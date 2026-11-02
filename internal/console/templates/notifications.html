@@ -2,6 +2,14 @@
 <div class="page">
 <h2>Notifications</h2>
 
+{{with .Shown}}<section class="notify once" aria-labelledby="shown">
+<h3 id="shown">Chat token {{.Name}} <span class="once-w">shown once</span></h3>
+<p class="once-l">Run the line in your terminal. The console keeps neither the line nor the bearer, so copy them now.</p>
+<div class="cline"><span class="ps" aria-hidden="true">$</span><code id="made-line" class="sel">{{.Line}}</code><button type="button" aria-live="polite" data-copy="made-line">Copy</button></div>
+<p class="once-k">bearer, for a script</p>
+<div class="cline"><code id="made-bearer" class="sel">{{.Bearer}}</code><button type="button" aria-live="polite" data-copy="made-bearer">Copy</button></div>
+</section>{{end}}
+
 {{$csrf := .CSRF}}{{$code := .Code}}{{$tg := ""}}{{range .Links}}{{if eq .Venue "telegram"}}{{$tg = .Address}}{{end}}{{end}}{{$dc := ""}}{{range .Links}}{{if eq .Venue "discord"}}{{$dc = .Address}}{{end}}{{end}}
 <section class="notify" aria-labelledby="connections">
 <h3 id="connections">Connections</h3>
@@ -42,5 +50,31 @@
 </tbody>
 </table>
 </section>
+{{if .ChatTokens}}{{$now := .Now}}
+<section class="notify" aria-labelledby="tokens">
+<h3 id="tokens">Chat tokens</h3>
+<table>
+<caption>A chat token lets your own Claude Code talk to one project's chat as you. It needs a Forgejo token of yours with only read:user, write:repository and write:issue. The console seals that token.</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Project</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">Act</th></tr></thead>
+<tbody>
+{{range .Tokens}}<tr><th scope="row"><span class="cut" title="{{.Name}}">{{.Name}}</span></th><td data-l="project">{{$r := .Repository}}{{$p := $r}}{{range $.Projects}}{{if eq .Repository $r}}{{$p = .Name}}{{end}}{{end}}<span class="cut" title="{{$r}}">{{$p}}</span></td>
+<td data-l="created">{{.Created.Format "2006-01-02"}}</td>
+<td data-l="expires">{{if .Expires.Before $now}}<span class="dim">expired</span>{{else}}{{.Expires.Format "2006-01-02"}}{{end}}</td>
+<td data-l="last used">{{if .LastUsed.IsZero}}<i class="lamp" aria-hidden="true"></i><span class="dim">never</span>{{else}}<i class="lamp{{if not (.Expires.Before $now)}} on{{end}}" aria-hidden="true"></i>{{.LastUsed.Format "2006-01-02 15:04"}}{{end}}</td>
+<td class="act"><form method="post" action="/notifications/tokens/revoke" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">Revoke</button></form></td></tr>
+{{else}}<tr><td colspan="6"><span class="dim">No chat token.</span></td></tr>{{end}}
+</tbody>
+</table>
+{{if .Writes}}<details class="mint"{{if not .Tokens}} open{{end}}><summary>Make a chat token</summary>
+<form method="post" action="/notifications/tokens">
+<input type="hidden" name="csrf" value="{{$csrf}}">
+<p><label for="token-project">Project</label><select id="token-project" name="project">{{range .Projects}}{{if .Writes}}<option value="{{.Repository}}">{{.Name}}</option>{{end}}{{end}}</select></p>
+<p><label for="token-name">Name</label><input id="token-name" name="name" type="text" maxlength="64" required></p>
+<p><label for="token-life">Lifetime</label><select id="token-life" name="life">{{range .Lives}}<option value="{{.}}"{{if eq . "30"}} selected{{end}}>{{.}} days</option>{{end}}</select></p>
+<p><label for="token-forgejo">Forgejo token</label><input id="token-forgejo" name="forgejo" type="password" autocomplete="off" required></p>
+<p><button type="submit">Make chat token</button></p>
+</form>
+</details>{{else}}<p class="dim">You write no project, so you can make no chat token.</p>{{end}}
+</section>{{end}}
 </div>
 {{template "foot"}}

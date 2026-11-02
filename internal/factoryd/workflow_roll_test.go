@@ -404,3 +404,214 @@ func TestWorkflowRollBeforeReviewRemarkFailsOnConcernsWithoutFindings(t *testing
 		t.Fatalf("RollCommit calls %v, approvals %+v, steps %v", *commits, g.approvals, g.steps)
 	}
 }
+
+// overBound is a session the worker ended on the named push refusal: the
+// branch's diff against its merge base is over the card's line bound even
+// after the merge of main, so the card cannot fit its patch.
+func overBound(session string) SessionResult {
+	refusal := "push failed: push refused: over the card's line bound: the branch's diff against its merge base is 340 lines over the card's 300-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"
+	return SessionResult{Outcome: OutcomeNoPush, SessionID: session, Summary: refusal,
+		Findings: []string{"previous session ended without a pushed commit: " + refusal}}
+}
+
+// A session that ends on the named push refusal closes the card into a
+// successor instead of looping: the successor activity runs once with the
+// refusal's findings and the open pull request, the card finishes failed
+// with a reason naming the successor, and nobody is asked.
+func TestPushOverBoundClosesIntoASuccessor(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), overBound("s2")})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q, escalations %q", final, h.escalated)
+	}
+	if len(h.successions) != 1 || h.successions[0].TaskID != "t1" || h.successions[0].PR != 9 {
+		t.Fatalf("the successor filings = %+v, want one for t1 carrying PR 9", h.successions)
+	}
+	if !strings.Contains(h.successions[0].Findings, "push refused: over the card's line bound") {
+		t.Fatalf("the successor's findings = %q, want the refusal", h.successions[0].Findings)
+	}
+	if reason := h.finals[0][1]; !strings.Contains(reason, "successor") || !strings.Contains(reason, "t-succ") {
+		t.Fatalf("the finish reason %q must name the successor", reason)
+	}
+	if len(h.escalated) != 0 {
+		t.Fatalf("escalations = %q, want none", h.escalated)
+	}
+}
+
+// A run from before the change loops on the refusal as before: the close
+// into a successor is versioned, and an old history files none.
+func TestSuccessorCloseIsVersioned(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.env.OnGetVersion("successor", workflow.DefaultVersion, versionSuccessor).Return(workflow.DefaultVersion - 1)
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), overBound("s2")})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	h.run(t)
+	if len(h.successions) != 0 {
+		t.Fatalf("a run from before the close filed a successor: %+v", h.successions)
+	}
+}
+
+// The deadlock ask's successor exit runs the same close: the answer files
+// the successor with the work state instead of buying another session, and
+// the card finishes failed naming it.
+func TestDeadlockAnswerCloseIntoASuccessorRunsTheSamePath(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason:   CheckinShareSpent,
+			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
+			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason:   CheckinShareSpent,
+			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}},
+			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: SuccessorChoice, Comment: 603})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "failed" {
+		t.Fatalf("final = %q, escalations %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its deadlock ask", h.escalated)
+	}
+	if len(h.successions) != 1 || h.successions[0].PR != 9 {
+		t.Fatalf("the successor filings = %+v, want one carrying PR 9", h.successions)
+	}
+	for _, want := range []string{"the migration runs outside its transaction", "review: concerns"} {
+		if !strings.Contains(h.successions[0].Findings, want) {
+			t.Errorf("the successor's findings = %q, want %q", h.successions[0].Findings, want)
+		}
+	}
+	if reason := h.finals[0][1]; !strings.Contains(reason, "successor") {
+		t.Fatalf("the finish reason %q must name the successor", reason)
+	}
+	if n := len(h.sessions); n != 3 {
+		t.Fatalf("sessions = %d, want three: the answer closes the card instead of buying a fourth", n)
+	}
+}
+
+// The successor activity files one card: the stuck card's objective with
+// the findings so far, the carried pull request and its size and budget,
+// queued on the direct track with no base of its own — it starts from
+// main's tip — on an issue labelled like a filed card's, started under
+// the work bound.
+func TestSuccessorFilesOneCard(t *testing.T) {
+	ctx := context.Background()
+	r, store, objects, fj, wf := newRetryRig(t)
+	a := store.tasks["t-a"]
+	a.Size, a.PRNumber = "small", 7
+	store.tasks["t-a"] = a
+	fj.calls = nil
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9,
+		Findings: "\n- the migration runs outside its transaction\n- the flag is read before it is set"})
+	if err != nil || id != SuccessorID("t-a") {
+		t.Fatalf("Successor = %q, %v", id, err)
+	}
+	s := store.tasks[id]
+	if s.Status != "queued" || s.Track != policy.TrackDirect || s.Source != SourceSuccessor || s.Kind != "agent" ||
+		s.CarryPR != 9 || s.SHA != "" || s.Repository != "linkshort/linkshort" || s.Parent != "t-plan" ||
+		s.Process != "spec" || s.BudgetEUR != 2 || s.Size != "small" {
+		t.Fatalf("the successor row = %+v", s)
+	}
+	is := fj.issues[9]
+	for _, want := range []string{"Findings so far:", "\n- the migration runs outside its transaction", "\n- the flag is read before it is set",
+		"Carries: #9", "Size: small", "Budget: 2.00 EUR", successorMarker("t-a")} {
+		if !strings.Contains(is.body, want) {
+			t.Errorf("the successor issue %q misses %q", is.body, want)
+		}
+	}
+	if is.poster != "factory-agent" || !slices.Equal(is.labels, []string{"agent", "state/queued"}) || s.IssueNumber != 9 {
+		t.Fatalf("issue #9 = %+v, the row's issue %d", is, s.IssueNumber)
+	}
+	if !slices.Equal(wf.started, []string{id}) {
+		t.Fatalf("started %q, want the successor alone", wf.started)
+	}
+	if got := events(t, objects, id); len(got) != 1 || !strings.HasPrefix(got[0], "card_created") {
+		t.Fatalf("the successor's events %v, want its card_created", got)
+	}
+}
+
+// A successor filing that stopped between its issue and its row runs again
+// to the same one card: the marker holds the issue, the row's identity
+// holds the card, and no second issue is filed.
+func TestSuccessorRetryFilesNoSecondIssue(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	fj.failLabel = 1
+	if _, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"}); err == nil {
+		t.Fatal("the first filing must stop at its labels")
+	}
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	if err != nil {
+		t.Fatalf("the second filing = %v", err)
+	}
+	var filed []*planIssue
+	for n := int64(1); n <= fj.next; n++ {
+		if is := fj.issues[n]; is != nil && strings.Contains(is.body, successorMarker("t-a")) {
+			filed = append(filed, is)
+		}
+	}
+	if len(filed) != 1 {
+		t.Fatalf("issues with the marker = %d, want one", len(filed))
+	}
+	if store.tasks[id].IssueNumber != 9 {
+		t.Fatalf("the successor row's issue = %d, want 9", store.tasks[id].IssueNumber)
+	}
+}
+
+// A successor's issue that closed inside the retry window — filed, then
+// closed by a human or a rule before the retry lands — is still found:
+// the marker search reads closed issues too, so the retry files no
+// second issue.
+func TestSuccessorFindsItsIssueClosed(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	fj.failLabel = 1
+	if _, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"}); err == nil {
+		t.Fatal("the first filing must stop at its labels")
+	}
+	fj.mu.Lock()
+	fj.issues[9].state = "closed"
+	fj.mu.Unlock()
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a", PR: 9, Findings: "\n- one finding"})
+	if err != nil {
+		t.Fatalf("the refiling = %v", err)
+	}
+	var filed []*planIssue
+	for n := int64(1); n <= fj.next; n++ {
+		if is := fj.issues[n]; is != nil && strings.Contains(is.body, successorMarker("t-a")) {
+			filed = append(filed, is)
+		}
+	}
+	if len(filed) != 1 {
+		t.Fatalf("issues with the marker = %d, want one", len(filed))
+	}
+	if store.tasks[id].IssueNumber != 9 {
+		t.Fatalf("the successor row's issue = %d, want 9", store.tasks[id].IssueNumber)
+	}
+}

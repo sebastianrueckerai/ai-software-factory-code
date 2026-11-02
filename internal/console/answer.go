@@ -90,18 +90,50 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // the human's row with its choice; the bound choice's press then runs
 // the bound tool call in code as the human's session, streamed, the
 // do- row landing as a Do it's does, any other press feeds the agent a
-// turn, which reads the row as their answer. Taking the binding
-// settles the ask: a second press hears it is gone, another human's
-// that it is not theirs; a binding expired leaves the question an
-// ordinary ask, every press of it settling.
+// turn, which reads the row as their answer. A bound set_pool choice
+// confirms the offer's captured change as a Do it's press does — the
+// one press the confirmation: no second proposal, no model turn, no
+// fresh read. The member is re-admitted and the change writes once
+// through the guarded writer before the stream opens, so only its
+// successful result streams: a file that moved since the offer, or in
+// the gap between the pre-stream guard and the writer's locked
+// recheck, answers the press's real 409 — never an SSE refusal — the
+// attempt valid and its token spent, and nothing rebases the change
+// onto the moved file. Taking the binding settles the ask: a second
+// press hears it is gone, another human's that it is not theirs; a
+// binding expired leaves the question an ordinary ask, every press of
+// it settling.
 func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
 	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
 	gone := errors.Is(err, factoryd.ErrNoProposal)
+	var landed *poolPress
 	switch {
 	case err == nil:
 		if err := t.inThread(p.Conversation); err != nil {
 			c.fail(w, r, err)
 			return
+		}
+		if choice == p.Choice && p.Pool != nil {
+			// the bound pool choice runs the captured change as a Do
+			// it's press does: re-admitted, guarded and written once
+			// before the stream, so a file that moved — before the
+			// press or in the gap between this guard and the writer's
+			// locked recheck — answers its real status with no write,
+			// and nothing rebases the change onto it
+			if err := t.readmit(p.Tool); err != nil {
+				c.fail(w, r, err)
+				return
+			}
+			if err := t.stalePool(p.Pool.Source); err != nil {
+				c.fail(w, r, err)
+				return
+			}
+			pr := t.poolPress(p, nil)
+			if pr.err != nil {
+				c.fail(w, r, pr.err)
+				return
+			}
+			landed = &pr
 		}
 	case errors.Is(err, factoryd.ErrOthersProposal):
 		http.Error(w, "It is another human's.", http.StatusForbidden)
@@ -119,12 +151,21 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	defer c.turns.leave(t.key())
 	t.detach()
 	t.open(w)
-	t.takeTurn(pos, wait)
+	if err == nil && choice == p.Choice && landed == nil {
+		leave := t.pressTurn(pos, wait)
+		defer leave()
+	} else {
+		t.takeTurn(pos, wait)
+	}
 	if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
 		return
 	}
 	if err == nil && choice == p.Choice {
-		t.apply(p)
+		if landed != nil {
+			t.poolLanded(p, nil, *landed)
+			return
+		}
+		t.apply(p, nil)
 		return
 	}
 	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
@@ -236,8 +277,11 @@ func (t *turn) askMember(in toolInput) (string, error) {
 // press of choice runs with args, under the checks the propose path runs
 // in call: the tool exists and writes, the arguments normalise and
 // decode, admitTool passes for the member's roles, describe writes the
-// human-facing line. It answers the binding's token and its description;
-// both "" when the ask binds nothing.
+// human-facing line. A set_pool choice binds the offer's own capture —
+// describe read the project file, its blob and its pool — in the row,
+// so the press runs the change the member read, never one the press
+// re-reads. It answers the binding's token and its description; both ""
+// when the ask binds nothing.
 func (t *turn) askBinding(name string, args json.RawMessage, choice string, choices []string) (string, string, error) {
 	if name == "" && choice == "" && len(args) == 0 {
 		return "", "", nil
@@ -278,7 +322,8 @@ func (t *turn) askBinding(name string, args json.RawMessage, choice string, choi
 		}
 	}
 	token := t.store(factoryd.ChatProposal{Token: randomToken(), Kind: "ask", Choice: choice, Repository: t.p.Repository, Login: t.owner,
-		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv})
+		Tool: name, Args: json.RawMessage(raw), Description: desc, Conversation: t.conv, Pool: t.pool})
+	t.pool = nil
 	if token == "" {
 		return "", "", refuse(http.StatusInternalServerError, "The binding could not be stored; nothing runs.")
 	}

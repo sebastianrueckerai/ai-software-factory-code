@@ -31,6 +31,7 @@ type approvalCard struct {
 	IDSuffix string // on the item's ids: "-d" in the drawer, so the column's copy keeps its own
 	IssueURL string
 	Issue    int64
+	PlanName string // a plan approval: the plan's name
 	PRURL    string
 	Monthly  float64
 	Merge    factoryd.MergeSpec
@@ -64,6 +65,7 @@ type approvalCard struct {
 	Questions   []planQuestion
 	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
+	Confirming  bool   // the revision's confirmation waits; its Request changes is the card's
 	Escalation  string // the plan task's escalation, such as its session cap
 	Problem     string // why the human's last action on the card was refused
 	// TaskStatus is its task's, where the task's card stands once the
@@ -139,7 +141,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 	}
 	base := strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/") + "/" + a.Project
 	t, ok := tasks[a.TaskID]
-	k.TaskStatus = t.Status
+	k.TaskStatus, k.PlanName = t.Status, t.PlanName
 	if ok && t.IssueNumber > 0 {
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
@@ -177,7 +179,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		if err = c.planOf(ctx, &k); err != nil {
 			k.Problem = "the plan could not be read; see the factoryd log"
 		}
-	case factoryd.ApprovalCriteria:
+	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		err = c.criteriaOf(ctx, &k)
 	}
 	if err != nil {
@@ -264,13 +266,14 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	open := 0
 	for i, q := range qs {
 		k.Questions = append(k.Questions, planQuestion{Index: i + 1, PlanQuestion: q})
-		if q.Answer == "" {
+		if q.Kind == factoryd.QuestionConfirmation {
+			confirming = !q.Answered()
+		}
+		if !q.Answered() {
 			open++
 		}
-		if q.Kind == factoryd.QuestionConfirmation {
-			confirming = q.Answer == ""
-		}
 	}
+	k.Confirming = confirming
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
 	}
@@ -342,15 +345,15 @@ func (c *Console) rerun(w http.ResponseWriter, r *http.Request) {
 }
 
 // decideButton runs a button's decision on the approval request the path
-// names and shows the board the form carried with its note.
+// names and answers the press.
 func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision func(ctx context.Context, a actor, id int64) (string, error)) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	note, err := decision(r.Context(), button(r), id)
-	c.pressNote(w, r, note, err)
+	_, err = decision(r.Context(), button(r), id)
+	c.pressed(w, r, err)
 }
 
 // review submits a pull request review on q's pull request: as a's

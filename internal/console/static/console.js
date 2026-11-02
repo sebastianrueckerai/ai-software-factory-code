@@ -1733,3 +1733,23 @@ document.addEventListener("keydown", function (e) {
     if (new URL(a.href, location.href).pathname === path) a.classList.add("open");
   });
 })();
+// a Copy button copies the text of the element it names, the shown-once
+// chat token and its line (C43), and says so for 2 s through its live
+// label; where the clipboard refuses, it selects the text for the human's
+// own copy and says that
+document.addEventListener("click", function (e) {
+  var b = e.target.closest && e.target.closest("[data-copy]");
+  if (!b) return;
+  var el = document.getElementById(b.dataset.copy);
+  var say = function (word) {
+    b.textContent = word;
+    clearTimeout(b.copyBack);
+    b.copyBack = setTimeout(function () { b.textContent = "Copy"; }, 2000);
+  };
+  var pick = function () {
+    window.getSelection().selectAllChildren(el);
+    say("Selected");
+  };
+  if (!navigator.clipboard) return pick();
+  navigator.clipboard.writeText(el.textContent).then(function () { say("Copied"); }, pick);
+});

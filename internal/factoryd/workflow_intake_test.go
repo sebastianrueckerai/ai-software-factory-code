@@ -480,6 +480,8 @@ func (f *requestInfoForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewDecoder(r.Body).Decode(&body)
 			f.labels = body.Labels
 			io.WriteString(w, `[]`)
+		case r.Method == "GET" && p == "/issues/4/dependencies":
+			io.WriteString(w, `[]`)
 		case r.Method == "GET" && p == "/issues/4":
 			fmt.Fprintf(w, `{"state":%q}`, map[bool]string{true: "closed", false: "open"}[f.closed])
 		case r.Method == "PATCH" && p == "/issues/4":

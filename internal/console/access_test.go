@@ -43,13 +43,13 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		return 0, ""
 	}
 	// path fills pattern's {id} (a card of sf/code (t-c), its pending request,
-	// a resource, an alert, a proposal), and {project} and {name} with the
+	// a resource, a proposal), and {project} and {name} with the
 	// leg's project.
 	path := func(pattern, name string) string {
 		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
-			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			{"/approvals/", "3"}, {"/resources/", "11"}} {
 			if strings.HasPrefix(p, fill.prefix) {
 				id = fill.v
 			}
@@ -72,7 +72,7 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	for _, p := range r.c.postRoutes() {
 		rule := accessTable[p.pattern]
 		if rule.need == 0 {
-			skipped = append(skipped, p.pattern) // the webhook checks its own header secret
+			skipped = append(skipped, p.pattern) // the webhook checks its own header secret, /mcp its bearer
 			continue
 		}
 		if rule.need == member {
@@ -96,9 +96,9 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 	}
 	// the documents' save is login-only too: its handler judges the
 	// project's sight, as its read does (TestDocsReadAccess).
-	if pages != 46 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /notifications/telegram/code",
-		"POST /notifications/disconnect", "POST /notifications/level", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
-		t.Fatalf("%d POST routes driven, skipped %v: want 46 driven and only the telegram webhook, the notifications' posts, logout and the documents' save skipped", pages, skipped)
+	if pages != 46 || !slices.Equal(skipped, []string{"POST /messengers/telegram", "POST /mcp", "POST /notifications/telegram/code",
+		"POST /notifications/disconnect", "POST /notifications/level", "POST /notifications/tokens", "POST /notifications/tokens/revoke", "POST /logout", "POST /projects/{name}/docs/{path...}"}) {
+		t.Fatalf("%d POST routes driven, skipped %v: want 46 driven and only the telegram webhook, /mcp, the notifications' posts, the chat tokens' posts, logout and the documents' save skipped", pages, skipped)
 	}
 
 	// The chat: every write tool by the member its scope refuses — bob on
@@ -143,8 +143,8 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		}
 		writes++
 	}
-	if writes != 37 || len(tools) != 72 {
-		t.Fatalf("%d of %d tools checked as writes: want 37 of 72", writes, len(tools))
+	if writes != 37 || len(tools) != 77 {
+		t.Fatalf("%d of %d tools checked as writes: want 37 of 77", writes, len(tools))
 	}
 
 	// #485's case in the chat's own words: bob, who writes demo, asks for
@@ -224,7 +224,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
-			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			{"/approvals/", "3"}, {"/resources/", "11"}} {
 			if strings.HasPrefix(p, fill.prefix) {
 				id = fill.v
 			}

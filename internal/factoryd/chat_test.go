@@ -562,18 +562,26 @@ func TestPGStoreChatConversations(t *testing.T) {
 // ProposalStates answers each token's state in the order asked: pending
 // while unused and unexpired, used once taken, expired after its time; a
 // token with no proposal row of the member on the project counts as
-// expired, as does an undo's.
+// expired, as does an undo's or another member's. A row that holds a pool
+// capture carries its safe preview with its state, pending, used or
+// expired alike — the display fields with checked-cent figures, never the
+// capture's source — and a capture that previews no whole cents carries
+// none while its state stands.
 func TestPGStoreProposalStates(t *testing.T) {
 	s, ctx := chatStore(t), context.Background()
 	now := time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC)
+	set := &PoolCapture{Action: poolActionSet, Reason: "the findings cost money", Source: "blob-set", From: 800, EUR: 10}
+	top := &PoolCapture{Action: poolActionTopUp, Reason: "a second finding", Source: "blob-top", From: 1000, EUR: 5}
 	for _, p := range []ChatProposal{
-		{Token: "pending", Kind: "proposal", Login: "anna", ExpiresAt: now},
-		{Token: "used", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(30 * time.Minute)},
-		{Token: "expired", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(-time.Second)},
-		{Token: "bobs", Kind: "proposal", Login: "bob", ExpiresAt: now.Add(30 * time.Minute)},
+		{Token: "pending", Kind: "proposal", Login: "anna", ExpiresAt: now, Pool: set},
+		{Token: "used", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(30 * time.Minute), Pool: top},
+		{Token: "expired", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(-time.Second), Pool: top},
+		{Token: "bobs", Kind: "proposal", Login: "bob", ExpiresAt: now.Add(30 * time.Minute), Pool: set},
 		{Token: "undo", Kind: "undo", Login: "anna", ExpiresAt: now.Add(30 * time.Minute)},
+		{Token: "subcent", Kind: "proposal", Login: "anna", ExpiresAt: now.Add(30 * time.Minute),
+			Pool: &PoolCapture{Action: poolActionTopUp, Reason: "no whole cents", Source: "blob", From: 1000, EUR: 0.005}},
 	} {
-		p.Repository, p.Tool, p.Args = "sf/code", "new_card", json.RawMessage(`{}`)
+		p.Repository, p.Tool, p.Args = "sf/code", "set_pool", json.RawMessage(`{}`)
 		if err := s.PutProposal(ctx, p); err != nil {
 			t.Fatal(err)
 		}
@@ -581,12 +589,30 @@ func TestPGStoreProposalStates(t *testing.T) {
 	if _, err := s.TakeProposal(ctx, "proposal", "used", "sf/code", "anna", now); err != nil {
 		t.Fatal(err)
 	}
-	states, err := s.ProposalStates(ctx, "sf/code", "anna", []string{"pending", "used", "expired", "missing", "bobs", "undo"}, now)
-	want := []ProposalState{{"pending", "pending"}, {"used", "used"}, {"expired", "expired"}, {"missing", "expired"}, {"bobs", "expired"}, {"undo", "expired"}}
+	states, err := s.ProposalStates(ctx, "sf/code", "anna", []string{"pending", "used", "expired", "missing", "bobs", "undo", "subcent"}, now)
+	want := []ProposalState{
+		{Token: "pending", State: "pending", Pool: &PoolPreview{Action: "set", EUR: 10, FromEUR: 8, ToEUR: 10, Reason: "the findings cost money"}},
+		{Token: "used", State: "used", Pool: &PoolPreview{Action: "top_up", EUR: 5, FromEUR: 10, ToEUR: 15, Reason: "a second finding"}},
+		{Token: "expired", State: "expired", Pool: &PoolPreview{Action: "top_up", EUR: 5, FromEUR: 10, ToEUR: 15, Reason: "a second finding"}},
+		{Token: "missing", State: "expired"},
+		{Token: "bobs", State: "expired"},
+		{Token: "undo", State: "expired"},
+		{Token: "subcent", State: "pending"},
+	}
 	if err != nil || !reflect.DeepEqual(states, want) {
 		t.Fatalf("states = %+v, %v, want %+v", states, err, want)
 	}
 	if states, err := s.ProposalStates(ctx, "sf/code", "anna", nil, now); err != nil || len(states) != 0 {
 		t.Fatalf("states of no token = %+v, %v, want none", states, err)
+	}
+	// the projection is safe in serialization too: the state carries the
+	// preview's five display fields and never the capture's source
+	b, err := json.Marshal(want[0])
+	if err != nil || string(b) != `{"token":"pending","state":"pending","pool":{"action":"set","eur":10,"from_eur":8,"to_eur":10,"reason":"the findings cost money"}}` {
+		t.Fatalf("the pending state's JSON = %s, %v", b, err)
+	}
+	b, err = json.Marshal(want[3])
+	if err != nil || string(b) != `{"token":"missing","state":"expired"}` {
+		t.Fatalf("a state without a capture's JSON = %s, %v", b, err)
 	}
 }

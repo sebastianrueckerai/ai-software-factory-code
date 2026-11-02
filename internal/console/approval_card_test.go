@@ -3,9 +3,11 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 
@@ -184,20 +186,24 @@ func TestAFiledRollCardIsQueued(t *testing.T) {
 // A card's press moves the card at once (C31): every column names the
 // statuses it holds, in the four columns and the wide view, and the
 // approval's forms the status of its task, whose card the decided request
-// leaves standing. The press sent by htmx answers with the note alone
-// behind the board-refresh trigger; a browser's form keeps its redirect.
-func TestCardPressAnswersWithTheNote(t *testing.T) {
+// leaves standing. The press sent by htmx answers with the board's refresh
+// alone; a browser's form keeps its redirect.
+func TestCardPressAnswersWithTheBoardAlone(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
 		Repository: "sf/code", IssueNumber: 9, PRNumber: 9}})
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-card",
 		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
-	r.c.cfg.ApproveMerge = func(context.Context, string, int64, string) error { return nil }
+	var approved []string
+	r.c.cfg.ApproveMerge = func(_ context.Context, taskID string, pr int64, approver string) error {
+		approved = append(approved, fmt.Sprintf("%s #%d by %s", taskID, pr, approver))
+		return nil
+	}
 	ck, s := r.loggedIn(t)
 	for page, wants := range map[string][]string{
 		"/?project=ai-software-factory-code": {`id="needs-you" data-holds="waiting-human waiting-poster">`,
 			`data-holds="queued waiting-deps waiting-image">`, `data-holds="running closing in-review merged">`, `data-holds="done failed closed"`,
-			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" hx-target="#note" hx-swap="innerHTML" data-to="in-review">`},
+			`<form method="post" action="/approvals/31/approve" hx-post="/approvals/31/approve" data-to="in-review">`},
 		"/?project=ai-software-factory-code&view=wide": {`data-holds="queued waiting-deps">`, `data-holds="running closing">`, `data-holds="in-review">`, `data-holds="merged">`,
 			`data-holds="failed"`, `data-holds="closed"`},
 	} {
@@ -210,10 +216,11 @@ func TestCardPressAnswersWithTheNote(t *testing.T) {
 	}
 	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
 	rec := r.do(htmxPost("/approvals/31/approve", form), ck)
-	if body := rec.Body.String(); rec.Code != http.StatusOK ||
-		body != `<p class="note" role="status">Approved pull request #9; factoryd merges it.</p>` ||
-		rec.Header().Get("HX-Trigger") != "board-refresh" {
+	if body := rec.Body.String(); rec.Code != http.StatusNoContent || body != "" || rec.Header().Get("HX-Trigger") != "board-refresh" {
 		t.Fatalf("the htmx approve = %d (%q):\n%s", rec.Code, rec.Header().Get("HX-Trigger"), body)
+	}
+	if !slices.Equal(approved, []string{"t-card #9 by sebastian"}) {
+		t.Fatalf("the htmx approve merged %v, want t-card #9 by sebastian", approved)
 	}
 	if rec := r.do(post("/approvals/31/approve", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("the browser's approve = %d to %q", rec.Code, rec.Header().Get("Location"))

@@ -106,6 +106,12 @@ func TestLab(t *testing.T) {
 		TelegramName: "factorybot",
 		Discord:      &DiscordConnect{AuthorizeURL: func(string) string { return "https://discord.example/oauth" }},
 	}
+	// the panel's and the tokens' POST routes mount in New, by the config
+	c, err := New(r.c.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.c = c
 	r.ledger.briefs = map[string]string{labBump.Brief: labBumpBrief}
 	ck, _ := r.loggedIn(t)
 
@@ -356,11 +362,13 @@ type labScene struct {
 	metrics factoryd.MetricsReport
 	// costs is the costs page's ledger; nil gets labCosts of spend
 	costs *policy.Costs
+	// chatTokens are the human's chat tokens on the Notifications page
+	chatTokens []factoryd.ChatToken
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene}
+	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -501,6 +509,37 @@ func thinkingScene(now time.Time) labScene {
 	return s
 }
 
+// tokensScene is the threads scene with sebastian's two chat tokens,
+// claude-laptop used four minutes ago and nightly-ci never, and the
+// laptop's thread open: claude-laptop asks twice, then sebastian answers
+// from the browser, so a token's rows stand beside a browser row.
+func tokensScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.chat = append(slices.Clone(s.chat),
+		factoryd.ChatMessage{Conversation: 6, Role: "user", Token: "claude-laptop", At: ago(12 * time.Minute),
+			Content: "What does #606 still wait on?"},
+		factoryd.ChatMessage{Conversation: 6, Role: "assistant", Token: "claude-laptop", At: ago(12*time.Minute - 20*time.Second),
+			Content: "One check: the e2e job fails on the drawer test since #612 moved the textarea to two rows."},
+		factoryd.ChatMessage{Conversation: 6, Role: "user", Token: "claude-laptop", At: ago(5 * time.Minute),
+			Content: "Which line of the test fails?"},
+		factoryd.ChatMessage{Conversation: 6, Role: "assistant", Token: "claude-laptop", At: ago(5*time.Minute - 15*time.Second),
+			Content: "drawer.spec.ts:88 expects Send centred on the textarea. It sits 4 px low at 1440."},
+		factoryd.ChatMessage{Conversation: 6, Role: "user", At: ago(2 * time.Minute),
+			Content: "Leave #606 to its session. I look at it after lunch."},
+		factoryd.ChatMessage{Conversation: 6, Role: "assistant", At: ago(2*time.Minute - 10*time.Second),
+			Content: "#606 stays with its session until you look."})
+	s.open, s.seen[6] = 6, int64(len(s.chat))
+	created := ago(3 * 24 * time.Hour)
+	s.chatTokens = []factoryd.ChatToken{
+		{ID: 1, Login: "sebastian", Repository: "sf/code", Name: "claude-laptop", Conversation: 6, Created: created,
+			Expires: created.AddDate(0, 0, 30), LastUsed: ago(4 * time.Minute)},
+		{ID: 2, Login: "sebastian", Repository: "sf/code", Name: "nightly-ci", Created: ago(26 * time.Hour),
+			Expires: ago(26*time.Hour).AddDate(0, 0, 7)},
+	}
+	return s
+}
+
 // assistedScene is the factory's own code at autonomy assisted: the
 // agent filed the login card itself (its applied filing in the chat, the
 // event naming it the decider, the inbox's poke with its decider line),
@@ -571,7 +610,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking or metrics", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics or tokens", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -734,6 +773,9 @@ func (r *rig) seedScene(s labScene) string {
 	}
 	r.chat.spend = []spendRow{{repository, now, s.spend - s.chatSpend, false}, {repository, now, s.chatSpend, true}}
 	r.chat.mu.Unlock()
+	r.chatTokens.mu.Lock()
+	r.chatTokens.rows = slices.Clone(s.chatTokens)
+	r.chatTokens.mu.Unlock()
 	r.mirrors.mu.Lock()
 	r.mirrors.rows = map[string]factoryd.Mirror{}
 	if s.github != "" {
@@ -924,15 +966,17 @@ func checksStep(start, end time.Time, failed string) map[string]any {
 }
 
 // pushedTimeline is a card's timeline: one session on alias from start
-// that pushed, and checks with failed ("" for none).
+// that pushed, and checks with failed ("" for none) judging that push.
 func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
+	checks := checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed)
+	checks["commit"] = "4be1c07"
 	return []map[string]any{
 		{"step": "intake", "time": stamp(start.Add(30 * time.Second)), "started": stamp(start), "source": "webhook"},
 		{"step": "session_start", "time": stamp(start.Add(time.Minute)), "session": "s-1", "model": alias, "attempt": 1},
 		{"step": "session_end", "time": stamp(start.Add(19 * time.Minute)), "session": "s-1", "started": stamp(start.Add(time.Minute)),
 			"attempt": 1, "outcome": "pushed"},
 		{"step": "pushed", "time": stamp(start.Add(19*time.Minute + 5*time.Second)), "session": "s-1", "commit": "4be1c07"},
-		checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed),
+		checks,
 	}
 }
 
@@ -958,7 +1002,7 @@ func busyScene(now time.Time) labScene {
 	plan := labCard(now, 558, "waiting-human", "plan", 64*time.Minute, "Console: a project's activity feed",
 		"Show each project's events as a feed beside the board: who did what, by which way, when.\nThe feed reads the events table; no new store.\n"+
 			"A writer filters it by card and by kind.\nIt pages back 500 rows at most.\nAcceptance: the feed shows a steer within a second of its row.")
-	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias = 5, 0.38, "big"
+	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias, plan.PlanName = 5, 0.38, "big", "activity feed"
 	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Four cards: the feed's read model first, then the page and the filters side by side, then the live rows.",
 		Cards: []factoryd.PlanCard{
 			{Key: "feed-read", Role: factoryd.RoleFoundation, Title: "Events: a paged read of a project's feed", Size: "small"},
@@ -1008,6 +1052,9 @@ func busyScene(now time.Time) labScene {
 		"Offer the newest snapshot as a download beside the costs table."), WaitingOn: "#603, #611"}
 	queued := factoryd.BoardTask{Task: labCard(now, 617, "queued", "direct", 40*time.Minute, "Chat form: center the Send button next to the two-row textarea",
 		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: "#611, #614"}
+	planOpen := factoryd.BoardTask{Task: labCard(now, 537, "waiting-deps", "plan", 8*time.Hour, "Costs: a per-model spend table",
+		"Break the costs page's spend down by model, with a cap line per model."), WaitingOn: "#533"}
+	planOpen.PlanName = "quota guard"
 	child := func(issue int64, status, key, title string, age time.Duration) factoryd.Task {
 		k := labCard(now, issue, status, "direct", age, title, fmt.Sprintf("Card %s of plan #531, filed for sebastian. Written by the planner.", key))
 		k.Source, k.Parent, k.PlanKey = factoryd.SourcePlan, labID(531), key
@@ -1027,7 +1074,9 @@ func busyScene(now time.Time) labScene {
 
 	planDone := finished(labCard(now, 531, "done", "plan", 30*time.Hour, "Console: the card drawer",
 		"Open a card beside the board with its overview, its activity, its files and its session."), now, 26*time.Hour, 0.52)
-	planDone.BudgetEUR, planDone.ModelAlias = 5, "big"
+	planDone.BudgetEUR, planDone.ModelAlias, planDone.PlanName = 5, "big", "card chips"
+	planClosed := finished(labCard(now, 527, "closed", "plan", 4*24*time.Hour, "Console: the pulse strip",
+		"Show the factory's pulse as a strip above the board."), now, 3*24*time.Hour, 0)
 	exported := finished(labCard(now, 596, "done", "direct", 9*time.Hour, "Chat: the Undo of a move restores the lane",
 		"An undone move leaves the card in ready; put it back where it was."), now, 7*time.Hour, 0.33)
 	exported.GitHubPR, exported.GitHubPRURL, exported.GitHubPRState = 14, "https://github.com/sebastianrueckerai/ai-software-factory-code/pull/14", "open"
@@ -1046,7 +1095,7 @@ func busyScene(now time.Time) labScene {
 		{Task: finished(labCard(now, 600, "done", "direct", 5*time.Hour, "Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."), now, 3*time.Hour, 0.18)},
 		{Task: finished(child(535, "failed", "drawer-activity", "Drawer: the Activity tab", 26*time.Hour), now, 18*time.Hour, 1.12)},
-		{Task: failed}, {Task: closed},
+		{Task: failed}, {Task: closed}, {Task: planClosed}, planOpen,
 	}
 	s.deps = map[string][]string{labID(617): {labID(611), labID(614)}, labID(616): {labID(603), labID(611)}}
 
@@ -1766,10 +1815,10 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 			t.Errorf("child #%d's title %q, want its headline %q", tc.issue, got, tc.title)
 		}
 	}
-	// the one child still in play wears its key on the plan chip; the
-	// finished children's rows have none
-	if got := strings.Count(body, `<span class="chip plan">from plan #531 · drawer-files</span>`); got != 1 {
-		t.Errorf("%d chips read from plan #531 · drawer-files, want the queued child's one", got)
+	// the three children in play (#606, #617, #533) wear the plan's name on the
+	// plan chip; the finished children's rows have none
+	if got := strings.Count(body, `<span class="chip plan">from plan #531 · card chips</span>`); got != 3 {
+		t.Errorf("%d chips read from plan #531 · card chips, want the 3 children in play", got)
 	}
 	for _, key := range []string{"drawer-files", "drawer-overview", "drawer-chat", "drawer-activity"} {
 		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {

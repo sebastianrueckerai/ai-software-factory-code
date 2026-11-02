@@ -106,7 +106,7 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 	g.replies = [][]string{{call(1, "routine_write", args)}}
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"Every Thursday at six, update the dependencies"}})
 	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, new in projects/demo-app.yaml:\n\n` +
-		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  skill: deps","id":"TOKEN","tool":"routine_write"}`,
+		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  skill: deps","expires":"EXPIRES","id":"TOKEN","tool":"routine_write"}`,
 		`done {}`})
 	if len(infra.contents) != 0 {
 		t.Fatalf("a proposal committed: %+v", infra.contents)
@@ -135,7 +135,7 @@ func TestRoutineWriteProposesThenCommitsTheProjectFile(t *testing.T) {
 	equal(t, "the change's proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n    - merges: 20\n  files: agent\n` +
 		`  brief: routines/demo-app.dependency-update.md\n  skill: deps\n\nIts brief, routines/demo-app.dependency-update.md:\n\n` +
-		`Update the dependencies and run the tests.","id":"TOKEN","tool":"routine_write"}`, `done {}`})
+		`Update the dependencies and run the tests.","expires":"EXPIRES","id":"TOKEN","tool":"routine_write"}`, `done {}`})
 	_, done, _ = chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "the change's Do it", done, ran("routine_write", args,
 		"Pull request #12 changed routine dependency-update in projects/demo-app.yaml and wrote its brief routines/demo-app.dependency-update.md. "+
@@ -203,7 +203,7 @@ func TestRoutineDeleteRemovesTheRoutineAndItsBrief(t *testing.T) {
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"stop updating the dependencies"}})
 	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Delete a routine, out of projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: agent\n  brief: routines/demo-app.dependency-update.md\n  skill: deps` +
-		`\n\nIts brief, routines/demo-app.dependency-update.md, goes too.","id":"TOKEN","tool":"routine_delete"}`, `done {}`})
+		`\n\nIts brief, routines/demo-app.dependency-update.md, goes too.","expires":"EXPIRES","id":"TOKEN","tool":"routine_delete"}`, `done {}`})
 	_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "Do it", done, ran("routine_delete", args,
 		"Pull request #12 deleted routine dependency-update from projects/demo-app.yaml, and its brief routines/demo-app.dependency-update.md."))
@@ -289,7 +289,7 @@ func TestChatRoutineRunAndSkip(t *testing.T) {
 	before := r.events.count()
 	const name = `{"name":"weekly-bump"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "routine_run", name)
-	equal(t, "the run's proposal", proposed, []string{`proposal {"arguments":` + name + `,"description":"Run a routine now, name weekly-bump","id":"TOKEN","tool":"routine_run"}`, `done {}`})
+	equal(t, "the run's proposal", proposed, []string{`proposal {"arguments":` + name + `,"description":"Run a routine now, name weekly-bump","expires":"EXPIRES","id":"TOKEN","tool":"routine_run"}`, `done {}`})
 	equal(t, "the run", done, ran("routine_run", name, "Held: #781 is still open"))
 	_, done, _ = proposeAndDo(t, r, g, "routine_skip", name)
 	equal(t, "the skip", done, ran("routine_skip", name, "Skipped once · next Mon 20 Oct 06:00"))
@@ -298,7 +298,7 @@ func TestChatRoutineRunAndSkip(t *testing.T) {
 	}
 	const undo = `{"name":"weekly-bump","undo":true}`
 	proposed, done, _ = proposeAndDo(t, r, g, "routine_skip", undo)
-	equal(t, "the undo's proposal", proposed, []string{`proposal {"arguments":` + undo + `,"description":"Skip a routine's next run, name weekly-bump, undo the pending skip","id":"TOKEN","tool":"routine_skip"}`, `done {}`})
+	equal(t, "the undo's proposal", proposed, []string{`proposal {"arguments":` + undo + `,"description":"Skip a routine's next run, name weekly-bump, undo the pending skip","expires":"EXPIRES","id":"TOKEN","tool":"routine_skip"}`, `done {}`})
 	equal(t, "the undo", done, ran("routine_skip", undo, "Skip once undone"))
 	routine := func(more map[string]any) map[string]any {
 		d := map[string]any{"project": "ai-software-factory-code", "routine": "weekly-bump"}
@@ -393,7 +393,7 @@ func TestRoutineWriteMovesItsBrief(t *testing.T) {
 	_, proposed, tokens := chatPost(t, r, ck, s, "/projects/demo-app/chat", url.Values{"message": {"give it a better brief"}})
 	equal(t, "the proposal", proposed, []string{`proposal {"arguments":` + args + `,"description":"Write a routine, in place of dependency-update in projects/demo-app.yaml:\n\n` +
 		`- name: dependency-update\n  title: Dependency update\n  schedule:\n    - cron: 0 6 * * 4\n  files: human\n  brief: routines/demo-app.dependency-update.md` +
-		`\n\nIts brief, routines/demo-app.dependency-update.md:\n\nUpdate them and run the tests.\n\nIts old brief, routines/deps.md, goes.","id":"TOKEN","tool":"routine_write"}`,
+		`\n\nIts brief, routines/demo-app.dependency-update.md:\n\nUpdate them and run the tests.\n\nIts old brief, routines/deps.md, goes.","expires":"EXPIRES","id":"TOKEN","tool":"routine_write"}`,
 		`done {}`})
 	_, done, _ := chatPost(t, r, ck, s, "/projects/demo-app/chat/proposals/"+tokens[0], nil)
 	equal(t, "Do it", done, ran("routine_write", args, "Pull request #12 changed routine dependency-update in projects/demo-app.yaml, "+

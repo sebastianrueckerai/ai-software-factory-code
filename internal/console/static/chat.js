@@ -55,10 +55,12 @@ var chatView = (function () {
   // a turn: a 22 px avatar at the left (the agent a cyan ring with a dot,
   // the member a filled circle with their initial), the name and the time
   // on one line above the text, the text at the full width
-  function whoHTML(name, at) {
-    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
+  function whoHTML(name, at, via) {
+    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span>" + (via || "") + " <time>" + stamp(at) + "</time></p>";
   }
-  function userHTML(login, text, at, queued, images, docs) {
+  // a row a chat token sent carries the token's name (C43): its avatar a
+  // dashed ring, "via" and the name after the human's in the who line
+  function userHTML(login, text, at, queued, images, docs, token) {
     // the row's images: their own names as thumbnails, the optimistic
     // object URLs until the read carries the stored ids; its documents:
     // link chips of file name and size, the same object URLs until then
@@ -70,7 +72,7 @@ var chatView = (function () {
       var href = d.url ? d.url : base + "/attachments/" + d.id;
       return "<a class=\"chip\" href=\"" + esc(href) + "\" target=\"_blank\" rel=\"noopener\">" + esc(d.fileName || d.file_name) + " · " + sizeHTML(d.bytes) + "</a>";
     }).join("");
-    return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
+    return "<div class=\"msg you" + (token ? " tok" : "") + "\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at, token ? " <span class=\"via\" title=\"" + esc("sent by the chat token " + token) + "\">via " + esc(token) + "</span>" : "") +
       "<p class=\"said\">" + esc(text) + "</p>" + (thumbs ? "<div class=\"chat-thumbs\">" + thumbs + "</div>" : "") +
       (chips ? "<div class=\"chat-chips\">" + chips + "</div>" : "") +
       (queued ? queuedHTML : "") + "</div>";
@@ -143,13 +145,15 @@ var chatView = (function () {
   }
   // toolHTML is a tool call folded to its name, its duration when known
   // and its result's first line; a refusal (the policy's or the role's) is
-  // the agent's line instead
-  function toolHTML(name, args, ms, result) {
+  // the agent's line instead; the research tool's trail folds behind the
+  // result as its own steps
+  function toolHTML(name, args, ms, result, trail) {
     result = String(result || "");
     if (result.indexOf("Refused: ") === 0) return "<p class=\"refused\"><code>" + esc(name) + "</code> " + esc(result) + "</p>";
     var first = result.split("\n")[0];
     return "<details class=\"tool\"><summary>🔧 " + esc(name) + (ms == null ? "" : " · " + Number(ms) + " ms") + (first ? " · " + esc(first) : "") +
-      "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre></details>";
+      "</summary><pre>" + esc(typeof args === "string" ? args : JSON.stringify(args)) + (result ? "\n\n" + esc(result) : "") + "</pre>" +
+      (trail ? "<details class=\"trail\"><summary>the researcher's steps</summary><pre>" + esc(trail) + "</pre></details>" : "") + "</details>";
   }
   // callsHTML joins a message's parts, a tool call's as {call: html}: each
   // run of calls shows its newest, the earlier ones folded behind one line
@@ -189,10 +193,47 @@ var chatView = (function () {
   // stoppedMarkHTML is the grey mark a stopped turn leaves where the
   // thinking one ran, on the cut answer's row
   var stoppedMarkHTML = "<span class=\"thinking stopped\" aria-hidden=\"true\">stopped</span>";
+  // poolPreview is a pool proposal's resulting ceiling at eur, the
+  // suggested one while none reads: a set stands at eur, a top-up on the
+  // captured allowance plus it — whole figures shown to the cent
+  function poolPreview(pool, eur) {
+    var v = typeof eur === "number" ? eur : Number(eur);
+    if (!isFinite(v)) v = Number(pool.eur);
+    var to = pool.action === "top_up" ? Number(pool.from_eur) + v : v;
+    return "the pool would stand at €" + to.toFixed(2);
+  }
+  // poolFormHTML is a set_pool proposal's own half: the operation, the
+  // cent-precision amount the member may correct, the reason fixed at the
+  // capture, and the ceiling the change would stand at (pool-preview)
+  function poolFormHTML(pool) {
+    var op = pool.action === "top_up" ? "Top up the pool by, EUR" : "Set the pool at, EUR";
+    return "<form class=\"pool-edit\" data-pool data-action=\"" + esc(pool.action) + "\" data-from=\"" + esc(pool.from_eur) +
+      "\" data-suggested=\"" + esc(pool.eur) + "\">" +
+      "<label>" + op + " <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" value=\"" + esc(pool.eur) + "\" aria-label=\"" + op + "\"></label>" +
+      "<p class=\"pool-reason\">reason (fixed): " + esc(pool.reason) + "</p>" +
+      "<p class=\"pool-preview\" data-pool-preview>" + poolPreview(pool) + "</p></form>";
+  }
   function proposalHTML(p) {
-    return "<div class=\"proposal\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" +
-      "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>" +
+    var body = p.pool ? poolFormHTML(p.pool) :
+      "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>";
+    return "<div class=\"proposal" + (p.pool ? " pool" : "") + "\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" + body +
       "<p class=\"pfoot\"><button type=\"button\" class=\"doit\" data-doit>Do it</button> <button type=\"button\" class=\"skip\" data-skip>Skip</button></p></div>";
+  }
+  // poolCtlHTML is the panel's pool control under the composer: the pool
+  // line as the settings and policy pages read it, and — an approver of
+  // the project alone — the ask that starts a normal chat turn: the agent
+  // proposes, the member's Do it confirms, nothing writes before that.
+  // Not an approver reads who is, and no dead button stands for them.
+  function poolCtlHTML(pool) {
+    var note = "<p class=\"pool-note\">" + esc(pool.words) + "</p>";
+    if (!pool.can_ask) return "<div class=\"poolctl\" data-pool-ctl>" + note +
+      "<p class=\"pool-why\">Only an approver of the project asks for a pool change.</p></div>";
+    var op = pool.present ? "Top up the pool by, EUR" : "Set the pool to, EUR";
+    return "<form class=\"choices poolctl\" data-pool-ctl data-present=\"" + String(!!pool.present) + "\">" + note +
+      "<label>" + op + " <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" required></label> " +
+      "<label>Reason <input type=\"text\" name=\"reason\" maxlength=\"200\" required></label> " +
+      "<button type=\"submit\">" + (pool.present ? "Top up…" : "Set the pool…") + "</button>" +
+      "<p class=\"pool-why\">This starts a normal chat turn: the agent reads the amount and the reason, proposes the change, and nothing writes until your Do it confirms the proposal.</p></form>";
   }
   // appliedHTML is a write that took effect, or an undo's when undone
   function appliedHTML(a, undone) {
@@ -207,8 +248,8 @@ var chatView = (function () {
   // expired one says so under its block. While budget, the stopped chat's
   // fund state, stands, the newest open fund row offers the fund.
   function historyHTML(msgs, login, proposals, budget) {
-    var states = {}, fundAt = -1;
-    (proposals || []).forEach(function (p) { states[p.token] = p.state; });
+    var states = {}, pools = {}, fundAt = -1;
+    (proposals || []).forEach(function (p) { states[p.token] = p.state; pools[p.token] = p.pool; });
     if (budget) msgs.forEach(function (m, i) { if (fundRow(m) && !m.settled) fundAt = i; });
     var out = [], parts = null, at, wake = null;
     function close() {
@@ -233,7 +274,7 @@ var chatView = (function () {
         }
         var ims = [], docs = [];
         (m.attachments || []).forEach(function (a) { (/^image\//.test(a.content_type) ? ims : docs).push(a); });
-        out.push(userHTML(login, m.content, m.at, m.queued, ims, docs));
+        out.push(userHTML(login, m.content, m.at, m.queued, ims, docs, m.token));
         return;
       }
       var dst = wake ? wake.parts : parts;
@@ -246,11 +287,11 @@ var chatView = (function () {
       (m.tool_calls || []).forEach(function (c) {
         var state = c.proposal && states[c.proposal];
         if (state === "pending") {
-          dst.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
+          dst.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments, pool: pools[c.proposal],
             description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
           return;
         }
-        dst.push({call: toolHTML(c.name, c.arguments, null, c.result)});
+        dst.push({call: toolHTML(c.name, c.arguments, null, c.result, c.trail)});
         if (state) dst.push("<p class=\"pfoot\"><span class=\"expired\">" + esc(state) + "</span></p>");
       });
     });
@@ -485,7 +526,7 @@ var chatView = (function () {
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
     queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, trimThink: trimThink,
-    stoppedMarkHTML: stoppedMarkHTML, zoomHTML: zoomHTML,
+    stoppedMarkHTML: stoppedMarkHTML, zoomHTML: zoomHTML, poolPreview: poolPreview, poolCtlHTML: poolCtlHTML,
     openQuestionHTML: openQuestionHTML};
 })();
 
@@ -497,6 +538,31 @@ var chatView = (function () {
   var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
   var answerRow = document.getElementById("chat-answer"), pending = null, sending = false;
   var commandsEl = document.getElementById("chat-commands"), palette = document.getElementById("chat-palette"), pal = {list: null, sel: 0};
+  // the pool control's host between the log and the composer: load fills
+  // it from the thread read's pool line
+  var poolHost = null;
+  if (form && form.parentNode) {
+    poolHost = document.createElement("div");
+    poolHost.className = "pool-host";
+    form.parentNode.insertBefore(poolHost, form);
+    // Set the pool / Top up starts a normal chat turn: the amount and the
+    // reason ride a plain message, no policy write of its own
+    poolHost.addEventListener("submit", function (e) {
+      var f = e.target.closest("[data-pool-ctl]");
+      if (!f) return;
+      // the native submission dies first: a press while a turn runs must
+      // not navigate away with the amount and reason in the URL
+      e.preventDefault();
+      if (busy(openRef())) return;
+      var eur = f.elements.eur.value.trim(), reason = f.elements.reason.value.trim();
+      if (!eur || !reason) return;
+      var text = f.dataset.present === "true"
+        ? "Top the month pool up by EUR " + eur + " — " + reason
+        : "Set the month pool to EUR " + eur + " — " + reason;
+      f.reset();
+      turn(text);
+    });
+  }
   var commands = commandsEl ? JSON.parse(commandsEl.textContent || "null") || [] : [];
   var sum = panel.querySelector(".sw-sum");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
@@ -560,6 +626,11 @@ var chatView = (function () {
     bar.setAttribute("tabindex", "0");
     form.insertBefore(bar, form.firstChild);
     var y0 = 0, h0 = 0, sizing = false;
+    // sized is set when the member sizes the box by hand, by the drag or
+    // its arrow keys: that height is theirs, and words that fit inside it
+    // leave it. Only the bar's double-click and a sent message give the
+    // height back to the words.
+    var sized = false;
     bar.addEventListener("pointerdown", function (e) {
       sizing = true; y0 = e.clientY; h0 = input.getBoundingClientRect().height;
       try { bar.setPointerCapture(e.pointerId); } catch (err) {}
@@ -567,16 +638,19 @@ var chatView = (function () {
     });
     bar.addEventListener("pointermove", function (e) {
       if (!sizing) return;
+      sized = true;
       input.style.height = Math.round(Math.max(44, Math.min(window.innerHeight * 0.6, h0 + (y0 - e.clientY)))) + "px";
     });
     ["pointerup", "pointercancel"].forEach(function (n) { bar.addEventListener(n, function () { sizing = false; }); });
-    bar.addEventListener("dblclick", function () { input.style.height = ""; });
+    bar.addEventListener("dblclick", function () { sized = false; input.style.height = ""; });
     bar.addEventListener("keydown", function (e) {
       if (e.key !== "ArrowUp" && e.key !== "ArrowDown") return;
+      sized = true;
       input.style.height = Math.round(Math.max(44, Math.min(window.innerHeight * 0.6, input.getBoundingClientRect().height + (e.key === "ArrowUp" ? 24 : -24)))) + "px";
       e.preventDefault();
     });
     input.addEventListener("input", function () {
+      if (!sized) input.style.height = "";
       if (input.scrollHeight > input.clientHeight) {
         input.style.height = Math.min(Math.round(window.innerHeight * 0.6), input.scrollHeight) + "px";
       }
@@ -749,11 +823,12 @@ var chatView = (function () {
     running[k] = (running[k] || 0) + 1;
     lock();
     listThreads();
-    // a string body posts urlencoded; a FormData one (the send with
+    // a string body posts urlencoded — the correction of a pool proposal's
+    // press, one JSON object, posts json; a FormData one (the send with
     // images) leaves the type to the browser, which sets the multipart
     // boundary
     var headers = {"X-CSRF-Token": form.elements.csrf.value};
-    if (typeof body === "string") headers["Content-Type"] = "application/x-www-form-urlencoded";
+    if (typeof body === "string") headers["Content-Type"] = body.charAt(0) === "{" ? "application/json" : "application/x-www-form-urlencoded";
     // drawThink puts the kept reasoning in the fold and follows its
     // newest line while it is open
     function drawThink() {
@@ -825,7 +900,7 @@ var chatView = (function () {
       said = null;
       if (ev.event === "tool") {
         foldCall(cursor.previousElementSibling);
-        add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result));
+        add(into, chatView.toolHTML(d.name, d.arguments, d.duration_ms, d.result, d.trail));
       }
       else if (ev.event === "proposal") add(into, chatView.proposalHTML(d));
       else if (ev.event === "applied") add(into, chatView.appliedHTML(d, into.classList.contains("undoing")));
@@ -901,6 +976,7 @@ var chatView = (function () {
   // paste's growth must not outlive the message or the clear that ends it
   function clearInput() {
     input.value = "";
+    sized = false;
     input.style.height = "";
   }
   // stopTurn ends the open thread's turn in flight: a press on the mark's
@@ -976,7 +1052,7 @@ var chatView = (function () {
         (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; (/^image\//.test(a.content_type) ? ims : docs).push(a); });
         if (!ims.length && !docs.length) return;
         var t = document.createElement("template");
-        t.innerHTML = chatView.userHTML(login, m.content, m.at, !!row.dataset.joined, ims, docs);
+        t.innerHTML = chatView.userHTML(login, m.content, m.at, !!row.dataset.joined, ims, docs, m.token);
         var fresh = t.content.firstElementChild;
         if (row.dataset.joined) fresh.dataset.joined = row.dataset.joined;
         row.replaceWith(fresh);
@@ -1277,8 +1353,30 @@ var chatView = (function () {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
       var foot = card.querySelector(".pfoot");
-      foot.textContent = "";
-      run(open, openOwner, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), "", foot, expired(foot));
+      var edit = card.querySelector("form[data-pool]");
+      var body = "", out = foot;
+      if (edit) {
+        // a pool proposal's press: the suggested amount as it stands, or
+        // the one correction the row takes, the eur alone, as JSON. The
+        // card keeps its buttons: a press the server refuses — a malformed
+        // amount among them — leaves the proposal pending, the error line
+        // beside it, and the member corrects and presses again. A blank or
+        // malformed edit posts nothing at all — an empty body would
+        // confirm the suggested amount the preview no longer shows
+        var raw = edit.elements.eur.value.trim(), eur = Number(raw);
+        out = document.createElement("div");
+        foot.after(out);
+        if (raw === "" || !isFinite(eur)) {
+          add(out, "<p class=\"chat-error\">Enter a valid EUR amount: nothing was sent, the proposal still stands.</p>");
+          return;
+        }
+        if (eur !== Number(edit.dataset.suggested)) {
+          body = JSON.stringify({correction: {eur: eur}});
+        }
+      } else {
+        foot.textContent = "";
+      }
+      run(open, openOwner, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), body, out, expired(foot));
     } else if (b.hasAttribute("data-undo")) {
       var out = document.createElement("div");
       out.className = "undoing";
@@ -1287,10 +1385,24 @@ var chatView = (function () {
       run(open, openOwner, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
   });
+  // a pool proposal's edited amount moves its ceiling preview at once,
+  // before any confirmation asks the server for anything
+  log.addEventListener("input", function (e) {
+    var f = e.target.closest("form[data-pool]");
+    if (!f) return;
+    var p = f.querySelector("[data-pool-preview]");
+    if (p) p.textContent = chatView.poolPreview({action: f.dataset.action, from_eur: Number(f.dataset.from), eur: Number(f.dataset.suggested)}, f.elements.eur.value);
+  });
   // Fund and go on: the stopped chat's budget rises by the amount, and the
   // thread's own stopped turn goes on under it, streamed; the thread read
-  // again settles the stop
+  // again settles the stop. Enter in a pool proposal's edit form carries
+  // nothing: the edit stays for its Do it press, no native submission
+  // navigates the page away
   log.addEventListener("submit", function (e) {
+    if (e.target.closest("form[data-pool]")) {
+      e.preventDefault();
+      return;
+    }
     var f = e.target.closest("[data-fund]");
     if (!f) return;
     e.preventDefault();
@@ -1339,6 +1451,7 @@ var chatView = (function () {
       data.messages.forEach(function (m) { (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; }); });
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
       log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.openQuestionHTML(data.open_question) + chatView.threadHTML(data.messages, login, data.proposals, data.thread, data.budget) : intro;
+      if (poolHost) poolHost.innerHTML = data.pool && !readOnly && !openOwner ? chatView.poolCtlHTML(data.pool) : "";
       if (form) {
         // an archived thread's composer is one line with restore (C14);
         // another member's archived thread has no restore to offer

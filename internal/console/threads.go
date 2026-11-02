@@ -121,19 +121,24 @@ func (g *turnGate) listen(key string) {
 	}
 }
 
-// join hands message id to the thread's turn in flight when it listens
-// and the sender, waiting on wait, is first in line: true, and the sender
-// has left the line, so it does not leave.
+// join hands message id to the thread's turn in flight when it listens,
+// from any place in the line — behind a wake's queued place included:
+// true, and the sender has left the line, so it does not leave.
 func (g *turnGate) join(key string, wait <-chan struct{}, id int64) bool {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	line := g.threads[key]
-	if line == nil || !line.listening || len(line.waiting) == 0 || line.waiting[0] != wait {
+	if line == nil || !line.listening {
 		return false
 	}
-	line.waiting = line.waiting[1:]
-	line.heard = append(line.heard, id)
-	return true
+	for i, ch := range line.waiting {
+		if ch == wait {
+			line.waiting = append(line.waiting[:i], line.waiting[i+1:]...)
+			line.heard = append(line.heard, id)
+			return true
+		}
+	}
+	return false
 }
 
 // heard takes the ids joined to the thread's turn in flight since the
@@ -212,7 +217,7 @@ func (c *Console) Behind(repository, login string, n int64) (queued bool, land f
 			defer c.turns.leave(key)
 			<-wait
 			for _, id := range ids {
-				if err := c.cfg.Chat.StartQueued(context.Background(), repository, login, id); err != nil {
+				if _, err := c.cfg.Chat.StartQueued(context.Background(), repository, login, id); err != nil {
 					log.Printf("console: land queued row %d of %s's thread %d on %s: %v", id, login, n, repository, err)
 				}
 			}
@@ -225,9 +230,9 @@ func (c *Console) Behind(repository, login string, n int64) (queued bool, land f
 // A turn registers when its POST owns it, before it waits behind the
 // thread's turn in flight or for a model slot, so the stop button the
 // page shows from the POST always reaches a turn. Only the chat's own
-// message path registers a turn: a compaction, a fund's resume, a wake's
-// and a card answer's run unregistered, so a press during them finds
-// nothing and changes nothing.
+// message path and a pressed proposal (pressTurn) register a turn: a
+// compaction, a fund's resume, a wake's and a card answer's run
+// unregistered, so a press during them finds nothing and changes nothing.
 type stopGate struct {
 	mu    sync.Mutex
 	stops map[string][]*stopEntry

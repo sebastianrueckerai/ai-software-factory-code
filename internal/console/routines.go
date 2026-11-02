@@ -27,22 +27,14 @@ var (
 // routineSkip is a routine's Skip once, and with the form's undo=1 its
 // undo (doRoutineSkip).
 func (c *Console) routineSkip(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doRoutineSkip(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"), r.PostFormValue("undo") == "1")
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.routineActed(w, r, note)
+	_, err := c.doRoutineSkip(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"), r.PostFormValue("undo") == "1")
+	c.routineActed(w, r, err)
 }
 
 // routineRun is a routine's Run now (doRoutineRun).
 func (c *Console) routineRun(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doRoutineRun(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"))
-	if err != nil {
-		c.fail(w, r, err)
-		return
-	}
-	c.routineActed(w, r, note)
+	_, err := c.doRoutineRun(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"))
+	c.routineActed(w, r, err)
 }
 
 // routineNeedsMe is a routine's live toggle, and with the form's undo=1
@@ -53,26 +45,25 @@ func (c *Console) routineNeedsMe(w http.ResponseWriter, r *http.Request) {
 		me := r.PostFormValue("needs_me") == "1"
 		side = &me
 	}
-	note, err := c.doRoutineNeedsMe(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"), side)
+	c.routineActed(w, r, c.doRoutineNeedsMe(r.Context(), button(r), r.PathValue("project"), r.PathValue("name"), side))
+}
+
+// routineActed answers an act: the routine's drawer on the tab its form
+// sat on (from=drawer, tab), else the board.
+func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	c.routineActed(w, r, note)
-}
-
-// routineActed answers an act with note: the routine's drawer on the tab
-// its form sat on (from=drawer, tab), else the board.
-func (c *Console) routineActed(w http.ResponseWriter, r *http.Request, note string) {
 	if r.PostFormValue("from") == "drawer" {
 		tab := r.PostFormValue("tab")
 		if !slices.ContainsFunc(routineTabs, func(t drawerTab) bool { return t.Name == tab }) {
 			tab = "overview"
 		}
-		c.showRoutineDrawer(w, r, tab, note)
+		c.showRoutineDrawer(w, r, tab)
 		return
 	}
-	c.pressNote(w, r, note, nil)
+	c.pressed(w, r, nil)
 }
 
 // doRoutineSkip sets project's routine name to skip its next run for a,
@@ -103,28 +94,18 @@ func (c *Console) doRoutineSkip(ctx context.Context, a actor, project, name stri
 // doRoutineNeedsMe sets project's routine name's live side for a: with
 // side true its runs wait on a person, with false they run on their
 // own, with nil the config's side files again.
-func (c *Console) doRoutineNeedsMe(ctx context.Context, a actor, project, name string, side *bool) (string, error) {
+func (c *Console) doRoutineNeedsMe(ctx context.Context, a actor, project, name string, side *bool) error {
 	repository, err := c.routineRepository(ctx, project)
 	if err != nil {
-		return "", err
+		return err
 	}
 	if err := c.cfg.Routines.NeedsMe(ctx, project, name, side, a.s.user); err != nil {
-		return "", routineFailed(err, project, name)
-	}
-	what := "follows its config"
-	if side != nil {
-		what = map[bool]string{true: "needs you", false: "runs on its own"}[*side]
-	}
-	title := name
-	if views, err := c.cfg.Routines.Views(ctx, project); err != nil {
-		log.Printf("console: the routines of %s: %v", project, err)
-	} else if i := slices.IndexFunc(views, func(v factoryd.RoutineView) bool { return v.Routine.Name == name }); i >= 0 {
-		title = views[i].Routine.Title
+		return routineFailed(err, project, name)
 	}
 	log.Printf("console: %s set the side of routine %s of %s via %s", a.s.user, name, project, a.via)
 	c.record(ctx, a, repository, "", 0, factoryd.EventRoutineNeedsMe,
 		map[string]any{"project": project, "routine": name, "undo": side == nil, "needs_me": side != nil && *side})
-	return title + " " + what + ".", nil
+	return nil
 }
 
 // doRoutineRun starts a run of project's routine name now and waits for

@@ -116,13 +116,13 @@ func TestWideViewHasNoLaneColumn(t *testing.T) {
 			}
 		}
 	}
-	// the plan's three cards still in play wear the chip with their keys;
+	// the plan's three cards still in play wear the plan chip;
 	// its done card's row has none, and its drawer names the plan
-	if got := strings.Count(body, `<span class="chip plan">from plan #1 · k`); got != 3 {
-		t.Errorf("%d cards read from plan #1 with their key, want its 3 cards in play", got)
+	if got := strings.Count(body, `<span class="chip plan">from plan #1</span>`); got != 3 {
+		t.Errorf("%d cards read from plan #1, want its 3 cards in play", got)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span> · k5`) {
-		t.Errorf("the done card's drawer does not name its plan and key:\n%s", d)
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c5/drawer?project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · <span class="mono">k5</span></dd>`) {
+		t.Errorf("the done card's drawer lacks its Plan row with the key:\n%s", d)
 	}
 	if !strings.Contains(body, `<option value="linkshort" selected>linkshort</option>`) || strings.Contains(body, "every project") {
 		t.Errorf("board lacks the project select, or offers every project")
@@ -146,18 +146,23 @@ func TestBoardPlanParentOutsideItsCards(t *testing.T) {
 	ck, _ := r.loggedIn(t)
 	r.tasks.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "queued", Track: "plan", Process: "spec", Objective: "Link shortener",
-			Repository: "sf/code", IssueNumber: 1}},
+			Repository: "sf/code", IssueNumber: 1, PlanName: "fix prod latency"}},
 		{Task: factoryd.Task{ID: "t-c", Kind: "agent", Status: "running", Track: "direct", Process: "spec", Objective: "build the API",
 			Repository: "linkshort/linkshort", IssueNumber: 2, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "k2"}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if !strings.Contains(body, `<span class="chip plan">from plan #1 · k2</span>`) {
-		t.Errorf("the card's chip does not name its plan and key, a card of another project:\n%s", body)
+	if !strings.Contains(body, `<span class="chip plan">from plan #1 · fix prod latency</span>`) {
+		t.Errorf("the card's chip does not name its plan, a card of another project:\n%s", body)
 	}
 	if strings.Contains(body, "Link shortener") {
 		t.Errorf("the board shows the other project's plan card:\n%s", body)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `part of plan <span class="ref-plain">#1</span> · k2`) {
+	r.tasks.tasks[0].IssueNumber = 0
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd>fix prod latency · <span class="mono">k2</span></dd>`) {
+		t.Errorf("the drawer of a child of a named plan without an issue number lacks the name, then the key:\n%s", d)
+	}
+	r.tasks.tasks[0].IssueNumber = 1
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/sf/code/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency · <span class="mono">k2</span></dd>`) {
 		t.Errorf("the drawer does not name the plan and key either:\n%s", d)
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
@@ -191,18 +196,28 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort"+view, nil), ck).Body.String()
 	}
 	card := col(t, board(ck, ""), "Needs you")
+	if !strings.Contains(card, `rel="noopener">#1</a>, revision 2`) {
+		t.Errorf("an unnamed plan's header carries more than its issue and revision:\n%s", card)
+	}
+	r.tasks.tasks[0].PlanName = "fix prod latency"
+	card = col(t, board(ck, ""), "Needs you")
 	for _, want := range []string{
 		`<article class="card approval plan" data-card="t-plan"`,
-		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a>, revision 2`,
+		`<a href="#card=t-plan" class="open">Plan</a> <a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency, revision 2`,
 		"Foundation first, then the API, then the acceptance tests.",
 		"<legend>1. How long are the results kept?</legend>",
 		`<p class="meta">1 question open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
-		`hx-post="/tasks/t-plan/plan/changes" hx-target="#note" hx-swap="innerHTML"`,
+		`hx-post="/tasks/t-plan/plan/changes"`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
 		}
 	}
+	r.tasks.tasks[0].IssueNumber = 0
+	if card = col(t, board(ck, ""), "Needs you"); !strings.Contains(card, `>Plan</a> fix prod latency, revision 2</h4>`) {
+		t.Errorf("a named plan without an issue number lacks the bare name in its header:\n%s", card)
+	}
+	r.tasks.tasks[0].IssueNumber = 1
 	for _, gone := range []string{"/plan/accept", "/plan/reject", "Accept plan", ">Reject<", "may accept a plan", "sha256"} {
 		if strings.Contains(card, gone) {
 			t.Errorf("the plan card offers %q:\n%s", gone, card)
@@ -351,7 +366,7 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String() +
 		r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	failed := col(t, body, "Done")
-	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#note" hx-swap="innerHTML" class="inline">` +
+	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" class="inline">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">` +
 		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
 	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
@@ -389,7 +404,7 @@ func TestRetryFilesTheReplacement(t *testing.T) {
 		t.Fatalf("alice retries: %d %q, retried %v, forgejo %v", rec.Code, rec.Body, r.retried, r.fg.calls)
 	}
 	rec := retry(ck, s.csrf)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Retried #7 as #9; it starts once a work slot is free.") {
+	if !pressRefreshes(rec) {
 		t.Fatalf("retry: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.retried, []string{"t-c7 by sebastian"}) || len(r.fg.labelled) != 0 {
@@ -427,7 +442,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The factory runs it as #16; card #15 closes.") {
+	if !pressRefreshes(rec) {
 		t.Fatalf("the go: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.handed, []string{"t-wait by sebastian"}) {

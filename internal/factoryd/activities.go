@@ -3,6 +3,8 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -21,6 +23,7 @@ import (
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/temporal"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -94,6 +97,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityReconcile:                   r.Reconcile,
 		ActivityEscalate:                    r.Escalate,
 		ActivityRecordUsage:                 r.RecordUsage,
+		ActivityReadUsage:                   r.ReadUsage,
+		ActivitySuccessor:                   r.Successor,
 		ActivityGatePolicy:                  r.GatePolicy,
 		ActivityGateMigration:               r.GateMigration,
 		ActivityGateReproduction:            r.GateReproduction,
@@ -104,6 +109,8 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityMerge:                       r.Merge,
 		ActivityReportMergeFailure:          r.ReportMergeFailure,
 		ActivityReportMergeRetriesExhausted: r.ReportMergeRetriesExhausted,
+		ActivityUnjudgedCriteria:            r.UnjudgedCriteria,
+		ActivityHoldMerge:                   r.HoldMerge,
 		ActivitySuperviseGate:               r.SuperviseGate,
 		ActivityDropTrip:                    r.DropTrip,
 		ActivityWithdrawQuestion:            r.WithdrawQuestion,
@@ -137,6 +144,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionFunded:               r.SessionFunded,
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityDayResume:                   r.DayResume,
+		ActivityCapResume:                   r.CapResume,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,
@@ -389,6 +397,124 @@ func (h *heartbeat) snapshot() sessionProgress {
 	return sessionProgress{SessionID: h.p.SessionID, Running: h.p.Running, Events: h.p.Events}
 }
 
+// ReadUsage reads the caps the task's row holds: the answer wake reloads
+// them, so a raise the console made while the card waited (ExtendCard)
+// is not overwritten by the usage snapshot the last session recorded.
+func (r *Runner) ReadUsage(ctx context.Context, taskID string) (TaskUsage, error) {
+	t, _, err := r.store.Task(ctx, taskID)
+	if err != nil {
+		return TaskUsage{}, err
+	}
+	return t.Usage, nil
+}
+
+// SuccessorInput is the successor a card closes into: the card, the
+// findings so far as the card's ask carried them (a packed block of
+// lines) and the pull request whose patch it carries.
+type SuccessorInput struct {
+	TaskID   string
+	Findings string
+	PR       int64
+}
+
+// SourceSuccessor is a card a stuck card closed into, which starts from
+// main's tip carrying the patch and the findings.
+const SourceSuccessor = "successor"
+
+// SuccessorID is the id of card id's successor, so a filing that stopped
+// part way finds it.
+func SuccessorID(id string) string {
+	sum := sha256.Sum256([]byte("successor " + id))
+	return "t-" + hex.EncodeToString(sum[:6])
+}
+
+// successorMarker marks the issue of card id's successor, so a filing that
+// stopped between the issue and its row finds it again.
+func successorMarker(id string) string {
+	return fmt.Sprintf("<!-- factoryd successor of %s -->", id)
+}
+
+// Successor files the successor of the stuck card in (task 6): a card of
+// the same objective with the findings so far, the carried pull request
+// and the card's size and budget, queued on the direct track under the
+// work bound with no base of its own — its first session starts from
+// main's tip. The row lands first and its issue after, so a filing that
+// stops part way runs again to the same one card: the row's identity holds
+// the card and the marker holds the issue.
+func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
+	old, repo, err := r.task(ctx, in.TaskID)
+	if err != nil {
+		return "", err
+	}
+	t, found, err := r.store.Task(ctx, SuccessorID(old.ID))
+	if err != nil {
+		return "", err
+	}
+	pr := cmp.Or(in.PR, old.PRNumber)
+	if !found {
+		p, ok, err := r.store.ProjectByRepository(ctx, old.Repository)
+		if err != nil {
+			return "", err
+		}
+		if !ok {
+			return "", errNoTrack(p)
+		}
+		var lines []string
+		if in.Findings != "" {
+			lines = append(lines, "Findings so far:"+in.Findings)
+		}
+		if pr > 0 {
+			lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
+		}
+		if old.Size != "" {
+			lines = append(lines, "Size: "+old.Size)
+		}
+		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
+		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
+			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
+			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
+			Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter, CarryPR: pr}); err != nil {
+			return "", err
+		}
+		// fileEntry gives a fresh intake card the project's process; the
+		// successor continues the card it came from, like a retry does
+		t.Process = old.Process
+		if err := r.store.CreateTask(ctx, t); err != nil {
+			return "", err
+		}
+	}
+	if t.IssueNumber == 0 {
+		marker := successorMarker(old.ID)
+		all, err := r.forgejo.Issues(ctx, repo.Owner, repo.Name)
+		if err != nil {
+			return "", fmt.Errorf("the successor of %s: search the issues: %w", old.ID, err)
+		}
+		title, body, _ := strings.Cut(t.Objective, "\n\n")
+		if i := slices.IndexFunc(all, func(is webhookIssue) bool {
+			return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
+		}); i >= 0 {
+			t.IssueNumber = all[i].Index
+		} else {
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			if err != nil {
+				return "", fmt.Errorf("the successor of %s: file its issue: %w", old.ID, err)
+			}
+			t.IssueNumber = ref.Number
+		}
+		if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, t.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
+			return "", fmt.Errorf("the successor of %s: label its issue #%d: %w", old.ID, t.IssueNumber, err)
+		}
+		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
+			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
+		}
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track})
+	}
+	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
+		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
+	}
+	return t.ID, nil
+}
+
 // RecordUsage keeps what the task used of its caps on its row; agent time
 // a human's answer granted counts an extra_time intervention.
 func (r *Runner) RecordUsage(ctx context.Context, taskID string, u TaskUsage) error {
@@ -416,10 +542,17 @@ var capRefusals = map[string]string{
 	policy.RefusedProjectCap: "the project's month cap cannot fund a call",
 }
 
-// DayCapped reports whether why is an attempt floor's refusal at the day
-// cap, which resets on its own: the workflow waits for the day (awaitDay),
-// and the console takes an answer.
-func DayCapped(why string) bool { return strings.HasPrefix(why, capRefusals[policy.RefusedDayCap]) }
+// CapDecision is the decision of the cap whose attempt floor refusal why
+// is: every cap resets on its own, so the console takes an answer, and the
+// workflow waits on the cap (capWait).
+func CapDecision(why string) (decision string, ok bool) {
+	for decision, opening := range capRefusals {
+		if strings.HasPrefix(why, opening) {
+			return decision, true
+		}
+	}
+	return "", false
+}
 
 // floorUnread opens the floor's refusal of a model it cannot price.
 const floorUnread = "the attempt's floor on "
@@ -625,43 +758,77 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, call, need, measure, then), nil
 }
 
-// startFits says free headroom f fits the cheapest call of model, a
-// session's start as the attempt's floor prices it.
-func startFits(f policy.Free, taskID, model string, price policy.Price) bool {
-	_, err := policy.Fit(f, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: model, Price: price})
-	return err == nil
+// CapCheck is a wait on the cap Decision refused: Turned says its period
+// turned, RefusedAt is set by the check before an ask to the refusal it
+// would ask about.
+type CapCheck struct {
+	TaskID, Model, Decision string
+	Turned                  bool
+	RefusedAt               time.Time `json:",omitzero"`
 }
 
-// DayResume reports whether a wait on the day cap ends (versionDayCap): at
-// the UTC day's turn (turned), or once the day's free headroom under the
-// budget.day_eur in force, every outstanding hold netted as the gateway
-// nets it, fits a session's start on model (startFits). An unpriced model
-// waits for the turn. An end resolves the task's open day-cap escalation
-// alerts, real and the factory's, and is on the timeline.
-func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
-	why := "the UTC day turned"
-	if !turned {
+// CapResumed is a wait's verdict: Resume ends it, Settles is when the
+// version in force binds at the gateway, if not yet.
+type CapResumed struct {
+	Resume  bool
+	Settles time.Time `json:",omitzero"`
+}
+
+// CapResume reports whether a wait on a cap ends: at the period's turn, or
+// once the cap no longer binds the session that runs next. The gateway may
+// enforce the previous policy version for PolicyTTL after a load, so no
+// wait ends before the version in force settles (Settles), nor on a
+// refusal that came after it did: the cap as enforced refused it, and a
+// floor that funds meanwhile would loop sessions with no wait. Past that,
+// the session's start must be funded as SessionFunded reads it, every
+// outstanding hold netted as the gateway nets it; the cap still refusing,
+// or a model that cannot be priced, waits for the turn, and any other
+// refusal ends the wait, the attempt's own floor asking its question. An
+// end resolves the task's open escalation alerts of the cap, real and the
+// factory's, and is on the timeline.
+func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
+	o, known := capOpenings[in.Decision]
+	if !known {
+		return CapResumed{}, terminalError("no cap is named %q", in.Decision)
+	}
+	why := "the UTC " + o.period + " turned"
+	if !in.Turned {
 		if r.cfg.Prices == nil {
-			return false, nil
+			return CapResumed{}, nil
 		}
-		price, err := r.price(ctx, aliasOf(model))
+		v := r.cfg.Policy()
+		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.clock().Before(settles) {
+			return CapResumed{Settles: settles}, nil
+		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
+			return CapResumed{}, nil
+		}
+		refusal, err := r.funded(ctx, in.TaskID, in.Model, true)
 		if err != nil {
-			return false, nil
+			return CapResumed{}, err
 		}
-		free, err := r.store.DayFree(ctx, r.cfg.Policy().Document.Budget.DayEUR)
-		if err != nil {
-			return false, err
+		if strings.HasPrefix(refusal, floorUnread) {
+			return CapResumed{}, nil
 		}
-		if !startFits(policy.Free{Task: math.Inf(1), Day: free, Month: math.Inf(1), Project: math.Inf(1)}, taskID, model, price) {
-			return false, nil
+		if d, _ := CapDecision(refusal); refusal != "" && d == in.Decision {
+			return CapResumed{}, nil
 		}
-		why = fmt.Sprintf("the day's free headroom of %.6f EUR funds a session", free)
+		why = fmt.Sprintf("the %s no longer binds a session (policy version %d)", o.name, v.ID)
+		if refusal != "" {
+			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
+		}
 	}
-	if err := r.store.JudgeEscalations(ctx, taskID, EscalationFilter{Source: "day_cap"}, VerdictReal, FactoryDecider); err != nil {
-		return false, err
+	if err := r.store.JudgeEscalations(ctx, in.TaskID, EscalationFilter{Source: o.source}, VerdictReal, FactoryDecider); err != nil {
+		return CapResumed{}, err
 	}
-	r.record(ctx, taskID, "day_cap_resumed", map[string]any{"why": why})
-	return true, nil
+	r.record(ctx, in.TaskID, "cap_resumed", map[string]any{"cap": in.Decision, "why": why})
+	return CapResumed{Resume: true}, nil
+}
+
+// DayResume is CapResume at the day cap, for a run from before the month
+// and the project caps resumed on their own.
+func (r *Runner) DayResume(ctx context.Context, taskID, model string, turned bool) (bool, error) {
+	res, err := r.CapResume(ctx, CapCheck{TaskID: taskID, Model: model, Decision: policy.RefusedDayCap, Turned: turned})
+	return res.Resume, err
 }
 
 // RunSession is one attempt: a fresh namespace with this session's own
@@ -762,12 +929,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	// a session the stopped factoryd detached from runs on in its pod:
 	// this retry reattaches to it; a dead pod's row goes and the attempt
-	// starts over from the branch
+	// starts over from the branch; a pod that finished while factoryd was
+	// away still holds the result line the old factoryd had not read
 	var live *LiveSession
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
 	} else if ok {
-		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending") {
+		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
 			live = &l
 			s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.parentDeadEnd, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.ParentDeadEnd, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
@@ -858,9 +1026,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			"minutes": math.Round(time.Since(startedAt).Minutes()*10) / 10})
 	}
 	if res.Outcome != OutcomePushed {
-		// no later session could spend: at a month cap a human raises it
-		// or waits for the month to end; at the day cap the card waits for
-		// the day's headroom
+		// no later session could spend: the card waits on the cap
+		// (awaitCap). A month's or a project's stays an escalation, which a
+		// run from before versionCapWait leaves to a human
 		refused, err := r.store.CapRefusal(ctx, t.ID, startedAt)
 		if err != nil {
 			return SessionResult{}, err
@@ -870,7 +1038,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		case refused.Decision == policy.RefusedDayCap:
 			res.Outcome, res.Capped = OutcomeDayCap, refused
 		default:
-			res.Outcome, res.Reason = OutcomeEscalate, refused.reason()
+			res.Outcome, res.Reason, res.Capped = OutcomeEscalate, capRefused(refused.Refusal), refused
 		}
 	}
 	if res.Outcome == OutcomeNoPush {
@@ -1177,7 +1345,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		// no answer can run: the card names why and the way out
 		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
 	}
-	if strings.HasPrefix(reason, dayCapResumes) {
+	if capWaitDecision(reason) != "" {
 		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
 	}
 	if strings.HasPrefix(reason, leftQueue) {
@@ -1618,7 +1786,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	if err != nil {
 		return RunState{}, err
 	}
-	st := RunState{Status: t.Status, Usage: t.Usage, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
+	st := RunState{Status: t.Status, Usage: t.Usage, Size: t.Size, Standing: t.Standing(), Report: t.Report(), Stronger: t.Source == SourceScreening,
 		Roll: t.Source == SourceRoll, FactoryPR: factoryPRSources(t.Source), Source: t.Source}
 	if Final(t.Status) || t.Kind == "human" {
 		st.Skip = true
@@ -1685,7 +1853,7 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 		}
 	}
 	st.Answers, st.Question, st.Choices = answersFrom(events)
-	st.DayCap, st.DayCapUntil = dayCapWait(events)
+	st.Cap, st.CapUntil = capWaitOf(events)
 	st.Screening = waitsOnScreening(events)
 	st.ScreeningAnswered = st.Screening && screeningAnswered(events)
 	st.InfoRequest, st.InfoRequestedAt, st.PosterInfo, st.InfoAnswered = posterInfoFrom(events)
@@ -2330,8 +2498,12 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 }
 
 // Finish is the terminal step. A failed or closed task's open pull request
-// is closed first, with the reason, and a closed task's issue still open
-// too; a done or closed task's branch on the fork is deleted. Both return a transient error, so a Forgejo blip retries them before the task
+// is closed first, with the reason, and a closed or done task's issue
+// still open too (a factory-PR card's pull request carries no "Closes
+// #N", an acceptance end has none), but a plan card's, done each time a
+// revision files its cards, and not again when the chain covers a merged
+// card (an issue a person reopened since stays open); a done or closed
+// task's branch on the fork is deleted. Both return a transient error, so a Forgejo blip retries them before the task
 // turns final, while one Forgejo refuses is logged and passed: no retry
 // fixes it, and failing here would have the heal pass restart the
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
@@ -2405,8 +2577,15 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if final == "closed" && t.IssueNumber != 0 {
-			if err := cleanup(taskID, "close its issue", r.closeTaskIssue(ctx, repo, t, msg)); err != nil {
+		if (final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan) && t.IssueNumber != 0 {
+			closing := msg
+			switch {
+			case final == "done" && merged:
+				closing = fmt.Sprintf("factoryd: pull request #%d merged; this card ends with it.", t.PRNumber)
+			case final == "done":
+				closing = "factoryd: " + why + "; this card ends with it."
+			}
+			if err := cleanup(taskID, "close its issue", r.closeTaskIssue(ctx, repo, t, closing)); err != nil {
 				return err
 			}
 		}
@@ -2457,6 +2636,12 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	// after the final state, never ahead of an end that may not come; a
 	// crash between the two loses only this record
 	taskEnded(ctx, r.timeline, r.store, r.forgejo, r.cfg.Workflows, t, final, why)
+	if final == "failed" {
+		// the end is done; a failed send leaves the impasse to the sweep
+		if err := r.impasse(ctx, t); err != nil {
+			log.Printf("task %s: impasse: %v", taskID, err)
+		}
+	}
 	return nil
 }
 
@@ -2501,11 +2686,12 @@ func cleanup(taskID, step string, err error) error {
 	return err
 }
 
-// closeTaskIssue closes a closed task's issue while it is still open, as
+// closeTaskIssue closes an ending task's issue while it is still open, as
 // factoryd's recorded close with msg as the reason, as
 // closeTaskPullRequest does on the pull request: the card a change request
 // closed (versionFactoryPRActions) reads closed on its issue as on the
-// board. An issue a human closed, the usual way to a closed task, is left.
+// board, and so does a done card whose end closed no issue. An issue a
+// human or the merge's "Closes #N" closed is left.
 func (r *Runner) closeTaskIssue(ctx context.Context, repo Repo, t Task, msg string) error {
 	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil || closed {

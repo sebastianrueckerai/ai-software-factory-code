@@ -6,8 +6,7 @@
 <nav class="tabs" role="tablist" aria-label="The routine's tabs">{{range .Tabs}}<button type="button" role="tab" aria-selected="{{eq .Name $.Tab}}" aria-controls="drawer-panel" hx-get="/routines/{{$.View.Project}}/{{$.View.Routine.Name}}/drawer?tab={{.Name}}" hx-target="#drawer" hx-swap="innerHTML">{{.Title}}</button>{{end}}</nav>
 </div>
 <div id="drawer-panel" class="drawer-body" role="tabpanel">
-{{with .Note}}<p class="note" role="status">{{.}}</p>
-{{end}}{{range .Problems}}<p class="problem" role="alert">{{.}}</p>
+{{range .Problems}}<p class="problem" role="alert">{{.}}</p>
 {{end}}{{if eq .Tab "overview"}}<dl class="top-block">
 {{range .Rows}}<dt>{{.Term}}</dt><dd{{with .Class}} class="{{.}}"{{end}}>{{if .Card}}<a href="#card={{.Card}}">{{.Value}}</a>{{else}}{{.Value}}{{end}}{{with .Why}} <span class="why">· {{.}}</span>{{end}}</dd>
 {{end}}</dl>

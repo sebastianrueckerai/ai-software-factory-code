@@ -130,7 +130,7 @@ func TestDenyMergeDefaultsToRequestChanges(t *testing.T) {
 	stored := `{"action":"request_changes","note":"Drop the committed binary.","task_id":"t-g"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "deny_merge", `{"task_id":"t-g","note":"Drop the committed binary."}`)
 	equal(t, "proposal", proposed, []string{`proposal {"arguments":` + stored +
-		`,"description":"Deny a merge, #15 t-g \"Cache the board.\", action request_changes, note Drop the committed binary.","id":"TOKEN","tool":"deny_merge"}`,
+		`,"description":"Deny a merge, #15 t-g \"Cache the board.\", action request_changes, note Drop the committed binary.","expires":"EXPIRES","id":"TOKEN","tool":"deny_merge"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("deny_merge", stored, "Denied pull request #12 (request changes)."))
 	if len(r.fg.reviews) != 1 || r.fg.reviews[0]["event"] != "REQUEST_CHANGES" {

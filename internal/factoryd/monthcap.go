@@ -3,34 +3,67 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // SourceMonthCap is the source of the human-lane task filed when the month
 // cap is reached.
 const SourceMonthCap = "month_cap"
 
-// monthCapReached and projectCapReached open the escalation of a session
-// the gateway refused at the month cap or at its project's.
+// monthCapReached and projectCapReached open the escalation of a card
+// stopped at the month cap or at its project's, dayCapReached the day
+// cap's.
 const (
-	monthCapReached   = "the month cap is reached: the gateway refused this task's spend (refused_month_cap): "
-	projectCapReached = "the project's month cap is reached: the gateway refused this task's spend (refused_project_cap): "
+	monthCapReached   = "the month cap is reached"
+	projectCapReached = "the project's month cap is reached"
+	dayCapReached     = "the day cap is reached"
 )
 
+// monthCapResumes, projectCapResumes and dayCapResumes open the reason of a
+// card the cap stopped, whose wait ends on its own (capWaitReason).
+const (
+	monthCapResumes   = monthCapReached + ": the card resumes on its own"
+	projectCapResumes = projectCapReached + ": the card resumes on its own"
+	dayCapResumes     = dayCapReached + ": the card resumes on its own"
+)
+
+// capOpenings is, by the refusal's decision, the opening of the reasons of
+// a card stopped at the cap (waiting for a human, and resuming on its own),
+// the source of its escalation alerts, its period and its name.
+var capOpenings = map[string]struct{ waits, resumes, source, period, name string }{
+	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
+	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap"},
+	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month", "project's month cap"},
+}
+
+// capGateway says the gateway refused a session's call at the cap
+// decision; it opens the second line of the reason.
+func capGateway(decision string) string {
+	return "the gateway refused this task's spend (" + decision + ")"
+}
+
+// capFloor says the attempt's floor refused the attempt at the cap
+// decision before it started; it opens the second line of the reason.
+func capFloor(decision string) string {
+	return "the attempt's floor refused the attempt before it started (" + decision + ")"
+}
+
 // capRefused is the escalation reason of a session the gateway refused at
-// a month cap.
+// a month cap, which waits for a human: the reason of a run from before
+// the cap resumes on its own.
 func capRefused(r policy.Refusal) string {
-	if r.Decision == policy.RefusedProjectCap {
-		return projectCapReached + r.Reason
-	}
-	return monthCapReached + r.Reason
+	return capOpenings[r.Decision].waits + ": " + capGateway(r.Decision) + ": " + r.Reason
 }
 
 // CapRefusal is the gateway's refusal of a model call of a task's session
@@ -43,35 +76,6 @@ type CapRefusal struct {
 	Allowed bool `json:",omitempty"`
 }
 
-// until is when the refusal's cap resets on its own: the day cap's at the
-// UTC day's turn; zero for a month's cap, which only a human raises.
-func (c CapRefusal) until() time.Time {
-	if c.Decision != policy.RefusedDayCap {
-		return time.Time{}
-	}
-	return dayTurn(c.At)
-}
-
-// reason is the card's escalation: a month's cap waits for a human, the
-// day's resumes on its own (dayCapRefused).
-func (c CapRefusal) reason() string {
-	if c.Decision != policy.RefusedDayCap {
-		return capRefused(c.Refusal)
-	}
-	return dayCapRefused(dayCapGateway, c.Reason, c.until())
-}
-
-// dayCapReached opens the reason of a card the day cap stopped.
-const dayCapReached = "the day cap is reached"
-
-// What refused at the day cap, which opens the reason's second line: the
-// gateway a session's call, or the attempt's floor the attempt before it
-// started.
-const (
-	dayCapGateway = "the gateway refused this task's spend (refused_day_cap)"
-	dayCapFloor   = "the attempt's floor refused the attempt before it started (refused_day_cap)"
-)
-
 // dayTurn is when the UTC day of at ends: the day cap counts the ledger's
 // UTC day (budget.day_eur), so it resets then.
 func dayTurn(at time.Time) time.Time {
@@ -79,28 +83,63 @@ func dayTurn(at time.Time) time.Time {
 	return time.Date(y, m, d+1, 0, 0, 0, 0, time.UTC)
 }
 
-// dayCapResumes opens the reason of a card the day cap stopped, whose
-// wait ends on its own (dayWait).
-const dayCapResumes = dayCapReached + ": the card resumes on its own"
-
-// dayCapRefused is the reason of a card by (dayCapGateway, dayCapFloor)
-// refused at the day cap, which resets at until: its first line is the
-// card's question row (escalationQuestion), with the actions; the second
-// names by and its state.
-func dayCapRefused(by, state string, until time.Time) string {
-	return fmt.Sprintf("%s once the day's free headroom funds a session, at the latest when the UTC day turns at %s. "+
-		"Raise budget.day_eur in policy.yaml to resume it sooner, or close the card.\n%s: %s", dayCapResumes, stamp(until), by, state)
+// monthTurn is when the UTC month of at ends: the month and the project
+// caps count the ledger's UTC month (policy.MonthSpentSQL).
+func monthTurn(at time.Time) time.Time {
+	y, m, _ := at.UTC().Date()
+	return time.Date(y, m+1, 1, 0, 0, 0, 0, time.UTC)
 }
 
-// dayCapWait is the wait on the day cap the task's last escalation holds:
-// its reason and the turn of its UTC day; "" when it asks otherwise.
-func dayCapWait(events []IntakeEvent) (reason string, until time.Time) {
+// capTurn is when the cap decision refused resets on its own after at.
+func capTurn(decision string, at time.Time) time.Time {
+	if decision == policy.RefusedDayCap {
+		return dayTurn(at)
+	}
+	return monthTurn(at)
+}
+
+// projectFile matches the project file a state names.
+var projectFile = regexp.MustCompile(`projects/[^\s/]+\.yaml`)
+
+// capWaitReason is the reason of a card by (capGateway, capFloor) refused
+// at the cap decision, which resets at until: its first line is the card's
+// question row (escalationQuestion), with the actions; the second names by
+// and its state.
+func capWaitReason(decision, by, state string, until time.Time) string {
+	var what, key, file string
+	switch decision {
+	case policy.RefusedDayCap:
+		what, key, file = "the day's free headroom", "budget.day_eur", "policy.yaml"
+	case policy.RefusedMonthCap:
+		what, key, file = "the month's free headroom", "budget.month_eur", "policy.yaml"
+	default:
+		what, key, file = "the project's free month headroom", "budget.month_eur", cmp.Or(projectFile.FindString(state), "the project's file")
+	}
+	o := capOpenings[decision]
+	return fmt.Sprintf("%s once %s funds a session, at the latest when the UTC %s turns at %s. "+
+		"Raise %s in %s to resume it sooner, or close the card.\n%s: %s", o.resumes, what, o.period, stamp(until), key, file, by, state)
+}
+
+// capWaitDecision is the decision whose resumes opening reason starts
+// with, "" for none.
+func capWaitDecision(reason string) string {
+	for decision, o := range capOpenings {
+		if strings.HasPrefix(reason, o.resumes) {
+			return decision
+		}
+	}
+	return ""
+}
+
+// capWaitOf is the wait on a cap the task's last escalation holds: its
+// reason and the turn of the cap's period; "" when it asks otherwise.
+func capWaitOf(events []IntakeEvent) (reason string, until time.Time) {
 	for _, e := range slices.Backward(events) {
 		if e.Kind != IntakeEscalation {
 			continue
 		}
-		if strings.HasPrefix(e.Body, dayCapResumes) {
-			return e.Body, dayTurn(e.CreatedAt)
+		if d := capWaitDecision(e.Body); d != "" {
+			return e.Body, capTurn(d, e.CreatedAt)
 		}
 		break
 	}
@@ -109,12 +148,13 @@ func dayCapWait(events []IntakeEvent) (reason string, until time.Time) {
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
 // YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
-// first refused_month_cap of a model call ("" for none): the gateway's
-// headroom, or LiteLLM's proxy-wide budget.
+// newest refused_month_cap of a model call, made at RefusedAt ("" for none):
+// the gateway's headroom, or LiteLLM's proxy-wide budget.
 type MonthSpend struct {
-	Month   string
-	EUR     float64
-	Refusal string
+	Month     string
+	EUR       float64
+	Refusal   string
+	RefusedAt time.Time
 }
 
 // MonthBook is what the month alarm reads and keeps.
@@ -126,12 +166,22 @@ type MonthBook interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
+	// AlertByTask is the newest alert of kind linked to task taskID.
+	AlertByTask(ctx context.Context, kind, taskID string) (Alert, bool, error)
+	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
+	projectLookup
+	taskReader
 }
 
 // MonthAlarm raises the month's spend against budget.month_eur (item 64 a):
-// an alert at 50 and at 80 percent, and at the cap an alert and a
-// human-lane issue on the configuration repository that names the spend
-// and links the month_eur line, each once per UTC month.
+// an alert at 50 and at 80 percent once per UTC month, and at the cap an
+// alert and a human-lane issue on the configuration repository that names
+// the spend and links the month_eur line, once per cap in force. It closes
+// the cap's issue when a raise lifts the cap above the spend, or the month
+// ends.
 type MonthAlarm struct {
 	Store   MonthBook
 	Forgejo *Forgejo
@@ -142,6 +192,8 @@ type MonthAlarm struct {
 	Current func() policy.Version
 	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
+	// Metrics counts the outcome of the cards the alarm closes; nil counts none.
+	Metrics *telemetry.Metrics
 }
 
 // Loop checks every interval until ctx ends.
@@ -161,43 +213,95 @@ func (a *MonthAlarm) Loop(ctx context.Context, every time.Duration) {
 }
 
 // Check raises every threshold the month has passed and has no alert for;
-// the cap counts as reached at the first model call it refused too, since
-// a call is refused before the ledger meets the cap. A cap of 0 stops all spend by
-// design and raises nothing.
+// the cap counts as reached at a model call it refused too, since a call is
+// refused before the ledger meets the cap, but only a call refused once the
+// gateway enforced the version in force (gateway.PolicyTTL after it
+// activated). A cap of 0 stops all spend by design and raises nothing.
 func (a *MonthAlarm) Check(ctx context.Context) error {
 	v := a.Current()
 	limit := v.Document.Budget.MonthEUR
-	if limit <= 0 {
-		return nil
-	}
 	m, err := a.Store.MonthSpend(ctx, time.Now())
 	if err != nil {
 		return err
 	}
+	closeErr := a.closeLifted(ctx, v, m, limit)
+	if limit <= 0 {
+		return closeErr
+	}
+	refused := m.Refusal != "" && !m.RefusedAt.Before(v.ActivatedAt.Add(gateway.PolicyTTL))
 	for _, pct := range []int{50, 80, 100} {
-		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && m.Refusal != "") {
+		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && refused) {
 			continue
 		}
 		fp := m.Month + "/" + strconv.Itoa(pct)
+		if pct == 100 {
+			fp += "/" + strconv.FormatFloat(limit, 'f', -1, 64)
+		}
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertMonthCap, fp)
 		if err != nil {
-			return err
+			return errors.Join(err, closeErr)
 		}
 		if !ok {
 			detail := map[string]any{"month": m.Month, "spent_eur": m.EUR, "cap_eur": limit, "refusal": m.Refusal, "policy_version": v.ID}
 			if row.ID, err = a.Store.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: strconv.Itoa(pct), Fingerprint: fp,
 				Verdict: VerdictReal, ResolvedBy: "factoryd", Detail: detail}); err != nil {
-				return err
+				return errors.Join(err, closeErr)
 			}
 			log.Printf("month cap: %s spent %.2f EUR of %.2f EUR, %d percent alert", m.Month, m.EUR, limit, pct)
 		}
 		if pct == 100 && row.TaskID == "" && row.ID != 0 {
 			if err := a.file(ctx, v, m, row.ID); err != nil {
-				return err
+				return errors.Join(err, closeErr)
 			}
 		}
 	}
-	return nil
+	return closeErr
+}
+
+// closeLifted closes every open cap card whose month has ended, and those of
+// this month whose cap a raise lifted above the card's. A card that fails to
+// close does not stop the others; the failures are joined.
+func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthSpend, limit float64) error {
+	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, t := range open {
+		if t.Source != SourceMonthCap {
+			continue
+		}
+		row, ok, err := a.Store.AlertByTask(ctx, AlertMonthCap, t.ID)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if !ok {
+			continue
+		}
+		month, _ := row.Detail["month"].(string)
+		capEUR, _ := row.Detail["cap_eur"].(float64)
+		var msg string
+		switch {
+		case month < m.Month:
+			msg = fmt.Sprintf("The UTC month %s ended: the cap card closes.", month)
+		case month == m.Month && limit > capEUR:
+			msg = fmt.Sprintf("budget.month_eur is %s in policy version %d: the cap card closes.", strconv.FormatFloat(limit, 'f', -1, 64), v.ID)
+		default:
+			continue
+		}
+		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		countOutcome(ctx, a.Metrics, a.Store, t, "done")
+		log.Printf("month cap: %s closed issue #%d of task %s", msg, t.IssueNumber, t.ID)
+	}
+	return errors.Join(errs...)
 }
 
 // file opens the cap's human-lane issue and links it to alert id.
@@ -277,4 +381,42 @@ func fileHumanTask(ctx context.Context, store interface {
 		return Task{}, 0, err
 	}
 	return t, number, nil
+}
+
+// CapWaits wakes the cards waiting on a cap when a policy version loads.
+type CapWaits struct {
+	Store interface {
+		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+		IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	}
+	// Signal delivers the policy_loaded signal to a task's workflow.
+	Signal func(ctx context.Context, taskID string) error
+}
+
+// Wake signals every waiting-human card whose last escalation is a cap wait.
+// It signals them all even when one fails, and returns the failures.
+func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
+	tasks, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return fmt.Errorf("list the waiting cards: %w", err)
+	}
+	var errs []error
+	woken := 0
+	for _, t := range tasks {
+		events, err := c.Store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("task %s: events: %w", t.ID, err))
+			continue
+		}
+		if reason, _ := capWaitOf(events); reason == "" {
+			continue
+		}
+		if err := c.Signal(ctx, t.ID); err != nil {
+			errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+			continue
+		}
+		woken++
+	}
+	log.Printf("config: version %d loaded, %d cap waits woken", v.ID, woken)
+	return errors.Join(errs...)
 }

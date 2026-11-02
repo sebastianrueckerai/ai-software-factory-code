@@ -106,6 +106,9 @@ type Task struct {
 	Track, Process string
 	// PlanKey is a plan's card's key in the plan (source plan).
 	PlanKey string
+	// PlanName is a plan's short name, the naming pass's answer once the
+	// plan is filed; "" until then.
+	PlanName string
 	// PlanRevision is the plan revision the card's first session ran
 	// against (roadmap 291); 0 while the card has not started.
 	PlanRevision int
@@ -217,7 +220,20 @@ type TaskUsage struct {
 	// can run its own check-in moments while the card's own budget stays
 	// the cap and an unspent share stops no card that was never answered.
 	ExtraCheckinShare int
+	// ExtraLines is the line-bound raise the console's Extend added: the
+	// effective bound every line-bound check reads is the size's plan
+	// plus this. The console alone writes it; the workflow's snapshot
+	// (SetTaskUsage) leaves it, so a raise on a running card stands.
+	ExtraLines int
+	// RaisedSessions are the sessions the console's Extend added, beside
+	// the ExtraAttempts the workflow's own grants count: the console alone
+	// writes them, the workflow reads them at each cap check (readRaise).
+	RaisedSessions int
 }
+
+// SessionsAdded is every session added to the policy's cap: the grants
+// the workflow's answers bought and the raises the console's Extend made.
+func (u TaskUsage) SessionsAdded() int { return u.ExtraAttempts + u.RaisedSessions }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
 // request merged or closed) recorded against a task's issue or pull
@@ -311,7 +327,8 @@ type Store interface {
 	// the queued cards not yet admitted, the complement of CountAdmitted's
 	// slots (roadmap 239's queue cap).
 	CountQueue(ctx context.Context, repository string) (int, error)
-	// ListQueuedByRepository lists repository's queued cards in filing
+	// ListQueuedByRepository lists repository's queued cards with an
+	// issue, in filing
 	// order, the oldest first: the order a freed slot admits them in.
 	// created_at ties (Forgejo stamps whole seconds) break by issue
 	// number, the filing sequence, so a same-second burst keeps its order.
@@ -415,9 +432,6 @@ type Store interface {
 	// Opening is how the newest sessions opened on ref, read for the task
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
-	// DayFree is the UTC day's free headroom under dayEUR now, every
-	// outstanding hold netted (policy.DayFree).
-	DayFree(ctx context.Context, dayEUR float64) (float64, error)
 	// OverHoldCall is the task's agent's newest model call since since
 	// that the gateway booked beyond its hold (COST OVER HOLD), nil for
 	// none.
@@ -470,6 +484,7 @@ type Store interface {
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
 	// SetTaskUsage records what the task has used of its caps.
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
+	ResetTaskUsage(ctx context.Context, id string) error
 	// SetTaskSizeBudget sets the task's size, and its budget to eur when it
 	// still holds heldCents, in one statement. A task that already has the
 	// size has had its write: nothing changes and the call succeeds.
@@ -530,6 +545,9 @@ type Store interface {
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
+	// NewestApproval is the task's newest request of kind, whatever its
+	// status; false when it has none.
+	NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error)
 	// SetGate records that the task entered gate at since; a finished
 	// task enters none.
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
@@ -611,11 +629,17 @@ type Store interface {
 	// ProjectMonthSpend is repository's ledger spend in the UTC month of
 	// at, as the gateway's project headroom counts it.
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error)
+	// MonthSpend is the whole factory's ledger spend in the UTC month of
+	// at, as the month cap counts it.
+	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
 	// WaitingDependents are the tasks in waiting-deps that wait on id.
 	WaitingDependents(ctx context.Context, id string) ([]string, error)
+	// Dependents are the cards that depend on task id, each with its
+	// status, by issue number.
+	Dependents(ctx context.Context, id string) ([]Dependency, error)
 	// ReplaceFailedCard puts plan card t in failed card id's place in one
 	// transaction: id lets go of its key, which t holds; t is inserted with
 	// every dependency of id, and every task waiting on id waits on t.
@@ -629,6 +653,10 @@ type Store interface {
 	// FundCard raises task id's budget by eur and writes e, its card_funded
 	// row (PGStore.FundCard).
 	FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error)
+	// ExtendCard raises task id's caps — its granted sessions, its line
+	// bound and its budget — and writes e, its card_extended row
+	// (PGStore.ExtendCard).
+	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error)
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
@@ -641,21 +669,24 @@ type Store interface {
 	// questions, after the planner's, kind confirmation, unless it has it
 	// already, and returns its index and whether it stored it.
 	PutPlanConfirmation(ctx context.Context, id string, revision int, q PlanQuestion) (int, bool, error)
-	// PlanConfirmationAnswered is the newest of plan task id's revisions
-	// whose confirmation question is answered, and whether there is one.
-	PlanConfirmationAnswered(ctx context.Context, id string) (revision int, answered bool, err error)
+	// PlanConfirmed is the newest of plan task id's revisions whose
+	// confirmation question is decided confirm, and whether there is one.
+	PlanConfirmed(ctx context.Context, id string) (revision int, ok bool, err error)
 	// PlanQuestions are revision's questions of plan task id in order,
 	// each with its answer once given.
 	PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error)
-	// AnswerPlanQuestion records by's answer to question idx of revision:
-	// ErrAnswered when it has one, ErrNotFound when there is no such
-	// question.
-	AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error
+	// AnswerPlanQuestion records by's answer to question idx of revision,
+	// the confirmation's decision with its findings, a real question's
+	// answer: ErrAnswered when it has one (a confirmation's is its
+	// decision), ErrNotFound when there is no such question.
+	AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error
 	// AnswerPlanQuestions records by's answers to plan task id's revision
 	// in one statement: ErrAnswered when any question has an answer,
 	// ErrNotFound when there is no such question; none is stored then.
 	AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error
-	// OpenPlanQuestions is how many of revision's questions have no answer.
+	// OpenPlanQuestions is how many of revision's questions wait: a
+	// confirmation until its decision, every other question until its
+	// answer.
 	OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error)
 	// ConfirmationIndex is revision's confirmation question's index, and
 	// whether it has one.
@@ -738,6 +769,12 @@ const (
 	// approver grants one more bounded card or waives (Spec a
 	// criteriaSpec).
 	ApprovalCriteria = "criteria"
+	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
+	// no verdict row holds, a review that never judged them: the approver
+	// waives, or confirms the delivered cards (Spec a CriteriaSpec). No
+	// Approve runs that review: the gateway takes no hold of a finished
+	// card.
+	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
@@ -997,6 +1034,63 @@ func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task,
 		repository, SourcePlan, "waiting-human", GateApproval)
 }
 
+// SetPlanName records plan id's short name; the naming pass is its sole
+// writer. The write stands as given: the read of the open plans' names,
+// not the schema, carries the name's uniqueness.
+func (s *PGStore) SetPlanName(ctx context.Context, id, name string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET plan_name = NULLIF($2, '') WHERE id = $1`, id, name)
+	return oneRow(res, err, "task "+id)
+}
+
+// OpenPlanNames are the names project's open plans hold — its plan-track
+// tasks without a plan_closed event — every one but excludeID's, the plan
+// the naming pass is naming: what a new name must not repeat.
+func (s *PGStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(plan_name, '') FROM tasks
+		WHERE repository = $1 AND track = 'plan' AND id <> $2 AND COALESCE(plan_name, '') <> ''
+		ORDER BY created_at, issue_number, id`, projectID, excludeID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id, name string
+		if err := rows.Scan(&id, &name); err != nil {
+			return nil, err
+		}
+		if _, closed, err := s.PlanClosed(ctx, id); err != nil {
+			return nil, err
+		} else if closed {
+			continue
+		}
+		out = append(out, name)
+	}
+	return out, rows.Err()
+}
+
+// UnnamedOpenPlans are the open plans — plan-track tasks without a
+// plan_closed event — that hold no name yet, oldest first: the naming
+// pass's queue.
+func (s *PGStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
+	candidates, err := s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE track = 'plan' AND COALESCE(plan_name, '') = ''
+		ORDER BY created_at, issue_number, id`)
+	if err != nil {
+		return nil, err
+	}
+	var out []Task
+	for _, t := range candidates {
+		if _, closed, err := s.PlanClosed(ctx, t.ID); err != nil {
+			return nil, err
+		} else if closed {
+			continue
+		}
+		out = append(out, t)
+	}
+	return out, nil
+}
+
 // SetTaskPlanRevision records the plan revision a card first runs
 // against; the WHERE plan_revision = 0 makes it once, the card's start
 // (roadmap 291). RunSession is its sole caller.
@@ -1038,8 +1132,8 @@ func defaultKind(kind string) string {
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, created_at, finished_at, gate, gate_since,
-	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''),
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, raised_sessions, created_at, finished_at, gate, gate_since,
+	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
 	image, image_digest, image_egress, COALESCE(roadmap_item, 0)`
@@ -1053,9 +1147,9 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.RaisedSessions,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
-		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.HumanSummary, &t.Accent,
+		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
 		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem); err != nil {
 		return Task{}, err
@@ -1332,14 +1426,22 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 	return oneRow(res, err, "task "+id)
 }
 
-// SetTaskUsage overwrites task id's usage counters with the snapshot u.
-// RunSession's RecordUsage writes them; BecomePlan and a replan's
-// reopen reset them to zero. oneRow answers ErrNotFound for an unknown
-// task.
+// SetTaskUsage overwrites task id's usage counters with the snapshot u,
+// the workflow's own: the console's raises (ExtraLines, RaisedSessions)
+// it leaves as they stand. RunSession's RecordUsage writes it. oneRow
+// answers ErrNotFound for an unknown task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
 		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
 		id, int64(u.AgentTime), u.Attempts, int64(u.ExtraTime), u.ExtraAttempts, u.PosterAttempts, u.LastUncounted, int64(u.RetryTime), u.ExtraCheckinShare)
+	return oneRow(res, err, "task "+id)
+}
+
+// ResetTaskUsage zeroes every usage counter of task id, the console's
+// raises included: BecomePlan and a replan's reopen start the card over.
+func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
+		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, raised_sessions = 0 WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 
@@ -1466,19 +1568,25 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
-// lines left out, as the gateway's month headroom counts it. The reason is the month's first
-// refused_month_cap of a model call; MonthAlarm.Check is its sole caller, for only a model
-// call finds the cap spent — a reservation or a tool call may be refused while euros remain.
+// lines left out, as the gateway's month headroom counts it. The reason and time are the month's
+// newest refused_month_cap of a model call; MonthAlarm.Check and the question facts of a card
+// stopped at the cap read it, for only a model call finds the cap spent: a reservation or a
+// tool call may be refused while euros remain.
 func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
+	var reason sql.NullString
+	var refusedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx,
 		`SELECT to_char($2::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM'),
 		        `+policy.MonthSpentSQL("$2::timestamptz")+`::float8,
-		        COALESCE((SELECT reason FROM audit WHERE decision = $1 AND tool = ''
+		        r.reason, r.ts
+		   FROM (SELECT 1) one
+		   LEFT JOIN LATERAL (SELECT reason, ts FROM audit WHERE decision = $1 AND tool = ''
 		                    AND ts >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 		                    AND ts < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
-		                  ORDER BY ts, id LIMIT 1), '')`,
-		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &m.Refusal)
+		                  ORDER BY ts DESC, id DESC LIMIT 1) r ON true`,
+		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &reason, &refusedAt)
+	m.Refusal, m.RefusedAt = reason.String, refusedAt.Time
 	return m, err
 }
 
@@ -1606,6 +1714,44 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 		return 0, 0, err
 	}
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e, _, err = insertEvent(ctx, tx, e)
+	if err != nil {
+		return 0, 0, err
+	}
+	if err := tx.Commit(); err != nil {
+		return 0, 0, err
+	}
+	s.publish(e)
+	return from, to, nil
+}
+
+// ExtendCard raises task id's caps — its granted sessions, its line bound
+// and its budget — and writes its card_extended row in one transaction; the
+// console extend action calls it. No task: ErrNotFound.
+func (s *PGStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, 0, err
+	}
+	defer tx.Rollback()
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	err = tx.QueryRowContext(ctx,
+		`UPDATE tasks SET raised_sessions = raised_sessions + $2, extra_lines = extra_lines + $3,
+			   budget_eur = budget_eur + $4
+		 WHERE id = $1
+		 RETURNING (budget_eur - $4::numeric)::float8, budget_eur::float8`,
+		id, sessions, lines, eur).Scan(&from, &to)
+	if errors.Is(err, sql.ErrNoRows) {
+		return 0, 0, ErrNotFound
+	}
+	if err != nil {
+		return 0, 0, err
+	}
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, from, to
 	e, _, err = insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, 0, err
@@ -1775,10 +1921,12 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 // ListQueuedByRepository lists repository's bound queued cards in filing
 // order, the oldest first: created_at, then issue number (Forgejo stamps
 // whole seconds, the number keeps a same-second burst's order), then id.
-// pullQueued, the bound's admission pass, is its sole caller.
+// A card with no issue, half filed by a plan (its row first, its issue
+// last), waits for its issue: it holds no slot. pullQueued, the bound's
+// admission pass, is its sole caller.
 func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+`
-		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued'
+		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued' AND issue_number > 0
 		ORDER BY created_at, issue_number, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
@@ -2223,26 +2371,47 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 // the console's board, chat and answer pages and factoryd's senders,
 // gates and plan passes read them. Rows are read whole, spec included.
 func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
-		        status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error
-		 FROM approval_requests WHERE status = $1 ORDER BY id`, status)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalColumns+` FROM approval_requests WHERE status = $1 ORDER BY id`, status)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ApprovalRequest
 	for rows.Next() {
-		var a ApprovalRequest
-		var spec []byte
-		if err := rows.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
-			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError); err != nil {
+		a, err := scanApproval(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.Spec = spec
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// NewestApproval is task taskID's newest request of kind, whatever its
+// status; false when it has none. The merge hold reads the request a
+// press decided.
+func (s *PGStore) NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error) {
+	a, err := scanApproval(s.db.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approval_requests
+		WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, taskID, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApprovalRequest{}, false, nil
+	}
+	return a, err == nil, err
+}
+
+// approvalColumns are an approval request's columns, in scanApproval's
+// order.
+const approvalColumns = `id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
+	status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error`
+
+// scanApproval reads one row of approvalColumns.
+func scanApproval(row interface{ Scan(...any) error }) (ApprovalRequest, error) {
+	var a ApprovalRequest
+	var spec []byte
+	err := row.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
+		&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError)
+	a.Spec = spec
+	return a, err
 }
 
 // RollRecorded reports whether a roll of sha on image is recorded. The

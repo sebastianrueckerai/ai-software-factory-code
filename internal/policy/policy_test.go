@@ -838,7 +838,11 @@ func TestFactoryModel(t *testing.T) {
 		{[]string{ClassChat}, PurposeOperator, Big},
 		{[]string{"coder"}, PurposeCompact, ""},
 		{[]string{ClassChat}, PurposeCompact, Small},
-		{[]string{"coder"}, PurposeTitle, ""},
+		{[]string{"coder"}, PurposeDigest, Small},
+		{[]string{"plain"}, PurposeDigest, Small},
+		{[]string{ClassChat}, PurposeDigest, Small},
+		{[]string{"coder"}, PurposeTitle, Small},
+		{[]string{"planner"}, PurposeTitle, Small},
 		{[]string{ClassChat}, PurposeTitle, Small},
 	} {
 		if got := d.FactoryModel(tc.classes, tc.purpose); got != tc.want {
@@ -848,10 +852,10 @@ func TestFactoryModel(t *testing.T) {
 	if d.AllowsModel([]string{"coder"}, "checkin") || d.AllowsModel([]string{"coder"}, "supervisor") {
 		t.Fatal("a factory model is not an agent model")
 	}
-	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"big", "review-cheap", "supervisor"}) {
+	if got := d.FactoryModels([]string{"researcher", "coder"}); !reflect.DeepEqual(got, []string{"big", "review-cheap", "small", "supervisor"}) {
 		t.Fatalf("FactoryModels = %v", got)
 	}
-	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "checkin", "supervisor"}) {
+	if got := d.FactoryModels([]string{"coder"}); !reflect.DeepEqual(got, []string{"big", "checkin", "small", "supervisor"}) {
 		t.Fatalf("FactoryModels(coder) = %v, want the check-in alias once", got)
 	}
 }
@@ -945,7 +949,7 @@ func TestBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]time.Duration{
-		"RunSession": 21 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
+		"RunSession": 31 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
 		"ModelReview": 20 * time.Minute, "GateAudit": 20 * time.Minute, "Merge": 90 * time.Second, "GatePolicy": 2 * time.Minute,
 		"Finish": 2 * time.Minute, "SuperviseGate": 8 * time.Minute,
 	} {
@@ -953,11 +957,12 @@ func TestBounds(t *testing.T) {
 			t.Errorf("default Bound(%s) = %s, want %s", name, got, want)
 		}
 	}
-	// a session outlives the agent time by a minute, the gate supervisor
-	// its call's timeout by two, the review its three calls' by two
+	// a session outlives a large card's agent time by a minute, the gate
+	// supervisor its call's timeout by two, the review its three calls' by
+	// two
 	d.Limits.AgentTime, d.Limits.SupervisorTimeout = 30*time.Minute, 10*time.Minute
-	if got := d.Bound("RunSession"); got != 31*time.Minute {
-		t.Errorf("Bound(RunSession) under agent_time 30m = %s, want 31m", got)
+	if got := d.Bound("RunSession"); got != 46*time.Minute {
+		t.Errorf("Bound(RunSession) under agent_time 30m = %s, want 46m", got)
 	}
 	if got := d.Bound("SuperviseGate"); got != 12*time.Minute {
 		t.Errorf("Bound(SuperviseGate) under supervisor_timeout 10m = %s, want 12m", got)
@@ -987,7 +992,7 @@ func TestBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]time.Duration{
-		"WaitChecks": 15 * time.Minute, "RunSession": 21 * time.Minute, "GatePolicy": time.Minute, "Finish": time.Minute,
+		"WaitChecks": 15 * time.Minute, "RunSession": 31 * time.Minute, "GatePolicy": time.Minute, "Finish": time.Minute,
 	} {
 		if got := d.Bound(name); got != want {
 			t.Errorf("Bound(%s) = %s, want %s", name, got, want)

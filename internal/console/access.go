@@ -102,13 +102,17 @@ var accessTable = map[string]accessRule{
 
 	// POST routes
 	"POST /messengers/telegram":                 {}, // the header secret is the route's own check
+	"POST /mcp":                                 {}, // the bearer is the route's own check
 	"POST /notifications/telegram/code":         rMember,
 	"POST /notifications/disconnect":            rMember,
+	"POST /notifications/tokens":                rMember, // the human's own writes judge the project
+	"POST /notifications/tokens/revoke":         rMember, // the store revokes only the human's own
 	"POST /notifications/level":                 rMember, // follows() judges the project's sight, as the stream does
 	"POST /logout":                              rMember,
 	"POST /tasks":                               rFactory,
 	"POST /tasks/{id}/answer":                   rCard,
 	"POST /tasks/{id}/fund":                     {need: approver, scope: scCard, what: "fund a card"},
+	"POST /tasks/{id}/extend":                   {need: approver, scope: scCard, what: "extend a card"},
 	"POST /tasks/{id}/summary":                  rCard,
 	"POST /tasks/{id}/accent":                   rCard,
 	"POST /cards/{id}/thread":                   rCard,
@@ -130,7 +134,6 @@ var accessTable = map[string]accessRule{
 	"POST /resources/{id}/release":              rFactory,
 	"POST /projects":                            {need: factoryWriter | approver, scope: scFactory, what: "add a project"},
 	"POST /projects/{name}/merge":               {need: factoryWriter | approver, scope: scFactory, what: "merge a project's file"},
-	"POST /alerts/{id}/verdict":                 {need: factoryWriter | approver, scope: scFactory, what: "judge an alert"},
 	"POST /projects/{name}/chat":                rProject,
 	"POST /projects/{name}/chat/stop":           rProject,
 	"POST /projects/{name}/chat/new":            rProject,
@@ -155,7 +158,8 @@ var accessTable = map[string]accessRule{
 
 	// chat tools: reads
 	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
-	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "session": rMember,
+	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "tree": rMember, "grep": rMember, "web_search": rMember,
+	"web_scrape": rMember, "research": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
 	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,

@@ -73,6 +73,8 @@ func (s *cardForgejo) server(t *testing.T) *httptest.Server {
 				}
 			}
 			json.NewEncoder(w).Encode(out)
+		case r.Method == http.MethodGet && strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/dependencies"):
+			fmt.Fprint(w, `[]`)
 		case strings.HasPrefix(p, cardUpPath+"/issues/") && strings.HasSuffix(p, "/labels"):
 			var number int64
 			fmt.Sscanf(strings.TrimSuffix(strings.TrimPrefix(p, cardUpPath+"/issues/"), "/labels"), "%d", &number)

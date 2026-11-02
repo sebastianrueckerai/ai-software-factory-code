@@ -314,6 +314,9 @@ func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) 
 func (s *accBatchTasks) FundCard(_ context.Context, _ string, _ float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
 	return 0, 0, nil
 }
+func (s *accBatchTasks) ExtendCard(_ context.Context, _ string, _, _ int, _ float64, _ factoryd.Event) (float64, float64, error) {
+	return 0, 0, nil
+}
 func (s *accBatchTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }
@@ -330,12 +333,12 @@ func (s *accBatchTasks) answerBatch(id string, revision int, answers []factoryd.
 		if a.Idx < 1 || a.Idx > len(qs) {
 			return factoryd.ErrNotFound
 		}
-		if qs[a.Idx-1].Answer != "" {
+		if qs[a.Idx-1].Answered() {
 			return factoryd.ErrAnswered
 		}
 	}
 	for _, a := range answers {
-		qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy = a.Text, by
+		qs[a.Idx-1].Answer, qs[a.Idx-1].Decision, qs[a.Idx-1].AnsweredBy = a.Text, a.Decision, by
 	}
 	s.questions[key] = qs
 	return nil
@@ -353,7 +356,7 @@ func (s *accBatchTasks) openCount() int {
 	defer s.mu.Unlock()
 	n := 0
 	for _, q := range s.questions[fmt.Sprintf("%s %d", planTask, planRev)] {
-		if q.Answer == "" {
+		if !q.Answered() {
 			n++
 		}
 	}
@@ -646,6 +649,9 @@ func (s *accBatchStore) ProjectByRepository(ctx context.Context, repository stri
 func (s *accBatchStore) SetTaskUsage(ctx context.Context, id string, u factoryd.TaskUsage) error {
 	panic("unused")
 }
+func (s *accBatchStore) ResetTaskUsage(ctx context.Context, id string) error {
+	panic("unused")
+}
 func (s *accBatchStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
 	panic("unused")
 }
@@ -707,6 +713,9 @@ func (s *accBatchStore) UndecideApproval(ctx context.Context, id int64) error { 
 func (s *accBatchStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
 	panic("unused")
 }
+func (s *accBatchStore) NewestApproval(ctx context.Context, taskID, kind string) (factoryd.ApprovalRequest, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
 	panic("unused")
 }
@@ -723,9 +732,6 @@ func (s *accBatchStore) ScreeningLetRun(ctx context.Context, taskID string) (boo
 	panic("unused")
 }
 func (s *accBatchStore) JudgeEscalations(ctx context.Context, taskID string, filter factoryd.EscalationFilter, verdict, by string) error {
-	panic("unused")
-}
-func (s *accBatchStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
 	panic("unused")
 }
 func (s *accBatchStore) OpenReportTask(ctx context.Context, t factoryd.Task) (factoryd.Task, error) {
@@ -819,6 +825,9 @@ func (s *accBatchStore) OpenDependencies(ctx context.Context, id string) ([]fact
 func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]string, error) {
 	panic("unused")
 }
+func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }
@@ -826,6 +835,9 @@ func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]
 	panic("unused")
 }
 func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
 	panic("unused")
 }
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
@@ -837,7 +849,7 @@ func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revisio
 func (s *accBatchStore) PutPlanConfirmation(ctx context.Context, id string, revision int, q factoryd.PlanQuestion) (int, bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+func (s *accBatchStore) PlanConfirmed(ctx context.Context, id string) (int, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
@@ -845,8 +857,8 @@ func (s *accBatchStore) PutPlanCatches(ctx context.Context, id string, revision 
 }
 
 // AnswerPlanQuestion is factoryd.PGStore.AnswerPlanQuestion on the fixture's // rows: an unknown number answers ErrNotFound, an answered one ErrAnswered.
-func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
-	return s.tasks.answerBatch(id, revision, []factoryd.PlanAnswer{{Idx: idx, Text: answer}}, by)
+func (s *accBatchStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error {
+	return s.tasks.answerBatch(id, revision, []factoryd.PlanAnswer{{Idx: idx, Text: answer, Decision: decision}}, by)
 }
 func (s *accBatchStore) CreatePlanCard(ctx context.Context, t factoryd.Task) (factoryd.Task, error) {
 	panic("unused")
@@ -886,6 +898,10 @@ func (s *accBatchStore) EndRoutineRun(ctx context.Context, project, routine stri
 }
 func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.RollHold, bool, error) {
 	panic("unused")
+}
+
+func (*accBatchStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {
+	return factoryd.MonthSpend{}, nil
 }
 
 func (*accBatchStore) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
@@ -1023,17 +1039,26 @@ func (f *accBatchChat) DeleteConversation(context.Context, string, string, int64
 	return 0, nil, nil
 }
 
-func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (f *accBatchChat) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[i]
 	f.msgs = slices.Delete(f.msgs, i, i+1)
 	m.ID, m.Queued, m.At = f.nextID(), false, time.Now()
 	f.msgs = append(f.msgs, m)
+	return m.ID, nil
+}
+
+func (f *accBatchChat) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if i := slices.IndexFunc(f.msgs, func(m factoryd.ChatMessage) bool { return m.ID == id }); i >= 0 {
+		f.msgs[i].Queued = true
+	}
 	return nil
 }
 
@@ -1045,6 +1070,10 @@ func (f *accBatchChat) ChatMessages(_ context.Context, _, _ string, _ int64, lim
 		all = all[len(all)-limit:]
 	}
 	return all, nil
+}
+
+func (f *accBatchChat) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
+	return nil, nil
 }
 
 func (f *accBatchChat) AddChatAttachment(_ context.Context, _, _ string, a factoryd.ChatAttachment) (factoryd.ChatAttachment, error) {
@@ -1082,6 +1111,10 @@ func (f *accBatchChat) CurrentConversation(context.Context, string, string) (int
 }
 
 func (f *accBatchChat) NewConversation(context.Context, string, string) (int64, error) { return 1, nil }
+
+func (f *accBatchChat) SideConversation(context.Context, string, string, string) (int64, error) {
+	return 2, nil
+}
 
 func (f *accBatchChat) Conversations(context.Context, string, string) ([]factoryd.ChatConversation, error) {
 	return nil, nil
@@ -1149,6 +1182,26 @@ func (f *accBatchChat) PutProposal(_ context.Context, p factoryd.ChatProposal) e
 	defer f.mu.Unlock()
 	f.proposals = append(f.proposals, accBatchProposal{ChatProposal: p})
 	return nil
+}
+
+func (f *accBatchChat) ReadProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.proposals {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
+			continue
+		}
+		switch {
+		case p.Login != login:
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		}
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
 }
 
 func (f *accBatchChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
@@ -1389,8 +1442,8 @@ func newBatchRig(t *testing.T) *batchRig {
 			Tracks: tree.Processes["maintenance"].Tracks}}},
 		Events: evs, Bus: evs.bus, Chat: &accBatchChat{tasks: tasks},
 		Operator: &factoryd.OperatorModel{GatewayURL: gwsrv.URL, Token: "gw-token"},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
-			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, answer, by)
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, wf, taskID, revision, idx, decision, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)

@@ -182,6 +182,10 @@ func (c *Console) token(ctx context.Context, s *session, form url.Values) error 
 	if t.AccessToken == "" {
 		return errors.New("token endpoint: no access token")
 	}
+	if t.RefreshToken == "" {
+		// the grant's refresh token is spent, so the session refreshes no more
+		return fmt.Errorf("%w: the token endpoint sent no refresh token", errLoggedOut)
+	}
 	s.access, s.refresh = t.AccessToken, t.RefreshToken
 	s.expiry = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
 	return nil
@@ -198,11 +202,11 @@ func (c *Console) accessToken(ctx context.Context, s *session) (string, error) {
 // and invalidates a refresh token on use). The refresh runs under
 // refreshMu from the row: a newer pair there is another request's refresh
 // of the same login, taken instead of a second grant. s holds the newer
-// pair only when storing its own last refresh failed. A fixed session's
-// token is returned as it is.
+// pair only when storing its own last refresh failed. A session without
+// a refresh token, a wake's or a chat token's, answers its token as it is.
 func (c *Console) tokenFor(ctx context.Context, s *session, margin time.Duration) (string, error) {
 	s.mu.Lock()
-	if s.fixed || time.Until(s.expiry) > margin {
+	if s.refresh == "" || time.Until(s.expiry) > margin {
 		defer s.mu.Unlock()
 		return s.access, nil
 	}
@@ -250,18 +254,33 @@ func (c *Console) asUser(r *http.Request, method, path string, payload any, want
 	return c.as(r.Context(), current(r), method, path, payload, want, out)
 }
 
-// as calls the Forgejo API as member s, decoding the answer into out when
-// non-nil, or keeping it whole in a *[]byte. A refused refresh ends the
-// session.
+// as calls the Forgejo API as human s, decoding the answer into out when
+// non-nil, or keeping it whole in a *[]byte.
 func (c *Console) as(ctx context.Context, s *session, method, path string, payload any, want int, out any) error {
+	b, err := c.callAs(ctx, s, method, path, payload, want, answerMax)
+	if err != nil {
+		return err
+	}
+	return decodeAnswer(method, path, b, out)
+}
+
+// callAs is call as human s, every session's way to Forgejo. A refused
+// refresh ends the session; Forgejo's 401 to a chat token's session names
+// the chat token, whose sealed Forgejo token its human deleted.
+func (c *Console) callAs(ctx context.Context, s *session, method, path string, payload any, want int, limit int64) ([]byte, error) {
 	tok, err := c.accessToken(ctx, s)
 	if err != nil {
 		if errors.Is(err, errLoggedOut) {
 			c.end(s)
 		}
-		return err
+		return nil, err
 	}
-	return c.api(ctx, tok, method, path, payload, want, out)
+	b, err := c.call(ctx, tok, method, path, payload, want, limit)
+	if ae := (*apiError)(nil); s.chatToken != 0 && errors.As(err, &ae) && ae.status == http.StatusUnauthorized {
+		log.Printf("console: chat token %d of %s: %v", s.chatToken, s.user, err)
+		return nil, refuse(http.StatusUnauthorized, "the Forgejo token behind chat token "+s.tokenName+" was refused; make a new chat token")
+	}
+	return b, err
 }
 
 // apiError is an answer of Forgejo's API other than the one wanted.
@@ -298,52 +317,16 @@ type upload struct {
 }
 
 func (c *Console) api(ctx context.Context, token, method, path string, payload any, want int, out any) error {
-	var body io.Reader
-	contentType := "application/json"
-	switch p := payload.(type) {
-	case nil:
-	case upload:
-		var form bytes.Buffer
-		mw := multipart.NewWriter(&form)
-		part, err := mw.CreateFormFile("attachment", p.name)
-		if err != nil {
-			return err
-		}
-		if _, err := part.Write(p.data); err != nil {
-			return err
-		}
-		if err := mw.Close(); err != nil {
-			return err
-		}
-		body, contentType = &form, mw.FormDataContentType()
-	default:
-		b, err := json.Marshal(payload)
-		if err != nil {
-			return err
-		}
-		body = bytes.NewReader(b)
-	}
-	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.cfg.ForgejoURL, "/")+path, body)
+	b, err := c.call(ctx, token, method, path, payload, want, answerMax)
 	if err != nil {
 		return err
 	}
-	req.Header.Set("Authorization", "Bearer "+token)
-	req.Header.Set("Accept", "application/json")
-	if payload != nil {
-		req.Header.Set("Content-Type", contentType)
-	}
-	res, err := c.cfg.HTTP.Do(req)
-	if err != nil {
-		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
-	}
-	defer res.Body.Close()
-	b, err := io.ReadAll(io.LimitReader(res.Body, answerMax))
-	if err != nil {
-		return fmt.Errorf("forgejo %s %s: %w", method, path, err)
-	}
-	if res.StatusCode != want {
-		return &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
-	}
+	return decodeAnswer(method, path, b, out)
+}
+
+// decodeAnswer puts Forgejo's answer b into out: whole into a *[]byte,
+// else as JSON; a nil out drops it.
+func decodeAnswer(method, path string, b []byte, out any) error {
 	if raw, ok := out.(*[]byte); ok {
 		*raw = b
 		return nil
@@ -354,4 +337,57 @@ func (c *Console) api(ctx context.Context, token, method, path string, payload a
 		}
 	}
 	return nil
+}
+
+// call is api's request and answer: it sends the call as the token's
+// member and reads at most limit bytes of the answer, an apiError for a
+// status other than want.
+func (c *Console) call(ctx context.Context, token, method, path string, payload any, want int, limit int64) ([]byte, error) {
+	var body io.Reader
+	contentType := "application/json"
+	switch p := payload.(type) {
+	case nil:
+	case upload:
+		var form bytes.Buffer
+		mw := multipart.NewWriter(&form)
+		part, err := mw.CreateFormFile("attachment", p.name)
+		if err != nil {
+			return nil, err
+		}
+		if _, err := part.Write(p.data); err != nil {
+			return nil, err
+		}
+		if err := mw.Close(); err != nil {
+			return nil, err
+		}
+		body, contentType = &form, mw.FormDataContentType()
+	default:
+		b, err := json.Marshal(payload)
+		if err != nil {
+			return nil, err
+		}
+		body = bytes.NewReader(b)
+	}
+	req, err := http.NewRequestWithContext(ctx, method, strings.TrimSuffix(c.cfg.ForgejoURL, "/")+path, body)
+	if err != nil {
+		return nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	req.Header.Set("Accept", "application/json")
+	if payload != nil {
+		req.Header.Set("Content-Type", contentType)
+	}
+	res, err := c.cfg.HTTP.Do(req)
+	if err != nil {
+		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
+	}
+	defer res.Body.Close()
+	b, err := io.ReadAll(io.LimitReader(res.Body, limit))
+	if err != nil {
+		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
+	}
+	if res.StatusCode != want {
+		return nil, &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
+	}
+	return b, nil
 }

@@ -267,6 +267,31 @@ func TestOperatorTitles(t *testing.T) {
 	}
 }
 
+// A digest is one summary call of one big read: purpose digest on the
+// chat task's account, the cheap alias, the ask and the content as one
+// user message, the answer bounded like a compaction's.
+func TestOperatorDigests(t *testing.T) {
+	g := &operatorGateway{chunks: []string{
+		`{"choices":[{"delta":{"content":"It ships "}}]}`,
+		`{"choices":[{"delta":{"content":"1.2.3."}}]}`,
+		`[DONE]`,
+	}}
+	m := g.start(t)
+	answer, err := m.Digest(t.Context(), "t-chat-sf-code-2026-10", "sf/code:sebastian:1", "what ships?", "the run\n- shipped 1.2.3\n")
+	if err != nil || answer != "It ships 1.2.3." {
+		t.Fatalf("digest = %q, err = %v", answer, err)
+	}
+	if g.headers.Get("Authorization") != "Bearer gw-token" || g.headers.Get(gateway.HeaderFactoryTask) != "t-chat-sf-code-2026-10" ||
+		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeDigest || g.headers.Get(gateway.HeaderFactoryThread) != "sf/code:sebastian:1" {
+		t.Fatalf("headers = %v", g.headers)
+	}
+	b, _ := json.Marshal(g.request)
+	want := `{"max_tokens":2048,"messages":[{"content":"what ships?\n\nthe run\n- shipped 1.2.3\n","role":"user"}],"model":"small","stream":true}`
+	if string(b) != want {
+		t.Fatalf("request = %s\nwant      %s", b, want)
+	}
+}
+
 // The window ask reads the gateway's window route on the chat task's
 // account with the operator purpose, and the gateway's answer is the
 // alias's served window; a refusal comes back as the error, so the turn
@@ -292,5 +317,34 @@ func TestOperatorWindow(t *testing.T) {
 	}
 	if _, err := m.Window(t.Context(), "t-chat-x-2026-10", "nope"); err == nil || !strings.Contains(err.Error(), "no model") {
 		t.Fatalf("err = %v, want the gateway's no-model refusal", err)
+	}
+}
+
+// One research call goes to the gateway on the chat task's account with
+// purpose research, the mid tier, the loop's messages and its read tools,
+// the answer bounded like the report's cut.
+func TestOperatorResearch(t *testing.T) {
+	g := &operatorGateway{chunks: []string{
+		`{"choices":[{"delta":{"content":"It ships "}}]}`,
+		`{"choices":[{"delta":{"content":"1.2.3."}}]}`,
+		`[DONE]`,
+	}}
+	m := g.start(t)
+	answer, err := m.Research(t.Context(), "t-chat-sf-code-2026-10", "sf/code:sebastian:1",
+		[]OperatorMessage{{Role: "system", Content: "the brief"}, {Role: "user", Content: "what ships?"}},
+		[]OperatorTool{{Name: "grep", Description: "Search the files.", Parameters: map[string]any{"type": "object"}}})
+	if err != nil || answer.Content != "It ships 1.2.3." {
+		t.Fatalf("research = %+v, err = %v", answer, err)
+	}
+	if g.headers.Get("Authorization") != "Bearer gw-token" || g.headers.Get(gateway.HeaderFactoryTask) != "t-chat-sf-code-2026-10" ||
+		g.headers.Get(gateway.HeaderFactoryPurpose) != policy.PurposeResearch || g.headers.Get(gateway.HeaderFactoryThread) != "sf/code:sebastian:1" {
+		t.Fatalf("headers = %v", g.headers)
+	}
+	b, _ := json.Marshal(g.request)
+	want := `{"max_tokens":2048,"messages":[{"content":"the brief","role":"system"},{"content":"what ships?","role":"user"}],` +
+		`"model":"big","stream":true,` +
+		`"tools":[{"function":{"description":"Search the files.","name":"grep","parameters":{"type":"object"}},"type":"function"}]}`
+	if string(b) != want {
+		t.Fatalf("request = %s\nwant      %s", b, want)
 	}
 }

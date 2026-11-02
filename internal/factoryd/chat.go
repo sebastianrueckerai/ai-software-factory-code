@@ -7,6 +7,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
+	"math"
 	"strings"
 	"time"
 
@@ -77,6 +79,9 @@ type ChatMessage struct {
 	// Attachments are the images this row's member sent with it, named
 	// img1.., laid under the row at read; never stored on it.
 	Attachments []ChatAttachment `json:"attachments,omitempty"`
+	// Token names the chat token whose session wrote the row; "" for the
+	// console.
+	Token string `json:"token,omitempty"`
 }
 
 // ChatAttachment is an image a member sent with a chat message: the
@@ -107,6 +112,10 @@ type ChatToolCall struct {
 	// chat's tool work (roadmap 198).
 	At time.Time `json:"at,omitempty"`
 	Ms int64     `json:"ms,omitempty"`
+	// Trail is the research tool's steps beside the thread, for the
+	// human's audit: every step's call and answer. The model never reads
+	// it; the report is the result.
+	Trail string `json:"trail,omitempty"`
 	// Proposal is the token of a call proposed to the member.
 	Proposal string `json:"proposal,omitempty"`
 	// Status is the HTTP status a refused call answered, 0 for one that
@@ -396,8 +405,10 @@ func (s *PGStore) changeThread(ctx context.Context, set, where, repository, logi
 // DeleteConversation hard-deletes login's thread n on repository: its
 // messages, its images' rows, its proposals and undos, its seen marker
 // and the thread, and answers how many messages went with the ids of
-// the images it removed, their objects the caller's to sweep. The inbox
-// stays: ErrNotFound for it, as for no thread.
+// the images it removed, their objects the caller's to sweep. A chat
+// token whose own thread it was has none again, so its next turn makes a
+// fresh one rather than reuse the number. The inbox stays: ErrNotFound
+// for it, as for no thread.
 func (s *PGStore) DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -442,7 +453,8 @@ func (s *PGStore) DeleteConversation(ctx context.Context, repository, login stri
 		return 0, nil, err
 	}
 	for _, q := range []string{`DELETE FROM chat_seen WHERE repository = $1 AND login = $2 AND conversation = $3`,
-		`DELETE FROM chat_proposals WHERE repository = $1 AND login = $2 AND conversation = $3`} {
+		`DELETE FROM chat_proposals WHERE repository = $1 AND login = $2 AND conversation = $3`,
+		`UPDATE chat_tokens SET conversation = 0 WHERE repository = $1 AND login = $2 AND conversation = $3`} {
 		if _, err := tx.ExecContext(ctx, q, repository, login, n); err != nil {
 			return 0, nil, err
 		}
@@ -919,9 +931,9 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 		return 0, err
 	}
 	var id int64
-	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal, cut)
-		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14) RETURNING id`,
-		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal, m.Cut).Scan(&id)
+	err := tx.QueryRowContext(ctx, `INSERT INTO chat_messages (repository, login, role, content, tool_calls, conversation, kind, choices, decider, task_id, queued, birth_kind, proposal, cut, token)
+		VALUES ($1, $2, $3, $4, $5::jsonb, $6, $7, $8::jsonb, $9, $10, $11, $12, $13, $14, $15) RETURNING id`,
+		repository, login, m.Role, m.Content, calls, conv, m.Kind, choices, m.Decider, m.TaskID, m.Queued, m.BirthKind, m.Proposal, m.Cut, m.Token).Scan(&id)
 	if err != nil {
 		return 0, err
 	}
@@ -944,31 +956,63 @@ func insertChatMessage(ctx context.Context, tx sqlRunner, repository, login stri
 // StartQueued lands queued row id in its place: the row takes the next
 // id, after every row of the turns before it, and is queued no longer.
 // The row's pending delivery rows follow it to the landing id, so a
-// notification born mid-turn still names a row the console shows.
-func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) error {
-	_, err := s.db.ExecContext(ctx, `WITH landed AS (
+// notification born mid-turn still names a row the console shows. It
+// answers the landed row's new id, 0 when another turn already landed
+// it.
+func (s *PGStore) StartQueued(ctx context.Context, repository, login string, id int64) (int64, error) {
+	var landed int64
+	err := s.db.QueryRowContext(ctx, `WITH landed AS (
 		UPDATE chat_messages SET id = nextval(pg_get_serial_sequence('chat_messages', 'id')), queued = false, at = now()
-		WHERE id = $1 AND repository = $2 AND login = $3 AND queued RETURNING id)
-		UPDATE notify_deliveries SET message_id = (SELECT id FROM landed) WHERE message_id = $1`, id, repository, login)
+		WHERE id = $1 AND repository = $2 AND login = $3 AND queued RETURNING id),
+		moved AS (
+		UPDATE notify_deliveries SET message_id = (SELECT id FROM landed) WHERE message_id = $1)
+		SELECT coalesce(max(id), 0) FROM landed`, id, repository, login).Scan(&landed)
+	return landed, err
+}
+
+// RequeueChatMessage puts landed row id back to the queue a turn that
+// read it and failed left: the retry turn reads it first.
+func (s *PGStore) RequeueChatMessage(ctx context.Context, repository, login string, id int64) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE chat_messages SET queued = true WHERE id = $1 AND repository = $2 AND login = $3 AND NOT queued`,
+		id, repository, login)
 	return err
 }
 
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT `+chatMessageColumns+` FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
 	if err != nil {
 		return nil, err
 	}
+	return scanChatMessages(rows)
+}
+
+// ChatMessagesAfter is login's thread conversation on repository from
+// the row after id after on, oldest first, at most limit rows: a reader
+// behind by more than limit pages forward.
+func (s *PGStore) ChatMessagesAfter(ctx context.Context, repository, login string, conversation, after int64, limit int) ([]ChatMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+chatMessageColumns+` FROM chat_messages
+		WHERE repository = $1 AND login = $2 AND conversation = $3 AND id > $4 ORDER BY id LIMIT $5`,
+		repository, login, conversation, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanChatMessages(rows)
+}
+
+const chatMessageColumns = `id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut, token`
+
+func scanChatMessages(rows *sql.Rows) ([]ChatMessage, error) {
 	defer rows.Close()
 	var out []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
 		var calls, choices []byte
-		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal, &m.Cut); err != nil {
+		if err := rows.Scan(&m.ID, &m.Role, &m.Content, &calls, &m.At, &m.Conversation, &m.Kind, &choices, &m.Decider, &m.TaskID, &m.Repeats, &m.Queued, &m.BirthKind, &m.Proposal, &m.Cut, &m.Token); err != nil {
 			return nil, err
 		}
 		if len(calls) > 0 {
@@ -1113,14 +1157,16 @@ func askKind(e Event) string {
 }
 
 // AttachAnalysis records what the chat agent found about the card's open
-// ask (the main agent concept): an analysis_attached row on the spine and
-// the ask's escalation rows rewritten to carry the findings after the
-// ask, so every member reads them with the ask. The ask is the card's
-// newest open one of either family, a question asked or an approval
-// requested; none open, the newest ask there is refuses as
+// ask (the main agent concept): e, the analysis_attached row on the spine
+// with its repository, actor, via and detail, the store adding the card
+// and the findings, and the ask's escalation rows rewritten to carry the
+// findings after the ask, so every member reads them with the ask. The
+// ask is the card's newest open one of either family, a question asked or
+// an approval requested; none open, the newest ask there is refuses as
 // AskSettledError with its kind and state, a card without an ask row as
 // ErrNoAsk.
-func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found, recommendation, by string) error {
+func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
+	repository := e.Repository
 	t, ok, err := s.Task(ctx, taskID)
 	if err != nil {
 		return err
@@ -1175,29 +1221,24 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 	// the ask's rows: the poke line the Poker wrote, alone or with an
 	// earlier analysis a new attach replaces; rows of an older ask keep
 	// their own words
-	var bases []string
-	switch ask.Kind {
-	case EventQuestionAsked:
-		question, _ := ask.Detail["question"].(string)
-		ref := TitledRef(cardRef(*ask, t), t)
-		bases = []string{ref + " needs you: " + question, ref + " is stopped by its budget: " + question}
-	default:
-		if content, _, ok := approvalPoke(*ask, t); ok {
-			bases = []string{content}
-		}
+	poke, ok := pokeOf(*ask, t)
+	if !ok {
+		return ErrNoAsk
 	}
+	base := poke.Content
 	analysis := "\nAnalysis: " + found
 	if recommendation != "" {
 		analysis += "\nRecommendation: " + recommendation
 	}
-	detail := map[string]any{"found": found, "source": "agent"}
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["found"], e.Detail["source"] = found, "agent"
 	if recommendation != "" {
-		detail["recommendation"] = recommendation
+		e.Detail["recommendation"] = recommendation
 	}
-	b, err := json.Marshal(detail)
-	if err != nil {
-		return err
-	}
+	e.TaskID, e.IssueNumber, e.Kind = taskID, t.IssueNumber, EventAnalysisAttached
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1210,7 +1251,6 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 		return err
 	}
 	var ids []int64
-	var matched []string
 	for rows.Next() {
 		var id int64
 		var content string
@@ -1218,13 +1258,8 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
 			return err
 		}
-		for _, base := range bases {
-			switch {
-			case content == base:
-				ids, matched = append(ids, id), append(matched, base)
-			case strings.HasPrefix(content, base+"\nAnalysis: "):
-				ids, matched = append(ids, id), append(matched, base)
-			}
+		if content == base || strings.HasPrefix(content, base+"\nAnalysis: ") {
+			ids = append(ids, id)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1237,51 +1272,65 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 	if len(ids) == 0 {
 		return ErrNoAsk
 	}
-	for i, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, matched[i]+analysis, id); err != nil {
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, base+analysis, id); err != nil {
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
-		VALUES (now(), $1, $2, $3, $4, $5, $6, $7::jsonb)`,
-		repository, taskID, t.IssueNumber, EventAnalysisAttached, by, ViaChat, b); err != nil {
+	if e, _, err = insertEvent(ctx, tx, e); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.publish(e)
+	return nil
 }
 
 // ProposalState is a proposal's state as GET /chat answers it: pending
-// while unused and unexpired, used once taken, expired otherwise.
+// while unused and unexpired, used once taken, expired otherwise, with
+// the row's pool change as its safe preview while it holds one.
 type ProposalState struct {
 	Token string `json:"token"`
 	State string `json:"state"`
+	// Pool is the row's captured pool change as the member reads it —
+	// the display fields alone, never the capture's source. A preview
+	// rides every state of its row, pending, used or expired, and only
+	// the owner's rows answer one.
+	Pool *PoolPreview `json:"pool,omitempty"`
 }
 
 // ProposalStates is the state of each of tokens, login's proposals on
 // repository, at now, in their order; a token with no such row is expired.
 func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]ProposalState, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT token, used_at, expires_at FROM chat_proposals
+	rows, err := s.db.QueryContext(ctx, `SELECT token, used_at, expires_at, pool FROM chat_proposals
 		WHERE kind = 'proposal' AND repository = $1 AND login = $2 AND token = ANY($3)`, repository, login, tokens)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	found := map[string]string{}
+	found := map[string]ProposalState{}
 	for rows.Next() {
 		var token string
 		var usedAt sql.NullTime
 		var expiresAt time.Time
-		if err := rows.Scan(&token, &usedAt, &expiresAt); err != nil {
+		var pool []byte
+		if err := rows.Scan(&token, &usedAt, &expiresAt, &pool); err != nil {
 			return nil, err
 		}
+		state := ProposalState{Token: token}
 		switch {
 		case usedAt.Valid:
-			found[token] = "used"
+			state.State = "used"
 		case expiresAt.Before(now):
-			found[token] = "expired"
+			state.State = "expired"
 		default:
-			found[token] = "pending"
+			state.State = "pending"
 		}
+		if capture, err := poolOf(pool); err == nil {
+			state.Pool = capture.Preview()
+		}
+		found[token] = state
 	}
 	if err := rows.Err(); err != nil {
 		return nil, err
@@ -1290,9 +1339,9 @@ func (s *PGStore) ProposalStates(ctx context.Context, repository, login string, 
 	for i, t := range tokens {
 		state, ok := found[t]
 		if !ok {
-			state = "expired"
+			state = ProposalState{Token: t, State: "expired"}
 		}
-		out[i] = ProposalState{Token: t, State: state}
+		out[i] = state
 	}
 	return out, nil
 }
@@ -1340,6 +1389,88 @@ type ChatProposal struct {
 	// Choice is the ask binding's choice: the one of the ask row's
 	// choices whose press runs Tool, as the ask tool bound it.
 	Choice string
+	// Pool is the pool change a set_pool row captured, a proposal's or
+	// an ask binding's: what the row itself holds, so the member's Do
+	// it — the amount the one thing it may correct — or their one
+	// press of the bound choice writes the operation, the reason and
+	// the baseline the offer read, not ones a request names. nil for
+	// every other row and a row stored before the pool carried
+	// captures.
+	Pool *PoolCapture
+}
+
+// PoolCapture is the pool change a set_pool offer carries, a proposal's
+// or an ask binding's: the action, the suggested amount and the reason
+// of the call, with the blob sha of the project file and the pool in
+// cents the offer read — the baseline the member's Do it or bound press
+// writes against and a correction's amount is judged with.
+type PoolCapture struct {
+	Action string  `json:"action"`
+	Reason string  `json:"reason"`
+	Source string  `json:"source"`
+	From   int64   `json:"from"`
+	EUR    float64 `json:"eur"`
+}
+
+// poolOf is the row's stored pool capture, nil for none.
+func poolOf(b []byte) (*PoolCapture, error) {
+	if b == nil {
+		return nil, nil
+	}
+	var p PoolCapture
+	if err := json.Unmarshal(b, &p); err != nil {
+		return nil, err
+	}
+	return &p, nil
+}
+
+// poolActions are the two pool changes a capture holds, the words the
+// proposal's own tool names.
+const (
+	poolActionSet   = "set"
+	poolActionTopUp = "top_up"
+)
+
+// PoolPreview is a pool capture's safe display projection, the read-only
+// half the member reads beside a proposal: the action, the suggested
+// replacement (a set) or increment (a top-up) in EUR, the allowance the
+// capture read, the ceiling the change would stand at and the reason,
+// fixed at the capture. Derived, never stored, it exposes those five
+// alone — never the capture's source blob, file content or anything
+// else the row keeps to itself.
+type PoolPreview struct {
+	Action  string  `json:"action"`
+	EUR     float64 `json:"eur"`
+	FromEUR float64 `json:"from_eur"`
+	ToEUR   float64 `json:"to_eur"`
+	Reason  string  `json:"reason"`
+}
+
+// Preview is the capture as the display fields above, whole cents end
+// to end: the suggested amount is checked exact as cents and of its
+// action's sign before it is read back, and a top-up's ceiling is the
+// captured allowance plus it with the sum checked to fit. A capture
+// that fails a check — one no proposal's capture writes — previews nil
+// rather than rounded, wrapped or nonsensical money.
+func (p *PoolCapture) Preview() *PoolPreview {
+	if p == nil || (p.Action != poolActionSet && p.Action != poolActionTopUp) ||
+		math.IsNaN(p.EUR) || math.IsInf(p.EUR, 0) ||
+		(p.Action == poolActionSet && p.EUR < 0) || (p.Action == poolActionTopUp && p.EUR <= 0) {
+		return nil
+	}
+	cents := Cents(p.EUR)
+	if float64(cents)/100 != p.EUR {
+		return nil
+	}
+	to := cents
+	if p.Action == poolActionTopUp {
+		if cents > math.MaxInt64-p.From {
+			return nil
+		}
+		to = p.From + cents
+	}
+	return &PoolPreview{Action: p.Action, EUR: float64(cents) / 100,
+		FromEUR: float64(p.From) / 100, ToEUR: float64(to) / 100, Reason: p.Reason}
 }
 
 // TakeProposal's refusals.
@@ -1351,9 +1482,17 @@ var (
 
 // PutProposal stores p.
 func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation, choice)
-		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10)`,
-		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation, p.Choice)
+	var pool []byte
+	if p.Pool != nil {
+		b, err := json.Marshal(p.Pool)
+		if err != nil {
+			return err
+		}
+		pool = b
+	}
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chat_proposals (token, kind, repository, login, tool, args, description, expires_at, conversation, choice, pool)
+		VALUES ($1, $2, $3, $4, $5, $6::jsonb, $7, $8, $9, $10, $11::jsonb)`,
+		p.Token, p.Kind, p.Repository, p.Login, p.Tool, []byte(p.Args), p.Description, p.ExpiresAt, p.Conversation, p.Choice, pool)
 	return err
 }
 
@@ -1363,14 +1502,18 @@ func (s *PGStore) PutProposal(ctx context.Context, p ChatProposal) error {
 // already used, ErrNoProposal for none.
 func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (ChatProposal, error) {
 	p := ChatProposal{Token: token, Kind: kind, Repository: repository, Login: login}
-	var args []byte
+	var args, pool []byte
 	err := s.db.QueryRowContext(ctx, `UPDATE chat_proposals SET used_at = $4
 		WHERE token = $1 AND repository = $2 AND login = $3 AND used_at IS NULL AND expires_at >= $4 AND kind = $5
-		RETURNING tool, args, description, expires_at, conversation, choice`, token, repository, login, now, kind).
-		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation, &p.Choice)
+		RETURNING tool, args, description, expires_at, conversation, choice, pool`, token, repository, login, now, kind).
+		Scan(&p.Tool, &args, &p.Description, &p.ExpiresAt, &p.Conversation, &p.Choice, &pool)
 	switch {
 	case err == nil:
 		p.Args = args
+		p.Pool, err = poolOf(pool)
+		if err != nil {
+			return ChatProposal{}, err
+		}
 		return p, nil
 	case !errors.Is(err, sql.ErrNoRows):
 		return ChatProposal{}, err
@@ -1388,6 +1531,41 @@ func (s *PGStore) TakeProposal(ctx context.Context, kind, token, repository, log
 		return ChatProposal{}, ErrUsedProposal
 	}
 	return ChatProposal{}, ErrNoProposal
+}
+
+// ReadProposal is token's row of kind for login on repository at now,
+// nothing spent: the stored proposal a correction is judged against
+// before its token is taken. ErrOthersProposal for another login's row,
+// which stays unused; ErrUsedProposal for one used, ErrNoProposal for
+// none, an expired one or another kind's.
+func (s *PGStore) ReadProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (ChatProposal, error) {
+	p := ChatProposal{Token: token, Kind: kind, Repository: repository}
+	var args, pool []byte
+	var rowLogin string
+	var used sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT tool, args, description, login, expires_at, used_at, conversation, choice, pool FROM chat_proposals
+		WHERE token = $1 AND repository = $2 AND kind = $3`, token, repository, kind).
+		Scan(&p.Tool, &args, &p.Description, &rowLogin, &p.ExpiresAt, &used, &p.Conversation, &p.Choice, &pool)
+	switch {
+	case err == nil:
+	case errors.Is(err, sql.ErrNoRows):
+		return ChatProposal{}, ErrNoProposal
+	default:
+		return ChatProposal{}, err
+	}
+	switch {
+	case rowLogin != login:
+		return ChatProposal{}, ErrOthersProposal
+	case used.Valid:
+		return ChatProposal{}, ErrUsedProposal
+	case p.ExpiresAt.Before(now):
+		return ChatProposal{}, ErrNoProposal
+	}
+	p.Login, p.Args = rowLogin, args
+	if p.Pool, err = poolOf(pool); err != nil {
+		return ChatProposal{}, err
+	}
+	return p, nil
 }
 
 // LiveAskBinds are the open ask bindings of login's conversation on

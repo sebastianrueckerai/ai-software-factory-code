@@ -208,10 +208,11 @@ func TestCardFaceChips(t *testing.T) {
 	}
 }
 
-// A plan child's chip carries its key after the plan reference: "from
-// plan #1 · links-api"; a parent that has no issue number yet keeps the
-// chip with the key alone.
-func TestPlanChildChipCarriesTheKey(t *testing.T) {
+// A plan child's chip carries the plan's name after the plan reference:
+// "from plan #1 · fix prod latency"; an unnamed plan reads "from plan
+// #1"; a parent that has no issue number yet keeps the chip with the key
+// alone.
+func TestPlanChildChipCarriesTheName(t *testing.T) {
 	r := newRig(t)
 	withLinkshort(r)
 	ck, _ := r.loggedIn(t)
@@ -222,14 +223,40 @@ func TestPlanChildChipCarriesTheKey(t *testing.T) {
 			Repository: "linkshort/linkshort", IssueNumber: 4, Source: factoryd.SourcePlan, Parent: "t-plan", PlanKey: "links-api"}},
 	}
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
-	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · links-api</span>`) {
-		t.Errorf("t-c4's face lacks its plan chip with the key:\n%s", face)
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) || strings.Contains(face, "links-api</span>") {
+		t.Errorf("t-c4's face lacks its bare plan chip, or shows the key:\n%s", face)
+	}
+	// a named plan: the name takes the key's slot, on the child and on the plan's own face
+	r.tasks.tasks[0].PlanName = "fix prod latency"
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1 · fix prod latency</span>`) || strings.Contains(face, "links-api</span>") {
+		t.Errorf("t-c4's face lacks its plan chip with the name, or still shows the key:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip plan">#1 · fix prod latency</span>`) {
+		t.Errorf("the plan's own face lacks its name chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">from plan #1</span>`) {
+		t.Errorf("t-c4's face lacks the bare plan chip of an unnamed plan:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-plan"); strings.Contains(face, `chip plan`) {
+		t.Errorf("an unnamed plan's own face carries a plan chip:\n%s", face)
 	}
 	// the parent filed before its issue: the chip keeps the key alone
 	r.tasks.tasks[0].IssueNumber = 0
 	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">links-api</span>`) || strings.Contains(face, "from plan") {
 		t.Errorf("the child of a plan without an issue number lacks the key alone on its chip:\n%s", face)
+	}
+	// named, the name outranks the key, and the plan's own chip shows no #0
+	r.tasks.tasks[0].PlanName = "fix prod latency"
+	body = r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-c4"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) {
+		t.Errorf("the child of a named plan without an issue number lacks the name alone on its chip:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-plan"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) || strings.Contains(face, "#0") {
+		t.Errorf("a named plan without an issue number lacks the name alone on its chip:\n%s", face)
 	}
 }
 
@@ -285,6 +312,68 @@ func TestCardFaceChecks(t *testing.T) {
 		if face := faceOf(t, body, id); strings.Contains(face, `class="checks"`) {
 			t.Errorf("%s shows checks:\n%s", id, face)
 		}
+	}
+}
+
+// The face's checks count names the head it judged: a newer push the
+// checks never ran on leaves the earlier pass's counts off the face
+// (#1396 wore "5/5 checks" from a pass its cycle had left behind), and
+// they return once checks run on that newer head. With no push at all,
+// the newest checks step stands on its own.
+func TestCardFaceChecksNameTheHeadTheyJudged(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	fiveOf := func(commit string) string {
+		return `{"step":"checks","commit":"` + commit + `","state":"success","jobs":[` +
+			`{"name":"build","status":"success"},{"name":"vet","status":"success"},{"name":"race","status":"success"},` +
+			`{"name":"lint","status":"success"},{"name":"docs","status":"success"}]}`
+	}
+	push := func(commit string) string {
+		return `{"step":"pushed","session":"s","branch":"b","commit":"` + commit + `"}`
+	}
+	start := `{"step":"session_start","attempt":1}`
+	r.objects["sessions/t-stale/timeline.jsonl"] = []byte(start + "\n" + push("aaa") + "\n" + fiveOf("aaa") + "\n" + push("bbb") + "\n")
+	r.objects["sessions/t-caught-up/timeline.jsonl"] = []byte(start + "\n" + push("aaa") + "\n" + fiveOf("aaa") + "\n" + push("bbb") + "\n" + fiveOf("bbb") + "\n")
+	r.objects["sessions/t-no-push/timeline.jsonl"] = []byte(start + "\n" + fiveOf("aaa") + "\n")
+	r.tasks.set("",
+		factoryd.Task{ID: "t-stale", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "a newer push", PRNumber: 4},
+		factoryd.Task{ID: "t-caught-up", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "checked again", PRNumber: 5},
+		factoryd.Task{ID: "t-no-push", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "checks only", PRNumber: 6})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-stale"); strings.Contains(face, `class="checks"`) {
+		t.Errorf("a push the checks never ran on still wears their counts:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-caught-up"); !strings.Contains(face, `<span class="checks">5/5 checks</span>`) {
+		t.Errorf("the checks on the newest head lack their 5/5:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-no-push"); !strings.Contains(face, `<span class="checks">5/5 checks</span>`) {
+		t.Errorf("checks with no push to be stale against lack their 5/5:\n%s", face)
+	}
+}
+
+// The face carries the newest session's attempt beside the gate clock,
+// which restarts on every retry: "under a minute" alone reads as
+// progress, not as the third try's restart. A card out of its stage
+// shows no floating attempt.
+func TestCardFaceAttemptBesideTheGateClock(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	attempts := `{"step":"session_start","attempt":1}
+{"step":"session_end","attempt":1,"outcome":"retry"}
+{"step":"session_start","attempt":2}
+{"step":"session_end","attempt":2,"outcome":"retry"}
+{"step":"session_start","attempt":3}`
+	r.objects["sessions/t-gate/timeline.jsonl"] = []byte(attempts)
+	r.objects["sessions/t-wait/timeline.jsonl"] = []byte(attempts)
+	r.tasks.set("",
+		factoryd.Task{ID: "t-gate", Kind: "agent", Status: "in-review", Repository: "sf/code", Objective: "at the gate", PRNumber: 4},
+		factoryd.Task{ID: "t-wait", Kind: "agent", Status: "waiting-poster", Repository: "sf/code", Objective: "waiting", PRNumber: 5})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face := faceOf(t, body, "t-gate"); !strings.Contains(face, `<span class="elapsed">attempt 3</span>`) {
+		t.Errorf("the card at its gate lacks its third attempt beside the clock:\n%s", face)
+	}
+	if face := faceOf(t, body, "t-wait"); strings.Contains(face, "attempt") {
+		t.Errorf("a card out of its stage carries a floating attempt:\n%s", face)
 	}
 }
 
@@ -708,7 +797,7 @@ func TestFilteredBoardFormsCarryTheFilter(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">`
 	htmx := func(action string) string {
-		return `action="` + action + `" hx-post="` + action + `" hx-target="#note" hx-swap="innerHTML"`
+		return `action="` + action + `" hx-post="` + action + `"`
 	}
 	for _, want := range []string{
 		`data-query="?project=linkshort" hx-get="/board?project=linkshort" hx-trigger="board-refresh from:body" hx-swap="outerHTML">`,
@@ -784,7 +873,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	filter := `<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">`
 	choice := func(c string) string {
-		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#note" hx-swap="innerHTML" data-to="running">` + "\n" + filter + "\n" +
+		return `<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running">` + "\n" + filter + "\n" +
 			`<button type="submit" name="answer" value="` + c + `">` + c + `</button>` + "\n</form>\n"
 	}
 	for _, page := range []string{"/?project=ai-software-factory-code&view=wide", "/?project=ai-software-factory-code"} {
@@ -797,7 +886,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 			`<div class="choices" role="group" aria-label="Answer with one click, posted on the issue as you">` + "\n" +
 			choice("a replica") + choice("a shard") + choice("both") +
 			`<button type="button" class="own-toggle" aria-expanded="false" aria-controls="own-t-ch">Or in your words</button>` + "\n</div>\n" +
-			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" hx-target="#note" hx-swap="innerHTML" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
+			`<form method="post" action="/tasks/t-ch/answer" hx-post="/tasks/t-ch/answer" data-to="running" class="own" id="own-t-ch" hidden>` + "\n" + filter + "\n" +
 			`<label for="answer-t-ch">Or your own answer, posted on the issue as you</label>` + "\n" +
 			`<textarea id="answer-t-ch" name="answer" rows="3" maxlength="4000" required hx-preserve></textarea>`
 		if !strings.Contains(esc, want) {
@@ -808,7 +897,7 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 		}
 		plain := escalationOf(t, body, "t-plain")
 		if strings.Contains(plain, `class="choices"`) || strings.Contains(plain, `name="answer" value=`) ||
-			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer" hx-post="/tasks/t-plain/answer" hx-target="#note" hx-swap="innerHTML" data-to="running">`) ||
+			!strings.Contains(plain, `<p class="reason">The agent asks: which port?</p>`+"\n"+`<form method="post" action="/tasks/t-plain/answer" hx-post="/tasks/t-plain/answer" data-to="running">`) ||
 			!strings.Contains(plain, `<label for="answer-t-plain">Your answer, posted on the issue as you</label>`) {
 			t.Errorf("%s: the escalation of t-plain =\n%s\nwant the text box alone", page, plain)
 		}
@@ -948,7 +1037,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 		if strings.Contains(page, "view=wide") {
 			filter += `<input type="hidden" name="view" value="wide">`
 		}
-		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" hx-target="#note" hx-swap="innerHTML" class="inline close" data-to="off">` + filter +
+		idleClose := `<form method="post" action="/tasks/t-idle/close" hx-post="/tasks/t-idle/close" class="inline close" data-to="off">` + filter +
 			`<textarea name="note" rows="1" maxlength="4000" required aria-label="note, posted on the issue as you"></textarea><button type="submit" class="deny" aria-label="Close #41 with a note">Close with note</button></form>`
 		idle := faceOf(t, body, "t-idle")
 		if !strings.Contains(idle, idleClose) {
@@ -963,7 +1052,7 @@ func TestAskingCardClosesOnANoteWithoutAConfirm(t *testing.T) {
 			}
 		}
 		q := escalationOf(t, body, "t-q")
-		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" hx-target="#note" hx-swap="innerHTML" class="inline close" data-to="closed">` + "\n" + filter + "\n" +
+		oneClick := `<form method="post" action="/tasks/t-q/close" hx-post="/tasks/t-q/close" class="inline close" data-to="closed">` + "\n" + filter + "\n" +
 			`<button type="submit" class="deny" aria-label="End the card">End the card</button></form>`
 		if !strings.Contains(q, oneClick) {
 			t.Errorf("%s: the question's End-the-card choice is not a one-click close:\n%s", page, q)
@@ -1363,4 +1452,31 @@ func TestAskLessAndQuestionLessCardsKeepTheirForms(t *testing.T) {
 		t.Errorf("the note = %q, want it on the issue", got)
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
+}
+
+// A plan that filed its cards ends done as a compact row; a named plan's
+// row carries the same chip as its live face, an unnamed plan's row none.
+func TestDonePlanRowCarriesTheName(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Track: "plan", Process: "spec", Objective: "Link shortener",
+			Repository: "linkshort/linkshort", IssueNumber: 1, PlanName: "fix prod latency"}},
+	}
+	get := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	face := faceOf(t, get(), "t-plan")
+	if !strings.Contains(face, "face final") || !strings.Contains(face, `<span class="chip plan">#1 · fix prod latency</span>`) {
+		t.Errorf("a named plan's done row lacks its chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	if face := faceOf(t, get(), "t-plan"); strings.Contains(face, "chip plan") {
+		t.Errorf("an unnamed plan's done row carries a chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName, r.tasks.tasks[0].IssueNumber = "fix prod latency", 0
+	if face := faceOf(t, get(), "t-plan"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) || strings.Contains(face, "#0") {
+		t.Errorf("a named plan without an issue number lacks the bare name or shows #0:\n%s", face)
+	}
 }

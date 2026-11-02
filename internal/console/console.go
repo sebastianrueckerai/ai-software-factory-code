@@ -128,6 +128,10 @@ type Tasks interface {
 	// bounds mark the agent's own raise, checked under a lock on e's
 	// repository (*factoryd.PoolSpentError, *factoryd.CardCapError).
 	FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (from, to float64, err error)
+	// ExtendCard raises task id's caps — its granted sessions, its line
+	// bound and its budget — and writes e, the raise's card_extended row,
+	// in one transaction.
+	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -206,9 +210,9 @@ type Config struct {
 	// so every Record fans out without polling the table (factoryd.EventBus).
 	Bus *factoryd.EventBus
 	// AnswerPlan signals a plan task's workflow with a writer's answer to
-	// one question of the revision that waits for its answers
-	// (factoryd.AnswerPlan).
-	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, answer, by string) error
+	// one question of the revision that waits for its answers, the
+	// confirmation's decision with its findings (factoryd.AnswerPlan).
+	AnswerPlan func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error
 	// AnswerPlanQuestions signals a plan task's workflow with every answer
 	// of one turn at once (factoryd.AnswerPlanQuestions).
 	AnswerPlanQuestions func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error
@@ -334,6 +338,9 @@ type Config struct {
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat
 	Operator *factoryd.OperatorModel
+	// Web is the chat's web door (nil = the chat reaches no web): the
+	// web_search and web_scrape tools call it on the chat task's account.
+	Web Web
 	// Notes are the projects' scratchpads (factoryd.PGStore); nil: the
 	// chat's notes tools say there is none.
 	Notes Notes
@@ -343,10 +350,11 @@ type Config struct {
 	// EscalateToHuman); nil: the escalate tool says the factory files
 	// none.
 	Escalate func(ctx context.Context, repository string, question factoryd.HumanQuestion, by string) (int64, error)
-	// AttachAnalysis records what the chat agent found about a card's
-	// open ask inside the ask itself (factoryd.PGStore.AttachAnalysis);
-	// nil: the attach_analysis tool says the factory records none.
-	AttachAnalysis func(ctx context.Context, repository, taskID, found, recommendation, by string) error
+	// AttachAnalysis records what the chat agent found about card taskID's
+	// open ask inside the ask itself, and e, its analysis_attached row
+	// with the findings added (factoryd.PGStore.AttachAnalysis); nil: the
+	// attach_analysis tool says the factory records none.
+	AttachAnalysis func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error
 	// Mirrors are the projects' GitHub exports; nil offers none.
 	Mirrors Mirrors
 	// Routines are the projects' routines; nil offers no routine act.
@@ -369,6 +377,9 @@ type Config struct {
 	// Messengers carries the Telegram webhook (roadmap 145); nil and the
 	// console answers no /messengers route.
 	Messengers *Messengers
+	// ChatTokens keeps the chat tokens of the humans' local agents
+	// (factoryd.PGStore); nil and the page offers none.
+	ChatTokens ChatTokens
 }
 
 // Console is the console's http.Handler.
@@ -428,6 +439,10 @@ type session struct {
 	// seen is when last_seen was moved last; it moves at most once a
 	// minute.
 	seen time.Time
+	// chatToken is the chat token that opened this session, tokenName its
+	// name; 0 for a cookie or a wake.
+	chatToken int64
+	tokenName string
 }
 
 // getRoute is a GET route of the console with its handler, and the chat
@@ -447,7 +462,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
-		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level"},
+		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level and makes no chat token"},
 		{"GET /messengers/discord/start", c.discordStart, "", "Discord's OAuth2 start: the messengers carry no chat"},
 		{"GET /messengers/discord/callback", c.discordCallback, "", "Discord's OAuth2 callback: the messengers carry no chat"},
 		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
@@ -494,15 +509,21 @@ func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
 	routines := func() bool { return c.cfg.Routines != nil }
 	messengers := func() bool { return c.cfg.Messengers != nil }
+	tokens := c.chatTokensOn
+	chatDoor := func() bool { return c.cfg.ChatTokens != nil && c.cfg.Chat != nil }
 	return []postRoute{
 		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
+		{"POST /mcp", c.bearer(c.mcpHandler()), chatDoor},
 		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
 		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
 		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},
+		{"POST /notifications/tokens", http.HandlerFunc(c.makeChatToken), tokens},
+		{"POST /notifications/tokens/revoke", http.HandlerFunc(c.revokeChatToken), tokens},
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},
 		{"POST /tasks/{id}/fund", http.HandlerFunc(c.fundCard), nil},
+		{"POST /tasks/{id}/extend", http.HandlerFunc(c.extendCard), nil},
 		{"POST /tasks/{id}/summary", http.HandlerFunc(c.setSummary), nil},
 		{"POST /tasks/{id}/accent", http.HandlerFunc(c.setAccent), nil},
 		{"POST /cards/{id}/thread", http.HandlerFunc(c.cardThreadStart), nil},
@@ -524,7 +545,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /resources/{id}/release", c.resourceButton(c.doReleaseResource), nil},
 		{"POST /projects", http.HandlerFunc(c.createProject), nil},
 		{"POST /projects/{name}/merge", http.HandlerFunc(c.mergeProject), nil},
-		{"POST /alerts/{id}/verdict", http.HandlerFunc(c.verdict), nil},
 		{"POST /projects/{name}/chat", http.HandlerFunc(c.chatPost), nil},
 		{"POST /projects/{name}/chat/stop", http.HandlerFunc(c.chatStopPost), nil},
 		{"POST /projects/{name}/chat/new", http.HandlerFunc(c.chatNew), nil},
@@ -564,6 +584,18 @@ func New(cfg Config) (*Console, error) {
 	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
+	}
+	if cfg.Events != nil {
+		cfg.Events = stampedEvents{cfg.Events}
+	}
+	if cfg.Tasks != nil {
+		cfg.Tasks = stampedTasks{cfg.Tasks}
+	}
+	if cfg.Chat != nil {
+		cfg.Chat = stampedChat{cfg.Chat}
+	}
+	if cfg.AttachAnalysis != nil {
+		cfg.AttachAnalysis = stampedAttach(cfg.AttachAnalysis)
 	}
 	c := &Console{cfg: cfg, tmpl: tmpl, mux: http.NewServeMux(), runs: map[string]*projectRun{}, turns: newTurnGate(), stops: newStopGate(), ended: make(chan struct{})}
 	gets, err := c.getRoutes()

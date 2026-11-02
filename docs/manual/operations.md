@@ -285,7 +285,9 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.activity.open_age{activity}`: the age of the oldest running
   activity per name.
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
-  `open` for no verdict yet.
+  `open` for no verdict yet. A machine (screening, the supervisor, a task's
+  outcome) or the project agent's `alert_verdict` tool sets the verdict; no
+  console page does.
 
 Task analytics, counted where they happen and exported as
 deltas (`Providers.Analytics`): SigNoz sums a delta series, so a series'
@@ -294,8 +296,8 @@ increase over a cumulative series drops. A panel sums them over the
 factoryd pods:
 
 The four task metrics below also carry `process` and `track` from the
-task row (`none` where it holds none: a human-lane task, the console's
-alert verdict click, a roll's process); a report task carries its
+task row (`none` where it holds none: a human-lane task, a human-confirmed
+alert verdict, a roll's process); a report task carries its
 parent's.
 
 - `factory.task.outcome{project,state,model_alias,attempts,merge_rule,process,track}`:
@@ -327,8 +329,9 @@ parent's.
   pull request without a merge), `escalation_answer` (a writer's new
   comment on a task waiting for a human, or waiting for its poster),
   `poster_answer` (the poster's new comment on a task waiting for the
-  poster); `alert_verdict_click` from the console, and `extra_time` when
-  a human's answer raised the task's agent time. Uncounted: a human merging
+  poster); `alert_verdict_click` from a verdict a human confirmed in the chat (the
+  agent's own are not counted), and
+  `extra_time` when a human's answer raised the task's agent time. Uncounted: a human merging
   a factory pull request in Forgejo directly, resource approvals.
 - `factory.task.reverted{project}`: the daily revert pass (at boot, then
   every 24 hours) sets `tasks.reverted_at` on a done agent task (a pull
@@ -562,7 +565,8 @@ roll watcher records the rows. The merge waits for a session gap (ruling
 every running session. `AwaitSessionGap` holds new sessions (a
 `roll_holds` row) and polls every 15 s until no session runs in factoryd,
 the roll's own aside, or until the longest agent time in force (limits,
-classes, processes, projects) plus 30 minutes, when it merges anyway and
+classes, processes, projects), as a large card holds it (one and a
+half), plus 30 minutes, when it merges anyway and
 logs so; steps `roll_waiting` (the live tasks) and `roll_gap`
 (`waited_s`). Every code and plan session first waits in `AwaitRollHold`
 while a hold is in force, before its agent time starts (one `held` step;

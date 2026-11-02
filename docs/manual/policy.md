@@ -84,10 +84,13 @@ intake, the approvers, the bounds of the other activities,
 `envelope_default` and `project_default`.
 
 `limits` in `policy.yaml`: `sessions` (the round cap, 3), `agent_time`
-(2h, the wall-clock cap across a task's sessions, at most 72h),
+(2h, the wall-clock cap across a task's sessions, at most 72h; a sized
+card gets half of it when small and one and a half when large),
 `supervisor_calls` (6, decides nothing since plan E, kept so a pinned
 policy loads), `checkin_calls` (20, also when absent: the model calls of
-one check-in conversation, the last without tools), `checkin_share` (10,
+one check-in conversation, the last without tools), `checkin_time` (5m,
+also when absent: how long one check-in conversation may run before its
+ask goes to a human, 1m to 30m), `checkin_share` (10,
 also when absent: the percent of the card's budget all its check-ins may
 spend), `supervisor_timeout` (6m per supervisor or review call, at most
 15m), `review_diff_kib` (48, also when absent, at most 1024: the size of
@@ -104,7 +107,7 @@ running session the message "You repeated the same call three times
 (<tool>). Change approach, then continue." and a `nudge` timeline step,
 once per repetition, counted only when the session took it; the next such
 run trips `same_call` to the check-in. A harness without messages gets the redirect with that text,
-decided in code. The activity bound of `RunSession` is the agent time plus a minute, of
+decided in code. The activity bound of `RunSession` is a large card's agent time (one and a half of `agent_time`) plus a minute, of
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 
@@ -378,7 +381,7 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   repository). `factoryd-project` also carries registration's Secrets and
   is never bound in a seed namespace.
 - `analyze_image` (exactly one of `path` and `card_image`, an optional
-  `ask` of at most 2000 bytes): free, listed as `analyze_image: {}` by a
+  `ask` of at most 2000 characters): free, listed as `analyze_image: {}` by a
   class that names `vision_model` (the loader refuses one without). The
   look is one call of the class's vision alias on the card's account
   (purpose `vision`, the chat's door): it books as a model call and the
@@ -401,6 +404,25 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   session, a session's worker from before the read, comments past 1 MiB,
   a class without `vision_model`, or a refused hold, 413, 415, 502 a read
   or the model did not answer), the agent's tool error.
+- `digest` (`path`, required, at most 4096 bytes, and an optional `ask`
+  of at most 2000 characters; none asks for a summary): free, listed as
+  `digest: {}`, and needs no model key: the call is one Small call on the
+  card's account (purpose `digest`, the chat's `OperatorModel.Digest`),
+  booked as a model call. Only its answer enters the session, labelled
+  `path: answer`; the file's bytes never do. The gateway checks the
+  arguments and posts the digest to factoryd's `POST /internal/digest`
+  (bearer `gateway-factoryd`, `{task_id, path, ask}`), which answers
+  `{"text"}`. The `path` is a file of the running session's workspace,
+  absolute under `/workspace` or relative to the repository, which
+  factoryd asks the pod's worker for (`POST /file` under the session's
+  message bearer), through the same `os.Root` open as `POST /image`. The
+  file must be UTF-8 text without a NUL byte, not empty, of at most
+  128 KiB (`policy.MaxDigestBytes`); a bigger one refuses naming the read
+  tool's offset and limit. A refusal is one sentence (400, 403 outside the
+  workspace, 404 no such file, 409 a final task, no live session, a
+  session's worker from before the read, or a refused hold, 413, 415, 502
+  a read or the model did not answer, or the model answered nothing), the
+  agent's tool error.
 - `request_tool` (`tool`, 1 to 80 characters, and `need`, 1 to 600; both
   required, each one line without control characters): free, through the
   class's tool list (`request_tool: {}`), never a tool card's session; a

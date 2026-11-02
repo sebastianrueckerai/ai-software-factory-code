@@ -369,6 +369,14 @@ func main() {
 		Timeline: runner.Timeline(), OpenBao: registrar.OpenBao}
 	runner.Imager = imager
 	go imager.Run(ctx, time.Minute)
+	// a plan is named when its first revision files; the open plans this
+	// build inherits are named once now, off the startup path
+	runner.Namer = &factoryd.Namer{Store: store, Model: supervisorModel(gatewayURL, gatewayToken), Current: policyLoader.Current}
+	go func() {
+		sweepCtx, cancel := context.WithTimeout(ctx, 60*time.Second)
+		defer cancel()
+		runner.Namer.NameOpenPlans(sweepCtx)
+	}()
 	if err := taskWorker.Start(); err != nil {
 		log.Fatalf("temporal worker: %v", err)
 	}
@@ -383,6 +391,7 @@ func main() {
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			runner.CriteriaPass(ctx)
 			runner.RevertPausePass(ctx)
+			runner.ImpassePass(ctx)
 			if err := releases.Pass(ctx); err != nil {
 				log.Printf("release pass: %v", err)
 			}
@@ -413,10 +422,14 @@ func main() {
 		}
 	}()
 	go completion.SettleLoop(ctx, time.Minute)
+	capWaits := &factoryd.CapWaits{Store: store, Signal: func(ctx context.Context, taskID string) error {
+		return inner.SignalRunning(ctx, taskID, factoryd.SignalPolicyLoaded)
+	}}
+	policyLoader.Wake = capWaits.Wake
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
-		Timeline: runner.Timeline()}
+		Timeline: runner.Timeline(), Metrics: metrics}
 	go monthAlarm.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics, Runs: store}
 	go ciRuns.Run(ctx)
@@ -490,6 +503,9 @@ func main() {
 	// on the card's account
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
 	mux.Handle("POST /internal/image-look", requireBearer(gatewayToken, runner.ImageLookHandler(operator)))
+	// the gateway's hand-over of a session's digest: the chat's Small
+	// digest, on the card's account
+	mux.Handle("POST /internal/digest", requireBearer(gatewayToken, runner.DigestHandler(operator)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {
@@ -595,8 +611,8 @@ func main() {
 		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
 			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
 		},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
-			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, answer, by)
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
+			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, decision, answer, by)
 		},
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, workflows, taskID, revision, answers, by)
@@ -655,6 +671,7 @@ func main() {
 		Steer:          runner.MessageSession,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
+		ChatTokens:     store,
 		Notes:          store,
 		Escalate: func(ctx context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
 			repo, err := factoryd.SplitRepo(repository)
@@ -666,6 +683,7 @@ func main() {
 		},
 		AttachAnalysis: store.AttachAnalysis,
 		Operator:       operator,
+		Web:            &factoryd.WebTools{GatewayURL: gatewayURL, Token: gatewayToken},
 		Mirrors: struct {
 			*factoryd.PGStore
 			*factoryd.Forgejo

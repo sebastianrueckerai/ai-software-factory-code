@@ -315,7 +315,7 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, "m1", 1, "", nil); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, 1, "", nil); err != nil {
 		t.Fatal(err)
 	}
 	if got := cardsByKey(t, store)[p.Cards[1].Key]; got.ID == "" || got.Image != "" {
@@ -326,8 +326,8 @@ func TestFileChildrenStoresDefaultAsNoImage(t *testing.T) {
 // A revision's card whose from names an old card with no row of its own
 // key starts from that card's work: it files at the old card's base, its
 // branch is the old card's head before its issue exists, and its brief
-// says so. A from whose branch is gone files at main's head and says that
-// instead, with no copy. A keyless from, the plan card's own work after a
+// says so. A from whose branch is gone files with no base stamp, its first
+// session's start at main's head, and says that instead, with no copy. A keyless from, the plan card's own work after a
 // direct card's cut, continues the plan's branch.
 func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 	ctx := context.Background()
@@ -357,7 +357,7 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 		if err != nil {
 			t.Fatal(err)
 		}
-		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, "m1", 2, ReplanPerson, old)
+		cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #40", Plan{Summary: "s", Cards: []PlanCard{c}}, FactoryDecider, true, 2, ReplanPerson, old)
 		if err != nil || len(cards) != 1 {
 			t.Fatalf("fileChildren = %+v, %v", cards, err)
 		}
@@ -382,7 +382,7 @@ func TestFileChildrenContinuesTheOldBranch(t *testing.T) {
 
 	card, fj = file(t, map[string]string{}, ui2)
 	gone := "The branch of #31 is gone: start from main."
-	if card.SHA != "m1" || !strings.Contains(card.Objective, gone) || strings.Contains(card.Objective, "Starts from") {
+	if card.SHA != "" || !strings.Contains(card.Objective, gone) || strings.Contains(card.Objective, "Starts from") {
 		t.Fatalf("ui2 without ui's branch filed at %q with:\n%s", card.SHA, card.Objective)
 	}
 	if slices.ContainsFunc(fj.calls, func(c string) bool {
@@ -431,7 +431,7 @@ func TestRestartChildrenKeepsTheStartLine(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, "m1", 1, "", old); err != nil {
+	if _, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", filed, FactoryDecider, true, 1, "", old); err != nil {
 		t.Fatal(err)
 	}
 	next := Plan{Summary: "three", Cards: []PlanCard{

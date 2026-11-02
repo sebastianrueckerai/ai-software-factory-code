@@ -95,7 +95,7 @@ func TestMemberSeesTheirProjectsOnly(t *testing.T) {
 			t.Errorf("GET %s as bob = %d, want 403", path, rec.Code)
 		}
 	}
-	for _, path := range []string{"/tasks", "/alerts/1/verdict", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
+	for _, path := range []string{"/tasks", "/resources/1/promote", "/resources/1/release", "/projects", "/projects/demo/merge"} {
 		if rec := r.do(post(path, url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "project": {"ai-software-factory-code"}, "title": {"x"},
 			"track": {"direct"}}), ck); rec.Code != http.StatusForbidden {
 			t.Errorf("POST %s as bob = %d, want 403", path, rec.Code)
@@ -177,7 +177,7 @@ func TestInvite(t *testing.T) {
 	g.replies = [][]string{{call(1, "invite", `{"login":"dave"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"invite dave"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":{"login":"dave"},"description":"Invite a human, login dave","id":"TOKEN","tool":"invite"}`, `done {}`})
+		`proposal {"arguments":{"login":"dave"},"description":"Invite a human, login dave","expires":"EXPIRES","id":"TOKEN","tool":"invite"}`, `done {}`})
 	if len(r.invited) != 0 {
 		t.Fatalf("a proposal invited %v", r.invited)
 	}

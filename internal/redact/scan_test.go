@@ -2,6 +2,7 @@ package redact
 
 import (
 	"slices"
+	"strings"
 	"testing"
 )
 
@@ -136,5 +137,20 @@ func TestDiffSecrets(t *testing.T) {
 	}
 	if got := New(DiffSecrets(plantedDiff)...).String("it quotes hunter2hunter2 and envpass0001"); got != "it quotes [redacted] and [redacted]" {
 		t.Fatalf("scrubbed = %q", got)
+	}
+}
+
+func TestShapesFindChatToken(t *testing.T) {
+	bearer := "sfc_" + strings.Repeat("aBcD-_", 7) + "a"
+	diff := "diff --git a/x.env b/x.env\n--- /dev/null\n+++ b/x.env\n@@ -0,0 +1 @@\n+KEY=" + bearer + "\n"
+	hits := ScanDiff(diff)
+	if len(hits) != 1 || hits[0] != (Hit{File: "x.env", Line: 1, Kind: KindChatToken}) {
+		t.Fatalf("hits = %+v", hits)
+	}
+	if got := New().String("sent " + bearer + " twice"); got != "sent [redacted] twice" {
+		t.Fatalf("String = %q", got)
+	}
+	if got := New().String("TOKEN_" + bearer); got != "[redacted]" {
+		t.Fatalf("a glued bearer: String = %q", got)
 	}
 }

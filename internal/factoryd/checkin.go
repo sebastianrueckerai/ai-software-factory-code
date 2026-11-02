@@ -143,6 +143,11 @@ type CheckInOutcome struct {
 	Verdicts   map[string]CheckVerdict
 	Remarks    []string       `json:",omitempty"`
 	Record     *CheckInRecord `json:",omitempty"`
+	// Findings and Review are the work state a stop carries when no
+	// judgment ran: the ask's findings and the last review verdict, so a
+	// fabricated stop names the work, not the spend alone
+	Findings []CheckFinding `json:",omitempty"`
+	Review   *Review        `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under
@@ -612,17 +617,27 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // the round runs as if no check-in existed. An answer the runner cannot
 // read gets one repair round and then a human, at once on the last call.
 // The last call carries no tools and asks for the answer; a tool asked
-// for on it is the call cap's human ask under spend. Every call lands in
-// the record.
-func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int) CheckInOutcome {
+// for on it is the call cap's human ask under spend. The conversation
+// ends at timeCap too, a call or a tool in flight cut: the time cap's
+// human ask under spend. Every call lands in the record.
+func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int, timeCap time.Duration) CheckInOutcome {
 	start := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, timeCap)
+	defer cancel()
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
 	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)
 	rec.StatementBytes = len(conv)
+	timeStop := func() CheckInOutcome {
+		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinTimeCapStop
+		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinTimeCapStop, Record: rec}
+	}
 
 	calls, repairs := 0, 0
 	for {
+		if time.Since(start) >= timeCap {
+			return timeStop()
+		}
 		last := calls >= callsLeft-1
 		if last {
 			conv += "\n\nThis is your last call: answer now with the JSON object, no tool."
@@ -637,6 +652,9 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		rec.Calls = append(rec.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: time.Since(at)})
 		rec.CostEUR += resp.UsageEUR
 		if err != nil {
+			if time.Since(start) >= timeCap {
+				return timeStop()
+			}
 			rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+err.Error()
 			return CheckInOutcome{Decision: CheckHandover, Record: rec}
 		}

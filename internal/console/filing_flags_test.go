@@ -184,7 +184,7 @@ func TestNewTaskFilesFlaggedTextAsWritten(t *testing.T) {
 	// the File as written button: the text filed as it stands
 	before := ev.count()
 	if rec = submit("as_written", "yes"); rec.Code != http.StatusSeeOther ||
-		rec.Header().Get("Location") != "/?filed=41&project=ai-software-factory-code" {
+		rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("File as written = %d to %q: %s", rec.Code, rec.Header().Get("Location"), rec.Body)
 	}
 	if len(r.fg.issues) != 1 || r.fg.issues[0]["body"] != "It drops entries.\nThis fixes #12.\n\nSize: small" {

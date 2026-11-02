@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -60,10 +61,27 @@ type fakeForgejo struct {
 	comments  map[string]string // path -> body
 	expiresIn int
 	refuse    bool            // token endpoint answers 400
+	noRefresh bool            // token endpoint answers no refresh token
 	failEdit  bool            // issue PATCHes answer 500
 	spent     map[string]bool // refresh tokens used once: Forgejo invalidates them on use
 	tokenN    int
 	failAPI   bool
+	revoked   string // the Forgejo token whose every API call answers 401
+	// tokens maps a Forgejo token to its login for /user; the token
+	// probes answer 200 where adminReach or notificationReach is set, else
+	// 403, as a token of read:user, write:repository and write:issue gets
+	tokens            map[string]string
+	adminReach        bool
+	notificationReach bool
+	probeStatus       int // when set, the probes answer it
+	// lacks is the write scope a token misses on the write probes, each a
+	// POST of [], which Forgejo answers 403 without the scope and 422 with
+	// it, as it judges the scope before it binds the body; probeFiles
+	// answers them 201, as if Forgejo filed something; probes are the
+	// probes asked, "path body"
+	lacks      string
+	probeFiles bool
+	probes     []string
 
 	reviews    []map[string]string
 	failReview bool
@@ -77,6 +95,7 @@ type fakeForgejo struct {
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
 	pullHead string            // PR 9's current head; empty answers no pull read
+	pullDiff string            // PR 9's diff; empty answers the short fixture
 	// posted are the comment bodies per path, in the order they came
 	posted map[string][]string
 	// scene is a lab scene's repository, answered after the rig's own:
@@ -84,6 +103,10 @@ type fakeForgejo struct {
 	// makes it a card
 	scene string
 	file  func(issue map[string]any) int64
+	// trees are the git trees answers by ref, raw JSON; archives the
+	// tarball answers by ref
+	trees    map[string]string
+	archives map[string][]byte
 }
 
 // asset is an upload as Forgejo's asset endpoints read it: the query's name
@@ -134,18 +157,63 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		f.tokenN++
-		json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("access-%d", f.tokenN),
-			"refresh_token": fmt.Sprintf("refresh-%d", f.tokenN), "token_type": "bearer", "expires_in": f.expiresIn})
+		answer := map[string]any{"access_token": fmt.Sprintf("access-%d", f.tokenN),
+			"refresh_token": fmt.Sprintf("refresh-%d", f.tokenN), "token_type": "bearer", "expires_in": f.expiresIn}
+		if f.noRefresh {
+			delete(answer, "refresh_token")
+		}
+		json.NewEncoder(w).Encode(answer)
 		return
 	}
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+	if f.revoked != "" && r.Header.Get("Authorization") == "Bearer "+f.revoked {
+		http.Error(w, `{"message":"token is required"}`, http.StatusUnauthorized)
+		return
+	}
 	if f.failAPI {
 		http.Error(w, "boom", http.StatusForbidden)
 		return
 	}
+	if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/issues") || strings.HasSuffix(r.URL.Path, "/pulls")) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if string(body) == "[]" {
+			f.probes = append(f.probes, r.URL.Path+" "+string(body))
+			scope := "write:repository"
+			if strings.HasSuffix(r.URL.Path, "/issues") {
+				scope = "write:issue"
+			}
+			switch {
+			case f.lacks == scope:
+				http.Error(w, `{"message":"token does not have at least one of required scope(s): [`+scope+`]"}`, http.StatusForbidden)
+			case f.probeFiles:
+				w.WriteHeader(http.StatusCreated)
+				io.WriteString(w, `{"number":43}`)
+			default:
+				http.Error(w, `[{"classification":"DeserializationError","message":"json: cannot unmarshal array into Go value of type api.CreateIssueOption"}]`,
+					http.StatusUnprocessableEntity)
+			}
+			return
+		}
+	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
-		json.NewEncoder(w).Encode(map[string]any{"login": f.user})
+		login, known := f.tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if f.tokens != nil && !known {
+			http.Error(w, `{"message":"token is required"}`, http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"login": cmp.Or(login, f.user)})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/users", r.Method == http.MethodGet && r.URL.Path == "/api/v1/notifications":
+		if f.probeStatus != 0 {
+			http.Error(w, "boom", f.probeStatus)
+			return
+		}
+		if r.URL.Path == "/api/v1/admin/users" && f.adminReach || r.URL.Path == "/api/v1/notifications" && f.notificationReach {
+			w.Write([]byte(`[]`))
+			return
+		}
+		http.Error(w, `{"message":"token does not have required scope"}`, http.StatusForbidden)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/labels":
 		// two a page, as a Forgejo whose MAX_RESPONSE_ITEMS is below the
 		// limit asked for; an empty page ends the list
@@ -189,6 +257,22 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		pages := map[string]string{"1": `[{"filename":"a.go","status":"modified","additions":40,"deletions":3},` +
 			`{"filename":"b.go","status":"modified","additions":5,"deletions":5}]`}
 		w.Write([]byte(cmp.Or(pages[r.URL.Query().Get("page")], "[]")))
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/git/trees/"):
+		// the recursive tree of a ref, raw JSON, by the ref's name
+		if body, ok := f.trees[strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/git/trees/")]; ok {
+			w.Write([]byte(body))
+		} else {
+			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
+		}
+	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/archive/"):
+		// the tarball of a ref, by the ref's name without .tar.gz
+		ref := strings.TrimSuffix(strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/archive/"), ".tar.gz")
+		if body, ok := f.archives[ref]; ok {
+			w.Header().Set("Content-Type", "application/gzip")
+			w.Write(body)
+		} else {
+			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
+		}
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/"):
 		// the files at main, by their escaped paths
 		files := map[string]string{"README.md": strings.Repeat("r", 1200), "bin/x": "\x00" + strings.Repeat("b", 99),
@@ -289,7 +373,7 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		sha := strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/code/commits/"), "/status")
 		io.WriteString(w, cmp.Or(f.statuses[sha], `{"state":"","statuses":null}`))
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/pulls/9.diff":
-		io.WriteString(w, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n")
+		io.WriteString(w, cmp.Or(f.pullDiff, "diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n"))
 	default:
 		http.NotFound(w, r)
 	}
@@ -359,6 +443,30 @@ func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds
 		return 0, 0, err
 	}
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	if _, err := s.events.Record(ctx, e); err != nil {
+		s.RaiseTaskBudget(ctx, id, -eur)
+		return 0, 0, err
+	}
+	return from, to, nil
+}
+
+// ExtendCard raises task id's caps and records e, both or neither, as the
+// store's one transaction does.
+func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
+	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.mu.Lock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].Usage.RaisedSessions += sessions
+			s.tasks[i].Usage.ExtraLines += lines
+		}
+	}
+	s.mu.Unlock()
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
 	if _, err := s.events.Record(ctx, e); err != nil {
 		s.RaiseTaskBudget(ctx, id, -eur)
 		return 0, 0, err
@@ -473,18 +581,29 @@ func (s *fakeTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdo
 	return slices.Clone(s.holdouts[id]), nil
 }
 
-// answer is factoryd.PGStore.AnswerPlanQuestion on the fake's questions.
-func (s *fakeTasks) answer(id string, revision, idx int, answer, by string) error {
+// answer is factoryd.AnswerPlanQuestion on the fake's questions: the
+// confirmation is decided, a real question answered, either once.
+func (s *fakeTasks) answer(id string, revision, idx int, decision, answer, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
 	switch {
 	case idx < 1 || idx > len(qs):
 		return factoryd.ErrNotFound
-	case qs[idx-1].Answer != "":
-		return factoryd.ErrAnswered
 	}
-	qs[idx-1].Answer, qs[idx-1].AnsweredBy = answer, by
+	q := &qs[idx-1]
+	confirming := q.Kind == factoryd.QuestionConfirmation
+	switch {
+	case q.Answered():
+		return factoryd.ErrAnswered
+	case !confirming && decision != "":
+		return factoryd.ErrDecisionReserved
+	case confirming && decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise:
+		return factoryd.ErrDecisionRequired
+	case confirming && decision == factoryd.DecisionRevise && strings.TrimSpace(answer) == "":
+		return factoryd.ErrReviseWords
+	}
+	q.Answer, q.Decision, q.AnsweredBy = answer, decision, by
 	return nil
 }
 
@@ -494,7 +613,7 @@ func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, q := range s.questions[fmt.Sprintf("%s %d", id, round)] {
-		if q.Kind == factoryd.QuestionConfirmation && q.Answer != "" {
+		if q.Kind == factoryd.QuestionConfirmation && q.Decision != "" {
 			return factoryd.ErrAnswered
 		}
 	}
@@ -1013,20 +1132,23 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 }
 
 type rig struct {
-	c         *Console
-	fg        *fakeForgejo
-	tasks     *fakeTasks
-	writers   *fakeWriters
-	objects   fakeObjects
-	ledger    *fakeLedger
-	approvals *fakeApprovals
-	resources *fakeResources
-	alerts    *fakeAlerts
-	projects  *fakeProjects
-	sessions  *fakeSessions
-	events    *fakeEvents
-	chat      *fakeChat
-	// gateway is the lab's scripted model, nil in the tests
+	c          *Console
+	fg         *fakeForgejo
+	tasks      *fakeTasks
+	writers    *fakeWriters
+	objects    fakeObjects
+	ledger     *fakeLedger
+	approvals  *fakeApprovals
+	resources  *fakeResources
+	alerts     *fakeAlerts
+	projects   *fakeProjects
+	sessions   *fakeSessions
+	events     *fakeEvents
+	chat       *fakeChat
+	chatTokens *fakeChatTokens
+	// web is the chat's fake web door; the gateway is the lab's scripted
+	// model, nil in the tests
+	web     *fakeWeb
 	gateway *chatGateway
 	// infra is the lab's configuration tree, nil in the tests
 	infra    *infraFake
@@ -1125,7 +1247,8 @@ func newRig(t *testing.T) *rig {
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.tasks.events = r.events
-	r.chat = &fakeChat{tasks: r.tasks}
+	r.chatTokens = &fakeChatTokens{}
+	r.chat = &fakeChat{tasks: r.tasks, chatTokens: r.chatTokens}
 	r.sessions = newFakeSessions()
 	c, err := New(Config{
 		Metrics:   metrics,
@@ -1138,7 +1261,7 @@ func newRig(t *testing.T) *rig {
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
 		},
-		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,
+		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, ChatTokens: r.chatTokens, Mirrors: r.mirrors, Routines: r.routines,
 		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
@@ -1165,11 +1288,11 @@ func newRig(t *testing.T) *rig {
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL changes_requested %s #%d by %s: %s", taskID, pr, by, words))
 			return r.signalErr
 		},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
 			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
-			if err := r.tasks.answer(taskID, revision, idx, answer, by); err != nil {
+			if err := r.tasks.answer(taskID, revision, idx, decision, answer, by); err != nil {
 				return err
 			}
 			fg.mu.Lock()
@@ -1182,7 +1305,7 @@ func newRig(t *testing.T) *rig {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
 			for _, a := range answers {
-				if err := r.tasks.answer(taskID, revision, a.Idx, a.Text, by); err != nil {
+				if err := r.tasks.answer(taskID, revision, a.Idx, a.Decision, a.Text, by); err != nil {
 					return err
 				}
 			}
@@ -1854,13 +1977,12 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 	for _, tc := range []struct {
 		project, track, priority, body, size string
 		labels                               []any
-		filed                                string
 	}{
-		{"ai-software-factory-code", "direct", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}, "41"},
-		{"ai-software-factory-code", "human", "priority/p1", "details", "", []any{2.0, 7.0}, "41"},
-		{"linkshort", "plan", "", "details\n\nAcceptance:\n- It works", "small", []any{24.0}, "42"},
-		{"linkshort", "direct", "", "details", "", []any{21.0}, "42"},
-		{"linkshort", "human", "", "details", "", []any{22.0}, "42"},
+		{"ai-software-factory-code", "direct", "", "details\n\nAcceptance:\n- It works", "small", []any{1.0}},
+		{"ai-software-factory-code", "human", "priority/p1", "details", "", []any{2.0, 7.0}},
+		{"linkshort", "plan", "", "details\n\nAcceptance:\n- It works", "small", []any{24.0}},
+		{"linkshort", "direct", "", "details", "", []any{21.0}},
+		{"linkshort", "human", "", "details", "", []any{22.0}},
 	} {
 		wantBody := tc.body
 		if tc.size != "" {
@@ -1869,7 +1991,7 @@ func TestNewTaskFilesTheIssueAsTheHumanWithTheTrackLabel(t *testing.T) {
 		r.fg.issues, r.fg.calls = nil, nil
 		rec := r.do(post("/tasks", url.Values{"csrf": {s.csrf}, "project": {tc.project}, "title": {" Fix the cache "}, "body": {tc.body},
 			"track": {tc.track}, "priority": {tc.priority}, "size": {tc.size}}), ck)
-		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?filed="+tc.filed+"&project="+tc.project {
+		if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project="+tc.project {
 			t.Fatalf("%s %s: POST /tasks = %d to %q: %s", tc.project, tc.track, rec.Code, rec.Header().Get("Location"), rec.Body)
 		}
 		got := r.fg.issues[0]
@@ -2099,6 +2221,27 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 	}
 }
 
+// An answer to a card whose session floor refuses at the month cap, or at
+// the project's, is taken the same way: the cap resets on its own.
+func TestAnswerTakenAtAMonthCap(t *testing.T) {
+	for _, why := range []string{
+		"the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free",
+		"the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
+	} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		r.tasks.set("cannot reach the database", []factoryd.Task{
+			{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
+		}...)
+		r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return why, nil }
+		if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
+			t.Fatalf("answer at %q = %d %s, %d comments; want it taken", why[:30], rec.Code, rec.Body, len(r.fg.comments))
+		}
+	}
+}
+
 func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	r := newRig(t)
 	r.fg.expiresIn = 30 // under the one-minute margin
@@ -2127,8 +2270,35 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	}
 }
 
+// A token endpoint answer without a refresh token is refused, so every
+// cookie session holds one: the login fails, and a refresh ends the
+// session at once, as a refused refresh does, since the spent refresh
+// token it keeps would refresh nothing.
+func TestTokenAnswerWithoutRefreshTokenIsRefused(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.setTokenExpiry(t, ck, time.Now())
+	r.fg.mu.Lock()
+	r.fg.noRefresh = true
+	r.fg.mu.Unlock()
+
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("a refresh without a refresh token: %d to %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
+	}
+	if len(r.sessions.rows) != 0 {
+		t.Fatal("session kept after a refresh without a refresh token")
+	}
+
+	rows := len(r.sessions.rows)
+	other, cb := r.login(t)
+	if other != nil || cb.Code != http.StatusBadGateway || cb.Body.String() != "login failed at the code exchange\n" || len(r.sessions.rows) != rows {
+		t.Fatalf("the login = %d %q, cookie %v, %d sessions; want 502 login failed at the code exchange and no new session",
+			cb.Code, cb.Body.String(), other, len(r.sessions.rows))
+	}
+}
+
 // setTokenExpiry writes the session row's token expiry, as a token about
-// to run out would have it.
+// to run out would have it; the row keeps its refresh token.
 func (r *rig) setTokenExpiry(t *testing.T, ck *http.Cookie, at time.Time) {
 	t.Helper()
 	hash := sessionIDHash(ck.Value)
@@ -2136,7 +2306,11 @@ func (r *rig) setTokenExpiry(t *testing.T, ck *http.Cookie, at time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.c.cfg.Sessions.UpdateConsoleSessionTokens(context.Background(), hash, sealed, "", at); err != nil {
+	row, ok := r.sessions.row(hash)
+	if !ok {
+		t.Fatal("no session row")
+	}
+	if err := r.c.cfg.Sessions.UpdateConsoleSessionTokens(context.Background(), hash, sealed, row.Refresh, at); err != nil {
 		t.Fatal(err)
 	}
 }
@@ -3154,67 +3328,53 @@ func TestTimelineClosedGateIsNotOpen(t *testing.T) {
 	}
 }
 
-// /alerts lists the alerts newest first; an open human alert takes a
-// verdict from an approver, on the page and on the escalation's card.
-// The alerts page is gone: the open human escalation's verdict buttons
-// ride its board card, and POST /alerts/{id}/verdict keeps its rules.
-func TestAlertVerdicts(t *testing.T) {
+// The agent's verdict tool is the one path that judges an escalation: an
+// unknown verdict is refused, the first verdict on an open escalation takes
+// and counts once as a human intervention, an agent-decided one does not
+// count, a second one and one on a machine alert find no open human alert.
+func TestAlertVerdictAction(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
-	resolved := raised.Add(time.Minute)
+	_, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: raised.Add(2 * time.Hour)},
-		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: "t-e", RaisedAt: raised.Add(time.Hour),
-			ResolvedAt: &resolved, Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor"},
-		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600},
+		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c"},
 	}
-	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
-	r.tasks.tasks[0].EscalationAlert = 3
-	if rec := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck); rec.Code != http.StatusNotFound {
-		t.Errorf("GET /alerts = %d, want 404: the page is gone", rec.Code)
+	a := actor{s: s, via: factoryd.ViaChat}
+	status := func(err error) int {
+		var ref *refusal
+		if errors.As(err, &ref) {
+			return ref.status
+		}
+		return 0
 	}
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Count(board, `action="/alerts/3/verdict"`) != 2 {
-		t.Error("the escalation card lacks the two verdict buttons")
+	ctx := context.Background()
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, "maybe"); status(err) != http.StatusBadRequest {
+		t.Fatalf("an unknown verdict: %v, want 400", err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"maybe"}}), ck); rec.Code != http.StatusBadRequest {
-		t.Fatalf("an unknown verdict = %d, want 400", rec.Code)
+	if note, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictReal); err != nil || note != "Alert 3 is judged real." {
+		t.Fatalf("verdict = %q, %v", note, err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {"/"}}), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
-		t.Fatalf("verdict = %d to %q", rec.Code, rec.Header().Get("Location"))
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+		t.Fatalf("a second verdict: %v, want 409", err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
-		t.Fatalf("a second verdict = %d, want 409", rec.Code)
-	}
-	if rec := r.do(post("/alerts/1/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
-		t.Fatalf("a verdict on a machine alert = %d, want 409", rec.Code)
+	if _, err := r.c.doAlertVerdict(ctx, a, 1, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+		t.Fatalf("a verdict on a machine alert: %v, want 409", err)
 	}
 	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
-}
-
-// Only the factory's approvers judge alerts: no buttons on the board,
-// and a 403.
-func TestAlertVerdictNeedsAnApprover(t *testing.T) {
-	r := newRig(t)
-	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
-	r.forgetWriters()
-	ck, s := r.loggedIn(t)
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Now()}}
-	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
-	r.tasks.tasks[0].EscalationAlert = 3
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Contains(board, "/verdict") {
-		t.Fatal("a non-approver is offered the verdict buttons")
+	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("interventions = %v, want %v", got, want)
 	}
-	for _, v := range []string{"real", "maybe"} {
-		if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {v}}), ck); rec.Code != http.StatusForbidden {
-			t.Fatalf("verdict %q by a non-approver = %d, want 403", v, rec.Code)
-		}
+	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 4, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"})
+	a.decider = "agent"
+	if _, err := r.c.doAlertVerdict(ctx, a, 4, factoryd.VerdictNoise); err != nil {
+		t.Fatal(err)
 	}
-	if len(r.alerts.verdicts) != 0 {
+	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the agent's own verdict, interventions = %v, want %v", got, want)
+	}
+	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian", "4 noise agent"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
 }
@@ -3412,9 +3572,9 @@ func (r *rig) interventions(t *testing.T) map[string]int64 {
 	return out
 }
 
-// The console counts only the verdict click, once, when it took effect:
-// its merge-card decisions act as the human in Forgejo and are counted by
-// the intake, like the same decisions made in Forgejo.
+// The console counts no click of its own: its merge-card decisions act as
+// the human in Forgejo and are counted by the intake, like the same
+// decisions made in Forgejo.
 func TestConsoleCountsInterventions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -3434,13 +3594,8 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("resource approve = %d", rec.Code)
 	}
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for range 2 {
-		r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck)
-	}
-	want := map[string]int64{"alert_verdict_click none none": 1}
-	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
-		t.Fatalf("interventions = %v, want %v", got, want)
+	if got := r.interventions(t); len(got) != 0 {
+		t.Fatalf("interventions = %v, want none", got)
 	}
 }
 

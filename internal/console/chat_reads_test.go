@@ -1,6 +1,9 @@
 package console
 
 import (
+	"archive/tar"
+	"bytes"
+	"compress/gzip"
 	"context"
 	"encoding/json"
 	"errors"
@@ -11,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -192,10 +196,12 @@ func TestChatPlanBuiltFromAnswers(t *testing.T) {
 	r.tasks.plans["t-p"] = append(r.tasks.plans["t-p"], second)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-p 1": {
 		{Text: "Which database?", Choices: []string{"Postgres", "SQLite"}, Answer: "Postgres", AnsweredBy: "sebastian"},
-		{Text: "How long are links kept?", Choices: []string{"30 days", "forever"}, Answer: "30 days", AnsweredBy: "alice"}}}
+		{Text: "How long are links kept?", Choices: []string{"30 days", "forever"}, Answer: "30 days", AnsweredBy: "alice"},
+		{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?", Decision: factoryd.DecisionConfirm, AnsweredBy: "sebastian"}}}
 	r.tasks.mu.Unlock()
 	const summary = "summary: An API, then its web UI.\n"
-	const built = "built from the answers of revision 1:\n1. Which database? -> Postgres (sebastian)\n2. How long are links kept? -> 30 days (alice)\n"
+	const built = "built from the answers of revision 1:\n1. Which database? -> Postgres (sebastian)\n2. How long are links kept? -> 30 days (alice)\n" +
+		"3. Does the plan match the spec? -> confirm (sebastian)\n"
 	equal(t, "revision 2 without questions", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
 		[]string{"revision 2, sha256 6a2b\n" + summary + built + readsPlanRows})
 	r.tasks.mu.Lock()
@@ -320,6 +326,286 @@ var longFile = func() string {
 // its size and the line to read on from, from and to one line-numbered
 // window under the same cap, a range off its lines answered with the line
 // count, a binary file and a path out of the repository refused.
+// A read with an ask answers one digest on the small alias: the digest's
+// input holds the ask and the read's text cut to the read's own limit,
+// and only the labelled answer enters the thread.
+func TestChatFileAskDigests(t *testing.T) {
+	r, g := newReadsRig(t)
+	equal(t, "the asked file reads", reads(t, r, g,
+		"file", `{"ref":"main","path":"README.md","ask":"what is this?"}`,
+		"file", `{"ref":"main","path":"big.txt","ask":"what is big.txt?"}`,
+	), []string{
+		"README.md at main: digest 1",
+		"big.txt at main (the first 64.0 KiB of 70.0 KiB): digest 2",
+	})
+	if len(g.digests) != 2 {
+		t.Fatalf("%d digest calls, want two", len(g.digests))
+	}
+	one := g.digests[0]["messages"].([]any)[0].(map[string]any)
+	if one["role"] != "user" || len(g.digests[0]["messages"].([]any)) != 1 {
+		t.Fatalf("the digest's message = %v", one)
+	}
+	if content := one["content"].(string); !strings.Contains(content, "what is this?") || !strings.Contains(content, strings.Repeat("r", 1200)) {
+		t.Fatalf("the digest's ask and text = %q", content)
+	}
+	content := g.digests[1]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if want := len("what is big.txt?") + 2 + (64 << 10); len(content) != want {
+		t.Fatalf("the digest's text = %d bytes, want %d: the ask, a break, the 64 KiB cut", len(content), want)
+	}
+}
+
+// The ask rides diff, read_doc and session_step like file's: one digest
+// on the small alias, the labelled answer the tool's result.
+func TestChatAskDigestsTheOtherReads(t *testing.T) {
+	r, g := newReadsRig(t)
+	withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	r.objects["sessions/t-r/s-1.jsonl"] = []byte(`{"time":"2026-10-11T10:00:10Z","kind":"tool_call","detail":{"tool":"read","status":"completed","args":{"path":"a.go"},"duration_ms":120}}` + "\n")
+	equal(t, "the asked reads", reads(t, r, g,
+		"diff", `{"task_id":"t-r","ask":"what changed?"}`,
+		"session_step", `{"task_id":"t-r","ask":"what did the session do?"}`,
+	), []string{
+		"the diff of task t-r: digest 1",
+		"session 1 of task t-r: digest 2",
+	})
+	for i, want := range []string{"what changed?\n\ndiff --git", "what did the session do?"} {
+		if content := g.digests[i]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(content, want) {
+			t.Fatalf("digest %d lacks %q: %q", i, want, content)
+		}
+	}
+	_, s := r.loggedIn(t)
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	tool, _ := r.c.chatTool("read_doc")
+	v, _ := r.c.inForce(req.Context())
+	cfg := v.Document.ChatOf(v.Projects["ai-software-factory-code"])
+	cfg.DocRepo = "sf/docs"
+	out, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, cfg: cfg,
+		task: factoryd.ChatTaskID("ai-software-factory-code", time.Now())}, toolInput{Path: "docs/plans/cache.md", Ask: "what is the store?"})
+	if err != nil || out != "docs/plans/cache.md: digest 3" {
+		t.Fatalf("the asked read_doc = %q, %v", out, err)
+	}
+	if content := g.digests[2]["messages"].([]any)[0].(map[string]any)["content"].(string); !strings.Contains(content, "what is the store?\n\n# The cache plan") {
+		t.Fatalf("the read_doc digest's ask and text = %q", content)
+	}
+}
+
+// treeJSON is main's recursive tree: two files, a directory entry and a
+// file under docs.
+const treeJSON = `{"truncated":false,"tree":[
+{"path":"cmd","type":"tree"},
+{"path":"cmd/app.go","type":"blob","size":312},
+{"path":"docs/a.md","type":"blob","size":20},
+{"path":"README.md","type":"blob","size":1200}]}`
+
+// tgz is the tarball the archive endpoint answers: name and body a file.
+func tgz(t *testing.T, files ...[2]string) []byte {
+	t.Helper()
+	var buf bytes.Buffer
+	gz := gzip.NewWriter(&buf)
+	tw := tar.NewWriter(gz)
+	for _, f := range files {
+		if err := tw.WriteHeader(&tar.Header{Name: f[0], Mode: 0o644, Size: int64(len(f[1]))}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := tw.Write([]byte(f[1])); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := tw.Close(); err != nil {
+		t.Fatal(err)
+	}
+	if err := gz.Close(); err != nil {
+		t.Fatal(err)
+	}
+	return buf.Bytes()
+}
+
+// The tree read lists the repository's files at a ref, one line a file,
+// directories without lines of their own; a path prefix narrows it; the
+// cut at 500 lines names the whole count, Forgejo's own truncation with
+// it; and the refusals name a missing ref, an empty one and a path that
+// leaves the repository.
+func TestChatTreeRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.fg.trees = map[string]string{"main": treeJSON}
+	equal(t, "the tree reads", reads(t, r, g,
+		"tree", `{"ref":"main"}`,
+		"tree", `{"ref":"main","path":"docs"}`,
+	), []string{
+		"cmd/app.go 312\ndocs/a.md 20\nREADME.md 1200\n",
+		"docs/a.md 20\n",
+	})
+	// a wide, Forgejo-truncated tree: 502 files, the first 500 shown
+	wide := `{"truncated":true,"tree":[` + strings.TrimSuffix(strings.Repeat(`{"path":"g/x.go","type":"blob","size":1},`, 502), ",") + `]}`
+	r.fg.trees["wide"] = wide
+	if got := reads(t, r, g, "tree", `{"ref":"wide"}`)[0]; !strings.HasPrefix(got, "g/x.go 1\n") ||
+		!strings.HasSuffix(got, "(cut at 500 of 502 files; Forgejo's tree answer is itself truncated)\n") {
+		t.Fatalf("the cut tree = %q", got)
+	}
+	r.fg.trees["bare"] = `{"truncated":false,"tree":[{"path":"cmd","type":"tree"}]}`
+	equal(t, "the empty subtree", reads(t, r, g, "tree", `{"ref":"bare","path":"cmd"}`),
+		[]string{"There are no files under cmd at bare."})
+	var treeRefusals []string
+	var treeStatuses []int
+	for _, in := range []toolInput{{}, {Ref: "nope"}, {Ref: "main", Path: "../x"}} {
+		code, sentence := refused(t, r, "tree", in)
+		treeStatuses = append(treeStatuses, code)
+		treeRefusals = append(treeRefusals, sentence)
+	}
+	equal(t, "the tree refusal statuses", treeStatuses, []int{400, 404, 400})
+	equal(t, "the tree refusals", treeRefusals, []string{
+		"The tree read needs a ref.",
+		"There is no tree at nope.",
+		"The path ../x leaves the repository.",
+	})
+}
+
+// The grep read walks the ref's tarball in memory: one line a match,
+// binaries skipped by the NUL sniff, a file's first 64 KiB read, a line
+// cut at 200 characters, the walk stopped at 50 matches with the count
+// line naming every bound; and the refusals name a missing pattern or
+// ref, one that does not compile, a ref with no archive and an archive
+// over the read limit.
+func TestChatGrepRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	long := strings.Repeat("x", 150) + "cache" + strings.Repeat("y", 200)
+	r.fg.archives = map[string][]byte{"main": tgz(t,
+		[2]string{"a.go", "the cache leaks\nplain\ncache hits\n"},
+		[2]string{"b.bin", "\x00cache\n"},
+		[2]string{"docs/d.md", "cache in docs\n"},
+		[2]string{"long.txt", long + "\n"},
+		[2]string{"late.txt", strings.Repeat("n\n", 32<<10) + "cache\n"},
+	)}
+	equal(t, "the greps", reads(t, r, g,
+		"grep", `{"pattern":"cache","ref":"main"}`,
+		"grep", `{"pattern":"c.che in","ref":"main","path":"docs"}`,
+	), []string{
+		"a.go:1:the cache leaks\na.go:3:cache hits\ndocs/d.md:1:cache in docs\nlong.txt:1:" + long[:200] +
+			"\n(scanned 5 of 5 files, 4 matches)\n",
+		"docs/d.md:1:cache in docs\n(scanned 1 of 1 file, 1 match)\n",
+	})
+	// 51 matches: the 50 shown, the count line naming the cut
+	r.fg.archives["many"] = tgz(t, [2]string{"hits.txt", strings.Repeat("cache\n", 51)})
+	equal(t, "the match cut", reads(t, r, g, "grep", `{"pattern":"cache","ref":"many"}`),
+		[]string{repeatLines("hits.txt", "cache", 50) + "(scanned 1 of 1 file, 50 matches, cut)\n"})
+	r.fg.archives["big"] = bytes.Repeat([]byte{0}, 100<<20+1)
+	var grepRefusals []string
+	var grepStatuses []int
+	for _, in := range []toolInput{
+		{Ref: "main"},
+		{Pattern: "(", Ref: "main"},
+		{Pattern: "cache", Ref: "nope"},
+		{Pattern: "cache", Ref: "main", Path: "../x"},
+		{Pattern: "cache", Ref: "big"},
+	} {
+		code, sentence := refused(t, r, "grep", in)
+		grepStatuses = append(grepStatuses, code)
+		grepRefusals = append(grepRefusals, sentence)
+	}
+	equal(t, "the grep refusal statuses", grepStatuses, []int{400, 400, 404, 400, 413})
+	equal(t, "the grep refusals", grepRefusals, []string{
+		"The grep read needs a pattern and a ref.",
+		"The grep pattern \"(\" does not compile: error parsing regexp: missing closing ): `(`.",
+		"There is no archive at nope.",
+		"The path ../x leaves the repository.",
+		"The archive of big is over the grep read's limit of 100.0 MiB.",
+	})
+}
+
+// The web tools are the chat's paid web door: a search's findings go
+// into the thread as found, a fetched page never does, one digest call
+// answers the ask; each call rides the chat task's account, and each
+// refusal names itself.
+func TestChatWebTools(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.web.answers = []string{
+		`[{"url":"https://iana.org/help/example-domains","title":"Example Domains","description":"# Example Domains"}]`,
+		"[]",
+		"# Example Domain\n\nThis domain is for use in documentation examples.",
+	}
+	task := factoryd.ChatTaskID("ai-software-factory-code", time.Now())
+	equal(t, "the web reads", reads(t, r, g,
+		"web_search", `{"query":"example domains"}`,
+		"web_search", `{"query":"nothing","limit":2}`,
+		"web_scrape", `{"url":"https://example.com/","ask":"what is this page?"}`,
+	), []string{
+		"1. Example Domains\nhttps://iana.org/help/example-domains\n# Example Domains",
+		"The web search found nothing.",
+		"https://example.com/: digest 1",
+	})
+	equal(t, "the door's calls", r.web.calls, []string{
+		"search " + task + " example domains 5", "search " + task + " nothing 2", "scrape " + task + " https://example.com/"})
+	if len(g.digests) != 1 {
+		t.Fatalf("%d digest calls, want the fetched page's one", len(g.digests))
+	}
+	page := g.digests[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(page, "what is this page?") || !strings.Contains(page, "# Example Domain") {
+		t.Fatalf("the digest call's page = %q, want the ask and the page", page)
+	}
+	// a page over the read limit reaches the digest cut, and named
+	r, g = newReadsRig(t)
+	r.web.answers = []string{"# Big\n\n" + strings.Repeat("word ", 16<<10)}
+	reads(t, r, g, "web_scrape", `{"url":"https://example.com/big"}`)
+	big := g.digests[0]["messages"].([]any)[0].(map[string]any)["content"].(string)
+	if !strings.Contains(big, "the page was cut at 64 KiB") {
+		t.Fatalf("the big page's digest = %q, want the cut named", big)
+	}
+}
+
+// The web tools' refusals: no query, a limit past the door's bound, no
+// url; a door the policy refused, and one it could not reach.
+func TestChatWebRefusals(t *testing.T) {
+	r, g := newReadsRig(t)
+	var statuses []int
+	var sentences []string
+	for _, call := range []struct {
+		tool string
+		in   toolInput
+	}{
+		{"web_search", toolInput{}},
+		{"web_search", toolInput{Query: "x", Limit: 11}},
+		{"web_scrape", toolInput{}},
+	} {
+		code, sentence := refused(t, r, call.tool, call.in)
+		statuses = append(statuses, code)
+		sentences = append(sentences, sentence)
+	}
+	equal(t, "the web refusal statuses", statuses, []int{400, 400, 400})
+	equal(t, "the web refusals", sentences, []string{
+		"The web search needs a query.",
+		"The web search's limit is 1 to 10.",
+		"The web page read needs a url.",
+	})
+	r.web.err = &policy.Refusal{Decision: "refused_tool_requests", Reason: "web_search's 500 requests are used"}
+	equal(t, "the refused door", reads(t, r, g, "web_search", `{"query":"x"}`),
+		[]string{"Refused: The web tool was refused: web_search's 500 requests are used."})
+	r, g = newReadsRig(t)
+	r.web.err = &factoryd.StatusError{Code: 502, Body: "upstream_error"}
+	equal(t, "the unreachable door", reads(t, r, g, "web_scrape", `{"url":"https://example.com/"}`),
+		[]string{"Refused: The web tool's call failed with status 502."})
+}
+
+// Without a web door wired the chat offers no web tool.
+func TestChatWebGated(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.c.cfg.Web = nil
+	for _, tool := range r.c.chatTools() {
+		if strings.HasPrefix(tool.name, "web_") {
+			t.Fatalf("%s is offered with no web door wired", tool.name)
+		}
+	}
+}
+
+// repeatLines is count match lines path:1..count of text.
+func repeatLines(path, text string, count int) string {
+	var b strings.Builder
+	for i := range count {
+		fmt.Fprintf(&b, "%s:%d:%s\n", path, i+1, text)
+	}
+	return b.String()
+}
+
 func TestChatFileRead(t *testing.T) {
 	r, g := newReadsRig(t)
 	equal(t, "the file reads", reads(t, r, g,
@@ -384,6 +670,54 @@ func TestChatFileRead(t *testing.T) {
 			t.Errorf("file %+v refused %d %q, want %d", c.in, status, msg, c.status)
 		}
 	}
+}
+
+// longDiff is the rig's long pull request diff: a header line of 31 bytes
+// and 5,000 lines of 16, so the 20 KB cut falls inside line 1280 and every
+// range reads whole lines.
+var longDiff = func() string {
+	var b strings.Builder
+	b.WriteString("diff --git a/long.go b/long.go\n")
+	for i := 1; i <= 5000; i++ {
+		fmt.Fprintf(&b, "body %010d\n", i)
+	}
+	return b.String()
+}()
+
+// The diff read is a card's pull request diff, short read whole, long cut
+// at 20 KB with its size and the line to read on from, from and to one
+// line-numbered window under the same cap, a range off its lines answered
+// with the line count.
+func TestChatDiffRead(t *testing.T) {
+	r, g := newReadsRig(t)
+	equal(t, "the short diff reads", reads(t, r, g, "diff", `{"task_id":"t-r"}`), []string{
+		"diff --git a/cache.go b/cache.go\n-\treturn nil\n+\treturn c.entries[k]\n",
+	})
+	r.fg.mu.Lock()
+	r.fg.pullDiff = longDiff
+	r.fg.mu.Unlock()
+	equal(t, "the long diff reads", reads(t, r, g, "diff", `{"task_id":"t-r"}`), []string{
+		longDiff[:20<<10] + "\n(cut at 20 KB of 80031 bytes; read on from line 1280)",
+	})
+	head := "card #11's diff: 80031 bytes, 5001 lines."
+	window := "line 1: diff --git a/long.go b/long.go\n"
+	for i := 2; i <= 1364; i++ {
+		window += fmt.Sprintf("line %d: body %010d\n", i, i-1)
+	}
+	window += "… a narrower range fits: raise from or lower to.\n"
+	equal(t, "the diff reads its ranges", reads(t, r, g,
+		"diff", `{"task_id":"t-r","from":1280,"to":1282}`,
+		"diff", `{"task_id":"t-r","from":5000}`,
+		"diff", `{"task_id":"t-r","from":1,"to":5001}`,
+		"diff", `{"task_id":"t-r","from":30,"to":10}`,
+		"diff", `{"task_id":"t-r","from":5002}`,
+	), []string{
+		head + "\n\nline 1280: body 0000001279\nline 1281: body 0000001280\nline 1282: body 0000001281\n",
+		head + "\n\nline 5000: body 0000004999\nline 5001: body 0000005000\n",
+		head + "\n\n" + window,
+		head + " from 30 and to 10 name no line range of its 5001 lines: name from at or before to, inside lines 1 to 5001.",
+		head + " from 5002 and to 0 name no line range of its 5001 lines: name from at or before to, inside lines 1 to 5001.",
+	})
 }
 
 // ciHead is main's head in the fake Forgejo.
@@ -460,5 +794,120 @@ func TestChatReadsAreNeverProposed(t *testing.T) {
 		if !ok || tool.write || slices.Contains(policy.DefaultChat.Confirm, name) {
 			t.Errorf("tool %s: offered %v, write %v, confirmed by default %v; want a read run at once", name, ok, tool.write, slices.Contains(policy.DefaultChat.Confirm, name))
 		}
+	}
+}
+
+// The research tool runs one bounded loop: the mid tier drives the chat's
+// own reads, every step lands on the row's trail beside the thread, the
+// report is the tool's result the premium model reads, and its arguments
+// carry the ask, so replay keeps the report whole.
+func TestChatResearch(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.fg.trees = map[string]string{"main": treeJSON}
+	g.replies = [][]string{{call(1, "research", `{"ask":"which files sit at main?"}`)}, {say("The repo holds four files.")}}
+	g.research = [][]string{{call(1, "tree", `{"ref":"main"}`)}, {say("Findings:\nmain holds cmd/app.go, docs/a.md and README.md.\n\nSources:\n- the tree at main\n\nOpen questions:\n- none")}}
+	ck, s := r.loggedIn(t)
+	if code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"which files?"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	if len(g.researchCalls) != 2 {
+		t.Fatalf("the loop made %d calls, want a step and the report", len(g.researchCalls))
+	}
+	first := g.researchCalls[0]
+	msgs := first["messages"].([]any)
+	second := msgs[1].(map[string]any)
+	if msgs[0].(map[string]any)["role"] != "system" || second["role"] != "user" || second["content"] != "which files sit at main?" {
+		t.Fatalf("the loop's first messages = %v", msgs)
+	}
+	var names []string
+	for _, tool := range first["tools"].([]any) {
+		names = append(names, tool.(map[string]any)["function"].(map[string]any)["name"].(string))
+	}
+	equal(t, "the researcher's tools", names, []string{"tree", "grep", "file", "read_doc", "web_search", "web_scrape"})
+	step := g.researchCalls[1]["messages"].([]any)
+	if role := step[len(step)-1].(map[string]any)["role"]; role != "tool" {
+		t.Fatalf("the step's tool message = %v", step[len(step)-1])
+	}
+	if got := step[len(step)-1].(map[string]any)["content"].(string); !strings.Contains(got, "README.md 1200") {
+		t.Fatalf("the researcher's tree read = %q", got)
+	}
+	calls := g.calls()
+	operator := messages(t, calls[len(calls)-1])
+	report := operator[len(operator)-1]
+	if report["role"] != "tool" || report["content"].(string) != "Findings:\nmain holds cmd/app.go, docs/a.md and README.md.\n\nSources:\n- the tree at main\n\nOpen questions:\n- none" {
+		t.Fatalf("the report the model read = %v", report)
+	}
+	var row *factoryd.ChatToolCall
+	for _, m := range r.chat.msgs["sf/code sebastian"] {
+		for i := range m.ToolCalls {
+			if m.ToolCalls[i].Name == "research" {
+				row = &m.ToolCalls[i]
+			}
+		}
+	}
+	if row == nil {
+		t.Fatal("no research row in the thread")
+	}
+	if !strings.Contains(row.Trail, `tree {"ref":"main"}`) || !strings.Contains(row.Trail, "README.md 1200") {
+		t.Fatalf("the trail = %q", row.Trail)
+	}
+}
+
+// The loop's bounds are in code: the step bound stops a loop that keeps
+// calling tools, the wall a call that outruns it, and each refusal names
+// the stop and the fitting action. A gateway refusal of the loop's own
+// call reaches the member as the tool's refusal.
+func TestChatResearchStopsAtItsBounds(t *testing.T) {
+	r, g := newReadsRig(t)
+	g.replies = [][]string{{call(1, "research", `{"ask":"everything"}`)}, {say("done")}}
+	steps := make([][]string, researchSteps)
+	for i := range steps {
+		steps[i] = []string{call(1, "tree", `{"ref":"main"}`)}
+	}
+	g.research = steps
+	ck, s := r.loggedIn(t)
+	if code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"everything"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	calls := g.calls()
+	operator := messages(t, calls[len(calls)-1])
+	got := operator[len(operator)-1]["content"].(string)
+	if !strings.Contains(got, fmt.Sprintf("%d-step bound", researchSteps)) || !strings.Contains(got, "narrower question") {
+		t.Fatalf("the step bound's words = %q", got)
+	}
+	if len(g.researchCalls) != researchSteps {
+		t.Fatalf("the loop made %d calls, want %d", len(g.researchCalls), researchSteps)
+	}
+
+	r2, g2 := newReadsRig(t)
+	g2.replies = [][]string{{call(1, "research", `{"ask":"everything"}`)}, {say("done")}}
+	oldWall := researchWall
+	researchWall = time.Nanosecond
+	time.Sleep(2 * time.Millisecond)
+	defer func() { researchWall = oldWall }()
+	ck2, s2 := r2.loggedIn(t)
+	if code, events, _ := chatPost(t, r2, ck2, s2, chatPath, url.Values{"message": {"everything"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	calls2 := g2.calls()
+	operator2 := messages(t, calls2[len(calls2)-1])
+	got2 := operator2[len(operator2)-1]["content"].(string)
+	if !strings.Contains(got2, "1ns time bound") || !strings.Contains(got2, "narrower question") {
+		t.Fatalf("the wall bound's words = %q", got2)
+	}
+	researchWall = oldWall
+
+	r3, g3 := newReadsRig(t)
+	g3.replies = [][]string{{call(1, "research", `{"ask":"everything"}`)}, {say("done")}}
+	g3.research = [][]string{{"REFUSE refused_budget the day cap is used"}}
+	ck3, s3 := r3.loggedIn(t)
+	if code, events, _ := chatPost(t, r3, ck3, s3, chatPath, url.Values{"message": {"everything"}}); code != http.StatusOK || events[len(events)-1] != "done {}" {
+		t.Fatalf("turn = %d %v", code, events)
+	}
+	calls3 := g3.calls()
+	operator3 := messages(t, calls3[len(calls3)-1])
+	got3 := operator3[len(operator3)-1]["content"].(string)
+	if !strings.HasPrefix(got3, "Refused: The research was refused: the day cap is used") {
+		t.Fatalf("the refusal's words = %q", got3)
 	}
 }

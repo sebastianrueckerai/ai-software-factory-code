@@ -90,6 +90,8 @@ type ServerOptions struct {
 	DeploymentReader DeploymentReader
 	// ImageLooker is the analyze_image tool's look at factoryd.
 	ImageLooker ImageLooker
+	// Digester is the digest tool's Small call at factoryd.
+	Digester Digester
 	// Delegator is the delegate tool's hand-over to factoryd.
 	Delegator Delegator
 	// Cloud is the commissioning connector (the agent Hetzner project).
@@ -166,9 +168,9 @@ type Server struct {
 	polAt time.Time // when pol was read; zero = never
 }
 
-// policyTTL bounds how long the gateway enforces a policy version after
+// PolicyTTL bounds how long the gateway enforces a policy version after
 // reading it: a new version is in force within this time.
-const policyTTL = 30 * time.Second
+const PolicyTTL = 30 * time.Second
 
 func NewServer(opts ServerOptions) *Server {
 	if opts.HTTP == nil {
@@ -182,12 +184,12 @@ func NewServer(opts ServerOptions) *Server {
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
-// policyTTL ago. The gateway never parses the policy file: factoryd loads
+// PolicyTTL ago. The gateway never parses the policy file: factoryd loads
 // it, and an unreadable current version refuses every call.
 func (s *Server) currentPolicy(ctx context.Context) (*policy.Version, error) {
 	s.polMu.Lock()
 	defer s.polMu.Unlock()
-	if !s.polAt.IsZero() && s.now().Sub(s.polAt) < policyTTL {
+	if !s.polAt.IsZero() && s.now().Sub(s.polAt) < PolicyTTL {
 		v := s.pol
 		return &v, nil
 	}
@@ -213,6 +215,7 @@ func (s *Server) Routes(version string) http.Handler {
 	mux := http.NewServeMux()
 	mux.Handle("POST /v1/chat/completions", http.HandlerFunc(s.handleChat))
 	mux.Handle("GET /v1/window/{alias}", http.HandlerFunc(s.handleWindow))
+	mux.Handle("POST /v1/tools/{tool}", http.HandlerFunc(s.handleChatTool))
 	mux.Handle("/mcp", s.mcpHandler())
 	mux.Handle("/healthz", health.Handler("factory-gateway", version))
 	return telemetry.Handler(s.tel.tp, "factory-gateway", mux)
@@ -412,8 +415,7 @@ func (s *Server) price(ctx context.Context, pv *policy.Version, task Task, alias
 // ServiceAccount JWT (purpose ""), whose headers name nothing. A factoryd
 // call without a known purpose is refused as kind auditFactoryd.
 func (s *Server) identify(r *http.Request) (Identity, string, error) {
-	raw, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-	if s.opts.FactorydToken == "" || subtle.ConstantTimeCompare([]byte(strings.TrimSpace(raw)), []byte(s.opts.FactorydToken)) != 1 {
+	if !s.factorydBearer(r) {
 		id, err := s.opts.Auth.Authenticate(r)
 		return id, "", err
 	}
@@ -423,6 +425,14 @@ func (s *Server) identify(r *http.Request) (Identity, string, error) {
 		return id, auditFactoryd, fmt.Errorf("a factoryd call names its task in %s and one of %q in %s", HeaderFactoryTask, policy.Purposes, HeaderFactoryPurpose)
 	}
 	return id, purpose, nil
+}
+
+// factorydBearer reports whether r carries the gateway-factoryd shared
+// token, read in constant time; the completions and tool doors take it,
+// and no sandbox token stands in for it.
+func (s *Server) factorydBearer(r *http.Request) bool {
+	raw, _ := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	return s.opts.FactorydToken != "" && subtle.ConstantTimeCompare([]byte(strings.TrimSpace(raw)), []byte(s.opts.FactorydToken)) == 1
 }
 
 // forwardedFields are the request fields LiteLLM receives: the OpenAI chat
@@ -1281,7 +1291,7 @@ func (s *Server) audit(pid *int64, taskID, kind, decision, reason, alias string,
 		SpendEUR:      spend,
 		PolicyVersion: pid,
 	}); err != nil {
-		log.Printf("insert audit row (task %s, decision %s): %v", taskID, decision, err)
+		log.Printf("insert audit row (task %q, decision %s): %v", taskID, decision, err) // #nosec G706 -- %q escapes every control character; the task id may be a refused header's string
 	}
 }
 

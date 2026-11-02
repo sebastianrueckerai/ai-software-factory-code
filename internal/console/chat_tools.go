@@ -36,6 +36,7 @@ type toolInput struct {
 	Text        string   `json:"text,omitempty"`
 	EUR         float64  `json:"eur,omitempty"`
 	Question    int      `json:"question,omitempty"`
+	Decision    string   `json:"decision,omitempty"`
 	Note        string   `json:"note,omitempty"`
 	Minutes     int      `json:"minutes,omitempty"`
 	Action      string   `json:"action,omitempty"`
@@ -55,6 +56,8 @@ type toolInput struct {
 	From        int      `json:"from,omitempty"`
 	To          int      `json:"to,omitempty"`
 	Query       string   `json:"query,omitempty"`
+	URL         string   `json:"url,omitempty"`
+	Limit       int      `json:"limit,omitempty"`
 	Size        string   `json:"size,omitempty"`
 	Rung        string   `json:"rung,omitempty"`
 	RungReason  string   `json:"rung_reason,omitempty"`
@@ -138,16 +141,20 @@ type toolInput struct {
 	Card         string `json:"card,omitempty"`
 	Tab          string `json:"tab,omitempty"`
 	Theme        string `json:"theme,omitempty"`
+	// Pattern is the grep read's regular expression.
+	Pattern string `json:"pattern,omitempty"`
 	// undo marks an undo's run, which only chatUndo sets: unexported, no
 	// arguments carry it
 	undo bool
 }
 
 // PlanAnswerInput is one answer of the answer tool's answers list: the
-// question's number on the plan card and its text.
+// question's number on the plan card, its text, and the decision when the
+// question is the plan's confirmation.
 type PlanAnswerInput struct {
 	Question int    `json:"question"`
 	Text     string `json:"text"`
+	Decision string `json:"decision,omitempty"`
 }
 
 // setNote is a set tool's result on issue: field is set, or on an undo
@@ -177,7 +184,12 @@ type chatTool struct {
 	write              bool
 	priced             bool // one model call over the conversation's own attachment: its result stays in replay, re-running re-spends
 	internal           bool // an undo's inverse only: the agent is not offered it
-	run                func(t *turn, in toolInput) (string, *inverse, error)
+	// memberOnly is a write the member alone decides: the turn proposes
+	// it whatever the chat's confirm list says — even at full auto, even
+	// when a custom list leaves it out — and only their Do it runs it.
+	// The pool's money is never an agent's decision.
+	memberOnly bool
+	run        func(t *turn, in toolInput) (string, *inverse, error)
 }
 
 // def is the tool's schema, its sentence marked (needs OK) when the
@@ -234,7 +246,8 @@ func (c *Console) chatTools() []chatTool {
 	return slices.DeleteFunc(slices.Clone(tools), func(t chatTool) bool {
 		return t.internal || t.name == "steer" && c.cfg.Steer == nil || t.name == "request_image" && c.cfg.RequestImage == nil ||
 			t.name == "github_export" && c.cfg.Mirrors == nil ||
-			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
+			t.name == "github_sync" && c.cfg.GitHubSync == nil || strings.HasPrefix(t.name, "web_") && c.cfg.Web == nil ||
+			strings.HasPrefix(t.name, "routine") && c.cfg.Routines == nil
 	})
 }
 
@@ -249,7 +262,7 @@ func (t *turn) offered() []factoryd.OperatorTool {
 	var defs []factoryd.OperatorTool
 	for _, tool := range t.c.chatTools() {
 		if t.offers(tool.name) && (t.p.Agents != policy.AgentsNone || !slices.Contains(imageTools, tool.name)) {
-			defs = append(defs, tool.def(slices.Contains(t.cfg.Confirm, tool.name)))
+			defs = append(defs, tool.def(tool.memberOnly || slices.Contains(t.cfg.Confirm, tool.name)))
 		}
 	}
 	return defs
@@ -438,6 +451,15 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", err
 		}
 	}
+	if tool.name == "set_pool" {
+		// the proposal captures the change — the file, its blob and its
+		// pool — so the member reads the operation, the suggestion, the
+		// reason and the ceiling before anything writes
+		if err := t.capturePool(*in); err != nil {
+			return "", err
+		}
+		return sanitize.Inbound(t.poolDesc(tool.title)), nil
+	}
 	if tool.name == "new_card" {
 		if err := refuseTrack(*in); err != nil {
 			return "", err
@@ -540,10 +562,17 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 				parts = append(parts, "question "+factoryd.QuestionLine(in.Question, qs[in.Question-1]))
 			}
 		}
+		if in.Decision != "" {
+			parts = append(parts, "decision "+in.Decision)
+		}
 		if len(in.Answers) > 0 {
 			lines := make([]string, 0, len(in.Answers))
 			for _, ans := range in.Answers {
-				lines = append(lines, fmt.Sprintf("question %d: %s", ans.Question, textutil.Truncate(strings.Join(strings.Fields(ans.Text), " "), 120)))
+				w := strings.Join(strings.Fields(ans.Text), " ")
+				if ans.Decision != "" {
+					w = ans.Decision + ": " + w
+				}
+				lines = append(lines, fmt.Sprintf("question %d: %s", ans.Question, textutil.Truncate(w, 120)))
 			}
 			parts = append(parts, strings.Join(lines, ", "))
 		}
@@ -692,7 +721,7 @@ func (t *turn) answer(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return q.Answer == "" })
+	open := slices.ContainsFunc(qs, func(q factoryd.PlanQuestion) bool { return !q.Answered() })
 	switch {
 	case len(in.Answers) > 0 && !open:
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
@@ -703,8 +732,8 @@ func (t *turn) answer(in toolInput) (string, error) {
 		if len(in.Answers) > 0 {
 			return t.c.doAnswerPlanQuestions(ctx, t.a, in.TaskID, in.Revision, in.Answers)
 		}
-		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Text)
-	case in.Question > 0:
+		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
+	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
@@ -842,8 +871,8 @@ func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	return all[i], nil
 }
 
-// criteriaRequest is the pending criteria approval request of plan id in
-// the chat's project.
+// criteriaRequest is the pending criteria or criteria_rerun approval
+// request of plan id in the chat's project.
 func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	k, err := t.card(in)
 	if err != nil {
@@ -855,7 +884,7 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
 	}
 	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalCriteria && q.Project == t.p.Repository
+		return q.TaskID == k.ID && (q.Kind == factoryd.ApprovalCriteria || q.Kind == factoryd.ApprovalCriteriaRerun) && q.Project == t.p.Repository
 	})
 	if i < 0 {
 		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
@@ -1229,8 +1258,10 @@ var tools = []chatTool{
 			s, err := t.c.spendLine(t.r.Context(), t.p)
 			return "The project's " + s + ".", nil, err
 		}},
-	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "A card's pull request diff, its first 20 KB.",
+	{name: "diff", title: "Read a pull request's diff", params: map[string]any{"task_id": taskParam,
+		"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
+		"ask": str("what a small digest answers (default the raw read)")}, required: []string{"task_id"},
+		about: "A card's pull request diff, its lines from and to, else its first 20 KB.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.diff(in); return s, nil, err }},
 	{name: "plan", title: "Read a plan", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
 		about: "The newest revision of a card's plan: its sha256, questions and cards.",
@@ -1242,10 +1273,37 @@ var tools = []chatTool{
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.prText(in); return s, nil, err }},
 	{name: "file", title: "Read a file",
 		params: map[string]any{"ref": str("a branch, tag or commit"), "path": str("the file's path"),
-			"from": stepParam("the first line to read"), "to": stepParam("the last line to read")},
+			"from": stepParam("the first line to read"), "to": stepParam("the last line to read"),
+			"ask": str("what a small digest answers (default the raw read)")},
 		required: []string{"ref", "path"},
 		about:    "A file of the project's repository at a ref, its lines from and to, else its first 64 KiB.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.fileText(in); return s, nil, err }},
+	{name: "tree", title: "Read the tree",
+		params:   map[string]any{"ref": str("a branch, tag or commit"), "path": str("a path prefix (default the whole tree)")},
+		required: []string{"ref"},
+		about:    "Every file of the repository at a ref, cut at 500 lines.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.treeText(in); return s, nil, err }},
+	{name: "grep", title: "Search the files",
+		params: map[string]any{"pattern": str("the text to find, a regular expression"), "ref": str("a branch, tag or commit"),
+			"path": str("a path prefix (default the whole tree)")},
+		required: []string{"pattern", "ref"},
+		about:    "Files at a ref whose lines match a pattern, at most 50.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.grepText(in); return s, nil, err }},
+	{name: "web_search", title: "Search the web",
+		params:   map[string]any{"query": str("the search query"), "limit": fallback(5, stepParam("results to show, at most 10"))},
+		required: []string{"query"},
+		about:    "At most ten pages the web search found for a query, each a title, its url and a snippet.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webSearch(in); return s, nil, err }},
+	{name: "web_scrape", title: "Read a web page",
+		params:   map[string]any{"url": str("the page's http(s) address"), "ask": str("what the digest answers (default the page's gist)")},
+		required: []string{"url"},
+		about:    "The web page at one address, digested to the ask, never raw.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.webScrape(in); return s, nil, err }},
+	{name: "research", title: "Research a question",
+		params:   map[string]any{"ask": str("the question to research")},
+		required: []string{"ask"},
+		about:    "A researcher reads the repository, the documents and the web, and answers with a sourced report.",
+		run:      func(t *turn, in toolInput) (string, *inverse, error) { return researchRun(t, in) }},
 	{name: "session", title: "Read a session", params: map[string]any{"task_id": taskParam, "n": sessionN}, required: []string{"task_id"},
 		about: "One session of a card: its outcome, summary, supervisor trips, model calls and changed files.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.sessionText(in); return s, nil, err }},
@@ -1257,7 +1315,8 @@ var tools = []chatTool{
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepsText(in); return s, nil, err }},
 	{name: "session_step", title: "Read a session's steps",
 		params: map[string]any{"task_id": taskParam, "n": sessionN, "from": fallback(1, stepParam("the first step")),
-			"to": stepParam("the last step (default from, most from + 19)")},
+			"to":  stepParam("the last step (default from, most from + 19)"),
+			"ask": str("what a small digest answers (default the raw read)")},
 		required: []string{"task_id"},
 		about:    "A session's steps in full.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.stepText(in); return s, nil, err }},
@@ -1378,15 +1437,19 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
+		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
 		"revision": map[string]any{"type": "integer", "description": "the plan's revision, for a plan's questions", "minimum": 1},
 		"answers": map[string]any{"type": "array", "description": "every open question's answer at once",
 			"items": map[string]any{"type": "object", "properties": map[string]any{
 				"question": map[string]any{"type": "integer", "description": "the question's number", "minimum": 1},
-				"text":     map[string]any{"type": "string", "description": "its answer"}},
-				"required": []string{"question", "text"}}}},
+				"text":     map[string]any{"type": "string", "description": "its answer"},
+				"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
+					"description": "its decision when this one is the plan's confirmation"}},
+				"required": []string{"question"}}}},
 		required: []string{"task_id"},
-		about:    "Answer the question a card waits on, or every open question of a plan at once.",
+		about:    "Answer a card's question or a plan's open ones, the plan's confirmation by your own decision.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)
 			return note, nil, err
@@ -1486,7 +1549,7 @@ var tools = []chatTool{
 			"criterion": str("the criterion the waiver names, cN"),
 			"reason":    str("the waiver's one-line reason")},
 		required: []string{"task_id", "action"},
-		about:    "Decide a plan's criteria gap on the human's word: waive, grant, or confirm.",
+		about:    "Decide a plan's criteria ask on the human's word: waive, grant, or confirm.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			line, ok, err := t.humanAnswerLine()
 			if err != nil {
@@ -1603,22 +1666,31 @@ var tools = []chatTool{
 			note, err := t.c.doReplan(t.r.Context(), t.a, in.TaskID, in.Note, in.OffMain)
 			return note, nil, err
 		}},
-	{name: "set_pool", title: "Set the pool", write: true,
+	{name: "set_pool", title: "Set the pool", write: true, memberOnly: true,
 		params: map[string]any{"action": enum("set the pool or top up the standing one", poolSet, poolTopUp),
 			"eur":    map[string]any{"type": "number", "description": "the pool in EUR, or the raise on a top-up", "exclusiveMinimum": 0},
 			"reason": str("why this number, one line")},
 		required: []string{"action", "eur", "reason"},
 		about:    "Set or top up the project's discretionary pool through a pull request on its project file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			path := policy.ProjectFile(t.p.Name)
-			_, source, present, err := t.c.infraFile(t.r.Context(), path)
-			switch {
-			case err != nil:
-				return "", nil, err
-			case !present:
-				return "", nil, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+			ch := poolChange{action: in.Action, eur: in.EUR, reason: in.Reason}
+			if t.pool != nil {
+				// a confirmed press runs the captured change: the
+				// operation, the reason and the source stay the row's,
+				// the amount the one thing a correction changed
+				ch.action, ch.reason, ch.source = t.pool.Action, t.pool.Reason, t.pool.Source
+			} else {
+				path := policy.ProjectFile(t.p.Name)
+				_, source, present, err := t.c.infraFile(t.r.Context(), path)
+				switch {
+				case err != nil:
+					return "", nil, err
+				case !present:
+					return "", nil, refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+				}
+				ch.source = source
 			}
-			res, err := t.c.doSetPool(t.r.Context(), t.p.Name, poolChange{action: in.Action, eur: in.EUR, reason: in.Reason, source: source}, t.a)
+			res, err := t.c.doSetPool(t.r.Context(), t.p.Name, ch, t.a)
 			if err != nil {
 				return "", nil, err
 			}
@@ -1629,11 +1701,12 @@ var tools = []chatTool{
 		params: map[string]any{"path": docPath, "find": str("the lines holding this text, case-insensitive"),
 			"from":  stepParam("the first line to read"),
 			"to":    stepParam("the last line to read"),
-			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"}},
+			"regex": map[string]any{"type": "boolean", "description": "find is a regular expression"},
+			"ask":   str("what a small digest answers (default the raw read)")},
 		required: []string{"path"},
 		about:    "Any file of the project's document repository with its base_sha256 and line count.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			s, err := t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
+			s, err := t.docText(in)
 			return s, nil, err
 		}},
 	{name: "write_doc", title: "Write a document", write: true,
@@ -1923,7 +1996,9 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 // diffLimit bounds the diff the agent reads.
 const diffLimit = 20 << 10
 
-// diff is the diff of card in's pull request, read as the member.
+// diff is the diff of card in's pull request, read as the member: short
+// read whole, long cut at 20 KB with the line to read on from, or its
+// lines from..to as one numbered window under the same cap.
 func (t *turn) diff(in toolInput) (string, error) {
 	k, err := t.card(in)
 	if err != nil {
@@ -1941,8 +2016,20 @@ func (t *turn) diff(in toolInput) (string, error) {
 	if err := t.c.as(t.r.Context(), t.a.s, http.MethodGet, path, nil, http.StatusOK, &raw); err != nil {
 		return "", &forgejoRefusal{"read the pull request's diff", err}
 	}
+	if in.Ask != "" {
+		label := fmt.Sprintf("the diff of task %s", k.ID)
+		if len(raw) > diffLimit {
+			label = fmt.Sprintf("%s (the first %s of %s)", label, imageSize(int64(diffLimit)), imageSize(int64(len(raw))))
+			raw = raw[:diffLimit]
+		}
+		return t.withDigest(label, in.Ask, string(raw))
+	}
+	if s, ok := lineWindow(fmt.Sprintf("card #%d's diff", k.IssueNumber), raw, in.From, in.To, diffLimit); ok {
+		return s, nil
+	}
 	if len(raw) > diffLimit {
-		return string(raw[:diffLimit]) + fmt.Sprintf("\n… the diff goes on for %s more bytes", answered(raw, len(raw)-diffLimit)), nil
+		next := strings.Count(string(raw[:diffLimit]), "\n") + 1
+		return string(raw[:diffLimit]) + fmt.Sprintf("\n(cut at 20 KB of %s bytes; read on from line %d)", answered(raw, len(raw)), next), nil
 	}
 	return string(raw), nil
 }
@@ -1965,6 +2052,10 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
+  file, diff, read_doc and session_step answer an ask with one small digest of the read; read the raw slice where its answer points.
+  for a file you cannot name, tree first and grep for its words.
+  web_search and web_scrape spend the chat's own budget per call: search wide, read a page only when its snippet promises, and name the url you scraped.
+  research hands one question to a researcher on a cheaper tier: reach for it when a question needs many reads across the repository, the documents or the web; one grep or one file read is faster made directly.
 `
 
 func (t *turn) systemText() (string, error) {

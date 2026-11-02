@@ -98,7 +98,7 @@ func escalationSource(reason string) string {
 	switch {
 	case strings.HasPrefix(reason, AgentAsks):
 		return "agent"
-	case strings.HasPrefix(reason, capReached), strings.HasPrefix(reason, plannerOutOfTime):
+	case AtSessionCap(reason), strings.HasPrefix(reason, plannerOutOfTime):
 		return "cap"
 	case strings.HasPrefix(reason, monthCapReached):
 		return SourceMonthCap
@@ -201,6 +201,16 @@ func (s *PGStore) NewestAlertRows(ctx context.Context, kind, namespace string) (
 func (s *PGStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error) {
 	a, err := scanAlert(s.db.QueryRowContext(ctx,
 		`SELECT `+alertColumns+` FROM alerts WHERE fingerprint = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, fingerprint, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Alert{}, false, nil
+	}
+	return a, err == nil, err
+}
+
+// AlertByTask is the newest alert of kind linked to task taskID.
+func (s *PGStore) AlertByTask(ctx context.Context, kind, taskID string) (Alert, bool, error) {
+	a, err := scanAlert(s.db.QueryRowContext(ctx,
+		`SELECT `+alertColumns+` FROM alerts WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, taskID, kind))
 	if errors.Is(err, sql.ErrNoRows) {
 		return Alert{}, false, nil
 	}

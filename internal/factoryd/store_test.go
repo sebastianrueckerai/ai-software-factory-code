@@ -74,12 +74,10 @@ type fakeStore struct {
 	liveSessions   map[string]LiveSession
 	pauses         map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
-	// budgetRefused BudgetRefused's by task; DayFree answers the day's cap
-	// less daySpent
+	// budgetRefused BudgetRefused's by task
 	monthSpend    MonthSpend
 	capRefusals   map[string]CapRefusal
 	budgetRefused map[string]bool
-	daySpent      float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
@@ -165,6 +163,17 @@ func (s *fakeStore) WaitingDependents(ctx context.Context, id string) ([]string,
 	return out, nil
 }
 
+func (s *fakeStore) Dependents(ctx context.Context, id string) ([]Dependency, error) {
+	var out []Dependency
+	for task, deps := range s.deps {
+		if t := s.tasks[task]; slices.Contains(deps, id) {
+			out = append(out, Dependency{TaskID: task, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+		}
+	}
+	slices.SortFunc(out, func(a, b Dependency) int { return int(a.Issue - b.Issue) })
+	return out, nil
+}
+
 func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
 	old := s.tasks[id]
 	if old.Status != "failed" || old.PlanKey == "" || old.PlanKey != t.PlanKey {
@@ -216,6 +225,61 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, eur
 	_, err = s.Record(ctx, e)
 	return from, t.BudgetEUR, err
+}
+
+// ExtendCard raises task id's caps — its granted sessions, its line bound
+// and its budget — and records e with the raise in its detail.
+func (s *fakeStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
+	t, ok := s.tasks[id]
+	if !ok {
+		return 0, 0, ErrNotFound
+	}
+	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
+	t.Usage.ExtraAttempts += sessions
+	t.Usage.ExtraLines += lines
+	s.tasks[id] = t
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, eur
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	_, err = s.Record(ctx, e)
+	return from, t.BudgetEUR, err
+}
+
+func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	t.PlanName = name
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
+	var out []string
+	for _, t := range s.tasks {
+		if t.Repository == projectID && t.Track == policy.TrackPlan && t.ID != excludeID && t.PlanName != "" {
+			if _, closed := s.closed[t.ID]; !closed {
+				out = append(out, t.PlanName)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+func (s *fakeStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if _, closed := s.closed[t.ID]; t.Track == policy.TrackPlan && t.PlanName == "" && !closed {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
 }
 
 func newFakeStore() *fakeStore {
@@ -772,7 +836,7 @@ func factorydFinal(status string) bool {
 func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.IssueNumber > 0 {
 			out = append(out, t)
 		}
 	}
@@ -781,14 +845,8 @@ func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository strin
 			return a.CreatedAt.Compare(b.CreatedAt)
 		}
 		// same second: the issue number is the filing sequence, as the
-		// SQL's ORDER BY; 0 means no issue and sorts last
+		// SQL's ORDER BY
 		if a.IssueNumber != b.IssueNumber {
-			if a.IssueNumber == 0 {
-				return 1
-			}
-			if b.IssueNumber == 0 {
-				return -1
-			}
 			return cmp.Compare(a.IssueNumber, b.IssueNumber)
 		}
 		return strings.Compare(a.ID, b.ID)
@@ -874,11 +932,23 @@ func (s *fakeStore) ProjectByRepository(ctx context.Context, repository string) 
 	return Project{}, false, nil
 }
 
+func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Usage = TaskUsage{}
+	s.tasks[id] = t
+	return nil
+}
+
+// SetTaskUsage keeps the console's raises, as the store does.
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
+	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1213,6 +1283,15 @@ func (s *fakeStore) ReopenApproval(ctx context.Context, taskID, kind, note strin
 	return nil
 }
 
+func (s *fakeStore) NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error) {
+	for i := len(s.approvals) - 1; i >= 0; i-- {
+		if a := s.approvals[i]; a.TaskID == taskID && a.Kind == kind {
+			return a, true, nil
+		}
+	}
+	return ApprovalRequest{}, false, nil
+}
+
 func (s *fakeStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
 	var out []ApprovalRequest
 	for _, a := range s.approvals {
@@ -1251,6 +1330,17 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	a.ID = int64(len(s.alerts) + 1)
 	s.alerts = append(s.alerts, a)
 	return a.ID, nil
+}
+
+func (s *fakeStore) AlertByTask(ctx context.Context, kind, taskID string) (Alert, bool, error) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for _, a := range slices.Backward(s.alerts) {
+		if a.Kind == kind && a.TaskID == taskID {
+			return a, true, nil
+		}
+	}
+	return Alert{}, false, nil
 }
 
 func (s *fakeStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
@@ -1724,10 +1814,6 @@ func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID string, filter 
 	return nil
 }
 
-func (s *fakeStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
-	return dayEUR - s.daySpent, nil
-}
-
 func (s *fakeStore) alertRows() []Alert {
 	s.alertsMu.Lock()
 	defer s.alertsMu.Unlock()
@@ -1876,6 +1962,25 @@ func TestPGStore(t *testing.T) {
 	}
 	if err := s.SetTaskUsage(ctx, "nope", usage); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetTaskUsage unknown task = %v, want ErrNotFound", err)
+	}
+	// the console's Extend raises columns the workflow's snapshot leaves:
+	// a snapshot written after the raise, holding none of it, keeps it
+	if _, _, err := s.ExtendCard(ctx, "t1", 1, 150, 0, Event{Repository: "sf/code", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
+		t.Fatal(err)
+	}
+	raised := usage
+	raised.RaisedSessions, raised.ExtraLines = 1, 150
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.SessionsAdded() != 2 {
+		t.Fatalf("usage after the raise and a snapshot = %+v, want %+v: the snapshot keeps the raise", got.Usage, raised)
+	}
+	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != (TaskUsage{}) {
+		t.Fatalf("usage after the reset = %+v, want every counter zero, the raises too", got.Usage)
 	}
 	// t1 holds 10 EUR: a write that read 1000 cents sets the budget, one
 	// that read 200 sets the size and leaves it
@@ -2469,6 +2574,44 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != marked {
 		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal and the terminal failure stay marked, the briefed row is done", rows, marked)
+	}
+}
+
+// NewestApproval is the task's newest request of the kind, whatever its
+// status: a superseded one gives way to its successor, decided or not.
+func TestPGStoreNewestApproval(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.NewestApproval(ctx, "a1", ApprovalMerge); err != nil || ok {
+		t.Fatalf("before any request: ok %v, %v; want none", ok, err)
+	}
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "a1", Project: "sf/r", PRNumber: 9, Reason: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "a1", Project: "sf/r", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c2"}`), Reason: "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DecideApproval(ctx, second, ApprovalMerge, "approved", "sebastian", "approved in the console"); err != nil {
+		t.Fatal(err)
+	}
+	q, ok, err := s.NewestApproval(ctx, "a1", ApprovalMerge)
+	if err != nil || !ok || q.ID != second || q.Status != "approved" || q.Reason != "r2" || q.PRNumber != 9 || string(q.Spec) != `{"head_sha": "c2"}` {
+		t.Fatalf("newest = %+v, %v, %v; want the approved second", q, ok, err)
+	}
+	if _, ok, err := s.NewestApproval(ctx, "a1", ApprovalPlan); err != nil || ok {
+		t.Fatalf("another kind: ok %v, %v; want none", ok, err)
 	}
 }
 
@@ -3443,7 +3586,7 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 
 // The month is the UTC calendar month over the ledger, standing lines left
 // out, whatever the session's zone; the cap counts as reached at the
-// month's first refused_month_cap of a model call. Hand-derived at
+// month's newest refused_month_cap of a model call. Hand-derived at
 // 2026-10-01 05:00 UTC (2026-09-30 22:00 in Los Angeles): 30 on 2026-09-30
 // and a standing 10 do not count, 0.03 on 2026-10-01 and 0.01 on
 // 2026-10-02 do: 0.04.
@@ -3475,15 +3618,28 @@ func TestPGStoreMonthCap(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 1, 5, 0, 0, 0, time.UTC)
 	m, err := s.MonthSpend(ctx, at)
-	if err != nil || m.Month != "2026-10" || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" {
+	if err != nil || m.Month != "2026-10" || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" || !m.RefusedAt.IsZero() {
 		t.Fatalf("MonthSpend = (%+v, %v), want 2026-10, 0.04 EUR, no model call refused", m, err)
 	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, ts) VALUES
 		('t', 'refused_month_cap', 'the month', '2026-10-01 00:30:00Z'), ('t', 'refused_month_cap', 'later', '2026-10-01 00:40:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if m, err := s.MonthSpend(ctx, at); err != nil || m.Refusal != "the month" {
-		t.Fatalf("MonthSpend after a model call's refusal = (%+v, %v), want the month's first", m, err)
+	if m, err := s.MonthSpend(ctx, at); err != nil || m.Refusal != "later" || !m.RefusedAt.Equal(time.Date(2026, 10, 1, 0, 40, 0, 0, time.UTC)) {
+		t.Fatalf("MonthSpend after a model call's refusal = (%+v, %v), want the month's newest, later at 00:40", m, err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "100", Fingerprint: "2026-10/100/544", Verdict: VerdictReal, ResolvedBy: "factoryd"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _, _ := s.AlertByFingerprint(ctx, AlertMonthCap, "2026-10/100/544")
+	if _, ok, err := s.AlertByTask(ctx, AlertMonthCap, "card-1"); err != nil || ok {
+		t.Fatalf("AlertByTask before the link = (%v, %v), want none", ok, err)
+	}
+	if err := s.SetAlertTask(ctx, row.ID, "card-1", map[string]any{"issue": 7}); err != nil {
+		t.Fatal(err)
+	}
+	if a, ok, err := s.AlertByTask(ctx, AlertMonthCap, "card-1"); err != nil || !ok || a.ID != row.ID || a.Fingerprint != "2026-10/100/544" {
+		t.Fatalf("AlertByTask = (%+v, %v, %v), want alert %d", a, ok, err, row.ID)
 	}
 	if r, err := s.CapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 35, 0, 0, time.UTC)); err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "later"}) {
 		t.Fatalf("t's refusal since 00:35 = (%+v, %v), want later", r, err)
@@ -3694,7 +3850,7 @@ func (s *fakeStore) PutPlanConfirmation(ctx context.Context, id string, revision
 	return len(s.questions[k]), true, nil
 }
 
-func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (int, bool, error) {
+func (s *fakeStore) PlanConfirmed(ctx context.Context, id string) (int, bool, error) {
 	newest, answered := 0, false
 	for k, kinds := range s.kinds {
 		var revision int
@@ -3702,7 +3858,7 @@ func (s *fakeStore) PlanConfirmationAnswered(ctx context.Context, id string) (in
 			continue
 		}
 		for i, kind := range kinds {
-			if kind == "confirmation" && s.questions[k][i].Answer != "" && (!answered || revision > newest) {
+			if kind == "confirmation" && s.questions[k][i].Decision == DecisionConfirm && (!answered || revision > newest) {
 				newest, answered = revision, true
 			}
 		}
@@ -3775,46 +3931,70 @@ func (s *fakeStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, er
 func (s *fakeStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
 	k := fmt.Sprintf("%s %d", id, revision)
 	qs := slices.Clone(s.questions[k])
-	kinds := s.kinds[k]
 	for i := range qs {
-		if i < len(kinds) && kinds[i] == QuestionConfirmation {
+		if s.planKind(k, i) == QuestionConfirmation {
 			qs[i].Kind = QuestionConfirmation
 		}
 	}
 	return qs, nil
 }
 
-func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, answer, by string) error {
-	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+// planKind is question i's kind in the fake's two maps.
+func (s *fakeStore) planKind(k string, i int) string {
+	if kinds := s.kinds[k]; i < len(kinds) && kinds[i] == QuestionConfirmation {
+		return QuestionConfirmation
+	}
+	return "question"
+}
+
+// planAnswered tells whether question i is answered: a confirmation by
+// its decision, every other question by its answer.
+func (s *fakeStore) planAnswered(k string, i int) bool {
+	if s.planKind(k, i) == QuestionConfirmation {
+		return s.questions[k][i].Decision != ""
+	}
+	return s.questions[k][i].Answer != ""
+}
+
+func (s *fakeStore) AnswerPlanQuestion(ctx context.Context, id string, revision, idx int, decision, answer, by string) error {
+	k := fmt.Sprintf("%s %d", id, revision)
+	qs := s.questions[k]
 	switch {
 	case idx < 1 || idx > len(qs):
 		return ErrNotFound
-	case qs[idx-1].Answer != "":
+	case s.planAnswered(k, idx-1):
 		return ErrAnswered
 	}
-	qs[idx-1].Answer, qs[idx-1].AnsweredBy, qs[idx-1].AnsweredAt = answer, by, time.Now()
+	qs[idx-1].Decision, qs[idx-1].Answer, qs[idx-1].AnsweredBy, qs[idx-1].AnsweredAt = decision, answer, by, time.Now()
 	return nil
 }
 
 func (s *fakeStore) AnswerPlanQuestions(ctx context.Context, id string, revision int, answers []PlanAnswer, by string) error {
-	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
+	k := fmt.Sprintf("%s %d", id, revision)
+	qs := s.questions[k]
 	for _, a := range answers {
 		switch {
 		case a.Idx < 1 || a.Idx > len(qs):
 			return ErrNotFound
-		case qs[a.Idx-1].Answer != "":
+		case s.planAnswered(k, a.Idx-1):
 			return ErrAnswered
 		}
 	}
 	for _, a := range answers {
-		qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy, qs[a.Idx-1].AnsweredAt = a.Text, by, time.Now()
+		qs[a.Idx-1].Decision, qs[a.Idx-1].Answer, qs[a.Idx-1].AnsweredBy, qs[a.Idx-1].AnsweredAt = a.Decision, a.Text, by, time.Now()
 	}
 	return nil
 }
 
 func (s *fakeStore) OpenPlanQuestions(ctx context.Context, id string, revision int) (int, error) {
-	qs, _ := s.PlanQuestions(ctx, id, revision)
-	return len(qs) - len(slices.DeleteFunc(qs, func(q PlanQuestion) bool { return q.Answer == "" })), nil
+	k := fmt.Sprintf("%s %d", id, revision)
+	open := 0
+	for i := range s.questions[k] {
+		if !s.planAnswered(k, i) {
+			open++
+		}
+	}
+	return open, nil
 }
 
 func (s *fakeStore) ConfirmationIndex(ctx context.Context, id string, revision int) (int, bool, error) {
@@ -4263,5 +4443,213 @@ func TestRecentSessions(t *testing.T) {
 	}
 	if got, err := s.RecentSessions(ctx, "t3", at.Add(time.Hour), 2); err != nil || len(got) != 0 {
 		t.Fatalf("RecentSessions of a task without sessions = %+v, %v; want none", got, err)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). SetPlanName
+// writes a plan's name and Task reads it back; a plan never named reads
+// the empty string.
+func TestSetPlanNameRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "p-name", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1}); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Task(ctx, "p-name"); err != nil || !ok || got.PlanName != "" {
+		t.Fatalf("unnamed plan's name = (%q, %v, %v), want (\"\", true, nil)", got.PlanName, ok, err)
+	}
+	if err := s.SetPlanName(ctx, "p-name", "Harden the gate"); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.Task(ctx, "p-name")
+	if err != nil || !ok {
+		t.Fatalf("Task = (%v, %v), want (true, nil)", ok, err)
+	}
+	if got.PlanName != "Harden the gate" {
+		t.Fatalf("plan's name = %q, want %q", got.PlanName, "Harden the gate")
+	}
+	if err := s.SetPlanName(ctx, "p-name", ""); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.Task(ctx, "p-name"); err != nil || !ok || got.PlanName != "" {
+		t.Fatalf("cleared plan's name = (%q, %v, %v), want (\"\", true, nil)", got.PlanName, ok, err)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). OpenPlanNames
+// lists the project's named open plans; a plan with a plan_closed event,
+// another project's plan and the excluded id's own are not among them.
+func TestOpenPlanNamesExcludesClosedOtherProjectsAndSelf(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range []Task{
+		{ID: "p-open", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1},
+		{ID: "p-shut", Status: "done", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 2},
+		{ID: "p-self", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 3},
+		{ID: "p-blank", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 4},
+		{ID: "p-elsewhere", Status: "queued", Repository: "sf/other", Kind: "agent", Track: "plan", IssueNumber: 1},
+	} {
+		if err := s.CreateTask(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	// p-blank stays nameless: an open plan of the project without a name
+	for _, id := range []string{"p-open", "p-shut", "p-self", "p-elsewhere"} {
+		if err := s.SetPlanName(ctx, id, "name of "+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "p-shut", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	names, err := s.OpenPlanNames(ctx, "sf/r", "p-self")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := []string{"name of p-open"}; !slices.Equal(names, want) {
+		t.Fatalf("OpenPlanNames(sf/r, p-self) = %q, want %q", names, want)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL).
+// UnnamedOpenPlans lists the open plans that hold no name, oldest first;
+// a named plan, a closed one and a direct-track card are not listed.
+func TestUnnamedOpenPlansListsOnlyNamelessOpenPlans(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	old := time.Date(2026, 11, 1, 9, 0, 0, 0, time.UTC)
+	for _, p := range []Task{
+		{ID: "p-old", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 1, CreatedAt: old},
+		{ID: "p-new", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 2, CreatedAt: old.Add(time.Hour)},
+		{ID: "p-named", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 3, CreatedAt: old.Add(2 * time.Hour)},
+		{ID: "p-closed", Status: "done", Repository: "sf/r", Kind: "agent", Track: "plan", IssueNumber: 4, CreatedAt: old.Add(-time.Hour)},
+		{ID: "t-direct", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "direct", IssueNumber: 5, CreatedAt: old},
+	} {
+		if err := s.CreateTask(ctx, p); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetPlanName(ctx, "p-named", "The named one"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "p-closed", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.UnnamedOpenPlans(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, p := range got {
+		ids = append(ids, p.ID)
+	}
+	if want := []string{"p-old", "p-new"}; !slices.Equal(ids, want) {
+		t.Fatalf("UnnamedOpenPlans = %q, want %q", ids, want)
+	}
+}
+
+const endedIssuesBackfill = "factoryd/20261113100000_ended_card_issues.sql"
+
+// The backfill hands the issues of ended cards that stood open to the heal
+// pass, once. The factory's closes of closed cards stand unconfirmed again
+// (c-1 and c-2, dropped cards Forgejo refused to close: 412), a closed
+// card's close of an older issue too, so the heal pass reads each issue;
+// d-1's close of a done card stays confirmed. A merged factory-PR card of
+// the agent lane gets the close its done end now writes (#1157 and #1333
+// as reverts, a template update in merged), one with a close keeps it;
+// a human-lane schema copy, a failed revert and a card with no issue get
+// none. A plan with plan_closed gets a close with no comment (#495), a
+// plan without none. A second run changes nothing.
+func TestEndedCardIssuesBackfill(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_ended_card_issues"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	for _, q := range []string{
+		`INSERT INTO tasks (id, budget_eur, spent_eur, status, repository, kind, source, track, issue_number, pr_number, finished_at) VALUES
+			('c-1', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 1355, 0, now()),
+			('c-2', 1, 0, 'closed', 'sf/r', 'agent', 'plan', 'direct', 1356, 0, now()),
+			('c-3', 1, 0, 'closed', 'sf/r', 'agent', 'webhook', 'direct', 1400, 0, now()),
+			('d-1', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'direct', 1401, 0, now()),
+			('rv-1157', 1, 0, 'done', 'sf/r', 'agent', 'revert', 'direct', 1157, 1156, now()),
+			('rv-1333', 1, 0, 'done', 'sf/r', 'agent', 'revert', 'direct', 1333, 1332, now()),
+			('tu-6', 1, 0, 'merged', 'sf/r', 'agent', 'template-update', 'direct', 6, 5, now()),
+			('tu-8', 1, 0, 'done', 'sf/r', 'agent', 'template-update', 'direct', 8, 7, now()),
+			('sc-9', 1, 0, 'done', 'sf/r', 'human', 'schema-copy', 'direct', 9, 10, now()),
+			('rv-11', 1, 0, 'failed', 'sf/r', 'agent', 'revert', 'direct', 11, 12, now()),
+			('gs-0', 1, 0, 'done', 'sf/r', 'agent', 'github-sync', 'direct', 0, 13, now()),
+			('p-495', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 495, 0, now()),
+			('p-496', 1, 0, 'done', 'sf/r', 'agent', 'webhook', 'plan', 496, 0, now())`,
+		`INSERT INTO intake_events (task_id, kind, author, body, comment_id, created_at, confirmed_at) VALUES
+			('c-1', 'factory_closed', 'factoryd', 'factoryd: task c-1 closed: the plan''s revision 10 drops it', 1355, '2026-11-01 09:00+00', '2026-11-01 09:06+00'),
+			('c-2', 'factory_closed', 'factoryd', 'factoryd: task c-2 closed: the plan''s revision 10 drops it', 1356, '2026-11-01 09:00+00', '2026-11-01 09:06+00'),
+			('c-3', 'factory_closed', 'factoryd', 'factoryd: Retried as #1400.', 1399, '2026-10-30 09:00+00', '2026-10-30 09:00+00'),
+			('d-1', 'factory_closed', 'factoryd', 'factoryd: the alert cleared', 1401, '2026-10-30 09:00+00', '2026-10-30 09:00+00'),
+			('tu-8', 'factory_closed', 'factoryd', 'factoryd: an older close', 8, '2026-10-30 09:00+00', '2026-10-30 09:00+00')`,
+		`INSERT INTO events (repository, task_id, issue_number, kind, actor, via, detail) VALUES
+			('sf/r', 'p-495', 495, 'plan_closed', 'factoryd', 'factoryd', '{"criteria": 0}')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	want := []string{
+		"c-1 1355 confirmed false: factoryd: task c-1 closed: the plan's revision 10 drops it",
+		"c-2 1356 confirmed false: factoryd: task c-2 closed: the plan's revision 10 drops it",
+		"c-3 1399 confirmed false: factoryd: Retried as #1400.",
+		"d-1 1401 confirmed true: factoryd: the alert cleared",
+		"p-495 495 confirmed false: ",
+		"rv-1157 1157 confirmed false: factoryd: pull request #1156 merged; this card ends with it.",
+		"rv-1333 1333 confirmed false: factoryd: pull request #1332 merged; this card ends with it.",
+		"tu-6 6 confirmed false: factoryd: pull request #5 merged; this card ends with it.",
+		"tu-8 8 confirmed true: factoryd: an older close",
+	}
+	for run := 1; run <= 2; run++ {
+		if _, err := s.db.ExecContext(ctx, `DELETE FROM schema_migrations WHERE name = $1`, endedIssuesBackfill); err != nil {
+			t.Fatal(err)
+		}
+		if err := schema.Migrate(ctx, s.db); err != nil {
+			t.Fatal(err)
+		}
+		rows, err := s.db.QueryContext(ctx, `SELECT task_id || ' ' || comment_id || ' confirmed ' || (confirmed_at IS NOT NULL) || ': ' || body
+			FROM intake_events WHERE kind = 'factory_closed' ORDER BY task_id`)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var got []string
+		for rows.Next() {
+			var r string
+			if err := rows.Scan(&r); err != nil {
+				t.Fatal(err)
+			}
+			got = append(got, r)
+		}
+		rows.Close()
+		if !slices.Equal(got, want) {
+			t.Fatalf("run %d: factory closes\n%s\nwant\n%s", run, strings.Join(got, "\n"), strings.Join(want, "\n"))
+		}
 	}
 }

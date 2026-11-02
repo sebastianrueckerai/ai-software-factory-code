@@ -204,7 +204,8 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			fmt.Fprintf(w, `{"number":%d,"state":%q,"merged":false}`, n, state)
 		case r.Method == "GET" && p == "/api/v1/users/factory-agent/tokens",
-			r.Method == "GET" && strings.HasSuffix(p, "/labels"):
+			r.Method == "GET" && strings.HasSuffix(p, "/labels"),
+			r.Method == "GET" && strings.HasSuffix(p, "/dependencies"):
 			io.WriteString(w, `[]`)
 		case strings.HasPrefix(p, "/api/v1/repos/sf/repo/issues/") && strings.HasSuffix(p, "/comments"):
 			var n int64

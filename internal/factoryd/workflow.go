@@ -12,6 +12,7 @@ import (
 	"go.temporal.io/sdk/temporal"
 	"go.temporal.io/sdk/workflow"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -70,6 +71,9 @@ const (
 	// its approval on a companion pin (versionCompanions): the companion
 	// reached its pin, so the gates read again and the merge can go.
 	SignalCompanionLanded = "companion_landed"
+	// SignalPolicyLoaded is the policy loader's wake of a card waiting on
+	// a cap (versionCapWait): a new policy version is in force.
+	SignalPolicyLoaded = "policy_loaded"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -105,6 +109,8 @@ const (
 	ActivityReconcile                   = "Reconcile"
 	ActivityEscalate                    = "Escalate"
 	ActivityRecordUsage                 = "RecordUsage"
+	ActivityReadUsage                   = "ReadUsage"
+	ActivitySuccessor                   = "Successor"
 	ActivityGatePolicy                  = "GatePolicy"
 	ActivityGateMigration               = "GateMigration"
 	ActivityGateReproduction            = "GateReproduction"
@@ -115,6 +121,8 @@ const (
 	ActivityMerge                       = "Merge"
 	ActivityReportMergeFailure          = "ReportMergeFailure"
 	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
+	ActivityUnjudgedCriteria            = "UnjudgedCriteria"
+	ActivityHoldMerge                   = "HoldMerge"
 	ActivitySuperviseGate               = "SuperviseGate"
 	ActivityDropTrip                    = "DropTrip"
 	ActivityAutoMergeNote               = "AutoMergeNote"
@@ -141,6 +149,7 @@ const (
 	ActivitySessionFunded               = "SessionFunded"
 	ActivitySessionAnswered             = "SessionAnswered"
 	ActivityDayResume                   = "DayResume"
+	ActivityCapResume                   = "CapResume"
 	ActivityParkForTool                 = "ParkForTool"
 	ActivityImageArrived                = "ImageArrived"
 	ActivityLeaveImagePark              = "LeaveImagePark"
@@ -384,7 +393,7 @@ type SessionResult struct {
 	// 0 (roadmap 208), when it ran one; a card it proves closes done on
 	// the fact, no model verdict and no human's answer owed.
 	Acceptance *AcceptanceHit
-	// Capped is a day_cap session's refusal.
+	// Capped is the refusal of the cap that stopped the session, at any cap.
 	Capped *CapRefusal `json:",omitempty"`
 	// Started is when the session began, its pod's first start for a
 	// session reattached after a restart: the since of its answer read.
@@ -415,6 +424,7 @@ type RunState struct {
 	// signal and its next session starts one with them.
 	Findings []string
 	Usage    TaskUsage // what earlier runs used of the caps and were granted
+	Size     string    // the card's size, "" before the sizing step or for a card no size binds
 	// Answers are the human's answers to the task's escalations rebuilt
 	// from the intake events, newest first, and Question the
 	// question of its last escalation, which a healed run asks again with
@@ -468,11 +478,12 @@ type RunState struct {
 	// DepStarted: a human started the card despite a dependency that ended
 	// failed or closed (stepDepsStarted), with the reason (versionDepWait).
 	DepStarted string
-	// DayCap is the reason of the task's last escalation when the day cap
-	// stopped it, DayCapUntil the turn of that escalation's UTC day: a
-	// healed run waits on (versionDayCap).
-	DayCap      string
-	DayCapUntil time.Time `json:",omitzero"`
+	// Cap is the reason of the task's last escalation when a cap stopped it
+	// and the card resumes on its own, CapUntil the turn of that cap's
+	// period after the escalation: a healed run waits on (versionDayCap).
+	// The names of the JSON keys are those of the day cap's wait.
+	Cap      string    `json:"DayCap"`
+	CapUntil time.Time `json:"DayCapUntil,omitzero"`
 	// Source is the task row's arrival (alert-precheck, roadmap 181 item
 	// 3.12): an alert card checks its alert still fires before its first
 	// model call.
@@ -588,6 +599,9 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
+	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
+	run.extendRaise = workflow.GetVersion(ctx, "extend-raise", workflow.DefaultVersion, versionExtendRaise)
+	run.successor = workflow.GetVersion(ctx, "successor", workflow.DefaultVersion, versionSuccessor)
 
 	run.headHolds = workflow.GetVersion(ctx, "head-holds", workflow.DefaultVersion, versionHeadHolds)
 	run.toolPark = workflow.GetVersion(ctx, "tool-park", workflow.DefaultVersion, versionToolPark)
@@ -599,6 +613,9 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.answeredRouting = workflow.GetVersion(ctx, "answered-routing", workflow.DefaultVersion, versionAnsweredRouting)
 	run.companions = workflow.GetVersion(ctx, "companions", workflow.DefaultVersion, versionCompanions)
 	run.resumeHold = workflow.GetVersion(ctx, "resume-hold", workflow.DefaultVersion, versionResumeHold)
+	run.capWaits = workflow.GetVersion(ctx, "cap-wait", workflow.DefaultVersion, versionCapWait)
+	run.raiseReload = workflow.GetVersion(ctx, "raise-reload", workflow.DefaultVersion, versionRaiseReload)
+	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -648,7 +665,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded} {
+		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1137,9 +1154,28 @@ const (
 	// buys the attempt alone and its next check-in moment stops the card
 	// again.
 	versionCheckinGrant workflow.Version = 1
+	// versionCheckinRepeat (change id "checkin-repeat"): a check-in stop
+	// whose answer changed nothing — neither the head nor the limits — is
+	// not asked again: the repeat names the unchanged commit when its
+	// answer bought a restart, else states that no reply can change it and
+	// names the exits. A run from before the change repeats its ask.
+	versionCheckinRepeat workflow.Version = 1
+	// versionExtendRaise (change id "extend-raise"): the answer wake
+	// reloads the caps from the row, so a raise the console's Extend made
+	// while the card waited reaches the run — its guard's marks and the
+	// usage the next session records — instead of the wake's grant
+	// overwriting the raise with the snapshot the last session recorded.
+	// A run from before the change keeps its in-memory usage.
+	versionExtendRaise workflow.Version = 1
 	// versionChainDone (change id "chain-done"): a run that recorded it
 	// waited at its merge for the chain; none waits now.
 	versionChainDone workflow.Version = 1
+	// versionSuccessor (change id "successor"): a session that ends on the
+	// named push refusal — the merge of main cannot fit the card's line
+	// bound — and the successor exit's answer close the card into its
+	// successor, which starts from main's tip and carries the patch and
+	// the findings. A run from before the change loops on the refusal.
+	versionSuccessor workflow.Version = 1
 	// versionToolPark (change id "tool-park"): a session that ends in
 	// missing_tool (request_tool) parks the card on an image (ParkForTool):
 	// a refusal goes to the next session at once, or to a human when the
@@ -1209,6 +1245,46 @@ const (
 	// t-6eadec8912ab's answer re-entered the gate on PR #1385's moved head
 	// and the task died, its fix unmerged).
 	versionResumeHold workflow.Version = 1
+	// versionReviewHoldsMerge (change id "review-holds-merge"): a press
+	// that would merge a plan's integration card whose criteria no review
+	// judged runs the model review again first (rejudge): findings go back
+	// to the sessions, a review that did not run again holds the merge
+	// and asks again (HoldMerge), a judging review merges. Read at the
+	// press, not at the run's start, so a run waiting on its approval at
+	// the roll takes it on its next press. A change id's version is fixed
+	// by its first read: a run whose history pressed before the change
+	// keeps the old merge on every press, which the merge guard holds;
+	// requested changes bring it a new head, whose review judges.
+	versionReviewHoldsMerge workflow.Version = 1
+	// versionCapWait (change id "cap-wait"): a code, plan or report session
+	// the gateway refused at the month's or the project's cap, or an
+	// attempt its floor refused there, waits as one at the day cap does:
+	// the card asks with the refusal and runs the next session on its own
+	// once the cap no longer binds one (CapResume, every monthCheck) or the
+	// UTC month turns, or sooner on an answer, and a session refused at its
+	// first call is no attempt. Before it asks, a check reads the cap in
+	// force, and a refusal the version in force already lifted asks
+	// nothing. A policy load wakes every cap's wait, which checks
+	// gateway.PolicyTTL later (SignalPolicyLoaded); a healed run's wait
+	// checks at once. A run from before the change waits on a human at
+	// the month's and the project's cap, and its day cap's wait checks
+	// every dayCheck alone (DayResume).
+	versionCapWait workflow.Version = 1
+	// versionRaiseReload (change id "raise-reload"): the lifecycle reads
+	// the console's raises from the row (readRaise) before each session's
+	// cap check and after every answer wake, so an Extend made while the
+	// card ran or waited at any stop — the session cap, the agent time, a
+	// gate — reaches the run. The raises live in columns the workflow
+	// never writes (TaskUsage.RaisedSessions, ExtraLines), so no usage
+	// record writes them away. A run from before the change reloads the
+	// whole row at the check-in's stop alone (versionExtendRaise).
+	versionRaiseReload workflow.Version = 1
+	// versionSizeTime (change id "size-time"): a card's agent time follows
+	// its size as its budget and line bound do (policy.SizeAgentTime): half the
+	// class's time for a small card, one and a half for a large one, set
+	// when the sizing step writes the size and read from the row on a
+	// later run. A run from before the change keeps the class's time.
+	versionSizeTime workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1252,6 +1328,17 @@ const (
 	answerQuiet = 30 * time.Second
 	answerMax   = 3 * time.Minute
 )
+
+// checkinStopMark is a check-in stop's state: what a repeated stop
+// compares itself against (versionCheckinRepeat). Share is the count of
+// share raises its answers added, ExtraLines the line-bound raises;
+// Granted says the stop's answer bought a restart that pushed nothing.
+type checkinStopMark struct {
+	Kind, Head string
+	Share      int
+	ExtraLines int
+	Granted    bool
+}
 
 type taskRun struct {
 	ctx, short        workflow.Context
@@ -1315,6 +1402,13 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
+	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
+	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
+	successor         workflow.Version // the push-bound refusal and its exit close into a successor (versionSuccessor)
+	// lastCheckinStop is the last check-in stop's mark, what a repeat
+	// compares against (versionCheckinRepeat); zero keeps a run from before
+	// the change silent
+	lastCheckinStop   checkinStopMark
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
@@ -1331,6 +1425,10 @@ type taskRun struct {
 	switched          *programEnd      // the run's end once the card switched to the plan track, which finish returns (switchToPlan)
 	gateRuns          map[string]int   // the long gates' runs so far, by activity (versionTripRouting)
 	dayCap            workflow.Version // a day cap's refusal waits for the day to turn (versionDayCap)
+	capWaits          workflow.Version // every cap's wait ends on its own and wakes on a policy load (versionCapWait)
+	raiseReload       workflow.Version // the console's raises are read before each cap check and after each answer (versionRaiseReload)
+	sizeTime          workflow.Version // the agent time follows the card's size (versionSizeTime)
+	agentTimeBase     time.Duration    // the class's agent time, which the size scales (sizeAgentTime)
 	podWait           workflow.Version // a session whose pod never started is no attempt (versionPodWait)
 	pendingPods       int              // sessions in a row whose pod never started (versionPodWait)
 	pr                PullRequest
@@ -1397,6 +1495,7 @@ type verdict struct {
 
 func (t *taskRun) lifecycle() (string, error) {
 	drained := t.v >= versionSignalsDrained
+	t.agentTimeBase = t.cfg.WallClockCap
 	if err := workflow.ExecuteActivity(t.short, ActivityEnsureIssue, t.taskID).Get(t.ctx, nil); err != nil {
 		return t.finish("failed", "ensure issue: "+errMessage(err))
 	}
@@ -1432,7 +1531,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// capAnswer is what an answer at a cap buys: an attempt only at the
 	// session cap, else the agent time alone (versionSessionLadder)
 	capAnswer := func() {
-		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.ExtraAttempts {
+		if t.sessionLadder >= versionSessionLadder && u.Attempts < t.cfg.MaxSessions+u.SessionsAdded() {
 			t.grantTime(&u)
 			return
 		}
@@ -1455,7 +1554,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
 			capAnswer()
 			return true
 		}
@@ -1471,10 +1570,13 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.grant(&u)
 	}
 	// held ends every wait for a human of this loop: the task's final state
-	// when the wait decided one, else the change requests that answered it join
-	// the next session's findings (the human's comments are in t.answers)
+	// when the wait decided one, else the console's raises are read from
+	// the row (versionRaiseReload) and the change requests that answered
+	// it join the next session's findings (the human's comments are in
+	// t.answers)
 	held := func(final, why string, answer []string) (string, string) {
 		if final == "" {
+			t.readRaise(&u)
 			addFindings(answer, "changes")
 			if len(answer) > 0 {
 				t.gateFindings = true
@@ -1529,7 +1631,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		case answered:
 			return "", ""
 		}
-		if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
+		capHead := timeCapReached
+		if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
+			capHead = capReached
+		}
+		if final, why := held(t.awaitHuman(t.sessionCapCard(capHead, reason, slices.Concat(findings, own)), nil)); final != "" {
 			return final, why
 		}
 		capAnswer()
@@ -1543,6 +1649,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.v5 >= versionPersistUsage {
 			u = st.Usage
 		}
+		t.sizeAgentTime(st.Size)
 		if t.v7 >= versionAnswers {
 			t.answers = st.Answers
 		}
@@ -1650,10 +1757,10 @@ func (t *taskRun) lifecycle() (string, error) {
 				return t.finish(final, why)
 			}
 			setFindings(answer, "changes")
-		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.DayCap != "":
-			// the day cap's wait, its own end included
+		case t.dayCap >= versionDayCap && st.Status == "waiting-human" && st.Cap != "":
+			// the cap's wait, its own end included
 			t.pr, startRef = st.PR, st.Head
-			final, why, answer := t.awaitDay(st.DayCap, st.DayCapUntil, model)
+			final, why, answer := t.awaitCapWait(st.Cap, &capWait{until: st.CapUntil, model: model, decision: capWaitDecision(st.Cap), restored: true})
 			if final != "" {
 				return t.finish(final, why)
 			}
@@ -1680,6 +1787,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if final != "" {
 				return t.finish(final, why)
 			}
+			t.readRaise(&u)
 			setFindings(answer, "changes")
 			switch {
 			case t.v5 < versionPersistUsage:
@@ -1703,7 +1811,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// rides the findings the review weighs instead. A head
 				// the agent moved past the gates is held, not died on
 				// (versionResumeHold)
-				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 				v := t.resumeVerify(&st.Head)
 				startRef = st.Head
 				if v.final != "" {
@@ -1727,7 +1835,7 @@ func (t *taskRun) lifecycle() (string, error) {
 					apply(verdict{findings: answer, reason: "changes requested", requested: true})
 					break
 				}
-				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 				v := t.resumeVerify(&st.Head)
 				startRef = st.Head
 				if v.final != "" {
@@ -1769,7 +1877,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
 			t.pr, startRef = st.PR, st.Head
-			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.ExtraAttempts
+			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 			v := t.verify(st.Head)
 			if v.final != "" {
 				return t.finish(v.final, v.reason)
@@ -1815,17 +1923,18 @@ func (t *taskRun) lifecycle() (string, error) {
 	// session, in a run from before versionSessionLadder
 	taken := 0
 	for {
+		t.readRaise(&u)
 		attempt := u.Attempts + 1 + taken
 		if t.attemptFunded >= versionAttemptFunded {
 			// the session is refused before it starts: no session, no key,
 			// no failure round, and the card says why an answer will not run
 			if why := t.unfunded(model); why != "" {
-				if DayCapped(why) {
-					// a spent day cap resets on its own: the day cap's
-					// wait, not a human's, and no session ran
+				if d, ok := CapDecision(why); ok && (d == policy.RefusedDayCap || t.capWaits >= versionCapWait) {
+					// a spent cap resets on its own: the cap's wait, not a
+					// human's, and no session ran
 					_, state, _ := strings.Cut(why, "\n")
-					until := dayTurn(workflow.Now(t.ctx))
-					if final, end := held(t.awaitDay(dayCapRefused(dayCapFloor, state, until), until, model)); final != "" {
+					until := capTurn(d, workflow.Now(t.ctx))
+					if final, end := held(t.awaitCapWait(capWaitReason(d, capFloor(d), state, until), &capWait{until: until, model: model, decision: d})); final != "" {
 						return t.finish(final, end)
 					}
 					continue
@@ -1843,7 +1952,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				continue
 			}
 		}
-		if attempt > t.cfg.MaxSessions+u.ExtraAttempts {
+		if attempt > t.cfg.MaxSessions+u.SessionsAdded() {
 			if t.v18 < versionSessionCap {
 				break
 			}
@@ -1855,7 +1964,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 			if !answered {
-				if final, why := held(t.awaitHuman(t.sessionCapCard(reason, slices.Concat(findings, own)), nil)); final != "" {
+				if final, why := held(t.awaitHuman(t.sessionCapCard(capReached, reason, slices.Concat(findings, own)), nil)); final != "" {
 					return t.finish(final, why)
 				}
 				t.grant(&u)
@@ -1911,7 +2020,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		began := workflow.Now(t.ctx)
 		var res SessionResult
 		in := SessionInput{
-			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.ExtraAttempts, Model: model,
+			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
@@ -1964,8 +2073,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		}
-		dayCapped := t.dayCap >= versionDayCap && err == nil && !decided && res.Outcome == OutcomeDayCap && res.Capped != nil && res.Acceptance == nil
-		if dayCapped && !res.Capped.Allowed {
+		// at versionCapWait a month's or a project's cap takes the day
+		// cap's path, before the escalation its outcome is
+		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil && res.Acceptance == nil &&
+			(res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
+		if capped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
@@ -2007,7 +2119,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if drained && isTerminal(err) {
 			return t.finish("failed", "session: "+errMessage(err))
 		}
-		last := attempt >= t.cfg.MaxSessions+u.ExtraAttempts
+		last := attempt >= t.cfg.MaxSessions+u.SessionsAdded()
 		if err != nil {
 			reason = "session failed: " + errMessage(err)
 			if final, why := askUnanswered(); final != "" {
@@ -2061,12 +2173,18 @@ func (t *taskRun) lifecycle() (string, error) {
 					if res.Capped == nil || res.Capped.Allowed {
 						t.deadFrom = res.SessionID
 					}
+				case OutcomeEscalate:
+					if capped {
+						// a month's or a project's cap stopped a session
+						// that made calls, as the day's does
+						t.deadFrom = res.SessionID
+					}
 				}
 			} else if midNote {
 				handoverNote = res.CheckIn.Handover
 			}
 		}
-		if dayCapped {
+		if capped {
 			// it made calls before the cap refused one: an attempt
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
 				return t.finish(final, why)
@@ -2097,12 +2215,44 @@ func (t *taskRun) lifecycle() (string, error) {
 			if res.CheckIn.Record != nil {
 				moment = res.CheckIn.Record.Moment
 			}
-			if final, why := held(t.awaitHuman("check-in: "+cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate"))+": "+res.Reason, nil)); final != "" {
+			// the work state rides the ask when no judgment ran, so the
+			// card's question holds the findings and the review verdict
+			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+			if t.checkinRepeat >= versionCheckinRepeat {
+				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Share: u.ExtraCheckinShare, ExtraLines: u.ExtraLines}
+				if prev := t.lastCheckinStop; prev.Kind == mark.Kind && prev.Head != "" && prev.Head == mark.Head {
+					sha := mark.Head
+					if len(sha) > 7 {
+						sha = sha[:7]
+					}
+					if prev.Granted {
+						reason = checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
+					} else if prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines {
+						reason = checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
+					}
+				}
+				t.lastCheckinStop = mark
+			}
+			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
-			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && res.Reason == checkinCallCapStop {
+			if t.extendRaise >= versionExtendRaise && t.raiseReload < versionRaiseReload {
+				// the row holds what the console's Extend raised while the
+				// card waited; the wake's grant and the next stop's marks
+				// read it, or the usage the next session records would write
+				// the raise away
+				u = t.readUsage(u)
+			}
+			if t.successor >= versionSuccessor && successorChosen(t.answers) {
+				// the successor exit's answer closes the card with its work
+				// carried on, before any branch of the chain could buy a
+				// session the close makes pointless
+				return t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review))
+			}
+			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && (res.Reason == checkinCallCapStop || res.Reason == checkinTimeCapStop) {
 				// the call cap's stop falls through to buy(), never the
 				// verify break: the answer buys the session
+				t.lastCheckinStop.Granted = true
 			} else if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
 				// a spent check-in with the pull request open verifies the
 				// head it judged below, like a dropped check-in: a bought
@@ -2116,6 +2266,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// it buys (versionCheckinGrant), so the next check-in
 				// moment runs where this one stopped the card
 				t.grantCheckin(&u, true)
+				t.lastCheckinStop.Granted = true
 			}
 			buy()
 			continue
@@ -2131,6 +2282,13 @@ func (t *taskRun) lifecycle() (string, error) {
 				if t.sessionReturn(res, attempt, last) {
 					model = t.cfg.Models.Stronger
 				}
+			}
+			if t.successor >= versionSuccessor && res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) {
+				// the merge of main cannot fit the card's line bound: the
+				// card closes into a successor that starts from main's tip
+				// and carries the patch and the findings
+				packed, _ := packCardLines(slices.Clone(res.Findings))
+				return t.closeIntoSuccessor(packed)
 			}
 			if final, why := askUnanswered(); final != "" {
 				return t.finish(final, why)
@@ -2196,7 +2354,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		apply(v)
 	}
-	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.ExtraAttempts, reason))
+	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.SessionsAdded(), reason))
 }
 
 // providerRefused takes a session the provider refused: the task waits
@@ -2483,8 +2641,10 @@ func (t *taskRun) climbed(stronger bool) bool {
 // fund the session on model, else the refusal the card carries
 // (SessionFunded; a run from before versionSessionLadder asks
 // AttemptFunded). A failed read is no refusal: the per-call hold still
-// guards the money.
+// guards the money. It reads the caps in force, so the policy loads
+// signalled before it are dropped (drainLoads).
 func (t *taskRun) unfunded(model string) string {
+	t.drainLoads()
 	activity := ActivityAttemptFunded
 	if t.sessionLadder >= versionSessionLadder {
 		activity = ActivitySessionFunded
@@ -2551,9 +2711,25 @@ func (t *taskRun) grantTime(u *TaskUsage) {
 // keeps WorkflowConfig.AnswerSlice instead.
 func (t *taskRun) answerTime() time.Duration {
 	if t.answerSlice >= versionAnswerSlice {
-		return max(t.cfg.WallClockCap/4, min(minSession, t.cfg.WallClockCap))
+		return answerSlice(t.cfg.WallClockCap)
 	}
 	return min(t.cfg.AnswerSlice, t.cfg.WallClockCap)
+}
+
+// answerSlice is the agent time an answer leaves the next session under
+// the cap: a quarter of it, never under the 5 minutes a session needs to
+// start, never over the cap itself.
+func answerSlice(cap time.Duration) time.Duration {
+	return max(cap/4, min(minSession, cap))
+}
+
+// sizeAgentTime sets the card's agent time by its size (versionSizeTime):
+// the class's time halved for a small card, raised by half for a large
+// one (policy.SizeAgentTime). A card no size binds keeps the class's.
+func (t *taskRun) sizeAgentTime(size string) {
+	if t.sizeTime >= versionSizeTime && size != "" {
+		t.cfg.WallClockCap = policy.SizeAgentTime(size, t.agentTimeBase)
+	}
 }
 
 // grantPoster is grant for an answer to an information request, up to
@@ -2578,6 +2754,31 @@ func (t *taskRun) recordUsage(u TaskUsage) {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordUsage, t.taskID, u).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record usage", "task", t.taskID, "error", err)
 	}
+}
+
+// readUsage reads the caps the task's row holds (ActivityReadUsage): the
+// answer wake reloads them, so a raise the console's Extend made while the
+// card waited survives the wake's own grant (versionExtendRaise). A
+// failure keeps the usage the run holds.
+func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
+	var u TaskUsage
+	if err := workflow.ExecuteActivity(t.short, ActivityReadUsage, t.taskID).Get(t.ctx, &u); err != nil {
+		workflow.GetLogger(t.ctx).Warn("read usage", "task", t.taskID, "error", err)
+		return held
+	}
+	return u
+}
+
+// readRaise takes the console's raises from the row into u
+// (versionRaiseReload): the sessions and lines an Extend added, which the
+// workflow never writes, so the row's numbers are the truth and the rest
+// of u stays the run's own.
+func (t *taskRun) readRaise(u *TaskUsage) {
+	if t.raiseReload < versionRaiseReload {
+		return
+	}
+	row := t.readUsage(*u)
+	u.RaisedSessions, u.ExtraLines = row.RaisedSessions, row.ExtraLines
 }
 
 // verify takes a pushed commit through its pull request, the checks and
@@ -2676,6 +2877,9 @@ func (t *taskRun) gate(commit string) verdict {
 		return verdict{final: "failed", reason: fmt.Sprintf("policy version %d: risk class %s is forbidden to agents: %s",
 			g.Policy.PolicyVersion, g.Policy.Class, strings.Join(g.Policy.Paths, ", "))}
 	}
+	if g.Policy.OverBound != "" {
+		return verdict{stronger: true, reason: "over the card's line bound", findings: []string{g.Policy.OverBound}}
+	}
 	if len(g.Policy.Migrations) > 0 {
 		if err := workflow.ExecuteActivity(t.short, ActivityGateMigration, t.taskID, t.pr.Number, g.Policy.Migrations).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "migration gate: " + errMessage(err)}
@@ -2738,7 +2942,7 @@ func (t *taskRun) gate(commit string) verdict {
 	if t.v11 >= versionGateStarted {
 		t.approvalRequested = workflow.Now(t.ctx)
 	}
-	return t.awaitApproval(commit, nil)
+	return t.awaitApproval(commit, g, nil)
 }
 
 // autoMerge merges on the project's merge rule auto (versionAutoMerge):
@@ -2790,8 +2994,10 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 // keeps the wait, but a queue head's red checks take it back through its
 // turn while re-runs are left (versionRedHeadRestage); one that fails
 // otherwise keeps the approval and is tried again after mergeRetryAfter
-// (versionGatesPinned).
-func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
+// (versionGatesPinned). A press on a plan's integration card whose
+// criteria no review judged runs the review on g again first
+// (versionReviewHoldsMerge).
+func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) verdict {
 	approver := ""
 	var retry workflow.Future
 	var cancelRetry workflow.CancelFunc
@@ -2865,6 +3071,20 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 		}
 		cancelRetry = nil
 		retry = nil
+		if signalled && t.source == SourcePlan &&
+			workflow.GetVersion(t.ctx, "review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge) >= versionReviewHoldsMerge {
+			v, stop, held := t.rejudge(commit, g, approver)
+			if stop {
+				return v
+			}
+			if held {
+				approver = ""
+				if t.v11 >= versionGateStarted {
+					t.approvalRequested = workflow.Now(t.ctx)
+				}
+				continue
+			}
+		}
 		opts := finishOptions()
 		if t.v8 >= versionGatesPinned {
 			opts = mergeOptions()
@@ -2937,6 +3157,58 @@ func (t *taskRun) awaitApproval(commit string, covered []string) verdict {
 			}
 		}
 	}
+}
+
+// rejudge runs the model review again, with the stage's inputs, on a
+// press that would merge a plan's integration card whose criteria no
+// review judged (versionReviewHoldsMerge): stop with findings not
+// overruled sends the card back to its sessions, held is a review that
+// did not run again, whose merge holds asking again with its note
+// (HoldMerge), and neither lets the merge go, whose guard reads the rows
+// again. A failed read of the criteria leaves the decision to that guard.
+func (t *taskRun) rejudge(commit string, g GateResults, approver string) (v verdict, stop, held bool) {
+	var never []string
+	if err := workflow.ExecuteActivity(t.short, ActivityUnjudgedCriteria, t.taskID).Get(t.ctx, &never); err != nil {
+		workflow.GetLogger(t.ctx).Warn("unjudged criteria", "task", t.taskID, "error", err)
+		return verdict{}, false, false
+	}
+	if len(never) == 0 {
+		return verdict{}, false, false
+	}
+	var review Review
+	v, decided, err := t.gateActivity(true, fanOutOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g, lastVerdict(t.reviews), len(t.reviews)+1)
+	if decided {
+		return v, true, false
+	}
+	if err != nil {
+		review = Review{Note: "model review failed: " + errMessage(err)}
+		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "note": review.Note, "round": len(t.reviews) + 1}
+		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "model_review", detail).Get(t.ctx, nil); err != nil {
+			workflow.GetLogger(t.ctx).Warn("record the failed review", "error", err)
+		}
+	}
+	t.reviews = append(t.reviews, review)
+	if final, why, ok := t.decided(); ok {
+		return verdict{final: final, reason: why}, true, false
+	}
+	switch review.Verdict {
+	case "":
+		if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
+			// the press decided the request, so a hold that failed leaves
+			// the card waiting with no ask to press: the log names it
+			workflow.GetLogger(t.ctx).Error("hold the merge: the ask may be off the human's surface", "task", t.taskID, "error", err)
+		}
+		return verdict{}, false, true
+	case "concerns":
+		findings := review.Findings
+		if t.adjudicated >= versionAdjudicated {
+			findings = slices.DeleteFunc(slices.Clone(findings), t.overruled)
+		}
+		if len(findings) > 0 {
+			return verdict{findings: findings, reason: "the model review run again at the approval has concerns"}, true, false
+		}
+	}
+	return verdict{}, false, false
 }
 
 // awaitSessionGap is a roll's wait for a session gap before its merge
@@ -3684,8 +3956,8 @@ func (t *taskRun) awaitHumanAgain(question string, choices []string) (final, why
 	return t.awaitAnswer(question, nil)
 }
 
-// waitEnd ends a wait for a human on its own, with no answer: the day
-// cap's turn (dayWait) or an image's arrival (imageReady).
+// waitEnd ends a wait for a human on its own, with no answer: a cap's
+// own end (capWait) or an image's arrival (imageReady).
 type waitEnd interface {
 	start(t *taskRun)
 	add(sel workflow.Selector)
@@ -3791,23 +4063,91 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 	}
 }
 
-// awaitCap escalates a session the gateway refused at cap c and waits for
-// a human, at the day cap also for the wait's own end (awaitDay).
-func (t *taskRun) awaitCap(c CapRefusal, model string) (final, why string, answer []string) {
-	if until := c.until(); !until.IsZero() {
-		return t.awaitDay(c.reason(), until, model)
+// capUntil is when cap refusal c resets on its own, at the turn of its
+// period: the UTC day's at the day cap, the UTC month's at the month's and
+// the project's; zero at those in a run from before versionCapWait, whose
+// wait only a human ends.
+func (t *taskRun) capUntil(c CapRefusal) time.Time {
+	if c.Decision != policy.RefusedDayCap && t.capWaits < versionCapWait {
+		return time.Time{}
 	}
-	return t.awaitHuman(c.reason(), nil)
+	return capTurn(c.Decision, c.At)
 }
 
-// awaitDay escalates a session the day cap stopped with reason and waits
-// for an answer or the wait's own end; a day that turned at until already
-// waits for nothing.
-func (t *taskRun) awaitDay(reason string, until time.Time, model string) (final, why string, answer []string) {
+// capReason is the card's escalation of cap refusal c: a wait that ends
+// on its own says when (capWaitReason), one only a human ends asks as a
+// run from before versionCapWait asks (capRefused).
+func (t *taskRun) capReason(c CapRefusal) string {
+	until := t.capUntil(c)
+	if until.IsZero() {
+		return capRefused(c.Refusal)
+	}
+	return capWaitReason(c.Decision, capGateway(c.Decision), c.Reason, until)
+}
+
+// capAsk is the question about cap refusal c of a session on model and
+// the wait that ends on its own (nil: only a human ends it). "" asks
+// nothing: the cap's period turned, or, at versionCapWait, the check
+// before the ask (CapResume with RefusedAt), which drops the policy loads
+// signalled before it (drainLoads), finds the cap lifted by a version the
+// refusal came before; a check that fails asks. That check also says when
+// the version in force binds at the gateway, which brings the wait's
+// first check soon (settles).
+func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait) {
+	until := t.capUntil(c)
+	if until.IsZero() {
+		return t.capReason(c), nil
+	}
 	if !workflow.Now(t.ctx).Before(until) {
+		return "", nil
+	}
+	w = &capWait{until: until, model: model, decision: c.Decision}
+	if t.capWaits >= versionCapWait {
+		t.drainLoads()
+		var res CapResumed
+		in := CapCheck{TaskID: t.taskID, Model: model, Decision: c.Decision, RefusedAt: c.At}
+		if err := workflow.ExecuteActivity(t.short, ActivityCapResume, in).Get(t.ctx, &res); err != nil {
+			workflow.GetLogger(t.ctx).Warn("cap check before the ask", "task", t.taskID, "cap", c.Decision, "error", err)
+		} else if res.Resume {
+			return "", nil
+		}
+		w.settles = res.Settles
+	}
+	return t.capReason(c), w
+}
+
+// awaitCap escalates a session the gateway refused at cap c, unless
+// capAsk asks nothing, and waits for a human or the wait's own end.
+func (t *taskRun) awaitCap(c CapRefusal, model string) (final, why string, answer []string) {
+	reason, w := t.capAsk(c, model)
+	switch {
+	case reason == "":
+		return "", "", nil
+	case w == nil:
+		return t.awaitHuman(reason, nil)
+	}
+	return t.awaitCapWait(reason, w)
+}
+
+// awaitCapWait escalates a card a cap stopped with reason and waits for
+// an answer or w's own end; a period that turned at w.until already waits
+// for nothing.
+func (t *taskRun) awaitCapWait(reason string, w *capWait) (final, why string, answer []string) {
+	if !workflow.Now(t.ctx).Before(w.until) {
 		return "", "", nil
 	}
-	return t.awaitHumanUntil(reason, nil, &dayWait{until: until, model: model})
+	return t.awaitHumanUntil(reason, nil, w)
+}
+
+// drainLoads drops the policy loads signalled so far, right before a read
+// of the cap in force (versionCapWait): the wait that follows the read
+// wakes on later ones alone.
+func (t *taskRun) drainLoads() {
+	if t.capWaits < versionCapWait {
+		return
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded).ReceiveAsync(nil) {
+	}
 }
 
 // dayCheck is how often a wait on the day cap reads the day's free
@@ -3816,68 +4156,163 @@ func (t *taskRun) awaitDay(reason string, until time.Time, model string) (final,
 // day's wait takes at most 288 checks into the run's history.
 const dayCheck = 5 * time.Minute
 
-// dayWait is a wait on the day cap (versionDayCap): it ends on its own at
-// until, the UTC day's turn, or at a DayResume check, every dayCheck, that
-// finds the day's free headroom funds a session's start on model. A nil
-// wait never ends on its own.
-type dayWait struct {
-	until  time.Time
-	model  string
-	t      *taskRun
-	ctx    workflow.Context
-	cancel workflow.CancelFunc
-	// next is the next check's timer, or the check that runs (checking);
-	// turned: that check is the day's turn's
-	next             workflow.Future
-	checking, turned bool
-	ended            bool
+// monthCheck is how often a wait on the month's or the project's cap
+// checks (versionCapWait): a 31-day wait at dayCheck would write about
+// 8,900 checks into one run's history against Temporal's limit of 51,200
+// events; hourly writes at most 744.
+const monthCheck = time.Hour
+
+// settleRetry is the least time before the next check after one that
+// found the version in force not yet binding: the runner's clock may lag
+// the workflow's.
+const settleRetry = 10 * time.Second
+
+// capWait is a wait on a cap (versionDayCap): it ends on its own at until,
+// the turn of the cap's period, or at a check, every dayCheck at the day
+// cap and every monthCheck at the month's and the project's, that finds
+// the cap no longer binds a session's start on model (CapResume). A
+// policy load wakes it (SignalPolicyLoaded): its next check comes
+// gateway.PolicyTTL later, once the gateway enforces the loaded version.
+// A run from before versionCapWait waits on the day cap alone, checks
+// through DayResume and takes no wake. A nil wait never ends on its own.
+type capWait struct {
+	until    time.Time
+	model    string
+	decision string    // the cap that refused (versionCapWait)
+	settles  time.Time // when the version in force binds at the gateway, by the last check: the next check comes soon (versionCapWait)
+	restored bool      // a healed run's wait, whose first check runs at once (versionCapWait)
+	t        *taskRun
+	ctx      workflow.Context
+	cancel   workflow.CancelFunc
+	// next is the next check's timer, which disarm cancels
+	// (versionCapWait), or the check that runs (checking); turned: that
+	// check is the period's turn's; woken: a policy load came while it ran
+	next                    workflow.Future
+	disarm                  workflow.CancelFunc
+	checking, turned, woken bool
+	ended                   bool
 }
 
-// start arms the wait's first check.
-func (d *dayWait) start(t *taskRun) {
+// start arms the wait's first check; a restored wait (versionCapWait)
+// checks at once, which reads the cap in force, so the policy loads
+// signalled before it are dropped.
+func (d *capWait) start(t *taskRun) {
 	if d == nil {
 		return
 	}
 	d.t = t
 	d.ctx, d.cancel = workflow.WithCancel(t.ctx)
-	d.arm()
+	if t.capWaits >= versionCapWait && d.restored {
+		t.drainLoads()
+		d.check()
+		return
+	}
+	d.arm(d.every())
 }
 
-// arm sets the timer of the next check, the day's turn's at the latest.
-func (d *dayWait) arm() {
+// every is the time between the wait's checks.
+func (d *capWait) every() time.Duration {
+	if d.t.capWaits < versionCapWait || d.decision == policy.RefusedDayCap {
+		return dayCheck
+	}
+	return monthCheck
+}
+
+// arm sets the timer of the next check, after, at the period's turn at
+// the latest. At versionCapWait a settles bounds it too, settleRetry at
+// the least, and the timer replaces the last under its own context, which
+// a wake cancels (cancelling a timer that fired issues no command).
+func (d *capWait) arm(after time.Duration) {
 	d.checking = false
-	d.next = workflow.NewTimer(d.ctx, min(dayCheck, d.until.Sub(workflow.Now(d.ctx))))
+	now := workflow.Now(d.ctx)
+	if d.t.capWaits < versionCapWait {
+		d.next = workflow.NewTimer(d.ctx, min(after, d.until.Sub(now)))
+		return
+	}
+	if !d.settles.IsZero() {
+		after = min(after, max(d.settles.Sub(now), settleRetry))
+	}
+	after = min(after, d.until.Sub(now))
+	if d.disarm != nil {
+		d.disarm()
+	}
+	var timer workflow.Context
+	timer, d.disarm = workflow.WithCancel(d.ctx)
+	d.next = workflow.NewTimer(timer, after)
+}
+
+// check runs the wait's check, the turn's once the period turned.
+func (d *capWait) check() {
+	d.checking, d.turned = true, !workflow.Now(d.ctx).Before(d.until)
+	opts := workflow.WithActivityOptions(d.ctx, finishOptions())
+	if d.t.capWaits < versionCapWait {
+		d.next = workflow.ExecuteActivity(opts, ActivityDayResume, d.t.taskID, d.model, d.turned)
+		return
+	}
+	d.next = workflow.ExecuteActivity(opts, ActivityCapResume, CapCheck{TaskID: d.t.taskID, Model: d.model, Decision: d.decision, Turned: d.turned})
+}
+
+// resumed reads check f: whether it ends the wait. One that failed waits
+// on; settles becomes the check's, set when it found the version in force
+// not yet binding at the gateway.
+func (d *capWait) resumed(f workflow.Future) bool {
+	if d.t.capWaits < versionCapWait {
+		var funded bool
+		if err := f.Get(d.ctx, &funded); err != nil {
+			workflow.GetLogger(d.ctx).Warn("day cap check", "task", d.t.taskID, "error", err)
+		}
+		return funded
+	}
+	var res CapResumed
+	if err := f.Get(d.ctx, &res); err != nil {
+		workflow.GetLogger(d.ctx).Warn("cap check", "task", d.t.taskID, "cap", d.decision, "error", err)
+	}
+	d.settles = res.Settles
+	return res.Resume
 }
 
 // add makes sel wake on the wait's next step: a timer starts a check; a
-// check that finds the session's start funded, or the turn's, ends the
-// wait, and any other arms the next.
-func (d *dayWait) add(sel workflow.Selector) {
+// check that finds the cap no longer binding, or the turn's, ends the
+// wait, and any other arms the next. At versionCapWait a policy load wakes
+// it too: the next check comes gateway.PolicyTTL after the wake, or after
+// the check that runs; a burst of loads is one wake.
+func (d *capWait) add(sel workflow.Selector) {
 	if d == nil || d.ended {
 		return
 	}
 	sel.AddFuture(d.next, func(f workflow.Future) {
 		if !d.checking {
-			d.checking, d.turned = true, !workflow.Now(d.ctx).Before(d.until)
-			opts := workflow.WithActivityOptions(d.ctx, finishOptions())
-			d.next = workflow.ExecuteActivity(opts, ActivityDayResume, d.t.taskID, d.model, d.turned)
+			d.check()
 			return
 		}
-		var funded bool
-		if err := f.Get(d.ctx, &funded); err != nil {
-			workflow.GetLogger(d.ctx).Warn("day cap check", "task", d.t.taskID, "error", err)
+		if d.ended = d.resumed(f) || d.turned; d.ended {
+			return
 		}
-		if d.ended = funded || d.turned; !d.ended {
-			d.arm()
+		after := d.every()
+		if d.woken {
+			d.woken, after = false, gateway.PolicyTTL
 		}
+		d.arm(after)
+	})
+	if d.t.capWaits < versionCapWait {
+		return
+	}
+	sel.AddReceive(workflow.GetSignalChannel(d.ctx, SignalPolicyLoaded), func(c workflow.ReceiveChannel, _ bool) {
+		for c.ReceiveAsync(nil) {
+		}
+		if d.checking {
+			d.woken = true
+			return
+		}
+		d.arm(gateway.PolicyTTL)
 	})
 }
 
 // over says the wait ended on its own.
-func (d *dayWait) over() bool { return d != nil && d.ended }
+func (d *capWait) over() bool { return d != nil && d.ended }
 
 // stop cancels the wait's timer and its running check.
-func (d *dayWait) stop() {
+func (d *capWait) stop() {
 	if d != nil && d.cancel != nil {
 		d.cancel()
 	}
@@ -4117,6 +4552,30 @@ func (t *taskRun) reviewV0() (final, reason string, findings []string) {
 // new run, which reconciles the task and decides it again (one found
 // closing is finished at once), so no task is left running or closing
 // with its credentials live.
+// pushOverBoundMark is the worker's named refusal in a session's summary
+// (errPushOverBound, cmd/agent-worker): the branch's diff against its
+// merge base does not fit the card's line bound even after the merge of
+// main.
+const pushOverBoundMark = "push refused: over the card's line bound"
+
+// successorChosen reports whether the answer the run woke on chose the
+// successor exit: the newest answer's body carries its label.
+func successorChosen(answers []string) bool {
+	return len(answers) > 0 && strings.Contains(answers[0], ": "+SuccessorChoice)
+}
+
+// closeIntoSuccessor files the card's successor with the findings so far
+// (a packed block of lines) and finishes the card failed, the successor
+// named in its reason.
+func (t *taskRun) closeIntoSuccessor(findings string) (string, error) {
+	var succ string
+	in := SuccessorInput{TaskID: t.taskID, Findings: findings, PR: t.pr.Number}
+	if err := workflow.ExecuteActivity(t.short, ActivitySuccessor, in).Get(t.ctx, &succ); err != nil {
+		return t.finish("failed", "close into the successor: "+errMessage(err))
+	}
+	return t.finish("failed", "closed into successor "+succ)
+}
+
 func (t *taskRun) finish(final, reason string) (string, error) {
 	if t.switched != nil {
 		// the plan program finished the card; a wait it ran in returns here

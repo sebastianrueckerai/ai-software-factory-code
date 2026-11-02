@@ -575,11 +575,22 @@ func (s *acceptanceStore) ProjectByRepository(context.Context, string) (factoryd
 	return factoryd.Project{}, false, nil
 }
 
+// SetTaskUsage keeps the console's raises, as the store does.
 func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.TaskUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
+	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
 	t.Usage = u
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *acceptanceStore) ResetTaskUsage(_ context.Context, id string) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Usage = factoryd.TaskUsage{}
 	s.tasks[id] = t
 	return nil
 }
@@ -719,6 +730,10 @@ func (s *acceptanceStore) ApprovalRequests(context.Context, string) ([]factoryd.
 	return nil, nil
 }
 
+func (s *acceptanceStore) NewestApproval(context.Context, string, string) (factoryd.ApprovalRequest, bool, error) {
+	return factoryd.ApprovalRequest{}, false, nil
+}
+
 func (s *acceptanceStore) SetGate(_ context.Context, id, gate string, since time.Time) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -823,10 +838,6 @@ func (s *acceptanceStore) ResolveAlert(_ context.Context, id int64, kind, verdic
 
 func (s *acceptanceStore) JudgeEscalations(context.Context, string, factoryd.EscalationFilter, string, string) error {
 	return nil
-}
-
-func (s *acceptanceStore) DayFree(_ context.Context, dayEUR float64) (float64, error) {
-	return dayEUR, nil
 }
 
 func (s *acceptanceStore) JudgeTaskAlerts(_ context.Context, taskID, kind, verdict, by string) error {
@@ -972,6 +983,18 @@ func (s *acceptanceStore) WaitingDependents(context.Context, string) ([]string, 
 	return nil, nil
 }
 
+func (s *acceptanceStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Dependency
+	for task, deps := range s.deps {
+		if t, ok := s.tasks[task]; ok && slices.Contains(deps, id) {
+			out = append(out, factoryd.Dependency{TaskID: task, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+		}
+	}
+	return out, nil
+}
+
 func (s *acceptanceStore) ReplaceFailedCard(context.Context, string, factoryd.Task) (bool, error) {
 	return false, nil
 }
@@ -1003,6 +1026,21 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ 
 	return from, t.BudgetEUR, nil
 }
 
+func (s *acceptanceStore) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok {
+		return 0, 0, factoryd.ErrNotFound
+	}
+	from := t.BudgetEUR
+	t.BudgetEUR += eur
+	t.Usage.ExtraAttempts += sessions
+	t.Usage.ExtraLines += lines
+	s.tasks[id] = t
+	return from, t.BudgetEUR, nil
+}
+
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {
 	return 0, nil
 }
@@ -1019,7 +1057,7 @@ func (s *acceptanceStore) PutPlanConfirmation(context.Context, string, int, fact
 	return 0, false, nil
 }
 
-func (s *acceptanceStore) PlanConfirmationAnswered(context.Context, string) (int, bool, error) {
+func (s *acceptanceStore) PlanConfirmed(context.Context, string) (int, bool, error) {
 	return 0, false, nil
 }
 
@@ -1031,7 +1069,7 @@ func (s *acceptanceStore) PlanQuestions(context.Context, string, int) ([]factory
 	return nil, nil
 }
 
-func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, string, string) error {
+func (s *acceptanceStore) AnswerPlanQuestion(context.Context, string, int, int, string, string, string) error {
 	return nil
 }
 

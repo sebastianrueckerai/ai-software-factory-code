@@ -74,7 +74,8 @@ var errStopping = errors.New("factoryd stopping; the wait goes on in the next")
 
 // gapBound is how long a roll waits for a session gap: the longest agent
 // time in force at any level a task's agent time comes from (the limits,
-// a class, a process, a project) plus rollGapSlack.
+// a class, a process, a project), as a large card holds it
+// (policy.SizeAgentTime), plus rollGapSlack.
 func gapBound(v policy.Version) time.Duration {
 	longest := v.Document.Limits.AgentTime
 	var times []*policy.Time
@@ -92,7 +93,7 @@ func gapBound(v policy.Version) time.Duration {
 			longest = max(longest, t.AgentTime)
 		}
 	}
-	return longest + rollGapSlack
+	return policy.SizeAgentTime("large", longest) + rollGapSlack
 }
 
 // AwaitSessionGap is a roll's wait before its merge: its hold

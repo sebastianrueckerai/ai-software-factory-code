@@ -53,6 +53,10 @@ const (
 	EventDependencySet        = "dependency_set"
 	EventCardReplanned        = "card_replanned"
 	EventCardFunded           = "card_funded"
+	// EventCardExtended is an approver's raise of a card's caps — its
+	// session cap, line bound and budget — the console's Extend the card:
+	// detail {"sessions", "lines", "amount_eur", "from_eur", "to_eur"}.
+	EventCardExtended = "card_extended"
 	// EventChatFunded is an approver's raise of a project's chat task's
 	// monthly budget, the console's Fund the chat: detail {"from_eur",
 	// "to_eur", "amount_eur", "reason"}.
@@ -126,6 +130,14 @@ const EventPlanReplanned = "plan_replanned"
 // budget_eur, until a fund or the policy's raise or the month's turn. The
 // poke it raises asks at the needs-you level.
 const EventChatBudgetSpent = "chat_budget_spent"
+
+// EventChatTokenMade and EventChatTokenRevoked are the console's record of
+// a human making or revoking a chat token: detail {"token": {"id", "name"},
+// "project"}, the token as a token's stamp names it, and its repository.
+const (
+	EventChatTokenMade    = "chat_token_made"    // #nosec G101 -- an event kind
+	EventChatTokenRevoked = "chat_token_revoked" // #nosec G101 -- an event kind
+)
 
 // The pulse's own events, historical kinds: the pulse band the console
 // once showed under a project's status line had a cheap model write it,

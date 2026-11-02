@@ -368,7 +368,8 @@ time spent, B left; session I of J." Neither figure left goes below 0.
 Before a checkpoint has measured the card's diff, the line says the
 changed lines are not measured at this moment. A report or plan
 session's statement carries no pace line. A conversation gets
-`limits.checkin_calls` (20) calls, the last without tools, then a human.
+`limits.checkin_calls` (20) calls, the last without tools, and
+`limits.checkin_time` (5m); past either, a human.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
 human with no call. Nothing the check-in answers changes a cap or a

@@ -10,7 +10,7 @@ const { chromium } = require("playwright");
 const base = process.env.BASE || "http://127.0.0.1:8090";
 const labDir = process.env.CONSOLE_LAB_DIR || "/tmp/claude-1000/console-lab";
 const out = process.env.OUT || path.join(labDir, "shots");
-const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake", "stopped", "thinking", "metrics"];
+const scenarios = ["busy", "idle", "fire", "quiet", "assisted", "threads", "compacted", "poke", "escalation", "wake", "stopped", "thinking", "metrics", "tokens"];
 const themes = ["dark", "light"];
 const desk = { width: 1440, height: 900 };
 const wide = { width: 1920, height: 1080 };
@@ -163,6 +163,26 @@ async function main() {
             await p.page.locator("#chat-full").click();
             await p.idle();
           }, false);
+        }
+        if (s === "tokens") {
+          // the chat token (C43): a token's rows beside the browser's, the
+          // Tokens section, and the answer to its form with the block
+          // shown once, at the desk and on the phone
+          await shot("chat-tokens-1440.png", desk, "/", async (p) => {
+            await p.page.locator("#chat-full").click();
+            await p.idle();
+          }, false);
+          const made = async (p) => {
+            await p.page.locator("details:has(#token-name) > summary").click();
+            await p.page.locator("#token-name").fill("desk-claude");
+            await p.page.locator("#token-forgejo").fill("lab-forgejo-token");
+            await Promise.all([p.page.waitForNavigation(), p.page.getByRole("button", { name: "Make chat token" }).click()]);
+            await p.idle();
+          };
+          for (const [vp, w] of [[desk, 1440], [phone, 390]]) {
+            await shot("tokens-" + w + ".png", vp, "/notifications");
+            await shot("token-made-" + w + ".png", vp, "/notifications", made);
+          }
         }
         if (s === "stopped") {
           // the stopped turn: the cut answer under the grey stopped mark,

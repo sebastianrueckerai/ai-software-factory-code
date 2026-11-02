@@ -28,7 +28,8 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	err = t.c.cfg.AttachAnalysis(t.r.Context(), t.p.Repository, k.ID, found, recommendation, t.a.s.user)
+	err = t.c.cfg.AttachAnalysis(t.r.Context(), k.ID, found, recommendation,
+		factoryd.Event{Repository: t.p.Repository, Actor: t.a.s.user, Via: factoryd.ViaChat})
 	var settled *factoryd.AskSettledError
 	switch {
 	case errors.As(err, &settled):
@@ -50,8 +51,8 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 // words with request, a question's own word.
 func askNoun(kind string) string {
 	switch kind {
-	case factoryd.ApprovalMerge, factoryd.ApprovalPlan, factoryd.ApprovalCriteria:
-		return kind + " request"
+	case factoryd.ApprovalMerge, factoryd.ApprovalPlan, factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
+		return strings.ReplaceAll(kind, "_", " ") + " request"
 	}
 	return "question"
 }

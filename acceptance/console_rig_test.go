@@ -799,6 +799,21 @@ func (a *AcceptanceRig) FundCard(ctx context.Context, id string, eur float64, _ 
 	return a.RaiseTaskBudget(ctx, id, eur)
 }
 
+func (a *AcceptanceRig) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.tasks {
+		if a.tasks[i].ID == id {
+			from := a.tasks[i].BudgetEUR
+			a.tasks[i].BudgetEUR += eur
+			a.tasks[i].Usage.ExtraAttempts += sessions
+			a.tasks[i].Usage.ExtraLines += lines
+			return from, a.tasks[i].BudgetEUR, nil
+		}
+	}
+	return 0, 0, factoryd.ErrNotFound
+}
+
 func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }
 
 func (a *AcceptanceRig) RemoveTaskDeps(context.Context, string, []string) error { return nil }
@@ -1042,6 +1057,10 @@ func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string
 	return all[max(0, len(all)-limit):], nil
 }
 
+func (a *AcceptanceRig) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
+	return nil, nil
+}
+
 func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1061,6 +1080,10 @@ func (a *AcceptanceRig) CurrentConversation(context.Context, string, string) (in
 
 func (a *AcceptanceRig) NewConversation(context.Context, string, string) (int64, error) {
 	return 1, nil
+}
+
+func (a *AcceptanceRig) SideConversation(context.Context, string, string, string) (int64, error) {
+	return 2, nil
 }
 
 func (a *AcceptanceRig) Conversations(context.Context, string, string) ([]factoryd.ChatConversation, error) {
@@ -1124,6 +1147,26 @@ func (a *AcceptanceRig) PutProposal(_ context.Context, p factoryd.ChatProposal) 
 	defer a.mu.Unlock()
 	a.proposals = append(a.proposals, &accProposal{ChatProposal: p})
 	return nil
+}
+
+func (a *AcceptanceRig) ReadProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.proposals {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
+			continue
+		}
+		switch {
+		case p.Login != login:
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		}
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
 }
 
 func (a *AcceptanceRig) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
@@ -1346,17 +1389,26 @@ func (a *AcceptanceRig) AbandonChatMessage(context.Context, string, string, int6
 	return nil, nil
 }
 
-func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := a.msgs[i]
 	a.msgs = slices.Delete(a.msgs, i, i+1)
 	m.ID, m.Queued, m.At = a.nextID(), false, time.Now()
 	a.msgs = append(a.msgs, m)
+	return m.ID, nil
+}
+
+func (a *AcceptanceRig) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id }); i >= 0 {
+		a.msgs[i].Queued = true
+	}
 	return nil
 }
 

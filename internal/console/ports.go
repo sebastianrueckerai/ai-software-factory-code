@@ -121,6 +121,16 @@ type Events interface {
 	FiledPR(ctx context.Context, name string) (int64, bool, error)
 }
 
+// ChatTokens is the store of chat tokens (factoryd.PGStore).
+type ChatTokens interface {
+	AddChatToken(ctx context.Context, t factoryd.ChatToken) (int64, error)
+	ChatTokenByHash(ctx context.Context, hash string) (factoryd.ChatToken, bool, error)
+	ChatTokensOf(ctx context.Context, login string) ([]factoryd.ChatToken, error)
+	RevokeChatToken(ctx context.Context, id int64, login string, now time.Time) (bool, error)
+	TouchChatToken(ctx context.Context, id int64, now time.Time) error
+	ClaimChatTokenConversation(ctx context.Context, id, n int64) (int64, error)
+}
+
 // Chat is the project agent's store (factoryd.PGStore): each project's
 // chat task, each member's conversations, their proposals and undos, and a
 // project's month spend.
@@ -128,6 +138,9 @@ type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
+	// ChatMessagesAfter is a thread's rows after id after, oldest first,
+	// at most limit: a reader behind by more pages forward.
+	ChatMessagesAfter(ctx context.Context, repository, login string, conversation, after int64, limit int) ([]factoryd.ChatMessage, error)
 	// ChatOpenQuestion is the thread's open question, the line its last
 	// human message asked that no reply has answered, and whether a reply
 	// has already passed it once; PutChatQuestion stores both, an empty
@@ -149,6 +162,9 @@ type Chat interface {
 	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
+	// SideConversation makes a thread titled title that never becomes
+	// login's current one: a chat token's own thread.
+	SideConversation(ctx context.Context, repository, login, title string) (int64, error)
 	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
 	// ProjectConversations lists every member's threads on the project
 	// with each thread's owner named: threads are project-visible, there
@@ -168,6 +184,9 @@ type Chat interface {
 	// whose newest row is the chat budget's stop: the turns a fund resumes
 	BudgetStoppedThreads(ctx context.Context, repository string) ([]factoryd.ChatConversation, error)
 	PutProposal(ctx context.Context, p factoryd.ChatProposal) error
+	// ReadProposal is TakeProposal's row read, nothing spent: the stored
+	// proposal a correction is judged against before its token is taken.
+	ReadProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	TakeProposal(ctx context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error)
 	PurgeProposals(ctx context.Context, before time.Time) (int64, error)
 	// LiveAskBinds are the thread's open ask bindings, each with its tool
@@ -187,7 +206,13 @@ type Chat interface {
 	// Clear old sweeps the thread's old rows from the member's view: the
 	// marker rides the seen marker's table, the record keeps the rows
 	MarkCleared(ctx context.Context, repository, login string, n int64) error
-	StartQueued(ctx context.Context, repository, login string, id int64) error
+	// StartQueued lands queued row id in its place: the row takes the
+	// next id, after every row of the turns before it, and is queued no
+	// longer. It answers the landed row's new id, 0 when another turn
+	// already landed it. RequeueChatMessage puts a landed row back to
+	// the queue for the retry turn of a turn that read it and failed.
+	StartQueued(ctx context.Context, repository, login string, id int64) (int64, error)
+	RequeueChatMessage(ctx context.Context, repository, login string, id int64) error
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
@@ -230,6 +255,14 @@ type Chat interface {
 type Notes interface {
 	Notes(ctx context.Context, repository string) (factoryd.Notes, error)
 	PutNotes(ctx context.Context, repository, login, content, base string) (bool, error)
+}
+
+// Web is the chat's web door (factoryd.WebTools through the gateway): one
+// search's findings and one fetched page, each on the chat task's account
+// under the chat block's caps.
+type Web interface {
+	Search(ctx context.Context, taskID, query string, limit int) (string, error)
+	Scrape(ctx context.Context, taskID, pageURL string) (string, error)
 }
 
 // Sessions is the console's logins (factoryd.PGStore's console_sessions):

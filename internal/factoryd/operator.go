@@ -150,6 +150,26 @@ func (m *OperatorModel) Compact(ctx context.Context, taskID, thread string, mess
 	return answer.Content, err
 }
 
+// Digest is one summary call of text under ask on task taskID's account,
+// a chat's asked read or a session's digest tool: the cheap alias reads
+// the ask and the content as one user message, its answer the summary
+// text, bounded like a compaction's.
+func (m *OperatorModel) Digest(ctx context.Context, taskID, thread, ask, text string) (string, error) {
+	answer, err := m.stream(ctx, policy.PurposeDigest, compactTokens, taskID, policy.Small, thread,
+		[]OperatorMessage{{Role: "user", Content: ask + "\n\n" + text}}, nil, func(string) {}, nil)
+	return answer.Content, err
+}
+
+// researchTokens bounds a research loop's answer: the report's cut.
+const researchTokens = 2048
+
+// Research is one call of the chat's research loop on chat task taskID's
+// account: the mid tier reads messages with the loop's read tools, its
+// answer a step's tool calls or the report.
+func (m *OperatorModel) Research(ctx context.Context, taskID, thread string, messages []OperatorMessage, tools []OperatorTool) (OperatorMessage, error) {
+	return m.stream(ctx, policy.PurposeResearch, researchTokens, taskID, policy.Big, thread, messages, tools, func(string) {}, nil)
+}
+
 // Vision is one look at image, ask's answer by the vision alias on chat
 // task taskID's account, purpose vision; an empty ask asks what the
 // image shows. A gateway refusal is a *policy.Refusal in the chain, as
@@ -301,4 +321,74 @@ func (m *OperatorModel) call(ctx context.Context, purpose, taskID, thread string
 		return answer, err
 	}
 	return answer, errors.New("the stream ended before [DONE]")
+}
+
+// webTimeout bounds one web tool call: the gateway's connector holds its
+// own, shorter bound against the provider.
+const webTimeout = 2 * time.Minute
+
+// WebTools is the chat's web door client (the web plan, phase 3): one
+// search's findings, one fetched page, each through the gateway on the
+// chat task's account under the chat block's caps. A gateway refusal is
+// a *policy.Refusal in the chain, as the operator's.
+type WebTools struct {
+	GatewayURL string
+	Token      string       // the gateway-factoryd token
+	HTTP       *http.Client // nil = http.DefaultClient
+}
+
+// Search returns the web's findings for query, at most limit pages, as
+// the door answers them: titles, urls and snippets in the raw.
+func (w *WebTools) Search(ctx context.Context, taskID, query string, limit int) (string, error) {
+	return w.call(ctx, taskID, policy.ToolWebSearch, struct {
+		Query string `json:"query"`
+		Limit int    `json:"limit"`
+	}{query, limit})
+}
+
+// Scrape returns the page at url as the door answers it: the page's text.
+func (w *WebTools) Scrape(ctx context.Context, taskID, url string) (string, error) {
+	return w.call(ctx, taskID, policy.ToolWebScrape, struct {
+		URL string `json:"url"`
+	}{url})
+}
+
+// call posts one tool call to the chat tool door on task taskID's
+// account and answers its plain text.
+func (w *WebTools) call(ctx context.Context, taskID, tool string, args any) (string, error) {
+	payload, err := json.Marshal(args)
+	if err != nil {
+		return "", err
+	}
+	ctx, cancel := context.WithTimeout(ctx, webTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, w.GatewayURL+"/v1/tools/"+url.PathEscape(tool), bytes.NewReader(payload)) // #nosec G704 -- the host is the configured GatewayURL and the tool a policy constant
+	if err != nil {
+		return "", err
+	}
+	req.Header.Set("Authorization", "Bearer "+w.Token)
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set(gateway.HeaderFactoryTask, taskID)
+	client := w.HTTP
+	if client == nil {
+		client = http.DefaultClient
+	}
+	res, err := client.Do(req) // #nosec G704 -- the request built above, to GatewayURL
+	if err != nil {
+		return "", err
+	}
+	defer res.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(res.Body, 128<<10))
+	if res.StatusCode != http.StatusOK {
+		var refused struct {
+			Error struct {
+				Message string `json:"message"`
+			} `json:"error"`
+		}
+		if d := res.Header.Get(gateway.HeaderDecision); d != "" && json.Unmarshal(body, &refused) == nil {
+			return "", fmt.Errorf("gateway %s: %w", d, &policy.Refusal{Decision: d, Reason: refused.Error.Message})
+		}
+		return "", &StatusError{Code: res.StatusCode, Body: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
+	}
+	return string(body), nil
 }

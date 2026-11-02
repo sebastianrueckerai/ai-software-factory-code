@@ -183,9 +183,9 @@ func TestTurnGate(t *testing.T) {
 		t.Fatal("the thread works after every turn left")
 	}
 
-	// a message joins a listening turn in flight only from the head of
-	// the line; the turn takes the joined ids once, and its last take
-	// with none closes it to more
+	// a message joins a listening turn in flight from any place in the
+	// line, a wake's queued place included; the turn takes the joined ids
+	// once, and its last take with none closes it to more
 	g.enter(key)
 	_, wa := g.enter(key)
 	if g.join(key, wa, 7) {
@@ -193,16 +193,13 @@ func TestTurnGate(t *testing.T) {
 	}
 	g.listen(key)
 	_, wb := g.enter(key)
-	if g.join(key, wb, 8) {
-		t.Fatal("a message joined from behind another waiting turn")
+	if !g.join(key, wb, 8) {
+		t.Fatal("a message behind another waiting turn did not join the listening turn")
 	}
 	if !g.join(key, wa, 7) {
-		t.Fatal("the head of the line did not join the listening turn")
+		t.Fatal("the waiting turn ahead did not join the listening turn")
 	}
-	if !g.join(key, wb, 8) {
-		t.Fatal("the next head of the line did not join the listening turn")
-	}
-	equal(t, "the turn's takes", [][]int64{g.heard(key, true), g.heard(key, false)}, [][]int64{{7, 8}, nil})
+	equal(t, "the turn's takes", [][]int64{g.heard(key, true), g.heard(key, false)}, [][]int64{{8, 7}, nil})
 	if g.heard(key, true) != nil {
 		t.Fatal("a last take with none joined took ids")
 	}

@@ -1,14 +1,18 @@
 package console
 
 import (
+	"archive/tar"
 	"bytes"
 	"cmp"
+	"compress/gzip"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"net/url"
 	"path"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -61,9 +65,13 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if k.IssueNumber > 0 {
 		fmt.Fprintf(&b, "\nissue %s/issues/%d", base, k.IssueNumber)
 	}
-	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, factoryd.SessionCap(k, v.Document.Limits.Sessions)+k.Usage.ExtraAttempts)
+	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, factoryd.SessionCap(k, v.Document.Limits.Sessions)+k.Usage.SessionsAdded())
 	if f := capFactsFrom(k, v.Document.Limits.Sessions, bt.Escalation, all); f.capped {
-		fmt.Fprintf(&b, "\nat its session cap: %d of %d sessions used, %d granted", f.attempts, f.sessions, f.extra)
+		capName := "session cap"
+		if factoryd.AtTimeCap(bt.Escalation) {
+			capName = "agent-time cap"
+		}
+		fmt.Fprintf(&b, "\nat its %s: %d of %d sessions used, %d granted", capName, f.attempts, f.sessions, f.extra)
 	}
 	calls, err := t.c.cfg.Costs.ModelCalls(ctx, k.ID)
 	if err != nil {
@@ -87,7 +95,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	}
 	asked := "\nQuestions:"
 	for i, q := range qs {
-		if q.Answer == "" {
+		if !q.Answered() {
 			b.WriteString(asked + "\n" + factoryd.QuestionLine(i+1, q))
 			asked = ""
 		}
@@ -136,7 +144,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if m := newest(steps, "audit"); m != nil {
 		fmt.Fprintf(&b, "\naudit: %s: see pr", verdict(m))
 	}
-	if n := newestChecksCount(steps); n != "" {
+	if n := newestChecksCount(steps, pushedHead(steps)); n != "" {
 		fmt.Fprintf(&b, "\nchecks: %s: see pr", n)
 	}
 	if k.Track == policy.TrackPlan || planChild(k) {
@@ -271,8 +279,8 @@ func (t *turn) planText(in toolInput) (string, error) {
 	}
 	for i, q := range qs {
 		b.WriteString("\n" + factoryd.QuestionLine(i+1, q))
-		if q.Answer != "" {
-			fmt.Fprintf(&b, " answered: %s (%s)", q.Answer, q.AnsweredBy)
+		if q.Answered() {
+			fmt.Fprintf(&b, " answered: %s (%s)", q.Reply(), q.AnsweredBy)
 		}
 	}
 	for n := rev.Revision - 1; len(qs) == 0 && n > 0; n-- {
@@ -282,8 +290,8 @@ func (t *turn) planText(in toolInput) (string, error) {
 		}
 		var answers []string
 		for i, q := range earlier {
-			if q.Answer != "" {
-				answers = append(answers, fmt.Sprintf("\n%d. %s -> %s (%s)", i+1, q.Text, q.Answer, q.AnsweredBy))
+			if q.Answered() {
+				answers = append(answers, fmt.Sprintf("\n%d. %s -> %s (%s)", i+1, q.Text, q.Reply(), q.AnsweredBy))
 			}
 		}
 		if len(answers) > 0 {
@@ -487,36 +495,265 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	if bytes.IndexByte(raw[:min(len(raw), binarySniff)], 0) >= 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%s bytes).", p, in.Ref, answered(raw, len(raw))))
 	}
-	if in.From != 0 || in.To != 0 {
-		lines := strings.Split(string(raw), "\n")
-		if bytes.HasSuffix(raw, []byte("\n")) {
-			lines = lines[:len(lines)-1]
+	if in.Ask != "" {
+		label := fmt.Sprintf("%s at %s", p, in.Ref)
+		if cut := cutText(raw, fileLimit); len(cut) < len(raw) {
+			label = fmt.Sprintf("%s (the first %s of %s)", label, imageSize(int64(len(cut))), imageSize(int64(len(raw))))
+			raw = cut
 		}
-		if len(raw) == 0 {
-			lines = nil
-		}
-		head := fmt.Sprintf("%s at %s: %s bytes, %d lines.", p, in.Ref, answered(raw, len(raw)), len(lines))
-		if in.From < 0 || in.To < 0 || in.From > len(lines) || (in.From > 0 && in.To > 0 && in.From > in.To) {
-			return head + fmt.Sprintf(" from %d and to %d name no line range of its %d lines: name from at or before to, inside lines 1 to %d.", in.From, in.To, len(lines), len(lines)), nil
-		}
-		var b strings.Builder
-		size := 0
-		for i := max(in.From, 1); i <= min(cmp.Or(in.To, len(lines)), len(lines)); i++ {
-			if l := lines[i-1]; size+len(l) > fileLimit {
-				fmt.Fprint(&b, "… a narrower range fits: raise from or lower to.\n")
-				break
-			} else {
-				size += len(l)
-				fmt.Fprintf(&b, "line %d: %s\n", i, l)
-			}
-		}
-		return head + "\n\n" + b.String(), nil
+		return t.withDigest(label, in.Ask, string(raw))
+	}
+	if s, ok := lineWindow(fmt.Sprintf("%s at %s", p, in.Ref), raw, in.From, in.To, fileLimit); ok {
+		return s, nil
 	}
 	if len(raw) > fileLimit {
 		next := bytes.Count(raw[:fileLimit], []byte{'\n'}) + 1
 		return string(raw[:fileLimit]) + fmt.Sprintf("\n(cut at 64 KiB of %s bytes; read on from line %d)", answered(raw, len(raw)), next), nil
 	}
 	return string(raw), nil
+}
+
+// splitLines splits raw into its lines, dropping the empty one a final
+// newline adds.
+func splitLines(raw []byte) []string {
+	if len(raw) == 0 {
+		return nil
+	}
+	lines := strings.Split(string(raw), "\n")
+	if lines[len(lines)-1] == "" {
+		lines = lines[:len(lines)-1]
+	}
+	return lines
+}
+
+// lineWindow answers name's lines from..to under limit, its head naming
+// the whole; asked no range it answers "" and reports false.
+func lineWindow(name string, raw []byte, from, to, limit int) (string, bool) {
+	if from == 0 && to == 0 {
+		return "", false
+	}
+	lines := splitLines(raw)
+	head := fmt.Sprintf("%s: %s bytes, %d lines.", name, answered(raw, len(raw)), len(lines))
+	if from < 0 || to < 0 || from > len(lines) || (from > 0 && to > 0 && from > to) {
+		return head + fmt.Sprintf(" from %d and to %d name no line range of its %d lines: name from at or before to, inside lines 1 to %d.", from, to, len(lines), len(lines)), true
+	}
+	var b strings.Builder
+	size := 0
+	for i := max(from, 1); i <= min(cmp.Or(to, len(lines)), len(lines)); i++ {
+		if l := lines[i-1]; size+len(l) > limit {
+			fmt.Fprint(&b, "… a narrower range fits: raise from or lower to.\n")
+			break
+		} else {
+			size += len(l)
+			fmt.Fprintf(&b, "line %d: %s\n", i, l)
+		}
+	}
+	return head + "\n\n" + b.String(), true
+}
+
+// docText is the read_doc tool's answer: an asked read digests the
+// document's text under it on the small alias, else the read as today.
+func (t *turn) docText(in toolInput) (string, error) {
+	if in.Ask != "" {
+		repo, err := t.c.docRepoOf(t.cfg.DocRepo, in.Path)
+		if err != nil {
+			return "", err
+		}
+		content, _, present, err := t.c.docFile(t.r.Context(), repo, in.Path)
+		switch {
+		case err != nil:
+			return "", err
+		case present:
+			label := in.Path
+			if cut := cutText([]byte(content), docShown); len(cut) < len(content) {
+				label = fmt.Sprintf("%s (the first %s of %s)", label, imageSize(int64(len(cut))), imageSize(int64(len(content))))
+				content = string(cut)
+			}
+			return t.withDigest(label, in.Ask, content)
+		}
+	}
+	return t.c.readDoc(t.r.Context(), t.cfg.DocRepo, in.Path, in.Find, in.From, in.To, in.Regex)
+}
+
+// subPrefix cleans a sub-tree prefix, the tree and grep reads' path
+// argument: "" is the whole tree, a path that leaves the repository a
+// refusal.
+func subPrefix(in toolInput) (string, error) {
+	if in.Path == "" {
+		return "", nil
+	}
+	p := path.Clean(strings.TrimLeft(in.Path, "/"))
+	switch {
+	case p == ".":
+		return "", nil
+	case p == ".." || strings.HasPrefix(p, "../"):
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The path %s leaves the repository.", in.Path))
+	}
+	return p, nil
+}
+
+// treeCut bounds the tree read's lines: the first treeCut files, the
+// count line naming the rest.
+const treeCut = 500
+
+// treeText is the tree tool's answer: the project repository's whole
+// tree at a ref, one line a file with its size, the first treeCut of
+// them, the count line naming the rest and Forgejo's own truncation.
+func (t *turn) treeText(in toolInput) (string, error) {
+	if in.Ref == "" {
+		return "", refuse(http.StatusBadRequest, "The tree read needs a ref.")
+	}
+	prefix, err := subPrefix(in)
+	if err != nil {
+		return "", err
+	}
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return "", err
+	}
+	var tree struct {
+		Truncated bool `json:"truncated"`
+		Tree      []struct {
+			Path string `json:"path"`
+			Type string `json:"type"`
+			Size int64  `json:"size"`
+		} `json:"tree"`
+	}
+	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/trees/%s?recursive=true",
+		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(in.Ref)), nil, http.StatusOK, &tree)
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no tree at %s.", in.Ref))
+	}
+	if err != nil {
+		return "", &forgejoRefusal{"read the tree", err}
+	}
+	var b strings.Builder
+	files := 0
+	for _, e := range tree.Tree {
+		if e.Type != "blob" || (prefix != "" && !strings.HasPrefix(e.Path, prefix)) {
+			continue
+		}
+		files++
+		if files <= treeCut {
+			fmt.Fprintf(&b, "%s %d\n", e.Path, e.Size)
+		}
+	}
+	if files == 0 {
+		if prefix == "" {
+			return fmt.Sprintf("%s holds no files.", in.Ref), nil
+		}
+		return fmt.Sprintf("There are no files under %s at %s.", prefix, in.Ref), nil
+	}
+	switch {
+	case files > treeCut && tree.Truncated:
+		fmt.Fprintf(&b, "(cut at %d of %d %s; Forgejo's tree answer is itself truncated)\n", treeCut, files, plural(files, "file"))
+	case files > treeCut:
+		fmt.Fprintf(&b, "(cut at %d of %d %s)\n", treeCut, files, plural(files, "file"))
+	case tree.Truncated:
+		b.WriteString("(Forgejo's tree answer is itself truncated)\n")
+	}
+	return b.String(), nil
+}
+
+// The grep read's bounds: the tarball it reads is at most archiveLimit
+// bytes, the walk opens at most grepFiles files and of each its first
+// fileLimit bytes, stops at grepMatches and shows a line's first
+// grepLine characters.
+const (
+	archiveLimit = 100 << 20
+	grepFiles    = 2000
+	grepMatches  = 50
+	grepLine     = 200
+)
+
+// grepText is the grep tool's answer: the files of the project's
+// repository at a ref whose lines match a pattern, read from the ref's
+// one tarball in memory, one line a match and a count line naming every
+// bound of the walk.
+func (t *turn) grepText(in toolInput) (string, error) {
+	if in.Pattern == "" || in.Ref == "" {
+		return "", refuse(http.StatusBadRequest, "The grep read needs a pattern and a ref.")
+	}
+	re, err := regexp.Compile(in.Pattern)
+	if err != nil {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The grep pattern %q does not compile: %v.", in.Pattern, err))
+	}
+	prefix, err := subPrefix(in)
+	if err != nil {
+		return "", err
+	}
+	repo, err := factoryd.SplitRepo(t.p.Repository)
+	if err != nil {
+		return "", err
+	}
+	raw, err := t.c.callAs(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/archive/%s.tar.gz",
+		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(in.Ref)), nil, http.StatusOK, archiveLimit+1)
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no archive at %s.", in.Ref))
+	}
+	if err != nil {
+		return "", &forgejoRefusal{"read the archive", err}
+	}
+	if int64(len(raw)) > archiveLimit {
+		return "", refuse(http.StatusRequestEntityTooLarge, fmt.Sprintf("The archive of %s is over the grep read's limit of %s.", in.Ref, imageSize(archiveLimit)))
+	}
+	gz, err := gzip.NewReader(bytes.NewReader(raw))
+	if err != nil {
+		return "", &forgejoRefusal{"read the archive", err}
+	}
+	tr := tar.NewReader(gz)
+	var b strings.Builder
+	files, opened, matches := 0, 0, 0
+	for {
+		hd, err := tr.Next()
+		if errors.Is(err, io.EOF) {
+			break
+		}
+		if err != nil {
+			return "", &forgejoRefusal{"read the archive", err}
+		}
+		if hd.Typeflag != tar.TypeReg {
+			continue
+		}
+		name := strings.TrimPrefix(hd.Name, "./")
+		if prefix != "" && !strings.HasPrefix(name, prefix) {
+			continue
+		}
+		files++
+		if opened >= grepFiles || matches >= grepMatches {
+			continue
+		}
+		head := make([]byte, fileLimit)
+		n, _ := io.ReadFull(tr, head)
+		head, opened = head[:n], opened+1
+		if bytes.IndexByte(head[:min(n, binarySniff)], 0) >= 0 {
+			continue
+		}
+		lines := strings.Split(string(head), "\n")
+		if bytes.HasSuffix(head, []byte{'\n'}) {
+			lines = lines[:len(lines)-1]
+		}
+		for i, line := range lines {
+			if !re.MatchString(line) {
+				continue
+			}
+			matches++
+			if matches > grepMatches {
+				break
+			}
+			fmt.Fprintf(&b, "%s:%d:%s\n", name, i+1, string(cutText([]byte(line), grepLine)))
+		}
+	}
+	shown, cut := min(matches, grepMatches), ""
+	if files > opened || matches > grepMatches {
+		cut = ", cut"
+	}
+	matchWord := "matches"
+	if shown == 1 {
+		matchWord = "match"
+	}
+	fmt.Fprintf(&b, "(scanned %d of %d %s, %d %s%s)\n", opened, files, plural(files, "file"), shown, matchWord, cut)
+	return b.String(), nil
 }
 
 // answered is n, a count of bytes of raw, an answer api read: "at least
@@ -526,4 +763,83 @@ func answered(raw []byte, n int) string {
 		return "at least " + strconv.Itoa(n)
 	}
 	return strconv.Itoa(n)
+}
+
+// maxWebResults bounds one web search's pages; pageLimit bounds a fetched
+// page before its digest.
+const (
+	maxWebResults = 10
+	pageLimit     = 64 << 10
+)
+
+// webSearch is one paid web search on the chat task's account: the
+// findings' titles, urls and snippets go into the thread as found, no
+// digest between.
+func (t *turn) webSearch(in toolInput) (string, error) {
+	if strings.TrimSpace(in.Query) == "" {
+		return "", &refusal{http.StatusBadRequest, "The web search needs a query."}
+	}
+	if in.Limit < 0 || in.Limit > maxWebResults {
+		return "", &refusal{http.StatusBadRequest, "The web search's limit is 1 to 10."}
+	}
+	limit := cmp.Or(in.Limit, 5)
+	text, err := t.c.cfg.Web.Search(t.r.Context(), t.task, in.Query, limit)
+	if err != nil {
+		return "", t.webErr(err)
+	}
+	var pages []struct {
+		Title       string `json:"title"`
+		URL         string `json:"url"`
+		Description string `json:"description"`
+	}
+	if json.Unmarshal([]byte(text), &pages) == nil {
+		if len(pages) == 0 {
+			return "The web search found nothing.", nil
+		}
+		var b strings.Builder
+		for i, p := range pages {
+			fmt.Fprintf(&b, "%d. %s\n%s\n%s\n", i+1, cmp.Or(p.Title, "(no title)"), p.URL, strings.TrimSpace(p.Description))
+		}
+		return strings.TrimRight(b.String(), "\n"), nil
+	}
+	// the door's answer is not the findings' list: it goes in whole, cut
+	if strings.TrimSpace(text) == "" {
+		return "The web search found nothing.", nil
+	}
+	return string(cutText([]byte(text), pageLimit)), nil
+}
+
+// webScrape is one paid page fetch on the chat task's account: the page
+// never enters the thread, one digest call on the cheap alias answers the
+// ask under the page's url as its label.
+func (t *turn) webScrape(in toolInput) (string, error) {
+	if strings.TrimSpace(in.URL) == "" {
+		return "", &refusal{http.StatusBadRequest, "The web page read needs a url."}
+	}
+	page, err := t.c.cfg.Web.Scrape(t.r.Context(), t.task, in.URL)
+	if err != nil {
+		return "", t.webErr(err)
+	}
+	if strings.TrimSpace(page) == "" {
+		return "The web page at " + in.URL + " answered nothing.", nil
+	}
+	if len(page) > pageLimit {
+		page = string(cutText([]byte(page), pageLimit)) + "\n\n(the page was cut at 64 KiB)"
+	}
+	return t.withDigest(in.URL, cmp.Or(in.Ask, "Summarise this page."), page)
+}
+
+// webErr words a web door failure for the member: a refusal the policy
+// chose names itself, a status the door answered names its code, and any
+// other failure keeps its own shape for the dispatch's sentence.
+func (t *turn) webErr(err error) error {
+	var ref *policy.Refusal
+	var st *factoryd.StatusError
+	switch {
+	case errors.As(err, &ref):
+		return &refusal{http.StatusPaymentRequired, "The web tool was refused: " + ref.Reason + "."}
+	case errors.As(err, &st):
+		return &refusal{http.StatusBadGateway, "The web tool's call failed with status " + strconv.Itoa(st.Code) + "."}
+	}
+	return err
 }

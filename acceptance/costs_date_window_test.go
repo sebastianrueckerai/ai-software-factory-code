@@ -348,6 +348,9 @@ func (s *acceptTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (f
 func (s *acceptTasks) FundCard(_ context.Context, _ string, _ float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
 	return 0, 0, nil
 }
+func (s *acceptTasks) ExtendCard(_ context.Context, _ string, _, _ int, _ float64, _ factoryd.Event) (float64, float64, error) {
+	return 0, 0, nil
+}
 func (s *acceptTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }
@@ -780,19 +783,29 @@ func (f *acceptChat) DeleteConversation(context.Context, string, string, int64) 
 	return 0, nil, nil
 }
 
-func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) error {
+func (f *acceptChat) StartQueued(_ context.Context, repository, login string, id int64) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
 	k := repository + " " + login
 	i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := f.msgs[k][i]
 	f.msgs[k] = slices.Delete(f.msgs[k], i, i+1)
 	f.next++
 	m.ID, m.At, m.Queued = f.next, f.at.Add(time.Duration(f.next)*time.Second), false
 	f.msgs[k] = append(f.msgs[k], m)
+	return m.ID, nil
+}
+
+func (f *acceptChat) RequeueChatMessage(_ context.Context, repository, login string, id int64) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	if i := slices.IndexFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.ID == id }); i >= 0 {
+		f.msgs[k][i].Queued = true
+	}
 	return nil
 }
 
@@ -810,6 +823,18 @@ func (f *acceptChat) NewConversation(_ context.Context, repository, login string
 		highest = max(highest, m.Conversation)
 	}
 	f.convs[repository+" "+login] = highest + 1
+	return highest + 1, nil
+}
+
+// SideConversation is a thread past the human's highest that never
+// becomes current.
+func (f *acceptChat) SideConversation(_ context.Context, repository, login, _ string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	highest := max(int64(1), f.current(repository, login))
+	for _, m := range f.msgs[repository+" "+login] {
+		highest = max(highest, m.Conversation)
+	}
 	return highest + 1, nil
 }
 
@@ -873,6 +898,10 @@ func (f *acceptChat) ChatMessages(_ context.Context, repository, login string, c
 	return out, nil
 }
 
+func (f *acceptChat) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
+	return nil, nil
+}
+
 func (f *acceptChat) ProposalStates(_ context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
@@ -934,6 +963,26 @@ func (f *acceptChat) PutProposal(_ context.Context, p factoryd.ChatProposal) err
 	defer f.mu.Unlock()
 	f.proposals = append(f.proposals, acceptProposal{ChatProposal: p})
 	return nil
+}
+
+func (f *acceptChat) ReadProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, p := range f.proposals {
+		if p.Kind != kind || p.Token != token || p.Repository != repository {
+			continue
+		}
+		switch {
+		case p.Login != login:
+			return factoryd.ChatProposal{}, factoryd.ErrOthersProposal
+		case !p.used.IsZero():
+			return factoryd.ChatProposal{}, factoryd.ErrUsedProposal
+		case now.After(p.ExpiresAt):
+			return factoryd.ChatProposal{}, factoryd.ErrNoProposal
+		}
+		return p.ChatProposal, nil
+	}
+	return factoryd.ChatProposal{}, factoryd.ErrNoProposal
 }
 
 func (f *acceptChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {

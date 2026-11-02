@@ -19,6 +19,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
@@ -53,11 +54,20 @@ const (
 
 // keep stores a proposal (kind proposal) or an applied action's undo
 // (kind undo) of tool with args for the member on the project, for
-// chatTTL under a fresh token, which it answers, and forgets the expired
-// ones but a used proposal; "" when the store fails.
-func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
-	return t.store(factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
-		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv})
+// chatTTL under a fresh token, and answers the row stored, and forgets
+// the expired ones but a used proposal; its Token "" when the store
+// fails. A proposal holds what its call captured beside its arguments,
+// an undo nothing, and an ask binding is stored by askBinding, which
+// carries a set_pool offer's capture the same way.
+func (t *turn) keep(kind, tool string, args json.RawMessage, description string) factoryd.ChatProposal {
+	p := factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
+		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv}
+	if kind == "proposal" {
+		p.Pool = t.pool
+	}
+	t.pool = nil
+	p.Token = t.store(p)
+	return p
 }
 
 // store is keep's row put under a fresh token, which it answers; "" when
@@ -82,13 +92,28 @@ func (t *turn) store(p factoryd.ChatProposal) string {
 // another member's, which stays.
 func (t *turn) take(kind, token string) (factoryd.ChatProposal, error) {
 	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), kind, token, t.p.Repository, t.a.s.user, time.Now())
+	return p, t.proposalRefusal(err)
+}
+
+// peek is take's row read without the spend: the stored proposal of kind
+// under token for the member on the project, unused and unexpired, with
+// take's refusals for every other row. A correction is judged against it
+// before its token is taken, so a wrong one leaves the proposal usable.
+func (t *turn) peek(kind, token string) (factoryd.ChatProposal, error) {
+	p, err := t.c.cfg.Chat.ReadProposal(t.r.Context(), kind, token, t.p.Repository, t.a.s.user, time.Now())
+	return p, t.proposalRefusal(err)
+}
+
+// proposalRefusal is a proposal store's error as the member's press
+// reads it.
+func (t *turn) proposalRefusal(err error) error {
 	switch {
 	case errors.Is(err, factoryd.ErrOthersProposal):
-		return p, refuse(http.StatusForbidden, "It is another human's.")
+		return refuse(http.StatusForbidden, "It is another human's.")
 	case errors.Is(err, factoryd.ErrNoProposal), errors.Is(err, factoryd.ErrUsedProposal):
-		return p, refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
+		return refuse(http.StatusNotFound, "There is no such proposal or undo; it may have expired.")
 	}
-	return p, err
+	return err
 }
 
 // turn is one answer of the project agent to the member, streamed.
@@ -140,8 +165,26 @@ type turn struct {
 	pageQuery string
 	present   map[string]bool
 	viewEvent map[string]any
+	// trail is the research tool's steps this turn last captured, which
+	// the row's call stores beside the thread; empty once it is stamped.
+	trail string
+	// pool is the set_pool call this turn last captured: the change with
+	// the project file's blob and pool the proposal read, which its Do it
+	// — the amount the one thing a correction may change — or an ask's
+	// bound press writes against. nil until a set_pool call describes
+	// one, and again once its proposal or ask binding is stored or the
+	// call moves on.
+	pool *factoryd.PoolCapture
 	// unread: no member's stream reads the turn (quiet)
 	unread bool
+	// landed are the ids of the rows this turn landed out of the queue
+	// (their ids after landing), failed says it failed with rows read —
+	// they go back to the queue for one retry turn — and retry marks
+	// that turn, whose own failure strands the rows for the next member
+	// turn instead of chaining retries.
+	landed []int64
+	failed bool
+	retry  bool
 	// sctx is the context of the turn's model calls and of its waits for
 	// the thread's turn and a model slot, which a member's stop ends (the
 	// chat-stop plan); nil: the request's own. stopEntry is the turn's
@@ -184,7 +227,10 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 		w.WriteHeader(http.StatusOK)
 	}
 	var failed error
+	var mu sync.Mutex
 	t.send = func(event string, data any) {
+		mu.Lock()
+		defer mu.Unlock()
 		b, err := json.Marshal(data)
 		if failed == nil && err == nil {
 			failed = write(fmt.Sprintf("event: %s\ndata: %s\n\n", event, b))
@@ -196,6 +242,7 @@ func (t *turn) stream(write func(string) error, w http.ResponseWriter) {
 // quiet turn, whose stream no member reads, leaves the failure in its
 // thread as a row too, so it never ends unseen.
 func (t *turn) fail(msg string) {
+	t.failed = true
 	t.send("error", map[string]string{"message": msg})
 	if !t.unread {
 		return
@@ -236,10 +283,26 @@ type chatGetAnswer struct {
 	Messages     []factoryd.ChatMessage    `json:"messages"`
 	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
 	Budget       *chatBudget               `json:"budget,omitempty"`
+	// Pool is the project's pool line (projectPool) the panel's Set the
+	// pool / Top up control reads, absent while the policy is unreadable:
+	// the same words the settings, policy and project pages read, and
+	// whether the reader is an approver, the only ask a pool change takes.
+	Pool *chatPool `json:"pool,omitempty"`
 	// OpenQuestion is the thread's question a reply passed without
 	// answering, which the next turn's prompt carries (card #1345);
 	// absent while none is open.
 	OpenQuestion string `json:"open_question,omitempty"`
+}
+
+// chatPool is the pool line a chat page read shows the panel's pool
+// control: the loaded policy's words on the project's pool — the same
+// projection the settings, policy and project pages read, with no policy
+// identity or month of its own — and whether the reader may ask: an
+// approver of the project, the access rule set_pool answers a press with.
+type chatPool struct {
+	Present bool   `json:"present"`
+	CanAsk  bool   `json:"can_ask"`
+	Words   string `json:"words"`
 }
 
 // chatGet answers GET /projects/{name}/chat: the member's current
@@ -320,6 +383,10 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
 	}
 	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
+	if v, ok := c.inForce(ctx); ok {
+		pl := c.projectPool(ctx, v, t.p, time.Now())
+		answer.Pool = &chatPool{Present: pl.Present, CanAsk: c.isApprover(ctx, t.a.s.user, repo), Words: pl.Words}
+	}
 	if q, passed, err := c.cfg.Chat.ChatOpenQuestion(ctx, repo, owner, t.conv); err != nil {
 		log.Printf("console: the open question of %s on %s: %v", owner, repo, err)
 	} else if passed {
@@ -584,33 +651,80 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if v := r.PostFormValue("view"); len(v) <= chatViewMax {
-		t.pageQuery = v
-	}
-	text := strings.TrimSpace(r.PostFormValue("message"))
-	if text == "" || len(text) > chatMessageMax {
-		http.Error(w, "a message of up to 8 KiB is required", http.StatusBadRequest)
+	in, err := t.input(r.PostFormValue("message"))
+	if err != nil {
+		c.fail(w, r, err)
 		return
 	}
-	if m, ok := t.tree.CommandMessage(strings.TrimPrefix(text, "/")); ok && strings.HasPrefix(text, "/") {
-		text = m
+	if v := r.PostFormValue("view"); len(v) <= chatViewMax {
+		in.View = v
 	}
-	text, scrubbed := scrubTokens(text)
-	notice := ""
-	if scrubbed {
-		notice = "I removed a GitHub token from your message; it was not stored or sent. " + c.exportForm(t.p.Name)
-	}
-	ctx := r.Context()
+	in.Images, in.Documents = images, docs
 	th, err := t.thread(r, true)
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
+	in.Names = names(th)
+	if err := t.say(in, func() { t.open(w) }); err != nil {
+		c.fail(w, r, err)
+	}
+}
+
+// turnInput is a human's message as a turn takes it: its words, scrubbed,
+// the view their page stands on, its attachments, the notice of a token
+// scrubbed from it, and whether it is its thread's first, which names
+// the thread.
+type turnInput struct {
+	Message, View string
+	Images        []chatImage
+	Documents     []chatDocument
+	Notice        string // scrubTokens' notice
+	Names         bool
+}
+
+// input is text as a turn takes it: trimmed, a config tree's /name alone
+// its command's message, every token scrubbed; a refusal for no words or
+// more than 8 KiB.
+func (t *turn) input(text string) (turnInput, error) {
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) > chatMessageMax {
+		return turnInput{}, refuse(http.StatusBadRequest, "a message of up to 8 KiB is required")
+	}
+	if m, ok := t.tree.CommandMessage(strings.TrimPrefix(text, "/")); ok && strings.HasPrefix(text, "/") {
+		text = m
+	}
+	var in turnInput
+	var github, chat bool
+	if in.Message, github, chat = scrubTokens(text); github || chat {
+		in.Notice = "I removed " + removedTokens(github, chat) + " from your message; it was not stored or sent."
+	}
+	if github {
+		in.Notice += " " + t.c.exportForm(t.p.Name)
+	}
+	return in, nil
+}
+
+// names says the next message is th's first and names it (roadmap 304):
+// never the inbox's, whose title stays, nor a card thread's, whose
+// "#task" stays.
+func names(th factoryd.ChatConversation) bool {
+	return th.Messages == 0 && !th.Inbox && th.TaskID == ""
+}
+
+// say runs the turn on in in the turn's thread: it files the month's chat
+// task, stores the message and its attachments, and answers it — joining
+// the thread's turn in flight, queued behind it, or on its own. A refusal
+// comes back before open opens the stream; after that the turn fails
+// through fail. It returns when the turn ends.
+func (t *turn) say(in turnInput, open func()) error {
+	c := t.c
+	ctx := t.r.Context()
+	t.pageQuery = in.View
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
 		log.Printf("console: the chat task of %s: %v", t.p.Name, err)
-		http.Error(w, "cannot file the chat's task", http.StatusInternalServerError)
-		return
+		return refuse(http.StatusInternalServerError, "cannot file the chat's task")
 	}
 	pos, wait := c.turns.enter(t.key())
 	joined, inLine := false, pos > 0
@@ -626,23 +740,22 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 			c.turns.leave(t.key())
 		}
 	}()
-	if text == chatCompactCommand {
+	if in.Message == chatCompactCommand {
 		t.detach()
-		t.open(w)
+		open()
 		t.takeTurn(pos, wait)
 		inLine = false
 		release := c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
 		defer release()
 		t.compactByHand(task.ID)
-		return
+		return nil
 	}
-	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv, Queued: pos > 0})
+	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, factoryd.ChatMessage{Role: "user", Content: in.Message, Conversation: t.conv, Queued: pos > 0})
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-		http.Error(w, "cannot store the message", http.StatusInternalServerError)
-		return
+		return refuse(http.StatusInternalServerError, "cannot store the message")
 	}
-	for _, img := range images {
+	for _, img := range in.Images {
 		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
 			Name: img.name, FileName: img.fileName, ContentType: img.contentType, Bytes: int64(len(img.data))})
 		if err == nil {
@@ -650,12 +763,11 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-			c.abandonMessage(r, t, id)
-			http.Error(w, "cannot store the message", http.StatusInternalServerError)
-			return
+			c.abandonMessage(t.r, t, id)
+			return refuse(http.StatusInternalServerError, "cannot store the message")
 		}
 	}
-	for _, doc := range docs {
+	for _, doc := range in.Documents {
 		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
 			Name: doc.name, FileName: doc.fileName, ContentType: doc.contentType, Bytes: int64(len(doc.data))})
 		if err == nil {
@@ -663,27 +775,26 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-			http.Error(w, "cannot store the message", http.StatusInternalServerError)
-			return
+			c.abandonMessage(t.r, t, id)
+			return refuse(http.StatusInternalServerError, "cannot store the message")
 		}
 	}
 	// the thread's first message names the thread once the message and
-	// its attachments are in (roadmap 304): never in the inbox, whose
-	// title stays, nor a card thread's, whose "#task" stays
-	if th.Messages == 0 && !th.Inbox && th.TaskID == "" {
-		go c.nameThread(context.WithoutCancel(ctx), t.p.Repository, t.owner, t.conv, task.ID, text)
+	// its attachments are in
+	if in.Names {
+		go c.nameThread(context.WithoutCancel(ctx), t.p.Repository, t.owner, t.conv, task.ID, in.Message)
 	}
 	// a listening turn in flight reads the message at its next model call
 	// and answers it in its own stream
 	if pos > 0 && c.turns.join(t.key(), wait, id) {
 		joined = true
-		t.open(w)
+		open()
 		t.send("joined", map[string]int64{"id": id})
 		t.send("done", struct{}{})
-		return
+		return nil
 	}
 	t.detach()
-	t.open(w)
+	open()
 	// the turn's stop (the chat-stop plan) opens with the turn's claim,
 	// not its first model call: its model calls run under a context a
 	// member's press ends, and a press while the turn still waits —
@@ -699,19 +810,27 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		// the press ended the turn while it queued behind the thread's
 		// turn in flight: its message stays for the thread's next turn
 		t.stopEnd("")
-		return
+		return nil
 	}
 	if sctx.Err() != nil {
 		// the press landed in the moment the line handed the turn over:
 		// the turn owns the thread and ends it stopped
 		t.stopEnd("")
-		return
+		return nil
 	}
 	if pos > 0 {
-		if err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id); err != nil {
+		landed, err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id)
+		if err != nil {
 			log.Printf("console: start the queued turn of %s on %s: %v", t.owner, t.p.Repository, err)
 			t.fail("The queued message could not start its turn; send it again.")
-			return
+			return nil
+		}
+		if landed == 0 {
+			// a turn of the thread already read the message: its answer is
+			// this POST's end
+			t.send("joined", map[string]int64{"id": id})
+			t.send("done", struct{}{})
+			return nil
 		}
 	}
 	release := c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
@@ -719,10 +838,11 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		// the press ended the turn while it waited for one of the
 		// project's model turns: its message stays for the next turn
 		t.stopEnd("")
-		return
+		return nil
 	}
 	defer release()
-	t.run(task.ID, notice)
+	t.run(task.ID, in.Notice)
+	return nil
 }
 
 // chatStopPost answers POST /projects/{name}/chat/stop: the member stops
@@ -880,11 +1000,23 @@ func chatDocuments(r *http.Request) ([]chatDocument, string) {
 	return out, ""
 }
 
-// scrubTokens is text with every GitHub token replaced by tokenMask, and
-// whether it held one.
-func scrubTokens(text string) (string, bool) {
-	out := redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask)
-	return out, out != text
+// scrubTokens is text with every GitHub token and chat token replaced by
+// tokenMask, and whether it held a GitHub token and a chat token.
+func scrubTokens(text string) (out string, github, chat bool) {
+	gh := redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask)
+	out = redact.ChatToken.ReplaceAllLiteralString(gh, tokenMask)
+	return out, gh != text, out != gh
+}
+
+// removedTokens names the tokens scrubTokens removed.
+func removedTokens(github, chat bool) string {
+	switch {
+	case github && chat:
+		return "a GitHub token and a chat token"
+	case github:
+		return "a GitHub token"
+	}
+	return "a chat token"
 }
 
 // run answers the conversation's newest message: the server's notice
@@ -892,8 +1024,9 @@ func scrubTokens(text string) (string, bool) {
 // then model calls on chat task id, each ending its tool calls, until an
 // answer calls none or proposes one and no message came meanwhile. A
 // message the member sends while it runs joins it and the next call
-// reads it; one still unread when the turn fails lands unanswered. A call
-// the gateway refuses for money ends the turn on a stop row (stop).
+// reads it; one the turn read but failed to answer goes back to the
+// queue for one retry turn of the server. A call the gateway refuses for
+// money ends the turn on a stop row (stop).
 func (t *turn) run(id, notice string) {
 	t.task = id
 	ctx := t.r.Context()
@@ -903,8 +1036,25 @@ func (t *turn) run(id, notice string) {
 		if sctx.Err() != nil {
 			return // a stopped turn leaves the messages that joined it unread
 		}
+		var stranded []int64
 		for ids := t.c.turns.heard(t.key(), true); len(ids) > 0; ids = t.c.turns.heard(t.key(), true) {
+			if t.failed {
+				stranded = append(stranded, ids...) // their rows stay queued for the retry
+				continue
+			}
 			t.land(ids)
+		}
+		if !t.failed {
+			return
+		}
+		ctx := context.WithoutCancel(t.r.Context())
+		for _, id := range t.landed {
+			if err := t.c.cfg.Chat.RequeueChatMessage(ctx, t.p.Repository, t.owner, id); err != nil {
+				log.Printf("console: requeue the message %d of %s on %s: %v", id, t.owner, t.p.Repository, err)
+			}
+		}
+		if !t.retry && (len(stranded) > 0 || len(t.landed) > 0) {
+			go t.c.retryTurn(ctx, t.p, t.owner, t.conv)
 		}
 	}()
 	t.landUnread()
@@ -1010,7 +1160,8 @@ func (t *turn) run(id, notice string) {
 			proposed = proposed || token != ""
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
-				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token, Status: code})
+				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token, Trail: t.trail, Status: code})
+			t.trail = ""
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if t.ask != nil {
@@ -1073,11 +1224,18 @@ func (t *turn) questionTurn(row factoryd.ChatMessage) {
 }
 
 // land puts the messages that joined the turn, rows ids, after the rows
-// it stored so far, where the context reads them.
+// it stored so far, where the context reads them. A row another turn
+// already landed lands nowhere: its id comes back 0 and the turn did not
+// read it.
 func (t *turn) land(ids []int64) {
 	for _, id := range ids {
-		if err := t.c.cfg.Chat.StartQueued(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, id); err != nil {
+		landed, err := t.c.cfg.Chat.StartQueued(context.WithoutCancel(t.r.Context()), t.p.Repository, t.owner, id)
+		if err != nil {
 			log.Printf("console: land the joined message %d of %s on %s: %v", id, t.owner, t.p.Repository, err)
+			continue
+		}
+		if landed > 0 {
+			t.landed = append(t.landed, landed)
 		}
 	}
 }
@@ -1100,11 +1258,26 @@ func (t *turn) landUnread() {
 	t.land(ids)
 }
 
+// queuedRows says the thread still holds rows in the queue; a read that
+// fails says yes, so its caller's turn rather than a skip settles them.
+func (t *turn) queuedRows() bool {
+	ctx := context.WithoutCancel(t.r.Context())
+	rows, err := t.c.cfg.Chat.ChatMessages(ctx, t.p.Repository, t.owner, t.conv, compactRead)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return true
+	}
+	return slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Queued })
+}
+
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it, and answers the result the agent reads, the
-// proposal's token and the HTTP status a refusal answered, 0 for none.
+// call runs one tool call of the agent, or proposes it when the chat's
+// confirm names it or the tool is the member's alone to decide, and
+// answers the result the agent reads, the proposal's token and the HTTP
+// status a refusal answered, 0 for none.
 func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status int) {
 	tool, ok := t.c.chatTool(call.Name)
+	t.pool = nil
 	var in toolInput
 	args := call.Arguments
 	if ok {
@@ -1123,7 +1296,7 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
-		if !slices.Contains(t.cfg.Confirm, tool.name) {
+		if !tool.memberOnly && !slices.Contains(t.cfg.Confirm, tool.name) {
 			t.a.decider = "agent"
 			out, code := t.runTool(tool, args, in)
 			return out, "", code
@@ -1141,13 +1314,17 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 		if !reflect.DeepEqual(in, asked) {
 			raw, _ = json.Marshal(in)
 		}
-		id := t.keep("proposal", tool.name, raw, desc)
-		if id == "" {
+		p := t.keep("proposal", tool.name, raw, desc)
+		if p.Token == "" {
 			result = "The proposal could not be stored; nothing runs."
 			break
 		}
-		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": raw, "description": desc})
-		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), id, 0
+		event := map[string]any{"id": p.Token, "tool": tool.name, "arguments": raw, "description": desc, "expires": p.ExpiresAt}
+		if preview := p.Pool.Preview(); preview != nil {
+			event["pool"] = preview
+		}
+		t.send("proposal", event)
+		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), p.Token, 0
 	}
 	t.block(call.Name, args, 0, result)
 	return result, "", status
@@ -1193,7 +1370,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 	applied := map[string]string{"tool": tool.name, "result": out}
 	if inv != nil {
 		args, _ := json.Marshal(inv.args)
-		applied["undo"] = t.keep("undo", inv.tool, args, tool.name)
+		applied["undo"] = t.keep("undo", inv.tool, args, tool.name).Token
 	}
 	if applied["undo"] != "" {
 		result += " The human may undo it."
@@ -1217,8 +1394,12 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 		limit = 2000
 	}
 	result = textutil.Truncate(result, limit)
-	t.send("tool", map[string]any{"name": name, "arguments": arguments,
-		"duration_ms": took.Milliseconds(), "result": result})
+	event := map[string]any{"name": name, "arguments": arguments,
+		"duration_ms": took.Milliseconds(), "result": result}
+	if t.trail != "" {
+		event["trail"] = textutil.Truncate(t.trail, 8000)
+	}
+	t.send("tool", event)
 }
 
 // sentence is err as the member and the agent read it.
@@ -1254,41 +1435,286 @@ func refusalCode(err error) int {
 }
 
 // chatProposal answers POST /projects/{name}/chat/proposals/{id}: the
-// member's Do it runs the proposal, streamed as a turn is.
+// member's Do it runs the proposal, streamed as a turn is. Its body may
+// correct a set_pool proposal's amount — one correction object, decoded
+// and judged against the stored proposal before the token is spent, so a
+// wrong correction leaves the proposal usable. A pool press writes once,
+// before any stream: the human is re-admitted through the tool's own
+// approver rule and the conversation binds first, so a refused admission
+// or a failed bind answers before anything writes; the guarded writer
+// runs once for a valid press, and only the successful already-landed
+// result streams — every other outcome is the typed press's real HTTP
+// status, never an SSE refusal. A captured pool change whose file moved
+// since the proposal answers 409 without a write; that attempt was
+// valid, the token stays spent and the change is proposed anew.
 func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
 		return
 	}
-	p, err := t.take("proposal", r.PathValue("id"))
+	fix, err := readPoolCorrection(r)
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	if err := t.inThread(p.Conversation); err != nil {
+	if err := t.press(r.PathValue("id"), fix, func() { t.open(w) }); err != nil {
 		c.fail(w, r, err)
-		return
+	}
+}
+
+// press runs the human's proposal id, corrected by fix when it is one,
+// as chatProposal's Do it does. A refusal before the stream opens is the
+// error; open starts the stream once the proposal is taken and its
+// thread bound.
+func (t *turn) press(id string, fix *poolCorrection, open func()) error {
+	c := t.c
+	if fix != nil {
+		p, err := t.peek("proposal", id)
+		if err != nil {
+			return err
+		}
+		if err := fix.against(p); err != nil {
+			return err
+		}
+	}
+	p, err := t.take("proposal", id)
+	if err != nil {
+		return err
+	}
+	if p.Pool != nil {
+		if err := t.readmit(p.Tool); err != nil {
+			return err
+		}
+		if err := t.stalePool(p.Pool.Source); err != nil {
+			return err
+		}
+		if err := t.inThread(p.Conversation); err != nil {
+			return err
+		}
+		pr := t.poolPress(p, fix)
+		if pr.err != nil {
+			return pr.err
+		}
+		pos, wait := c.turns.enter(t.key())
+		defer c.turns.leave(t.key())
+		t.detach()
+		open()
+		t.takeTurn(pos, wait)
+		t.poolLanded(p, fix, pr)
+		return nil
+	}
+	if err := t.inThread(p.Conversation); err != nil {
+		return err
 	}
 	pos, wait := c.turns.enter(t.key())
 	defer c.turns.leave(t.key())
 	t.detach()
-	t.open(w)
-	t.takeTurn(pos, wait)
-	t.apply(p)
+	open()
+	leave := t.pressTurn(pos, wait)
+	defer leave()
+	t.apply(p, fix)
+	return nil
 }
 
-// apply is the member's Do it on proposal p: the tool runs with its
-// stored arguments, streamed, and the result lands in the conversation.
-// A refusal feeds the agent a turn, which reads the refused row and
-// answers it as an in-turn refusal; a success ends the stream.
-func (t *turn) apply(p factoryd.ChatProposal) {
+// pressTurn takes the thread's turn for a pressed proposal at pos behind
+// wait, its stop entered first, as say's is: a stop reaches the press
+// before a message that comes while its tool runs. The wait runs out, as
+// the proposal is spent and its tool runs; the stop ends the follow-up
+// turn (apply). leave takes the stop back.
+func (t *turn) pressTurn(pos int, wait <-chan struct{}) (leave func()) {
+	sctx, cancel := context.WithCancel(t.r.Context())
+	t.stopEntry = t.c.stops.enter(t.key(), cancel)
+	t.takeTurn(pos, wait)
+	t.sctx = sctx
+	return func() {
+		t.c.stops.leave(t.key(), t.stopEntry)
+		cancel()
+	}
+}
+
+// poolCorrection is a member's correction of a set_pool proposal's
+// amount: eur alone, as the one number the member may change of what the
+// proposal captured — the operation, the reason and the baseline stay the
+// row's.
+type poolCorrection struct{ eur float64 }
+
+// correctionForm is what a corrected press's body holds, as its refusals
+// name it.
+const correctionForm = `one JSON object {"correction":{"eur":12}} and nothing else`
+
+// correctionBytes is the most a corrected press's body holds. One byte
+// past it and the body refuses whole, never reads as its first bytes
+// alone: a correction hidden past the bound must not read as none.
+const correctionBytes = 8 << 10
+
+// readPoolCorrection is the correction in the press's request: a body
+// holding none — the plain press of today — answers nil. A body over
+// correctionBytes never reads as a shorter one: it refuses whole. A body
+// holding one must be exactly the correction object: null, a string, a
+// bool, an object or an array for eur, a second correction, a field
+// beside eur, a duplicate of either, or JSON after the object refuses
+// with 400.
+func readPoolCorrection(r *http.Request) (*poolCorrection, error) {
+	body, err := io.ReadAll(io.LimitReader(r.Body, correctionBytes+1))
+	if err != nil {
+		return nil, refuse(http.StatusBadRequest, "The correction's body does not read; press the proposal again.")
+	}
+	if len(body) > correctionBytes {
+		return nil, refuse(http.StatusBadRequest, fmt.Sprintf("The correction's body is over %d bytes; press the proposal again.", correctionBytes))
+	}
+	if len(bytes.TrimSpace(body)) == 0 {
+		return nil, nil
+	}
+	return decodePoolCorrection(body)
+}
+
+// decodePoolCorrection is readPoolCorrection's judgement of a body that
+// holds one.
+func decodePoolCorrection(body []byte) (*poolCorrection, error) {
+	wrong := func() error {
+		return refuse(http.StatusBadRequest, "The correction is "+correctionForm+".")
+	}
+	dec := json.NewDecoder(bytes.NewReader(body))
+	dec.UseNumber()
+	next := func() (json.Token, error) {
+		tok, err := dec.Token()
+		if err != nil {
+			return nil, wrong()
+		}
+		return tok, nil
+	}
+	delim := func(tok json.Token, open byte) bool {
+		d, ok := tok.(json.Delim)
+		return ok && d == json.Delim(open)
+	}
+	tok, err := next()
+	if err != nil {
+		return nil, err
+	}
+	if !delim(tok, '{') {
+		return nil, wrong()
+	}
+	var fix poolCorrection
+	correction, eur := false, false
+	for dec.More() {
+		k, err := next()
+		if err != nil {
+			return nil, err
+		}
+		switch k.(string) {
+		case "correction":
+			if correction {
+				return nil, wrong()
+			}
+			correction = true
+			tok, err := next()
+			if err != nil {
+				return nil, err
+			}
+			if !delim(tok, '{') {
+				return nil, wrong()
+			}
+			for dec.More() {
+				k, err := next()
+				if err != nil {
+					return nil, err
+				}
+				if k.(string) != "eur" || eur {
+					return nil, wrong()
+				}
+				eur = true
+				tok, err := next()
+				if err != nil {
+					return nil, err
+				}
+				n, ok := tok.(json.Number)
+				if !ok {
+					return nil, wrong()
+				}
+				f, err := n.Float64()
+				if err != nil {
+					return nil, refuse(http.StatusBadRequest, "a pool change's amount is a finite number in EUR")
+				}
+				fix.eur = f
+			}
+			if tok, err = next(); err != nil {
+				return nil, err
+			}
+			if !delim(tok, '}') {
+				return nil, wrong()
+			}
+		default:
+			return nil, wrong()
+		}
+	}
+	if tok, err = next(); err != nil {
+		return nil, err
+	}
+	if !delim(tok, '}') || !correction || !eur {
+		return nil, wrong()
+	}
+	if _, err := dec.Token(); !errors.Is(err, io.EOF) {
+		return nil, wrong()
+	}
+	return &fix, nil
+}
+
+// against judges the correction against the proposal it corrects: only a
+// set_pool proposal's amount may be corrected, and the amount takes the
+// change's own rules — poolCents' with the row's captured action, reason
+// and source, so the correction writes no operation, reason or baseline
+// of its own.
+func (c *poolCorrection) against(p factoryd.ChatProposal) error {
+	if p.Pool == nil {
+		return refuse(http.StatusBadRequest, fmt.Sprintf("A %s proposal takes no correction: only the pool's amount may be corrected.", p.Tool))
+	}
+	if _, err := poolCents(poolChange{action: p.Pool.Action, eur: c.eur, reason: p.Pool.Reason, source: p.Pool.Source}); err != nil {
+		return err
+	}
+	return nil
+}
+
+// stalePool is the captured pool change's guard before the stream: the
+// blob sha its proposal read against the project file on infra's main
+// now, with the write's own refusals — the file gone, or changed since
+// the proposal, which nothing rebases onto. The guarded writer checks
+// again under its lock.
+func (t *turn) stalePool(source string) error {
+	path := policy.ProjectFile(t.p.Name)
+	_, blob, present, err := t.c.infraFile(t.r.Context(), path)
+	switch {
+	case err != nil:
+		return err
+	case !present:
+		return refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+	case blob != source:
+		return refuse(http.StatusConflict, fmt.Sprintf("%s changed since the change was proposed (its blob is now %s): read it again and propose the change anew", path, blob))
+	}
+	return nil
+}
+
+// apply is the member's Do it on proposal p — fix, when the press
+// corrected it, the one amount the row lets change — the tool runs with
+// its stored arguments, streamed, and the result lands in the
+// conversation. A refusal feeds the agent a turn, which reads the refused
+// row and answers it as an in-turn refusal; a success ends the stream.
+func (t *turn) apply(p factoryd.ChatProposal, fix *poolCorrection) {
 	t.a.decider = "member"
+	t.pool = p.Pool
 	var in toolInput
 	tool, ok := t.c.chatTool(p.Tool)
 	result := "There is no tool " + p.Tool + "."
 	code := 0
 	start := time.Now()
 	if ok && json.Unmarshal(p.Args, &in) == nil {
+		if fix != nil {
+			// the corrected press runs the captured change with its amount
+			// alone changed, in the row's arguments and in the tool's input
+			in.EUR = fix.eur
+			if b, err := json.Marshal(poolArgs{Action: p.Pool.Action, EUR: fix.eur, Reason: p.Pool.Reason}); err == nil {
+				p.Args = b
+			}
+		}
 		result, code = t.runTool(tool, string(p.Args), in)
 	}
 	t.freshRead = time.Now()
@@ -1301,7 +1727,14 @@ func (t *turn) apply(p factoryd.ChatProposal) {
 		t.send("done", struct{}{})
 		return
 	}
-	release := t.c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
+	// the follow-up turn is stoppable as a sent message's turn is, on the
+	// press's stop (pressTurn); a stop while the tool ran skips it, and the
+	// applied tool stands
+	release := t.c.turns.slot(t.sctx, t.p.Repository, t.parallelTurns())
+	if release == nil {
+		t.stopEnd("")
+		return
+	}
 	defer release()
 	task, err := t.c.cfg.Chat.EnsureChatTask(t.r.Context(), t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
@@ -1465,7 +1898,7 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		msgs = append(msgs, om)
 		for _, call := range m.ToolCalls {
 			result := call.Result
-			if earlier && isRead(call.Name) && !isPriced(call.Name) {
+			if earlier && isRead(call.Name) && !isPriced(call.Name) && !asked(call.Arguments) {
 				if call.Name == "read_attachment" {
 					result = "[read at " + t.since(call.ReadAt) + ", in an earlier turn: its result is left out; the document is unchanged, call read_attachment again for the same words]"
 				} else {
@@ -1477,6 +1910,15 @@ func (t *turn) replay(rows []factoryd.ChatMessage) []factoryd.OperatorMessage {
 		}
 	}
 	return msgs
+}
+
+// asked is true for a read's recorded arguments that carry an ask: its
+// answer is a digest's, never the project's, and stays whole in replay.
+func asked(args string) bool {
+	var in struct {
+		Ask string `json:"ask"`
+	}
+	return json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) == nil && strings.TrimSpace(in.Ask) != ""
 }
 
 // imageSize is n bytes as the replay's names line shows it.
@@ -1524,7 +1966,7 @@ func (t *turn) imageNamed(name string) (*factoryd.ChatAttachment, error) {
 // image under in.Name, looked at once by the vision model on the chat
 // task's account.
 func (t *turn) lookImage(in toolInput) (string, error) {
-	if ask := strings.TrimSpace(in.Ask); len(ask) > 2000 {
+	if ask := strings.TrimSpace(in.Ask); utf8.RuneCountInString(ask) > 2000 {
 		return "", refuse(http.StatusBadRequest, "ask: what to look for, at most 2000 characters")
 	}
 	found, err := t.imageNamed(in.Name)
@@ -1662,22 +2104,42 @@ func (t *turn) summarizeAttachment(in toolInput) (string, error) {
 	}
 	label := fmt.Sprintf("%s (%s)", found.Name, found.FileName)
 	if len(b) > docSummarize {
-		cut := b[:docSummarize]
-		for !utf8.Valid(cut) {
-			cut = cut[:len(cut)-1]
-		}
-		if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
-			cut = cut[:i+1]
-		}
+		cut := cutText(b, docSummarize)
 		label = fmt.Sprintf("%s (%s, the first %s of %s)", found.Name, found.FileName, imageSize(int64(len(cut))), imageSize(int64(len(b))))
 		b = cut
 	}
-	answer, err := t.c.cfg.Operator.Stream(t.r.Context(), t.task, t.cfg.Model, t.threadRef(),
-		[]factoryd.OperatorMessage{{Role: "user", Content: cmp.Or(in.Ask, "Summarise this document.") + "\n\n" + string(b)}}, nil, func(string) {}, nil)
+	answer, err := t.c.cfg.Operator.Digest(t.r.Context(), t.task, t.threadRef(), cmp.Or(in.Ask, "Summarise this document."), string(b))
 	if err != nil {
 		return "", err
 	}
-	return label + ": " + answer.Content, nil
+	return label + ": " + answer, nil
+}
+
+// cutText is b's first size bytes, ended at a line boundary inside them
+// and valid UTF-8 to its end.
+func cutText(b []byte, size int) []byte {
+	if len(b) <= size {
+		return b
+	}
+	cut := b[:size]
+	for !utf8.Valid(cut) {
+		cut = cut[:len(cut)-1]
+	}
+	if i := bytes.LastIndexByte(cut, '\n'); i >= 0 {
+		cut = cut[:i+1]
+	}
+	return cut
+}
+
+// withDigest is one digest call over text under ask on the chat task's
+// account: the labelled answer the tool returns, whole in replay by the
+// asked rule.
+func (t *turn) withDigest(label, ask, text string) (string, error) {
+	answer, err := t.c.cfg.Operator.Digest(t.r.Context(), t.task, t.threadRef(), ask, text)
+	if err != nil {
+		return "", err
+	}
+	return label + ": " + answer, nil
 }
 
 // since is at as a replayed row shows it: its time and its age at the

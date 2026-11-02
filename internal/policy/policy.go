@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"slices"
 	"strings"
@@ -116,6 +117,10 @@ type ChatConfig struct {
 	// past its window is the bound that always holds. Absent: the window
 	// the gateway serves for the alias.
 	Window int `yaml:"window,omitempty" json:"window,omitempty"`
+	// Tools are the paid gateway tools the chat may call, with the chat
+	// task's per-tool caps: the web door's two, a policy that lists one
+	// carrying its Firecrawl prices. Absent: the chat reaches no web.
+	Tools map[string]ToolCap `yaml:"tools,omitempty" json:"tools"`
 }
 
 // DefaultParallelTurns is the bound of a chat block without one.
@@ -124,7 +129,7 @@ const DefaultParallelTurns = 3
 // ChatTools are the project agent's tools, one per console action and
 // the reads.
 var ChatTools = []string{"system", "board", "card", "history", "card_history", "costs", "diff",
-	"plan", "pr", "file", "session", "session_steps", "session_step", "session_search", "ci",
+	"plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
 	"alerts", "deployment_health", "resources", "settings", "policy", "project_images",
 	"alert_verdict", "promote_resource", "release_resource",
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
@@ -240,6 +245,12 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 		if b.Confirm != nil {
 			c.Confirm = b.Confirm
 		}
+		if b.Tools != nil {
+			merged := make(map[string]ToolCap, len(c.Tools)+len(b.Tools))
+			maps.Copy(merged, c.Tools)
+			maps.Copy(merged, b.Tools)
+			c.Tools = merged
+		}
 	}
 	c.Confirm = ConfirmFor(p.Autonomy, p.MergeRule, c.Confirm)
 	return c
@@ -276,6 +287,14 @@ func (c *ChatConfig) validate() error {
 	}
 	if c.DocRepo != "" && !repositoryName.MatchString(c.DocRepo) {
 		return fmt.Errorf("chat.doc_repo %q: owner/name in lower case", c.DocRepo)
+	}
+	for tool, tc := range c.Tools {
+		if !slices.Contains(ChatPaidTools, tool) {
+			return fmt.Errorf("chat.tools: unknown tool %q (known: %v)", tool, ChatPaidTools)
+		}
+		if tc.MaxRequests <= 0 || tc.MaxEUR <= 0 {
+			return fmt.Errorf("chat.tools %q needs a positive max_requests and max_eur", tool)
+		}
 	}
 	return nil
 }
@@ -331,6 +350,9 @@ type Limits struct {
 	// its last call carries no tools and asks for the answer. Absent:
 	// DefaultCheckinCalls.
 	CheckinCalls int `yaml:"checkin_calls,omitempty" json:"checkin_calls,omitempty"`
+	// CheckinTime is how long one check-in conversation may run before
+	// its ask goes to a human; 0 means DefaultCheckinTime.
+	CheckinTime time.Duration `yaml:"checkin_time,omitempty" json:"checkin_time,omitempty"`
 	// CheckinShare is the most percent of the card's budget the check-in's
 	// calls may spend. Absent: DefaultCheckinShare.
 	CheckinShare int `yaml:"checkin_share,omitempty" json:"checkin_share,omitempty"`
@@ -404,6 +426,7 @@ func (l Limits) NoPushShare() float64 {
 // version pinned before they existed (the escalation ladder's plan D).
 const (
 	DefaultCheckinCalls         = 20
+	DefaultCheckinTime          = 5 * time.Minute
 	DefaultCheckinShare         = 10
 	DefaultCheckinTailKiB       = 24
 	DefaultCheckinHandoverChars = 2000
@@ -414,6 +437,10 @@ const (
 // CheckinSessionCount are the keys, their defaults where unset;
 // CheckinShareOf is CheckinShare as a share of a card's budget.
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
+
+// CheckinTimeCap is how long one check-in conversation may run,
+// limits.checkin_time or DefaultCheckinTime.
+func (l Limits) CheckinTimeCap() time.Duration { return cmp.Or(l.CheckinTime, DefaultCheckinTime) }
 
 // CheckinShareOf is CheckinShare as a share of budget, its default
 // where unset.
@@ -502,14 +529,19 @@ type limitsJSON struct {
 	// PlanWarnAt is limits.plan_warn_at, left out when 0.
 	PlanWarnAt int `json:"plan_warn_at,omitempty"`
 	// NoPushSpend is limits.no_push_spend, left out when 0.
-	NoPushSpend int `json:"no_push_spend,omitempty"`
+	NoPushSpend int    `json:"no_push_spend,omitempty"`
+	CheckinTime string `json:"checkin_time,omitempty"`
 }
 
 // MarshalJSON is Limits as limitsJSON, its durations as strings, as in
 // the YAML.
 func (l Limits) MarshalJSON() ([]byte, error) {
+	checkinTime := ""
+	if l.CheckinTime != 0 {
+		checkinTime = l.CheckinTime.String()
+	}
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
-		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend})
+		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, checkinTime})
 }
 
 // UnmarshalJSON reads limitsJSON back into Limits, its duration strings
@@ -526,7 +558,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
-	}{{j.AgentTime, &out.AgentTime}, {j.CheckIn, &out.CheckIn}, {j.SupervisorTimeout, &out.SupervisorTimeout}} {
+	}{{j.AgentTime, &out.AgentTime}, {j.CheckIn, &out.CheckIn}, {j.SupervisorTimeout, &out.SupervisorTimeout}, {j.CheckinTime, &out.CheckinTime}} {
 		if d.s == "" {
 			continue
 		}
@@ -590,6 +622,8 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
 	case l.CheckinCalls != 0 && (l.CheckinCalls < 1 || l.CheckinCalls > 48):
 		return fmt.Errorf("policy: limits.checkin_calls must be 0 or lie between 1 and 48, is %d", l.CheckinCalls)
+	case l.CheckinTime != 0 && (l.CheckinTime < time.Minute || l.CheckinTime > 30*time.Minute):
+		return fmt.Errorf("policy: limits.checkin_time must be 0 or lie between 1m and 30m, is %s", l.CheckinTime)
 	case l.CheckinShare != 0 && (l.CheckinShare < 1 || l.CheckinShare > 100):
 		return fmt.Errorf("policy: limits.checkin_share must be 0 or lie between 1 and 100, is %d", l.CheckinShare)
 	case l.CheckinTailKiB != 0 && (l.CheckinTailKiB < 4 || l.CheckinTailKiB > 64):
@@ -765,7 +799,7 @@ func (d Document) PartsBound(activity string, parts int) time.Duration {
 	switch {
 	case ok:
 	case activity == "RunSession" || activity == "RunReport" || activity == "RunPlan":
-		return d.Limits.AgentTime + time.Minute
+		return SizeAgentTime("large", d.Limits.AgentTime) + time.Minute
 	case activity == "Screen" || activity == "SizeCard":
 		// a screening's or a sizing's report session, and its pod start
 		return d.Limits.AgentTime + 2*time.Minute
@@ -915,6 +949,10 @@ const (
 	// PurposeCompact is a chat thread's compaction (roadmap 239): one
 	// cheap call that summarises the thread before its kept tail.
 	PurposeCompact = "compact"
+	// PurposeDigest is one summary of one big read or page (roadmap 300):
+	// the cheap alias answers the ask over the content, its answer the
+	// only thing that enters the thread.
+	PurposeDigest = "digest"
 	// PurposeCheckin is the check-in agent's conversation at a gate
 	// return (the escalation ladder's plan D).
 	PurposeCheckin = "checkin"
@@ -922,9 +960,13 @@ const (
 	// member pasted, a session's analyze_image at a card's image or a
 	// workspace file. The only purpose an image part may ride.
 	PurposeVision = "vision"
-	// PurposeTitle is a chat thread's naming call (roadmap 304): one
-	// cheap call that writes the thread's title from its first message.
+	// PurposeTitle is a naming call: a chat thread's (roadmap 304), one
+	// cheap call that writes the thread's title from its first message,
+	// and a plan's, which names the plan from its first revision.
 	PurposeTitle = "title"
+	// PurposeResearch is the chat's research subagent: the bounded loop
+	// behind the research tool, on the class below premium, hard-coded.
+	PurposeResearch = "research"
 	// PurposeBrief is a needs-you card's brief, on the
 	// class's supervisor model: the one call a card that waits on a person
 	// may make.
@@ -937,8 +979,12 @@ var LookTypes = []string{"image/png", "image/jpeg", "image/webp", "image/gif"}
 // MaxLookBytes is the largest image a look takes.
 const MaxLookBytes = 8 << 20
 
+// MaxDigestBytes is the largest file a session's digest reads: about 40K
+// tokens of text, which one Small call takes beside the ask.
+const MaxDigestBytes = 128 << 10
+
 // Purposes are the factoryd purposes the gateway admits.
-var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeCheckin, PurposeVision, PurposeTitle, PurposeBrief}
+var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeResearch, PurposeBrief}
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
 // and Small are LiteLLM aliases routed to their z.ai model, Premium the
@@ -981,6 +1027,18 @@ const (
 // PaidTools are the tools a class lists with caps.
 var PaidTools = []string{ToolWebScrape, ToolWebSearch, ToolReplicate, ToolFal}
 
+// ChatPaidTools are the paid tools a chat block lists in tools: the web
+// door's two, booked per credit on the chat task's account.
+var ChatPaidTools = []string{ToolWebSearch, ToolWebScrape}
+
+// tools is a nil-safe read of the chat block's tools.
+func (c *ChatConfig) tools() map[string]ToolCap {
+	if c == nil {
+		return nil
+	}
+	return c.Tools
+}
+
 // The gateway's free tools: a class allows one by listing it in
 // classes.<c>.tools without caps ({}). The commissioning tools spend
 // through their own reservation and envelope, not a per-task tool cap.
@@ -1015,6 +1073,10 @@ const (
 	// the card's issue or a file in the workspace; the look spends on the
 	// card's account as a model call.
 	ToolAnalyzeImage = "analyze_image"
+	// ToolDigest has the Small model answer an ask over one text file of
+	// the workspace: the answer enters the session, the file's bytes never
+	// do.
+	ToolDigest = "digest"
 )
 
 // SourceToolRequest is the source of a tool card, which adds a tool an
@@ -1053,7 +1115,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {
@@ -1176,6 +1238,11 @@ func (d Document) Validate() error {
 	}
 	if err := d.Chat.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
+	}
+	for tool := range d.Chat.tools() {
+		if err := d.Prices.validate(tool); err != nil {
+			return fmt.Errorf("policy: chat lists %s: %w", tool, err)
+		}
 	}
 	if err := d.Risk.validate(); err != nil {
 		return err
@@ -1363,20 +1430,26 @@ const ClassChat = "chat"
 
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
-// project agent's (operator) is the chat block's; the compaction's and
-// the thread naming's are Small, for a chat task only; a chat task's look
-// is the chat block's vision model, a session's its class's.
+// digest's and the naming's are Small, on any task. The project agent's
+// (operator) is the chat block's; the compaction's is Small, for a chat
+// task only; a chat task's look is the chat block's vision model, a
+// session's its class's.
 func (d Document) FactoryModel(classes []string, purpose string) string {
 	chat := slices.Contains(classes, ClassChat)
+	if purpose == PurposeDigest || purpose == PurposeTitle {
+		return Small
+	}
 	if purpose == PurposeVision && chat {
 		return d.ChatOf(ProjectConfig{}).VisionModel
 	}
-	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeTitle {
+	if purpose == PurposeOperator || purpose == PurposeCompact || purpose == PurposeResearch {
 		switch {
 		case !chat:
 			return ""
-		case purpose == PurposeCompact, purpose == PurposeTitle:
+		case purpose == PurposeCompact:
 			return Small
+		case purpose == PurposeResearch:
+			return Big
 		}
 		return d.ChatOf(ProjectConfig{}).Model
 	}
@@ -1448,6 +1521,19 @@ func (b Budget) ClampBudget(requested float64) float64 {
 
 // CardSizes are the sizes a card may have.
 var CardSizes = []string{"small", "medium", "large"}
+
+// SizeAgentTime is the agent time a card of size gets under base, the
+// class's: half of it for a small card, base for a medium one, one and a
+// half for a large one. A card no size binds keeps base.
+func SizeAgentTime(size string, base time.Duration) time.Duration {
+	switch size {
+	case "small":
+		return base / 2
+	case "large":
+		return base + base/2
+	}
+	return base
+}
 
 // sizeEUR is a card's budget by its size.
 var sizeEUR = map[string]float64{"small": 4, "medium": 5, "large": 10}

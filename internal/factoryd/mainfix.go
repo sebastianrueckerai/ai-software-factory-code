@@ -21,19 +21,29 @@ import (
 // build cache unreachable for seconds) files nothing. A re-run red too, or
 // one Forgejo refuses, files the fix-forward card, and when no fix lands
 // within mainRedBound of the pause, factoryd files the revert of the red
-// commit as a factory-PR card. A red whose every failed job lost its
-// runner (killed, shut down, or its docker daemon restarted) is no
-// commit's fault and reverts nothing: its card is the human one to re-run
-// it. The next green run of main ends the pause, wakes the queue's heads
-// and ends the pause's card, unless the card's own merge made main green.
+// commit as a factory-PR card, which ends the fix-forward card: a red main
+// gets one automatic remedy at a time, and a red that outlives the
+// remedy's merge goes to a person (stillRed). A red whose every failed job
+// lost its runner (killed, shut down, or its docker daemon restarted) is
+// no commit's fault and reverts nothing: its card is the human one to
+// re-run it. The next green run of main ends the pause and the pause's
+// cards, unless a card's own merge made main green, then wakes the
+// queue's heads.
 const (
 	SourceMainFix = "mainfix"
 	SourceRerun   = "rerun"
 	SourceRevert  = "revert"
+	// SourceStillRed is the human card of a pause whose remedy merged
+	// while main stayed red (stillRed).
+	SourceStillRed = "still-red"
 	// SourceGroupRevert is the agent card of a plan's group revert whose
 	// plain git revert conflicts (RevertGroup).
 	SourceGroupRevert = "group-revert"
 	mainRedBound      = 2 * time.Hour
+	// stallGrace is how long a main run stays blocked with a red job
+	// before stalledMain takes it as stalled: a runner that reports its
+	// job's failure has Forgejo free the jobs that need it within a second
+	stallGrace = 5 * time.Minute
 )
 
 // QueuePause is a project's paused merge queue: main is red since the run.
@@ -143,17 +153,22 @@ func (s *PGStore) ClearRevertPause(ctx context.Context, project, revertTask stri
 }
 
 // mainState reads main's newest push run: a red one pauses the queue, a
-// green one ends a pause, and a pause past the bound with no revert yet
-// files it. A red one on a pause with no card, a re-run's, is judged
-// again (pause), and so is the pause's own run when its re-run ended
+// green one ends a pause, a red one at another commit after a remedy of
+// the pause merged files its human card (stillRed), and a pause past the
+// bound with no revert yet files it. A red one on a pause with no card, a
+// re-run's, is judged again (pause), and so is the pause's own run when its re-run ended
 // cancelled: no run of it turns green or red then, and the pause would
 // hold with no card.
 // While the newest runs or waits (a red one's re-run too), or ended
 // neither green nor red otherwise, nothing changes: an older run says
-// nothing of main's head. runs are the poll's, newest first by id.
+// nothing of main's head. A stalled run (stalledMain) is the exception: it
+// holds main's CI lane, so it is red to the queue as a red newest is, its
+// failed jobs re-run once, unless a card of the pause stands.
+// runs are the poll's, newest first by id.
 func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	newest := newestMain(runs)
-	if newest == nil || (newest.Status != "success" && newest.Status != "failure" && newest.Status != "cancelled") {
+	stalled := r.stalledMain(ctx, runs)
+	if stalled == nil && (newest == nil || (newest.Status != "success" && newest.Status != "failure" && newest.Status != "cancelled")) {
 		return nil
 	}
 	project := r.Repo.String()
@@ -164,16 +179,27 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 	if pause.Plan != "" {
 		return nil
 	}
+	if stalled != nil {
+		if paused && pause.FixTask != "" {
+			return nil
+		}
+		since := time.Now()
+		if paused {
+			since = pause.Since
+		}
+		return r.pause(ctx, *stalled, since)
+	}
 	switch {
 	case newest.Status == "success" && paused:
 		if err := r.Store.ClearQueuePause(ctx, project); err != nil {
 			return err
 		}
 		log.Printf("roller: main is green again at %s (run %d): the merge queue of %s goes on", newest.CommitSHA, newest.ID, project)
-		signalQueueHeads(ctx, r.Store, r.Workflows)
+		// no woken card takes its turn before the pause's cards end
 		if err := r.endPauseCard(ctx, pause, *newest); err != nil {
-			log.Printf("roller: end the pause's card %s: %v", pause.FixTask, err)
+			log.Printf("roller: end the pause's cards %s and %s: %v", pause.FixTask, pause.RevertTask, err)
 		}
+		signalQueueHeads(ctx, r.Store, r.Workflows)
 		return nil
 	case newest.Status == "failure" && (!paused || pause.FixTask == ""),
 		newest.Status == "cancelled" && paused && pause.FixTask == "" && pause.RunID == newest.ID:
@@ -182,12 +208,87 @@ func (r *Roller) mainState(ctx context.Context, runs []ActionRun) error {
 			since = pause.Since
 		}
 		return r.pause(ctx, *newest, since)
-	case newest.Status == "cancelled":
+	case newest.Status == "cancelled" || !paused:
 		return nil
-	case paused && time.Since(pause.Since) >= mainRedBound:
+	}
+	if newest.Status == "failure" && newest.CommitSHA != pause.SHA {
+		if handled, err := r.stillRed(ctx, pause, *newest, runs); err != nil || handled {
+			return err
+		}
+	}
+	if time.Since(pause.Since) >= mainRedBound {
 		return r.revert(ctx, pause)
 	}
 	return nil
+}
+
+// humanPauseCard tells a pause's card that a person works: the re-run
+// card, or the card of a red that outlived its remedy. Main's green ends
+// it, and no revert follows it.
+func humanPauseCard(t Task) bool {
+	return t.Source == SourceRerun || t.Source == SourceStillRed
+}
+
+// stillRed files the human card of pause once a remedy of it, the
+// fix-forward card or the revert, merged and run, main's newest push run,
+// is red at a commit other than the pause's own: a red main gets one
+// automatic remedy, then a person decides. runs, the poll's, must hold a
+// run of the remedy's merge commit where it is known: a red pushed by hand
+// before it says nothing of the remedy. The pause takes the card as its own on run, as it
+// takes a re-run card, and a failed fix-forward card or one still at work
+// ends, the human card replacing it. handled is true when the pause's card
+// is a person's already or the card is filed, false when no remedy merged:
+// a red pushed by hand waits for the remedy as before.
+func (r *Roller) stillRed(ctx context.Context, pause QueuePause, run ActionRun, runs []ActionRun) (handled bool, err error) {
+	fix, _, err := r.Store.Task(ctx, pause.FixTask)
+	if err != nil || humanPauseCard(fix) {
+		return humanPauseCard(fix), err
+	}
+	remedy, commit := "", ""
+	fixCommit, fixMerged, err := remedyMerge(ctx, r.Forgejo, fix)
+	if err != nil {
+		return false, err
+	}
+	if fixMerged {
+		remedy, commit = fmt.Sprintf("the fix-forward card #%d", fix.IssueNumber), fixCommit
+	}
+	rev, ok, err := r.Store.Task(ctx, pause.RevertTask)
+	if err != nil {
+		return false, err
+	}
+	if ok {
+		if revCommit, merged, err := remedyMerge(ctx, r.Forgejo, rev); err != nil {
+			return false, err
+		} else if merged {
+			remedy, commit = fmt.Sprintf("the revert #%d", rev.IssueNumber), revCommit
+		}
+	}
+	if remedy == "" || commit != "" && !slices.ContainsFunc(runs, func(x ActionRun) bool { return x.PrettyRef == prBase && x.CommitSHA == commit }) {
+		return false, nil
+	}
+	p, ok, err := r.Store.ProjectByRepository(ctx, r.Repo.String())
+	if err != nil {
+		return false, err
+	}
+	if !ok {
+		return false, fmt.Errorf("no project has the repository %s", r.Repo)
+	}
+	link := fmt.Sprintf("%s/%s/actions/runs/%d", r.Forgejo.PublicURL, r.Repo, run.Index)
+	t, err := EscalateToHuman(ctx, r.Store, r.Forgejo, r.Timeline, p.Repo(), stillRedQuestion(run.Index, run.CommitSHA, remedy, link), "factoryd", Task{
+		SHA: run.CommitSHA, Source: SourceStillRed,
+	})
+	if err != nil {
+		return false, err
+	}
+	if _, err := r.Store.PauseQueue(ctx, QueuePause{Project: p.Repository, RunID: run.ID, SHA: run.CommitSHA, Since: pause.Since, FixTask: t.ID}); err != nil {
+		return false, err
+	}
+	log.Printf("roller: main is still red at %s (run %d) after %s merged: the merge queue of %s stays paused; human card %s, issue #%d", run.CommitSHA, run.ID, remedy, p.Repository, t.ID, t.IssueNumber)
+	if fix.ID == "" || fixMerged || fix.Status != "failed" && !stoppable(fix) {
+		return true, nil
+	}
+	return true, closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: main is still red at %s after %s merged: the human card #%d replaces this card. Closing this issue.",
+		run.CommitSHA[:min(7, len(run.CommitSHA))], remedy, t.IssueNumber))
 }
 
 // newestMain is main's newest push run among runs, nil without one.
@@ -199,6 +300,38 @@ func newestMain(runs []ActionRun) *ActionRun {
 		}
 	}
 	return newest
+}
+
+// stalledMain answers main's oldest push run blocked with a failed or
+// cancelled job for stallGrace: Forgejo's zombie sweep failed the job of a
+// runner that died and never freed the jobs that need it, so the run
+// never ends, holds main's CI lane (concurrency ci-main), and every newer
+// run waits behind it (main's run 2317 on 2026-11-02: 2 h 22 min, until a
+// person re-ran it). nil for none, and while Forgejo does not list the
+// run's jobs.
+func (r *Roller) stalledMain(ctx context.Context, runs []ActionRun) *ActionRun {
+	var oldest *ActionRun
+	for i := range runs {
+		if x := &runs[i]; x.PrettyRef == prBase && x.Status == "blocked" && (oldest == nil || x.ID < oldest.ID) {
+			oldest = x
+		}
+	}
+	if oldest == nil {
+		r.stall.run = 0
+		return nil
+	}
+	jobs, err := r.Forgejo.ActionRunJobs(ctx, r.Token, r.Repo.Owner, r.Repo.Name, oldest.ID)
+	if err != nil || !slices.ContainsFunc(jobs, func(j ActionJob) bool { return j.Status == "failure" || j.Status == "cancelled" }) {
+		r.stall.run = 0
+		return nil
+	}
+	if r.stall.run != oldest.ID {
+		r.stall.run, r.stall.seen = oldest.ID, time.Now()
+	}
+	if time.Since(r.stall.seen) < stallGrace {
+		return nil
+	}
+	return oldest
 }
 
 // pause pauses the queue on the red run since since, a standing pause's
@@ -233,7 +366,8 @@ func (r *Roller) pause(ctx context.Context, run ActionRun, since time.Time) erro
 	}
 	var redJobs []ActionJob
 	for _, j := range jobs {
-		if !doneStatus(j.Status) {
+		// a stalled run's blocked jobs wait on its red ones: none will run
+		if !doneStatus(j.Status) && (run.Status != "blocked" || j.Status != "blocked") {
 			return nil
 		}
 		if j.Status == "failure" || j.Status == "cancelled" {
@@ -353,25 +487,70 @@ func (r *Roller) failedLogs(ctx context.Context, red []ActionJob) string {
 	return b.String()
 }
 
-// endPauseCard ends the pause's card once run, main's green push run,
+// endPauseCard ends the pause's cards once run, main's green push run,
 // ended the pause: a comment naming the run, then the issue's close as
-// factoryd's own (issueClosed). The re-run card's human finishes, and a
+// factoryd's own (issueClosed). The human card's person finishes, and a
 // fix-forward card still open stops its session: the red it was filed for
-// is gone. A fix card that merged made main green itself and is left as
-// it is, as is one that ended or is ending; a re-run's pause has none.
+// is gone. A revert still at work ends too: it would merge as an ordinary
+// card and revert a commit on a green main. A human-lane revert (a
+// project without agents) ends through its pull request's close as the
+// bot instead, which the heal pass takes to the card (WithdrawPRCard). A
+// card that merged made main green itself and is left as it is, as is one
+// that ended or is ending; a re-run's pause has none.
 func (r *Roller) endPauseCard(ctx context.Context, pause QueuePause, run ActionRun) error {
+	green := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d)", run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
+	return errors.Join(r.endFixCard(ctx, pause, green), r.endRevertCard(ctx, pause, green))
+}
+
+// endFixCard ends the pause's own card for endPauseCard: the human card
+// of a person, or a fix-forward card at work or failed whose pull request
+// did not merge.
+func (r *Roller) endFixCard(ctx context.Context, pause QueuePause, green string) error {
 	t, ok, err := r.Store.Task(ctx, pause.FixTask)
-	if err != nil || !ok {
+	switch {
+	case err != nil || !ok:
+		return err
+	case humanPauseCard(t) && t.Status == "waiting-human":
+		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
+	case t.Source != SourceMainFix || t.Status != "failed" && !stoppable(t):
+		return nil
+	}
+	if _, merged, err := remedyMerge(ctx, r.Forgejo, t); err != nil || merged {
 		return err
 	}
-	green := fmt.Sprintf("factoryd: main's push run %d at %s is green (%s/%s/actions/runs/%d)", run.Index, run.CommitSHA, r.Forgejo.PublicURL, r.Repo, run.Index)
-	switch {
-	case t.Source == SourceRerun && t.Status == "waiting-human":
-		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the merge queue's pause has ended. Closing this issue.")
-	case t.Source == SourceMainFix && (t.Status == "failed" || !Final(t.Status) && t.Status != "merged" && t.Status != "closing"):
-		return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the red this card was filed for is gone. Closing this issue.")
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, t, green+": the red this card was filed for is gone. Closing this issue.")
+}
+
+// endRevertCard ends the pause's revert for endPauseCard while it is at
+// work and its merge neither runs nor ran (landing): an agent-lane one
+// through its issue's close, a human-lane one through its pull request's.
+func (r *Roller) endRevertCard(ctx context.Context, pause QueuePause, green string) error {
+	rev, ok, err := r.Store.Task(ctx, pause.RevertTask)
+	if err != nil || !ok || !stoppable(rev) {
+		return err
 	}
-	return nil
+	if landed, err := landing(ctx, r.Forgejo, rev); err != nil || landed {
+		return err
+	}
+	if rev.Kind == "human" {
+		return r.closeRevertPR(ctx, rev, green+": main is green without this revert. Closing this pull request.")
+	}
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, rev, green+": main is green without this revert. Closing this issue.")
+}
+
+// closeRevertPR closes human-lane revert card t's pull request as the bot
+// while it is open, then leaves comment on it; one a person merged or
+// closed is left.
+func (r *Roller) closeRevertPR(ctx context.Context, t Task, comment string) error {
+	st, err := r.Forgejo.PullRequestState(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber)
+	if err != nil || st.State != "open" {
+		return err
+	}
+	if err := r.Forgejo.ClosePullRequest(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber); err != nil {
+		return err
+	}
+	_, err = r.Forgejo.CreateIssueComment(ctx, r.Repo.Owner, r.Repo.Name, t.PRNumber, comment)
+	return err
 }
 
 // lostRunners answers, for each of run's failed statuses, the job's link
@@ -486,15 +665,24 @@ func runnerLost(log []byte, recorded time.Time) (line string, silent time.Durati
 // bot's fork, its pull request, and a factory-PR card the gates and the
 // approval take like a roll's, exempt from the pause. The pause names the
 // card's id before any of it, so a call that finds the id with no card
-// files that card, and one that finds the card does nothing. A pause on a
-// re-run or on a re-run card, its jobs having lost their runner, reverts
-// nothing. A revert that conflicted clones main again only once main's
-// head moved: on the same head it conflicts again.
+// files that card, and one that finds the card only ends the fix card
+// (replaceFix). A pause on a re-run or on a person's card (humanPauseCard)
+// reverts nothing, and neither does one whose
+// fix-forward card merges or merged (landing): a red main gets one
+// remedy at a time. A revert that conflicted clones main again only once
+// main's head moved: on the same head it conflicts again.
 func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
-	if fix, ok, err := r.Store.Task(ctx, pause.FixTask); err != nil {
+	fix, ok, err := r.Store.Task(ctx, pause.FixTask)
+	if err != nil {
 		return err
-	} else if pause.FixTask == "" || ok && fix.Source == SourceRerun {
+	}
+	if pause.FixTask == "" || ok && humanPauseCard(fix) {
 		return nil
+	}
+	if ok {
+		if landed, err := landing(ctx, r.Forgejo, fix); err != nil || landed {
+			return err
+		}
 	}
 	taskID := pause.RevertTask
 	if taskID == "" {
@@ -502,8 +690,10 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		if err := r.Store.SetQueuePauseRevert(ctx, pause.Project, taskID); err != nil {
 			return err
 		}
-	} else if _, filed, err := r.Store.Task(ctx, taskID); err != nil || filed {
+	} else if rev, filed, err := r.Store.Task(ctx, taskID); err != nil {
 		return err
+	} else if filed {
+		return r.replaceFix(ctx, pause, fix, rev)
 	}
 	head, err := r.Forgejo.DefaultBranchHeadSHA(ctx, r.Repo.Owner, r.Repo.Name, prBase)
 	if err != nil {
@@ -558,5 +748,96 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		return err
 	}
 	log.Printf("roller: main red since %s with no fix landed: revert card %s, issue #%d, pull request #%d", pause.Since.Format(time.RFC3339), t.ID, ref.Number, pr.Number)
-	return nil
+	return r.replaceFix(ctx, pause, fix, t)
+}
+
+// landing tells a remedy card of a red main whose merge runs (its gate is
+// merge) or ran (remedyMerge).
+func landing(ctx context.Context, forgejo *Forgejo, t Task) (bool, error) {
+	if !Final(t.Status) && t.Gate == GateMerge {
+		return true, nil
+	}
+	_, merged, err := remedyMerge(ctx, forgejo, t)
+	return merged, err
+}
+
+// remedyMerge tells whether remedy card t's pull request merged, and its
+// merge commit where known: the recorded one, else the forge's, where a
+// person can merge it while the card still reads in-review, before its
+// workflow takes the merge. A pull request the forge refuses to show
+// counts as merged only by the card's status.
+func remedyMerge(ctx context.Context, forgejo *Forgejo, t Task) (commit string, merged bool, err error) {
+	if t.MergeCommit != "" {
+		return t.MergeCommit, true, nil
+	}
+	if t.PRNumber == 0 {
+		return "", t.Status == "merged", nil
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return "", false, err
+	}
+	pr, err := forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+	if forgejoTerminal(err) {
+		log.Printf("task %s: pull request #%d: %v: its merge read off the card alone", t.ID, t.PRNumber, err)
+		return "", t.Status == "merged", nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return pr.MergeCommit, pr.Merged || t.Status == "merged", nil
+}
+
+// revertRefusal is why revert card t does not merge, "" when it does: a
+// revert merges only under the pause that names it (a red main's, a
+// plan's), as a green main ends the pause before the revert's end, and a
+// merge retry or an end that failed would revert a commit on a green main;
+// and a red main's revert gives way to its fix-forward card whose merge
+// runs or ran (landing).
+func (r *Runner) revertRefusal(ctx context.Context, t Task) (string, error) {
+	if t.Source != SourceRevert {
+		return "", nil
+	}
+	p, paused, err := r.store.QueuePause(ctx, t.Repository)
+	switch {
+	case err != nil:
+		return "", err
+	case !paused || p.RevertTask != t.ID:
+		return "no pause of the merge queue names this revert: main turned green, or the plan's revert ended, without it", nil
+	case p.FixTask == "":
+		return "", nil
+	}
+	fix, ok, err := r.store.Task(ctx, p.FixTask)
+	if err != nil || !ok {
+		return "", err
+	}
+	if landed, err := landing(ctx, r.forgejo, fix); err != nil || !landed {
+		return "", err
+	}
+	return fmt.Sprintf("the fix-forward card #%d (%s) of main's red merged or merges: a red main gets one remedy at a time", fix.IssueNumber, fix.ID), nil
+}
+
+// replaceFix ends the pause's fix-forward card fix, which the revert card
+// rev replaces, while its work still runs (stoppable): a comment naming
+// the revert, then the issue's close as factoryd's own, which stops its
+// session. A close recorded already is the heal pass's to finish.
+func (r *Roller) replaceFix(ctx context.Context, pause QueuePause, fix, rev Task) error {
+	if fix.ID == "" {
+		return nil
+	}
+	// the revert's filing takes seconds: the fix card may have entered its
+	// merge since revert read it
+	fix, ok, err := r.Store.Task(ctx, fix.ID)
+	if err != nil || !ok || !stoppable(fix) {
+		return err
+	}
+	if landed, err := landing(ctx, r.Forgejo, fix); err != nil || landed {
+		return err
+	}
+	events, err := r.Store.IntakeEvents(ctx, fix.ID)
+	if err != nil || botCloseRecorded(events, fix) {
+		return err
+	}
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: no fix landed by %s: the revert #%d replaces this card. Closing this issue.",
+		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), rev.IssueNumber))
 }

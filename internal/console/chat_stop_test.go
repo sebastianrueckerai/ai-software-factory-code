@@ -3,11 +3,15 @@ package console
 import (
 	"bufio"
 	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -367,5 +371,92 @@ func TestChatStopSecondPressStopsTheNextWaitingTurn(t *testing.T) {
 		after[0].Via != factoryd.ViaButton || after[1].Via != factoryd.ViaButton ||
 		after[0].Detail["thread"] != int64(5) || after[1].Detail["thread"] != int64(5) {
 		t.Fatalf("the presses' event rows = %+v", after)
+	}
+}
+
+// A stop ends the follow-up turn of a pressed proposal too: the tool's
+// refusal row stays, the stream answers stopped and ends, and the stop row
+// lands after it.
+func TestChatStopEndsAPressedProposalsFollowUp(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	annasRefusedProposal(t, r)
+	ck, s := memberLogin(t, r, "anna")
+	g.replies = [][]string{{say("never said")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	defer close(g.hold)
+
+	stream := chatStream(t, r, ck, s, chatPath+"/proposals/p-anna-proposal", nil)
+	<-g.arrived
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"1"}}); code != http.StatusNoContent {
+		t.Fatalf("the stop = %d %q", code, body)
+	}
+	var events []string
+	for e := range stream {
+		events = append(events, e)
+	}
+	if n := len(events); n < 2 || !strings.HasPrefix(events[n-2], `stopped {"message":{"id":`) ||
+		!strings.Contains(events[n-2], `"content":"Stopped by anna."`) || events[n-1] != "done {}" {
+		t.Fatalf("the stream = %v, want it to end with stopped, then done", events)
+	}
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "anna", 1, 10)
+	if len(rows) != 2 || rows[0].ToolCalls[0].Name != "approve_merge" || rows[1].Kind != factoryd.MessageStop || rows[1].Content != "Stopped by anna." {
+		t.Fatalf("rows = %+v, want the refused tool's row, then the stop row", rows)
+	}
+}
+
+// A stop reaches a pressed proposal before a message that came while its
+// tool ran: the press's follow-up ends stopped, its tool's row standing,
+// and the message, which waited behind the press, gets its own answer.
+func TestChatStopReachesThePressBeforeAMessageThatWaits(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ran, release := make(chan struct{}), make(chan struct{})
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+		close(ran)
+		<-release
+		return 0, errors.New("forgejo is down")
+	}
+	if err := chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: "p-escalate-press", Kind: "proposal", Repository: "sf/code", Login: "sebastian",
+		Tool: "escalate", Args: json.RawMessage(`{"ask":"Use a replica?","why":"The card cannot go on.","info":"The replica adds 12 ms of lag.",` +
+			`"recommendation":"Keep one replica","choices":["Yes","No"]}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say("The message's answer.")}}
+
+	press := chatStream(t, r, ck, s, chatPath+"/proposals/p-escalate-press", nil)
+	<-ran
+	message := chatStream(t, r, ck, s, chatPath, url.Values{"message": {"still there?"}, "conversation": {"1"}})
+	if e := waitEvent(t, message); e != `queued {"position":1}` {
+		t.Fatalf("the message's first event = %q, want it queued behind the press", e)
+	}
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"1"}}); code != http.StatusNoContent {
+		t.Fatalf("the stop = %d %q", code, body)
+	}
+	close(release)
+
+	var pressed, said []string
+	for e := range press {
+		pressed = append(pressed, e)
+	}
+	for e := range message {
+		said = append(said, e)
+	}
+	if n := len(pressed); n < 2 || !strings.HasPrefix(pressed[n-2], `stopped {"message":`) ||
+		!strings.Contains(pressed[n-2], `"content":"Stopped by sebastian."`) || pressed[n-1] != "done {}" {
+		t.Fatalf("the press's stream = %v, want it to end stopped, then done", pressed)
+	}
+	if !slices.Contains(said, `text {"text":"The message's answer."}`) || said[len(said)-1] != "done {}" ||
+		slices.ContainsFunc(said, func(e string) bool { return strings.HasPrefix(e, "stopped ") }) {
+		t.Fatalf("the message's stream = %v, want its answer and no stop", said)
+	}
+	// the queued message lands, after the press's rows, when its turn starts
+	rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
+	if len(rows) != 4 || rows[0].ToolCalls[0].Name != "escalate" || !strings.HasPrefix(rows[0].ToolCalls[0].Result, "Refused: ") ||
+		rows[1].Kind != factoryd.MessageStop || rows[1].Content != "Stopped by sebastian." ||
+		rows[2].Content != "still there?" || rows[2].Queued || rows[3].Content != "The message's answer." {
+		t.Fatalf("rows = %+v, want the refused tool's row, the stop row, the landed message and its answer", rows)
+	}
+	if n := len(g.calls()); n != 1 {
+		t.Fatalf("%d model calls, want the message's alone", n)
 	}
 }

@@ -189,6 +189,8 @@ type Runner struct {
 	// (Intake.Writes), the trust rule of a person's close of a plan's
 	// issue; factoryd sets it before the minute pass starts.
 	Writes func(ctx context.Context, repository, login string) (bool, error)
+	// Namer names a plan when its first revision files; nil names none.
+	Namer *Namer
 }
 
 // liveSession takes the agent's escalations: ch is unbuffered, so a send
@@ -640,7 +642,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	} else {
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, TimeLeft: time.Until(deadline),
-			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines}.Line()
+			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, ExtraLines: t.Usage.ExtraLines}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -714,7 +716,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
 	if sizeBounded(t, s) {
-		supCfg.SizeLines, _ = cardLineBound(t.Size, s.policy.Risk.LargeLines)
+		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines)
 	}
 	if s.attempt == 1 && r.canClimb(s) {
 		supCfg.CheapCap = r.cheapCap
@@ -1100,14 +1102,15 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	if eurLeft <= 0 {
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
-		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: rec}, true
+		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+			Findings: ask.Findings, Review: ask.Review, Record: rec}, true
 	}
 	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
 		lines := -1
 		if ask.Gates != nil {
 			lines = ask.Gates.Policy.Lines
 		}
-		bound, _ := cardLineBound(t.Size, s.policy.Risk.LargeLines)
+		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines)
 		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 		var parent []byte
 		if s.parent != "" {
@@ -1122,7 +1125,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 		if out.Record != nil {
 			out.Record.Session = s.id
 		}
@@ -1175,11 +1178,18 @@ func cuttable(t Task, s sessionSpec) bool {
 // says the outcome stops the session and rides SessionResult.CheckIn.
 func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
+	// a handover's next session runs on the stronger rung, or on the
+	// session_model of a plan or report class, which this session runs on
+	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
+	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
+		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
+		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
 	eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
-		return Decision{Action: ActionEscalate, Reason: CheckinShareSpent}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: record}, true
+		return Decision{Action: ActionEscalate, Reason: CheckinShareSpent}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+			Findings: ask.Findings, Review: ask.Review, Record: record}, true
 	}
 	alias := r.callModel(t, policy.PurposeCheckin)
 	if alias == "" {
@@ -1187,16 +1197,10 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		log.Printf("task %s: no model under the check-in's purpose: %s over %s", t.ID, d.Action, trip.Kind)
 		return d, nil, false
 	}
-	// a handover's next session runs on the stronger rung, or on the
-	// session_model of a plan or report class, which this session runs on
-	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
-	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
-		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
-		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
 	tr := rec.Transcript()
 	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
-		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap())
+		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
 	switch out.Decision {
 	case "continue":
@@ -2153,6 +2157,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		globsJSON, _ := json.Marshal(globs)
 		env = append(env, map[string]any{"name": "MIGRATION_GLOBS", "value": string(globsJSON)})
 	}
+	// the worker's push rule reads the card's line bound: the same
+	// effective number the gate and the supervisor check
+	env = append(env, map[string]any{"name": "LINE_BOUND", "value": strconv.Itoa(EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines))})
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
 	}

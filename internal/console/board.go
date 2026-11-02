@@ -105,7 +105,6 @@ var funcs = template.FuncMap{
 	},
 	"inc":             func(i int) int { return i + 1 },
 	"join":            strings.Join,
-	"verdictForm":     func(id int64, csrf, back string) verdictForm { return verdictForm{id, csrf, back} },
 	"alertSupervisor": alertSupervisor,
 }
 
@@ -130,12 +129,6 @@ func supervisedBy(action, diagnosis, recommendation any) supervised {
 		s.Diagnosis += " Recommendation: " + rec
 	}
 	return s
-}
-
-// verdictForm is the "verdict" template's data: an alert's two buttons.
-type verdictForm struct {
-	ID         int64
-	CSRF, Back string
 }
 
 // The project screen's four columns (as C8 amends it), a view
@@ -365,7 +358,7 @@ func faceWords(k card, a *approvalCard) string {
 			}
 			return strings.Join(w, " ")
 		case factoryd.ApprovalPlan:
-			return fmt.Sprintf("plan #%d %s %s", a.Issue, a.PlanSummary, a.TaskID)
+			return fmt.Sprintf("plan #%d %s %s %s", a.Issue, a.PlanName, a.PlanSummary, a.TaskID)
 		}
 		return strings.Join([]string{"resource request", a.Resource.ServerType, a.Resource.Purpose, a.TaskID}, " ")
 	}
@@ -379,6 +372,7 @@ func faceWords(k card, a *approvalCard) string {
 	if k.PlanIssue > 0 {
 		w = append(w, fmt.Sprintf("from plan #%d", k.PlanIssue))
 	}
+	w = append(w, k.PlanName, k.Task.PlanName)
 	if k.Routine() {
 		w = append(w, "routine")
 	}
@@ -427,7 +421,13 @@ func fact(k card, a *approvalCard, key, val string) (match, known bool) {
 	case "is":
 		return isState(k, val), true
 	case "plan":
-		return eq(strconv.FormatInt(k.PlanIssue, 10))
+		if val == "" {
+			return false, true
+		}
+		if n, err := strconv.ParseInt(val, 10, 64); err == nil {
+			return n > 0 && (k.PlanIssue == n || k.Track == policy.TrackPlan && k.IssueNumber == n), true
+		}
+		return strings.Contains(strings.ToLower(cmp.Or(k.PlanName, k.Task.PlanName)), strings.ToLower(val)), true
 	case "stage":
 		return eq(k.Stage)
 	case "status":
@@ -500,6 +500,10 @@ type card struct {
 	// remaining budget cannot fund a call, which
 	// raises its budget (roadmap 210).
 	Fund *fundForm
+	// Extend is the approver's Extend action on a card whose question
+	// offers the exit (a stop that names the owner's decision): the
+	// stated sessions, lines and EUR raise its caps and answer the stop.
+	Extend *extendForm
 	// AcceptanceClose is the approver's Close on a waiting card whose
 	// event trail shows one of its plan's acceptance commands run green
 	// in a session (roadmap 208): the work is its own evidence, so the
@@ -525,9 +529,10 @@ type card struct {
 	// names (C38), "" for a word that names none.
 	Stage, StageAge, StageURL string
 	GateText                  string
-	EscalationAlert           int64  // the escalation's open alert
 	WaitingOn                 string // a card in waiting-deps: the issues it waits on
 	PlanIssue                 int64  // a plan's card: the plan's issue
+	PlanURL                   string // a plan's card: the plan's issue on the forge
+	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
 	PlanKey                   string // a plan's card: its key in the plan, on the face's plan chip
 	Plan                      []card // a done plan's cards, which its drawer lists
 	Retry                     *retry // a failed plan card's Retry, for an approver
@@ -542,6 +547,9 @@ type card struct {
 	// Checks is "n/n" from the task's newest checks step, "" on a card
 	// without a pull request, a final one, or one whose timeline holds none.
 	Checks string
+	// Attempt is the newest session's number, shown beside the stage
+	// clock, which the gate's restarts would else read as progress.
+	Attempt string
 	// NearBudget is spend at 80 percent of the budget or more.
 	NearBudget bool
 	// CallsText is the task's call rows summed beside the spend line
@@ -654,12 +662,32 @@ func nearBudget(spent, budget float64) bool {
 	return cents(spent)*5 >= cents(budget)*4
 }
 
-// newestChecksCount is the task's newest checks step: passed over total of
-// its jobs; "" when the steps hold none or it named no counts.
-func newestChecksCount(steps []map[string]any) string {
+// pushedHead is the task's newest pushed step's commit, "" when the
+// steps hold no push.
+func pushedHead(steps []map[string]any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if s, _ := steps[i]["step"].(string); s == "pushed" {
+			commit, _ := steps[i]["commit"].(string)
+			return commit
+		}
+	}
+	return ""
+}
+
+// newestChecksCount is the task's newest checks step that judged head,
+// the newest pushed commit: passed over total of its jobs; "" when the
+// steps hold none, it named no counts, or a newer push has run no checks
+// on it yet. With no push at all, the newest checks step stands on its
+// own, nothing supersedes it.
+func newestChecksCount(steps []map[string]any, head string) string {
 	for i := len(steps) - 1; i >= 0; i-- {
 		if s, _ := steps[i]["step"].(string); s != "checks" {
 			continue
+		}
+		if head != "" {
+			if commit, _ := steps[i]["commit"].(string); commit != head {
+				continue
+			}
 		}
 		jobs, _ := steps[i]["jobs"].([]any)
 		var passed, ran int
@@ -677,6 +705,21 @@ func newestChecksCount(steps []map[string]any) string {
 			return ""
 		}
 		return fmt.Sprintf("%d/%d", passed, ran)
+	}
+	return ""
+}
+
+// attemptOf is the task's newest session's number, "" when no session
+// started or the step named no attempt.
+func attemptOf(steps []map[string]any) string {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if s, _ := steps[i]["step"].(string); s == "session_start" {
+			a, _ := steps[i]["attempt"].(float64)
+			if a < 1 {
+				return ""
+			}
+			return strconv.Itoa(int(a))
+		}
 	}
 	return ""
 }
@@ -755,6 +798,7 @@ const checksTTL = 30 * time.Second
 // read.
 type checks struct {
 	count                    string
+	attempt                  string
 	retrying, held, provider bool
 	stepAt                   time.Time
 	at                       time.Time
@@ -775,6 +819,7 @@ func (c *Console) faceTimelines(ctx context.Context, everyCard func(func(*card))
 		if k.PRNumber > 0 {
 			k.Checks = got.count
 		}
+		k.Attempt = got.attempt
 		k.Retrying, k.Held, k.Provider = got.retrying, got.held, got.provider && k.Status == "running"
 		k.stepAt = got.stepAt
 	})
@@ -793,7 +838,7 @@ func (c *Console) timelineFace(ctx context.Context, id string) checks {
 	if steps, err := c.readTimeline(ctx, id); err != nil {
 		log.Printf("console: timeline of %s for its checks: %v", id, err)
 	} else {
-		got.count, got.retrying, got.held, got.provider = newestChecksCount(steps), retrying(steps), held(steps), onProvider(steps)
+		got.count, got.attempt, got.retrying, got.held, got.provider = newestChecksCount(steps, pushedHead(steps)), attemptOf(steps), retrying(steps), held(steps), onProvider(steps)
 		got.stepAt = newestStepOf(steps)
 	}
 	c.mu.Lock()
@@ -818,18 +863,18 @@ func depsCount(list string) int {
 	return strings.Count(list, "#")
 }
 
-// planIssue is plan task id's issue: from the board's tasks, else read.
-func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) int64 {
+// planIssue is plan task id's issue, name and repository: from the board's tasks, else read.
+func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string, string) {
 	if t, ok := byID[id]; ok {
-		return t.IssueNumber
+		return t.IssueNumber, t.PlanName, t.Repository
 	}
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	if err != nil || !ok {
 		log.Printf("console: plan %s: found %v, %v", id, ok, err)
-		return 0
+		return 0, "", ""
 	}
 	byID[id] = t
-	return t.IssueNumber
+	return t.IssueNumber, t.PlanName, t.Repository
 }
 
 func plural(n int, word string) string {
@@ -874,6 +919,17 @@ func planRollup(cards []card) string {
 // fundForm is an approver's Fund action beside a capped card's answer box:
 // the stated amount raises the card's budget_eur (roadmap 210).
 type fundForm struct{ CSRF string }
+
+// extendForm is an approver's Extend action on a live card: the stated
+// sessions, lines and EUR raise the card's caps, and on a waiting card the
+// note answers the stop. Cap, Bound,
+// Budget and Left are the card's numbers the raise starts from.
+type extendForm struct {
+	CSRF       string
+	Cap, Bound int
+	Budget     float64
+	Left       float64
+}
 
 // acceptanceCloseForm is an approver's Close beside a waiting card's
 // answer box: the close ends the card done on its acceptance green
@@ -981,8 +1037,7 @@ type colMenu struct {
 }
 
 // need is an item of the human lane, or of the Needs you column: an
-// approval request, an escalated card with its answer form (CSRF, the
-// verdict for an approver and the board to go back to), or a card that
+// approval request, an escalated card with its answer form (CSRF), or a card that
 // needs the viewer; Since is when it began to wait.
 type need struct {
 	Since     time.Time
@@ -990,8 +1045,6 @@ type need struct {
 	Card      card
 	Escalated bool
 	CSRF      string
-	Approver  bool
-	Back      string
 	Suffix    string // on the ids of the item's fields: "-d" in the drawer, so the column's copy keeps its own
 }
 
@@ -1318,10 +1371,9 @@ type level struct {
 }
 
 type boardData struct {
-	User  string
-	CSRF  string
-	Filed string
-	Page  string // the layout marks the bar's current destination: the board
+	User string
+	CSRF string
+	Page string // the layout marks the bar's current destination: the board
 	// Project and View are the board's filter, which every form
 	// on it carries back so an action keeps the view.
 	boardFilter
@@ -1471,7 +1523,7 @@ func (c *Console) counts(d boardData) ([]string, error) {
 func (d boardData) faces() string {
 	var b strings.Builder
 	add := func(k card) {
-		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge, k.StageAge)
+		fmt.Fprintf(&b, "%s %t %q %t %t %t %s %s %s %s %s\n", k.ID, k.Stale, k.StaleText, k.Provider, k.Retrying, k.Held, k.Checks, k.Total, k.GateAge, k.StageAge, k.Attempt)
 	}
 	for _, col := range d.Columns {
 		for _, k := range col.Cards {
@@ -1604,7 +1656,6 @@ func (c *Console) board(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	d.Filed = r.URL.Query().Get("filed")
 	name := "page.html"
 	if r.URL.Path == "/board" {
 		name = "board-fragment"
@@ -1743,11 +1794,11 @@ func (c *Console) readFinishedColumn(w http.ResponseWriter, r *http.Request, f b
 	return col, true
 }
 
-// pressNote answers a press: the note at once into the page's note
-// outlet, the board's own re-render behind the board-refresh trigger, so
-// the press never waits on the board's reads. A form post without htmx
-// keeps the redirect to the whole page.
-func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string, err error) {
+// pressed answers a press with no content and the board-refresh trigger:
+// the board's re-render is the answer, so the press never waits on the
+// board's reads. A form post without htmx keeps the redirect to the
+// whole page.
+func (c *Console) pressed(w http.ResponseWriter, r *http.Request, err error) {
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -1757,7 +1808,7 @@ func (c *Console) pressNote(w http.ResponseWriter, r *http.Request, note string,
 		return
 	}
 	w.Header().Set("HX-Trigger", "board-refresh")
-	c.render(w, "note-fragment", note)
+	w.WriteHeader(http.StatusNoContent)
 }
 
 // boardView is what the cards of one render share: the viewer, the
@@ -1916,7 +1967,11 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
-		k.PlanIssue = c.planIssue(ctx, v.byID, t.Parent)
+		var planRepo string
+		k.PlanIssue, k.PlanName, planRepo = c.planIssue(ctx, v.byID, t.Parent)
+		if k.PlanIssue > 0 {
+			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), planRepo, k.PlanIssue)
+		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {
 		cards, cardsErr := c.cfg.Tasks.PlanCards(ctx, t.ID)
@@ -1949,8 +2004,16 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if factoryd.MayReplan(t, v.planTrack[t.Repository]) && v.approves(t.Repository) {
 		k.Replan = &replanForm{CSRF: v.csrf, Group: factoryd.InPlan(t)}
 	}
+	// the Extend action is offered on every live agent card, to its
+	// approvers, with its numbers the raise starts from
+	if v.approves(t.Repository) && extendable(t) {
+		k.Extend = &extendForm{CSRF: v.csrf,
+			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
+			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
+			Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
+	}
 	if v.escalated(t) {
-		k.Reason, k.Choices, k.EscalationAlert = cardReason(bt.Escalation), bt.Choices, bt.EscalationAlert
+		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
 		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
 		// the Fund action is offered where the fund's floor refuses a
@@ -2275,7 +2338,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 	escalations := map[string]factoryd.BoardTask{}
 	var needs []need
 	escalation := func(k card) need {
-		return need{Card: k, Escalated: true, CSRF: v.csrf, Approver: d.Factory && c.approver(r), Back: "/" + d.Query}
+		return need{Card: k, Escalated: true, CSRF: v.csrf}
 	}
 	// BoardTasks and readFinished read shown.Repository's cards only, so
 	// every byID lookup below stays right: a plan parent not among them
@@ -3050,19 +3113,19 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, issue, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0)
+	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}, "filed": {strconv.FormatInt(issue, 10)}}.Encode(), http.StatusSeeOther)
+	http.Redirect(w, r, "/?"+url.Values{"project": {form.Project}}.Encode(), http.StatusSeeOther)
 }
 
 // answer posts the human's answer to an escalation (doAnswer). Words that
 // matched none of the question's choices went to the chat (answerInChat):
 // the member lands on it.
 func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"))
+	note, err := c.doAnswerValue(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("answer"), r.PostFormValue("value"), r.PostFormValue("instruction"))
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3076,7 +3139,28 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 		http.Redirect(w, r, chat, http.StatusSeeOther)
 		return
 	}
-	c.pressNote(w, r, note, nil)
+	c.pressed(w, r, nil)
+}
+
+// extendCard raises a waiting card's caps (doExtend).
+func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
+	sessions, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("sessions")))
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
+		return
+	}
+	lines, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("lines")))
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "lines is a whole number"))
+		return
+	}
+	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
+		return
+	}
+	_, err = c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, eur, r.PostFormValue("reason"))
+	c.pressed(w, r, err)
 }
 
 // fundCard raises a waiting card's budget (doFund).
@@ -3086,8 +3170,8 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	note, err := c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
-	c.pressNote(w, r, note, err)
+	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
+	c.pressed(w, r, err)
 }
 
 // chatFund raises the project's chat task's monthly budget (doChatFund),
@@ -3197,7 +3281,6 @@ type drawerData struct {
 	Session                    *sessionRef
 	Said                       []said
 	Steers                     bool   // the session runs and takes the member's messages
-	Note                       string // what the member's action did
 	Problem                    string // what the tab could not read
 	// Runs are the card's life for the Time section (C10) and Life its
 	// at-a-glance line; Need is the open question with its actions when
@@ -3217,6 +3300,9 @@ type drawerData struct {
 	// reads it (C38), nil while the chain holds nothing to say.
 	Chain *chainReadout
 }
+
+// Suffix is the drawer's id suffix on the fields of the forms it shares with the column's copy.
+func (drawerData) Suffix() string { return "-d" }
 
 // chainReadout is the Chain section of a merged or done card's Activity
 // tab and timeline (C38): the chain behind its change in the drawer's
@@ -3393,7 +3479,7 @@ func (c *Console) cardDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab must be overview, activity, files or chat", http.StatusBadRequest)
 		return
 	}
-	c.drawer(w, r, tab, "")
+	c.drawer(w, r, tab)
 }
 
 // cardThreadStart answers POST /cards/{id}/thread, the card door: the
@@ -3484,19 +3570,17 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 }
 
 // steerCard hands the member's message from the drawer's Chat to card
-// id's running session (doSteer) and answers the tab again with its note.
+// id's running session (doSteer) and answers the tab again.
 func (c *Console) steerCard(w http.ResponseWriter, r *http.Request) {
-	note, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text"))
-	if err != nil {
+	if _, err := c.doSteer(r.Context(), button(r), r.PathValue("id"), r.PostFormValue("text")); err != nil {
 		c.fail(w, r, err)
 		return
 	}
-	c.drawer(w, r, "chat", note)
+	c.drawer(w, r, "chat")
 }
 
-// drawer renders the card drawer on tab, "" for the card's default, with
-// note, what the member's action did.
-func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note string) {
+// drawer renders the card drawer on tab, "" for the card's default.
+func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	bt, k, v, ok := c.writableCard(w, r)
 	if !ok {
 		return
@@ -3508,7 +3592,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 		}
 	}
 	ctx := r.Context()
-	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs, Note: note}
+	d := drawerData{Card: k, Tab: tab, Tabs: drawerTabs}
 	// the drawer's head carries the title as filed, whole: the objective's
 	// first line, unless a writer's summary names the card
 	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" {
@@ -3545,7 +3629,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab, note strin
 			}
 		}
 		if v.escalated(bt.Task) && bt.Escalation != "" {
-			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Approver: c.approver(r), Back: "/" + k.Filter.query(), Suffix: "-d"}
+			d.Need = &need{Card: k, Escalated: true, CSRF: v.csrf, Suffix: "-d"}
 		}
 		d.Runs = c.lifeOf(ctx, bt.Task)
 		d.Life = lifeLine(d.Runs, bt.SpentEUR)

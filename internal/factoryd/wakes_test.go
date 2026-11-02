@@ -25,6 +25,10 @@ type fakeWakeStarter struct {
 	calls []wakeCall
 	err   error
 	gone  map[int64]bool // conversations whose venue is gone: the wake refuses for good
+	// block holds the wakes of one project on release, a turn in flight
+	// the Waker must not wait for
+	block   string
+	release chan struct{}
 }
 
 type wakeCall struct {
@@ -35,12 +39,18 @@ type wakeCall struct {
 
 func (f *fakeWakeStarter) StartWake(ctx context.Context, project, login string, conversation int64, birth, text string) error {
 	f.mu.Lock()
-	defer f.mu.Unlock()
 	f.calls = append(f.calls, wakeCall{project, login, conversation, birth, text})
-	if f.gone[conversation] {
+	gone := f.gone[conversation]
+	wait := f.block == project && f.release != nil
+	err := f.err
+	f.mu.Unlock()
+	if wait {
+		<-f.release
+	}
+	if gone {
 		return fmt.Errorf("conversation %d is archived: %w", conversation, ErrWakeVenueGone)
 	}
-	return f.err
+	return err
 }
 
 func (f *fakeWakeStarter) recorded() []wakeCall {
@@ -79,7 +89,7 @@ func newWakeRig(t *testing.T, projects map[string]policy.ProjectConfig) (*Waker,
 		Now:     func() time.Time { return *clock },
 		Current: func() policy.Version { return policy.Version{Tree: policy.Tree{Projects: projects}} },
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("the seeding pass: %v", err)
 	}
 	return w, s, starter, clock
@@ -91,6 +101,18 @@ func wakeAsk(t *testing.T, s *PGStore, repository, task, ask, via string) int64 
 	t.Helper()
 	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: EventQuestionAsked, Via: via,
 		Detail: map[string]any{"ask": ask}})
+	if err != nil {
+		t.Fatalf("record the ask: %v", err)
+	}
+	return id
+}
+
+// wakeAskComment records one ask of task on repository that filed the
+// issue comment id, and returns the event's id.
+func wakeAskComment(t *testing.T, s *PGStore, repository, task, ask string, comment int64, via string) int64 {
+	t.Helper()
+	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, Kind: EventQuestionAsked, Via: via,
+		Detail: map[string]any{"ask": ask, "comment": comment}})
 	if err != nil {
 		t.Fatalf("record the ask: %v", err)
 	}
@@ -140,7 +162,7 @@ func wakeAskMarked(keys []string, task string) bool {
 func TestWakerWakesOnAskAtAutonomous(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	id := wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -172,7 +194,7 @@ func TestWakerIgnoresChatFiledAsksAndManualProjects(t *testing.T) {
 	idAuto := wakeAsk(t, s, "sf/auto", "t-1", "Raise the month cap?", ViaChat)
 	idAssisted := wakeAsk(t, s, "sf/assisted", "t-2", "Fund the build?", ViaFactoryd)
 	idManual := wakeAsk(t, s, "sf/manual", "t-3", "Merge the branch?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 0 {
@@ -192,7 +214,7 @@ func TestWakerBatchesAsks(t *testing.T) {
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
 	wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
 	wakeAsk(t, s, "sf/wake", "t-3", "Merge the branch?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -213,20 +235,134 @@ func TestWakerBatchesAsks(t *testing.T) {
 	}
 }
 
-// The same ask text of the same card again is the same ask: no second
-// wake.
+// An ask that carries no comment of its own falls back to its sentence:
+// the same text of the same card again wakes no second time.
 func TestWakerNoSecondAttemptOnRepeatedAsk(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
 		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+}
+
+// A new ask that repeats a sentence wakes again: the mark keys the ask's
+// own comment, so two asks of one sentence are two asks.
+func TestWakerANewAskThatRepeatsASentenceWakesAgain(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, nil)
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27258, ViaFactoryd)
+	*clock = clock.Add(11 * time.Second)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 2 {
+		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
+	}
+}
+
+// The same ask again, the same comment however it reappears, is the one
+// the mark holds: no second wake.
+func TestWakerTheSameAskWakesOnce(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, nil)
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeAskComment(t, s, "sf/wake", "t-1", "Raise the month cap?", 27247, ViaFactoryd)
+	*clock = clock.Add(11 * time.Second)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+}
+
+// drainPass runs one pass and waits out the wake turns it started, so a
+// test reads the store only after their bookkeeping landed.
+func drainPass(t *testing.T, w *Waker) error {
+	t.Helper()
+	err := w.Pass(t.Context())
+	w.drain()
+	return err
+}
+
+// A wake turn runs on its own goroutine: Pass returns while it runs,
+// another project's timer fires in the same pass, the running wake's own
+// timer row stands until its turn ends, and no second wake of that
+// project starts beside it.
+func TestWakerPassesWhileAWakeTurnRuns(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, map[string]policy.ProjectConfig{
+		"a-proj": {Repository: "sf/a", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}},
+		"b-proj": {Repository: "sf/b", Autonomy: policy.AutonomyAutonomous, Notify: []string{"sebastian"}},
+	})
+	convA, err := s.NewConversation(t.Context(), "sf/a", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	convB, err := s.NewConversation(t.Context(), "sf/b", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, t2 := range []struct {
+		repo string
+		conv int64
+		note string
+	}{
+		{"sf/a", convA, "Check A."},
+		{"sf/b", convB, "Check B."},
+	} {
+		if err := s.AddChatTimer(t.Context(), t2.repo, "sebastian", t2.conv, clock.Add(-time.Minute), t2.note, ""); err != nil {
+			t.Fatal(err)
+		}
+	}
+	starter.block, starter.release = "a-proj", make(chan struct{})
+	pass := make(chan error, 1)
+	go func() { pass <- w.Pass(t.Context()) }()
+	select {
+	case err := <-pass:
+		if err != nil {
+			t.Fatalf("Pass: %v", err)
+		}
+	case <-time.After(2 * time.Second):
+		t.Fatal("Pass waited for the wake turn to run")
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		if calls := starter.recorded(); len(calls) == 2 {
+			break
+		} else if time.Now().After(deadline) {
+			t.Fatalf("%d wakes, want both projects': %+v", len(calls), calls)
+		}
+	}
+	if due, err := s.DueChatTimers(t.Context(), "sf/a", *clock); err != nil || len(due) != 1 {
+		t.Fatalf("a's due timers = %v, %v, want its row while its wake runs", due, err)
+	}
+	for deadline := time.Now().Add(5 * time.Second); ; time.Sleep(time.Millisecond) {
+		due, err := s.DueChatTimers(t.Context(), "sf/b", *clock)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if len(due) == 0 {
+			break
+		}
+		if time.Now().After(deadline) {
+			t.Fatal("b's timer row outlived its wake turn")
+		}
+	}
+	close(starter.release)
+	w.drain()
+	if due, err := s.DueChatTimers(t.Context(), "sf/a", *clock); err != nil || len(due) != 0 {
+		t.Fatalf("a's due timers = %v, %v, want none once its wake ran", due, err)
 	}
 }
 
@@ -235,12 +371,12 @@ func TestWakerNoSecondAttemptOnRepeatedAsk(t *testing.T) {
 func TestWakerTurnRateCaps(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	capped := wakeCursorOf(t, s, "sf/wake")
 	id := wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
@@ -250,7 +386,7 @@ func TestWakerTurnRateCaps(t *testing.T) {
 		t.Fatalf("the cursor moved to %d while capped at %d", got, capped)
 	}
 	*clock = clock.Add(11 * time.Second)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -311,7 +447,7 @@ func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 			}
 			timers := due()
 			for i := range 2 {
-				if err := w.Pass(t.Context()); err != nil {
+				if err := drainPass(t, w); err != nil {
 					t.Fatalf("pass %d: %v", i+1, err)
 				}
 				var cards int
@@ -327,7 +463,7 @@ func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 			}
 			*clock = clock.Add(61 * time.Second)
 			starter.err = nil
-			if err := w.Pass(t.Context()); err != nil {
+			if err := drainPass(t, w); err != nil {
 				t.Fatal(err)
 			}
 			if calls := starter.recorded(); len(calls) != 2 || calls[1].birth != tc.birth || !strings.Contains(calls[1].text, tc.text) ||
@@ -354,14 +490,14 @@ func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 		return id
 	}
 	id := ask("t-cap", "The month cap is reached. Raise it?", SourceMonthCap)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 0 || wakeCursorOf(t, s, "sf/wake") < id {
 		t.Fatalf("wakes %+v, cursor %d; want none and the cursor past %d", calls, wakeCursorOf(t, s, "sf/wake"), id)
 	}
 	ask("t-roll", "3 rolls failed since the last one merged. Retry the roll?", SourceRollFailed)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 || !strings.Contains(calls[0].text, "rolls failed since the last one merged") {
@@ -376,7 +512,7 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
 	starter.err = errors.New("the wake did not run")
 	id := wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
@@ -388,7 +524,7 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	if !slices.Contains(wakeStateKeys(t, s, "sf/wake"), "cooldown") {
 		t.Fatalf("no cooldown mark among %v", wakeStateKeys(t, s, "sf/wake"))
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
@@ -396,7 +532,7 @@ func TestWakerFailedTurnRetriesColdly(t *testing.T) {
 	}
 	*clock = clock.Add(61 * time.Second)
 	starter.err = nil
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -421,7 +557,7 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 		Kind: EventQuestionAsked, Via: ViaFactoryd, Detail: map[string]any{"question": "Use a replica?"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -445,13 +581,13 @@ func TestWakeAskTextNamesCardsAndTools(t *testing.T) {
 func TestWakeAskTextCountsAsks(t *testing.T) {
 	w, s, starter, clock := newWakeRig(t, nil)
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
 	wakeAsk(t, s, "sf/wake", "t-3", "Merge the branch?", ViaFactoryd)
 	*clock = clock.Add(11 * time.Second)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -473,11 +609,11 @@ func TestWakeAskTextCountsAsks(t *testing.T) {
 func TestWakerMarksSurviveRestart(t *testing.T) {
 	w1, s, starter1, clock := newWakeRig(t, nil)
 	wakeAsk(t, s, "sf/wake", "t-1", "Raise the month cap?", ViaFactoryd)
-	if err := w1.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w1); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	wakeAsk(t, s, "sf/wake", "t-2", "Fund the build?", ViaFactoryd)
-	if err := w1.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w1); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter1.recorded(); len(calls) != 1 {
@@ -488,7 +624,7 @@ func TestWakerMarksSurviveRestart(t *testing.T) {
 		Now:     func() time.Time { return *clock },
 		Current: w1.Current}
 	*clock = clock.Add(11 * time.Second)
-	if err := w2.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w2); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter2.recorded()
@@ -512,7 +648,7 @@ func TestVenueGoneDropsItsWatch(t *testing.T) {
 	}
 	starter.gone = map[int64]bool{conv: true}
 	wakeMove(t, s, "sf/wake", "t-1", "board")
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass returned %v, want nil", err)
 	}
 	if ws, err := s.ChatWatchesFor(t.Context(), "sf/wake", "t-1"); err != nil {
@@ -521,7 +657,7 @@ func TestVenueGoneDropsItsWatch(t *testing.T) {
 		t.Fatalf("the watch outlived its venue: %+v", ws)
 	}
 	wakeAsk(t, s, "sf/wake", "t-1", "Where does the cache live?", "member")
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("second Pass returned %v, want nil", err)
 	}
 	calls := starter.recorded()
@@ -544,11 +680,11 @@ func TestVenueGoneDropsItsTimer(t *testing.T) {
 		t.Fatal(err)
 	}
 	starter.gone = map[int64]bool{conv: true}
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass returned %v, want nil", err)
 	}
 	*clock = clock.Add(2 * time.Minute)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("second Pass returned %v, want nil", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
@@ -571,7 +707,7 @@ func TestWakeAskTextNamesFundOnlyForAnApprover(t *testing.T) {
 		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
 			"wake-proj": {Repository: "sf/wake", Autonomy: tc.autonomy, Notify: []string{"sebastian"}, Approvers: tc.approvers}})
 		wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
-		if err := w.Pass(t.Context()); err != nil {
+		if err := drainPass(t, w); err != nil {
 			t.Fatal(err)
 		}
 		calls := starter.recorded()
@@ -643,7 +779,7 @@ func refillWaiting(t *testing.T, s *PGStore) {
 func TestWakerWakesOnTheRoadmapPull(t *testing.T) {
 	w, s, starter, clock, roadmap := refillRig(t, 2)
 	refillWaiting(t, s)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	calls := starter.recorded()
@@ -666,7 +802,7 @@ func TestWakerWakesOnTheRoadmapPull(t *testing.T) {
 	// the fake starter runs no turn, so nothing was filed: the stamped head
 	// holds the pull past every gap and cooldown
 	*clock = clock.Add(2 * time.Minute)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("the second Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
@@ -674,7 +810,7 @@ func TestWakerWakesOnTheRoadmapPull(t *testing.T) {
 	}
 	// a changed roadmap is a new pull, once the cooldown allows it
 	roadmap.set("head-2")
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("the third Pass: %v", err)
 	}
 	calls = starter.recorded()
@@ -731,7 +867,7 @@ func TestWakerRefillRefusals(t *testing.T) {
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
 			w, s, starter, roadmap := tc.prepare(t)
-			if err := w.Pass(t.Context()); err != nil {
+			if err := drainPass(t, w); err != nil {
 				t.Fatalf("Pass: %v", err)
 			}
 			if calls := starter.recorded(); len(calls) != 0 {
@@ -752,7 +888,7 @@ func TestWakerRefillRefusals(t *testing.T) {
 func TestWakerRefillAFailedStartMovesNoStamp(t *testing.T) {
 	w, s, starter, clock, _ := refillRig(t, 1)
 	starter.err = errors.New("the chat is unfunded")
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 1 {
@@ -763,7 +899,7 @@ func TestWakerRefillAFailedStartMovesNoStamp(t *testing.T) {
 	}
 	starter.err = nil
 	*clock = clock.Add(61 * time.Second)
-	if err := w.Pass(t.Context()); err != nil {
+	if err := drainPass(t, w); err != nil {
 		t.Fatalf("the retry Pass: %v", err)
 	}
 	if calls := starter.recorded(); len(calls) != 2 {

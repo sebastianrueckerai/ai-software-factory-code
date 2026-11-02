@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/url"
@@ -14,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -63,11 +65,13 @@ type PlanFiler interface {
 	FilePlan(ctx context.Context, taskID, plan string) (PlanFiled, error)
 }
 
-// PlanFiled is a plan filing's result: a stored revision, or every
-// finding the check raised, back into the same session.
+// PlanFiled is a plan filing's result: a stored revision and whether its
+// cards wait on the human's confirmation, or every finding the check
+// raised, back into the same session.
 type PlanFiled struct {
 	Revision int      `json:"revision"`
 	SHA256   string   `json:"sha256"`
+	Gate     bool     `json:"gate"`
 	Findings []string `json:"findings"`
 }
 
@@ -82,6 +86,12 @@ type DeploymentReader interface {
 // analyze_image tool). Implemented by Factoryd; tests substitute a fake.
 type ImageLooker interface {
 	LookAtImage(ctx context.Context, taskID string, in AnalyzeImageIn) (string, error)
+}
+
+// Digester has the Small model answer an ask over one workspace file (the
+// digest tool). Implemented by Factoryd; tests substitute a fake.
+type Digester interface {
+	Digest(ctx context.Context, taskID string, in DigestIn) (string, error)
 }
 
 // HoldoutVerdicter files an audit session's hold-out verdict (the
@@ -141,6 +151,7 @@ var (
 	_ HoldoutVerdicter = (*Factoryd)(nil)
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
+	_ Digester         = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -244,6 +255,18 @@ func (f *Factoryd) LookAtImage(ctx context.Context, taskID string, in AnalyzeIma
 		struct {
 			TaskID string `json:"task_id"`
 			AnalyzeImageIn
+		}{taskID, in})
+	return factorydText(b, err)
+}
+
+// Digest returns the Small model's answer over the workspace file in in,
+// as LookAtImage its look.
+func (f *Factoryd) Digest(ctx context.Context, taskID string, in DigestIn) (string, error) {
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/digest",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+			DigestIn
 		}{taskID, in})
 	return factorydText(b, err)
 }
@@ -403,6 +426,17 @@ const (
 	maxImageAsk  = 2000
 )
 
+type DigestIn struct {
+	Path string `json:"path" jsonschema:"a text file in the workspace: absolute under /workspace or relative to the repository"`
+	Ask  string `json:"ask,omitempty" jsonschema:"what you need from the file, at most 2000 characters; leave it out for a summary"`
+}
+
+// The bounds of a digest's arguments; the file's is policy.MaxDigestBytes.
+const (
+	maxDigestPath = 4096
+	maxDigestAsk  = 2000
+)
+
 type FileVerdictIn struct {
 	Idx      int    `json:"idx" jsonschema:"the hold-out's idx, from the task card"`
 	Verdict  string `json:"verdict" jsonschema:"wrong_test, real_gap or spec_question"`
@@ -499,7 +533,7 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 			return s.delegate(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFilePlan, Description: "File the plan: hand the complete plan json over and it is checked at once. " +
-		"A refusal names every finding; correct the plan and file it again in this session. A filed plan is this session's answer; end the session. Free."},
+		"A refusal names every finding; correct the plan and file it again in this session. A stored plan is this session's answer; end the session. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
 			return s.filePlan(ctx, c, in), nil, nil
 		})
@@ -525,6 +559,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"Name exactly one of path and card_image; ask says what to look for. PNG, JPEG, WebP or GIF of at most 8 MiB. Spends on the card's budget as a model call."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in AnalyzeImageIn) (*mcp.CallToolResult, any, error) {
 			return s.analyzeImage(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDigest, Description: "Have a small model read one text file of your workspace and answer your ask about it: " +
+		"only its answer enters your context, never the file's text. Use it on a big file with a pointed ask, such as what a function returns or which cards a plan names, " +
+		"and read raw only the part its answer points at. UTF-8 text of at most 128 KiB. Books as a call of the cheap model on the card's account."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in DigestIn) (*mcp.CallToolResult, any, error) {
+			return s.digest(ctx, c, in), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -572,9 +612,30 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 		return r
 	}
 	toolCap, _ := c.pv.Document.ToolCap(c.task.Classes, tool)
+	text, err := s.runPaid(ctx, c, tool, toolCap, p)
+	var refused *toolRefusal
+	switch {
+	case err == nil:
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+	case errors.As(err, &refused):
+		return s.refuseTool(c, tool, refused.decision, refused.reason)
+	default:
+		return toolError(err.Error())
+	}
+}
+
+// runPaid holds, runs and books one paid tool call for either door: the
+// call's worst case is held against the caps the caller read, the
+// provider runs under the hold, and the real cost (the hold when unknown)
+// is booked with the task's spend and audited under the policy version. A
+// refusal comes back as a *toolRefusal; a failure is already audited.
+func (s *Server) runPaid(ctx context.Context, c *toolCaller, tool string, toolCap policy.ToolCap, p paidCall) (string, error) {
+	if c.task.Status != "running" {
+		return "", &toolRefusal{"refused_task_status", "the task is " + c.task.Status}
+	}
 	worst, decision, reason := p.prepare(ctx)
 	if decision != "" {
-		return s.refuseTool(c, tool, decision, reason)
+		return "", &toolRefusal{decision, reason}
 	}
 	project, projectEUR := c.pv.ProjectCap(c.task.Repository)
 	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
@@ -585,11 +646,11 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {
-		return s.refuseTool(c, tool, refusal.Decision, refusal.Reason)
+		return "", &toolRefusal{refusal.Decision, refusal.Reason}
 	}
 	if err != nil {
 		s.auditTool(c, tool, "error_store", err.Error(), nil, nil)
-		return toolError("the factory could not reserve the call's cost: " + err.Error())
+		return "", fmt.Errorf("the factory could not reserve the call's cost: %w", err)
 	}
 	ctx, up := s.tel.startCall(ctx, c.task, "tool", tool, hold.EUR)
 	defer up.end()
@@ -607,17 +668,131 @@ func (s *Server) paid(ctx context.Context, c *toolCaller, tool string, p paidCal
 	b, err := s.opts.Store.ReleaseHold(context.Background(), hold, cost, policy.Usage{})
 	if err != nil {
 		note += fmt.Sprintf("; hold %d not released: %v", hold.ID, err)
-		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified JWT; tool is one of the policy constants
+		log.Printf("task %s: tool %s: hold %d not released: %v", c.task.ID, tool, hold.ID, err) // #nosec G706 -- the task id is the stored row's, found by the verified caller; tool is one of the policy constants
 		b.Spent = c.task.SpentEUR
 	}
 	up.booked(b.Booked, b.OverHold)
 	spend := b.Spent
 	if callErr != nil {
 		s.auditBooked(c, tool, "error_tool", callErr.Error()+note, &spend, &hold.EUR, b.OverHold)
-		return toolError(tool + " failed: " + callErr.Error())
+		return "", fmt.Errorf("%s failed: %w", tool, callErr)
 	}
 	s.auditBooked(c, tool, decision, strings.TrimPrefix(note, "; "), &spend, &hold.EUR, b.OverHold)
-	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+	return text, nil
+}
+
+// toolRefusal is a paid tool call the policy refused before the provider
+// ran; the doors word it for their callers.
+type toolRefusal struct{ decision, reason string }
+
+func (e *toolRefusal) Error() string { return e.decision + ": " + e.reason }
+
+// maxDoorBody bounds a chat tool door request body: a query or a URL.
+const maxDoorBody = maxURL + 1024
+
+// handleChatTool is the chat's tool door: the factoryd shared token on
+// the factory-task header, as the completions door's identity check, runs
+// one of the chat block's web tools on the chat task's account under its
+// chat.tools caps. The agent door at /mcp admits sandbox JWTs only; no
+// sandbox opens this one.
+func (s *Server) handleChatTool(w http.ResponseWriter, r *http.Request) {
+	ctx := r.Context()
+	pv, polErr := s.currentPolicy(ctx)
+	var pid *int64
+	if pv != nil {
+		pid = &pv.ID
+	}
+	if !s.factorydBearer(r) {
+		s.refuse(w, pid, r.Header.Get(HeaderFactoryTask), auditFactoryd, "refused_auth",
+			"the chat's tool door takes the factoryd shared token, not a sandbox token", "", http.StatusUnauthorized, "authentication_error")
+		return
+	}
+	taskID := r.Header.Get(HeaderFactoryTask)
+	if taskID == "" {
+		s.refuse(w, pid, "", auditFactoryd, "refused_auth",
+			"a factoryd call names its task in "+HeaderFactoryTask, "", http.StatusBadRequest, "invalid_request_error")
+		return
+	}
+	if polErr != nil {
+		s.refuse(w, pid, taskID, auditFactoryd, "error_policy", polErr.Error(), "", http.StatusServiceUnavailable, "server_error")
+		return
+	}
+	task, ok, err := s.opts.Store.Task(ctx, taskID)
+	switch {
+	case err != nil:
+		s.refuse(w, pid, taskID, auditFactoryd, "error_store", err.Error(), "", http.StatusInternalServerError, "server_error")
+		return
+	case !ok:
+		s.refuse(w, pid, taskID, auditFactoryd, "refused_task_unknown", "no task row for "+taskID, "", http.StatusNotFound, "invalid_request_error")
+		return
+	}
+	tool := r.PathValue("tool")
+	name, project, _ := pv.ProjectOf(task.Repository)
+	c := &toolCaller{pv: pv, task: task}
+	toolCap, listed := pv.Document.ChatOf(project).Tools[tool]
+	reason := ""
+	switch {
+	case !slices.Contains(task.Classes, policy.ClassChat):
+		reason = "the web tools serve the chat task, and " + task.ID + " is not one"
+	case !listed:
+		reason = tool + " is not in the chat block's tools (chat.tools)"
+	}
+	if reason != "" {
+		s.auditTool(c, tool, "refused_capability",
+			fmt.Sprintf("%s on %s: %s (chat.tools of %s under policy version %d)", tool, task.ID, reason, cmp.Or(name, "the policy"), pv.ID),
+			&task.SpentEUR, nil)
+		w.Header().Set(HeaderDecision, "refused_capability")
+		writeError(w, http.StatusForbidden, "permission_error", reason)
+		return
+	}
+	body, err := io.ReadAll(io.LimitReader(r.Body, maxDoorBody))
+	if err != nil {
+		s.refuse(w, pid, taskID, auditFactoryd, "refused_arguments", err.Error(), "", http.StatusBadRequest, "invalid_request_error")
+		return
+	}
+	refuseArgs := func(reason string) {
+		s.auditTool(c, tool, "refused_arguments", reason, &task.SpentEUR, nil)
+		w.Header().Set(HeaderDecision, "refused_arguments")
+		writeError(w, http.StatusBadRequest, "invalid_request_error", reason)
+	}
+	var p paidCall
+	switch tool {
+	case policy.ToolWebSearch:
+		var in SearchIn
+		if json.Unmarshal(body, &in) != nil {
+			refuseArgs(`the body is not a web_search call: {"query": string, "limit": 1 to 10}`)
+			return
+		}
+		p = s.search(c, in)
+	case policy.ToolWebScrape:
+		var in ScrapeIn
+		if json.Unmarshal(body, &in) != nil {
+			refuseArgs(`the body is not a web_scrape call: {"url": string}`)
+			return
+		}
+		p = s.scrape(c, in)
+	}
+	text, err := s.runPaid(ctx, c, tool, toolCap, p)
+	var refused *toolRefusal
+	switch {
+	case err == nil:
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.WriteHeader(http.StatusOK)
+		io.WriteString(w, text) // #nosec G104,G705 -- best-effort response write; served as text/plain, a browser renders the answer as text, not HTML
+	case errors.As(err, &refused):
+		s.auditTool(c, tool, refused.decision, refused.reason, &task.SpentEUR, nil)
+		w.Header().Set(HeaderDecision, refused.decision)
+		status, typ := http.StatusPaymentRequired, "budget_exceeded"
+		switch refused.decision {
+		case "refused_arguments":
+			status, typ = http.StatusBadRequest, "invalid_request_error"
+		case "refused_task_status":
+			status, typ = http.StatusConflict, "invalid_request_error"
+		}
+		writeError(w, status, typ, refused.reason)
+	default:
+		writeError(w, http.StatusBadGateway, "upstream_error", err.Error())
+	}
 }
 
 func toolError(msg string) *mcp.CallToolResult {
@@ -831,6 +1006,10 @@ const deploymentHealthTimeout = 20 * time.Second
 // opencode's 150 s on an MCP call.
 const imageLookTimeout = 145 * time.Second
 
+// digestTimeout bounds a digest at factoryd as imageLookTimeout a look:
+// the file's read and the Small call.
+const digestTimeout = 145 * time.Second
+
 // admitTool refuses a tool none of the task's classes lists in the policy.
 func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
 	switch {
@@ -998,7 +1177,7 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxImagePath))
 	case len(in.CardImage) > maxCardImage:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("card_image is longer than %d bytes: name the image or paste its /attachments/ link", maxCardImage))
-	case len(in.Ask) > maxImageAsk:
+	case utf8.RuneCountInString(in.Ask) > maxImageAsk:
 		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters", maxImageAsk))
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), imageLookTimeout)
@@ -1012,9 +1191,42 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
+// digest has factoryd read one workspace file and answer the ask over it
+// with the Small model. Free, for the classes that list it; the call
+// books on the task's account as a model call.
+func (s *Server) digest(ctx context.Context, c *toolCaller, in DigestIn) *mcp.CallToolResult {
+	tool := policy.ToolDigest
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	in.Path, in.Ask = strings.TrimSpace(in.Path), strings.TrimSpace(in.Ask)
+	switch {
+	case in.Path == "":
+		return s.refuseTool(c, tool, "refused_arguments", "path is required: a text file of the workspace, absolute under /workspace or relative to the repository")
+	case len(in.Path) > maxDigestPath:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxDigestPath))
+	case utf8.RuneCountInString(in.Ask) > maxDigestAsk:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters: ask for the one thing you need from the file", maxDigestAsk))
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), digestTimeout)
+	defer cancel()
+	text, err := s.opts.Digester.Digest(ctx, c.task.ID, in)
+	if err != nil {
+		s.auditTool(c, tool, "error_digest", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError(err.Error())
+	}
+	s.auditTool(c, tool, "digested", in.Path, &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
 // filePlan hands the planner's plan to factoryd, which checks the whole
 // json at once: a refusal carries every finding back into the session, a
-// filed plan is the session's answer. Free, for the classes that list it.
+// stored plan is the session's answer, and the answer names whether the
+// human's confirmation waits on the revision's cards, because storing
+// files none. Free, for the classes that list it.
 func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mcp.CallToolResult {
 	tool := policy.ToolFilePlan
 	if c.task.Status != "running" {
@@ -1038,9 +1250,14 @@ func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mc
 		return toolError("the plan was refused:\n- " + strings.Join(res.Findings, "\n- ") +
 			"\ncorrect the plan and file it again in this session")
 	}
-	s.auditTool(c, tool, "plan_filed", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
+	if res.Gate {
+		s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d, confirmation waits", res.Revision), &c.task.SpentEUR, nil)
+		return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+			Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file only after the human confirms the spec and the criteria. You may end the session; a later session carries the human's changes, if any.", res.Revision)}}}
+	}
+	s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
-		Text: fmt.Sprintf("filed as revision %d; it is this session's answer. You may end the session.", res.Revision)}}}
+		Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file with no further gate. You may end the session.", res.Revision)}}}
 }
 
 // fileVerdict hands the audit session's verdict on one hold-out to

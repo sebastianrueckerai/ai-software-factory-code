@@ -1636,7 +1636,7 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 	}
 }
 
-// A new policy version is in force within policyTTL, and the store is read
+// A new policy version is in force within PolicyTTL, and the store is read
 // at most once per TTL.
 func TestPolicyCachedForAtMost30s(t *testing.T) {
 	stub := newStubUpstream(t)
@@ -1705,7 +1705,7 @@ func TestKeyRemintedOnPolicyVersion(t *testing.T) {
 	next := testPolicy(2, 20)
 	next.Document.Classes["coder"] = policy.Class{Models: []string{"small"}}
 	store.setPolicy(next)
-	now = now.Add(policyTTL)
+	now = now.Add(PolicyTTL)
 	call() // version 2: only small
 
 	want := []mintCall{
@@ -1788,7 +1788,7 @@ func TestSupersededKeyBlockedAfterItsCalls(t *testing.T) {
 	<-started // the first call runs on key 1
 	store.setPolicy(testPolicy(2, 20))
 	clock.Lock()
-	now = now.Add(policyTTL) // version 2: key 2
+	now = now.Add(PolicyTTL) // version 2: key 2
 	clock.Unlock()
 	if rr := doChat(t, s.Routes("test"), chatBody("small")); rr.Code != http.StatusOK {
 		t.Fatalf("call under the new version = %d", rr.Code)
@@ -1954,7 +1954,7 @@ func TestFactorydReviewCall(t *testing.T) {
 				t.Fatalf("upstream calls = %d, want %d", len(auths), tc.want.upstream)
 			}
 			if tc.want.upstream > 0 {
-				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,supervisor" || calls[0].taskID != "42" {
+				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor" || calls[0].taskID != "42" {
 					t.Fatalf("mints = %+v, want one key for task 42 on the factory aliases only", calls)
 				}
 			}
@@ -2052,7 +2052,7 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 		t.Fatalf("agent call = %d", rr.Code)
 	}
 	calls := minter.mintCalls()
-	if len(calls) != 2 || calls[0].models != "big,small" || calls[1].models != "big,supervisor" {
+	if len(calls) != 2 || calls[0].models != "big,small" || calls[1].models != "big,small,supervisor" {
 		t.Fatalf("mints = %+v, want the session's key and factoryd's", calls)
 	}
 	if b := minter.blockedKeys(); len(b) != 0 {
@@ -2852,7 +2852,7 @@ func TestFactorydVisionCallOnACodersTask(t *testing.T) {
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusOK {
 		t.Fatalf("the vision call = %d: %s", rr.Code, rr.Body)
 	}
-	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,supervisor,vision" {
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor,vision" {
 		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases", calls)
 	}
 
@@ -2862,6 +2862,55 @@ func TestFactorydVisionCallOnACodersTask(t *testing.T) {
 		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice, "vision": testPrice}})
 	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
 		t.Fatalf("a class without vision_model = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+}
+
+// A session's digest is factoryd's Small call on the card's own task,
+// whatever its classes: small is the one alias it may name, on the key
+// beside the class's other factoryd models.
+func TestFactorydDigestCallOnACodersTask(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0001"}})
+	store := newMemStore(Task{Classes: []string{"coder"}, ModelAlias: "small", ID: "42", BudgetEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	minter := &fakeMinter{}
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: minter,
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice}})
+	h := s.Routes("test")
+	digest := func(model string) string {
+		return `{"messages":[{"role":"user","content":"which cards?\n\n# Plan"}],"model":"` + model + `"}`
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeDigest, digest("small")); rr.Code != http.StatusOK {
+		t.Fatalf("the digest call = %d: %s", rr.Code, rr.Body)
+	}
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor" {
+		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases, small among them", calls)
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeDigest, digest("big")); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
+		t.Fatalf("a digest on big = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+}
+
+// A plan's naming is factoryd's Small title call on the plan's own task,
+// whatever its classes, booked under the task; no other alias names it.
+func TestFactorydTitleCallOnAPlansTask(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: 200, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0001"}})
+	store := newMemStore(Task{Classes: []string{"coder"}, ModelAlias: "big", ID: "42", BudgetEUR: 2, Status: "running"})
+	store.setPolicy(factoryPolicy())
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, FactorydToken: testFactorydToken,
+		Prices: fakePrices{"big": testPrice, "small": testPrice, "supervisor": testPrice}})
+	h := s.Routes("test")
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeTitle, chatBody(policy.Small)); rr.Code != http.StatusOK {
+		t.Fatalf("the naming call = %d %q: %s", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
+	}
+	if want := []ledgerRow{{"42", "title/small", 0.0001, policy.KindModel}}; !reflect.DeepEqual(store.ledger, want) {
+		t.Fatalf("ledger = %+v, want %+v", store.ledger, want)
+	}
+	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeTitle, chatBody(policy.Big)); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {
+		t.Fatalf("a naming call on big = %d %q: %s, want 403 refused_capability", rr.Code, rr.Header().Get(HeaderDecision), rr.Body)
 	}
 }
 
