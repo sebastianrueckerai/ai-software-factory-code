@@ -1378,6 +1378,44 @@ func TestMCPChatConfirmPoolWithARefusedForgejoToken(t *testing.T) {
 	}
 }
 
+// A pool proposal carries its preview as the browser's does: chat_send's
+// proposal, and chat_read's state of it pending and used alike.
+func TestMCPPoolProposalCarriesItsPreview(t *testing.T) {
+	r, g, _ := poolChatRig(t, 10, 3)
+	poolChatReload(r, 15)
+	g.replies = [][]string{{call(1, "set_pool", `{"action":"top_up","eur":5,"reason":"a second finding"}`)}}
+	session := tokenSession(t, r)
+	var a sendAnswer
+	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "top the pool up"})), &a); err != nil {
+		t.Fatal(err)
+	}
+	want := &factoryd.PoolPreview{Action: "top_up", EUR: 5, FromEUR: 10, ToEUR: 15, Reason: "a second finding"}
+	if len(a.Proposals) != 1 {
+		t.Fatalf("chat_send's proposals = %+v, want one", a.Proposals)
+	}
+	equal(t, "chat_send's preview", a.Proposals[0].Pool, want)
+	id := a.Proposals[0].ID
+	stateOf := func() mcpProposalState {
+		t.Helper()
+		var read readAnswer
+		if err := json.Unmarshal([]byte(answerOf(t, session, "chat_read", map[string]any{})), &read); err != nil {
+			t.Fatal(err)
+		}
+		for _, m := range read.Messages {
+			for _, p := range m.Proposals {
+				if p.ID == id {
+					return p
+				}
+			}
+		}
+		t.Fatalf("chat_read lists no proposal %s", id)
+		return mcpProposalState{}
+	}
+	equal(t, "the pending state", stateOf(), mcpProposalState{ID: id, State: "pending", Pool: want})
+	confirmed(t, session, id)
+	equal(t, "the used state", stateOf(), mcpProposalState{ID: id, State: "used", Pool: want})
+}
+
 // chat_confirm on a pool proposal writes the change its turn captured, as
 // the button's Do it does; a project file that moved since the proposal
 // refuses before anything writes, the proposal spent.

@@ -264,10 +264,11 @@ type mcpTool struct {
 }
 
 type mcpProposal struct {
-	ID      string    `json:"id"`
-	Tool    string    `json:"tool"`
-	What    string    `json:"what"`
-	Expires time.Time `json:"expires"`
+	ID      string                `json:"id"`
+	Tool    string                `json:"tool"`
+	What    string                `json:"what"`
+	Expires time.Time             `json:"expires"`
+	Pool    *factoryd.PoolPreview `json:"pool,omitempty"`
 }
 
 type mcpApplied struct {
@@ -308,7 +309,8 @@ func (k *collector) send(event string, data any) {
 		tool, _ := m["tool"].(string)
 		what, _ := m["description"].(string)
 		expires, _ := m["expires"].(time.Time)
-		k.a.Proposals = append(k.a.Proposals, mcpProposal{ID: id, Tool: tool, What: what, Expires: expires})
+		pool, _ := m["pool"].(*factoryd.PoolPreview)
+		k.a.Proposals = append(k.a.Proposals, mcpProposal{ID: id, Tool: tool, What: what, Expires: expires, Pool: pool})
 	case "applied":
 		m, _ := data.(map[string]string)
 		k.a.Applied = append(k.a.Applied, mcpApplied{Tool: m["tool"], Result: m["result"]})
@@ -497,8 +499,9 @@ type mcpMessage struct {
 }
 
 type mcpProposalState struct {
-	ID    string `json:"id"`
-	State string `json:"state"`
+	ID    string                `json:"id"`
+	State string                `json:"state"`
+	Pool  *factoryd.PoolPreview `json:"pool,omitempty"`
 }
 
 // chatReadMax bounds chat_read's rows, chatReadBytes their text as the
@@ -572,14 +575,14 @@ func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*
 	if err != nil {
 		log.Printf("console: the chat proposals of %s on %s: %v", call.row.Login, call.row.Repository, err)
 	}
-	state := make(map[string]string, len(states))
+	state := make(map[string]factoryd.ProposalState, len(states))
 	for _, st := range states {
-		state[st.Token] = st.State
+		state[st.Token] = st
 	}
 	for i := range out.Messages {
 		ps := out.Messages[i].Proposals
 		for j := range ps {
-			ps[j].State = state[ps[j].ID]
+			ps[j].State, ps[j].Pool = state[ps[j].ID].State, state[ps[j].ID].Pool
 		}
 	}
 	return jsonAnswer(out)
