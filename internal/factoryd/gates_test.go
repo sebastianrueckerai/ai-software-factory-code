@@ -2081,16 +2081,20 @@ func TestMergeReadsTheCheckedHead(t *testing.T) {
 // A revert of a red main gives way to the pause's fix-forward card whose
 // merge runs or ran: a red main gets one remedy at a time, so the revert
 // does not merge, and its refusal names the fix card. A fix card that
-// ended without its merge leaves the revert to merge.
+// ended without its merge leaves the revert to merge. A revert no standing
+// pause names merges nothing: main turned green, and a merge retry or a
+// green end that missed it would revert a commit on a green main.
 func TestMergeRefusesARevertWhoseFixForwardCardLanded(t *testing.T) {
 	for _, tc := range []struct {
 		name    string
 		fix     Task
-		refused bool
+		noPause bool
+		refusal string
 	}{
-		{"merged", Task{Status: "merged", MergeCommit: "m9"}, true},
-		{"merging", Task{Status: "in-review", Gate: GateMerge}, true},
-		{"closed", Task{Status: "closed"}, false},
+		{"merged", Task{Status: "merged", MergeCommit: "m9"}, false, "fix-forward card #40 (fix1)"},
+		{"merging", Task{Status: "in-review", Gate: GateMerge}, false, "fix-forward card #40 (fix1)"},
+		{"closed", Task{Status: "closed"}, false, ""},
+		{"the pause ended", Task{Status: "closed"}, true, "no pause of the merge queue names this revert"},
 	} {
 		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 		task := gateTask
@@ -2099,18 +2103,20 @@ func TestMergeRefusesARevertWhoseFixForwardCardLanded(t *testing.T) {
 		fix := tc.fix
 		fix.ID, fix.Source, fix.Kind, fix.Repository, fix.IssueNumber = "fix1", SourceMainFix, "agent", task.Repository, 40
 		store.tasks["fix1"] = fix
-		store.pauses = map[string]QueuePause{task.Repository: {Project: task.Repository, RunID: 58, SHA: "bad1bad", Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "t1"}}
+		if !tc.noPause {
+			store.pauses = map[string]QueuePause{task.Repository: {Project: task.Repository, RunID: 58, SHA: "bad1bad", Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "t1"}}
+		}
 		store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
 		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
 		res := getInto[MergeResult](t, val, err)
-		if !tc.refused {
+		if tc.refusal == "" {
 			if !res.Merged || len(fj.merges) != 1 {
 				t.Errorf("%s: result %+v, merges %d; want the revert merged", tc.name, res, len(fj.merges))
 			}
 			continue
 		}
-		if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, "fix-forward card #40 (fix1)") {
-			t.Errorf("%s: result %+v, merges %d; want a refusal naming the fix-forward card #40 and no merge", tc.name, res, len(fj.merges))
+		if res.Merged || len(fj.merges) != 0 || !strings.Contains(res.Refusal, tc.refusal) {
+			t.Errorf("%s: result %+v, merges %d; want a refusal naming %q and no merge", tc.name, res, len(fj.merges), tc.refusal)
 		}
 	}
 }

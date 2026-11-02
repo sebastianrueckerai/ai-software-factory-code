@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"net/http"
 	"slices"
 	"strings"
@@ -212,15 +211,16 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	} else if err != nil {
 		return err
 	}
+	// a repository with issue dependencies switched off answers 404: none
 	deps, err := forgejo.IssueDependencies(ctx, repo.Owner, repo.Name, t.IssueNumber)
-	if err != nil {
+	if err != nil && !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	for _, n := range slices.Sorted(maps.Keys(deps)) {
-		if deps[n] != "open" {
+	for _, d := range deps {
+		if d.State != "open" {
 			continue
 		}
-		if err := forgejo.RemoveIssueDependency(ctx, repo, t.IssueNumber, n); err != nil {
+		if err := forgejo.RemoveIssueDependency(ctx, repo, t.IssueNumber, d); err != nil {
 			return err
 		}
 	}

@@ -1344,6 +1344,22 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 	}
 }
 
+// A merged card that its chain covers later ends done without a second
+// close: its issue closed at the merge, and one a person reopened since
+// stays open.
+func TestEndCoveredLeavesTheIssue(t *testing.T) {
+	fj := &prForgejo{labels: map[int64][]string{4: {"state/merged"}}}
+	task := withStatus(withPR(prTask, 12), "merged")
+	task.Kind, task.MergeCommit = "agent", "m12"
+	r, _, _ := newActivityRunner(t, task, fj)
+	if err := r.EndCovered(context.Background(), "t1", 7); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.comments) != 0 || len(fj.issuesClosed) != 0 {
+		t.Fatalf("comments %q, issues closed %v; want the issue left as it is", fj.comments, fj.issuesClosed)
+	}
+}
+
 // chainRunner is a runner over card task in project repo, whose chain
 // mode is mode: the card's two tokens live beside another card's, its
 // session on.

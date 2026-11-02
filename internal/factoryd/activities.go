@@ -2457,8 +2457,9 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // is closed first, with the reason, and a closed or done task's issue
 // still open too (a factory-PR card's pull request carries no "Closes
 // #N", an acceptance end has none), but a plan card's, done each time a
-// revision files its cards; a done or closed task's branch on the fork is
-// deleted. Both return a transient error, so a Forgejo blip retries them before the task
+// revision files its cards, and not again when the chain covers a merged
+// card (an issue a person reopened since stays open); a done or closed
+// task's branch on the fork is deleted. Both return a transient error, so a Forgejo blip retries them before the task
 // turns final, while one Forgejo refuses is logged and passed: no retry
 // fixes it, and failing here would have the heal pass restart the
 // workflow every minute. Then completion (credentials revoked, keys blocked, final status,
@@ -2532,7 +2533,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if (final == "closed" || final == "done" && t.Track != policy.TrackPlan) && t.IssueNumber != 0 {
+		if (final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan) && t.IssueNumber != 0 {
 			closing := msg
 			switch {
 			case final == "done" && merged:

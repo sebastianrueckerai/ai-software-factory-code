@@ -234,17 +234,51 @@ func TestRollerRevertReplacesTheFixForwardCard(t *testing.T) {
 	}
 }
 
+// A fix-forward card that enters its merge while the revert files keeps
+// its issue: the revert's filing reads the card again before it ends it,
+// and the merge gate holds the revert.
+func TestRollerRevertLeavesAFixThatEnteredItsMerge(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "in-review", Gate: GateApproval, Repository: codeRepo, IssueNumber: 40, PRNumber: 41}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}}
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		fix := store.tasks["fix1"]
+		fix.Gate = GateMerge
+		store.tasks["fix1"] = fix
+		return "", nil
+	}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, filed := store.tasks[store.pauses[codeRepo].RevertTask]; !filed || len(f.comments) != 0 || len(f.closed) != 0 {
+		t.Fatalf("revert filed %t, comments %q, closed %q; want the revert filed and the merging fix card left as it is", filed, f.comments, f.closed)
+	}
+}
+
 // A remedy of the pause that merged while main's newest push run is red at
 // another commit goes to a human: the pause takes the human card as its
-// own, on the new red run, and the next poll files nothing more. A red
-// run still at the pause's own commit changes nothing: the merge's run has
-// not started yet.
+// own, on the new red run, the failed fix-forward card it replaces closes,
+// and the next poll files nothing more. A red run still at the pause's own
+// commit changes nothing: the merge's run has not started yet. Neither
+// does a red pushed by hand before the remedy's merge has a run.
 func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		sha   string
-		files bool
-	}{{"red at the revert's merge", commitC2, true}, {"red at the pause's own commit", commitC1, false}} {
+		name, sha, merge string
+		files            bool
+	}{
+		{"red at the revert's merge", commitC2, commitC2, true},
+		{"red at the pause's own commit", commitC1, commitC2, false},
+		{"red pushed by hand before the revert's run", commitC2, "m-revert", false},
+	} {
 		f := &rollForgejo{
 			runs:  []map[string]any{pushRun(60, tc.sha, "failure"), pushRun(58, commitC1, "failure")},
 			files: map[string]map[string]string{codeRepo + "@main": mainPins()},
@@ -254,8 +288,8 @@ func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
 		roller, store, _ := newTestRoller(t, f)
 		roller.Forgejo.PublicURL = "https://git.example"
 		store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
-		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "closed", Repository: codeRepo, IssueNumber: 40}
-		store.tasks["rev1"] = Task{ID: "rev1", Source: SourceRevert, Kind: "agent", Status: "merged", MergeCommit: commitC2, Repository: codeRepo, IssueNumber: 42, PRNumber: 43}
+		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "failed", Repository: codeRepo, IssueNumber: 40}
+		store.tasks["rev1"] = Task{ID: "rev1", Source: SourceRevert, Kind: "agent", Status: "merged", MergeCommit: tc.merge, Repository: codeRepo, IssueNumber: 42, PRNumber: 43}
 		since := time.Now().Add(-mainRedBound - time.Minute)
 		pause := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC1, Since: since, FixTask: "fix1", RevertTask: "rev1"}
 		store.pauses = map[string]QueuePause{codeRepo: pause}
@@ -272,10 +306,13 @@ func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
 		groupRevertBranch = saved
 		got := store.pauses[codeRepo]
 		if !tc.files {
-			if !reflect.DeepEqual(got, pause) || len(f.issues) != 0 {
-				t.Errorf("%s: pause %+v, issues %q; want the pause as it stood and nothing filed", tc.name, got, f.issues)
+			if !reflect.DeepEqual(got, pause) || len(f.issues) != 0 || len(f.closed) != 0 {
+				t.Errorf("%s: pause %+v, issues %q, closed %q; want the pause as it stood and nothing filed or closed", tc.name, got, f.issues, f.closed)
 			}
 			continue
+		}
+		if want := []string{"40 factoryd: main is still red at c2c2c2c after the revert #42 merged: the human card #31 replaces this card. Closing this issue."}; !slices.Equal(f.comments, want) || !slices.Equal(f.closed, []string{"40"}) {
+			t.Errorf("%s: comments %q, closed %q; want the failed fix card closed with %q", tc.name, f.comments, f.closed, want)
 		}
 		card := store.tasks[got.FixTask]
 		if got.RunID != 60 || got.SHA != commitC2 || !got.Since.Equal(since) || got.RevertTask != "rev1" ||

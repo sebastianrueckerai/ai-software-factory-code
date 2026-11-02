@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net/http"
 	"net/http/httptest"
@@ -888,6 +889,53 @@ func TestCloseIssueAsFactory(t *testing.T) {
 		t.Fatal("a failed record returned no error")
 	}
 	check("record failed", store, fj, nil, "open", false)
+}
+
+// A repository with issue dependencies switched off answers their read
+// 404: the issue has none, and the close goes on.
+func TestCloseIssueAsFactoryWithDependenciesOff(t *testing.T) {
+	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open"}}, failCall: "GET issues/5/dependencies", failStatus: http.StatusNotFound}
+	f := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	store := newFakeStore()
+	if err := closeIssueAsFactory(context.Background(), store, f, Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] {
+		t.Fatalf("#5 %s, confirmed %t; want closed and confirmed", fj.issues[5].state, store.confirmedCloses[[2]any{"t-a", int64(5)}])
+	}
+}
+
+// A dependency on an open issue of another repository is dropped in that
+// repository's name: the DELETE names the dependency's owner and
+// repository, not the card's.
+func TestCloseIssueAsFactoryDropsADependencyOfAnotherRepository(t *testing.T) {
+	var deleted []string
+	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
+		switch p := strings.TrimPrefix(r.URL.Path, "/api/v1/repos/linkshort/linkshort/"); {
+		case r.Method == "GET" && p == "issues/5/dependencies":
+			io.WriteString(w, `[{"number":3,"state":"open","repository":{"owner":"sf","name":"infra","full_name":"sf/infra"}},`+
+				`{"number":7,"state":"closed","repository":{"owner":"linkshort","name":"linkshort","full_name":"linkshort/linkshort"}}]`)
+		case r.Method == "DELETE" && p == "issues/5/dependencies":
+			var body map[string]any
+			json.NewDecoder(r.Body).Decode(&body)
+			deleted = append(deleted, fmt.Sprintf("%v/%v#%v", body["owner"], body["repo"], body["index"]))
+			io.WriteString(w, `{}`)
+		case r.Method == "PATCH" && p == "issues/5":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{}`)
+		default:
+			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
+			http.NotFound(w, r)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	if err := closeIssueAsFactory(context.Background(), newFakeStore(), f, Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}, ""); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(deleted, []string{"sf/infra#3"}) {
+		t.Fatalf("deleted %q, want the dependency on sf/infra#3 alone", deleted)
+	}
 }
 
 // An ending card waits on nothing: closeIssueAsFactory drops the issue's

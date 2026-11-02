@@ -1880,12 +1880,10 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	} else if stale {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the plan's revision %d drops the card %s", newest, t.PlanKey)), nil
 	}
-	// a red main gets one remedy at a time: its revert gives way to a
-	// fix-forward card whose merge runs or ran
-	if fix, landed, err := r.landedFix(ctx, t); err != nil {
+	if why, err := r.revertRefusal(ctx, t); err != nil {
 		return MergeResult{}, err
-	} else if landed {
-		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the fix-forward card #%d (%s) of main's red merged or merges: a red main gets one remedy at a time", fix.IssueNumber, fix.ID)), nil
+	} else if why != "" {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, why), nil
 	}
 	// an integration card whose criteria no review judged holds its merge
 	// on every path: the approval press, the retry timer, the auto approvers

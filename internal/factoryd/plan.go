@@ -3408,7 +3408,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			return nil, err
 		}
 		for _, d := range dependsOn(order, edges, c.Key) {
-			if dep := cards[d]; have[dep.IssueNumber] == "" {
+			if dep := cards[d]; !dependsOnIssue(have, repo, dep.IssueNumber) {
 				if err := r.forgejo.AddIssueDependency(ctx, repo, child.IssueNumber, dep.IssueNumber); err != nil {
 					return nil, err
 				}
@@ -3439,21 +3439,44 @@ func (f *Forgejo) EditIssueComment(ctx context.Context, owner, repo string, id i
 	return err
 }
 
-// IssueDependencies are the issues issue number depends on (Forgejo's
-// blocking dependencies), all pages: each number's state, open or closed.
-func (f *Forgejo) IssueDependencies(ctx context.Context, owner, repo string, number int64) (map[int64]string, error) {
+// IssueDependency is an issue another issue depends on: its repository,
+// which Forgejo lets differ from the dependent's, its number and its state,
+// open or closed.
+type IssueDependency struct {
+	Repo   Repo
+	Number int64
+	State  string
+}
+
+// IssueDependencies are the issues issue number of owner/repo depends on
+// (Forgejo's blocking dependencies), all pages. A dependency whose answer
+// names no repository is of owner/repo.
+func (f *Forgejo) IssueDependencies(ctx context.Context, owner, repo string, number int64) ([]IssueDependency, error) {
 	deps, err := GetPages[struct {
-		Number int64  `json:"number"`
-		State  string `json:"state"`
+		Number     int64  `json:"number"`
+		State      string `json:"state"`
+		Repository struct {
+			Owner string `json:"owner"`
+			Name  string `json:"name"`
+		} `json:"repository"`
 	}](ctx, f.call, fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies?", owner, repo, number))
 	if err != nil {
 		return nil, err
 	}
-	out := make(map[int64]string, len(deps))
+	out := make([]IssueDependency, 0, len(deps))
 	for _, d := range deps {
-		out[d.Number] = d.State
+		dep := IssueDependency{Repo: Repo{Owner: owner, Name: repo}, Number: d.Number, State: d.State}
+		if d.Repository.Owner != "" && d.Repository.Name != "" {
+			dep.Repo = Repo{Owner: d.Repository.Owner, Name: d.Repository.Name}
+		}
+		out = append(out, dep)
 	}
 	return out, nil
+}
+
+// dependsOnIssue tells whether deps hold issue number of repo.
+func dependsOnIssue(deps []IssueDependency, repo Repo, number int64) bool {
+	return slices.ContainsFunc(deps, func(d IssueDependency) bool { return d.Repo == repo && d.Number == number })
 }
 
 // AddIssueDependency makes issue number of repo depend on issue dependency
@@ -3476,21 +3499,21 @@ func (f *Forgejo) SetIssueDependency(ctx context.Context, repo Repo, number, dep
 	if err != nil {
 		return err
 	}
-	_, has := have[dependency]
+	has := dependsOnIssue(have, repo, dependency)
 	switch {
 	case has && !remove, !has && remove:
 		return nil
 	case !remove:
 		return f.AddIssueDependency(ctx, repo, number, dependency)
 	}
-	return f.RemoveIssueDependency(ctx, repo, number, dependency)
+	return f.RemoveIssueDependency(ctx, repo, number, IssueDependency{Repo: repo, Number: dependency})
 }
 
-// RemoveIssueDependency drops issue number's dependency on issue
-// dependency of the same repository (swagger issueRemoveIssueDependencies
-// says 200, where the add answers 201, so any 2xx).
-func (f *Forgejo) RemoveIssueDependency(ctx context.Context, repo Repo, number, dependency int64) error {
-	payload, err := json.Marshal(map[string]any{"owner": repo.Owner, "repo": repo.Name, "index": dependency})
+// RemoveIssueDependency drops issue number of repo's dependency dep, named
+// by its own repository (swagger issueRemoveIssueDependencies says 200,
+// where the add answers 201, so any 2xx).
+func (f *Forgejo) RemoveIssueDependency(ctx context.Context, repo Repo, number int64, dep IssueDependency) error {
+	payload, err := json.Marshal(map[string]any{"owner": dep.Repo.Owner, "repo": dep.Repo.Name, "index": dep.Number})
 	if err != nil {
 		return err
 	}
