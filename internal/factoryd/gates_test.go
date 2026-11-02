@@ -1427,6 +1427,86 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 	}
 }
 
+// The merge of a plan's integration card holds while a criterion of its
+// revision has no verdict row from any source: the refusal names the
+// count and the last review's note, and the merge ask is on the human's
+// surface again with the refused review named — filed anew from the
+// pressed request's spec, or re-opened when it names the note already.
+// A row for every criterion, whatever its verdict, merges.
+func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
+	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
+	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	named := base + ". The model review did not run: " + note
+	for _, c := range []struct {
+		name    string
+		note    string // the last model_review step's
+		reason  string // the pressed request's
+		rows    []CriterionVerdict
+		refusal string
+		asks    int // merge requests filed in all
+		ask     string
+	}{
+		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 2, named},
+		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 1, named},
+		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged by a model review", 1, base},
+		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "met"}}, "", 1, base},
+	} {
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		r, store, _ := newGateRunner(t, task, fj)
+		ctx := context.Background()
+		b, _ := json.Marshal(criteriaPlan())
+		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+			t.Fatal(err)
+		}
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+		// the press met the human criterion
+		if err := store.PutCriteriaVerdicts(ctx, "t1", "approver", "sebastian", append(c.rows, CriterionVerdict{Criterion: "c2", Verdict: "met"})); err != nil {
+			t.Fatal(err)
+		}
+		r.record(ctx, "t1", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
+		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1", Review: Review{Verdict: "approve", Summary: "fine"}, WhyHuman: []string{"schema migration"}})
+		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec, Reason: c.reason})
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+			t.Fatal(err)
+		}
+		val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+		res := getInto[MergeResult](t, val, err)
+		if c.refusal == "" {
+			if !res.Merged || len(fj.merges) != 1 {
+				t.Errorf("%s: result %+v, merges %d: want merged", c.name, res, len(fj.merges))
+			}
+			continue
+		}
+		if res.Merged || res.Refusal != c.refusal || len(fj.merges) != 0 {
+			t.Errorf("%s: result %+v, merges %d: want the refusal %q", c.name, res, len(fj.merges), c.refusal)
+		}
+		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], c.refusal) {
+			t.Errorf("%s: comments %q, want one naming the hold", c.name, fj.comments)
+		}
+		if len(store.approvals) != c.asks {
+			t.Errorf("%s: %d merge requests, want %d", c.name, len(store.approvals), c.asks)
+		}
+		pending, _ := store.ApprovalRequests(ctx, "pending")
+		if len(pending) != 1 || pending[0].Reason != c.ask || pending[0].DecisionNote != "waiting: "+c.refusal {
+			t.Fatalf("%s: pending %+v, want one ask reading %q, noted with the hold", c.name, pending, c.ask)
+		}
+		var got MergeSpec
+		if err := json.Unmarshal(pending[0].Spec, &got); err != nil {
+			t.Fatal(err)
+		}
+		if c.asks == 2 && (got.Review.Note != note || got.VerdictSummary != note || got.HeadSHA != "c1" ||
+			!slices.Equal(got.WhyHuman, []string{"The model review did not run: " + note + ". The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.", "schema migration"}) ||
+			len(got.EarlierReviews) != 1 || got.EarlierReviews[0].Verdict != "approve") {
+			t.Errorf("%s: the filed spec = %+v, want the refused review named and the judged one kept as earlier", c.name, got)
+		}
+		if tk, _, _ := store.Task(ctx, "t1"); tk.Gate != GateApproval {
+			t.Errorf("%s: gate %q, want approval", c.name, tk.Gate)
+		}
+	}
+}
+
 // The merge commit's message names the approver, and its trailers the
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).
