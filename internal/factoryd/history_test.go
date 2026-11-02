@@ -150,7 +150,8 @@ func (f *histForgejo) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 700+len(f.comments))
 		case r.Method == "GET" && strings.HasPrefix(p, "/issues/4"):
-			io.WriteString(w, `{"number":4,"state":"open"}`)
+			// the merge's "Closes #4" closes it
+			fmt.Fprintf(w, `{"number":4,"state":%q}`, map[bool]string{false: "open", true: "closed"}[f.merged])
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)

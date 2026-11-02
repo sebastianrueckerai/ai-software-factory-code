@@ -1296,6 +1296,42 @@ func TestFinishDoneFromInReview(t *testing.T) {
 	}
 }
 
+// A card that ends done on its merged pull request closes its issue
+// where the merge left it open: a factory-PR card's pull request carries
+// no "Closes #N" (card #1333). An issue the merge's "Closes #N" closed
+// takes no write, and a done card without a pull request, a plan among
+// them, keeps its issue open.
+func TestFinishDoneClosesTheIssueOfAMergedCard(t *testing.T) {
+	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m12"}`
+	for _, tc := range []struct {
+		name     string
+		pr       int64
+		source   string
+		issueOff bool
+		comments []string
+		closed   []int64
+	}{
+		{"a revert, its issue open", 12, SourceRevert, false, []string{"factoryd: pull request #12 merged; this card ends with it."}, []int64{4}},
+		{"an agent card whose merge closed its issue", 12, "api", true, nil, nil},
+		{"a plan without a pull request", 0, SourcePlan, false, nil, nil},
+	} {
+		fj := &prForgejo{issueOff: tc.issueOff, pulls: map[int64]string{12: merged}, labels: map[int64][]string{4: {"state/in-review"}}}
+		task := withStatus(prTask, "in-review")
+		task.Kind, task.Source, task.PRNumber = "agent", tc.source, tc.pr
+		r, store, _ := newActivityRunner(t, task, fj)
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged by factory-merge"); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(fj.comments, tc.comments) || !slices.Equal(fj.issuesClosed, tc.closed) {
+			t.Errorf("%s: comments %q, issues closed %v; want %q, %v", tc.name, fj.comments, fj.issuesClosed, tc.comments, tc.closed)
+		}
+		events, _ := store.IntakeEvents(context.Background(), "t1")
+		if botCloseRecorded(events, task) != (tc.closed != nil) {
+			t.Errorf("%s: intake events %+v, want factoryd's close recorded: %t", tc.name, events, tc.closed != nil)
+		}
+	}
+}
+
 // chainRunner is a runner over card task in project repo, whose chain
 // mode is mode: the card's two tokens live beside another card's, its
 // session on.
@@ -1697,8 +1733,8 @@ func TestFinishDeletesTheForkBranch(t *testing.T) {
 		fj      *prForgejo
 		deleted []string
 	}{
-		"merged":       {&prForgejo{pulls: map[int64]string{12: merged}}, []string{"factory-agent/repo factory/t1"}},
-		"already gone": {&prForgejo{pulls: map[int64]string{12: merged}, branchGone: true}, nil},
+		"merged":       {&prForgejo{pulls: map[int64]string{12: merged}, issueOff: true}, []string{"factory-agent/repo factory/t1"}},
+		"already gone": {&prForgejo{pulls: map[int64]string{12: merged}, branchGone: true, issueOff: true}, nil},
 		"unmerged":     {&prForgejo{pulls: map[int64]string{12: open}}, nil},
 	} {
 		fj := tc.fj
