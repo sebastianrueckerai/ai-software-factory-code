@@ -1006,11 +1006,11 @@ func (t *turn) run(id, notice string) {
 		var results []factoryd.OperatorMessage
 		for i, call := range answer.ToolCalls {
 			start := time.Now()
-			result, token := t.call(call)
+			result, token, code := t.call(call)
 			proposed = proposed || token != ""
 			answer.ToolCalls[i].Arguments = objectArgs(call.Arguments)
 			row.ToolCalls = append(row.ToolCalls, factoryd.ChatToolCall{ID: call.ID, Name: call.Name, Arguments: answer.ToolCalls[i].Arguments,
-				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token})
+				Result: result, At: start, Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Proposal: token, Status: code})
 			results = append(results, factoryd.OperatorMessage{Role: "tool", ToolCallID: call.ID, Content: result})
 		}
 		if t.ask != nil {
@@ -1101,9 +1101,9 @@ func (t *turn) landUnread() {
 }
 
 // call runs one tool call of the agent, or proposes it when the chat's
-// confirm names it, and answers the result the agent reads and the
-// proposal's token.
-func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
+// confirm names it, and answers the result the agent reads, the
+// proposal's token and the HTTP status a refusal answered, 0 for none.
+func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status int) {
 	tool, ok := t.c.chatTool(call.Name)
 	var in toolInput
 	args := call.Arguments
@@ -1120,20 +1120,21 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 	default:
 		asked := in
 		if err := t.byTaskID(&in); err != nil {
-			result = "Refused: " + t.sentence(err)
+			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
 		if !slices.Contains(t.cfg.Confirm, tool.name) {
 			t.a.decider = "agent"
-			return t.runTool(tool, args, in), ""
+			out, code := t.runTool(tool, args, in)
+			return out, "", code
 		}
 		if err := t.admitTool(tool.name, in); err != nil {
-			result = "Refused: " + t.sentence(err)
+			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
 		desc, err := t.describe(tool, &in)
 		if err != nil {
-			result = "Refused: " + t.sentence(err)
+			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
 		}
 		raw := json.RawMessage(cmp.Or(args, "{}"))
@@ -1146,10 +1147,10 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 			break
 		}
 		t.send("proposal", map[string]any{"id": id, "tool": tool.name, "arguments": raw, "description": desc})
-		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), id
+		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), id, 0
 	}
 	t.block(call.Name, args, 0, result)
-	return result, ""
+	return result, "", status
 }
 
 // tokenMask stands in for a GitHub token in every message, row and log
@@ -1158,8 +1159,9 @@ const tokenMask = "[token]"
 
 // runTool runs tool with its arguments args (in, decoded) as the member:
 // a tool block, and for a write that took effect an applied line with its
-// undo, when it has one.
-func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
+// undo, when it has one. It answers the result and the HTTP status a
+// refusal answered, 0 for none.
+func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 	var named map[string]json.RawMessage
 	if json.Unmarshal([]byte(args), &named) == nil {
 		t.present = make(map[string]bool, len(named))
@@ -1171,12 +1173,13 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 	if err := t.admitTool(tool.name, in); err != nil {
 		result := "Refused: " + t.sentence(err)
 		t.block(tool.name, args, time.Since(start), result)
-		return result
+		return result, refusalCode(err)
 	}
 	out, inv, err := tool.run(t, in)
 	result := out
+	code := 0
 	if err != nil {
-		result = "Refused: " + t.sentence(err)
+		result, code = "Refused: "+t.sentence(err), refusalCode(err)
 	}
 	result = sanitize.Inbound(result)
 	t.block(tool.name, args, time.Since(start), result)
@@ -1185,7 +1188,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 		t.viewEvent = nil
 	}
 	if err != nil || !tool.write {
-		return result
+		return result, code
 	}
 	applied := map[string]string{"tool": tool.name, "result": out}
 	if inv != nil {
@@ -1198,7 +1201,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 		result += " It cannot be undone."
 	}
 	t.send("applied", applied)
-	return result
+	return result, code
 }
 
 // block sends a tool block: the call, its arguments (as a string when
@@ -1240,6 +1243,16 @@ func (t *turn) sentence(err error) string {
 	return "The action failed; see the factoryd log."
 }
 
+// refusalCode is err's HTTP status when err is a refusal, 0 for any
+// other error: the code the history keeps beside the refusal's sentence.
+func refusalCode(err error) int {
+	var no *refusal
+	if errors.As(err, &no) {
+		return no.status
+	}
+	return 0
+}
+
 // chatProposal answers POST /projects/{name}/chat/proposals/{id}: the
 // member's Do it runs the proposal, streamed as a turn is.
 func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
@@ -1273,14 +1286,15 @@ func (t *turn) apply(p factoryd.ChatProposal) {
 	var in toolInput
 	tool, ok := t.c.chatTool(p.Tool)
 	result := "There is no tool " + p.Tool + "."
+	code := 0
 	start := time.Now()
 	if ok && json.Unmarshal(p.Args, &in) == nil {
-		result = t.runTool(tool, string(p.Args), in)
+		result, code = t.runTool(tool, string(p.Args), in)
 	}
 	t.freshRead = time.Now()
 	if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
 		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: string(p.Args), Result: result, At: start,
-			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead}}}); !ok {
+			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead, Status: code}}}); !ok {
 		return
 	}
 	if !strings.HasPrefix(result, "Refused: ") {

@@ -36,10 +36,11 @@ type AccFileChange struct {
 }
 
 // AccInfraCommit is one guarded commit the fake landed on its branch:
-// its message, the branch, the Authorization that made it and its files.
+// its message, the branch, the main it branches from, the Authorization
+// that made it and its files.
 type AccInfraCommit struct {
-	Message, Branch, Bearer string
-	Files                   []AccFileChange
+	Message, Branch, From, Bearer string
+	Files                         []AccFileChange
 }
 
 // AccInfraPull is one pull request the fake opened: its head branch, its
@@ -60,11 +61,13 @@ func accBlob(text string) string { return factoryd.ContentHash(text)[:12] }
 
 // serveInfra answers the configuration repository's API: a file of main
 // by path with its blob sha, a change of the files as one commit on a
-// new branch off main — the sha guard held, an update of a file whose
-// blob is another refused 409 — the pull request the change opens with a
-// counted number, and the member's merge of it, which lands the branch's
-// files on main; a refused merge leaves main as it was. Every call is
-// recorded with its Authorization. a.mu held.
+// new branch off the ref the request names — main alone, a change that
+// names another refused 404 as Forgejo refuses a ref it does not hold,
+// and the sha guard held — an update of a file whose blob is another
+// refused 409 — the pull request the change opens with a counted number,
+// and the member's merge of it, which lands the branch's files on main;
+// a refused merge leaves main as it was. Every call is recorded with its
+// Authorization. a.mu held.
 func (a *AcceptanceRig) serveInfra(w http.ResponseWriter, r *http.Request) {
 	a.infraCalls = append(a.infraCalls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
 	switch {
@@ -84,6 +87,7 @@ func (a *AcceptanceRig) serveInfra(w http.ResponseWriter, r *http.Request) {
 			"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": accBlob(text)})
 	case r.Method == http.MethodPost && r.URL.Path == accInfra+"/contents":
 		var body struct {
+			Branch    string `json:"branch"`
 			NewBranch string `json:"new_branch"`
 			Message   string `json:"message"`
 			Files     []struct {
@@ -91,11 +95,18 @@ func (a *AcceptanceRig) serveInfra(w http.ResponseWriter, r *http.Request) {
 			} `json:"files"`
 		}
 		_ = json.NewDecoder(r.Body).Decode(&body) // #nosec G104 -- test harness stub request
+		// the fake holds main alone: a change that names another ref —
+		// wrong or nonexistent — branches from nothing Forgejo has, and
+		// the answer says so rather than landing the commit anyway
+		if body.Branch != "main" {
+			http.Error(w, `{"message":"object does not exist"}`, http.StatusNotFound)
+			return
+		}
 		if a.commitStat != 0 {
 			http.Error(w, `{"message":`+strconv.Quote(cmp.Or(a.commitMsg, "the branch is protected"))+`}`, a.commitStat)
 			return
 		}
-		c := AccInfraCommit{Message: body.Message, Branch: body.NewBranch, Bearer: r.Header.Get("Authorization")}
+		c := AccInfraCommit{Message: body.Message, Branch: body.NewBranch, From: body.Branch, Bearer: r.Header.Get("Authorization")}
 		for _, f := range body.Files {
 			current, present := a.infra[f.Path]
 			switch {

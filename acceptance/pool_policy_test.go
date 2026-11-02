@@ -15,10 +15,12 @@ import (
 // The acceptance proof of the month pool's write integrity (the
 // pool-policy rig card of plan #1399): the set_pool change a confirmed
 // proposal carries, end-to-end through the console's HTTP surface on the
-// configuration repository's fake — one guarded branch commit, one pull
-// request, one merge, one reload request and one pool_changed row, the
-// file's own pool the only key that moves — and the refusals a stale,
-// rejected, malformed or unbounded change answers, each without a write.
+// configuration repository's fake — one guarded branch commit off main,
+// one pull request, one merge, one reload request and one pool_changed
+// row, the file's own pool the only key that moves — and the refusals a
+// stale, rejected, malformed or unbounded change answers, each its exact
+// status, read from the tool row the press stored beside the sentence,
+// and none of them writing.
 
 // accInfraFile is the code project's file on the configuration
 // repository's main.
@@ -90,16 +92,29 @@ func pressPool(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csr
 	return eventsOf(t, body)
 }
 
-// refusedPool proposes set_pool with args and presses Do it; corrective
-// is the agent's reply to the refusal it answers.
-func refusedPool(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args, corrective string) []string {
+// pressStatus answers the HTTP status the press's set_pool call answered,
+// from the tool row its Do it stored — the machine fact behind the
+// refusal's sentence, 0 for a call that ran.
+func pressStatus(t *testing.T, r *AcceptanceRig) int {
+	t.Helper()
+	rows := r.ToolCalls("sf/code", "sebastian")
+	if len(rows) == 0 {
+		t.Fatalf("the press stored no tool row")
+	}
+	return rows[len(rows)-1].Status
+}
+
+// refusedPool proposes set_pool with args and presses Do it; it answers
+// the press's stream and the status the refused call answered.
+// corrective is the agent's reply to the refusal.
+func refusedPool(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, args, corrective string) ([]string, int) {
 	t.Helper()
 	r.Reply([]string{Call(1, "set_pool", args)}, []string{Say(corrective)})
 	code, body := postChat(t, r, path, ck, url.Values{"message": {"please change the pool"}, "csrf": {csrf}})
 	if code != http.StatusOK {
 		t.Fatalf("POST the chat = %d:\n%s", code, body)
 	}
-	return pressPool(t, r, path, ck, csrf, poolToken(t, eventsOf(t, body)))
+	return pressPool(t, r, path, ck, csrf, poolToken(t, eventsOf(t, body))), pressStatus(t, r)
 }
 
 // TestPoolPolicyPR is the live check of the pool write's integrity: the
@@ -123,6 +138,7 @@ func TestPoolPolicyPR(t *testing.T) {
 	equal(t, "the Do it's stream", pressPool(t, r, path, ck, csrf, token), []string{
 		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"` + answer + `"}`,
 		`applied {"result":"` + answer + `","tool":"set_pool"}`, `done {}`})
+	equal(t, "the landed call's status", pressStatus(t, r), 0)
 
 	// one guarded commit on a branch of main: the file read with the
 	// config token, the change made with the member's own token, the
@@ -135,6 +151,7 @@ func TestPoolPolicyPR(t *testing.T) {
 	if !strings.HasPrefix(c.Branch, "config-"+accProjectName+"-") {
 		t.Errorf("the commit's branch = %q", c.Branch)
 	}
+	equal(t, "the commit's source branch", c.From, "main")
 	if !strings.HasPrefix(c.Message, "Project "+accProjectName+": month pool 12.00 EUR\n\n") ||
 		!strings.Contains(c.Message, "Factory-Role: chat\n") ||
 		!strings.Contains(c.Message, "Requested-by: sebastian\n") {
@@ -210,16 +227,19 @@ func TestPoolPolicyPR(t *testing.T) {
 		`tool {"arguments":` + stale + `,"duration_ms":0,"name":"set_pool","result":"Refused: projects/` + accProjectName +
 			`.yaml changed since the change was proposed (its blob is now ` + accBlob(moved) + `): read it again and propose the change anew"}`,
 		`text {"text":"I will read the file again."}`, `done {}`})
+	equal(t, "the stale refusal's status", pressStatus(t, r), http.StatusConflict)
 	equal(t, "the other writer's file", r.InfraFiles()[accInfraFile], moved)
 	r.PutInfraFile(accInfraFile, accPoolLanded)
 
 	// a candidate the change check refuses: 422, its line whole
 	r.RefuseCheck([]string{"projects/" + accProjectName + ".yaml: budget.month_eur must not be negative"}, nil)
 	rejected := `{"action":"set","eur":20,"reason":"over a broken bound"}`
-	equal(t, "the rejected candidate", refusedPool(t, r, path, ck, csrf, rejected, "I will write a policy PR."), []string{
+	stream, status := refusedPool(t, r, path, ck, csrf, rejected, "I will write a policy PR.")
+	equal(t, "the rejected candidate", stream, []string{
 		`tool {"arguments":` + rejected + `,"duration_ms":0,"name":"set_pool","result":"Refused: The project file would not load: projects/` +
 			accProjectName + `.yaml: budget.month_eur must not be negative"}`,
 		`text {"text":"I will write a policy PR."}`, `done {}`})
+	equal(t, "the rejected candidate's status", status, http.StatusUnprocessableEntity)
 	r.RefuseCheck(nil, nil)
 
 	// a malformed amount: 400, before any file is read for a write
@@ -228,9 +248,11 @@ func TestPoolPolicyPR(t *testing.T) {
 		{`{"action":"top_up","eur":0,"reason":"nothing"}`, "a top-up takes a positive amount in EUR"},
 		{`{"action":"set","eur":12.005,"reason":"sub-cent"}`, "a pool change's amount is whole cents"},
 	} {
-		equal(t, "the malformed amount "+tc.args, refusedPool(t, r, path, ck, csrf, tc.args, "Understood."), []string{
+		stream, status := refusedPool(t, r, path, ck, csrf, tc.args, "Understood.")
+		equal(t, "the malformed amount "+tc.args, stream, []string{
 			`tool {"arguments":` + tc.args + `,"duration_ms":0,"name":"set_pool","result":"Refused: ` + tc.refusal + `"}`,
 			`text {"text":"Understood."}`, `done {}`})
+		equal(t, "the malformed amount "+tc.args+" answers", status, http.StatusBadRequest)
 	}
 
 	// a file without the bounds the pool needs: 409, each named
@@ -244,9 +266,11 @@ func TestPoolPolicyPR(t *testing.T) {
 	} {
 		r.PutInfraFile(accInfraFile, tc.file)
 		args20 := `{"action":"set","eur":20,"reason":"unbounded"}`
-		equal(t, "the file with "+tc.name, refusedPool(t, r, path, ck, csrf, args20, "Understood."), []string{
+		stream, status := refusedPool(t, r, path, ck, csrf, args20, "Understood.")
+		equal(t, "the file with "+tc.name, stream, []string{
 			`tool {"arguments":` + args20 + `,"duration_ms":0,"name":"set_pool","result":"Refused: ` + tc.refusal + `"}`,
 			`text {"text":"Understood."}`, `done {}`})
+		equal(t, "the file with "+tc.name+" answers", status, http.StatusConflict)
 	}
 	r.PutInfraFile(accInfraFile, accPoolLanded)
 
