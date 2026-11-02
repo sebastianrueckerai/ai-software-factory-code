@@ -1347,7 +1347,9 @@ func (t *turn) sentence(err error) string {
 // or a failed bind answers before anything writes; the guarded writer
 // runs once for a valid press, and only the successful already-landed
 // result streams — every other outcome is the typed press's real HTTP
-// status, never an SSE refusal.
+// status, never an SSE refusal. A captured pool change whose file moved
+// since the proposal answers 409 without a write; that attempt was
+// valid, the token stays spent and the change is proposed anew.
 func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -1376,6 +1378,10 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	}
 	if p.Pool != nil {
 		if err := t.readmit(p.Tool); err != nil {
+			c.fail(w, r, err)
+			return
+		}
+		if err := t.stalePool(p.Pool.Source); err != nil {
 			c.fail(w, r, err)
 			return
 		}
@@ -1546,6 +1552,25 @@ func (c *poolCorrection) against(p factoryd.ChatProposal) error {
 	}
 	if _, err := poolCents(poolChange{action: p.Pool.Action, eur: c.eur, reason: p.Pool.Reason, source: p.Pool.Source}); err != nil {
 		return err
+	}
+	return nil
+}
+
+// stalePool is the captured pool change's guard before the stream: the
+// blob sha its proposal read against the project file on infra's main
+// now, with the write's own refusals — the file gone, or changed since
+// the proposal, which nothing rebases onto. The guarded writer checks
+// again under its lock.
+func (t *turn) stalePool(source string) error {
+	path := policy.ProjectFile(t.p.Name)
+	_, blob, present, err := t.c.infraFile(t.r.Context(), path)
+	switch {
+	case err != nil:
+		return err
+	case !present:
+		return refuse(http.StatusNotFound, "There is no file "+path+" on infra's main.")
+	case blob != source:
+		return refuse(http.StatusConflict, fmt.Sprintf("%s changed since the change was proposed (its blob is now %s): read it again and propose the change anew", path, blob))
 	}
 	return nil
 }
