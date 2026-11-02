@@ -2161,10 +2161,13 @@ func metricDivideCuts(ctx context.Context, db *sql.DB, repo string, w metricWind
 // keeps the window's own names; the spans compare every name the
 // window, the equal window before it and the seven weeks hold.
 func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, []NamedFigure, error) {
-	// rounds(c): the maximum explicit round no later than the closure.
-	// The legacy double of a revision a canonical revision-level row
-	// holds is dropped at the closure's own cutoff, so evidence a later
-	// row would carry never rewrites the closed answer.
+	// rounds(c): the maximum explicit round no later than the closure,
+	// over the repository's own eligible evidence alone — a row another
+	// repository recorded on the same task, however high the round it
+	// names, inflates nothing. The legacy double of a revision a
+	// canonical revision-level row holds is dropped at the closure's own
+	// cutoff, so evidence a later row would carry never rewrites the
+	// closed answer.
 	body := `WITH closed AS (
 			SELECT e.task_id, min(e.at) AS closed_at
 			FROM events e JOIN tasks t ON t.id = e.task_id
@@ -2173,7 +2176,7 @@ func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w m
 		)
 		SELECT c.closed_at, GREATEST(
 			COALESCE((SELECT max(` + dcRoundOf + `) FROM events e
-				WHERE e.task_id = c.task_id AND e.kind = 'plan_replanned' AND e.at <= c.closed_at
+				WHERE e.task_id = c.task_id AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.at <= c.closed_at
 					AND (` + dcLegacyFiling("k.at <= c.closed_at") + `)), 0),
 			COALESCE((SELECT max((v.plan->>'round')::int) FROM plan_revisions v
 				WHERE v.task_id = c.task_id AND (v.plan->>'round') ~ '^[0-9]+$' AND v.created_at <= c.closed_at), 0)
@@ -2235,10 +2238,12 @@ func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w m
 func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, []NamedFigure, error) {
 	// one row per plan and key, the earliest across repository history:
 	// DISTINCT ON keeps the original filing of a key any later revision
-	// filed again, before the span bounds below choose their cohorts
+	// filed again, before the span bounds below choose their cohorts —
+	// and the repository's own rows alone are eligible, so a row another
+	// repository recorded on the same task files no card here
 	const filings = `SELECT DISTINCT ON (e.task_id, e.detail->>'key') e.at, ` + dcRoundOf + ` AS round
 		FROM events e JOIN tasks t ON t.id = e.task_id
-		WHERE ` + dcCardReach + ` AND e.kind = 'plan_replanned' AND e.identity_key IS NOT NULL
+		WHERE ` + dcCardReach + ` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.identity_key IS NOT NULL
 			AND e.detail->>'card' IS NOT NULL
 		ORDER BY e.task_id, e.detail->>'key', e.at, e.id`
 	counts := fmt.Sprintf(`SELECT CASE WHEN f.round > 0 THEN f.round::text ELSE 'unknown' END AS name, count(*)::float8
@@ -2284,19 +2289,22 @@ func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w met
 // asked them — a person, a cut, a round. A replan is the revision's own
 // plan_replanned row, one per plan and revision however many cards the
 // revision filed; the cards' rows answer the filings panel, not this
-// one, and never suppress a revision's own. A row the identity contract
-// never covered, one no canonical revision-level row of its revision
-// holds as of the window's own end, keeps the origin its detail names —
-// or its own unknown bucket where it names none; nothing guesses a
-// name, and a canonical replacement arriving after the window never
-// rewrites the older answer.
+// one, and never suppress a revision's own. Only the repository's own
+// rows are eligible, scoped before the deduplication: a row another
+// repository recorded on the same task — its task's reach holds it —
+// neither wins the revision's origin nor replaces the local one. A row
+// the identity contract never covered, one no canonical revision-level
+// row of its revision holds as of the window's own end, keeps the
+// origin its detail names — or its own unknown bucket where it names
+// none; nothing guesses a name, and a canonical replacement arriving
+// after the window never rewrites the older answer.
 func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
 	rows, err := db.QueryContext(ctx, `SELECT r.name, count(*)::float8 FROM (
 			SELECT DISTINCT ON (e.task_id, e.detail->>'revision')
 				CASE WHEN e.detail->>'origin' IN ('`+ReplanPerson+`', '`+ReplanCut+`', '`+ReplanRound+`')
 					THEN e.detail->>'origin' ELSE 'unknown' END AS name
 			FROM events e JOIN tasks t ON t.id = e.task_id
-			WHERE `+dcCardReach+` AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
+			WHERE `+dcCardReach+` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
 				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling("k.at < $3")+`)
 			ORDER BY e.task_id, e.detail->>'revision', e.identity_key IS NULL, e.at, e.id
 		) r GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To) // #nosec G202 -- the query is built from the package's constant fragments

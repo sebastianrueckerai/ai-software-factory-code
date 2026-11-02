@@ -1305,8 +1305,9 @@ func TestDivideConquerCutsSQL(t *testing.T) {
 // window (t-plan-6's round 9) rewrites no older answer, one recorded
 // exactly at the window's own exclusive end (t-plan-9) suppresses
 // nothing it cannot count, and one another repository recorded
-// (t-plan-10) suppresses no round or origin evidence here. The same
-// definitions answer the previous window and a week of the spark.
+// (t-plan-10) suppresses no round or origin evidence here, and wins
+// none. The same definitions answer the previous window and a week of
+// the spark.
 // [planning_rounds_origins]
 func TestDivideConquerPlanningSQL(t *testing.T) {
 	s := metricsStore(t)
@@ -1427,8 +1428,10 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		// same revision recorded under another repository's name (Oct 4,
 		// before the closure) suppresses no round evidence here — the
 		// plan keeps the two rounds its own row names, and the revision
-		// counts once as a replan, on the canonical row its task's
-		// reach holds
+		// counts once as a replan on its own repository's row, the cut
+		// its detail names: the other repository's canonical row, though
+		// its task's reach holds it, neither wins the revision's origin
+		// nor suppresses the local one
 		dcPlan(t, s, "t-plan-10", "sf/dc9", 210)
 		dcLegacyReplan(t, s, "t-plan-10", "sf/dc9", 210,
 			map[string]any{"revision": 2, "origin": ReplanCut, "round": 2}, from.AddDate(0, 0, 7))
@@ -1518,16 +1521,17 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 	}
 	// three replans by a person (t-plan-1's canonical row, t-plan-5's
 	// legacy one its card row never suppresses, t-plan-9's legacy one the
-	// replacement at the window's own end cannot), two by a cut (t-plan-3's
-	// multi-card revision once, t-plan-6's legacy row), two by a round
-	// (t-plan-4's, t-plan-10's canonical row of another repository's
-	// name) and the lost origin of t-plan-4's revision 3 its own unknown
-	// bucket — the legacy double of revision 2 dropped
-	if len(d.ReplansByOrigin) != 4 || d.ReplansByOrigin[0] != (NamedCount{Name: ReplanPerson, Count: 3}) ||
-		d.ReplansByOrigin[1] != (NamedCount{Name: ReplanCut, Count: 2}) ||
-		d.ReplansByOrigin[2] != (NamedCount{Name: ReplanRound, Count: 2}) ||
+	// replacement at the window's own end cannot), three by a cut
+	// (t-plan-3's multi-card revision once, t-plan-6's legacy row,
+	// t-plan-10's own row the other repository's canonical neither wins
+	// nor suppresses), one by a round (t-plan-4's) and the lost origin of
+	// t-plan-4's revision 3 its own unknown bucket — the legacy double of
+	// revision 2 dropped
+	if len(d.ReplansByOrigin) != 4 || d.ReplansByOrigin[0] != (NamedCount{Name: ReplanCut, Count: 3}) ||
+		d.ReplansByOrigin[1] != (NamedCount{Name: ReplanPerson, Count: 3}) ||
+		d.ReplansByOrigin[2] != (NamedCount{Name: ReplanRound, Count: 1}) ||
 		d.ReplansByOrigin[3] != (NamedCount{Name: "unknown", Count: 1}) {
-		t.Fatalf("replans by origin = %+v, want person thrice, cut and round twice each and one unknown", d.ReplansByOrigin)
+		t.Fatalf("replans by origin = %+v, want cut and person thrice each, round once and one unknown", d.ReplansByOrigin)
 	}
 	// the same definitions answer the previous window: its closures
 	// (t-plan-3 Sep 20, t-plan-8 Sep 18) ran two rounds and three — its
@@ -1567,13 +1571,13 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		t.Fatalf("weekly filings = %+v / %+v, want four first and two later",
 			rw.DivideConquer.CardsFirstRound, rw.DivideConquer.CardsLaterRounds)
 	}
-	// the week's replans: the cut, the person and the unknown above,
-	// the round's Oct 6 row outside — and t-plan-10's cross-repository
-	// canonical row of Oct 4 inside, the revision once on it alone
-	if got := rw.DivideConquer.ReplansByOrigin; len(got) != 4 || got[0] != (NamedCount{Name: ReplanCut, Count: 1}) ||
-		got[1] != (NamedCount{Name: ReplanPerson, Count: 1}) || got[2] != (NamedCount{Name: ReplanRound, Count: 1}) ||
-		got[3] != (NamedCount{Name: "unknown", Count: 1}) {
-		t.Fatalf("weekly replans by origin = %+v, want cut, person, round and the unknown once each", got)
+	// the week's replans: the cut twice — t-plan-3's Oct 3 row and
+	// t-plan-10's own Oct 5 one, the other repository's Oct 4 canonical
+	// row winning nothing here — the person, the unknown above, the
+	// round's Oct 6 row outside
+	if got := rw.DivideConquer.ReplansByOrigin; len(got) != 3 || got[0] != (NamedCount{Name: ReplanCut, Count: 2}) ||
+		got[1] != (NamedCount{Name: ReplanPerson, Count: 1}) || got[2] != (NamedCount{Name: "unknown", Count: 1}) {
+		t.Fatalf("weekly replans by origin = %+v, want the cut twice, the person and the unknown once each", got)
 	}
 	// the other project's plan answers its report alone
 	ro, err := s.ProjectMetrics(context.Background(), "sf/other9", from, to)
