@@ -863,18 +863,18 @@ func depsCount(list string) int {
 	return strings.Count(list, "#")
 }
 
-// planIssue is plan task id's issue and name: from the board's tasks, else read.
-func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string) {
+// planIssue is plan task id's issue, name and repository: from the board's tasks, else read.
+func (c *Console) planIssue(ctx context.Context, byID map[string]factoryd.Task, id string) (int64, string, string) {
 	if t, ok := byID[id]; ok {
-		return t.IssueNumber, t.PlanName
+		return t.IssueNumber, t.PlanName, t.Repository
 	}
 	t, ok, err := c.cfg.Tasks.Task(ctx, id)
 	if err != nil || !ok {
 		log.Printf("console: plan %s: found %v, %v", id, ok, err)
-		return 0, ""
+		return 0, "", ""
 	}
 	byID[id] = t
-	return t.IssueNumber, t.PlanName
+	return t.IssueNumber, t.PlanName, t.Repository
 }
 
 func plural(n int, word string) string {
@@ -1969,9 +1969,10 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		return k
 	}
 	if t.Source == factoryd.SourcePlan && t.Parent != "" {
-		k.PlanIssue, k.PlanName = c.planIssue(ctx, v.byID, t.Parent)
+		var planRepo string
+		k.PlanIssue, k.PlanName, planRepo = c.planIssue(ctx, v.byID, t.Parent)
 		if k.PlanIssue > 0 {
-			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), t.Repository, k.PlanIssue)
+			k.PlanURL = fmt.Sprintf("%s/%s/issues/%d", strings.TrimSuffix(c.cfg.ForgejoPublicURL, "/"), planRepo, k.PlanIssue)
 		}
 	}
 	if t.Track == policy.TrackPlan && t.Status == "done" {

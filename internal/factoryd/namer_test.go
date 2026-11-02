@@ -306,3 +306,58 @@ func TestNameOpenPlansStopsOnARevisionReadError(t *testing.T) {
 		t.Fatalf("names %v with %d calls, want only first named with 1 call", store.names, len(ll.chats))
 	}
 }
+
+// signalNameStore tells when a plan's name is stored, so a test waits for
+// naming that runs off the filing's path.
+type signalNameStore struct {
+	NameStore
+	named chan struct{}
+}
+
+func newSignalNameStore(s NameStore) *signalNameStore {
+	return &signalNameStore{NameStore: s, named: make(chan struct{}, 4)}
+}
+
+func (s *signalNameStore) SetPlanName(ctx context.Context, id, name string) error {
+	err := s.NameStore.SetPlanName(ctx, id, name)
+	s.named <- struct{}{}
+	return err
+}
+
+func (s *signalNameStore) wait(t *testing.T) {
+	t.Helper()
+	select {
+	case <-s.named:
+	case <-time.After(10 * time.Second):
+		t.Fatal("the plan was not named in 10s")
+	}
+}
+
+func TestPlanSlugStaysInsideTheBounds(t *testing.T) {
+	for _, tt := range []struct {
+		title string
+		taken []string
+		want  string
+	}{
+		{"Go", nil, "plan"},
+		{"Go", []string{"plan"}, "plan-2"},
+		{"Go!!", []string{"plan", "plan-2"}, "plan-3"},
+		{"Fix it", nil, "fix-it"},
+	} {
+		if got := planSlug(tt.title, tt.taken); got != tt.want {
+			t.Fatalf("planSlug(%q, %v) = %q, want %q", tt.title, tt.taken, got, tt.want)
+		}
+	}
+}
+
+func TestNameOpenPlansStopsOnACancelledContext(t *testing.T) {
+	ll := &fakeLiteLLM{contents: []string{`{"name":"fix prod latency"}`}}
+	n, store := newNamer(t, ll, nil)
+	store.plans = []Task{{ID: "open", Repository: "o/r", Objective: "Fix the check!"}}
+	store.revs = map[string]PlanRevision{"open": {Plan: []byte(`{"summary":"a"}`)}}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if got := n.NameOpenPlans(ctx); got != 0 || len(ll.chats) != 0 || len(store.names) != 0 {
+		t.Fatalf("named %d with %d calls and names %v, want none", got, len(ll.chats), store.names)
+	}
+}

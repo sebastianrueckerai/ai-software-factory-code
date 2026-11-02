@@ -162,7 +162,7 @@ func TestBoardPlanParentOutsideItsCards(t *testing.T) {
 		t.Errorf("the drawer of a child of a named plan without an issue number lacks the name, then the key:\n%s", d)
 	}
 	r.tasks.tasks[0].IssueNumber = 1
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/linkshort/linkshort/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency · <span class="mono">k2</span></dd>`) {
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-c/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, `<dt>Plan</dt><dd><a class="ref" href="https://git.example/sf/code/issues/1" target="_blank" rel="noopener">#1</a> · fix prod latency · <span class="mono">k2</span></dd>`) {
 		t.Errorf("the drawer does not name the plan and key either:\n%s", d)
 	}
 	code := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()

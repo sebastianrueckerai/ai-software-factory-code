@@ -110,6 +110,9 @@ func (n *Namer) NameOpenPlans(ctx context.Context) int {
 	named := 0
 	defer func() { log.Printf("names: %d open plans named", named) }()
 	for _, t := range plans {
+		if ctx.Err() != nil {
+			return named
+		}
 		rev, filed, err := n.Store.PlanRevision(ctx, t.ID, 0)
 		if err != nil {
 			log.Printf("names: revision of %s: %v", t.ID, err)
@@ -208,7 +211,7 @@ func planSlug(title string, taken []string) string {
 		}
 	}
 	base := cutSlug(strings.Trim(b.String(), "-"), planNameMax)
-	if base == "" {
+	if len([]rune(base)) < planNameMin {
 		base = "plan"
 	}
 	slug := base

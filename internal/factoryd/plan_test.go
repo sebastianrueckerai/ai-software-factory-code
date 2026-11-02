@@ -2886,7 +2886,8 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	runner.cfg.Policy = func() policy.Version { return bounded }
 	ctx := context.Background()
 	ll := &fakeLiteLLM{contents: []string{`{"name":"shorten links"}`}}
-	runner.Namer = &Namer{Store: store, Model: testSupervisorModel(ll.srv(t).URL),
+	signal := newSignalNameStore(store)
+	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
 		Current: func() policy.Version { return nameVersion() }}
 
 	over := testPlan()
@@ -2925,6 +2926,7 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	if held, ok := runner.takeFiled("t-plan"); !ok || held.Revision != 1 {
 		t.Fatalf("held for the session = %+v, %v", held, ok)
 	}
+	signal.wait(t)
 	if got := store.tasks["t-plan"].PlanName; got != "shorten links" {
 		t.Fatalf("plan name %q, want the model's %q", got, "shorten links")
 	}
@@ -3022,6 +3024,33 @@ func TestPlanFilingStampsCompanions(t *testing.T) {
 // A declared companion the factory-config token cannot read refuses the
 // filing: the pin is the system's own fact, so a filing that cannot stamp
 // it stores nothing.
+// A gateway that fails never fails a filing, nor holds its answer: the
+// plan files at once and the title's slug names it.
+func TestFilePlanFilesAtOnceWhenTheModelFails(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	bounded := fixtureVersion(t)
+	runner.cfg.Policy = func() policy.Version { return bounded }
+	ll := &fakeLiteLLM{status: http.StatusInternalServerError}
+	signal := newSignalNameStore(store)
+	runner.Namer = &Namer{Store: signal, Model: testSupervisorModel(ll.srv(t).URL),
+		Current: func() policy.Version { return nameVersion() }}
+	b, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	res, err := runner.FilePlan(context.Background(), "t-plan", string(b))
+	if err != nil || res.Revision != 1 || len(res.Findings) != 0 {
+		t.Fatalf("filed = %+v, %v, want revision 1", res, err)
+	}
+	signal.wait(t)
+	if got := store.tasks["t-plan"].PlanName; got != "link-shortener" {
+		t.Fatalf("plan name %q, want the slug %q", got, "link-shortener")
+	}
+}
+
 func TestFilePlanRefusesAnUnreadableCompanion(t *testing.T) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		switch r.URL.Path {
