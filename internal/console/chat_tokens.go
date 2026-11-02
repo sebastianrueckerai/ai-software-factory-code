@@ -41,9 +41,10 @@ func chatTokenHash(bearer string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// checkForgejoToken refuses a Forgejo token that is not login's or that
-// reaches beyond read:user, write:repository and write:issue: the admin
-// and the notification endpoints must answer 401 or 403.
+// checkForgejoToken refuses a Forgejo token that is not login's, or that
+// Forgejo lets read the admin API or the notification API. Those two
+// probes catch a token wider than read:user, write:repository and
+// write:issue only where it holds an admin or a notification scope.
 func (c *Console) checkForgejoToken(ctx context.Context, login, tok string) error {
 	var me struct {
 		Login string `json:"login"`
@@ -114,28 +115,34 @@ func (c *Console) makeChatToken(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
+	data, status, msg := c.notificationsData(r)
+	if status != 0 {
+		c.fail(w, r, refuse(status, msg))
+		return
+	}
 	bearer, hash, err := newChatToken()
+	var box string
 	if err == nil {
-		var box string
-		if box, err = sealed.Seal(c.cfg.SessionKey, chatTokenKeyLabel, forgejo, hash); err == nil {
-			var id int64
-			now := time.Now()
-			id, err = c.cfg.ChatTokens.AddChatToken(r.Context(), factoryd.ChatToken{Hash: hash, Login: s.user, Repository: repository,
-				Name: name, Sealed: box, Expires: now.AddDate(0, 0, days)})
-			if err == nil {
-				c.record(r.Context(), button(r), repository, "", 0, factoryd.EventChatTokenMade,
-					map[string]any{"token": id, "name": name, "project": repository})
-			}
-		}
+		box, err = sealed.Seal(c.cfg.SessionKey, chatTokenKeyLabel, forgejo, hash)
+	}
+	row := factoryd.ChatToken{Hash: hash, Login: s.user, Repository: repository, Name: name, Sealed: box, Created: time.Now()}
+	row.Expires = row.Created.AddDate(0, 0, days)
+	if err == nil {
+		row.ID, err = c.cfg.ChatTokens.AddChatToken(r.Context(), row)
 	}
 	if err != nil {
 		log.Printf("console: the chat token of %s: %v", s.user, err)
 		c.fail(w, r, refuse(http.StatusInternalServerError, "cannot make the chat token"))
 		return
 	}
+	c.record(r.Context(), button(r), repository, "", 0, factoryd.EventChatTokenMade,
+		map[string]any{"token": row.ID, "name": name, "project": repository})
 	line := fmt.Sprintf("claude mcp add --transport http factory-%s %s/mcp --header \"Authorization: Bearer %s\"",
 		p.Name, strings.TrimSuffix(c.cfg.PublicURL, "/"), bearer)
-	c.notificationsPage(w, r, &shownOnce{Name: name, Bearer: bearer, Line: line})
+	data["Shown"] = &shownOnce{Name: name, Bearer: bearer, Line: line}
+	data["Tokens"] = append([]factoryd.ChatToken{row}, data["Tokens"].([]factoryd.ChatToken)...)
+	w.Header().Set("Cache-Control", "no-store")
+	c.render(w, "notifications.html", data)
 }
 
 // revokeChatToken answers POST /notifications/tokens/revoke: the human
@@ -159,9 +166,14 @@ func (c *Console) revokeChatToken(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "you have no chat token "+r.PostFormValue("id")))
 		return
 	}
-	if _, err := c.cfg.ChatTokens.RevokeChatToken(r.Context(), id, s.user, time.Now()); err != nil {
+	revoked, err := c.cfg.ChatTokens.RevokeChatToken(r.Context(), id, s.user, time.Now())
+	if err != nil {
 		log.Printf("console: revoke chat token %d of %s: %v", id, s.user, err)
 		c.fail(w, r, refuse(http.StatusInternalServerError, "cannot revoke the chat token"))
+		return
+	}
+	if !revoked {
+		http.Redirect(w, r, "/notifications", http.StatusSeeOther) // a second press
 		return
 	}
 	c.record(r.Context(), button(r), t.Repository, "", 0, factoryd.EventChatTokenRevoked,

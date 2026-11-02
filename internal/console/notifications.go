@@ -18,57 +18,58 @@ var notifyLevels = []string{factoryd.LevelOff, factoryd.LevelNeedsYou, factoryd.
 type projectLevel struct {
 	Name, Repository, Level string
 	Default                 string
+	Writes                  bool // the human writes the project: what a chat token needs
 }
 
 // notifications answers GET /notifications: the member's connections
 // and their level per project they read, with the derived default
 // where they set none. Without the messengers there is no panel.
 func (c *Console) notifications(w http.ResponseWriter, r *http.Request) {
-	c.notificationsPage(w, r, nil)
+	data, status, msg := c.notificationsData(r)
+	if status != 0 {
+		http.Error(w, msg, status)
+		return
+	}
+	c.render(w, "notifications.html", data)
 }
 
-// notificationsPage renders the panel; shown, the bearer of the token the
-// request just made, appears in that answer alone.
-func (c *Console) notificationsPage(w http.ResponseWriter, r *http.Request, shown *shownOnce) {
+// notificationsData reads the panel's data; shown, the bearer of the token
+// the request just made, is added by the caller. A failure answers its
+// status and words, status 0 on success.
+func (c *Console) notificationsData(r *http.Request) (data map[string]any, status int, msg string) {
 	m := c.cfg.Messengers
 	if m == nil || m.Store == nil {
-		http.NotFound(w, r)
-		return
+		return nil, http.StatusNotFound, "404 page not found"
 	}
 	s := current(r)
 	links, err := m.Store.MessengerLinks(r.Context(), s.user)
 	if err != nil {
 		log.Printf("console: the messenger links of %s: %v", s.user, err)
-		http.Error(w, "cannot read the connections", http.StatusInternalServerError)
-		return
+		return nil, http.StatusInternalServerError, "cannot read the connections"
 	}
 	levels, err := m.Store.NotifyLevelsOf(r.Context(), s.user)
 	if err != nil {
 		log.Printf("console: the notify levels of %s: %v", s.user, err)
-		http.Error(w, "cannot read the levels", http.StatusInternalServerError)
-		return
+		return nil, http.StatusInternalServerError, "cannot read the levels"
 	}
 	ps, err := c.cfg.Projects.Projects(r.Context())
 	if err != nil {
 		log.Printf("console: projects: %v", err)
-		http.Error(w, "cannot read the projects", http.StatusInternalServerError)
-		return
+		return nil, http.StatusInternalServerError, "cannot read the projects"
 	}
 	v, ok, err := c.cfg.Policies.CurrentPolicy(r.Context())
 	if err != nil || !ok {
 		log.Printf("console: current policy: loaded %v, %v", ok, err)
-		http.Error(w, "cannot read the policy", http.StatusInternalServerError)
-		return
+		return nil, http.StatusInternalServerError, "cannot read the policy"
 	}
 	var rows []projectLevel
 	for _, p := range ps {
 		if p.Repository == "" {
 			continue
 		}
-		sees, _, err := c.follows(r, p)
+		sees, writes, err := c.follows(r, p)
 		if err != nil {
-			http.Error(w, "cannot check the project's writers", http.StatusServiceUnavailable)
-			return
+			return nil, http.StatusServiceUnavailable, "cannot check the project's writers"
 		}
 		if !sees {
 			continue
@@ -77,20 +78,26 @@ func (c *Console) notificationsPage(w http.ResponseWriter, r *http.Request, show
 		if slices.Contains(p.NotifyOrApprovers(v.ApproversOf(p.Repository)), s.user) {
 			def = factoryd.LevelNeedsYou
 		}
-		rows = append(rows, projectLevel{Name: p.Name, Repository: p.Repository, Level: levels[p.Repository], Default: def})
+		rows = append(rows, projectLevel{Name: p.Name, Repository: p.Repository, Level: levels[p.Repository], Default: def, Writes: writes})
 	}
 	var tokens []factoryd.ChatToken
-	if c.cfg.ChatTokens != nil {
+	if c.chatTokensOn() {
 		if tokens, err = c.cfg.ChatTokens.ChatTokensOf(r.Context(), s.user); err != nil {
 			log.Printf("console: the chat tokens of %s: %v", s.user, err)
-			http.Error(w, "cannot read the chat tokens", http.StatusInternalServerError)
-			return
+			return nil, http.StatusInternalServerError, "cannot read the chat tokens"
 		}
 	}
-	c.render(w, "notifications.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Links": links,
+	return map[string]any{"User": s.user, "CSRF": s.csrf, "Links": links,
 		"Projects": rows, "Levels": notifyLevels, "Code": r.URL.Query().Get("code"),
 		"TelegramName": m.TelegramName, "Discord": m.Discord != nil,
-		"ChatTokens": c.cfg.ChatTokens != nil, "Tokens": tokens, "Shown": shown, "Lives": []string{"7", "30", "90"}, "Now": time.Now()})
+		"ChatTokens": c.chatTokensOn(), "Tokens": tokens, "Lives": []string{"7", "30", "90"}, "Now": time.Now()}, 0, ""
+}
+
+// chatTokensOn: the chat tokens live on the notifications page, which
+// needs the messengers' store as well as the tokens' own.
+func (c *Console) chatTokensOn() bool {
+	m := c.cfg.Messengers
+	return c.cfg.ChatTokens != nil && m != nil && m.Store != nil
 }
 
 // telegramCode answers POST /notifications/telegram/code: it hands the

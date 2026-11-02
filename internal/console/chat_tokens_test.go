@@ -98,6 +98,9 @@ func TestMakeChatTokenShowsItOnce(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("POST = %d %q", rec.Code, rec.Body.String())
 	}
+	if cc := rec.Header().Get("Cache-Control"); cc != "no-store" {
+		t.Fatalf("Cache-Control = %q, want no-store", cc)
+	}
 	body := rec.Body.String()
 	i := strings.Index(body, "sfc_")
 	if i < 0 || len(body) < i+47 {
@@ -133,6 +136,9 @@ func TestMakeChatTokenShowsItOnce(t *testing.T) {
 		t.Fatalf("events = %+v", evs)
 	}
 
+	if !strings.Contains(body, time.Now().Format("2006-01-02")) {
+		t.Fatalf("the answer's table misses the created date")
+	}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), ck).Body.String()
 	if !strings.Contains(page, "laptop") || strings.Contains(page, "sfc_") {
 		t.Fatalf("the page after shows %q and sfc_ %v", "laptop", strings.Contains(page, "sfc_"))
@@ -151,6 +157,9 @@ func TestMakeChatTokenRefuses(t *testing.T) {
 		{"notification reach", func(f *fakeForgejo, _ url.Values) { f.notificationReach = true }, http.StatusBadRequest, "this Forgejo token reaches more than read:user, write:repository and write:issue; make one with only those three scopes"},
 		{"unknown token", func(f *fakeForgejo, form url.Values) { form.Set("forgejo", "nope") }, http.StatusBadRequest, "Forgejo refused this token"},
 		{"project not written", func(_ *fakeForgejo, form url.Values) { form.Set("project", "other/repo") }, http.StatusForbidden, "you do not write other/repo"},
+		{"life 365", func(_ *fakeForgejo, form url.Values) { form.Set("life", "365") }, http.StatusBadRequest, "choose 7, 30 or 90 days"},
+		{"no life", func(_ *fakeForgejo, form url.Values) { form.Del("life") }, http.StatusBadRequest, "choose 7, 30 or 90 days"},
+		{"probe 500", func(f *fakeForgejo, _ url.Values) { f.probeStatus = http.StatusInternalServerError }, http.StatusBadRequest, "Forgejo refused this token"},
 		{"empty name", func(_ *fakeForgejo, form url.Values) { form.Set("name", "  ") }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 		{"long name", func(_ *fakeForgejo, form url.Values) { form.Set("name", strings.Repeat("ä", 65)) }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 	}
@@ -195,6 +204,9 @@ func TestRevokeChatTokenOnlyOwn(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || r.chatTokens.rows[0].Revoked.IsZero() {
 		t.Fatalf("own id = %d, revoked %v", rec.Code, r.chatTokens.rows[0].Revoked)
 	}
+	if rec = r.do(post("/notifications/tokens/revoke", url.Values{"csrf": {s.csrf}, "id": {"1"}}), ck); rec.Code != http.StatusBadRequest {
+		t.Fatalf("a second press = %d", rec.Code)
+	}
 	evs := eventsOf(r, factoryd.EventChatTokenRevoked)
 	if len(evs) != 1 || evs[0].Actor != "sebastian" || evs[0].Detail["name"] != "laptop" || evs[0].Detail["token"] != int64(1) {
 		t.Fatalf("events = %+v", evs)
@@ -213,5 +225,19 @@ func TestChatTokenBearerShape(t *testing.T) {
 	b, h, err := newChatToken()
 	if err != nil || len(b) != 47 || redact.ChatToken.FindString(b) != b || h != chatTokenHash(b) || len(h) != 64 {
 		t.Fatalf("newChatToken = %q, %q, %v", b, h, err)
+	}
+}
+
+func TestChatTokenFormOffersWrittenProjectsOnly(t *testing.T) {
+	r, _, _ := tokenRig(t)
+	ck, _ := r.readerOfCode(t, "bob")
+	page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), ck).Body.String()
+	i := strings.Index(page, `id="token-project"`)
+	if i < 0 {
+		t.Fatalf("no project select:\n%s", page)
+	}
+	sel := page[i : i+strings.Index(page[i:], "</select>")]
+	if !strings.Contains(sel, `value="demo-app/demo-app"`) || strings.Contains(sel, `value="sf/code"`) {
+		t.Fatalf("select = %s", sel)
 	}
 }

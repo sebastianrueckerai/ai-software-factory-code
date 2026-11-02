@@ -504,7 +504,7 @@ func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
 	routines := func() bool { return c.cfg.Routines != nil }
 	messengers := func() bool { return c.cfg.Messengers != nil }
-	tokens := func() bool { return c.cfg.ChatTokens != nil }
+	tokens := c.chatTokensOn
 	return []postRoute{
 		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
 		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},

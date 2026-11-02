@@ -70,6 +70,7 @@ type fakeForgejo struct {
 	tokens            map[string]string
 	adminReach        bool
 	notificationReach bool
+	probeStatus       int // when set, the probes answer it
 
 	reviews    []map[string]string
 	failReview bool
@@ -163,6 +164,10 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		json.NewEncoder(w).Encode(map[string]any{"login": cmp.Or(login, f.user)})
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/users", r.Method == http.MethodGet && r.URL.Path == "/api/v1/notifications":
+		if f.probeStatus != 0 {
+			http.Error(w, "boom", f.probeStatus)
+			return
+		}
 		if r.URL.Path == "/api/v1/admin/users" && f.adminReach || r.URL.Path == "/api/v1/notifications" && f.notificationReach {
 			w.Write([]byte(`[]`))
 			return

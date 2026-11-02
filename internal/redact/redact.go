@@ -23,7 +23,7 @@ var (
 	// shortWord is a credential position holding a word ("missing bearer
 	// token"), not a credential
 	shortWord = regexp.MustCompile(`^[A-Za-z]{1,7}$`)
-	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|\bsfc_[\w-]{43}`)
+	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|` + ChatToken.String())
 	longRun   = regexp.MustCompile(`(?:sha256:)?[\w+/=-]{32,}`)
 	// gitSHA and digest are what the 32-character rule keeps: a commit id,
 	// an image or blob digest

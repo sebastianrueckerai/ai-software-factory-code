@@ -150,4 +150,7 @@ func TestShapesFindChatToken(t *testing.T) {
 	if got := New().String("sent " + bearer + " twice"); got != "sent [redacted] twice" {
 		t.Fatalf("String = %q", got)
 	}
+	if got := New().String("TOKEN_" + bearer); got != "[redacted]" {
+		t.Fatalf("a glued bearer: String = %q", got)
+	}
 }
