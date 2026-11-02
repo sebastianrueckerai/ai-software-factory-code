@@ -19,6 +19,8 @@ import (
 const proxyRefusal = "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): Budget has been exceeded! Current cost: 55.0123, Max budget: 55.0"
 
 // monthPolicy is a policy.yaml whose month_eur is on line 7.
+var refusedAt = time.Date(2026, 9, 20, 12, 0, 0, 0, time.UTC)
+
 const monthPolicy = "# yaml-language-server: $schema=schema/policy.schema.json\nversion: 1\n\nbudget:\n  task_default_eur: 2\n  day_eur: 20\n  month_eur: 50\n"
 
 func monthAlarm(t *testing.T, store *fakeStore, monthEUR float64) (*MonthAlarm, *alertForgejo) {
@@ -69,19 +71,19 @@ func TestMonthAlarm(t *testing.T) {
 	}
 	// a failed filing is filed at the next check, once
 	fj.failNext = 1
-	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal, RefusedAt: refusedAt}
 	if err := alarm.Check(ctx); err == nil {
 		t.Fatal("a failed filing raised nothing")
 	}
-	step(MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal}, "2026-09/50", "2026-09/80", "2026-09/100")
-	step(MonthSpend{Month: "2026-09", EUR: 49.99, Refusal: proxyRefusal}, "2026-09/50", "2026-09/80", "2026-09/100")
+	step(MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal, RefusedAt: refusedAt}, "2026-09/50", "2026-09/80", "2026-09/100/50")
+	step(MonthSpend{Month: "2026-09", EUR: 49.99, Refusal: proxyRefusal, RefusedAt: refusedAt}, "2026-09/50", "2026-09/80", "2026-09/100/50")
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
 	for _, want := range []string{"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
-		"refused_month_cap", "The first refusal:\n\n```\n" + proxyRefusal + "\n```"} {
+		"refused_month_cap", "The newest refusal:\n\n```\n" + proxyRefusal + "\n```"} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
 		}
@@ -99,14 +101,14 @@ func TestMonthAlarm(t *testing.T) {
 	for _, a := range store.alertRows() {
 		switch {
 		case a.Kind != AlertMonthCap:
-		case a.Fingerprint == "2026-09/100" && (a.TaskID != task.ID || a.Detail["issue"] != int64(41)):
+		case a.Fingerprint == "2026-09/100/50" && (a.TaskID != task.ID || a.Detail["issue"] != int64(41)):
 			t.Errorf("the cap's alert = %+v, want it on task %s", a, task.ID)
 		case a.Verdict != VerdictReal || a.ResolvedBy != "factoryd" || a.Detail["month"] != "2026-09" || a.Detail["cap_eur"] != 50.0:
 			t.Errorf("alert = %+v", a)
 		}
 	}
 	// a new month starts over; a jump past every threshold raises each
-	step(MonthSpend{Month: "2026-10", EUR: 50}, "2026-09/50", "2026-09/80", "2026-09/100", "2026-10/50", "2026-10/80", "2026-10/100")
+	step(MonthSpend{Month: "2026-10", EUR: 50}, "2026-09/50", "2026-09/80", "2026-09/100/50", "2026-10/50", "2026-10/80", "2026-10/100/50")
 	if len(fj.issues) != 2 || !strings.Contains(fj.issues[1], "(2026-10)") {
 		t.Fatalf("issues = %q, want the October card", fj.issues)
 	}
@@ -154,7 +156,7 @@ func TestMonthAlarmFilesTheCapIssueOnce(t *testing.T) {
 	var task Task
 	for _, task = range store.tasks {
 	}
-	a, ok, _ := store.AlertByFingerprint(ctx, AlertMonthCap, "2026-09/100")
+	a, ok, _ := store.AlertByFingerprint(ctx, AlertMonthCap, "2026-09/100/50")
 	if !ok || task.IssueNumber != 41 || task.Source != SourceMonthCap || task.Status != "waiting-human" || a.TaskID != task.ID || a.Detail["issue"] != int64(41) {
 		t.Fatalf("task %+v, alert %+v", task, a)
 	}
@@ -167,7 +169,7 @@ func TestMonthAlarmFilesTheCapIssueOnce(t *testing.T) {
 func TestMonthAlarmZeroCap(t *testing.T) {
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 0)
-	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refusal: proxyRefusal}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refusal: proxyRefusal, RefusedAt: refusedAt}
 	if err := alarm.Check(context.Background()); err != nil || len(store.alertRows()) != 0 || len(fj.issues) != 0 {
 		t.Fatalf("check under a cap of 0 = %v, alerts %+v, issues %q", err, store.alertRows(), fj.issues)
 	}
@@ -302,4 +304,138 @@ func TestPolicyLoadWakesCapWaitsPastAnEndedWorkflow(t *testing.T) {
 		t.Fatal("SignalRunning against a frontend that is down = nil, want the failure")
 	}
 	down.AssertNumberOfCalls(t, "SignalWorkflow", 2)
+}
+
+// closeComments are the comments of task id's factory-close events.
+func closeComments(t *testing.T, store *fakeStore, id string) []string {
+	t.Helper()
+	events, err := store.IntakeEvents(context.Background(), id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var out []string
+	for _, e := range events {
+		if e.Kind == IntakeFactoryClosed {
+			out = append(out, e.Body)
+		}
+	}
+	return out
+}
+
+func taskOf(t *testing.T, store *fakeStore, alert string) Task {
+	t.Helper()
+	a, ok, _ := store.AlertByFingerprint(context.Background(), AlertMonthCap, alert)
+	task, found, _ := store.Task(context.Background(), a.TaskID)
+	if !ok || !found {
+		t.Fatalf("no card for alert %s", alert)
+	}
+	return task
+}
+
+// Hand-derived: the cap of 544 is reached at 544 spent (version 4): one
+// card and the alert 2026-10/100/544. Version 5 raises it to 600, activated
+// a minute ago, with 543.90 spent (below 600) and the newest refusal made
+// 5 minutes before the activation: nothing is filed, no early alert comes
+// again (50 and 80 are once a month), and the first card closes. At 600
+// spent a second card and the alert 2026-10/100/600 come.
+func TestMonthAlarmClosesTheCardARaiseLifted(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 544)
+	now := time.Now()
+	version := func(id int64, limit float64, activated time.Time) {
+		alarm.Current = func() policy.Version {
+			return policy.Version{ID: id, Commit: "c9", ActivatedAt: activated,
+				Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{MonthEUR: limit}}}}
+		}
+	}
+	version(4, 544, now.Add(-48*time.Hour))
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 544}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want := []string{"2026-10/50", "2026-10/80", "2026-10/100/544"}
+	if got := monthAlerts(store); !slices.Equal(got, want) || len(fj.issues) != 1 {
+		t.Fatalf("alerts %v, issues %d, want %v and 1", got, len(fj.issues), want)
+	}
+	first := taskOf(t, store, "2026-10/100/544")
+	activated := now.Add(-time.Minute)
+	version(5, 600, activated)
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90, Refusal: proxyRefusal, RefusedAt: activated.Add(-5 * time.Minute)}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := monthAlerts(store); !slices.Equal(got, want) || len(fj.issues) != 1 {
+		t.Fatalf("after the raise: alerts %v, issues %d, want %v and 1", got, len(fj.issues), want)
+	}
+	if got := taskOf(t, store, "2026-10/100/544"); got.Status != "done" {
+		t.Fatalf("first card = %s, want done", got.Status)
+	}
+	if got := closeComments(t, store, first.ID); !slices.Equal(got, []string{"budget.month_eur is 600 in policy version 5: the cap card closes."}) {
+		t.Fatalf("close comments = %q", got)
+	}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 600}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	want = append(want, "2026-10/100/600")
+	if got := monthAlerts(store); !slices.Equal(got, want) || len(fj.issues) != 2 {
+		t.Fatalf("at 600: alerts %v, issues %d, want %v and 2", got, len(fj.issues), want)
+	}
+	if got := taskOf(t, store, "2026-10/100/600"); got.Status != "waiting-human" || got.ID == first.ID {
+		t.Fatalf("second card = %+v", got)
+	}
+}
+
+// A refusal counts toward the cap in force only once the gateway enforced
+// it: with the raise activated at T, one made at T+10s was under 544 and
+// does not count toward 600; one made at T+40s (PolicyTTL is 30 s) does,
+// the spend being 543.90 still.
+func TestMonthAlarmCountsARefusalAfterTheTTL(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, _ := monthAlarm(t, store, 600)
+	activated := time.Now().Add(-time.Hour)
+	alarm.Current = func() policy.Version {
+		return policy.Version{ID: 5, Commit: "c9", ActivatedAt: activated,
+			Tree: policy.Tree{Document: policy.Document{Budget: policy.Budget{MonthEUR: 600}}}}
+	}
+	for _, c := range []struct {
+		after time.Duration
+		want  []string
+	}{
+		{10 * time.Second, []string{"2026-10/50", "2026-10/80"}},
+		{40 * time.Second, []string{"2026-10/50", "2026-10/80", "2026-10/100/600"}},
+	} {
+		store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90, Refusal: proxyRefusal, RefusedAt: activated.Add(c.after)}
+		if err := alarm.Check(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if got := monthAlerts(store); !slices.Equal(got, c.want) {
+			t.Fatalf("refusal %s after the activation: alerts %v, want %v", c.after, got, c.want)
+		}
+	}
+}
+
+// A cap card of September still open in October closes with the month's
+// comment, whatever the cap in force.
+func TestMonthAlarmClosesLastMonthsCard(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, _ := monthAlarm(t, store, 50)
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 50}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	card := taskOf(t, store, "2026-09/100/50")
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 1}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if got := taskOf(t, store, "2026-09/100/50"); got.Status != "done" {
+		t.Fatalf("September's card = %s, want done", got.Status)
+	}
+	if got := closeComments(t, store, card.ID); !slices.Equal(got, []string{"The UTC month 2026-09 ended: the cap card closes."}) {
+		t.Fatalf("close comments = %q", got)
+	}
 }

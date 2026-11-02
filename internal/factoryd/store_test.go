@@ -1320,6 +1320,17 @@ func (s *fakeStore) InsertAlert(ctx context.Context, a Alert) (int64, error) {
 	return a.ID, nil
 }
 
+func (s *fakeStore) AlertByTask(ctx context.Context, kind, taskID string) (Alert, bool, error) {
+	s.alertsMu.Lock()
+	defer s.alertsMu.Unlock()
+	for _, a := range slices.Backward(s.alerts) {
+		if a.Kind == kind && a.TaskID == taskID {
+			return a, true, nil
+		}
+	}
+	return Alert{}, false, nil
+}
+
 func (s *fakeStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	return s.monthSpend, nil
 }
@@ -3544,7 +3555,7 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 
 // The month is the UTC calendar month over the ledger, standing lines left
 // out, whatever the session's zone; the cap counts as reached at the
-// month's first refused_month_cap of a model call. Hand-derived at
+// month's newest refused_month_cap of a model call. Hand-derived at
 // 2026-10-01 05:00 UTC (2026-09-30 22:00 in Los Angeles): 30 on 2026-09-30
 // and a standing 10 do not count, 0.03 on 2026-10-01 and 0.01 on
 // 2026-10-02 do: 0.04.
@@ -3576,15 +3587,28 @@ func TestPGStoreMonthCap(t *testing.T) {
 	}
 	at := time.Date(2026, 10, 1, 5, 0, 0, 0, time.UTC)
 	m, err := s.MonthSpend(ctx, at)
-	if err != nil || m.Month != "2026-10" || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" {
+	if err != nil || m.Month != "2026-10" || math.Abs(m.EUR-0.04) > 1e-12 || m.Refusal != "" || !m.RefusedAt.IsZero() {
 		t.Fatalf("MonthSpend = (%+v, %v), want 2026-10, 0.04 EUR, no model call refused", m, err)
 	}
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO audit (task_id, decision, reason, ts) VALUES
 		('t', 'refused_month_cap', 'the month', '2026-10-01 00:30:00Z'), ('t', 'refused_month_cap', 'later', '2026-10-01 00:40:00Z')`); err != nil {
 		t.Fatal(err)
 	}
-	if m, err := s.MonthSpend(ctx, at); err != nil || m.Refusal != "the month" {
-		t.Fatalf("MonthSpend after a model call's refusal = (%+v, %v), want the month's first", m, err)
+	if m, err := s.MonthSpend(ctx, at); err != nil || m.Refusal != "later" || !m.RefusedAt.Equal(time.Date(2026, 10, 1, 0, 40, 0, 0, time.UTC)) {
+		t.Fatalf("MonthSpend after a model call's refusal = (%+v, %v), want the month's newest, later at 00:40", m, err)
+	}
+	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "100", Fingerprint: "2026-10/100/544", Verdict: VerdictReal, ResolvedBy: "factoryd"}); err != nil {
+		t.Fatal(err)
+	}
+	row, _, _ := s.AlertByFingerprint(ctx, AlertMonthCap, "2026-10/100/544")
+	if _, ok, err := s.AlertByTask(ctx, AlertMonthCap, "card-1"); err != nil || ok {
+		t.Fatalf("AlertByTask before the link = (%v, %v), want none", ok, err)
+	}
+	if err := s.SetAlertTask(ctx, row.ID, "card-1", map[string]any{"issue": 7}); err != nil {
+		t.Fatal(err)
+	}
+	if a, ok, err := s.AlertByTask(ctx, AlertMonthCap, "card-1"); err != nil || !ok || a.ID != row.ID || a.Fingerprint != "2026-10/100/544" {
+		t.Fatalf("AlertByTask = (%+v, %v, %v), want alert %d", a, ok, err, row.ID)
 	}
 	if r, err := s.CapRefusal(ctx, "t", time.Date(2026, 10, 1, 0, 35, 0, 0, time.UTC)); err != nil || r == nil || r.Refusal != (policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "later"}) {
 		t.Fatalf("t's refusal since 00:35 = (%+v, %v), want later", r, err)

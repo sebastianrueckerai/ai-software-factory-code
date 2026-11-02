@@ -753,10 +753,10 @@ func configRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 // of limit in month; refusal is the gateway's first refusal, if any.
 func monthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
 	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
-		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, " +
+		"a task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."
 	if refusal != "" {
-		info += "\n\nThe first refusal:\n\n" + fenced(refusal)
+		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
 	}
 	return HumanQuestion{
 		Ask:  fmt.Sprintf("The month cap of %.2f EUR is reached (%s): raise it, or let the factory stand until the month ends?", limit, month),

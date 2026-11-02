@@ -429,7 +429,7 @@ func main() {
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
-		Timeline: runner.Timeline()}
+		Timeline: runner.Timeline(), Metrics: metrics}
 	go monthAlarm.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics, Runs: store}
 	go ciRuns.Run(ctx)

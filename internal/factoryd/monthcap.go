@@ -12,7 +12,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
 // SourceMonthCap is the source of the human-lane task filed when the month
@@ -146,12 +148,13 @@ func capWaitOf(events []IntakeEvent) (reason string, until time.Time) {
 
 // MonthSpend is the UTC calendar month's variable spend: Month as
 // YYYY-MM, EUR booked in the ledger, and Refusal the reason of the month's
-// first refused_month_cap of a model call ("" for none): the gateway's
-// headroom, or LiteLLM's proxy-wide budget.
+// newest refused_month_cap of a model call, made at RefusedAt ("" for none):
+// the gateway's headroom, or LiteLLM's proxy-wide budget.
 type MonthSpend struct {
-	Month   string
-	EUR     float64
-	Refusal string
+	Month     string
+	EUR       float64
+	Refusal   string
+	RefusedAt time.Time
 }
 
 // MonthBook is what the month alarm reads and keeps.
@@ -163,12 +166,22 @@ type MonthBook interface {
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
 	SetAlertTask(ctx context.Context, id int64, taskID string, detail map[string]any) error
+	// AlertByTask is the newest alert of kind linked to task taskID.
+	AlertByTask(ctx context.Context, kind, taskID string) (Alert, bool, error)
+	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	TransitionTask(ctx context.Context, id string, from []string, to string) error
+	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
+	projectLookup
+	taskReader
 }
 
 // MonthAlarm raises the month's spend against budget.month_eur (item 64 a):
-// an alert at 50 and at 80 percent, and at the cap an alert and a
-// human-lane issue on the configuration repository that names the spend
-// and links the month_eur line, each once per UTC month.
+// an alert at 50 and at 80 percent once per UTC month, and at the cap an
+// alert and a human-lane issue on the configuration repository that names
+// the spend and links the month_eur line, once per cap in force. It closes
+// the cap's issue when a raise lifts the cap above the spend, or the month
+// ends.
 type MonthAlarm struct {
 	Store   MonthBook
 	Forgejo *Forgejo
@@ -179,6 +192,8 @@ type MonthAlarm struct {
 	Current func() policy.Version
 	// Timeline records the card's card_created; nil records none.
 	Timeline *Timeline
+	// Metrics counts the outcome of the cards the alarm closes; nil counts none.
+	Metrics *telemetry.Metrics
 }
 
 // Loop checks every interval until ctx ends.
@@ -198,9 +213,10 @@ func (a *MonthAlarm) Loop(ctx context.Context, every time.Duration) {
 }
 
 // Check raises every threshold the month has passed and has no alert for;
-// the cap counts as reached at the first model call it refused too, since
-// a call is refused before the ledger meets the cap. A cap of 0 stops all spend by
-// design and raises nothing.
+// the cap counts as reached at a model call it refused too, since a call is
+// refused before the ledger meets the cap, but only a call refused once the
+// gateway enforced the version in force (gateway.PolicyTTL after it
+// activated). A cap of 0 stops all spend by design and raises nothing.
 func (a *MonthAlarm) Check(ctx context.Context) error {
 	v := a.Current()
 	limit := v.Document.Budget.MonthEUR
@@ -211,11 +227,18 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	refused := m.Refusal != "" && !m.RefusedAt.Before(v.ActivatedAt.Add(gateway.PolicyTTL))
+	if err := a.closeLifted(ctx, v, m, limit); err != nil {
+		return err
+	}
 	for _, pct := range []int{50, 80, 100} {
-		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && m.Refusal != "") {
+		if m.EUR < limit*float64(pct)/100 && !(pct == 100 && refused) {
 			continue
 		}
 		fp := m.Month + "/" + strconv.Itoa(pct)
+		if pct == 100 {
+			fp += "/" + strconv.FormatFloat(limit, 'f', -1, 64)
+		}
 		row, ok, err := a.Store.AlertByFingerprint(ctx, AlertMonthCap, fp)
 		if err != nil {
 			return err
@@ -233,6 +256,48 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 				return err
 			}
 		}
+	}
+	return nil
+}
+
+// closeLifted closes every open cap card whose month has ended, and those of
+// this month whose cap a raise lifted above the cap's alert, the spend
+// being below the cap in force.
+func (a *MonthAlarm) closeLifted(ctx context.Context, v policy.Version, m MonthSpend, limit float64) error {
+	open, err := a.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return err
+	}
+	for _, t := range open {
+		if t.Source != SourceMonthCap {
+			continue
+		}
+		row, ok, err := a.Store.AlertByTask(ctx, AlertMonthCap, t.ID)
+		if err != nil {
+			return err
+		}
+		if !ok {
+			continue
+		}
+		month, _ := row.Detail["month"].(string)
+		capEUR, _ := row.Detail["cap_eur"].(float64)
+		var msg string
+		switch {
+		case month < m.Month:
+			msg = fmt.Sprintf("The UTC month %s ended: the cap card closes.", month)
+		case month == m.Month && limit > capEUR && m.EUR < limit:
+			msg = fmt.Sprintf("budget.month_eur is %s in policy version %d: the cap card closes.", strconv.FormatFloat(limit, 'f', -1, 64), v.ID)
+		default:
+			continue
+		}
+		if err := closeIssueAsFactory(ctx, a.Store, a.Forgejo, t, msg); err != nil {
+			return err
+		}
+		if err := a.Store.TransitionTask(ctx, t.ID, []string{"waiting-human"}, "done"); err != nil {
+			return err
+		}
+		countOutcome(ctx, a.Metrics, a.Store, t, "done")
+		log.Printf("month cap: %s closed issue #%d of task %s", msg, t.IssueNumber, t.ID)
 	}
 	return nil
 }
