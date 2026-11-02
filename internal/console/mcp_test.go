@@ -1182,6 +1182,39 @@ func TestMCPChatConfirmPoolWithARefusedForgejoToken(t *testing.T) {
 	}
 }
 
+// chat_confirm on a pool proposal writes the change its turn captured, as
+// the button's Do it does; a project file that moved since the proposal
+// refuses before anything writes, the proposal spent.
+func TestMCPChatConfirmPoolAgainstItsCapture(t *testing.T) {
+	r, g, infra := poolChatRig(t, 10, 3)
+	poolChatReload(r, 15)
+	topUp := call(1, "set_pool", `{"action":"top_up","eur":5,"reason":"a second finding"}`)
+	g.replies = [][]string{{topUp}}
+	session := tokenSession(t, r)
+	id := raised(t, session, "top the pool up")
+	const landed = "The pool of ai-software-factory-code is €15.00 now, was €10.00: sf/infra#12 carries the change and the policy in force holds it."
+	equal(t, "the answer", confirmed(t, session, id), sendAnswer{Conversation: 2, Tools: []mcpTool{{Name: "set_pool", Result: landed}},
+		Proposals: []mcpProposal{}, Applied: []mcpApplied{{Tool: "set_pool", Result: landed}}, Ended: true})
+	if len(infra.contents) != 1 {
+		t.Fatalf("the confirm wrote %d commits, want 1", len(infra.contents))
+	}
+
+	g.replies = [][]string{{topUp}}
+	id = raised(t, session, "top the pool up again")
+	infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob2"}
+	text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": id})
+	const want = "projects/ai-software-factory-code.yaml changed since the change was proposed (its blob is now blob2): read it again and propose the change anew"
+	if err != nil || !refused || text != want {
+		t.Fatalf("chat_confirm on a moved file = %q, refused %v, %v, want the tool's error %q", text, refused, err, want)
+	}
+	if len(infra.contents) != 1 || len(infra.pulls) != 1 || len(infra.merges) != 1 {
+		t.Fatalf("the stale confirm wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+	if p, _ := r.chat.proposal(id); p.used.IsZero() {
+		t.Fatal("the stale confirm left its proposal unspent")
+	}
+}
+
 // storeFails is the rig's chat store that cannot store a message.
 type storeFails struct{ *fakeChat }
 
