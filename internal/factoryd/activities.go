@@ -2579,6 +2579,12 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 	// after the final state, never ahead of an end that may not come; a
 	// crash between the two loses only this record
 	taskEnded(ctx, r.timeline, r.store, r.forgejo, r.cfg.Workflows, t, final, why)
+	if final == "failed" {
+		// the end is done; a failed send leaves the impasse to the sweep
+		if err := r.impasse(ctx, t); err != nil {
+			log.Printf("task %s: impasse: %v", taskID, err)
+		}
+	}
 	return nil
 }
 

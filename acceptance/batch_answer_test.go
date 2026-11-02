@@ -822,6 +822,9 @@ func (s *accBatchStore) OpenDependencies(ctx context.Context, id string) ([]fact
 func (s *accBatchStore) WaitingDependents(ctx context.Context, id string) ([]string, error) {
 	panic("unused")
 }
+func (s *accBatchStore) Dependents(ctx context.Context, id string) ([]factoryd.Dependency, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t factoryd.Task) (bool, error) {
 	panic("unused")
 }

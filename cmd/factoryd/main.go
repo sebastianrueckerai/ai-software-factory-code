@@ -383,6 +383,7 @@ func main() {
 			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
 			runner.CriteriaPass(ctx)
 			runner.RevertPausePass(ctx)
+			runner.ImpassePass(ctx)
 			if err := releases.Pass(ctx); err != nil {
 				log.Printf("release pass: %v", err)
 			}

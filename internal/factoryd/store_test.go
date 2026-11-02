@@ -165,6 +165,17 @@ func (s *fakeStore) WaitingDependents(ctx context.Context, id string) ([]string,
 	return out, nil
 }
 
+func (s *fakeStore) Dependents(ctx context.Context, id string) ([]Dependency, error) {
+	var out []Dependency
+	for task, deps := range s.deps {
+		if t := s.tasks[task]; slices.Contains(deps, id) {
+			out = append(out, Dependency{TaskID: task, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+		}
+	}
+	slices.SortFunc(out, func(a, b Dependency) int { return int(a.Issue - b.Issue) })
+	return out, nil
+}
+
 func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
 	old := s.tasks[id]
 	if old.Status != "failed" || old.PlanKey == "" || old.PlanKey != t.PlanKey {
@@ -793,7 +804,7 @@ func factorydFinal(status string) bool {
 func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.IssueNumber > 0 {
 			out = append(out, t)
 		}
 	}
@@ -802,14 +813,8 @@ func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository strin
 			return a.CreatedAt.Compare(b.CreatedAt)
 		}
 		// same second: the issue number is the filing sequence, as the
-		// SQL's ORDER BY; 0 means no issue and sorts last
+		// SQL's ORDER BY
 		if a.IssueNumber != b.IssueNumber {
-			if a.IssueNumber == 0 {
-				return 1
-			}
-			if b.IssueNumber == 0 {
-				return -1
-			}
 			return cmp.Compare(a.IssueNumber, b.IssueNumber)
 		}
 		return strings.Compare(a.ID, b.ID)
