@@ -159,6 +159,9 @@ type Chat interface {
 	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
+	// SideConversation makes a thread titled title that never becomes
+	// login's current one: a chat token's own thread.
+	SideConversation(ctx context.Context, repository, login, title string) (int64, error)
 	Conversations(ctx context.Context, repository, login string) ([]factoryd.ChatConversation, error)
 	// ProjectConversations lists every member's threads on the project
 	// with each thread's owner named: threads are project-visible, there

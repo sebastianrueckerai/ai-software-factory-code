@@ -630,33 +630,77 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	if v := r.PostFormValue("view"); len(v) <= chatViewMax {
-		t.pageQuery = v
-	}
-	text := strings.TrimSpace(r.PostFormValue("message"))
-	if text == "" || len(text) > chatMessageMax {
-		http.Error(w, "a message of up to 8 KiB is required", http.StatusBadRequest)
+	in, err := t.input(r.PostFormValue("message"))
+	if err != nil {
+		c.fail(w, r, err)
 		return
 	}
-	if m, ok := t.tree.CommandMessage(strings.TrimPrefix(text, "/")); ok && strings.HasPrefix(text, "/") {
-		text = m
+	if v := r.PostFormValue("view"); len(v) <= chatViewMax {
+		in.View = v
 	}
-	text, scrubbed := scrubTokens(text)
-	notice := ""
-	if scrubbed {
-		notice = "I removed a GitHub token from your message; it was not stored or sent. " + c.exportForm(t.p.Name)
-	}
-	ctx := r.Context()
+	in.Images, in.Documents = images, docs
 	th, err := t.thread(r, true)
 	if err != nil {
 		c.fail(w, r, err)
 		return
 	}
+	in.Names = names(th)
+	if err := t.say(in, func() { t.open(w) }); err != nil {
+		c.fail(w, r, err)
+	}
+}
+
+// turnInput is a human's message as a turn takes it: its words, scrubbed,
+// the view their page stands on, its attachments, the notice of a token
+// scrubbed from it, and whether it is its thread's first, which names
+// the thread.
+type turnInput struct {
+	Message, View string
+	Images        []chatImage
+	Documents     []chatDocument
+	Notice        string // scrubTokens' notice
+	Names         bool
+}
+
+// input is text as a turn takes it: trimmed, a config tree's /name alone
+// its command's message, every token scrubbed; a refusal for no words or
+// more than 8 KiB.
+func (t *turn) input(text string) (turnInput, error) {
+	text = strings.TrimSpace(text)
+	if text == "" || len(text) > chatMessageMax {
+		return turnInput{}, refuse(http.StatusBadRequest, "a message of up to 8 KiB is required")
+	}
+	if m, ok := t.tree.CommandMessage(strings.TrimPrefix(text, "/")); ok && strings.HasPrefix(text, "/") {
+		text = m
+	}
+	var in turnInput
+	var scrubbed bool
+	if in.Message, scrubbed = scrubTokens(text); scrubbed {
+		in.Notice = "I removed a GitHub token from your message; it was not stored or sent. " + t.c.exportForm(t.p.Name)
+	}
+	return in, nil
+}
+
+// names says the next message is th's first and names it (roadmap 304):
+// never the inbox's, whose title stays, a card thread's, whose "#task"
+// stays, or a titled thread's, which no model title replaces.
+func names(th factoryd.ChatConversation) bool {
+	return th.Messages == 0 && th.Title == "" && !th.Inbox && th.TaskID == ""
+}
+
+// say runs the turn on in in the turn's thread: it files the month's chat
+// task, stores the message and its attachments, and answers it — joining
+// the thread's turn in flight, queued behind it, or on its own. A refusal
+// comes back before open opens the stream; after that the turn fails
+// through fail. It returns when the turn ends.
+func (t *turn) say(in turnInput, open func()) error {
+	c := t.c
+	ctx := t.r.Context()
+	t.pageQuery = in.View
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
 		log.Printf("console: the chat task of %s: %v", t.p.Name, err)
-		http.Error(w, "cannot file the chat's task", http.StatusInternalServerError)
-		return
+		return refuse(http.StatusInternalServerError, "cannot file the chat's task")
 	}
 	pos, wait := c.turns.enter(t.key())
 	joined, inLine := false, pos > 0
@@ -672,23 +716,22 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 			c.turns.leave(t.key())
 		}
 	}()
-	if text == chatCompactCommand {
+	if in.Message == chatCompactCommand {
 		t.detach()
-		t.open(w)
+		open()
 		t.takeTurn(pos, wait)
 		inLine = false
 		release := c.turns.slot(context.Background(), t.p.Repository, t.parallelTurns())
 		defer release()
 		t.compactByHand(task.ID)
-		return
+		return nil
 	}
-	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, factoryd.ChatMessage{Role: "user", Content: text, Conversation: t.conv, Queued: pos > 0})
+	id, err := c.cfg.Chat.AddChatMessage(ctx, t.p.Repository, t.owner, factoryd.ChatMessage{Role: "user", Content: in.Message, Conversation: t.conv, Queued: pos > 0})
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-		http.Error(w, "cannot store the message", http.StatusInternalServerError)
-		return
+		return refuse(http.StatusInternalServerError, "cannot store the message")
 	}
-	for _, img := range images {
+	for _, img := range in.Images {
 		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
 			Name: img.name, FileName: img.fileName, ContentType: img.contentType, Bytes: int64(len(img.data))})
 		if err == nil {
@@ -696,12 +739,11 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-			c.abandonMessage(r, t, id)
-			http.Error(w, "cannot store the message", http.StatusInternalServerError)
-			return
+			c.abandonMessage(t.r, t, id)
+			return refuse(http.StatusInternalServerError, "cannot store the message")
 		}
 	}
-	for _, doc := range docs {
+	for _, doc := range in.Documents {
 		a, err := c.cfg.Chat.AddChatAttachment(ctx, t.p.Repository, t.owner, factoryd.ChatAttachment{Conversation: t.conv, MessageID: id,
 			Name: doc.name, FileName: doc.fileName, ContentType: doc.contentType, Bytes: int64(len(doc.data))})
 		if err == nil {
@@ -709,27 +751,26 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		}
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-			http.Error(w, "cannot store the message", http.StatusInternalServerError)
-			return
+			c.abandonMessage(t.r, t, id)
+			return refuse(http.StatusInternalServerError, "cannot store the message")
 		}
 	}
 	// the thread's first message names the thread once the message and
-	// its attachments are in (roadmap 304): never in the inbox, whose
-	// title stays, nor a card thread's, whose "#task" stays
-	if th.Messages == 0 && !th.Inbox && th.TaskID == "" {
-		go c.nameThread(context.WithoutCancel(ctx), t.p.Repository, t.owner, t.conv, task.ID, text)
+	// its attachments are in
+	if in.Names {
+		go c.nameThread(context.WithoutCancel(ctx), t.p.Repository, t.owner, t.conv, task.ID, in.Message)
 	}
 	// a listening turn in flight reads the message at its next model call
 	// and answers it in its own stream
 	if pos > 0 && c.turns.join(t.key(), wait, id) {
 		joined = true
-		t.open(w)
+		open()
 		t.send("joined", map[string]int64{"id": id})
 		t.send("done", struct{}{})
-		return
+		return nil
 	}
 	t.detach()
-	t.open(w)
+	open()
 	// the turn's stop (the chat-stop plan) opens with the turn's claim,
 	// not its first model call: its model calls run under a context a
 	// member's press ends, and a press while the turn still waits —
@@ -745,27 +786,27 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		// the press ended the turn while it queued behind the thread's
 		// turn in flight: its message stays for the thread's next turn
 		t.stopEnd("")
-		return
+		return nil
 	}
 	if sctx.Err() != nil {
 		// the press landed in the moment the line handed the turn over:
 		// the turn owns the thread and ends it stopped
 		t.stopEnd("")
-		return
+		return nil
 	}
 	if pos > 0 {
 		landed, err := c.cfg.Chat.StartQueued(t.r.Context(), t.p.Repository, t.owner, id)
 		if err != nil {
 			log.Printf("console: start the queued turn of %s on %s: %v", t.owner, t.p.Repository, err)
 			t.fail("The queued message could not start its turn; send it again.")
-			return
+			return nil
 		}
 		if landed == 0 {
 			// a turn of the thread already read the message: its answer is
 			// this POST's end
 			t.send("joined", map[string]int64{"id": id})
 			t.send("done", struct{}{})
-			return
+			return nil
 		}
 	}
 	release := c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
@@ -773,10 +814,11 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		// the press ended the turn while it waited for one of the
 		// project's model turns: its message stays for the next turn
 		t.stopEnd("")
-		return
+		return nil
 	}
 	defer release()
-	t.run(task.ID, notice)
+	t.run(task.ID, in.Notice)
+	return nil
 }
 
 // chatStopPost answers POST /projects/{name}/chat/stop: the member stops

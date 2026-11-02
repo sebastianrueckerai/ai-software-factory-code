@@ -826,6 +826,18 @@ func (f *acceptChat) NewConversation(_ context.Context, repository, login string
 	return highest + 1, nil
 }
 
+// SideConversation is a thread past the member's highest that never
+// becomes current.
+func (f *acceptChat) SideConversation(_ context.Context, repository, login, _ string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	highest := max(int64(1), f.current(repository, login))
+	for _, m := range f.msgs[repository+" "+login] {
+		highest = max(highest, m.Conversation)
+	}
+	return highest + 1, nil
+}
+
 func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
 	return nil, nil
 }

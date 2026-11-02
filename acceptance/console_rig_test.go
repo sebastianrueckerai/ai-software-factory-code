@@ -1017,6 +1017,10 @@ func (a *AcceptanceRig) NewConversation(context.Context, string, string) (int64,
 	return 1, nil
 }
 
+func (a *AcceptanceRig) SideConversation(context.Context, string, string, string) (int64, error) {
+	return 2, nil
+}
+
 func (a *AcceptanceRig) Conversations(context.Context, string, string) ([]factoryd.ChatConversation, error) {
 	return nil, nil
 }

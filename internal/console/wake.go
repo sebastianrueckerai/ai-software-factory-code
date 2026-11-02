@@ -106,20 +106,13 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
 	}
-	v, _ := c.inForce(ctx)
-	cfg := v.Document.ChatOf(v.Projects[p.Name])
+	tu := c.sessionTurn(context.WithoutCancel(ctx), p, a.s, conv)
 	text, scrubbed := scrubTokens(text)
 	notice := ""
 	if scrubbed {
 		notice = "I removed a GitHub token from your answer; it was not stored or sent."
 	}
-	tu := &turn{c: c, p: p, conv: conv, owner: a.s.user, tree: v.Tree, cfg: cfg,
-		a: actor{s: a.s, thread: conv, repository: p.Repository, via: factoryd.ViaChat, chatTask: factoryd.ChatTaskID(p.Name, time.Now())}}
-	if pc, ok := v.Projects[p.Name]; ok {
-		tu.a.level, tu.a.mergeRule = pc.AutonomyState(), pc.MergeRule
-	}
-	tu.r = wakeRequest(context.WithoutCancel(ctx), tu.a.s)
-	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, cfg.MonthlyEUR, time.Now())
+	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, tu.cfg.MonthlyEUR, time.Now())
 	if err != nil {
 		log.Printf("console: the chat task of %s: %v", p.Name, err)
 		return "", refuse(http.StatusInternalServerError, "cannot file the chat's task")
@@ -169,15 +162,22 @@ func (c *Console) wakeTurn(ctx context.Context, p factoryd.Project, login string
 	if err != nil {
 		return nil, err
 	}
+	t := c.sessionTurn(ctx, p, s, conversation)
+	t.a.wake = true
+	return t, nil
+}
+
+// sessionTurn is s's turn on their thread conversation of project p with
+// no browser behind it: a wake's, a card answer's or a chat token's.
+func (c *Console) sessionTurn(ctx context.Context, p factoryd.Project, s *session, conversation int64) *turn {
 	v, _ := c.inForce(ctx)
-	t := &turn{c: c, p: p, conv: conversation, owner: login, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
-		a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat, wake: true, chatTask: factoryd.ChatTaskID(p.Name, time.Now()),
-			thread: conversation}}
+	t := &turn{c: c, p: p, conv: conversation, owner: s.user, tree: v.Tree, cfg: v.Document.ChatOf(v.Projects[p.Name]),
+		a: actor{s: s, repository: p.Repository, via: factoryd.ViaChat, chatTask: factoryd.ChatTaskID(p.Name, time.Now()), thread: conversation}}
 	if pc, ok := v.Projects[p.Name]; ok {
 		t.a.level, t.a.mergeRule = pc.AutonomyState(), pc.MergeRule
 	}
-	t.r = wakeRequest(ctx, s)
-	return t, nil
+	t.r = sessionRequest(ctx, s)
+	return t
 }
 
 // wakeSession is the session a wake on p runs on: the woken member's
@@ -196,10 +196,10 @@ func (c *Console) wakeSession(p factoryd.Project, login string) (*session, error
 	return &session{user: login, access: token, fixed: true}, nil
 }
 
-// wakeRequest is the turn's request without a member's browser behind it
-// (the pulse's pattern): the session travels in the context, the form
-// fields stay empty.
-func wakeRequest(ctx context.Context, s *session) *http.Request {
+// sessionRequest is the turn's request without a browser behind it (the
+// pulse's pattern): the session travels in the context, the form fields
+// stay empty.
+func sessionRequest(ctx context.Context, s *session) *http.Request {
 	r, err := http.NewRequestWithContext(context.WithValue(ctx, ctxKey{}, s), http.MethodPost, "/projects/wake/chat", nil)
 	if err != nil {
 		panic(err)

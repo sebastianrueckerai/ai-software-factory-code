@@ -56,6 +56,9 @@ type fakeChat struct {
 	// login; archived the archived threads by repository, login and thread
 	inboxes  map[string]factoryd.ChatConversation
 	archived map[string]bool
+	// sides are the side threads, a chat token's own, by repository and
+	// login: listed before their first row, never current
+	sides map[string][]factoryd.ChatConversation
 	// cards are the bound card threads (the card door) by repository and
 	// task
 	cards map[string]boundThread
@@ -221,6 +224,9 @@ func (f *fakeChat) NewConversation(_ context.Context, repository, login string) 
 // highest is the member's highest thread number, 1 for none; f.mu held.
 func (f *fakeChat) highest(repository, login string) int64 {
 	n := max(f.inboxes[repository+" "+login].Number, 1)
+	for _, c := range f.sides[repository+" "+login] {
+		n = max(n, c.Number)
+	}
 	for _, m := range f.msgs[repository+" "+login] {
 		n = max(n, m.Conversation)
 	}
@@ -236,6 +242,25 @@ func (f *fakeChat) startNew(repository, login string) int64 {
 	}
 	f.started[repository+" "+login] = n
 	return n
+}
+
+// SideConversation makes a thread titled title past the member's highest
+// and current ones, as the store does: listed at once, never current.
+func (f *fakeChat) SideConversation(_ context.Context, repository, login, title string) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	k := repository + " " + login
+	n := max(f.highest(repository, login), f.current(repository, login)) + 1
+	if f.sides == nil {
+		f.sides = map[string][]factoryd.ChatConversation{}
+	}
+	if f.titles == nil {
+		f.titles = map[string]string{}
+	}
+	made := f.stamp()
+	f.sides[k] = append(f.sides[k], factoryd.ChatConversation{Number: n, Title: title, State: factoryd.ThreadActive, FirstAt: made, LastAt: made})
+	f.titles[fmt.Sprint(k, " ", n)] = title
+	return n, nil
 }
 
 func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int64, error) {
@@ -383,8 +408,12 @@ func (f *fakeChat) DeleteConversation(_ context.Context, repository, login strin
 	if f.inboxes[k].Number != n && before > 0 {
 		f.msgs[k] = slices.DeleteFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == n })
 	}
+	sides := len(f.sides[k])
+	if sides > 0 {
+		f.sides[k] = slices.DeleteFunc(f.sides[k], func(c factoryd.ChatConversation) bool { return c.Number == n })
+	}
 	gone := int64(before - len(f.msgs[k]))
-	if gone == 0 {
+	if gone == 0 && sides == len(f.sides[k]) {
 		return 0, nil, factoryd.ErrNotFound
 	}
 	var ids []int64
@@ -477,6 +506,7 @@ func (f *fakeChat) threads(repository, login string) []factoryd.ChatConversation
 	if in, ok := f.inboxes[k]; ok {
 		out = append(out, in)
 	}
+	out = append(out, f.sides[k]...)
 	for id, b := range f.cards {
 		if b.login != login {
 			continue
@@ -3438,6 +3468,33 @@ func TestChatImageFailureCleansUp(t *testing.T) {
 	}
 	if _, still := flaky.fakeObjects["attachments/1/1"]; still {
 		t.Fatal("the failed send left the first image's object")
+	}
+}
+
+// A document that cannot be stored withdraws the message as a failed
+// image does: no row, no attachment and no object stays behind.
+func TestChatDocumentFailureCleansUp(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("Got them.")}}
+	flaky := &flakyObjects{fakeObjects: fakeObjects{}, failPut: 2}
+	r.c.cfg.Timelines = flaky
+	code, _, _ := chatPostFiles(t, r, ck, s, chatPath, url.Values{"message": {"look at img1 and doc1"}},
+		testFile{name: "shot.png", data: png1x1}, testFile{name: "notes.md", data: []byte("# Notes\n"), field: "documents"})
+	if code != http.StatusInternalServerError {
+		t.Fatalf("the send = %d, want 500", code)
+	}
+	if rows, _ := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 10); len(rows) != 0 {
+		t.Fatalf("the failed send left rows: %+v", rows)
+	}
+	if atts, _ := r.chat.ChatAttachments(t.Context(), "sf/code", "sebastian", 1); len(atts) != 0 {
+		t.Fatalf("the failed send left attachments: %+v", atts)
+	}
+	if len(flaky.fakeObjects) != 0 {
+		t.Fatalf("the failed send left objects: %v", slices.Collect(maps.Keys(flaky.fakeObjects)))
+	}
+	if n := len(g.calls()); n != 0 {
+		t.Fatalf("%d model calls, want none", n)
 	}
 }
 

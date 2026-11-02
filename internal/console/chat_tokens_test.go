@@ -2,6 +2,7 @@ package console
 
 import (
 	"context"
+	"database/sql"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -78,8 +79,20 @@ func (f *fakeChatTokens) TouchChatToken(_ context.Context, id int64, now time.Ti
 	return nil
 }
 
-func (f *fakeChatTokens) ClaimChatTokenConversation(context.Context, int64, int64) (int64, error) {
-	return 0, nil
+// ClaimChatTokenConversation gives token id thread n while it has none
+// and answers the thread in force, as the store does.
+func (f *fakeChatTokens) ClaimChatTokenConversation(_ context.Context, id, n int64) (int64, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, t := range f.rows {
+		if t.ID == id {
+			if t.Conversation == 0 {
+				f.rows[i].Conversation = n
+			}
+			return f.rows[i].Conversation, nil
+		}
+	}
+	return 0, sql.ErrNoRows
 }
 
 // tokenRig is the rig with the notifications page and the chat tokens, and

@@ -1108,6 +1108,10 @@ func (f *accBatchChat) CurrentConversation(context.Context, string, string) (int
 
 func (f *accBatchChat) NewConversation(context.Context, string, string) (int64, error) { return 1, nil }
 
+func (f *accBatchChat) SideConversation(context.Context, string, string, string) (int64, error) {
+	return 2, nil
+}
+
 func (f *accBatchChat) Conversations(context.Context, string, string) ([]factoryd.ChatConversation, error) {
 	return nil, nil
 }

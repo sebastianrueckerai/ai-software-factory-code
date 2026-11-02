@@ -5,15 +5,19 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sealed"
 )
 
@@ -95,12 +99,12 @@ func opened(t *testing.T, srv *httptest.Server, d *door) *mcp.ClientSession {
 	return session
 }
 
-// threadsOf is chat_threads' answer on session.
-func threadsOf(t *testing.T, session *mcp.ClientSession) string {
-	t.Helper()
-	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: "chat_threads", Arguments: map[string]any{}})
+// callTool is session's call of tool with args: its text, and whether
+// the tool refused.
+func callTool(session *mcp.ClientSession, tool string, args map[string]any) (string, bool, error) {
+	res, err := session.CallTool(context.Background(), &mcp.CallToolParams{Name: tool, Arguments: args})
 	if err != nil {
-		t.Fatalf("chat_threads: %v", err)
+		return "", false, err
 	}
 	text := ""
 	for _, c := range res.Content {
@@ -108,10 +112,46 @@ func threadsOf(t *testing.T, session *mcp.ClientSession) string {
 			text += tc.Text
 		}
 	}
-	if res.IsError {
-		t.Fatalf("chat_threads refused: %s", text)
+	return text, res.IsError, nil
+}
+
+// answerOf is tool's answer to args on session; the test fails when the
+// tool refuses.
+func answerOf(t *testing.T, session *mcp.ClientSession, tool string, args map[string]any) string {
+	t.Helper()
+	text, refused, err := callTool(session, tool, args)
+	if err != nil || refused {
+		t.Fatalf("%s(%v) = %q, %v", tool, args, text, err)
 	}
 	return text
+}
+
+// threadsOf is chat_threads' answer on session.
+func threadsOf(t *testing.T, session *mcp.ClientSession) string {
+	t.Helper()
+	return answerOf(t, session, "chat_threads", map[string]any{})
+}
+
+// tokenSession serves r and opens sebastian's chat token on sf/code.
+func tokenSession(t *testing.T, r *rig) *mcp.ClientSession {
+	t.Helper()
+	srv := httptest.NewServer(r.c)
+	t.Cleanup(srv.Close)
+	return opened(t, srv, &door{auth: "Bearer " + r.chatTokenOf(t, "sebastian", "sf/code", nil)})
+}
+
+// rowsOf is login's rows of conversation n on sf/code as "role: content".
+func rowsOf(t *testing.T, chat *fakeChat, login string, n int64) []string {
+	t.Helper()
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", login, n, 50)
+	if err != nil {
+		t.Fatal(err)
+	}
+	out := []string{}
+	for _, m := range rows {
+		out = append(out, m.Role+": "+m.Content)
+	}
+	return out
 }
 
 func TestMCPRefusesWithoutValidBearer(t *testing.T) {
@@ -363,5 +403,284 @@ func TestMCPServesNothingWithoutBearer(t *testing.T) {
 	r.c.mcpHandler().ServeHTTP(deadlined{rec}, req)
 	if rec.Code != http.StatusBadRequest || rec.Body.String() != "no server available\n" {
 		t.Fatalf("POST /mcp without bearer = %d %q, want 400 no server available", rec.Code, rec.Body.String())
+	}
+}
+
+// sent is the answer chat_send gives when nothing but its reply happened.
+func sent(conversation int64, reply, failure string, ended bool) string {
+	q := func(s string) string { b, _ := json.Marshal(s); return string(b) }
+	return fmt.Sprintf(`{"conversation":%d,"reply":%s,"tools":[],"proposals":[],"applied":[],"budget":"","error":%s,"ended":%t}`,
+		conversation, q(reply), q(failure), ended)
+}
+
+func TestMCPChatSendAnswersReply(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("hel"), say("lo")}}
+	session := tokenSession(t, r)
+	if got, want := answerOf(t, session, "chat_send", map[string]any{"message": "hi"}),
+		`{"conversation":2,"reply":"hello","tools":[],"proposals":[],"applied":[],"budget":"","error":"","ended":true}`; got != want {
+		t.Fatalf("chat_send = %s\nwant %s", got, want)
+	}
+	equal(t, "the side thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: hello"})
+	if cur, _ := chat.CurrentConversation(t.Context(), "sf/code", "sebastian"); cur != 1 {
+		t.Fatalf("the current conversation = %d, want 1 still", cur)
+	}
+	list, _ := chat.Conversations(t.Context(), "sf/code", "sebastian")
+	if len(list) != 1 || list[0].Number != 2 || list[0].Title != "laptop" || list[0].Current {
+		t.Fatalf("the threads = %+v, want the token's thread 2 titled laptop, not current", list)
+	}
+	r.chatTokens.mu.Lock()
+	defer r.chatTokens.mu.Unlock()
+	if got := r.chatTokens.rows[0].Conversation; got != 2 {
+		t.Fatalf("the token's conversation = %d, want 2", got)
+	}
+}
+
+// racedChat is the rig's chat store whose side threads each wait for
+// the other caller's, so two first turns both make one before either
+// claims.
+type racedChat struct {
+	*fakeChat
+	both *sync.WaitGroup
+}
+
+func (s racedChat) SideConversation(ctx context.Context, repository, login, title string) (int64, error) {
+	n, err := s.fakeChat.SideConversation(ctx, repository, login, title)
+	s.both.Done()
+	s.both.Wait()
+	return n, err
+}
+
+func TestMCPChatSendFirstTurnsShareOneThread(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("one")}, {say("two")}}
+	cfg := r.c.cfg
+	both := &sync.WaitGroup{}
+	both.Add(2)
+	cfg.Chat = racedChat{chat, both}
+	c, err := New(cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.c = c
+	session := tokenSession(t, r)
+	answers := make(chan string, 2)
+	for _, msg := range []string{"first", "second"} {
+		go func() {
+			text, refused, err := callTool(session, "chat_send", map[string]any{"message": msg})
+			if err != nil || refused {
+				t.Errorf("chat_send %s = %q, %v", msg, text, err)
+			}
+			answers <- text
+		}()
+	}
+	var convs []int64
+	for range 2 {
+		var a struct{ Conversation int64 }
+		if err := json.Unmarshal([]byte(<-answers), &a); err != nil {
+			t.Fatal(err)
+		}
+		convs = append(convs, a.Conversation)
+	}
+	list, _ := chat.Conversations(t.Context(), "sf/code", "sebastian")
+	if convs[0] != convs[1] || len(list) != 1 || list[0].Number != convs[0] || list[0].Title != "laptop" {
+		t.Fatalf("the answers name threads %v, the human has %+v; want one thread laptop that both name", convs, list)
+	}
+	rows := rowsOf(t, chat, "sebastian", convs[0])
+	slices.Sort(rows)
+	if !slices.Contains(rows, "user: first") || !slices.Contains(rows, "user: second") {
+		t.Fatalf("thread %d holds %q, want both messages", convs[0], rows)
+	}
+}
+
+func TestMCPChatSendRaisesProposal(t *testing.T) {
+	r, g := newWritesRig(t)
+	args := `{"task_id":"t-b","depends_on":"t-a"}`
+	g.replies = [][]string{{call(1, "set_dependency", args)}}
+	session := tokenSession(t, r)
+	before := time.Now()
+	var a struct {
+		Proposals []struct {
+			ID, Tool, What string
+			Expires        time.Time
+		}
+		Tools, Applied []any
+		Reply          string
+		Ended          bool
+	}
+	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "#22 waits on #21"})), &a); err != nil {
+		t.Fatal(err)
+	}
+	after := time.Now()
+	if len(a.Proposals) != 1 || len(a.Tools) != 0 || len(a.Applied) != 0 || a.Reply != "" || !a.Ended {
+		t.Fatalf("chat_send = %+v, want one proposal, no tool, nothing applied, ended", a)
+	}
+	p := a.Proposals[0]
+	if p.Tool != "set_dependency" || p.What != `Set a dependency, #22 t-b "Add the web UI.", depends on #21 t-a "Add the API."` ||
+		p.Expires.Before(before.Add(30*time.Minute)) || p.Expires.After(after.Add(30*time.Minute)) {
+		t.Fatalf("the proposal = %+v, want set_dependency's, expiring 30 minutes on", p)
+	}
+	stored, ok := r.chat.proposal(p.ID)
+	if !ok || stored.Login != "sebastian" || stored.Conversation != 2 || !stored.used.IsZero() {
+		t.Fatalf("the stored proposal = %+v (%v), want sebastian's unused one in thread 2", stored, ok)
+	}
+	if len(r.issueDeps) != 0 {
+		t.Fatalf("a proposal acted: %q", r.issueDeps)
+	}
+	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
+		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"console","proposal":"`+p.ID+`","state":"pending"}]`; got != want {
+		t.Fatalf("chat_read = %s\nwant %s", got, want)
+	}
+}
+
+func TestMCPChatSendRefusesForeignConversation(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	if _, err := chat.AddChatMessage(t.Context(), "sf/code", "alice", factoryd.ChatMessage{Conversation: 2, Role: "user", Content: "Alice's thread"}); err != nil {
+		t.Fatal(err)
+	}
+	session := tokenSession(t, r)
+	for tool, args := range map[string]map[string]any{
+		"chat_send": {"message": "hi", "conversation": 2},
+		"chat_read": {"conversation": 2},
+	} {
+		if text, refused, err := callTool(session, tool, args); err != nil || !refused || text != "conversation 2 is not yours in sf/code" {
+			t.Errorf("%s on alice's thread = %q refused %v, %v; want conversation 2 is not yours in sf/code", tool, text, refused, err)
+		}
+	}
+	equal(t, "sebastian's rows", rowsOf(t, chat, "sebastian", 2), []string{})
+	equal(t, "alice's rows", rowsOf(t, chat, "alice", 2), []string{"user: Alice's thread"})
+	if n := len(g.calls()); n != 0 {
+		t.Fatalf("%d model calls, want none", n)
+	}
+}
+
+func TestMCPChatSendOutlastsWait(t *testing.T) {
+	r, _, g := newChatRig(t)
+	wait := chatSendWait
+	chatSendWait = 50 * time.Millisecond
+	t.Cleanup(func() { chatSendWait = wait })
+	g.replies = [][]string{{say("late hello")}}
+	g.hold = make(chan struct{})
+	session := tokenSession(t, r)
+	if got := answerOf(t, session, "chat_send", map[string]any{"message": "hi"}); got != sent(2, "", "", false) {
+		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, "", "", false))
+	}
+	close(g.hold)
+	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"console"},` +
+		`{"id":2,"role":"assistant","text":"late hello","at":"2026-10-11T09:30:02Z","source":"console"}]`
+	got := ""
+	for deadline := time.Now().Add(5 * time.Second); got != want && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		got = answerOf(t, session, "chat_read", map[string]any{})
+	}
+	if got != want {
+		t.Fatalf("chat_read after the turn = %s\nwant %s", got, want)
+	}
+}
+
+func TestMCPChatSendFailureLandsAsRow(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{`STATUS 500 {"error":{"message":"upstream exploded"}}`}}
+	const failed = "The model could not be reached; try again."
+	if got := answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "hi"}); got != sent(2, "", failed, true) {
+		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, "", failed, true))
+	}
+	equal(t, "the thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: This turn failed: " + failed})
+}
+
+func TestMCPChatSendBudgetStop(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	const reason = "free headroom 0.000000 EUR (day 20.000000 of 20.000000); the day cap budget.day_eur in policy.yaml is spent, and only a human raises it, by a commit"
+	g.replies = [][]string{{refuseFor(policy.RefusedDayCap, reason)}}
+	stop := "The factory's day cap is used up: the chat goes on when the UTC day turns, or once a commit raises budget.day_eur in policy.yaml.\n" + reason
+	var a struct {
+		Budget, Error string
+		Ended         bool
+	}
+	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "hi"})), &a); err != nil {
+		t.Fatal(err)
+	}
+	if a.Budget != stop || a.Error != "" || !a.Ended {
+		t.Fatalf("chat_send = %+v, want the stop %q, ended", a, stop)
+	}
+	equal(t, "the thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: " + stop})
+}
+
+func TestMCPChatSendRevokedMidTurn(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("still here")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	srv := httptest.NewServer(r.c)
+	t.Cleanup(srv.Close)
+	d := &door{auth: "Bearer " + r.chatTokenOf(t, "sebastian", "sf/code", nil)}
+	session := opened(t, srv, d)
+	answer := make(chan string, 1)
+	go func() {
+		text, refused, err := callTool(session, "chat_send", map[string]any{"message": "hi"})
+		if err != nil || refused {
+			t.Errorf("chat_send = %q, %v", text, err)
+		}
+		answer <- text
+	}()
+	select {
+	case <-g.arrived:
+	case got := <-answer:
+		t.Fatalf("chat_send answered %q before its model call", got)
+	}
+	if ok, err := r.chatTokens.RevokeChatToken(t.Context(), 1, "sebastian", time.Now()); !ok || err != nil {
+		t.Fatalf("revoke = %v, %v", ok, err)
+	}
+	close(g.hold)
+	if got := <-answer; got != sent(2, "still here", "", true) {
+		t.Fatalf("chat_send across the revoke = %s\nwant %s", got, sent(2, "still here", "", true))
+	}
+	equal(t, "the thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: still here"})
+	if _, _, err := callTool(session, "chat_threads", map[string]any{}); err == nil || d.status != http.StatusUnauthorized {
+		t.Fatalf("the call after the revoke = %v, %d; want 401", err, d.status)
+	}
+}
+
+func TestMCPChatReadNeverMarksSeen(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("hello")}}
+	session := tokenSession(t, r)
+	answerOf(t, session, "chat_send", map[string]any{"message": "hi"})
+	if got := answerOf(t, session, "chat_read", map[string]any{}); !strings.Contains(got, `"text":"hello"`) {
+		t.Fatalf("chat_read = %s, want the reply", got)
+	}
+	answerOf(t, session, "chat_read", map[string]any{"conversation": 2})
+	list, _ := chat.Conversations(t.Context(), "sf/code", "sebastian")
+	if len(list) != 1 || list[0].Unread != 1 {
+		t.Fatalf("the threads = %+v, want the token's thread unread", list)
+	}
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	if chat.seen != nil || chat.started != nil {
+		t.Fatalf("the token marked seen %v or opened or made current %v", chat.seen, chat.started)
+	}
+}
+
+func TestMCPChatReadSource(t *testing.T) {
+	r, srv, bearer := mcpRig(t)
+	for _, m := range []factoryd.ChatMessage{
+		{Conversation: 1, Role: "user", Content: "The current thread"},
+		{Conversation: 2, Role: "user", Content: "From the laptop", Token: "laptop"},
+		{Conversation: 2, Role: "user", Content: "From the browser"},
+	} {
+		if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := opened(t, srv, &door{auth: "Bearer " + bearer})
+	if got := answerOf(t, session, "chat_read", map[string]any{}); got != "[]" {
+		t.Fatalf("chat_read before the token's first turn = %s, want []", got)
+	}
+	if got, want := answerOf(t, session, "chat_read", map[string]any{"conversation": 2}),
+		`[{"id":2,"role":"user","text":"From the laptop","at":"2026-10-11T09:30:02Z","source":"laptop"},`+
+			`{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}]`; got != want {
+		t.Fatalf("chat_read = %s\nwant %s", got, want)
+	}
+	if got, want := answerOf(t, session, "chat_read", map[string]any{"conversation": 2, "after": 2}),
+		`[{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}]`; got != want {
+		t.Fatalf("chat_read after 2 = %s\nwant %s", got, want)
 	}
 }
