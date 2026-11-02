@@ -1188,17 +1188,11 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 	// the ask's rows: the poke line the Poker wrote, alone or with an
 	// earlier analysis a new attach replaces; rows of an older ask keep
 	// their own words
-	var bases []string
-	switch ask.Kind {
-	case EventQuestionAsked:
-		question, _ := ask.Detail["question"].(string)
-		ref := TitledRef(cardRef(*ask, t), t)
-		bases = []string{ref + " needs you: " + question, ref + " is stopped by its budget: " + question}
-	default:
-		if content, _, ok := approvalPoke(*ask, t); ok {
-			bases = []string{content}
-		}
+	poke, ok := pokeOf(*ask, t)
+	if !ok {
+		return ErrNoAsk
 	}
+	base := poke.Content
 	analysis := "\nAnalysis: " + found
 	if recommendation != "" {
 		analysis += "\nRecommendation: " + recommendation
@@ -1223,7 +1217,6 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 		return err
 	}
 	var ids []int64
-	var matched []string
 	for rows.Next() {
 		var id int64
 		var content string
@@ -1231,13 +1224,8 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 			_ = rows.Close() // #nosec G104 -- best effort before the failed read returns its own error
 			return err
 		}
-		for _, base := range bases {
-			switch {
-			case content == base:
-				ids, matched = append(ids, id), append(matched, base)
-			case strings.HasPrefix(content, base+"\nAnalysis: "):
-				ids, matched = append(ids, id), append(matched, base)
-			}
+		if content == base || strings.HasPrefix(content, base+"\nAnalysis: ") {
+			ids = append(ids, id)
 		}
 	}
 	if err := rows.Err(); err != nil {
@@ -1250,8 +1238,8 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 	if len(ids) == 0 {
 		return ErrNoAsk
 	}
-	for i, id := range ids {
-		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, matched[i]+analysis, id); err != nil {
+	for _, id := range ids {
+		if _, err := tx.ExecContext(ctx, `UPDATE chat_messages SET content = $1 WHERE id = $2`, base+analysis, id); err != nil {
 			return err
 		}
 	}
