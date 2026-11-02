@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -99,6 +101,17 @@ type SizeFigure struct {
 type NamedCount struct {
 	Name  string  `json:"name"`
 	Count float64 `json:"count"`
+}
+
+// NamedFigure is one bucket's whole comparison: the window's count of
+// the name, the equal window before it and each of the seven weeks, the
+// plain-count Figure semantics — a span the name does not reach holds a
+// zero, not an absence, and a name only the previous window or a week
+// holds is not lost. Plans by rounds, card filings by round and replans
+// by origin compare through it.
+type NamedFigure struct {
+	Name   string `json:"name"`
+	Figure Figure `json:"figure"`
 }
 
 // SizeIntercept is one size's fixed euros per card: the intercept of an
@@ -576,6 +589,15 @@ type DivideConquer struct {
 	CardsFirstRound  Figure       `json:"cards_first_round"`
 	CardsLaterRounds Figure       `json:"cards_later_rounds"`
 	ReplansByOrigin  []NamedCount `json:"replans_by_origin"`
+	// PlansByRoundsSpans compares panel 10's named counts over the
+	// window, the equal window before it and all seven weeks; CardsByRound
+	// panel 11's original filings by the round each stamped, rounds past
+	// the first each its own name beside the first/later totals above.
+	// The unknown round is an explicit bucket in both; the names order
+	// fewest round first, unknown last, and a name only the previous
+	// window or a weekly bucket holds is not lost.
+	PlansByRoundsSpans []NamedFigure `json:"plans_by_rounds_spans"`
+	CardsByRound       []NamedFigure `json:"cards_by_round"`
 }
 
 // MetricsReport is every figure of one project over one window, the
@@ -678,6 +700,47 @@ func metricRatio(num, den float64) (float64, bool) {
 		return 0, false
 	}
 	return num / den, true
+}
+
+// metricNamedWeeks reads a named-weekly query — rows of (bucket, name,
+// count) — into each name's seven buckets, the shape the named
+// comparisons below are assembled from.
+func metricNamedWeeks(ctx context.Context, db *sql.DB, query string, args ...any) (map[string][7]float64, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][7]float64{}
+	for rows.Next() {
+		var b int
+		var name string
+		var v float64
+		if err := rows.Scan(&b, &name, &v); err != nil {
+			return nil, err
+		}
+		if b >= 0 && b < 7 {
+			ws := out[name]
+			ws[b] = v
+			out[name] = ws
+		}
+	}
+	return out, rows.Err()
+}
+
+// metricNamedWeeksTotals sums each name's weekly buckets: the name's
+// own total across the spark, beside the window's and the previous
+// window's counts.
+func metricNamedWeeksTotals(weeks map[string][7]float64) map[string]float64 {
+	out := make(map[string]float64, len(weeks))
+	for name, ws := range weeks {
+		var total float64
+		for _, v := range ws {
+			total += v
+		}
+		out[name] = total
+	}
+	return out
 }
 
 // metricCount is the shape of every plain count: a fact even at zero.
@@ -1661,10 +1724,10 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 	if d.Cuts, d.CutGroupsClosed, err = metricDivideCuts(ctx, db, repo, w); err != nil {
 		return d, err
 	}
-	if d.PlansByRounds, err = metricDividePlansByRounds(ctx, db, repo, w); err != nil {
+	if d.PlansByRounds, d.PlansByRoundsSpans, err = metricDividePlansByRounds(ctx, db, repo, w); err != nil {
 		return d, err
 	}
-	if d.CardsFirstRound, d.CardsLaterRounds, err = metricDivideCardFilings(ctx, db, repo, w); err != nil {
+	if d.CardsFirstRound, d.CardsLaterRounds, d.CardsByRound, err = metricDivideCardFilings(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	if d.ReplansByOrigin, err = metricDivideReplans(ctx, db, repo, w); err != nil {
@@ -1968,16 +2031,85 @@ func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricW
 
 // dcLegacyFiling keeps a plan_replanned row of the identity contract's
 // era apart from one producers wrote before it: an identity-less row
-// survives only where no canonical row of its own revision holds the
-// filing, so explicit persisted legacy rows supplement gaps without
-// doubling a fact the identity already keeps.
-const dcLegacyFiling = `e.identity_key IS NOT NULL OR NOT EXISTS (
+// survives only where no canonical revision-level row of its own
+// revision holds the replan as of cutoff, so explicit persisted legacy
+// rows supplement gaps without doubling a fact the identity already
+// keeps. A card's own canonical filing row never suppresses a
+// revision-level one — the two are separate identities — and a
+// canonical replacement arriving after the cutoff, a closure or a
+// window's end, never rewrites the older answer.
+func dcLegacyFiling(cutoff string) string {
+	return `e.identity_key IS NOT NULL OR NOT EXISTS (
 	SELECT 1 FROM events k WHERE k.task_id = e.task_id AND k.kind = 'plan_replanned'
-		AND k.identity_key IS NOT NULL AND k.detail->>'revision' = e.detail->>'revision')`
+		AND k.identity_key IS NOT NULL AND k.detail->>'card' IS NULL
+		AND k.detail->>'revision' = e.detail->>'revision' AND k.at <= ` + cutoff + `)`
+}
 
 // dcRoundOf reads the round a filing row names, 0 where it names none —
 // a plan filed before rounds names no round, and none is guessed.
 const dcRoundOf = `CASE WHEN (e.detail->>'round') ~ '^[0-9]+$' THEN (e.detail->>'round')::int ELSE 0 END`
+
+// dcRoundCounts reads one span's named counts — query answers rows of
+// (name, count) over the span's own $2 and $3 bounds and the project's
+// $1 — into the span's name-to-count map.
+func dcRoundCounts(ctx context.Context, db *sql.DB, repo, query string, from, to time.Time) (map[string]float64, error) {
+	rows, err := db.QueryContext(ctx, query, repo, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var name string
+		var n float64
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
+}
+
+// dcNamedFigures assembles the named comparison from the three spans'
+// own answers: every name any span holds — a name only the previous
+// window or a weekly bucket holds is not lost — each a plain count's
+// Figure, zero wherever the span does not hold it, never absent.
+func dcNamedFigures(cur, prev map[string]float64, weeks map[string][7]float64) []NamedFigure {
+	names := map[string]bool{}
+	for name := range cur {
+		names[name] = true
+	}
+	for name := range prev {
+		names[name] = true
+	}
+	for name := range weeks {
+		names[name] = true
+	}
+	out := make([]NamedFigure, 0, len(names))
+	for name := range names {
+		out = append(out, NamedFigure{Name: name, Figure: Figure{
+			Value: cur[name], Prev: prev[name], Has: true, PrevHas: true, Weeks: weeks[name]}})
+	}
+	return out
+}
+
+// dcRoundFigureOrder orders the named round figures in place: explicit
+// rounds fewest first, every name that is no number — the unknown
+// bucket among them — after them and alphabetical among themselves.
+func dcRoundFigureOrder(figs []NamedFigure) {
+	sort.Slice(figs, func(i, j int) bool {
+		a, aErr := strconv.Atoi(figs[i].Name)
+		b, bErr := strconv.Atoi(figs[j].Name)
+		switch {
+		case aErr == nil && bErr == nil && a != b:
+			return a < b
+		case aErr != bErr:
+			return aErr == nil
+		default:
+			return figs[i].Name < figs[j].Name
+		}
+	})
+}
 
 // metricDivideCuts — panel 6: the window's applied cuts, and the cut
 // groups the span's own end saw closed. A cut is the CutFact row the
@@ -2012,104 +2144,148 @@ func metricDivideCuts(ctx context.Context, db *sql.DB, repo string, w metricWind
 	return cuts, groups, err
 }
 
-// metricDividePlansByRounds — panel 10: the plans the window saw close,
-// by the rounds each ran to its closure. A plan's rounds are its
-// maximum explicit round as of the closure — the round a filing's rows
-// name, and the plan_revisions the store kept, none later than the
-// closure itself: never a count of revisions, never a round a revision
-// filed after the close. A plan no explicit round covers, filed before
-// rounds, keeps its own unknown bucket; rounds are named by number,
-// fewest first.
-func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
-	rows, err := db.QueryContext(ctx, `WITH closed AS (
+// metricDividePlansByRounds — panel 10: the plans the span saw close,
+// by the rounds each ran to its closure. A plan closes once, at its
+// first actual plan_closed row — a duplicate close, in the span or
+// before it, inflates nothing — and belongs to the span that closure
+// lands in. A plan's rounds are its maximum explicit round as of that
+// closure — the round a filing's rows name, and the plan_revisions the
+// store kept, none later than the closure itself: never a count of
+// revisions, never a round a revision filed after the close, never a
+// canonical replacement that arrived after it. A plan no explicit round
+// covers, filed before rounds, keeps its own unknown bucket. The scalar
+// keeps the window's own names; the spans compare every name the
+// window, the equal window before it and the seven weeks hold.
+func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, []NamedFigure, error) {
+	// rounds(c): the maximum explicit round no later than the closure.
+	// The legacy double of a revision a canonical revision-level row
+	// holds is dropped at the closure's own cutoff, so evidence a later
+	// row would carry never rewrites the closed answer.
+	body := `WITH closed AS (
 			SELECT e.task_id, min(e.at) AS closed_at
 			FROM events e JOIN tasks t ON t.id = e.task_id
-			WHERE `+dcCardReach+` AND e.kind = 'plan_closed' AND e.at >= $2 AND e.at < $3
+			WHERE ` + dcCardReach + ` AND e.kind = 'plan_closed' AND e.at < $3
 			GROUP BY e.task_id
 		)
-		SELECT CASE WHEN r.rounds > 0 THEN r.rounds::text ELSE 'unknown' END, count(*)::float8
-		FROM (
-			SELECT GREATEST(
-				COALESCE((SELECT max(`+dcRoundOf+`) FROM events e
-					WHERE e.task_id = c.task_id AND e.kind = 'plan_replanned' AND e.at <= c.closed_at
-						AND (`+dcLegacyFiling+`)), 0),
-				COALESCE((SELECT max((v.plan->>'round')::int) FROM plan_revisions v
-					WHERE v.task_id = c.task_id AND (v.plan->>'round') ~ '^[0-9]+$' AND v.created_at <= c.closed_at), 0)
-			) AS rounds
-			FROM closed c
-		) r
-		GROUP BY 1 ORDER BY (min(r.rounds) = 0), min(r.rounds)`, repo, w.From, w.To)
+		SELECT c.closed_at, GREATEST(
+			COALESCE((SELECT max(` + dcRoundOf + `) FROM events e
+				WHERE e.task_id = c.task_id AND e.kind = 'plan_replanned' AND e.at <= c.closed_at
+					AND (` + dcLegacyFiling("c.closed_at") + `)), 0),
+			COALESCE((SELECT max((v.plan->>'round')::int) FROM plan_revisions v
+				WHERE v.task_id = c.task_id AND (v.plan->>'round') ~ '^[0-9]+$' AND v.created_at <= c.closed_at), 0)
+		) AS rounds
+		FROM closed c WHERE c.closed_at >= $2 AND c.closed_at < $3`
+	counts := fmt.Sprintf(`SELECT CASE WHEN r.rounds > 0 THEN r.rounds::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) r GROUP BY 1`, body)
+	weeks := fmt.Sprintf(`SELECT %s, CASE WHEN r.rounds > 0 THEN r.rounds::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) r GROUP BY 1, 2`, metricBucketFrom("r.closed_at", "$2"), body)
+	cur, err := dcRoundCounts(ctx, db, repo, counts, w.From, w.To)
 	if err != nil {
-		return nil, err
+		return nil, nil, err
 	}
-	defer rows.Close()
-	var out []NamedCount
-	for rows.Next() {
-		var nc NamedCount
-		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
-			return nil, err
+	prev, err := dcRoundCounts(ctx, db, repo, counts, w.PrevFrom, w.PrevTo)
+	if err != nil {
+		return nil, nil, err
+	}
+	wk, err := metricNamedWeeks(ctx, db, weeks, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return nil, nil, err
+	}
+	spans := dcNamedFigures(cur, prev, wk)
+	dcRoundFigureOrder(spans)
+	// the scalar keeps the window's own names alone, fewest round first
+	var scalar []NamedCount
+	for name, n := range cur {
+		scalar = append(scalar, NamedCount{Name: name, Count: n})
+	}
+	slices.SortFunc(scalar, func(a, b NamedCount) int {
+		an, aErr := strconv.Atoi(a.Name)
+		bn, bErr := strconv.Atoi(b.Name)
+		if aErr != bErr {
+			if aErr == nil {
+				return -1
+			}
+			return 1
 		}
-		out = append(out, nc)
-	}
-	return out, rows.Err()
+		if aErr == nil && an != bn {
+			return an - bn
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return scalar, spans, nil
 }
 
-// metricDivideCardFilings — panel 11: the window's new card filings,
-// the first round's against later rounds'. A filing is a card's own
-// plan_replanned row — the card's issue and plan key on it, the round
-// the filing stamped — and the original filing's round and instant
-// count once: a key filed again keeps its first row, and a retained
-// card, which refiles nothing, adds none. A filing that names no round,
-// of a plan filed before rounds, is neither first nor later; the panel
-// leaves it out rather than guess it a round.
-func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, error) {
-	// one row per plan and key, the earliest: DISTINCT ON keeps the
-	// original filing of a key a later revision filed again
-	filings := `SELECT DISTINCT ON (e.task_id, e.detail->>'key') ` + metricBucket("e.at") + ` AS b, ` + dcRoundOf + ` AS round
+// metricDivideCardFilings — panel 11: the span's new card filings, the
+// first round's against later rounds', and each explicit round its own
+// named figure. A filing is a card's own canonical plan_replanned row —
+// the card's issue and plan key on it, the round the filing stamped —
+// and the original filing's round and instant count once: each card
+// key's original filing is selected across repository history before
+// any cohort bound, so a key first filed in an earlier window and
+// refiled in this one contributes only at its original time and round,
+// wherever the panels read it, and a retained card, which refiles
+// nothing, adds none. A filing that names no round, of a plan filed
+// before rounds, is neither first nor later and keeps the explicit
+// unknown bucket of the named comparison; the panel never guesses it a
+// round.
+func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, []NamedFigure, error) {
+	// one row per plan and key, the earliest across repository history:
+	// DISTINCT ON keeps the original filing of a key any later revision
+	// filed again, before the span bounds below choose their cohorts
+	const filings = `SELECT DISTINCT ON (e.task_id, e.detail->>'key') e.at, ` + dcRoundOf + ` AS round
 		FROM events e JOIN tasks t ON t.id = e.task_id
 		WHERE ` + dcCardReach + ` AND e.kind = 'plan_replanned' AND e.identity_key IS NOT NULL
-			AND e.detail->>'card' IS NOT NULL AND e.at >= $2 AND e.at < $3
+			AND e.detail->>'card' IS NOT NULL
 		ORDER BY e.task_id, e.detail->>'key', e.at, e.id`
-	read := func(from, to time.Time) (first, later float64, err error) {
-		err = db.QueryRowContext(ctx, `SELECT count(*) FILTER (WHERE round = 1), count(*) FILTER (WHERE round >= 2)
-			FROM (`+filings+`) f`, repo, from, to).Scan(&first, &later)
-		return
+	counts := fmt.Sprintf(`SELECT CASE WHEN f.round > 0 THEN f.round::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) f WHERE f.at >= $2 AND f.at < $3 GROUP BY 1`, filings)
+	weeks := fmt.Sprintf(`SELECT %s, CASE WHEN f.round > 0 THEN f.round::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) f WHERE f.at >= $2 AND f.at < $3 GROUP BY 1, 2`, metricBucketFrom("f.at", "$2"), filings)
+	cur, err := dcRoundCounts(ctx, db, repo, counts, w.From, w.To)
+	if err != nil {
+		return Figure{}, Figure{}, nil, err
 	}
+	prev, err := dcRoundCounts(ctx, db, repo, counts, w.PrevFrom, w.PrevTo)
+	if err != nil {
+		return Figure{}, Figure{}, nil, err
+	}
+	wk, err := metricNamedWeeks(ctx, db, weeks, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return Figure{}, Figure{}, nil, err
+	}
+	figs := dcNamedFigures(cur, prev, wk)
+	dcRoundFigureOrder(figs)
+	// the first/later totals stand on the same named counts: round 1
+	// alone, and every explicit later round summed — the rounds past the
+	// first keep their own names beside the total
 	var first, later Figure
 	first.Has, first.PrevHas, later.Has, later.PrevHas = true, true, true, true
-	var err error
-	if first.Value, later.Value, err = read(w.From, w.To); err != nil {
-		return first, later, err
-	}
-	if first.Prev, later.Prev, err = read(w.PrevFrom, w.PrevTo); err != nil {
-		return first, later, err
-	}
-	rows, err := db.QueryContext(ctx, `SELECT b, count(*) FILTER (WHERE round = 1), count(*) FILTER (WHERE round >= 2)
-		FROM (`+filings+`) f GROUP BY 1`, repo, w.SparkFrom, w.To) // #nosec G202 -- filings is built from the package's constant fragments
-	if err != nil {
-		return first, later, err
-	}
-	defer rows.Close()
-	for rows.Next() {
-		var b int
-		var firstN, laterN float64
-		if err := rows.Scan(&b, &firstN, &laterN); err != nil {
-			return first, later, err
+	for _, nf := range figs {
+		if nf.Name == "1" {
+			first = nf.Figure
+			continue
 		}
-		if b >= 0 && b < len(first.Weeks) {
-			first.Weeks[b], later.Weeks[b] = firstN, laterN
+		if n, err := strconv.Atoi(nf.Name); err == nil && n >= 2 {
+			later.Value += nf.Figure.Value
+			later.Prev += nf.Figure.Prev
+			for b, v := range nf.Figure.Weeks {
+				later.Weeks[b] += v
+			}
 		}
 	}
-	return first, later, rows.Err()
+	return first, later, figs, nil
 }
 
 // metricDivideReplans — panel 12: the window's applied replans by who
 // asked them — a person, a cut, a round. A replan is the revision's own
 // plan_replanned row, one per plan and revision however many cards the
 // revision filed; the cards' rows answer the filings panel, not this
-// one. A row the identity contract never covered, one no canonical row
-// of its revision holds, keeps the origin its detail names — or its own
-// unknown bucket where it names none; nothing guesses a name.
+// one, and never suppress a revision's own. A row the identity contract
+// never covered, one no canonical revision-level row of its revision
+// holds as of the window's own end, keeps the origin its detail names —
+// or its own unknown bucket where it names none; nothing guesses a
+// name, and a canonical replacement arriving after the window never
+// rewrites the older answer.
 func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
 	rows, err := db.QueryContext(ctx, `SELECT r.name, count(*)::float8 FROM (
 			SELECT DISTINCT ON (e.task_id, e.detail->>'revision')
@@ -2117,9 +2293,9 @@ func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricW
 					THEN e.detail->>'origin' ELSE 'unknown' END AS name
 			FROM events e JOIN tasks t ON t.id = e.task_id
 			WHERE `+dcCardReach+` AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
-				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling+`)
+				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling("$3")+`)
 			ORDER BY e.task_id, e.detail->>'revision', e.identity_key IS NULL, e.at, e.id
-		) r GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To)
+		) r GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To) // #nosec G202 -- the query is built from the package's constant fragments
 	if err != nil {
 		return nil, err
 	}

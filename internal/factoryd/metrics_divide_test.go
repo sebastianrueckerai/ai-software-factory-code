@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -1073,6 +1074,14 @@ func TestDivideConquerCombinedReportSQL(t *testing.T) {
 	if d.ReviewsNotReviewed != (Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}) {
 		t.Fatalf("reviews not reviewed = %+v, want one of the two answers", d.ReviewsNotReviewed)
 	}
+	// the additive named comparisons compose beside the economics: no
+	// plan fact seeds this fixture, so the planning panels stay empty —
+	// measured zeros where their own panels read, absence here
+	if len(d.PlansByRounds) != 0 || len(d.PlansByRoundsSpans) != 0 || len(d.CardsByRound) != 0 ||
+		len(d.ReplansByOrigin) != 0 {
+		t.Fatalf("planning panels = %+v %+v %+v %+v, want none beside the economics",
+			d.PlansByRounds, d.PlansByRoundsSpans, d.CardsByRound, d.ReplansByOrigin)
+	}
 	// the deck's own figures stand: the dates asked, the window's five
 	// done cards, the window's 22 ledger euros — cb5's included, whatever
 	// its absent statistics
@@ -1259,18 +1268,41 @@ func TestDivideConquerCutsSQL(t *testing.T) {
 		empty.DivideConquer.CutGroupsClosed != (Figure{Has: true, PrevHas: true}) {
 		t.Fatalf("without cuts: cuts %+v groups %+v, want measured zeros", empty.DivideConquer.Cuts, empty.DivideConquer.CutGroupsClosed)
 	}
+	// closures arriving after the report was taken — t-cut-a's group
+	// closed again beyond the window, t-cut-b's still later — rewrite no
+	// older answer: the window's, the previous window's and every
+	// bucket's figures stand as they were read
+	dcClosed(t, s, "t-cut-a", "sf/dc8", to.AddDate(0, 0, 5))
+	dcClosed(t, s, "t-cut-b", "sf/dc8", to.AddDate(0, 0, 4))
+	again, err := s.ProjectMetrics(context.Background(), "sf/dc8", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DivideConquer.Cuts != d.Cuts || again.DivideConquer.CutGroupsClosed != d.CutGroupsClosed {
+		t.Fatalf("after later closures: cuts %+v groups %+v, want the older answers %+v %+v",
+			again.DivideConquer.Cuts, again.DivideConquer.CutGroupsClosed, d.Cuts, d.CutGroupsClosed)
+	}
 }
 
 // TestDivideConquerPlanningSQL — panels 10, 11 and 12: the window's
 // closed plans by the rounds each ran to its closure, its new card
 // filings of the first round against later ones, and its applied replans
-// by who asked them. Rounds are explicit round evidence as of the
-// closure — a filing's stamped round, a round replan's row, the plan
-// revisions the store kept — never a count of revisions, never a round a
-// revision filed after the close (t-plan-2's round-5 revision); a card
-// filed again keeps its original filing's round and instant; a revision
-// filing several cards is one replan; a legacy row doubles no canonical
-// one and an originless gap keeps its own unknown bucket. The same
+// by who asked them, the rounds and the filings compared name by name
+// over the window, the equal window before it and all seven weeks
+// (PlansByRoundsSpans, CardsByRound — the unknown round an explicit
+// bucket, rounds past the first each their own name). Rounds are
+// explicit round evidence as of the first closure — a filing's stamped
+// round, a round replan's row, the plan revisions the store kept —
+// never a count of revisions, never a round a revision filed after the
+// close (t-plan-2's round-5 revision), never a duplicate close (t-plan-2
+// in-window, t-plan-3 after its own); a card filed again keeps its
+// original filing's round and instant wherever it was filed (e6, first
+// in the previous window); a revision filing several cards is one
+// replan; a canonical card row neither suppresses a legacy
+// revision-level replan (t-plan-5) nor counts as one, and a legacy row
+// doubles no canonical one; an originless gap keeps its own unknown
+// bucket; a canonical replacement arriving after the closure and the
+// window (t-plan-6's round 9) rewrites no older answer. The same
 // definitions answer the previous window and a week of the spark.
 // [planning_rounds_origins]
 func TestDivideConquerPlanningSQL(t *testing.T) {
@@ -1334,6 +1366,49 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 			map[string]any{"round": 2, "cards": []int64{132}}, from.AddDate(0, 0, 8))
 		dcFiling(t, s, "t-plan-4", "sf/dc9", 2, ReplanRound, 132, "f2", 132, map[string]any{"round": 2}, from.AddDate(0, 0, 8))
 		dcLegacyReplan(t, s, "t-plan-4", "sf/dc9", 204, map[string]any{"revision": 3, "kept": 1}, from.AddDate(0, 0, 7))
+		// duplicate closes inflate nothing: t-plan-2's second close Oct 9
+		// lands in-window, t-plan-3's Oct 6 after its first (Sep 20, the
+		// previous window's own) — each plan keeps its first closure
+		dcClosed(t, s, "t-plan-2", "sf/dc9", from.AddDate(0, 0, 11))
+		dcClosed(t, s, "t-plan-3", "sf/dc9", from.AddDate(0, 0, 8))
+		// t-plan-3's key e6, first filed Sep 16 round 1, refiled Oct 4
+		// round 2: the original filing alone counts, at its own instant
+		// and round, in whichever window and week the panels read — the
+		// refile adds nothing anywhere
+		dcFiling(t, s, "t-plan-3", "sf/dc9", 1, "", 126, "e6", 126, map[string]any{"round": 1}, from.AddDate(0, 0, -12))
+		dcFiling(t, s, "t-plan-3", "sf/dc9", 3, ReplanCut, 126, "e6", 126, map[string]any{"round": 2}, from.AddDate(0, 0, 6))
+		// t-plan-4's j2, a round-4 filing inside the spark alone (Sep 10,
+		// bucket 2): a name only a weekly bucket holds, not lost
+		dcFiling(t, s, "t-plan-4", "sf/dc9", 2, ReplanRound, 135, "j2", 135, map[string]any{"round": 4}, from.AddDate(0, 0, -18))
+		// t-plan-5, closed Oct 7: the canonical card row of its revision
+		// — roundless, its own filing — beside the legacy revision-level
+		// replan row of the same revision: separate identities, the card
+		// row never suppresses the revision's, and the legacy origin
+		// counts once while the filing answers the filings panels alone
+		dcPlan(t, s, "t-plan-5", "sf/dc9", 205)
+		dcFiling(t, s, "t-plan-5", "sf/dc9", 2, ReplanPerson, 142, "h1", 142, nil, from.AddDate(0, 0, 8))
+		dcLegacyReplan(t, s, "t-plan-5", "sf/dc9", 205,
+			map[string]any{"revision": 2, "origin": ReplanPerson, "round": 2}, from.AddDate(0, 0, 8))
+		dcClosed(t, s, "t-plan-5", "sf/dc9", from.AddDate(0, 0, 9))
+		// t-plan-6, closed Oct 7: its replan a legacy row alone, the
+		// canonical replacement arrives only after the window and the
+		// closure — later evidence must not rewrite the answers read
+		// before it
+		dcPlan(t, s, "t-plan-6", "sf/dc9", 206)
+		dcLegacyReplan(t, s, "t-plan-6", "sf/dc9", 206,
+			map[string]any{"revision": 3, "origin": ReplanCut, "round": 2}, from.AddDate(0, 0, 8))
+		dcClosed(t, s, "t-plan-6", "sf/dc9", from.AddDate(0, 0, 9))
+		// t-plan-7, closed Oct 9 with no round any row or revision names:
+		// the plan keeps the unknown bucket, its roundless filing the
+		// filings' own unknown name
+		dcPlan(t, s, "t-plan-7", "sf/dc9", 207)
+		dcFiling(t, s, "t-plan-7", "sf/dc9", 1, "", 143, "i1", 143, nil, from.AddDate(0, 0, 10))
+		dcClosed(t, s, "t-plan-7", "sf/dc9", from.AddDate(0, 0, 11))
+		// t-plan-8, the previous window's rounds-3 closure (Sep 18): a
+		// name only the previous window and its week hold
+		dcPlan(t, s, "t-plan-8", "sf/dc9", 208)
+		dcFiling(t, s, "t-plan-8", "sf/dc9", 2, ReplanCut, 144, "j1", 144, map[string]any{"round": 3}, from.AddDate(0, 0, -12))
+		dcClosed(t, s, "t-plan-8", "sf/dc9", from.AddDate(0, 0, -10))
 		// the other project's plan answers its report alone
 		dcPlan(t, s, "t-plan-far", "sf/other9", 251)
 		dcFiling(t, s, "t-plan-far", "sf/other9", 1, "", 151, "g1", 151, map[string]any{"round": 1}, from.AddDate(0, 0, 6))
@@ -1346,46 +1421,99 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	d := r.DivideConquer
-	// t-plan-2 ran one round to its closure, t-plan-1 two; t-plan-3
-	// closed before the window, t-plan-4 never
-	if len(d.PlansByRounds) != 2 || d.PlansByRounds[0] != (NamedCount{Name: "1", Count: 1}) ||
-		d.PlansByRounds[1] != (NamedCount{Name: "2", Count: 1}) {
-		t.Fatalf("plans by rounds = %+v, want one plan of one round and one of two", d.PlansByRounds)
+	// t-plan-2 ran one round to its closure, t-plan-1, t-plan-5 and
+	// t-plan-6 two, t-plan-7 none any row names; t-plan-3's duplicate
+	// close moved it nowhere and t-plan-4 never closed
+	if len(d.PlansByRounds) != 3 || d.PlansByRounds[0] != (NamedCount{Name: "1", Count: 1}) ||
+		d.PlansByRounds[1] != (NamedCount{Name: "2", Count: 3}) ||
+		d.PlansByRounds[2] != (NamedCount{Name: "unknown", Count: 1}) {
+		t.Fatalf("plans by rounds = %+v, want one plan of one round, three of two and one unknown", d.PlansByRounds)
 	}
-	// four first-round filings (a1, a2, b1, b2 — b1's re-file never
-	// counted), three later ones (e4, e5, f2); the spark holds the
-	// previous window's filings too (e1, e2, f1 and e3, bucket 3)
-	if d.CardsFirstRound != (Figure{Value: 4, Prev: 3, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 3, 0, 4, 0}}) {
-		t.Fatalf("cards first round = %+v, want four of the window's filings", d.CardsFirstRound)
+	// the same names compared over the window, the equal window before
+	// it and all seven weeks: explicit rounds fewest first, unknown
+	// last, a name only the previous window or a week holds not lost —
+	// round 3 is t-plan-8's closure alone (Sep 18, bucket 3) — and an
+	// empty span a zero, never an absence
+	wantPlanSpans := []NamedFigure{
+		{Name: "1", Figure: Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
+		{Name: "2", Figure: Figure{Value: 3, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 3}}},
+		{Name: "3", Figure: Figure{Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0}}},
+		{Name: "unknown", Figure: Figure{Value: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}}},
 	}
-	if d.CardsLaterRounds != (Figure{Value: 3, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 2, 1}}) {
-		t.Fatalf("cards later rounds = %+v, want three of the window's filings", d.CardsLaterRounds)
+	if !slices.Equal(d.PlansByRoundsSpans, wantPlanSpans) {
+		t.Fatalf("plans by rounds spans = %+v, want %+v", d.PlansByRoundsSpans, wantPlanSpans)
 	}
-	// one replan of each origin — the cut's two cards one replan, the
-	// legacy double of revision 2 dropped — and the lost origin of
-	// t-plan-4's revision 3 its own unknown bucket
-	if len(d.ReplansByOrigin) != 4 || d.ReplansByOrigin[0] != (NamedCount{Name: ReplanCut, Count: 1}) ||
-		d.ReplansByOrigin[1] != (NamedCount{Name: ReplanPerson, Count: 1}) ||
+	// four first-round filings of the window (a1, a2, b1, b2 — b1's
+	// re-file never counted, e6's original is the previous window's
+	// own), four of the previous (e1, e2, e6, f1); three later ones of
+	// the window (e4, e5, f2), two of the previous (e3, j1); the spark
+	// holds the weeks' filings too, j2's round 4 among them (bucket 2)
+	if d.CardsFirstRound != (Figure{Value: 4, Prev: 4, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 4, 0, 4, 0}}) {
+		t.Fatalf("cards first round = %+v, want four of the window's filings and four before it", d.CardsFirstRound)
+	}
+	if d.CardsLaterRounds != (Figure{Value: 3, Prev: 2, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 1, 2, 0, 2, 1}}) {
+		t.Fatalf("cards later rounds = %+v, want three of the window's filings and two before it", d.CardsLaterRounds)
+	}
+	// each round its own named comparison, the totals above agreeing
+	// with it name for name: e6 contributes only at its original
+	// instant and round (the previous window's, bucket 3), the refiled
+	// round 2 nowhere; j2's round 4 is a week's alone (bucket 2); the
+	// roundless h1 and i1 keep the explicit unknown bucket
+	wantCardsByRound := []NamedFigure{
+		{Name: "1", Figure: Figure{Value: 4, Prev: 4, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 4, 0, 4, 0}}},
+		{Name: "2", Figure: Figure{Value: 3, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 2, 1}}},
+		{Name: "3", Figure: Figure{Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0}}},
+		{Name: "4", Figure: Figure{Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 1, 0, 0, 0, 0}}},
+		{Name: "unknown", Figure: Figure{Value: 2, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 2}}},
+	}
+	if !slices.Equal(d.CardsByRound, wantCardsByRound) {
+		t.Fatalf("cards by round = %+v, want %+v", d.CardsByRound, wantCardsByRound)
+	}
+	byRound := map[string]Figure{}
+	roundWeeks := map[string][7]float64{}
+	for _, nf := range d.CardsByRound {
+		byRound[nf.Name] = nf.Figure
+		roundWeeks[nf.Name] = nf.Figure.Weeks
+	}
+	if byRound["1"] != d.CardsFirstRound {
+		t.Fatalf("round 1 %+v disagrees with the first-round total %+v", byRound["1"], d.CardsFirstRound)
+	}
+	// Value and Weeks agree: each round's spark total is its window and
+	// previous-window counts plus nothing else — e6's refile counted
+	// anywhere would lift round 1's total past its eight originals
+	totals := metricNamedWeeksTotals(roundWeeks)
+	if totals["1"] != 8 || totals["2"] != 4 || totals["unknown"] != 2 {
+		t.Fatalf("round totals = %+v, want round 1's eight, round 2's four and the two unknown", totals)
+	}
+	// two replans by a person (t-plan-1's canonical row, t-plan-5's
+	// legacy one its card row never suppresses), two by a cut (t-plan-3's
+	// multi-card revision once, t-plan-6's legacy row), one by a round
+	// and the lost origin of t-plan-4's revision 3 its own unknown
+	// bucket — the legacy double of revision 2 dropped
+	if len(d.ReplansByOrigin) != 4 || d.ReplansByOrigin[0] != (NamedCount{Name: ReplanCut, Count: 2}) ||
+		d.ReplansByOrigin[1] != (NamedCount{Name: ReplanPerson, Count: 2}) ||
 		d.ReplansByOrigin[2] != (NamedCount{Name: ReplanRound, Count: 1}) ||
 		d.ReplansByOrigin[3] != (NamedCount{Name: "unknown", Count: 1}) {
-		t.Fatalf("replans by origin = %+v, want person, cut and round once each and one unknown", d.ReplansByOrigin)
+		t.Fatalf("replans by origin = %+v, want person and cut twice each, the round once and one unknown", d.ReplansByOrigin)
 	}
-	// the same definitions answer the previous window: its one closure
-	// (t-plan-3, Sep 20) ran two rounds — evidence its round replan's
-	// row and card name — and its replans are the round's alone
+	// the same definitions answer the previous window: its closures
+	// (t-plan-3 Sep 20, t-plan-8 Sep 18) ran two rounds and three — its
+	// replans are the round's alone — and its filings carry e6's
+	// original among the first and j1 among the later
 	prevFrom, prevTo := from.AddDate(0, 0, -14), to.AddDate(0, 0, -14)
 	rp, err := s.ProjectMetrics(context.Background(), "sf/dc9", prevFrom, prevTo)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(rp.DivideConquer.PlansByRounds) != 1 || rp.DivideConquer.PlansByRounds[0] != (NamedCount{Name: "2", Count: 1}) {
-		t.Fatalf("previous plans by rounds = %+v, want t-plan-3's two rounds alone", rp.DivideConquer.PlansByRounds)
+	if len(rp.DivideConquer.PlansByRounds) != 2 || rp.DivideConquer.PlansByRounds[0] != (NamedCount{Name: "2", Count: 1}) ||
+		rp.DivideConquer.PlansByRounds[1] != (NamedCount{Name: "3", Count: 1}) {
+		t.Fatalf("previous plans by rounds = %+v, want t-plan-3's two rounds and t-plan-8's three", rp.DivideConquer.PlansByRounds)
 	}
 	if len(rp.DivideConquer.ReplansByOrigin) != 1 || rp.DivideConquer.ReplansByOrigin[0] != (NamedCount{Name: ReplanRound, Count: 1}) {
 		t.Fatalf("previous replans by origin = %+v, want the round replan alone", rp.DivideConquer.ReplansByOrigin)
 	}
-	if rp.DivideConquer.CardsFirstRound.Value != 3 || rp.DivideConquer.CardsLaterRounds.Value != 1 {
-		t.Fatalf("previous filings = %+v / %+v, want three first and one later",
+	if rp.DivideConquer.CardsFirstRound.Value != 4 || rp.DivideConquer.CardsLaterRounds.Value != 2 {
+		t.Fatalf("previous filings = %+v / %+v, want four first and two later",
 			rp.DivideConquer.CardsFirstRound, rp.DivideConquer.CardsLaterRounds)
 	}
 	if rp.DivideConquer.CardsFirstRound.Value != d.CardsFirstRound.Prev || rp.DivideConquer.CardsLaterRounds.Value != d.CardsLaterRounds.Prev {
@@ -1422,5 +1550,27 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		ro.DivideConquer.ReplansByOrigin[0] != (NamedCount{Name: ReplanPerson, Count: 1}) {
 		t.Fatalf("sf/other9 filings %v replans %+v, want its own alone",
 			ro.DivideConquer.CardsFirstRound.Value, ro.DivideConquer.ReplansByOrigin)
+	}
+	// the canonical replacement of t-plan-6's revision 3 arrives after
+	// the window and the closure, naming a round the plan never ran:
+	// no earlier answer moves — the revision-level origin stays counted
+	// once, the closed plan keeps the rounds its closure saw, the
+	// filings and their rounds stand, and the later row adds nothing
+	dcFiling(t, s, "t-plan-6", "sf/dc9", 3, ReplanRound, 0, "", 206,
+		map[string]any{"round": 9, "cards": []int64{}}, to.AddDate(0, 0, 3))
+	again, err := s.ProjectMetrics(context.Background(), "sf/dc9", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	a := again.DivideConquer
+	if !slices.Equal(a.PlansByRounds, d.PlansByRounds) || !slices.Equal(a.PlansByRoundsSpans, d.PlansByRoundsSpans) ||
+		!slices.Equal(a.ReplansByOrigin, d.ReplansByOrigin) {
+		t.Fatalf("after the late replacement: plans %+v spans %+v replans %+v, want the older answers %+v %+v %+v",
+			a.PlansByRounds, a.PlansByRoundsSpans, a.ReplansByOrigin, d.PlansByRounds, d.PlansByRoundsSpans, d.ReplansByOrigin)
+	}
+	if a.CardsFirstRound != d.CardsFirstRound || a.CardsLaterRounds != d.CardsLaterRounds ||
+		!slices.Equal(a.CardsByRound, d.CardsByRound) {
+		t.Fatalf("after the late replacement: first %+v later %+v by round %+v, want the older answers %+v %+v %+v",
+			a.CardsFirstRound, a.CardsLaterRounds, a.CardsByRound, d.CardsFirstRound, d.CardsLaterRounds, d.CardsByRound)
 	}
 }
