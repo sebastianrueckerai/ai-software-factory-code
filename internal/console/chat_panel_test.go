@@ -197,6 +197,8 @@ console.log(JSON.stringify({
       result: "Findings:\nmain holds README.md.", trail: "\ntree {\"ref\":\"main\"}\nREADME.md 1200\n"}]},
     {role: "assistant", content: "Done.", at: "2026-10-11T09:30:03Z"}], "sebastian", []),
   queuedRow: chatView.userHTML("sebastian", "also this", "2026-10-11T09:30:05Z", true),
+  tokenThread: chatView.historyHTML([{id: 1, role: "user", content: "what waits?", token: "claude-<b>", at: "2026-10-11T09:30:01Z"},
+    {id: 2, role: "user", content: "and now", at: "2026-10-11T09:31:01Z"}], "sebastian", []),
   readRow: chatView.readHTML,
   openQ: [chatView.openQuestionHTML("Can you do that? <b>"), chatView.openQuestionHTML("")].join("|"),
   imgRow: chatView.userHTML("sebastian", "look at the run", "2026-10-11T09:30:01Z", false,
@@ -324,6 +326,11 @@ console.log(JSON.stringify({
 			`<div class="said"><p>Done.</p></div></div>`},
 		{"queuedRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
 			`<p class="said">also this</p><p class="meta chat-queued">not read yet: the agent reads it after its current step</p></div>`},
+		{"tokenThread", `<div class="msg you tok"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span>` +
+			` <span class="via" title="sent by the chat token claude-&lt;b&gt;">via claude-&lt;b&gt;</span> <time>10-11 09:30Z</time></p>` +
+			`<p class="said">what waits?</p></div>` +
+			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:31Z</time></p>` +
+			`<p class="said">and now</p></div>`},
 		{"imgRow", `<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p>` +
 			`<p class="said">look at the run</p><div class="chat-thumbs">` +
 			`<a class="thumb" href="/projects/ai-software-factory-code/chat/attachments/901" target="_blank" rel="noopener">` +

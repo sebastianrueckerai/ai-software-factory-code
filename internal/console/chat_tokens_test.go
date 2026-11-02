@@ -277,3 +277,19 @@ func TestChatTokenFormOffersWrittenProjectsOnly(t *testing.T) {
 		t.Fatalf("select = %s", sel)
 	}
 }
+
+// A token's row names its project as the page's level table does, and a
+// project the human no longer reads by its repository.
+func TestChatTokenRowNamesItsProject(t *testing.T) {
+	r, ck, _ := tokenRig(t)
+	r.chatTokens.rows = []factoryd.ChatToken{
+		{ID: 1, Login: "sebastian", Repository: "sf/code", Name: "laptop", Expires: time.Now().Add(time.Hour)},
+		{ID: 2, Login: "sebastian", Repository: "sf/gone", Name: "old", Expires: time.Now().Add(time.Hour)},
+	}
+	page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), ck).Body.String()
+	for _, want := range []string{`<td data-l="project">ai-software-factory-code</td>`, `<td data-l="project">sf/gone</td>`} {
+		if !strings.Contains(page, want) {
+			t.Errorf("page lacks %s", want)
+		}
+	}
+}

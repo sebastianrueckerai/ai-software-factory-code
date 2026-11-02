@@ -101,7 +101,7 @@ form.htmx-request button::after { content: ""; display: inline-block; width: .8r
 @keyframes spin { to { transform: rotate(360deg); } }
 /* fields: a line, the page's colour, a cyan ring when focused */
 input[type=text], input[type=number], input[type=password], textarea, select { width: 100%; max-width: 48rem; padding: 6px 8px; border: 1px solid var(--btn-line); border-radius: 2px; background: var(--bg); color: var(--text); font-size: 13px; line-height: 1.45; }
-[data-theme=light] input[type=text], [data-theme=light] input[type=number], [data-theme=light] input[type=password], [data-theme=light] textarea, [data-theme=light] select { background: var(--bg-card); }
+[data-theme=light] input[type=text], [data-theme=light] input[type=number], [data-theme=light] input[type=password], [data-theme=light] textarea, [data-theme=light] select { background-color: var(--bg-card); }
 input[type=number] { width: 10rem; }
 input[type=password] { max-width: 24rem; }
 textarea { resize: vertical; }
@@ -127,6 +127,7 @@ th, td { text-align: left; padding: 6px 10px 6px 0; border-bottom: 1px solid var
 td a[href^="/tasks/"], td time { white-space: nowrap; }
 td code { overflow-wrap: anywhere; }
 th { border-bottom-color: var(--line-strong); color: var(--text-muted); font: 600 12.5px var(--font-ui); white-space: nowrap; }
+th[scope=row] { border-bottom-color: var(--line); }
 tr.line td:first-child { padding-left: 1.5rem; color: var(--text-muted); }
 caption { text-align: left; color: var(--text-muted); font: 600 12.5px var(--font-ui); padding: 4px 0; }
 code { white-space: pre-wrap; word-break: break-word; font-size: .93em; }
@@ -1262,6 +1263,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
    for needs-you, an unlit socket for off and not connected */
 .notify th[scope=row] { color: var(--text); font: 400 12px var(--font-mono); white-space: normal; }
 .notify td.act { width: 100%; text-align: right; }
+@media (min-width: 900px) { .notify th[scope=row], .notify td:not(.act) { white-space: nowrap; } }
 .notify td.act form.inline { white-space: nowrap; }
 .notify .dim { color: var(--text-muted); }
 .notify .addr { color: var(--text-faint); }
@@ -1410,3 +1412,33 @@ summary.strip .cell[data-tip]:hover::after, summary.strip .cell[data-tip]:focus-
 /* the input's drag seam lights the composer's top rule, the divider's
    own way of saying it drags */
 form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible) { border-top-color: var(--accent); }
+/* a human row a chat token sent (C42): the avatar's ring dashed, the
+   human at a remove, and "via" and the token's name after the human's */
+.msg.you.tok .av { border-style: dashed; background: none; color: var(--accent); }
+.msg .who .via { min-width: 0; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
+.msg .who time { flex: none; }
+/* the Tokens section (C42): the shown-once block above the page's
+   sections, C14's cyan rule at its left, each value in a dark line with
+   its Copy button; a lamp on the last use, lit while a used token lives;
+   the form folds once a token exists */
+.notify + .notify { margin-top: 26px; }
+.notify.once { margin: 12px 0 0; padding: 10px 14px 12px; border: 1px solid var(--line-strong); border-left: 2px solid var(--accent); background: var(--bg-raised); }
+.notify.once h3 { display: flex; align-items: baseline; gap: 10px; margin: 0 0 4px; }
+.once-w { color: var(--accent); font: 11.5px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
+.once-l { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
+.once-k { margin: 10px 0 0; color: var(--text-muted); font: 11.5px var(--font-mono); font-variant-caps: all-small-caps; letter-spacing: .06em; }
+.cline { display: flex; gap: 8px; align-items: flex-start; margin: 6px 0 0; padding: 6px 6px 6px 10px; border: 1px solid var(--line); border-radius: 2px; background: var(--bg); }
+.cline .ps { flex: none; color: var(--text-muted); font: 12px/22px var(--font-mono); }
+.cline code.sel { flex: 1; min-width: 0; color: var(--text); font-size: 12px; line-height: 22px; overflow-wrap: anywhere; user-select: all; cursor: text; }
+.cline button { flex: none; height: 24px; font-size: 12px; }
+.mint { margin: 14px 0 0; }
+.mint > summary { color: var(--text-muted); font: 600 12.5px var(--font-ui); font-variant-caps: all-small-caps; letter-spacing: .07em; cursor: pointer; }
+.mint form { max-width: 28rem; }
+.mint input { height: 28px; }
+.mint form button { margin-top: 12px; }
+@media (max-width: 899px) {
+  .notify td[data-l]::before { content: attr(data-l) " "; color: var(--text-faint); }
+  .cline button { height: 44px; }
+  .mint > summary { display: flex; align-items: center; min-height: 44px; }
+  .mint input, .mint select, .mint form button { width: 100%; max-width: none; height: 44px; }
+}

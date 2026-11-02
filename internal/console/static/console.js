@@ -1733,3 +1733,14 @@ document.addEventListener("keydown", function (e) {
     if (new URL(a.href, location.href).pathname === path) a.classList.add("open");
   });
 })();
+// a Copy button copies the text of the element it names, the shown-once
+// chat token and its line (C42); where the clipboard refuses, it selects
+// the text for the human's own copy
+document.addEventListener("click", function (e) {
+  var b = e.target.closest && e.target.closest("[data-copy]");
+  if (!b) return;
+  var el = document.getElementById(b.dataset.copy);
+  var pick = function () { window.getSelection().selectAllChildren(el); };
+  if (!navigator.clipboard) return pick();
+  navigator.clipboard.writeText(el.textContent).then(function () { b.textContent = "Copied"; }, pick);
+});

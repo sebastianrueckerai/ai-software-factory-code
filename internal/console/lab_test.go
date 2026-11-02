@@ -106,6 +106,12 @@ func TestLab(t *testing.T) {
 		TelegramName: "factorybot",
 		Discord:      &DiscordConnect{AuthorizeURL: func(string) string { return "https://discord.example/oauth" }},
 	}
+	// the panel's and the tokens' POST routes mount in New, by the config
+	c, err := New(r.c.cfg)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.c = c
 	r.ledger.briefs = map[string]string{labBump.Brief: labBumpBrief}
 	ck, _ := r.loggedIn(t)
 
@@ -356,11 +362,13 @@ type labScene struct {
 	metrics factoryd.MetricsReport
 	// costs is the costs page's ledger; nil gets labCosts of spend
 	costs *policy.Costs
+	// chatTokens are the human's chat tokens on the Notifications page
+	chatTokens []factoryd.ChatToken
 }
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene}
+	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -501,6 +509,37 @@ func thinkingScene(now time.Time) labScene {
 	return s
 }
 
+// tokensScene is the threads scene with sebastian's two chat tokens,
+// claude-laptop used four minutes ago and nightly-ci never, and the
+// laptop's thread open: claude-laptop asks twice, then sebastian answers
+// from the browser, so a token's rows stand beside a browser row.
+func tokensScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.chat = append(slices.Clone(s.chat),
+		factoryd.ChatMessage{Conversation: 6, Role: "user", Token: "claude-laptop", At: ago(12 * time.Minute),
+			Content: "What does #606 still wait on?"},
+		factoryd.ChatMessage{Conversation: 6, Role: "assistant", Token: "claude-laptop", At: ago(12*time.Minute - 20*time.Second),
+			Content: "One check: the e2e job fails on the drawer test since #612 moved the textarea to two rows."},
+		factoryd.ChatMessage{Conversation: 6, Role: "user", Token: "claude-laptop", At: ago(5 * time.Minute),
+			Content: "Which line of the test fails?"},
+		factoryd.ChatMessage{Conversation: 6, Role: "assistant", Token: "claude-laptop", At: ago(5*time.Minute - 15*time.Second),
+			Content: "drawer.spec.ts:88 expects Send centred on the textarea. It sits 4 px low at 1440."},
+		factoryd.ChatMessage{Conversation: 6, Role: "user", At: ago(2 * time.Minute),
+			Content: "Leave #606 to its session. I look at it after lunch."},
+		factoryd.ChatMessage{Conversation: 6, Role: "assistant", At: ago(2*time.Minute - 10*time.Second),
+			Content: "#606 stays with its session until you look."})
+	s.open, s.seen[6] = 6, int64(len(s.chat))
+	created := ago(3 * 24 * time.Hour)
+	s.chatTokens = []factoryd.ChatToken{
+		{ID: 1, Login: "sebastian", Repository: "sf/code", Name: "claude-laptop", Conversation: 6, Created: created,
+			Expires: created.AddDate(0, 0, 30), LastUsed: ago(4 * time.Minute)},
+		{ID: 2, Login: "sebastian", Repository: "sf/code", Name: "nightly-ci", Created: ago(26 * time.Hour),
+			Expires: ago(26*time.Hour).AddDate(0, 0, 7)},
+	}
+	return s
+}
+
 // assistedScene is the factory's own code at autonomy assisted: the
 // agent filed the login card itself (its applied filing in the chat, the
 // event naming it the decider, the inbox's poke with its decider line),
@@ -571,7 +610,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking or metrics", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics or tokens", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -734,6 +773,9 @@ func (r *rig) seedScene(s labScene) string {
 	}
 	r.chat.spend = []spendRow{{repository, now, s.spend - s.chatSpend, false}, {repository, now, s.chatSpend, true}}
 	r.chat.mu.Unlock()
+	r.chatTokens.mu.Lock()
+	r.chatTokens.rows = slices.Clone(s.chatTokens)
+	r.chatTokens.mu.Unlock()
 	r.mirrors.mu.Lock()
 	r.mirrors.rows = map[string]factoryd.Mirror{}
 	if s.github != "" {

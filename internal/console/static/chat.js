@@ -55,10 +55,12 @@ var chatView = (function () {
   // a turn: a 22 px avatar at the left (the agent a cyan ring with a dot,
   // the member a filled circle with their initial), the name and the time
   // on one line above the text, the text at the full width
-  function whoHTML(name, at) {
-    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span> <time>" + stamp(at) + "</time></p>";
+  function whoHTML(name, at, via) {
+    return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span>" + (via || "") + " <time>" + stamp(at) + "</time></p>";
   }
-  function userHTML(login, text, at, queued, images, docs) {
+  // a row a chat token sent carries the token's name (C42): its avatar a
+  // dashed ring, "via" and the name after the human's in the who line
+  function userHTML(login, text, at, queued, images, docs, token) {
     // the row's images: their own names as thumbnails, the optimistic
     // object URLs until the read carries the stored ids; its documents:
     // link chips of file name and size, the same object URLs until then
@@ -70,7 +72,7 @@ var chatView = (function () {
       var href = d.url ? d.url : base + "/attachments/" + d.id;
       return "<a class=\"chip\" href=\"" + esc(href) + "\" target=\"_blank\" rel=\"noopener\">" + esc(d.fileName || d.file_name) + " · " + sizeHTML(d.bytes) + "</a>";
     }).join("");
-    return "<div class=\"msg you\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at) +
+    return "<div class=\"msg you" + (token ? " tok" : "") + "\"><span class=\"av\" aria-hidden=\"true\">" + esc(String(login).charAt(0).toUpperCase()) + "</span>" + whoHTML(login, at, token ? " <span class=\"via\" title=\"" + esc("sent by the chat token " + token) + "\">via " + esc(token) + "</span>" : "") +
       "<p class=\"said\">" + esc(text) + "</p>" + (thumbs ? "<div class=\"chat-thumbs\">" + thumbs + "</div>" : "") +
       (chips ? "<div class=\"chat-chips\">" + chips + "</div>" : "") +
       (queued ? queuedHTML : "") + "</div>";
@@ -235,7 +237,7 @@ var chatView = (function () {
         }
         var ims = [], docs = [];
         (m.attachments || []).forEach(function (a) { (/^image\//.test(a.content_type) ? ims : docs).push(a); });
-        out.push(userHTML(login, m.content, m.at, m.queued, ims, docs));
+        out.push(userHTML(login, m.content, m.at, m.queued, ims, docs, m.token));
         return;
       }
       var dst = wake ? wake.parts : parts;
@@ -987,7 +989,7 @@ var chatView = (function () {
         (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; (/^image\//.test(a.content_type) ? ims : docs).push(a); });
         if (!ims.length && !docs.length) return;
         var t = document.createElement("template");
-        t.innerHTML = chatView.userHTML(login, m.content, m.at, !!row.dataset.joined, ims, docs);
+        t.innerHTML = chatView.userHTML(login, m.content, m.at, !!row.dataset.joined, ims, docs, m.token);
         var fresh = t.content.firstElementChild;
         if (row.dataset.joined) fresh.dataset.joined = row.dataset.joined;
         row.replaceWith(fresh);

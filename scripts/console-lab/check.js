@@ -34,6 +34,21 @@ const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.g
 // as contrastEl is
 const notifyEl = ".notify th[scope=row], .notify td, .notify .dim, .notify .addr, .notify caption, .notify td.act a, .notify td.act button, .notify select";
 
+// tokenEl are the chat token's text (C42): the label on a token's row,
+// the Tokens section and its shown-once block, measured as contrastEl is
+const tokenEl = ".msg .who .via, .msg.tok .who .name, .once-w, .once-l, .once-k, .cline .ps, .cline code, .cline button, .mint > summary, " +
+  ".notify.once h3, .notify td, .notify th[scope=row], .notify .dim, .notify caption, .notify td.act button";
+
+// madeToken opens the token form where it folds, makes desk-claude and
+// waits for the answer: the page with the shown-once block
+async function madeToken(page) {
+  if (!(await page.locator("#token-name").isVisible())) await page.locator("details:has(#token-name) > summary").click();
+  await page.locator("#token-name").fill("desk-claude");
+  await page.locator("#token-forgejo").fill("lab-forgejo-token");
+  await Promise.all([page.waitForNavigation(), page.getByRole("button", { name: "Make chat token" }).click()]);
+  await page.waitForTimeout(400);
+}
+
 // metricsEl are the metrics page's text (round 13, C30), measured as
 // contrastEl is
 const metricsEl = ".mhead h2, .mintro, .mwin a, .msec > h3, .mname, .mval, .mmove";
@@ -82,6 +97,7 @@ const mustHave = {
   quiet: ["4 working", "0 need you", "€4.10", "#624", "#625", "#622", "#621", "#620", "done",
     "chain run 3251", "live through run 3248, 25 min after merge"],
 
+  tokens: ["via claude-laptop", "sent by the chat token claude-laptop", "What does #606 still wait on?", "Leave #606 to its session."],
   metrics: ["Delivery", "Stability", "Cost", "Autonomy", "The factory itself", "deploys / week", "lead time, push to live",
     "spend by model", "served by", "7 days", "28 days", "90 days"],
 };
@@ -378,6 +394,17 @@ async function text(page) {
     const low = (await text(p.page)).toLowerCase();
     if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
+    if (sc === "tokens") {
+      // a token's rows (C42): the dashed avatar and "via" with the token's
+      // name on each, nothing on the row the browser sent
+      const rows = await p.page.evaluate(() => Array.from(document.querySelectorAll("#chat-log .msg.you")).map((m) => ({
+        tok: m.classList.contains("tok"), via: (m.querySelector(".who .via") || {}).textContent || "",
+        ring: getComputedStyle(m.querySelector(".av")).borderTopStyle, said: m.querySelector(".said").textContent })));
+      const want = JSON.stringify([{ tok: true, via: "via claude-laptop", ring: "dashed", said: "What does #606 still wait on?" },
+        { tok: true, via: "via claude-laptop", ring: "dashed", said: "Which line of the test fails?" },
+        { tok: false, via: "", ring: "solid", said: "Leave #606 to its session. I look at it after lunch." }]);
+      if (JSON.stringify(rows) !== want) fails.push("tokens: the human rows read " + JSON.stringify(rows) + ", want " + want);
+    }
     if (sc === "stopped") {
       // the stopped turn (the 2026-10-31 stop plan): the cut answer keeps
       // one grey stopped mark that is no button, and the factory's stop
@@ -1619,7 +1646,7 @@ async function text(page) {
     await pp.page.goto(base + "/notifications", { waitUntil: "load" });
     await pp.page.waitForTimeout(600);
     if (!(await pp.page.locator(".notify thead").first().isHidden())) fails.push("phone: the panel's headers still show at 390");
-    const stacked = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify tbody tr")).map((tr) => getComputedStyle(tr).display));
+    const stacked = await pp.page.evaluate(() => Array.from(document.querySelectorAll('[aria-labelledby="connections"] tbody tr, [aria-labelledby="levels"] tbody tr')).map((tr) => getComputedStyle(tr).display));
     if (stacked.length !== 5 || stacked.includes("table-row")) fails.push("phone: the panel's rows do not stack: " + JSON.stringify(stacked));
     const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(".notify td.act a, .notify td.act button, .notify td.act select"))
       .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 16) || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
@@ -1720,11 +1747,80 @@ async function text(page) {
     if (tails.some((g) => g > 24)) fails.push("panel: the act controls leave an empty tail to the row's rule: " + tails.join(","));
     await np.ctx.close();
   }
+  // the chat token (C42): a 64-character name cuts with an ellipsis on the
+  // phone and keeps the row's time in view; the Tokens section lights the
+  // used token's lamp and leaves the unused one dark, the form folds once
+  // a token exists; the answer to the form shows the block on the first
+  // screen at the desk and on the phone, its Copy puts the line on the
+  // clipboard, the stacked rows name their fields, targets reach 44 px
+  await seed("tokens");
+  {
+    const lp = await open(browser, { width: 390, height: 844 });
+    await lp.page.goto(base + "/", { waitUntil: "load" });
+    await lp.page.waitForTimeout(600);
+    const long = await lp.page.evaluate(() => {
+      const log = document.getElementById("chat-log");
+      log.insertAdjacentHTML("beforeend", chatView.userHTML("sebastian", "a long name", new Date(), false, [], [], "t".repeat(64)));
+      const who = log.lastElementChild.querySelector(".who"), via = who.querySelector(".via"), time = who.querySelector("time");
+      return { cut: via.scrollWidth > via.clientWidth && getComputedStyle(via).textOverflow === "ellipsis",
+        timeIn: time.getBoundingClientRect().right <= who.getBoundingClientRect().right + 0.5 };
+    });
+    if (!long.cut || !long.timeIn) fails.push("tokens: a 64-character token name at 390 " + JSON.stringify(long) + ", want it cut and the time in the row");
+    const lsw = await sideways(lp.page);
+    if (lsw) fails.push("tokens: horizontal scroll at 390 with a 64-character token name (" + lsw + " px)");
+    await lp.ctx.close();
+  }
+  for (const vp of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    await seed("tokens");
+    const tp = await open(browser, vp);
+    await tp.ctx.grantPermissions(["clipboard-read", "clipboard-write"], { origin: base });
+    await tp.page.goto(base + "/notifications", { waitUntil: "load" });
+    await tp.page.waitForTimeout(400);
+    const w = vp.width;
+    const lamps = await tp.page.evaluate(() => Array.from(document.querySelectorAll('[aria-labelledby="tokens"] tbody tr')).map((tr) =>
+      tr.querySelector("th").textContent + ":" + ((tr.querySelector(".lamp") || {}).className || "none")));
+    if (JSON.stringify(lamps) !== JSON.stringify(["claude-laptop:lamp on", "nightly-ci:lamp"])) fails.push(w + ": the token rows' lamps read " + JSON.stringify(lamps));
+    if (await tp.page.locator("#token-name").isVisible()) fails.push(w + ": the token form stands open while tokens exist");
+    const projects = await tp.page.evaluate(() => Array.from(document.querySelectorAll('[aria-labelledby="tokens"] td[data-l="project"]')).map((td) => td.textContent));
+    if (JSON.stringify(projects) !== JSON.stringify(["ai-software-factory-code", "ai-software-factory-code"])) fails.push(w + ": the token rows name their projects " + JSON.stringify(projects));
+    if (w === 390) {
+      const labels = await tp.page.evaluate(() => Array.from(document.querySelectorAll('[aria-labelledby="tokens"] tbody tr:first-child td[data-l]'))
+        .map((td) => getComputedStyle(td, "::before").content));
+      if (JSON.stringify(labels) !== JSON.stringify(['"project "', '"created "', '"expires "', '"last used "'])) fails.push("390: the stacked token row names its fields " + JSON.stringify(labels));
+    }
+    await madeToken(tp.page);
+    const made = await tp.page.evaluate(() => {
+      const b = document.querySelector('[aria-labelledby="shown"]');
+      return b && { top: b.getBoundingClientRect().top, text: b.innerText, line: document.getElementById("made-line").textContent,
+        bearer: document.getElementById("made-bearer").textContent, copies: b.querySelectorAll("button[data-copy]").length };
+    });
+    if (!made) fails.push(w + ": the answer to the token form shows no shown-once block");
+    else {
+      if (made.top > vp.height - 120) fails.push(w + ": the shown-once block starts at " + Math.round(made.top) + " px, below the first screen");
+      if (!/^sfc_[A-Za-z0-9_-]{43}$/.test(made.bearer)) fails.push(w + ": the block's bearer reads " + JSON.stringify(made.bearer));
+      if (made.line !== 'claude mcp add --transport http factory-ai-software-factory-code https://console.example/mcp --header "Authorization: Bearer ' + made.bearer + '"')
+        fails.push(w + ": the block's line reads " + JSON.stringify(made.line));
+      if (!/shown once/i.test(made.text) || made.copies !== 2) fails.push(w + ": the block lacks its mark or its two Copy buttons");
+      await tp.page.locator('button[data-copy="made-line"]').click();
+      await tp.page.waitForTimeout(200);
+      const clip = await tp.page.evaluate(() => navigator.clipboard.readText());
+      const said = await tp.page.locator('button[data-copy="made-line"]').textContent();
+      if (clip !== made.line || said !== "Copied") fails.push(w + ": Copy put " + JSON.stringify(clip.slice(0, 40)) + " on the clipboard and reads " + JSON.stringify(said));
+    }
+    if (w === 390) {
+      const small = await tp.page.evaluate(() => Array.from(document.querySelectorAll(".cline button, .mint > summary, .notify td.act button"))
+        .filter((b) => b.offsetParent).map((b) => [b.textContent.trim().slice(0, 16), b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
+      if (small.length) fails.push("390: token targets under 44 px: " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
+    }
+    const tsw = await sideways(tp.page);
+    if (tsw) fails.push(w + ": horizontal scroll on the made token's page (" + tsw + " px)");
+    await tp.ctx.close();
+  }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
     for (const [sc, act, sel, pg] of [["threads", "delete", contrastEl, ""], ["escalation", "palette", contrastEl, ""], ["assisted", "level", contrastEl, ""],
       ["poke", "", contrastEl, ""], ["busy", "docs", contrastEl, ""], ["busy", "", ghostEl, ""], ["fire", "", ghostEl, ""], ["busy", "", notifyEl, "/notifications"],
-      ["metrics", "", metricsEl, metricsPath]]) {
+      ["metrics", "", metricsEl, metricsPath], ["tokens", "", tokenEl, ""], ["tokens", "made", tokenEl, "/notifications"]]) {
       await seed(sc);
       const cp = await open(browser, { width: 1440, height: 900 });
       // after open's own init script, so this theme wins
@@ -1735,6 +1831,7 @@ async function text(page) {
       if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();
       if (act === "palette") { await cp.page.locator("#chat-input").click(); await cp.page.keyboard.type("/"); }
       if (act === "level") await cp.page.locator("#level-btn").click();
+      if (act === "made") await madeToken(cp.page);
       if (act === "docs") {
         await cp.page.locator("#documents").click();
         await cp.page.waitForTimeout(600);

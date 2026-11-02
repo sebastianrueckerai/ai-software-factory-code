@@ -87,7 +87,7 @@ func (c *Console) notificationsData(r *http.Request) (data map[string]any, statu
 			return nil, http.StatusInternalServerError, "cannot read the chat tokens"
 		}
 	}
-	return map[string]any{"User": s.user, "CSRF": s.csrf, "Links": links,
+	return map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Links": links,
 		"Projects": rows, "Levels": notifyLevels, "Code": r.URL.Query().Get("code"),
 		"TelegramName": m.TelegramName, "Discord": m.Discord != nil,
 		"ChatTokens": c.chatTokensOn(), "Tokens": tokens, "Lives": []string{"7", "30", "90"}, "Now": time.Now()}, 0, ""
