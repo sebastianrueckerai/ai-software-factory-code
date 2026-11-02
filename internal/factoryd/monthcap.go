@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"regexp"
@@ -313,4 +314,42 @@ func fileHumanTask(ctx context.Context, store interface {
 		return Task{}, 0, err
 	}
 	return t, number, nil
+}
+
+// CapWaits wakes the cards waiting on a cap when a policy version loads.
+type CapWaits struct {
+	Store interface {
+		ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+		IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
+	}
+	// Signal delivers the policy_loaded signal to a task's workflow.
+	Signal func(ctx context.Context, taskID string) error
+}
+
+// Wake signals every waiting-human card whose last escalation is a cap wait.
+// It signals them all even when one fails, and returns the failures.
+func (c *CapWaits) Wake(ctx context.Context, v policy.Version) error {
+	tasks, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
+	if err != nil {
+		return fmt.Errorf("list the waiting cards: %w", err)
+	}
+	var errs []error
+	woken := 0
+	for _, t := range tasks {
+		events, err := c.Store.IntakeEvents(ctx, t.ID)
+		if err != nil {
+			errs = append(errs, fmt.Errorf("task %s: events: %w", t.ID, err))
+			continue
+		}
+		if reason, _ := capWaitOf(events); reason == "" {
+			continue
+		}
+		if err := c.Signal(ctx, t.ID); err != nil {
+			errs = append(errs, fmt.Errorf("task %s: %w", t.ID, err))
+			continue
+		}
+		woken++
+	}
+	log.Printf("config: version %d loaded, %d cap waits woken", v.ID, woken)
+	return errors.Join(errs...)
 }

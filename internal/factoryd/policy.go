@@ -80,6 +80,10 @@ type PolicyLoader struct {
 	// Loaded settles a loaded head once (the open rejections close): the
 	// loader asks again at the next poll while it fails. nil: nothing.
 	Loaded func(ctx context.Context, v policy.Version) error
+	// Wake runs once per loaded head, after Loaded (the cap waits learn of
+	// the new version). A failure leaves the head unsettled: both run again
+	// at the next poll. nil: nothing.
+	Wake func(ctx context.Context, v policy.Version) error
 	// ReadFailing raises readFailureStreak failed reads in a row, once a
 	// streak. nil: logged only.
 	ReadFailing func(ctx context.Context, err error) error
@@ -88,7 +92,7 @@ type PolicyLoader struct {
 	current policy.Version // the version in force
 	loaded  bool           // whether a valid version was ever loaded
 	seen    string         // the commit last handled, valid or not
-	settled string         // the loaded commit Loaded last succeeded for
+	settled string         // the loaded commit Loaded and Wake last succeeded for
 	failed  int            // failed reads in a row
 	// held is the valid head open cards refused, its tree and the lines it
 	// was refused with: judged again at each call without a second read
@@ -241,17 +245,26 @@ func (l *PolicyLoader) reject(ctx context.Context, head string, reason error, cu
 	return true
 }
 
-// settle runs Loaded once for head when head is the version in force.
+// settle runs Loaded and then Wake once for head when head is the version in
+// force.
 func (l *PolicyLoader) settle(ctx context.Context, head string) error {
 	l.mu.Lock()
 	cur, done := l.current, l.settled == head
 	l.mu.Unlock()
-	if l.Loaded == nil || done || cur.Commit != head {
+	if done || cur.Commit != head {
 		return nil
 	}
-	if err := l.Loaded(ctx, cur); err != nil {
-		log.Printf("config: settle commit %s: %v", head, err)
-		return err
+	if l.Loaded != nil {
+		if err := l.Loaded(ctx, cur); err != nil {
+			log.Printf("config: settle commit %s: %v", head, err)
+			return err
+		}
+	}
+	if l.Wake != nil {
+		if err := l.Wake(ctx, cur); err != nil {
+			log.Printf("config: wake the cap waits for commit %s: %v", head, err)
+			return err
+		}
 	}
 	l.mu.Lock()
 	l.settled = head

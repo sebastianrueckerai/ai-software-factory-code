@@ -7,6 +7,11 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/stretchr/testify/mock"
+	"go.temporal.io/api/serviceerror"
+	"go.temporal.io/sdk/mocks"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -210,4 +215,91 @@ func TestFileHumanTaskRecordsTheAsk(t *testing.T) {
 			t.Fatalf("adopt=%v question_asked rows = %+v, issue %d", adopt, asked, number)
 		}
 	}
+}
+
+// capWaitStore is a store of waiting-human cards by id with the escalation
+// each one's last: a month wait (m1), a day wait (d1), an agent's ask (a1)
+// and a month wait followed by an ask (l1); a card done (x1) is not
+// waiting.
+func capWaitStore(t *testing.T) *fakeStore {
+	t.Helper()
+	store, ctx := newFakeStore(), context.Background()
+	month := capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), "spent", novFirst)
+	day := capWaitReason(policy.RefusedDayCap, capGateway(policy.RefusedDayCap), "spent", oct(15, 0, 0))
+	esc := func(id, body string, at time.Time) {
+		if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: id, Kind: IntakeEscalation, Author: "factoryd", Body: body, CreatedAt: at}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for id, status := range map[string]string{"m1": "waiting-human", "d1": "waiting-human", "a1": "waiting-human", "l1": "waiting-human", "x1": "done"} {
+		if err := store.CreateTask(ctx, Task{ID: id, Status: status, Track: "direct"}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	esc("m1", month, oct31(21, 0, 0))
+	esc("d1", day, oct(14, 20, 43))
+	esc("a1", "The agent asks: which one?", oct31(21, 0, 0))
+	esc("l1", month, oct31(21, 0, 0))
+	esc("l1", "The agent asks: which one?", oct31(22, 0, 0))
+	esc("x1", month, oct31(21, 0, 0))
+	return store
+}
+
+// A policy load signals the waiting cards whose last escalation is a cap
+// wait, the month's (m1) and the day's (d1), and no other: not an agent's
+// ask (a1), not a cap wait a later ask followed (l1), not a done card
+// (x1). A signal that fails leaves the others signalled and Wake failing.
+func TestCapWaitsWake(t *testing.T) {
+	var sent []string
+	var broken string
+	w := &CapWaits{Store: capWaitStore(t), Signal: func(_ context.Context, id string) error {
+		if id == broken {
+			return errors.New("frontend down")
+		}
+		sent = append(sent, id)
+		return nil
+	}}
+	if err := w.Wake(context.Background(), policy.Version{ID: 8}); err != nil || !slices.Equal(sent, []string{"d1", "m1"}) {
+		t.Fatalf("Wake = %v, signalled %v; want d1 and m1", err, sent)
+	}
+	sent, broken = nil, "d1"
+	err := w.Wake(context.Background(), policy.Version{ID: 8})
+	if err == nil || !strings.Contains(err.Error(), "task d1") || !slices.Equal(sent, []string{"m1"}) {
+		t.Fatalf("Wake with d1 failing = %v, signalled %v; want m1 signalled and d1 named", err, sent)
+	}
+}
+
+// A card whose workflow ended has no wait to wake: SignalRunning counts
+// the frontend's NotFound as delivered and starts nothing, so with the
+// waker and the loader the other waits are signalled and the head settles.
+// A frontend that is down fails the signal, retried once, and the head
+// stays unsettled for the next poll.
+func TestPolicyLoadWakesCapWaitsPastAnEndedWorkflow(t *testing.T) {
+	ctx := context.Background()
+	c := &mocks.Client{}
+	c.On("SignalWorkflow", mock.Anything, "task-d1", "", SignalPolicyLoaded, TaskSignal{Author: "factoryd"}).
+		Return(serviceerror.NewNotFound("workflow execution not found")).Once()
+	c.On("SignalWorkflow", mock.Anything, "task-m1", "", SignalPolicyLoaded, TaskSignal{Author: "factoryd"}).Return(nil).Once()
+	inner := TemporalWorkflows{Client: c}
+	waits := &CapWaits{Store: capWaitStore(t), Signal: func(ctx context.Context, id string) error {
+		return inner.SignalRunning(ctx, id, SignalPolicyLoaded)
+	}}
+	src := &memSource{}
+	l := &PolicyLoader{Source: src, Store: &memPolicy{}, Wake: waits.Wake}
+	src.push("c1", testFiles(testPolicyYAML))
+	if err := l.Load(ctx); err != nil {
+		t.Fatalf("Load = %v, want the head settled", err)
+	}
+	if err := l.Load(ctx); err != nil {
+		t.Fatal(err)
+	}
+	c.AssertNumberOfCalls(t, "SignalWorkflow", 2)
+	c.AssertNotCalled(t, "SignalWithStartWorkflow", mock.Anything)
+
+	down := &mocks.Client{}
+	down.On("SignalWorkflow", mock.Anything, mock.Anything, "", SignalPolicyLoaded, mock.Anything).Return(serviceerror.NewUnavailable("down"))
+	if err := (TemporalWorkflows{Client: down}).SignalRunning(ctx, "m1", SignalPolicyLoaded); err == nil {
+		t.Fatal("SignalRunning against a frontend that is down = nil, want the failure")
+	}
+	down.AssertNumberOfCalls(t, "SignalWorkflow", 2)
 }

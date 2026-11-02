@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -3491,6 +3492,90 @@ func TestWorkflowCapWaitTakesALoadDuringACheck(t *testing.T) {
 	}
 	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(22, 13, 30)}) {
 		t.Fatalf("sessions began at %v, want the second at 22:13:30", run.began)
+	}
+}
+
+// stampedPolicy is a policy store that activates each version it records at
+// activate, the test environment's clock.
+type stampedPolicy struct {
+	memPolicy
+	activate time.Time
+}
+
+func (p *stampedPolicy) RecordPolicy(ctx context.Context, commit string, tree policy.Tree) (policy.Version, bool, error) {
+	v, inserted, err := p.memPolicy.RecordPolicy(ctx, commit, tree)
+	if inserted {
+		v.ActivatedAt = p.activate
+		p.memPolicy.mu.Lock()
+		p.memPolicy.versions[len(p.memPolicy.versions)-1] = v
+		p.memPolicy.mu.Unlock()
+	}
+	return v, inserted, err
+}
+
+// A card waits at the month cap of 544 EUR, its session refused at its
+// first call (21:10). A commit raising budget.month_eur to 600 loads at
+// 21:30: the loader's Wake signals the waiting workflow, and the check
+// gateway.PolicyTTL later, at 21:30:30, finds the cap lifted by the version
+// now in force. The card starts its next session then, with no answer and
+// no restart of any part; the timeline holds cap_resumed. The hourly check
+// (22:10) never came.
+func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
+	ctx := context.Background()
+	h, run := capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	g := newCapRig(t)
+	if _, err := g.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: monthReason, CreatedAt: oct31(21, 10, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	src, pol := &memSource{}, &stampedPolicy{activate: oct31(20, 0, 0)}
+	policyYAML := func(monthEUR string) map[string][]byte {
+		return testFiles(strings.Replace(testPolicyYAML, "month_eur: 50", "month_eur: "+monthEUR, 1))
+	}
+	l := &PolicyLoader{Source: src, Store: pol}
+	waits := &CapWaits{Store: g.store, Signal: func(_ context.Context, id string) error {
+		h.env.SignalWorkflow(SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+		return nil
+	}}
+	src.push("c1", policyYAML("544"))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	l.Wake = waits.Wake
+	g.r.now, g.r.cfg.Policy = h.env.Now, l.Current
+	run.verdict = func(time.Time) CapResumed {
+		g.store.capsFree = &policy.Free{Day: math.Inf(1), Month: l.Current().Document.Budget.MonthEUR - 544, Project: math.Inf(1)}
+		res, err := g.r.CapResume(ctx, run.inputs[len(run.inputs)-1])
+		if err != nil {
+			t.Errorf("CapResume: %v", err)
+		}
+		return res
+	}
+	h.env.RegisterDelayedCallback(func() {
+		src.push("c2", policyYAML("600"))
+		pol.activate = h.env.Now()
+		if err := l.Load(ctx); err != nil {
+			t.Errorf("Load: %v", err)
+		}
+	}, 20*time.Minute)
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(21, 30, 30)}) || len(h.sessions) != 2 || h.sessions[1].Attempt != 1 || len(h.sessions[1].Answers) != 0 {
+		t.Fatalf("sessions began at %v (%+v), want the second at 21:30:30, attempt 1, no answer", run.began, h.sessions)
+	}
+	if !sameTimes(run.checks, []time.Time{oct31(21, 30, 30)}) {
+		t.Fatalf("checks at %v, want the one 30 s after the load", run.checks)
+	}
+	if !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("escalations = %q, want the cap's wait once", h.escalated)
+	}
+	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 2)" {
+		t.Fatalf("cap_resumed = %v", step)
 	}
 }
 
