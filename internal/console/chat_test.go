@@ -734,8 +734,13 @@ func (f *fakeChat) ProposalStates(_ context.Context, repository, login string, t
 	for i, token := range tokens {
 		out[i] = factoryd.ProposalState{Token: token, State: "expired"}
 		for _, p := range f.proposals {
+			if p.Kind != "proposal" || p.Token != token || p.Repository != repository || p.Login != login {
+				continue
+			}
+			// the row's own capture previews with every state of it,
+			// as the store's read does
+			out[i].Pool = p.Pool.Preview()
 			switch {
-			case p.Kind != "proposal" || p.Token != token || p.Repository != repository || p.Login != login:
 			case !p.used.IsZero():
 				out[i].State = "used"
 			case !p.ExpiresAt.Before(now):
