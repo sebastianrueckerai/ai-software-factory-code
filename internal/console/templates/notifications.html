@@ -5,9 +5,9 @@
 {{with .Shown}}<section class="notify once" aria-labelledby="shown">
 <h3 id="shown">Chat token {{.Name}} <span class="once-w">shown once</span></h3>
 <p class="once-l">Run the line in your terminal. The console keeps neither the line nor the bearer, so copy them now.</p>
-<div class="cline"><span class="ps" aria-hidden="true">$</span><code id="made-line" class="sel">{{.Line}}</code><button type="button" data-copy="made-line">Copy</button></div>
+<div class="cline"><span class="ps" aria-hidden="true">$</span><code id="made-line" class="sel">{{.Line}}</code><button type="button" aria-live="polite" data-copy="made-line">Copy</button></div>
 <p class="once-k">bearer, for a script</p>
-<div class="cline"><code id="made-bearer" class="sel">{{.Bearer}}</code><button type="button" data-copy="made-bearer">Copy</button></div>
+<div class="cline"><code id="made-bearer" class="sel">{{.Bearer}}</code><button type="button" aria-live="polite" data-copy="made-bearer">Copy</button></div>
 </section>{{end}}
 
 {{$csrf := .CSRF}}{{$code := .Code}}{{$tg := ""}}{{range .Links}}{{if eq .Venue "telegram"}}{{$tg = .Address}}{{end}}{{end}}{{$dc := ""}}{{range .Links}}{{if eq .Venue "discord"}}{{$dc = .Address}}{{end}}{{end}}
@@ -57,7 +57,7 @@
 <caption>A chat token lets your own Claude Code talk to one project's chat as you. It needs a Forgejo token of yours with only read:user, write:repository and write:issue. The console seals that token.</caption>
 <thead><tr><th scope="col">Name</th><th scope="col">Project</th><th scope="col">Created</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">Act</th></tr></thead>
 <tbody>
-{{range .Tokens}}<tr><th scope="row">{{.Name}}</th><td data-l="project">{{$r := .Repository}}{{$p := $r}}{{range $.Projects}}{{if eq .Repository $r}}{{$p = .Name}}{{end}}{{end}}{{$p}}</td>
+{{range .Tokens}}<tr><th scope="row"><span class="cut" title="{{.Name}}">{{.Name}}</span></th><td data-l="project">{{$r := .Repository}}{{$p := $r}}{{range $.Projects}}{{if eq .Repository $r}}{{$p = .Name}}{{end}}{{end}}<span class="cut" title="{{$r}}">{{$p}}</span></td>
 <td data-l="created">{{.Created.Format "2006-01-02"}}</td>
 <td data-l="expires">{{if .Expires.Before $now}}<span class="dim">expired</span>{{else}}{{.Expires.Format "2006-01-02"}}{{end}}</td>
 <td data-l="last used">{{if .LastUsed.IsZero}}<i class="lamp" aria-hidden="true"></i><span class="dim">never</span>{{else}}<i class="lamp{{if not (.Expires.Before $now)}} on{{end}}" aria-hidden="true"></i>{{.LastUsed.Format "2006-01-02 15:04"}}{{end}}</td>

@@ -39,11 +39,12 @@ const notifyEl = ".notify th[scope=row], .notify td, .notify .dim, .notify .addr
 const tokenEl = ".msg .who .via, .msg.tok .who .name, .once-w, .once-l, .once-k, .cline .ps, .cline code, .cline button, .mint > summary, " +
   ".notify.once h3, .notify td, .notify th[scope=row], .notify .dim, .notify caption, .notify td.act button";
 
-// madeToken opens the token form where it folds, makes desk-claude and
-// waits for the answer: the page with the shown-once block
-async function madeToken(page) {
+// madeToken opens the token form where it folds, makes a token named
+// name (desk-claude) and waits for the answer: the page with the
+// shown-once block
+async function madeToken(page, name = "desk-claude") {
   if (!(await page.locator("#token-name").isVisible())) await page.locator("details:has(#token-name) > summary").click();
-  await page.locator("#token-name").fill("desk-claude");
+  await page.locator("#token-name").fill(name);
   await page.locator("#token-forgejo").fill("lab-forgejo-token");
   await Promise.all([page.waitForNavigation(), page.getByRole("button", { name: "Make chat token" }).click()]);
   await page.waitForTimeout(400);
@@ -1787,6 +1788,10 @@ async function text(page) {
       const labels = await tp.page.evaluate(() => Array.from(document.querySelectorAll('[aria-labelledby="tokens"] tbody tr:first-child td[data-l]'))
         .map((td) => getComputedStyle(td, "::before").content));
       if (JSON.stringify(labels) !== JSON.stringify(['"project "', '"created "', '"expires "', '"last used "'])) fails.push("390: the stacked token row names its fields " + JSON.stringify(labels));
+      const stack = await tp.page.evaluate(() => Array.from(document.querySelectorAll('[aria-labelledby="tokens"] tbody tr')).map((tr) => getComputedStyle(tr).display));
+      if (stack.length !== 2 || stack.some((d) => d !== "block")) fails.push("390: the token rows do not stack: " + JSON.stringify(stack));
+      const fold = await tp.page.evaluate(() => { const m = document.querySelector(".mint > summary"); return { display: getComputedStyle(m).display, h: m.getBoundingClientRect().height }; });
+      if (fold.display !== "list-item" || fold.h < 43.5) fails.push("390: the token form's fold shows no marker or is under 44 px: " + JSON.stringify(fold));
     }
     await madeToken(tp.page);
     const made = await tp.page.evaluate(() => {
@@ -1806,6 +1811,10 @@ async function text(page) {
       const clip = await tp.page.evaluate(() => navigator.clipboard.readText());
       const said = await tp.page.locator('button[data-copy="made-line"]').textContent();
       if (clip !== made.line || said !== "Copied") fails.push(w + ": Copy put " + JSON.stringify(clip.slice(0, 40)) + " on the clipboard and reads " + JSON.stringify(said));
+      const live = await tp.page.locator('button[data-copy="made-line"]').getAttribute("aria-live");
+      await tp.page.waitForTimeout(2200);
+      const back = await tp.page.locator('button[data-copy="made-line"]').textContent();
+      if (live !== "polite" || back !== "Copy") fails.push(w + ": Copy's label is live " + JSON.stringify(live) + " and reads " + JSON.stringify(back) + " after 2 s, want polite and Copy");
     }
     if (w === 390) {
       const small = await tp.page.evaluate(() => Array.from(document.querySelectorAll(".cline button, .mint > summary, .notify td.act button"))
@@ -1815,6 +1824,22 @@ async function text(page) {
     const tsw = await sideways(tp.page);
     if (tsw) fails.push(w + ": horizontal scroll on the made token's page (" + tsw + " px)");
     await tp.ctx.close();
+  }
+  // a token named with all 64 characters the form allows scrolls no width
+  // sideways: its name cuts at the desk and wraps on the phone
+  await seed("tokens");
+  {
+    const lp = await open(browser, { width: 900, height: 900 });
+    await lp.page.goto(base + "/notifications", { waitUntil: "load" });
+    await lp.page.waitForTimeout(400);
+    await madeToken(lp.page, "x".repeat(64));
+    for (const width of [900, 960, 1090, 1440, 390]) {
+      await lp.page.setViewportSize({ width, height: 900 });
+      await lp.page.waitForTimeout(200);
+      const lsw = await sideways(lp.page);
+      if (lsw) fails.push(width + ": horizontal scroll on the Notifications page with a 64-character token name (" + lsw + " px)");
+    }
+    await lp.ctx.close();
   }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {

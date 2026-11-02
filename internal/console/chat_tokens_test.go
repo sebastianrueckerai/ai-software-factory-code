@@ -287,9 +287,29 @@ func TestChatTokenRowNamesItsProject(t *testing.T) {
 		{ID: 2, Login: "sebastian", Repository: "sf/gone", Name: "old", Expires: time.Now().Add(time.Hour)},
 	}
 	page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), ck).Body.String()
-	for _, want := range []string{`<td data-l="project">ai-software-factory-code</td>`, `<td data-l="project">sf/gone</td>`} {
+	for _, want := range []string{`<td data-l="project"><span class="cut" title="sf/code">ai-software-factory-code</span></td>`,
+		`<td data-l="project"><span class="cut" title="sf/gone">sf/gone</span></td>`} {
 		if !strings.Contains(page, want) {
 			t.Errorf("page lacks %s", want)
 		}
+	}
+}
+
+// The page's bar links the factory-level pages only for a human who writes
+// the factory, as the board's bar does: each of them refuses anyone else.
+func TestNotificationsBarLinksFactoryPagesForWritersOnly(t *testing.T) {
+	r, ck, _ := tokenRig(t)
+	if page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), ck).Body.String(); !strings.Contains(page, `href="/costs"`) {
+		t.Fatalf("a factory writer's page lacks the bar's Costs")
+	}
+	bob, _ := r.readerOfCode(t, "bob")
+	page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), bob).Body.String()
+	for _, link := range []string{`href="/tasks/new"`, `href="/costs"`, `href="/resources"`, `href="/settings"`, `href="/policy"`} {
+		if strings.Contains(page, link) {
+			t.Errorf("a human who does not write the factory sees %s", link)
+		}
+	}
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/costs", nil), bob); rec.Code == http.StatusOK {
+		t.Fatalf("GET /costs for bob = %d, want a refusal, so the link must not show", rec.Code)
 	}
 }
