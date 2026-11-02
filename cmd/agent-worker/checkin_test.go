@@ -319,7 +319,16 @@ func TestRecordsEndpoint(t *testing.T) {
 
 func postImage(t *testing.T, h http.Handler, auth, path string) (int, string, string) {
 	t.Helper()
-	req := httptest.NewRequest(http.MethodPost, "/image", strings.NewReader(fmt.Sprintf(`{"path":%q}`, path)))
+	return postRead(t, h, "/image", auth, path)
+}
+
+func postRead(t *testing.T, h http.Handler, route, auth, path string) (int, string, string) {
+	t.Helper()
+	body, err := json.Marshal(map[string]string{"path": path})
+	if err != nil {
+		t.Fatal(err)
+	}
+	req := httptest.NewRequest(http.MethodPost, route, bytes.NewReader(body))
 	req.Header.Set("Authorization", auth)
 	rec := httptest.NewRecorder()
 	h.ServeHTTP(rec, req)
@@ -384,6 +393,80 @@ func TestImageEndpoint(t *testing.T) {
 		}
 	}
 	if code, _, body := postImage(t, h, "", "shots/page.png"); code != http.StatusUnauthorized || body != "unauthorized\n" {
+		t.Errorf("no bearer: status %d, body %q, want 401 unauthorized", code, body)
+	}
+}
+
+// POST /file answers a workspace text file's bytes for a digest, through
+// the same workspace read as POST /image: a path outside refuses, a
+// directory, a missing file, an empty one and one that is no UTF-8 text
+// refuse by name, and the byte cap holds.
+func TestFileEndpoint(t *testing.T) {
+	ws := t.TempDir()
+	repo := filepath.Join(ws, "repo")
+	for _, dir := range []string{filepath.Join(repo, "docs"), filepath.Join(ws, "docs")} {
+		if err := os.MkdirAll(dir, 0o750); err != nil {
+			t.Fatal(err)
+		}
+	}
+	write := func(path, body string) {
+		t.Helper()
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	plan := "# Plan\n\nThe cards: één, two.\n"
+	full := strings.Repeat("x", policy.MaxDigestBytes)
+	write(filepath.Join(repo, "docs", "plan.md"), plan)
+	write(filepath.Join(ws, "docs", "spec.md"), plan)
+	write(filepath.Join(repo, "cap.md"), full)
+	write(filepath.Join(repo, "huge.md"), full+"x")
+	write(filepath.Join(repo, "empty.md"), "")
+	write(filepath.Join(repo, "shot.png"), "\x89PNG\r\n\x1a\npixels")
+	write(filepath.Join(repo, "nul.txt"), "a\x00b")
+	write(filepath.Join(repo, "latin1.txt"), "caf\xe9")
+	secret := filepath.Join(t.TempDir(), "secret.md")
+	write(secret, plan)
+	if err := os.Symlink(secret, filepath.Join(repo, "link.md")); err != nil {
+		t.Fatal(err)
+	}
+	h := checkinHandler(t, newCheckinServe(ws))
+	const auth = "Bearer session-secret"
+	// the gateway admits a path of 4096 bytes: in short names, in one name
+	// over the file system's 255, and in bytes JSON escapes to six each
+	longPath := strings.Repeat("a/", 2047) + "aa"
+	longName := strings.Repeat("n", 300)
+	quoted := strings.Repeat("\x01", 4096)
+
+	for name, tc := range map[string]struct {
+		path   string
+		status int
+		body   string
+	}{
+		"relative to the repo":  {"docs/plan.md", 200, plan},
+		"absolute in workspace": {filepath.Join(ws, "docs", "spec.md"), 200, plan},
+		"at the byte cap":       {"cap.md", 200, full},
+		"absolute outside":      {"/etc/hostname", 403, "/etc/hostname is outside the workspace\n"},
+		"symlink out":           {"link.md", 403, "link.md goes through a symlink that is absolute or leaves the workspace: name the file by its own path\n"},
+		"missing":               {"docs/none.md", 404, "no file docs/none.md in the workspace\n"},
+		"directory":             {"docs", 400, "docs is a directory: digest one file in it\n"},
+		"over the byte cap":     {"huge.md", 413, "huge.md is larger than 128 KiB, more than one digest reads: read the part you need with the read tool's offset and limit\n"},
+		"empty":                 {"empty.md", 400, "empty.md is empty: there is nothing to digest\n"},
+		"an image":              {"shot.png", 415, "shot.png is not UTF-8 text, which a digest reads\n"},
+		"a NUL byte":            {"nul.txt", 415, "nul.txt is not UTF-8 text, which a digest reads\n"},
+		"not UTF-8":             {"latin1.txt", 415, "latin1.txt is not UTF-8 text, which a digest reads\n"},
+		"under a file":          {"docs/plan.md/x", 404, "no file docs/plan.md/x in the workspace\n"},
+		"a name too long":       {longName, 400, longName + " is not a path a file can have: name a file of the workspace\n"},
+		"a NUL in the path":     {"docs/plan\x00.md", 400, "docs/plan\x00.md is not a path a file can have: name a file of the workspace\n"},
+		"the longest path":      {longPath, 404, "no file " + longPath + " in the workspace\n"},
+		"escaped to the limit":  {quoted, 400, quoted + " is not a path a file can have: name a file of the workspace\n"},
+	} {
+		code, _, body := postRead(t, h, "/file", auth, tc.path)
+		if code != tc.status || body != tc.body {
+			t.Errorf("%s: status %d, body %.120q; want %d, %.120q", name, code, body, tc.status, tc.body)
+		}
+	}
+	if code, _, body := postRead(t, h, "/file", "", "docs/plan.md"); code != http.StatusUnauthorized || body != "unauthorized\n" {
 		t.Errorf("no bearer: status %d, body %q, want 401 unauthorized", code, body)
 	}
 }

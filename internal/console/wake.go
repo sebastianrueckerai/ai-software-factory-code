@@ -64,8 +64,12 @@ func (c *Console) StartWake(ctx context.Context, project, login string, conversa
 	t.quiet()
 	t.takeTurn(pos, wait)
 	if pos > 0 {
-		if err := c.cfg.Chat.StartQueued(ctx, p.Repository, login, id); err != nil {
+		landed, err := c.cfg.Chat.StartQueued(ctx, p.Repository, login, id)
+		if err != nil {
 			return fmt.Errorf("start the queued turn: %w", err)
+		}
+		if landed == 0 {
+			return nil // a turn of the thread already read the wake's note
 		}
 	}
 	release := c.turns.slot(context.Background(), p.Repository, t.parallelTurns())
@@ -140,9 +144,13 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 		tu.quiet()
 		tu.takeTurn(pos, wait)
 		if pos > 0 {
-			if err := c.cfg.Chat.StartQueued(tu.r.Context(), p.Repository, a.s.user, id); err != nil {
+			landed, err := c.cfg.Chat.StartQueued(tu.r.Context(), p.Repository, a.s.user, id)
+			if err != nil {
 				log.Printf("console: start the queued turn of %s on %s: %v", a.s.user, p.Repository, err)
 				return
+			}
+			if landed == 0 {
+				return // a turn of the thread already read the answer
 			}
 		}
 		release := c.turns.slot(tu.r.Context(), p.Repository, tu.parallelTurns())

@@ -43,13 +43,13 @@ func TestAccessTableRefusesEveryWrite(t *testing.T) {
 		return 0, ""
 	}
 	// path fills pattern's {id} (a card of sf/code (t-c), its pending request,
-	// a resource, an alert, a proposal), and {project} and {name} with the
+	// a resource, a proposal), and {project} and {name} with the
 	// leg's project.
 	path := func(pattern, name string) string {
 		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
-			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			{"/approvals/", "3"}, {"/resources/", "11"}} {
 			if strings.HasPrefix(p, fill.prefix) {
 				id = fill.v
 			}
@@ -224,7 +224,7 @@ func TestAccessTableAdmitsRoleHolders(t *testing.T) {
 		p := strings.NewReplacer("{project}", name, "{name}", name).Replace(strings.TrimPrefix(pattern, "POST "))
 		id := "1"
 		for _, fill := range []struct{ prefix, v string }{{"/tasks/", "t-c"}, {"/cards/", "t-c"},
-			{"/approvals/", "3"}, {"/resources/", "11"}, {"/alerts/", "7"}} {
+			{"/approvals/", "3"}, {"/resources/", "11"}} {
 			if strings.HasPrefix(p, fill.prefix) {
 				id = fill.v
 			}

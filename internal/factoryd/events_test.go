@@ -100,7 +100,7 @@ func TestEventsRecorded(t *testing.T) {
 
 	t.Run("all_children_done", func(t *testing.T) {
 		plan := Task{ID: "t-plan", Kind: "agent", Status: "done", Track: "plan", Process: "spec", Repository: "sf/repo", IssueNumber: 1}
-		fj := &prForgejo{labels: map[int64][]string{1: {"plan", "state/done"}, 2: {"agent"}, 3: {"agent"}}}
+		fj := &prForgejo{labels: map[int64][]string{1: {"plan", "state/done"}, 2: {"agent"}, 3: {"agent"}}, issueStates: map[int64]string{}}
 		r, store, objects := newActivityRunner(t, plan, fj)
 		for id, issue := range map[string]int64{"t-c2": 2, "t-c3": 3} {
 			store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Track: "direct", Process: "spec", Repository: "sf/repo",
@@ -112,8 +112,10 @@ func TestEventsRecorded(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityFinish, "t-c2", "done", "merged"); err != nil {
 			t.Fatal(err)
 		}
-		if got := events(t, objects, "t-plan"); len(got) != 0 || len(fj.comments) != 0 {
-			t.Fatalf("one card open: plan events %v, comments %q", got, fj.comments)
+		// each card's done end closes its own issue, the plan's stays open
+		ended := "factoryd: merged; this card ends with it."
+		if got := events(t, objects, "t-plan"); len(got) != 0 || !slices.Equal(fj.comments, []string{ended}) || !slices.Equal(fj.issuesClosed, []int64{2}) {
+			t.Fatalf("one card open: plan events %v, comments %q, issues closed %v", got, fj.comments, fj.issuesClosed)
 		}
 		if _, err := execActivity(t, r, ActivityFinish, "t-c3", "done", "merged"); err != nil {
 			t.Fatal(err)
@@ -127,8 +129,8 @@ func TestEventsRecorded(t *testing.T) {
 		if got := events(t, objects, "t-plan"); !slices.Equal(got, []string{"all_children_done 2"}) {
 			t.Fatalf("plan events = %v", got)
 		}
-		if !slices.Equal(fj.comments, []string{"factoryd: all 2 cards of this plan are done."}) {
-			t.Fatalf("comments = %q", fj.comments)
+		if !slices.Equal(fj.comments, []string{ended, ended, "factoryd: all 2 cards of this plan are done."}) || !slices.Equal(fj.issuesClosed, []int64{2, 3}) {
+			t.Fatalf("comments = %q, issues closed %v", fj.comments, fj.issuesClosed)
 		}
 	})
 }

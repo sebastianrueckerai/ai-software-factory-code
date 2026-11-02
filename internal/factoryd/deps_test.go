@@ -591,7 +591,7 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 				t.Fatalf("A = %s with key %q, want failed without a key", a.Status, a.PlanKey)
 			}
 			title, body, _ := strings.Cut(retryCard, "\n\n")
-			if is := fj.issues[9]; is.title != title || is.body != body+"\n\n"+line || is.poster != "factory-agent" ||
+			if is := fj.issues[9]; is.title != title || is.body != body+"\n\n"+line+"\n\n"+`<!-- factoryd retry of t-a -->` || is.poster != "factory-agent" ||
 				!slices.Equal(is.labels, []string{"agent", "state/queued"}) {
 				t.Fatalf("issue #9 = %+v", is)
 			}
@@ -618,8 +618,8 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 			if !slices.Equal(wf.started, []string{n.ID}) || !slices.Equal(wf.signals, []string{"t-b dep_ended  #0: "}) {
 				t.Fatalf("started %q, signals %q; want the replacement started and dep_ended to B", wf.started, wf.signals)
 			}
-			want := []string{"POST issues", "PUT issues/9/labels", "GET fork branch factory/" + n.ID, "POST fork branches factory/" + n.ID,
-				"POST issues/5/comments", "PATCH issues/5"}
+			want := []string{"GET issues", "POST issues", "PUT issues/9/labels", "GET fork branch factory/" + n.ID, "POST fork branches factory/" + n.ID,
+				"POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5"}
 			if !slices.Equal(fj.calls, want) {
 				t.Fatalf("forgejo calls\n%q\nwant\n%q", fj.calls, want)
 			}
@@ -837,6 +837,45 @@ func TestRetryResumesAfterAFailedStep(t *testing.T) {
 				t.Fatalf("third retry: %v, want already retried", err)
 			}
 		})
+	}
+}
+
+// failSetIssue fails the first SetTaskIssue, as a store that stops between
+// the filing and the link does.
+type failSetIssue struct {
+	*fakeStore
+	failed bool
+}
+
+func (s *failSetIssue) SetTaskIssue(ctx context.Context, id string, issue int64) error {
+	if !s.failed {
+		s.failed = true
+		return fmt.Errorf("store down")
+	}
+	return s.fakeStore.SetTaskIssue(ctx, id, issue)
+}
+
+// A retry that stopped between filing its issue and linking it is finished
+// by the next Retry to the same one issue: the marker on the filed issue
+// holds the link, so no second issue is filed.
+func TestRetryFindsItsIssueUnlinked(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	r.store = &failSetIssue{fakeStore: store}
+	if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); err == nil || !strings.Contains(err.Error(), "stopped at linking its issue #9") {
+		t.Fatalf("first retry: %v, want it stopped at the link of #9", err)
+	}
+	if issue, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
+		t.Fatalf("second retry = %d, %v; want #9", issue, err)
+	}
+	var filed int
+	for n := int64(1); n <= fj.next; n++ {
+		if is := fj.issues[n]; is != nil && strings.Contains(is.body, "<!-- factoryd retry of t-a -->") {
+			filed++
+		}
+	}
+	if filed != 1 || store.tasks["t-33198a8c2c69"].IssueNumber != 9 {
+		t.Fatalf("%d issues with the marker, replacement on #%d; want one, #9", filed, store.tasks["t-33198a8c2c69"].IssueNumber)
 	}
 }
 

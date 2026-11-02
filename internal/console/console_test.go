@@ -387,6 +387,30 @@ func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds
 	return from, to, nil
 }
 
+// ExtendCard raises task id's caps and records e, both or neither, as the
+// store's one transaction does.
+func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
+	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
+	if err != nil {
+		return 0, 0, err
+	}
+	s.mu.Lock()
+	for i := range s.tasks {
+		if s.tasks[i].ID == id {
+			s.tasks[i].Usage.ExtraAttempts += sessions
+			s.tasks[i].Usage.ExtraLines += lines
+		}
+	}
+	s.mu.Unlock()
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
+	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	if _, err := s.events.Record(ctx, e); err != nil {
+		s.RaiseTaskBudget(ctx, id, -eur)
+		return 0, 0, err
+	}
+	return from, to, nil
+}
+
 // Dependencies are the tasks task id depends on, those not done first.
 func (s *fakeTasks) Dependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
 	s.mu.Lock()
@@ -494,18 +518,29 @@ func (s *fakeTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdo
 	return slices.Clone(s.holdouts[id]), nil
 }
 
-// answer is factoryd.PGStore.AnswerPlanQuestion on the fake's questions.
-func (s *fakeTasks) answer(id string, revision, idx int, answer, by string) error {
+// answer is factoryd.AnswerPlanQuestion on the fake's questions: the
+// confirmation is decided, a real question answered, either once.
+func (s *fakeTasks) answer(id string, revision, idx int, decision, answer, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	qs := s.questions[fmt.Sprintf("%s %d", id, revision)]
 	switch {
 	case idx < 1 || idx > len(qs):
 		return factoryd.ErrNotFound
-	case qs[idx-1].Answer != "":
-		return factoryd.ErrAnswered
 	}
-	qs[idx-1].Answer, qs[idx-1].AnsweredBy = answer, by
+	q := &qs[idx-1]
+	confirming := q.Kind == factoryd.QuestionConfirmation
+	switch {
+	case q.Answered():
+		return factoryd.ErrAnswered
+	case !confirming && decision != "":
+		return factoryd.ErrDecisionReserved
+	case confirming && decision != factoryd.DecisionConfirm && decision != factoryd.DecisionRevise:
+		return factoryd.ErrDecisionRequired
+	case confirming && decision == factoryd.DecisionRevise && strings.TrimSpace(answer) == "":
+		return factoryd.ErrReviseWords
+	}
+	q.Answer, q.Decision, q.AnsweredBy = answer, decision, by
 	return nil
 }
 
@@ -515,7 +550,7 @@ func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, q := range s.questions[fmt.Sprintf("%s %d", id, round)] {
-		if q.Kind == factoryd.QuestionConfirmation && q.Answer != "" {
+		if q.Kind == factoryd.QuestionConfirmation && q.Decision != "" {
 			return factoryd.ErrAnswered
 		}
 	}
@@ -1188,11 +1223,11 @@ func newRig(t *testing.T) *rig {
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL changes_requested %s #%d by %s: %s", taskID, pr, by, words))
 			return r.signalErr
 		},
-		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, answer, by string) error {
+		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
 			if newest, _, _ := r.tasks.PlanRevision(ctx, taskID, 0); newest.Revision != revision {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
-			if err := r.tasks.answer(taskID, revision, idx, answer, by); err != nil {
+			if err := r.tasks.answer(taskID, revision, idx, decision, answer, by); err != nil {
 				return err
 			}
 			fg.mu.Lock()
@@ -1205,7 +1240,7 @@ func newRig(t *testing.T) *rig {
 				return factoryd.ErrStalePlan{Newest: newest.Revision}
 			}
 			for _, a := range answers {
-				if err := r.tasks.answer(taskID, revision, a.Idx, a.Text, by); err != nil {
+				if err := r.tasks.answer(taskID, revision, a.Idx, a.Decision, a.Text, by); err != nil {
 					return err
 				}
 			}
@@ -2119,6 +2154,27 @@ func TestAnswerTakenAtTheDayCap(t *testing.T) {
 	}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
 		t.Fatalf("answer at the day cap = %d %s, %d comments; want it taken", rec.Code, rec.Body, len(r.fg.comments))
+	}
+}
+
+// An answer to a card whose session floor refuses at the month cap, or at
+// the project's, is taken the same way: the cap resets on its own.
+func TestAnswerTakenAtAMonthCap(t *testing.T) {
+	for _, why := range []string{
+		"the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the month's 50.00 EUR (budget.month_eur) is free",
+		"the project's month cap cannot fund a call: Raise budget.month_eur in projects/app.yaml by a commit and answer, or wait for the next UTC month and answer.\n" +
+			"0.010000 EUR of the project's 3.00 EUR month (budget.month_eur in projects/app.yaml) is free",
+	} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		r.tasks.set("cannot reach the database", []factoryd.Task{
+			{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
+		}...)
+		r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return why, nil }
+		if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusSeeOther || len(r.fg.comments) != 1 {
+			t.Fatalf("answer at %q = %d %s, %d comments; want it taken", why[:30], rec.Code, rec.Body, len(r.fg.comments))
+		}
 	}
 }
 
@@ -3177,67 +3233,53 @@ func TestTimelineClosedGateIsNotOpen(t *testing.T) {
 	}
 }
 
-// /alerts lists the alerts newest first; an open human alert takes a
-// verdict from an approver, on the page and on the escalation's card.
-// The alerts page is gone: the open human escalation's verdict buttons
-// ride its board card, and POST /alerts/{id}/verdict keeps its rules.
-func TestAlertVerdicts(t *testing.T) {
+// The agent's verdict tool is the one path that judges an escalation: an
+// unknown verdict is refused, the first verdict on an open escalation takes
+// and counts once as a human intervention, an agent-decided one does not
+// count, a second one and one on a machine alert find no open human alert.
+func TestAlertVerdictAction(t *testing.T) {
 	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	raised := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
-	resolved := raised.Add(time.Minute)
+	_, s := r.loggedIn(t)
 	r.alerts.rows = []factoryd.Alert{
-		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: raised.Add(2 * time.Hour)},
-		{ID: 2, Kind: factoryd.AlertSupervisorTrip, Source: "same_failure", TaskID: "t-e", RaisedAt: raised.Add(time.Hour),
-			ResolvedAt: &resolved, Verdict: factoryd.VerdictNoise, ResolvedBy: "supervisor"},
-		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c", RaisedAt: raised, BoundS: 600},
+		{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
+		{ID: 1, Kind: factoryd.AlertGateBound, Source: "WaitChecks", TaskID: "t-c"},
 	}
-	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
-	r.tasks.tasks[0].EscalationAlert = 3
-	if rec := r.do(httptest.NewRequest(http.MethodGet, "/alerts", nil), ck); rec.Code != http.StatusNotFound {
-		t.Errorf("GET /alerts = %d, want 404: the page is gone", rec.Code)
+	a := actor{s: s, via: factoryd.ViaChat}
+	status := func(err error) int {
+		var ref *refusal
+		if errors.As(err, &ref) {
+			return ref.status
+		}
+		return 0
 	}
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Count(board, `action="/alerts/3/verdict"`) != 2 {
-		t.Error("the escalation card lacks the two verdict buttons")
+	ctx := context.Background()
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, "maybe"); status(err) != http.StatusBadRequest {
+		t.Fatalf("an unknown verdict: %v, want 400", err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"maybe"}}), ck); rec.Code != http.StatusBadRequest {
-		t.Fatalf("an unknown verdict = %d, want 400", rec.Code)
+	if note, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictReal); err != nil || note != "Alert 3 is judged real." {
+		t.Fatalf("verdict = %q, %v", note, err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}, "back": {"/"}}), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/" {
-		t.Fatalf("verdict = %d to %q", rec.Code, rec.Header().Get("Location"))
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+		t.Fatalf("a second verdict: %v, want 409", err)
 	}
-	if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
-		t.Fatalf("a second verdict = %d, want 409", rec.Code)
-	}
-	if rec := r.do(post("/alerts/1/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"noise"}}), ck); rec.Code != http.StatusConflict {
-		t.Fatalf("a verdict on a machine alert = %d, want 409", rec.Code)
+	if _, err := r.c.doAlertVerdict(ctx, a, 1, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+		t.Fatalf("a verdict on a machine alert: %v, want 409", err)
 	}
 	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
-}
-
-// Only the factory's approvers judge alerts: no buttons on the board,
-// and a 403.
-func TestAlertVerdictNeedsAnApprover(t *testing.T) {
-	r := newRig(t)
-	r.fg.user, r.repoWriters["sf/code"] = "alice", []string{"sebastian", "alice"}
-	r.forgetWriters()
-	ck, s := r.loggedIn(t)
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e", RaisedAt: time.Now()}}
-	r.tasks.set("stuck", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Objective: "stuck work", Repository: "sf/code", IssueNumber: 13})
-	r.tasks.tasks[0].EscalationAlert = 3
-	board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	if strings.Contains(board, "/verdict") {
-		t.Fatal("a non-approver is offered the verdict buttons")
+	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("interventions = %v, want %v", got, want)
 	}
-	for _, v := range []string{"real", "maybe"} {
-		if rec := r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {v}}), ck); rec.Code != http.StatusForbidden {
-			t.Fatalf("verdict %q by a non-approver = %d, want 403", v, rec.Code)
-		}
+	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 4, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"})
+	a.decider = "agent"
+	if _, err := r.c.doAlertVerdict(ctx, a, 4, factoryd.VerdictNoise); err != nil {
+		t.Fatal(err)
 	}
-	if len(r.alerts.verdicts) != 0 {
+	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("after the agent's own verdict, interventions = %v, want %v", got, want)
+	}
+	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian", "4 noise agent"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
 }
@@ -3435,9 +3477,9 @@ func (r *rig) interventions(t *testing.T) map[string]int64 {
 	return out
 }
 
-// The console counts only the verdict click, once, when it took effect:
-// its merge-card decisions act as the human in Forgejo and are counted by
-// the intake, like the same decisions made in Forgejo.
+// The console counts no click of its own: its merge-card decisions act as
+// the human in Forgejo and are counted by the intake, like the same
+// decisions made in Forgejo.
 func TestConsoleCountsInterventions(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -3457,13 +3499,8 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	if rec := r.do(post("/approvals/3/approve", url.Values{"csrf": {s.csrf}, "scope": {"task"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("resource approve = %d", rec.Code)
 	}
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	for range 2 {
-		r.do(post("/alerts/3/verdict", url.Values{"csrf": {s.csrf}, "verdict": {"real"}}), ck)
-	}
-	want := map[string]int64{"alert_verdict_click none none": 1}
-	if got := r.interventions(t); !reflect.DeepEqual(got, want) {
-		t.Fatalf("interventions = %v, want %v", got, want)
+	if got := r.interventions(t); len(got) != 0 {
+		t.Fatalf("interventions = %v, want none", got)
 	}
 }
 

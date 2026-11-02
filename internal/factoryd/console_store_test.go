@@ -181,7 +181,7 @@ func TestPGStoreChainLiveness(t *testing.T) {
 		{13, "e2", 52, "running"},
 		{14, "e3", 53, "failure"},
 	} {
-		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, row.status); err != nil {
+		if err := s.RecordChainRun(ctx, "sf/r", row.pr, row.sha, row.run, 0, row.status); err != nil {
 			t.Fatalf("RecordChainRun pr %d: %v", row.pr, err)
 		}
 	}

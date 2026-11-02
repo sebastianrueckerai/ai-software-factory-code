@@ -135,6 +135,60 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	}
 }
 
+// A criteria_rerun ask is the criteria card under its own name: it offers
+// waive, confirm and deny, and no Approve, since nothing here can pay for
+// the review that never judged them; an approve that reaches it refuses
+// naming the answers it has.
+func TestCriteriaNeverJudgedCardOffersWaiveAndConfirm(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1] = factoryd.ApprovalRequest{ID: 30, Kind: factoryd.ApprovalCriteriaRerun, TaskID: "t-plan",
+		Project: "sf/code", Status: "pending", Reason: "criteria never judged: the review of card #5 did not run (the review never ran): c2, c3",
+		Spec: json.RawMessage(`{"revision":0,"task":"t-int"}`)}
+	var calls []string
+	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
+		calls = append(calls, fmt.Sprintf("%s %s %s", id, cid, verdict))
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	for _, want := range []string{
+		"Criteria never judged",
+		"No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards.",
+		`<legend>c2 (human): open</legend>`,
+		`aria-label="Waive criterion c3 of t-plan"`,
+		`aria-label="Deny the criteria never judged 30 of t-plan"`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the card lacks %q:\n%s", want, card)
+		}
+	}
+	// the column holds the rig's resource request too: the claims are the
+	// gap's name and an Approve of this request, which it never carries
+	if strings.Contains(card, "Criteria gap") || strings.Contains(card, `action="/approvals/30/approve"`) ||
+		strings.Contains(card, "Every criterion is met or waived") {
+		t.Errorf("the card reads as the gap or offers an Approve:\n%s", card)
+	}
+	form := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}
+	if rec := r.do(post("/approvals/30/approve", form), ck); rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "waive a criterion with your reason, or confirm the delivered cards") {
+		t.Fatalf("approve = %d %q, want the refusal naming the answers", rec.Code, rec.Body.String())
+	}
+	waive := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "criterion": {"c3"}, "reason": {"the provider's SLA"}}
+	if rec := r.do(post("/approvals/30/waive", waive), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("waive = %d %q", rec.Code, rec.Body.String())
+	}
+	deny := url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"not worth the money"}}
+	if rec := r.do(post("/approvals/30/deny", deny), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("deny = %d %q", rec.Code, rec.Body.String())
+	}
+	if a := r.approvals.get(30); a.Status != "denied" {
+		t.Errorf("the denial left the request %+v", a)
+	}
+	if want := []string{"t-plan c3 waived"}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}
+
 // The confirm button is keyed on every child of the plan done or merged
 // (spec piece 2): it records the human's confirmation of the delivered
 // cards, and a child still open shows no button. The request closes on
@@ -177,7 +231,7 @@ func TestCriteriaGapConfirm(t *testing.T) {
 }
 
 // Fault 9: typed text on the board is draft state — every typed field it
-// renders carries the preserve treatment the find field already carries,
+// renders carries the preserve treatment the find's form already carries,
 // so one criterion's Waive does not erase its siblings' reasons — and the
 // card states its closing rule.
 func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
@@ -194,6 +248,11 @@ func TestTheBoardKeepsTypedTextAndNamesItsClose(t *testing.T) {
 		t.Fatalf("the board's typed fields = %v", typed)
 	}
 	for _, f := range typed {
+		// the find field rides its form's preserve; its own mark would nest
+		// and the swap would carry the box out of the form
+		if strings.Contains(f, `id="q"`) {
+			continue
+		}
 		if !strings.Contains(f, "hx-preserve") {
 			t.Errorf("a typed field loses its text on a swap: %s", f)
 		}

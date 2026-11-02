@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -50,6 +51,19 @@ func dcGateHead(t *testing.T, s *PGStore, card, repository, head, gate string, b
 	t.Helper()
 	return dcRecord(t, s, GateHeadFact{Task: card, Head: head, Gate: gate, Decision: "auto",
 		Size: "small", Bound: bound, Insertions: insertions, Deletions: deletions}.Event(repository, 9), at)
+}
+
+// dcLegacyGateHead records one merge-gate row exactly as detail says,
+// as producers around the fact contract wrote them: keyed false leaves
+// it identity-less. The row is the reading's whole truth — whatever it
+// lacks, the reading lacks.
+func dcLegacyGateHead(t *testing.T, s *PGStore, card, repository, head string, keyed bool, detail map[string]any, at time.Time) int64 {
+	t.Helper()
+	e := Event{Repository: repository, TaskID: card, Kind: EventGateHead, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}
+	if keyed {
+		e.IdentityKey = identityKey(EventGateHead, card, head)
+	}
+	return dcRecord(t, s, e, at)
 }
 
 // dcSessionEnd records a session's terminal end at at.
@@ -117,7 +131,9 @@ func dcSpend(t *testing.T, s *PGStore, card, day string, eur float64) {
 // crosses, with 300 exactly it does not; a retried head records once, a
 // card crossing on many heads counts once, the window's bounds hold,
 // other repositories and other gates stay out, and a span no reading
-// covers is unknown, not zero. [size_bound_escape]
+// covers is unknown, not zero. The readings are history: the policy in
+// force now and the card's size now change nothing.
+// [size_bound_escape]
 func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	s := metricsStore(t)
 	// the package's tests share one database: clear the tables the
@@ -167,6 +183,32 @@ func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 		Weeks: [7]float64{0, 0, 0, 0, 1, 1, 1}}) {
 		t.Fatalf("gate above bound = %+v", r.DivideConquer.GateAboveBound)
 	}
+	// the window holds four readings, every one a complete fact: no
+	// hole to name
+	if cov := r.DivideConquer.GateBoundCoverage; cov != (GateBoundCoverage{Readings: 4, Measured: 4}) {
+		t.Fatalf("gate bound coverage = %+v, want four measured readings", cov)
+	}
+	// the readings are history: a new policy in force (large_lines 50,
+	// small 15) and the card re-sized change nothing — the bound stays
+	// the one the gates read
+	if _, _, err := policy.Record(context.Background(), s.db, "dc-size-bounds", policy.Tree{Document: policy.Document{Risk: policy.Risk{LargeLines: 50}}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(context.Background(), `UPDATE tasks SET size = 'large' WHERE id = 't-escape'`); err != nil {
+		t.Fatal(err)
+	}
+	again, err := s.ProjectMetrics(context.Background(), "sf/dc1", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if again.DivideConquer.GateAboveBound != r.DivideConquer.GateAboveBound {
+		t.Fatalf("gate above bound after the change = %+v, want the historical %+v",
+			again.DivideConquer.GateAboveBound, r.DivideConquer.GateAboveBound)
+	}
+	if again.DivideConquer.GateBoundCoverage != r.DivideConquer.GateBoundCoverage {
+		t.Fatalf("gate bound coverage after the change = %+v, want the historical %+v",
+			again.DivideConquer.GateBoundCoverage, r.DivideConquer.GateBoundCoverage)
+	}
 	// a repository no reading covers reads unknown, never zero
 	empty, err := s.ProjectMetrics(context.Background(), "sf/dc-none1", from, to)
 	if err != nil {
@@ -174,6 +216,107 @@ func TestDivideConquerSizeBoundsSQL(t *testing.T) {
 	}
 	if empty.DivideConquer.GateAboveBound != (Figure{}) {
 		t.Fatalf("gate above bound without evidence = %+v, want unknown", empty.DivideConquer.GateAboveBound)
+	}
+	if empty.DivideConquer.GateBoundCoverage != (GateBoundCoverage{}) {
+		t.Fatalf("gate bound coverage without evidence = %+v, want none", empty.DivideConquer.GateBoundCoverage)
+	}
+}
+
+// TestDivideConquerSizeEvidenceSQL — panel 1's evidence: a reading
+// measures its card only complete, the fact's identity, a bound, both
+// line counts and the size whose bound it planned. A missing bound,
+// missing line statistics, a size the row never carried, an explicitly
+// unsized card and an identity-less legacy row each name their hole in
+// the coverage, never borrow the policy in force now or the card's
+// metadata, and never pass as measured — a span only holes cover is
+// unknown, not a zero, a span nothing covers is unknown with no
+// readings to name, and a complete reading at exactly its bound still
+// proves the zero. [size_bound_escape]
+func TestDivideConquerSizeEvidenceSQL(t *testing.T) {
+	s := metricsStore(t)
+	from, to := metricsTestWindow()
+	// the policy in force now, its bounds small enough that any fill
+	// from it would read every hole over: nothing is filled from it
+	if _, _, err := policy.Record(context.Background(), s.db, "dc-size-evidence", policy.Tree{Document: policy.Document{Risk: policy.Risk{LargeLines: 50}}}); err != nil {
+		t.Fatal(err)
+	}
+	// every hole on its own card, each card sized small so a fill from
+	// the task's metadata now would read over too
+	dcCard(t, s, "t-nobound", "sf/dc6", "small", "", 91)
+	if id := dcLegacyGateHead(t, s, "t-nobound", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 1)); id == 0 {
+		t.Fatal("the boundless reading recorded no row")
+	}
+	dcCard(t, s, "t-nolines", "sf/dc6", "small", "", 92)
+	dcLegacyGateHead(t, s, "t-nolines", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "bound": 300},
+		from.AddDate(0, 0, 2))
+	dcCard(t, s, "t-nosize", "sf/dc6", "small", "", 93)
+	dcLegacyGateHead(t, s, "t-nosize", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "bound": 300, "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 3))
+	dcCard(t, s, "t-unsized", "sf/dc6", "small", "", 94)
+	dcLegacyGateHead(t, s, "t-unsized", "sf/dc6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "", "bound": 300, "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 4))
+	// an identity-less legacy row, complete in every field it carries
+	dcCard(t, s, "t-legacy", "sf/dc6", "small", "", 95)
+	if id := dcLegacyGateHead(t, s, "t-legacy", "sf/dc6", "h1", false,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "bound": 300, "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 5)); id == 0 {
+		t.Fatal("the legacy reading recorded no row")
+	}
+	// the one complete reading: 300 lines at exactly the small bound
+	// 300, a measured zero — the bound is a bound, not a target
+	dcCard(t, s, "t-zero", "sf/dc6", "small", "", 96)
+	if id := dcGateHead(t, s, "t-zero", "sf/dc6", "z1", GateMerge, 300, 150, 150, from.AddDate(0, 0, 6)); id == 0 {
+		t.Fatal("the measured reading recorded no row")
+	}
+	// a repository a hole alone covers: unknown, with the hole named
+	dcCard(t, s, "u-nobound", "sf/dc-unknown6", "small", "", 97)
+	if id := dcLegacyGateHead(t, s, "u-nobound", "sf/dc-unknown6", "h1", true,
+		map[string]any{"gate": GateMerge, "head": "h1", "decision": "auto", "size": "small", "insertions": 400, "deletions": 20},
+		from.AddDate(0, 0, 1)); id == 0 {
+		t.Fatal("the boundless reading recorded no row")
+	}
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc6", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the panel stands on the one measured reading: a measured zero,
+	// with the four over-looking holes beside it measuring nothing —
+	// none of them escaped, and none of them passed
+	if r.DivideConquer.GateAboveBound != (Figure{Has: true}) {
+		t.Fatalf("gate above bound = %+v, want a measured zero on the one complete reading", r.DivideConquer.GateAboveBound)
+	}
+	if cov := r.DivideConquer.GateBoundCoverage; cov != (GateBoundCoverage{Readings: 6, Measured: 1,
+		MissingBound: 1, MissingLines: 1, UnknownSize: 1, UnsizedSize: 1, Identityless: 1}) {
+		t.Fatalf("gate bound coverage = %+v, want one measured reading and every hole named", cov)
+	}
+	// a span only holes cover reads unknown, never a measured zero —
+	// and stays tellable from a span nothing covers: both figures are
+	// unknown, only the coverage counts the readings behind them
+	unknown, err := s.ProjectMetrics(context.Background(), "sf/dc-unknown6", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if unknown.DivideConquer.GateAboveBound != (Figure{}) {
+		t.Fatalf("gate above bound on holes alone = %+v, want unknown", unknown.DivideConquer.GateAboveBound)
+	}
+	if cov := unknown.DivideConquer.GateBoundCoverage; cov != (GateBoundCoverage{Readings: 1, MissingBound: 1}) {
+		t.Fatalf("gate bound coverage on holes alone = %+v, want the one hole named", cov)
+	}
+	none, err := s.ProjectMetrics(context.Background(), "sf/dc-none6", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.DivideConquer.GateAboveBound != (Figure{}) {
+		t.Fatalf("gate above bound without evidence = %+v, want unknown", none.DivideConquer.GateAboveBound)
+	}
+	if none.DivideConquer.GateBoundCoverage != (GateBoundCoverage{}) {
+		t.Fatalf("gate bound coverage without evidence = %+v, want none", none.DivideConquer.GateBoundCoverage)
 	}
 }
 
@@ -333,12 +476,6 @@ func TestDivideConquerSessionsSQL(t *testing.T) {
 	}
 }
 
-// TestDivideConquerReviewCoverageSQL — panel 9: reviews that answered
-// not reviewed (target: none). Two of the window's three answers never
-// judged the head, their reasons bounded where the payload wrote them;
-// a span every answer of which reviewed is a proven zero, a span no
-// answer covers stays unknown, and the window's bounds and the
-// repository's hold. [not_reviewed_answers]
 // TestDivideConquerSessionEvidenceSQL — panel 2's evidence: the size a
 // card counts by is the reading its merged head's snapshot planned, so
 // the task row's later size moves no merged card, an abandoned head's
@@ -472,6 +609,16 @@ func TestDivideConquerSessionEvidenceSQL(t *testing.T) {
 	}
 }
 
+// TestDivideConquerReviewCoverageSQL — panel 9: reviews that answered
+// not reviewed (target: none). Two of the window's three genuine
+// answers never judged the head — the explicit note and the gateway
+// refusal — the third a valid negative verdict that did, so 2 of 3;
+// their reasons bounded where the payload wrote them. Replaying one
+// attempt's persistence adds no answer; a second genuine round of that
+// same head adds its own, and another head stays distinct. A span every
+// genuine answer of which reviewed is a proven zero, a span no genuine
+// answer covers stays unknown, and the window's bounds and the
+// repository's hold. [not_reviewed_answers]
 func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	s := metricsStore(t)
 	from, to := metricsTestWindow()
@@ -481,7 +628,7 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	if id := dcRecord(t, s, nr1.Event("t-r1", "sf/dc3", 71), from); id == 0 {
 		t.Fatal("the first answer recorded no row")
 	}
-	nr2 := ReviewAttemptFact{PR: 9, Commit: "c2", Round: 1, Model: "big", Note: "no verdict"}
+	nr2 := ReviewAttemptFact{PR: 9, Commit: "c2", Round: 1, Model: "big", Note: "the gateway refused the review call"}
 	if id := dcRecord(t, s, nr2.Event("t-r1", "sf/dc3", 71), from.AddDate(0, 0, 3)); id == 0 {
 		t.Fatal("the second answer recorded no row")
 	}
@@ -489,7 +636,8 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 	if id := dcRecord(t, s, nr2.Event("t-r1", "sf/dc3", 71), from.AddDate(0, 0, 3).Add(time.Hour)); id != 0 {
 		t.Fatalf("the re-answered round recorded %d, want 0: one round, one row", id)
 	}
-	ok := ReviewAttemptFact{PR: 9, Commit: "c3", Round: 1, Model: "big", Verdict: "approve"}
+	// a valid negative verdict: concerns judged the change, reviewed
+	ok := ReviewAttemptFact{PR: 9, Commit: "c3", Round: 1, Model: "big", Verdict: "concerns"}
 	dcRecord(t, s, ok.Event("t-r1", "sf/dc3", 71), from.AddDate(0, 0, 4))
 	// exactly To: outside
 	late := ReviewAttemptFact{PR: 9, Commit: "c4", Round: 1, Model: "big", Note: "outside"}
@@ -516,24 +664,172 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 		t.Fatalf("the stored reason is %q, want the payload's bounded %q", reason, want)
 	}
 
+	// 2 of 3: the window's two answers that never judged over its three
+	// genuine answers, the replay having added none; the previous
+	// window's one answer reviewed, a proven zero; the spark names both
+	// its weeks — the early unjudged answer bucket 0 (Aug 26, the spark
+	// opens Aug 24), the previous window's reviewed answer bucket 3
+	// (Sep 20) — and the window's two answers bucket 5
 	r, err := s.ProjectMetrics(context.Background(), "sf/dc3", from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	// two of the window's three answers never judged; the previous
-	// window's one answer reviewed, a proven zero; the early unjudged
-	// answer fills bucket 0 (Aug 26, the spark opens Aug 24) and the
-	// window's two bucket 5
 	if r.DivideConquer.ReviewsNotReviewed != (Figure{Value: 2, Has: true, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 2, 0}}) {
-		t.Fatalf("reviews not reviewed = %+v", r.DivideConquer.ReviewsNotReviewed)
+		t.Fatalf("reviews not reviewed = %+v, want 2 of 3", r.DivideConquer.ReviewsNotReviewed)
+	}
+	if r.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 3, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 1, 0, 3, 0}}) {
+		t.Fatalf("review answers = %+v, want the measured denominator 3", r.DivideConquer.ReviewEvidence.Answers)
+	}
+	// a separate genuine round of that same head adds its own answer,
+	// and another head stays distinct: the head alone never collapses
+	// rounds, the round alone never collapses heads
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "c2", Round: 2, Model: "big", Verdict: "approve"}.Event("t-r1", "sf/dc3", 71), from.AddDate(0, 0, 5))
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "c8", Round: 1, Model: "big", Note: "malformed answer"}.Event("t-r1", "sf/dc3", 71), from.AddDate(0, 0, 7))
+	again, err := s.ProjectMetrics(context.Background(), "sf/dc3", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// three of five never judged: nr1 and nr2 of the first three, the
+	// other head's malformed answer beside them in bucket 6
+	if again.DivideConquer.ReviewsNotReviewed != (Figure{Value: 3, Has: true, PrevHas: true, Weeks: [7]float64{1, 0, 0, 0, 0, 2, 1}}) {
+		t.Fatalf("reviews not reviewed = %+v, want 3 of 5", again.DivideConquer.ReviewsNotReviewed)
+	}
+	if again.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 5, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 1, 0, 4, 1}}) {
+		t.Fatalf("review answers = %+v, want the measured denominator 5", again.DivideConquer.ReviewEvidence.Answers)
+	}
+	// every row a genuine answer: no hole to name, a measured zero of
+	// unknown coverage
+	if again.DivideConquer.ReviewEvidence.Unknown != (Figure{Has: true, PrevHas: true}) {
+		t.Fatalf("review unknown = %+v, want a measured zero", again.DivideConquer.ReviewEvidence.Unknown)
 	}
 	// a repository no answer covers reads unknown, never zero
 	empty, err := s.ProjectMetrics(context.Background(), "sf/dc-none3", from, to)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if empty.DivideConquer.ReviewsNotReviewed != (Figure{}) {
-		t.Fatalf("reviews not reviewed without evidence = %+v, want unknown", empty.DivideConquer.ReviewsNotReviewed)
+	if empty.DivideConquer.ReviewsNotReviewed != (Figure{}) || empty.DivideConquer.ReviewEvidence != (ReviewEvidence{}) {
+		t.Fatalf("reviews without evidence = %+v, want unknown", empty.DivideConquer.ReviewEvidence)
+	}
+}
+
+// dcLegacyReview records one model_review row exactly as detail says,
+// as producers around the fact contract wrote them: keyed false leaves
+// it identity-less, and the answer's classification lands only where
+// the detail carries one. The row is the answer's whole truth —
+// whatever it lacks, the answer lacks.
+func dcLegacyReview(t *testing.T, s *PGStore, card, repository, commit, round string, keyed bool, detail map[string]any, at time.Time) int64 {
+	t.Helper()
+	e := Event{Repository: repository, TaskID: card, Kind: EventModelReview, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}
+	if keyed {
+		e.IdentityKey = identityKey(EventModelReview, commit, round)
+	}
+	return dcRecord(t, s, e, at)
+}
+
+// TestDivideConquerReviewEvidenceSQL — panel 9's evidence: only a
+// genuine answer is usable — the attempt's identity and the
+// classification the payload wrote. A row without its identity,
+// however complete its detail, and a row whose classification is
+// missing or ambiguous are unknown evidence, never an inferred
+// success: the count stands on the genuine rest, the coverage names
+// the holes over the window, the window before it and the spark's
+// weeks, answers outside the window and of other repositories count
+// nowhere, and an empty cohort stays unknown beside a measured zero.
+// [not_reviewed_answers] [window_and_existing_figures]
+func TestDivideConquerReviewEvidenceSQL(t *testing.T) {
+	s := metricsStore(t)
+	from, to := metricsTestWindow()
+	dcCard(t, s, "t-ev1", "sf/dc7", "small", "", 74)
+	// the window's one genuine answer never judged, its reason bounded
+	// where the payload wrote it (Sep 29, bucket 5)
+	if id := dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k1", Round: 1, Model: "big",
+		Note: "the gateway refused the review call"}.Event("t-ev1", "sf/dc7", 74), from.AddDate(0, 0, 1)); id == 0 {
+		t.Fatal("the genuine answer recorded no row")
+	}
+	// a legacy row without its attempt identity, however complete its
+	// detail: the store cannot hold it as one attempt, so no panel can
+	// count it an answer (Oct 2, bucket 5)
+	if id := dcLegacyReview(t, s, "t-ev1", "sf/dc7", "k2", "1", false,
+		map[string]any{"pr": 9, "commit": "k2", "round": 1, "model": "big", "verdict": "concerns"},
+		from.AddDate(0, 0, 4)); id == 0 {
+		t.Fatal("the identity-less answer recorded no row")
+	}
+	// a keyed row whose classification never landed (Oct 7, bucket 6)
+	dcLegacyReview(t, s, "t-ev1", "sf/dc7", "k3", "1", true,
+		map[string]any{"pr": 9, "commit": "k3", "round": 1, "model": "big"}, from.AddDate(0, 0, 9))
+	// the previous window's one row answers "maybe": neither reviewed
+	// nor not — ambiguous, so that span is unknown, never a proven zero
+	// (Sep 20, bucket 3)
+	dcLegacyReview(t, s, "t-ev1", "sf/dc7", "k4", "1", true,
+		map[string]any{"pr": 9, "commit": "k4", "round": 1, "model": "big", "reviewed": "maybe"},
+		from.AddDate(0, 0, -8))
+	// a legacy row before the previous window fills the spark's first
+	// week with unknown evidence alone (Aug 29, bucket 0)
+	dcLegacyReview(t, s, "t-ev1", "sf/dc7", "k5", "1", false,
+		map[string]any{"pr": 9, "commit": "k5", "round": 1, "model": "big", "verdict": "approve"},
+		from.AddDate(0, 0, -30))
+	// a genuine answer exactly at To: outside every span
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k6", Round: 1, Model: "big", Verdict: "approve"}.Event("t-ev1", "sf/dc7", 74), to.AddDate(0, 0, 1))
+	// another repository's answer, however genuine, stays out
+	dcCard(t, s, "t-ev9", "sf/other7", "small", "", 75)
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k7", Round: 1, Model: "big", Note: "elsewhere"}.Event("t-ev9", "sf/other7", 75), from.AddDate(0, 0, 2))
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc7", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	// the window's one genuine answer never judged, over the denominator
+	// 1; the two holes measure nothing; the previous window's ambiguous
+	// row alone proves nothing, so its zero is unknown, never measured
+	if r.DivideConquer.ReviewsNotReviewed != (Figure{Value: 1, Has: true, PrevHas: false, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) {
+		t.Fatalf("reviews not reviewed = %+v, want 1 of 1 and an unknown previous window", r.DivideConquer.ReviewsNotReviewed)
+	}
+	if r.DivideConquer.ReviewEvidence.Answers != (Figure{Value: 1, Has: true, Prev: 0, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) {
+		t.Fatalf("review answers = %+v, want one genuine answer and a measured zero before the window", r.DivideConquer.ReviewEvidence.Answers)
+	}
+	// the holes over the three spans: two in the window, one in the
+	// window before it, and the spark's buckets 0, 3, 5 and 6 each name
+	// their own
+	if r.DivideConquer.ReviewEvidence.Unknown != (Figure{Value: 2, Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{1, 0, 0, 1, 0, 1, 1}}) {
+		t.Fatalf("review unknown = %+v, want the holes over the three spans", r.DivideConquer.ReviewEvidence.Unknown)
+	}
+	// the other repository's answer answers its own report alone — one
+	// not-reviewed of one genuine answer, its own spark week (Sep 30,
+	// bucket 5) and nothing before the window
+	other, err := s.ProjectMetrics(context.Background(), "sf/other7", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.DivideConquer.ReviewsNotReviewed != (Figure{Value: 1, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 1, 0}}) ||
+		other.DivideConquer.ReviewEvidence.Answers.Value != 1 {
+		t.Fatalf("other repository reviews = %+v %+v, want its one answer alone",
+			other.DivideConquer.ReviewsNotReviewed, other.DivideConquer.ReviewEvidence.Answers)
+	}
+	// a repository no answer of any kind covers: every figure unknown,
+	// never zero
+	none, err := s.ProjectMetrics(context.Background(), "sf/dc-none7", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.DivideConquer.ReviewsNotReviewed != (Figure{}) || none.DivideConquer.ReviewEvidence != (ReviewEvidence{}) {
+		t.Fatalf("reviews without rows = %+v, want the unknown block", none.DivideConquer.ReviewEvidence)
+	}
+	// a repository whose every answer judged: a proven zero over its
+	// measured denominator, no hole to name
+	dcCard(t, s, "t-zero7", "sf/dc-zero7", "small", "", 76)
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "z1", Round: 1, Model: "big", Verdict: "approve"}.Event("t-zero7", "sf/dc-zero7", 76), from.AddDate(0, 0, 2))
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "z2", Round: 1, Model: "big", Verdict: "concerns"}.Event("t-zero7", "sf/dc-zero7", 76), from.AddDate(0, 0, 6))
+	zero, err := s.ProjectMetrics(context.Background(), "sf/dc-zero7", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if zero.DivideConquer.ReviewsNotReviewed != (Figure{Has: true}) {
+		t.Fatalf("reviews of judged answers = %+v, want a measured zero", zero.DivideConquer.ReviewsNotReviewed)
+	}
+	// two judged answers, both of the window's week (Sep 30 and Oct 4,
+	// bucket 5): no hole to name over the measured denominator
+	if zero.DivideConquer.ReviewEvidence != (ReviewEvidence{Answers: Figure{Value: 2, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 2, 0}}, Unknown: Figure{Has: true}}) {
+		t.Fatalf("review evidence of judged answers = %+v, want two answers and no hole", zero.DivideConquer.ReviewEvidence)
 	}
 }
 
@@ -541,7 +837,12 @@ func TestDivideConquerReviewCoverageSQL(t *testing.T) {
 // every panel reads the window, the equal-length window before it and
 // the seven weekly buckets, holds the repository to its own rows,
 // answers an empty repository with the whole block unknown, and leaves
-// the deck's existing figures standing. [window_and_existing_figures]
+// the deck's existing figures standing. The size-bound panel's evidence
+// spans the same three: its window's reading measures, its previous
+// window's does, and a hole in a weekly bucket measures nothing there;
+// so does the review panel's, whose previous window a legacy row alone
+// leaves unknown, never a measured zero.
+// [window_and_existing_figures]
 func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	s := metricsStore(t)
 	from, to := metricsTestWindow()
@@ -549,12 +850,38 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	dcGateHead(t, s, "c1", "sf/dc4", "g1", GateMerge, 300, 350, 0, from.AddDate(0, 0, 8))  // window, bucket 6
 	dcGateHead(t, s, "c1", "sf/dc4", "g0", GateMerge, 300, 350, 0, from.AddDate(0, 0, -8)) // previous window, bucket 3
 	dcSessionEnd(t, s, "se1", string(OutcomeWallClock), "c1", "sf/dc4", 1, from.AddDate(0, 0, 9))
-	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "k1", Round: 1, Model: "big", Verdict: "approve"}.Event("c1", "sf/dc4", 81), from.AddDate(0, 0, 9))
+	// the window's one genuine answer (Oct 7, bucket 6): its own fact
+	// identity — commit f1, round 1 — because the package's tests share
+	// one database and the identity index holds one row per key, so a
+	// commit another test's answer already holds would drop this row
+	dcRecord(t, s, ReviewAttemptFact{PR: 9, Commit: "f1", Round: 1, Model: "big", Verdict: "approve"}.Event("c1", "sf/dc4", 81), from.AddDate(0, 0, 9))
+	// a legacy identity-less row, over-looking in the window (Sep 30,
+	// bucket 5) — it measures nothing: the panel keeps its one escape
+	// and the bucket its zero, and the coverage names the hole
+	dcCard(t, s, "c2", "sf/dc4", "small", "", 84)
+	if id := dcLegacyGateHead(t, s, "c2", "sf/dc4", "g8", false,
+		map[string]any{"gate": GateMerge, "head": "g8", "decision": "auto", "size": "small", "bound": 300, "insertions": 900, "deletions": 900},
+		from.AddDate(0, 0, 2)); id == 0 {
+		t.Fatal("the legacy reading recorded no row")
+	}
+	// a legacy review row without identity or classification, alone in
+	// the previous window (Sep 20, bucket 3): it proves nothing there —
+	// the review panel's previous window stays unknown, never a
+	// measured zero — and the unknown coverage names the hole
+	if id := dcLegacyReview(t, s, "c2", "sf/dc4", "g8", "1", false,
+		map[string]any{"pr": 9, "commit": "g8", "round": 1, "model": "big", "verdict": "approve"},
+		from.AddDate(0, 0, -8)); id == 0 {
+		t.Fatal("the legacy answer recorded no row")
+	}
 	// another repository's rows the same instants — ow1, not o1 again:
 	// the package's tests share one database, one task id once
 	dcCard(t, s, "ow1", "sf/other4", "small", "", 82)
 	dcGateHead(t, s, "ow1", "sf/other4", "g1", GateMerge, 300, 999, 0, from.AddDate(0, 0, 8))
 	dcSessionEnd(t, s, "oe1", string(OutcomePushed), "ow1", "sf/other4", 1, from.AddDate(0, 0, 9))
+	dcCard(t, s, "ow2", "sf/other4", "small", "", 85)
+	dcLegacyGateHead(t, s, "ow2", "sf/other4", "g8", false,
+		map[string]any{"gate": GateMerge, "head": "g8", "decision": "auto", "size": "small", "bound": 300, "insertions": 900, "deletions": 900},
+		from.AddDate(0, 0, 2))
 	// a done card of the window: the deck's throughput still counts it
 	done := Task{ID: "c-done", Status: "done", Objective: "the deck's figure", Repository: "sf/dc4", Kind: "agent",
 		Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: 83, Size: "small",
@@ -576,11 +903,26 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 	if d.GateAboveBound != (Figure{Value: 1, Prev: 1, Has: true, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 1}}) {
 		t.Fatalf("gate above bound = %+v", d.GateAboveBound)
 	}
+	// the window's two readings: g1 measured, g8 an identity-less hole;
+	// the other repository's rows, measured or holed, stay out
+	if d.GateBoundCoverage != (GateBoundCoverage{Readings: 2, Measured: 1, Identityless: 1}) {
+		t.Fatalf("gate bound coverage = %+v, want one measured reading and its identity-less hole", d.GateBoundCoverage)
+	}
 	if len(d.SessionEnds) != 1 || d.SessionEnds[0] != (NamedCount{Name: string(OutcomeWallClock), Count: 1}) {
 		t.Fatalf("session ends = %+v, want the window's wall_clock alone", d.SessionEnds)
 	}
 	if d.ReviewsNotReviewed != (Figure{Has: true, PrevHas: false}) {
 		t.Fatalf("reviews not reviewed = %+v, want a measured zero of one reviewed answer", d.ReviewsNotReviewed)
+	}
+	// the window's one genuine answer over its one row — its hole count
+	// a measured zero, the row covers the span — the previous window's
+	// legacy row a measured zero of genuine answers beside its one hole,
+	// and the spark's third week names that hole alone
+	if d.ReviewEvidence != (ReviewEvidence{
+		Answers: Figure{Value: 1, Has: true, Prev: 0, PrevHas: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 1}},
+		Unknown: Figure{Has: true, Prev: 1, PrevHas: true, Weeks: [7]float64{0, 0, 0, 1, 0, 0, 0}},
+	}) {
+		t.Fatalf("review evidence = %+v, want one answer in the window and the legacy hole before it", d.ReviewEvidence)
 	}
 	// the deck's own figures stand: the window's done card, the dates asked
 	if r.Repository != "sf/dc4" || !r.From.Equal(from) || !r.To.Equal(to) {
@@ -595,7 +937,8 @@ func TestDivideConquerFlowWindowsSQL(t *testing.T) {
 		t.Fatal(err)
 	}
 	if e := empty.DivideConquer; !e.CoveredFrom.IsZero() || len(e.SessionsPerCard) != 0 || len(e.SessionEnds) != 0 ||
-		e.GateAboveBound != (Figure{}) || e.ReviewsNotReviewed != (Figure{}) {
+		e.GateAboveBound != (Figure{}) || e.GateBoundCoverage != (GateBoundCoverage{}) ||
+		e.ReviewsNotReviewed != (Figure{}) || e.ReviewEvidence != (ReviewEvidence{}) {
 		t.Fatalf("divide conquer without evidence = %+v, want the zero block", e)
 	}
 }

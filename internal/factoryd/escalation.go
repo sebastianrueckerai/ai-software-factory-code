@@ -167,8 +167,11 @@ func botCloseRecorded(events []IntakeEvent, t Task) bool {
 
 // closeIssueAsFactory closes t's issue as the bot, the one way factoryd
 // closes a card's issue: it records the close as its own with comment
-// (IntakeFactoryClosed), posts comment unless it is "", closes the issue
-// and confirms the record. A step that fails returns, the record left
+// (IntakeFactoryClosed), posts comment unless it is "", drops the issue's
+// dependencies on open issues (an ending card waits on nothing, and
+// Forgejo refuses the close while one stands; the store's edges order the
+// cards, the issues only mirror them), closes the issue and confirms the
+// record. A step that fails returns, the record left
 // unconfirmed for the next call or the heal; only a comment Forgejo
 // refuses (forgejoTerminal) is logged, and the close goes on. A call that
 // finds the record posts the recorded comment, not its own, where the
@@ -207,6 +210,19 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 		log.Printf("task %s: issue #%d closes without its comment, which Forgejo refused: %v", t.ID, t.IssueNumber, err)
 	} else if err != nil {
 		return err
+	}
+	// a repository with issue dependencies switched off answers 404: none
+	deps, err := forgejo.IssueDependencies(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return err
+	}
+	for _, d := range deps {
+		if d.State != "open" {
+			continue
+		}
+		if err := forgejo.RemoveIssueDependency(ctx, repo, t.IssueNumber, d); err != nil {
+			return err
+		}
 	}
 	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
 		return err

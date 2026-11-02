@@ -54,7 +54,7 @@ decimals: a task's model calls cost fractions of a cent.
   commit's tree in the infra repository, as `/policy` shows it. A card
   shows the task's time in all (from the
   issue's `created_at`) and the gate it is in with the gate's age, from the
-  row's `gate` and `gate_since`; a plan's card `part of plan #n`.
+  row's `gate` and `gate_since`; a plan child's drawer has a Plan row: the plan's `#n`, its name and the card's key.
 - The production hold: while a plan's group is open on the project's main,
   for the factory's own project or a project whose CI asked `/release`,
   the status strip shows the cell `production held · <time>` after the
@@ -118,18 +118,19 @@ decimals: a task's model calls cost fractions of a cent.
   current gate "open for N min" while no step ended it. The approval wait
   ends at the signal that ended it: an approval, a change request, a merge
   in Forgejo or a close.
-- `/alerts`: the newest 200 alerts: `gate_bound` (an activity
-  still running at its policy bound, written once per run by the
-  `GateWatch` worker interceptor; the policy's `bounds` section, seconds
+- Alerts: no page lists them. Three kinds exist. `gate_bound` is an
+  activity still running at its policy bound, written once per run by the
+  `GateWatch` worker interceptor (the policy's `bounds` section, seconds
   per activity and `default`; without it RunSession 1260, WaitChecks 600,
   GateReproduction 900, ModelReview 180, Merge 90, SuperviseGate 360,
-  every other activity 120), `supervisor_trip` (every detector trip the
-  supervisor decided; `continue` is `noise`, any other action `real`) and
-  `escalation` (every escalation, not a healed run's repeat of it; open until an approver clicks `real
-  problem` or `noise`, here or on the escalation's board card). A
-  supervisor column shows the action and diagnosis of a machine alert;
-  the timeline shows them on its `supervisor` and `gate_supervisor`
-  steps. An escalation's detail stays off the page.
+  every other activity 120). `supervisor_trip` is every detector trip the
+  supervisor decided; `continue` is `noise`, any other action `real`. The
+  timeline shows both on its `supervisor` and `gate_supervisor` steps.
+  `escalation` is every escalation, not a healed run's repeat of it. It
+  shows as a needs-you card.
+  The project agent judges an open escalation `real` or `noise` with its
+  `alert_verdict` tool; a human confirms the call unless the project's
+  autonomy lets the agent act alone. The `alerts` tool lists the alerts.
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the

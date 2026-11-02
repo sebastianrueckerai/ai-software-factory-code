@@ -113,6 +113,12 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 		// a target panel's measured zero carries has=true
 		GateAboveBound:     factoryd.Figure{Value: 0, Has: true, PrevHas: true},
 		ReviewsNotReviewed: factoryd.Figure{Value: 1, Has: true},
+		// the review panel's evidence: the denominator the count above
+		// stands over and the hole no usable evidence covers
+		ReviewEvidence: factoryd.ReviewEvidence{
+			Answers: factoryd.Figure{Value: 3, Has: true},
+			Unknown: factoryd.Figure{Value: 1, Has: true},
+		},
 		SessionsPerCard: []factoryd.SizeFigure{
 			{Size: "small", Figure: factoryd.Figure{Value: 1.2, Has: true}},
 			{Size: "medium", Figure: factoryd.Figure{Value: 2.4, Has: true}},
@@ -163,8 +169,8 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 	}
 	for _, key := range []string{"covered_from", "gate_above_bound", "sessions_per_card", "session_ends",
 		"eur_per_merged_line", "fixed_eur_per_card", "cuts", "cut_groups_closed", "group_open_hours",
-		"hold_wait_hours", "reviews_not_reviewed", "plans_by_rounds", "cards_first_round", "cards_later_rounds",
-		"replans_by_origin"} {
+		"hold_wait_hours", "reviews_not_reviewed", "review_evidence", "plans_by_rounds", "cards_first_round",
+		"cards_later_rounds", "replans_by_origin"} {
 		if _, ok := dc[key]; !ok {
 			t.Errorf("divide_conquer lacks %s", key)
 		}
@@ -177,6 +183,16 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 	gate := dc["gate_above_bound"].(map[string]any)
 	if gate["value"] != float64(0) || gate["has"] != true {
 		t.Errorf("gate_above_bound = %v, want a measured zero", gate)
+	}
+	// evidence: the review count's denominator and its hole survive the
+	// boundary apart — the answers a fact even at zero, the unknown rows
+	// never an inferred success
+	ev := dc["review_evidence"].(map[string]any)
+	if answers := ev["answers"].(map[string]any); answers["value"] != float64(3) || answers["has"] != true {
+		t.Errorf("review_evidence answers = %v, want the measured denominator 3", answers)
+	}
+	if holes := ev["unknown"].(map[string]any); holes["value"] != float64(1) || holes["has"] != true {
+		t.Errorf("review_evidence unknown = %v, want the named hole", holes)
 	}
 	// undefined: no merged line and an unfit intercept read absent,
 	// never zero

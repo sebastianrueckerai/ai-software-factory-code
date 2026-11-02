@@ -246,6 +246,105 @@ func TestDivideConquerSessionReviewRetries(t *testing.T) {
 	}
 }
 
+// Roadmap 336: one attempt, one review fact — the attempt's evidence.
+// The identity is the head and the round together, so a persistence
+// replay of one attempt leaves the row it already wrote, a second
+// genuine round of the same head adds its own row and a round of
+// another head its own beside it; a write the store refuses is the
+// activity's error, observable, and its retry writes the row once. A
+// legacy row without its identity or classification the store cannot
+// collapse — a replay writes it again — and no identity of its own ever
+// lands: it stays what it is, unknown evidence the panels name, never
+// an answer the producer fabricated. [ledger_retry_integrity]
+func TestDivideConquerReviewAttemptEvidence(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"s","findings":["f"]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	// round 1 of head c1: a genuine negative answer that judged the head
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	// the persistence replay of the same attempt: the identity keeps one
+	// row, so the replay adds no answer
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+	// a second genuine round of the same head: its own answer
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 2); err != nil {
+		t.Fatal(err)
+	}
+	// a round of another head: the gateway refuses it, its answer never
+	// judged — and the store's refusal of the row is the activity's own
+	// error, so the retry writes it
+	fj.head = "c2"
+	refused := &fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"}
+	r.supervisor = testSupervisorModel(refused.srv(t).URL)
+	store.recordFails = map[string]int{EventModelReview: 1}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c2", GateResults{}, nil, 1); err == nil || !strings.Contains(err.Error(), "the store is down") {
+		t.Fatalf("review err = %v, want the refused row", err)
+	}
+	if rows := eventsOfKind(store, EventModelReview); len(rows) != 2 {
+		t.Fatalf("model_review rows = %d (%v), want none of the refused write", len(rows), rows)
+	}
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c2", GateResults{}, nil, 1); err != nil {
+		t.Fatal(err)
+	}
+
+	rows := eventsOfKind(store, EventModelReview)
+	if len(rows) != 3 {
+		t.Fatalf("model_review rows = %d (%v), want the three attempts' once each", len(rows), rows)
+	}
+	want := []struct {
+		identity string
+		reviewed bool
+		verdict  string
+	}{
+		{EventModelReview + " c1 1", true, "concerns"},
+		{EventModelReview + " c1 2", true, "concerns"},
+		{EventModelReview + " c2 1", false, ""},
+	}
+	for i, w := range want {
+		row := rows[i]
+		if row.TaskID != "t1" || row.Repository != "sf/repo" || row.IssueNumber != 4 {
+			t.Fatalf("row %d = %+v, want task t1's card", i, row)
+		}
+		if row.IdentityKey != w.identity {
+			t.Fatalf("row %d identity = %q, want %q", i, row.IdentityKey, w.identity)
+		}
+		if row.Detail["reviewed"] != w.reviewed || row.Detail["verdict"] != w.verdict {
+			t.Fatalf("row %d detail = %v, want the classification reviewed %v of verdict %q", i, row.Detail, w.reviewed, w.verdict)
+		}
+		if !w.reviewed {
+			reason, _ := row.Detail["reason"].(string)
+			if reason == "" || len(reason) > maxFactReason+1 {
+				t.Fatalf("row %d reason = %q, want the bounded reason of an answer that never judged", i, reason)
+			}
+		}
+	}
+
+	// the legacy row no identity holds: recorded twice, it lands twice —
+	// the store cannot know it one attempt — and no classification of
+	// its own ever lands, so it stays unknown evidence, never an answer
+	legacy := Event{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventModelReview,
+		Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"pr": 9, "commit": "c9", "round": 1, "model": "big", "verdict": "approve"}}
+	for write := 1; write <= 2; write++ {
+		if _, err := store.Record(context.Background(), legacy); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rows = eventsOfKind(store, EventModelReview)
+	if len(rows) != 5 {
+		t.Fatalf("model_review rows = %d, want the three attempts' and the legacy row twice: no identity holds it one", len(rows))
+	}
+	for i, row := range rows[3:] {
+		if row.IdentityKey != "" || row.Detail["reviewed"] != nil {
+			t.Fatalf("legacy row %d = %+v: no identity, no classification — unknown evidence, never an answer", i, row)
+		}
+	}
+}
+
 // Roadmap 336: a named start is a fact row beside its timeline line,
 // as stable as the end — the row an activity retry replays is one row
 // (the identity is the card and the session), and a refused write is

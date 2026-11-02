@@ -924,15 +924,17 @@ func checksStep(start, end time.Time, failed string) map[string]any {
 }
 
 // pushedTimeline is a card's timeline: one session on alias from start
-// that pushed, and checks with failed ("" for none).
+// that pushed, and checks with failed ("" for none) judging that push.
 func pushedTimeline(start time.Time, alias, failed string) []map[string]any {
+	checks := checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed)
+	checks["commit"] = "4be1c07"
 	return []map[string]any{
 		{"step": "intake", "time": stamp(start.Add(30 * time.Second)), "started": stamp(start), "source": "webhook"},
 		{"step": "session_start", "time": stamp(start.Add(time.Minute)), "session": "s-1", "model": alias, "attempt": 1},
 		{"step": "session_end", "time": stamp(start.Add(19 * time.Minute)), "session": "s-1", "started": stamp(start.Add(time.Minute)),
 			"attempt": 1, "outcome": "pushed"},
 		{"step": "pushed", "time": stamp(start.Add(19*time.Minute + 5*time.Second)), "session": "s-1", "commit": "4be1c07"},
-		checksStep(start.Add(19*time.Minute+10*time.Second), start.Add(26*time.Minute), failed),
+		checks,
 	}
 }
 
@@ -958,7 +960,7 @@ func busyScene(now time.Time) labScene {
 	plan := labCard(now, 558, "waiting-human", "plan", 64*time.Minute, "Console: a project's activity feed",
 		"Show each project's events as a feed beside the board: who did what, by which way, when.\nThe feed reads the events table; no new store.\n"+
 			"A writer filters it by card and by kind.\nIt pages back 500 rows at most.\nAcceptance: the feed shows a steer within a second of its row.")
-	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias = 5, 0.38, "big"
+	plan.BudgetEUR, plan.SpentEUR, plan.ModelAlias, plan.PlanName = 5, 0.38, "big", "activity feed"
 	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Four cards: the feed's read model first, then the page and the filters side by side, then the live rows.",
 		Cards: []factoryd.PlanCard{
 			{Key: "feed-read", Role: factoryd.RoleFoundation, Title: "Events: a paged read of a project's feed", Size: "small"},
@@ -1008,6 +1010,9 @@ func busyScene(now time.Time) labScene {
 		"Offer the newest snapshot as a download beside the costs table."), WaitingOn: "#603, #611"}
 	queued := factoryd.BoardTask{Task: labCard(now, 617, "queued", "direct", 40*time.Minute, "Chat form: center the Send button next to the two-row textarea",
 		"The Send button sits at the textarea's top edge; center it on the two rows."), Dependencies: "#611, #614"}
+	planOpen := factoryd.BoardTask{Task: labCard(now, 537, "waiting-deps", "plan", 8*time.Hour, "Costs: a per-model spend table",
+		"Break the costs page's spend down by model, with a cap line per model."), WaitingOn: "#533"}
+	planOpen.PlanName = "quota guard"
 	child := func(issue int64, status, key, title string, age time.Duration) factoryd.Task {
 		k := labCard(now, issue, status, "direct", age, title, fmt.Sprintf("Card %s of plan #531, filed for sebastian. Written by the planner.", key))
 		k.Source, k.Parent, k.PlanKey = factoryd.SourcePlan, labID(531), key
@@ -1027,7 +1032,9 @@ func busyScene(now time.Time) labScene {
 
 	planDone := finished(labCard(now, 531, "done", "plan", 30*time.Hour, "Console: the card drawer",
 		"Open a card beside the board with its overview, its activity, its files and its session."), now, 26*time.Hour, 0.52)
-	planDone.BudgetEUR, planDone.ModelAlias = 5, "big"
+	planDone.BudgetEUR, planDone.ModelAlias, planDone.PlanName = 5, "big", "card chips"
+	planClosed := finished(labCard(now, 527, "closed", "plan", 4*24*time.Hour, "Console: the pulse strip",
+		"Show the factory's pulse as a strip above the board."), now, 3*24*time.Hour, 0)
 	exported := finished(labCard(now, 596, "done", "direct", 9*time.Hour, "Chat: the Undo of a move restores the lane",
 		"An undone move leaves the card in ready; put it back where it was."), now, 7*time.Hour, 0.33)
 	exported.GitHubPR, exported.GitHubPRURL, exported.GitHubPRState = 14, "https://github.com/sebastianrueckerai/ai-software-factory-code/pull/14", "open"
@@ -1046,7 +1053,7 @@ func busyScene(now time.Time) labScene {
 		{Task: finished(labCard(now, 600, "done", "direct", 5*time.Hour, "Costs: the day cap line under the table",
 			"Show today's spend against the day cap under the costs table."), now, 3*time.Hour, 0.18)},
 		{Task: finished(child(535, "failed", "drawer-activity", "Drawer: the Activity tab", 26*time.Hour), now, 18*time.Hour, 1.12)},
-		{Task: failed}, {Task: closed},
+		{Task: failed}, {Task: closed}, {Task: planClosed}, planOpen,
 	}
 	s.deps = map[string][]string{labID(617): {labID(611), labID(614)}, labID(616): {labID(603), labID(611)}}
 
@@ -1766,10 +1773,10 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 			t.Errorf("child #%d's title %q, want its headline %q", tc.issue, got, tc.title)
 		}
 	}
-	// the one child still in play wears its key on the plan chip; the
-	// finished children's rows have none
-	if got := strings.Count(body, `<span class="chip plan">from plan #531 · drawer-files</span>`); got != 1 {
-		t.Errorf("%d chips read from plan #531 · drawer-files, want the queued child's one", got)
+	// the three children in play (#606, #617, #533) wear the plan's name on the
+	// plan chip; the finished children's rows have none
+	if got := strings.Count(body, `<span class="chip plan">from plan #531 · card chips</span>`); got != 3 {
+		t.Errorf("%d chips read from plan #531 · card chips, want the 3 children in play", got)
 	}
 	for _, key := range []string{"drawer-files", "drawer-overview", "drawer-chat", "drawer-activity"} {
 		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {
