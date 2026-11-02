@@ -1147,9 +1147,12 @@ type rig struct {
 	chat       *fakeChat
 	chatTokens *fakeChatTokens
 	// cardSteps are card_step's answers by task id, step 1 first, and
-	// boardDigests the board digests by repository
+	// boardDigests the board digests by repository; openCases are the
+	// open cases by task id, and caseSteps their steps by case id
 	cardSteps    map[string][]string
 	boardDigests map[string]factoryd.BoardDigest
+	openCases    map[string][]factoryd.Case
+	caseSteps    map[int64][]factoryd.CaseStep
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1285,7 +1288,9 @@ func newRig(t *testing.T) *rig {
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
 		},
-		ChatToken: func(factoryd.Project) string { return r.chatToken },
+		OpenCasesOf: func(_ context.Context, taskID string) ([]factoryd.Case, error) { return r.openCases[taskID], nil },
+		CaseSteps:   func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
+		ChatToken:   func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate
@@ -1623,6 +1628,8 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CardDigest":  func(c *Config) { c.CardDigest = nil },
 		"CardStep":    func(c *Config) { c.CardStep = nil },
 		"BoardDigest": func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf": func(c *Config) { c.OpenCasesOf = nil },
+		"CaseSteps":   func(c *Config) { c.CaseSteps = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)

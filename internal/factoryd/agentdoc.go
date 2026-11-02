@@ -458,7 +458,14 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}
 	t := Task{ID: agentDocTask, Objective: "Fix the counter so it counts the skipped rows too.",
 		Repository: "owner/name", IssueNumber: 42, Author: "fixture-author"}
-	facts, acts, err := briefFacts(a, t, nil)
+	at := time.Date(2026, 10, 31, 10, 0, 0, 0, time.UTC)
+	life := CardDigest{Head: DigestHead{Issue: 42, BudgetEUR: 3, SpentEUR: 0.41, Status: "in-review", Gate: GateApproval},
+		Steps: []DigestStep{
+			{N: 1, At: at, Kind: "filed", Actor: "fixture-author", Outcome: "direct card", Count: 1},
+			{N: 2, At: at.Add(5 * time.Minute), Offset: 5 * time.Minute, Kind: "session", Actor: "1 small", Outcome: "pushed a1b2c3d", Count: 1},
+			{N: 3, At: at.Add(30 * time.Minute), Offset: 30 * time.Minute, Kind: "review", Outcome: "changes_requested", Count: 1},
+		}}.Render()
+	facts, acts, err := briefFacts(a, t, nil, life)
 	if err != nil {
 		return nil, err
 	}
@@ -469,6 +476,7 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 	return []agentdoc.Span{
 		{Name: "the brief prompt", Symbol: "factoryd.briefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the card's facts", Symbol: "factoryd.briefFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(facts)},
+		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
 	}, nil
 }
 

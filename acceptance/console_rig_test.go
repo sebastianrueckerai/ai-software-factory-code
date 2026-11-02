@@ -193,8 +193,8 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 }
 
 // cardReads wires cfg's card reads over tasks: a card's digest is its
-// head from the task row, the rig holds no card step, and the board
-// digest is empty.
+// head from the task row, the rig holds no card step and no case, and
+// the board digest is empty.
 func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.CardDigest = func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
 		k, _, err := tasks.Task(ctx, taskID)
@@ -205,6 +205,8 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return "", factoryd.ErrNoStep("the acceptance rig holds no card step")
 	}
 	cfg.BoardDigest = func(context.Context, string) (factoryd.BoardDigest, error) { return factoryd.BoardDigest{}, nil }
+	cfg.OpenCasesOf = func(context.Context, string) ([]factoryd.Case, error) { return nil, nil }
+	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers

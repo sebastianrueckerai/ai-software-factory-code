@@ -672,6 +672,8 @@ func main() {
 		CardDigest:     runner.CardDigest,
 		CardStep:       runner.CardStep,
 		BoardDigest:    runner.BoardDigest,
+		OpenCasesOf:    store.OpenCasesOf,
+		CaseSteps:      store.CaseSteps,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		ChatTokens:     store,
@@ -711,7 +713,8 @@ func main() {
 		RoadmapHead: consoleHandler.RoadmapHead}).Loop(ctx, 5*time.Second)
 	// the needs-you cards' briefs: one small model call each, a pass after
 	// they file, so filing never waits on the writer
-	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken)}).Loop(ctx, 5*time.Second)
+	go (&factoryd.BriefWriter{Store: store, Current: policyLoader.Current, Model: supervisorModel(gatewayURL, gatewayToken),
+		CardDigest: runner.CardDigest}).Loop(ctx, 5*time.Second)
 	consoleServer := &http.Server{
 		Addr:              *consoleAddr,
 		Handler:           telemetry.Handler(otelProviders.Tracer, "factoryd", consoleHandler),

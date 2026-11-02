@@ -337,6 +337,12 @@ type Config struct {
 	CardDigest  func(ctx context.Context, taskID string) (factoryd.CardDigest, error)
 	CardStep    func(ctx context.Context, taskID string, n int, transcript factoryd.TranscriptPointer) (string, error)
 	BoardDigest func(ctx context.Context, repository string) (factoryd.BoardDigest, error)
+	// OpenCasesOf are a card's open and at_human cases, oldest first, and
+	// CaseSteps a case's steps, oldest first (factoryd's PGStore): the
+	// drawer's fold of the card's life lists its open cases' steps. New
+	// refuses a Config without either.
+	OpenCasesOf func(ctx context.Context, taskID string) ([]factoryd.Case, error)
+	CaseSteps   func(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error)
 	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
 	// "" when the task's free headroom can fund a session's opening calls and
 	// its rung's floor on model, else the refusal (factoryd's
@@ -494,6 +500,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		{"GET /projects/{name}/events/stream", c.projectEventsStream, "", "the event stream: the live half of the events fragment"},
 		{"GET /cards/{id}", c.cardFragment, "", "a card's face: a fragment of the board page, whose tool is card"},
 		{"GET /cards/{id}/drawer", c.cardDrawer, "", "a card's drawer: a fragment of the board page, whose tool is card"},
+		{"GET /tasks/{id}/digest", c.cardLife, "", "the drawer's fold of a card's life: a fragment of the board page, whose tool is card"},
 		{"GET /routines/{project}/{name}/drawer", c.routineDrawer, "", "a routine's drawer: a fragment of the board page, whose tool is routines"},
 		{"GET /projects/{name}/chat", c.chatGet, "", "the chat's own page"},
 		{"GET /projects/{name}/chat/conversations", c.chatConversations, "", "the chat's conversation list: the chat's own route"},
@@ -597,6 +604,10 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no CardStep")
 	case cfg.BoardDigest == nil:
 		return nil, errors.New("console: no BoardDigest")
+	case cfg.OpenCasesOf == nil:
+		return nil, errors.New("console: no OpenCasesOf")
+	case cfg.CaseSteps == nil:
+		return nil, errors.New("console: no CaseSteps")
 	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}

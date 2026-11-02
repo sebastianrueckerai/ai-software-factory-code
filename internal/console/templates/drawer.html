@@ -22,6 +22,7 @@
 {{else}}<p class="open-bad">{{.Card.Activity}}{{with .Card.StaleText}} · {{.}}{{end}}</p>
 {{end}}{{end}}{{end}}</div>
 {{end}}<details class="sec" data-sec="time"><summary>Time<span class="hint">{{.Life}}</span></summary><div class="sec-body"><div class="life">{{range .Runs}}<span class="mono">{{.At}}</span><span class="k {{.Class}}">{{.Kind}}</span><span class="mono num">{{.Duration}}</span><span class="mono num">{{if .Costs}}{{eur2 .EUR}}{{end}}</span><span class="tnote">{{.Note}}</span>{{end}}</div></div></details>
+<details class="sec" data-sec="life"><summary>The card's life</summary><div class="sec-body" hx-get="/tasks/{{.Card.ID}}/digest" hx-trigger="revealed"><p class="meta">Loading…</p></div></details>
 {{with .Thread}}<p class="thread-link">{{if not .Own}}From {{.Who}}'s chat thread {{.Number}}{{else if .Title}}From your chat thread <button type="button" class="linkbtn" data-open-thread="{{.Number}}">{{.Title}}</button>{{else}}From your chat thread {{.Number}}, since deleted{{end}}</p>
 {{end}}{{if .Door}}<p class="thread-door"><button type="button" class="linkbtn" data-card-thread="{{.Card.ID}}">Talk about this card</button></p>
 {{end}}{{if or .Body .Provenance}}<details class="sec" data-sec="objective"><summary>Objective</summary><div class="sec-body">{{with .Body}}<p class="objective-body">{{.}}</p>{{end}}{{with .Provenance}}<p class="provenance">{{.}}</p>{{end}}</div></details>
@@ -71,3 +72,7 @@
 </table>
 {{end}}</div>
 </div>
+
+{{define "card-life"}}<pre class="digest">{{.Life}}</pre>
+{{with .Steps}}<h4>Open cases</h4><ul>{{range .}}<li>rung {{.Rung}} by {{.Actor}} → {{.Outcome}}{{with .Found}}: {{.}}{{end}}</li>{{end}}</ul>
+{{end}}{{end}}
