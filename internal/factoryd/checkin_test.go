@@ -265,15 +265,16 @@ type scriptedTools struct{ out map[string]string }
 
 // A conversation past its time cap stops as at the call cap: the call in
 // flight is cut, no further call is made, and the human ask carries the
-// time stop.
+// time stop with the time the conversation had.
 func TestCheckinTimeCapAsksAHuman(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
-	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != checkinTimeCapStop {
+	const reason = "check-in time cap reached after 20ms"
+	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's human ask", out.Decision, out.ReasonKind, out.Reason)
 	}
-	if chat.calls != 1 || out.Record.Reason != checkinTimeCapStop || len(out.Record.Calls) != 1 {
+	if chat.calls != 1 || out.Record.Reason != reason || len(out.Record.Calls) != 1 {
 		t.Fatalf("calls = %d, record %+v; want the one call the cap cut", chat.calls, out.Record)
 	}
 }
@@ -534,13 +535,13 @@ func TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer(t *testing.T) {
 }
 
 // A tool asked for on the last call is never run: the conversation ends
-// at the call cap's human ask under spend.
+// at the call cap's human ask under spend, which names the calls it had.
 func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
 		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached" {
+	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached after 2 calls" {
 		t.Fatalf("outcome = %+v, want the cap's human ask under spend", out)
 	}
 	if chat.calls != 2 {
@@ -557,7 +558,7 @@ func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || out.Reason == "check-in call cap reached" {
+	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || strings.HasPrefix(out.Reason, checkinCallCapStop) {
 		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
 	}
 	if out.ReasonKind != "" || out.Record.Reason != out.Reason {

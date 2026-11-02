@@ -125,6 +125,21 @@ const checkinCallCapStop = "check-in call cap reached"
 // time (limits.checkin_time): the card stops as at the call cap.
 const checkinTimeCapStop = "check-in time cap reached"
 
+// checkinCapStop is a cap stop's reason: stop, then the cap the check-in
+// ran with, which the stop's question names (checkinCapOf).
+func checkinCapStop(stop, cap string) string { return stop + " after " + cap }
+
+// checkinCapOf is the cap a cap stop's reason names after stop, "" for a
+// reason that names none.
+func checkinCapOf(reason, stop string) string {
+	_, rest, ok := strings.Cut(reason, stop+" after ")
+	if !ok {
+		return ""
+	}
+	cap, _, _ := strings.Cut(rest, "\n")
+	return cap
+}
+
 // atCheckinSpend: escalation is a check-in stopped under spend, at its
 // call cap or on the budget's share; checkinAnswer says what its answer
 // buys.

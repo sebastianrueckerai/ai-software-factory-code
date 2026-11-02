@@ -1124,8 +1124,11 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s), ask: &ask}
+		// the session's deadline sits sessionGrace before the activity's:
+		// the room the time cap's stop takes to land
+		timeCap := min(limits.CheckinTimeCap(), time.Until(deadline).Round(time.Second))
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), timeCap)
 		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id

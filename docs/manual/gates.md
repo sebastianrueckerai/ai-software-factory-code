@@ -238,7 +238,8 @@ head that moved (`queue_synced {from, to, main}`) runs the checks stage
 again, recorded as factoryd's own move like a re-run's head; policy,
 review and audit do not run again. Red checks there go back to the agent
 prefixed `after main was merged in:`, a 409 takes backlog 70's conflict
-path, and both leave the queue; green, the approval request and the
+path, whose instruction reaches the next session with no check-in, as a
+fact of Forgejo's, and both leave the queue; green, the approval request and the
 merge are pinned to the synced head. Every way out of the turn leaves
 the queue (`queue_left`) and signals `queue_turn` to the new head, and so
 does `Finish`; the heal pass signals every head still in gate
@@ -369,8 +370,8 @@ Before a checkpoint has measured the card's diff, the line says the
 changed lines are not measured at this moment. A report or plan
 session's statement carries no pace line. A conversation gets
 `limits.checkin_calls` (20) calls, the last without tools, and
-`limits.checkin_time` (90 s a call when absent, 30m at 20 calls); past
-either, a human.
+`limits.checkin_time` (90 s a call when absent, 30m at 20 calls, at most
+30m, and never past the session's end); past either, a human.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
 human with no call. Nothing the check-in answers changes a cap or a

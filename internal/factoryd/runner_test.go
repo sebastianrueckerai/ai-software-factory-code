@@ -4604,6 +4604,30 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	}
 }
 
+// A start check-in never outlives its session: with 2 seconds of agent
+// time and the default 30-minute cap, the slow conversation ends at the
+// session's deadline as the time cap's human ask, not as a refused call's
+// handover past the RunSession activity's own deadline.
+func TestRunSessionStartCheckinStopsAtTheSessionsDeadline(t *testing.T) {
+	runner, _, _, _, chat, _, _ := checkinRig(t,
+		`{"findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}],"decision":"handover","handover":"fix the caller first"}`)
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 2 * time.Second })
+	chat.delay = 15 * time.Second
+
+	began := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+	if err != nil || res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || !strings.HasPrefix(res.CheckIn.Reason, checkinTimeCapStop+" after ") {
+		t.Fatalf("result = (%+v, %v), want the time cap's human ask, naming the time the check-in had", res, err)
+	}
+	if had, err := time.ParseDuration(strings.TrimPrefix(res.CheckIn.Reason, checkinTimeCapStop+" after ")); err != nil || had > 2*time.Second {
+		t.Fatalf("the stop names %q, want at most the session's 2 seconds", res.CheckIn.Reason)
+	}
+	if took := time.Since(began); took > 10*time.Second || chat.calls != 1 {
+		t.Fatalf("took %s with %d calls: want the one call cut at the session's deadline", took, chat.calls)
+	}
+}
+
 // The gate moment's check-in opens with the policy's 20 calls too.
 func TestRunSessionGateCheckinOpensWithThePolicysCalls(t *testing.T) {
 	runner, _, _, _, chat, _, _ := checkinRig(t,

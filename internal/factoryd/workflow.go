@@ -1304,6 +1304,18 @@ const (
 	// began. A run from before keeps the head it verified, and an answer
 	// verifies it again and spends a head hold on the move.
 	versionVerifiedHead workflow.Version = 1
+	// versionConflictFact (change id "conflict-fact"): Forgejo's refusal to
+	// merge main into the pull request goes to the next session as its
+	// findings with no check-in: a fact, not a finding a model raised. Read
+	// where a conflict's findings are taken. A run from before asks the
+	// next session's check-in to judge it.
+	versionConflictFact workflow.Version = 1
+	// versionStoppedParent (change id "stopped-parent"): a session its
+	// mid-session check-in stopped ran its conversation and is the next
+	// session's parent, whose working state that one continues; a session
+	// stopped at its start check-in ran nothing and is none. Read at such a
+	// stop. A run from before keeps the last session that ended on its own.
+	versionStoppedParent workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1519,6 +1531,9 @@ type verdict struct {
 	// head: the head verify's stages ended on, its commit or one a stage
 	// adopted past it (taskRun.head)
 	head string
+	// conflict: the findings are Forgejo's refusal to merge main into the
+	// pull request (versionConflictFact)
+	conflict bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1577,7 +1592,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			from = "changes"
 		}
 		setFindings(v.findings, from)
-		if len(v.findings) > 0 {
+		if len(v.findings) > 0 && !(v.conflict && workflow.GetVersion(t.ctx, "conflict-fact", workflow.DefaultVersion, versionConflictFact) >= versionConflictFact) {
 			t.gateFindings = true
 		}
 		own, reason = nil, v.reason
@@ -2145,7 +2160,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			continue
 		}
-		if !res.StartFailed && res.Outcome != OutcomeCheckinHuman && res.Outcome != OutcomeCheckinDropped {
+		ran := res.Outcome == OutcomeCheckinHuman && res.CheckIn != nil && res.CheckIn.Record != nil && res.CheckIn.Record.Moment == CheckInSession
+		if !res.StartFailed && (res.Outcome != OutcomeCheckinHuman && res.Outcome != OutcomeCheckinDropped ||
+			ran && workflow.GetVersion(t.ctx, "stopped-parent", workflow.DefaultVersion, versionStoppedParent) >= versionStoppedParent) {
 			parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
 		}
 		if res.Model != "" {
@@ -2239,24 +2256,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.checkinRepeat >= versionCheckinRepeat {
 				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef), Share: u.ExtraCheckinShare,
 					ShareEUR: res.CheckIn.Share, ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
-				if prev := t.lastCheckinStop; prev.Kind == mark.Kind && prev.Tip != "" {
-					was, head := prev.Head, mark.Head
-					same := prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines
-					if t.checkinAnswers() {
-						was, head = prev.Tip, mark.Tip
-						same = same && prev.ShareEUR == mark.ShareEUR && prev.RaisedSessions == mark.RaisedSessions
+				if prev := t.lastCheckinStop; prev.Kind == mark.Kind {
+					ask := repeatAsk(prev, mark, false)
+					if fixed := repeatAsk(prev, mark, true); fixed != ask && t.checkinAnswers() {
+						ask = fixed
 					}
-					sha := head
-					if len(sha) > 7 {
-						sha = sha[:7]
-					}
-					switch {
-					case was == "" || was != head:
-					case prev.Granted:
-						reason = checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
-					case same:
-						reason = checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
-					}
+					reason = cmp.Or(ask, reason)
 				}
 				t.lastCheckinStop = mark
 			}
@@ -2278,7 +2283,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			spend := res.CheckIn.ReasonKind == CheckSpend
 			stop := checkinStop{spend: spend, share: spend && res.CheckIn.Reason == CheckinShareSpent,
-				callCap: spend && (res.Reason == checkinCallCapStop || res.Reason == checkinTimeCapStop)}
+				callCap: spend && (strings.HasPrefix(res.Reason, checkinCallCapStop) || strings.HasPrefix(res.Reason, checkinTimeCapStop))}
 			var verify bool
 			if startRef, verify = t.checkinAnswer(&u, stop, t.pr.Number != 0 && startRef != "", res.Commit, startRef); verify {
 				// verified below, as a dropped check-in's head is
@@ -2698,6 +2703,36 @@ func (t *taskRun) grant(u *TaskUsage) {
 	t.grantTime(u)
 }
 
+// repeatAsk is the ask a check-in stop with mark asks instead of its
+// own when it repeats the stop with prev, "" for none: the restart's
+// unchanged head when prev's answer bought one, else the deadlock's when
+// the head and the card's limits are unchanged. fixed compares as a run at
+// versionCheckinAnswer does: the branch's head, the share in euros, which
+// a mark from before the change does not carry, and the sessions the
+// console raised.
+func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
+	was, head := prev.Head, mark.Head
+	same := prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines
+	if fixed {
+		was, head = prev.Tip, mark.Tip
+		same = same && (prev.ShareEUR == 0 || prev.ShareEUR == mark.ShareEUR) && prev.RaisedSessions == mark.RaisedSessions
+	}
+	if was == "" || was != head {
+		return ""
+	}
+	sha := head
+	if len(sha) > 7 {
+		sha = sha[:7]
+	}
+	switch {
+	case prev.Granted:
+		return checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
+	case same:
+		return checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
+	}
+	return ""
+}
+
 // checkinStop is a check-in stop as its answer reads it: under spend, and
 // of those the budget's share spent, or the call cap or the time cap
 // reached.
@@ -2712,6 +2747,9 @@ type checkinStop struct{ spend, share, callCap bool }
 // The share stop's answer grants one more share (versionCheckinGrant),
 // beside the verification too (versionCheckinAnswer), recorded at once
 // there, for the runner reads the share from the row at the next check-in.
+// That grant leaves lastCheckinStop.Granted false: the answer buys a
+// verification, no restart, and the wider share makes the next stop at
+// the same head an ask of its own.
 func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, head string) (from string, verify bool) {
 	if pushed != "" && pushed != head && t.checkinAnswers() {
 		head = pushed
@@ -3345,7 +3383,7 @@ const mergeRetryAfter = 10 * time.Minute
 // back to the agent. The worker bases its commit on the main commit the
 // merge brings in, so main's changes, .forgejo/ among them, stay main's.
 func conflictVerdict(refusal string) verdict {
-	return verdict{reason: "the pull request no longer merges into main", findings: []string{
+	return verdict{reason: "the pull request no longer merges into main", conflict: true, findings: []string{
 		"the pull request no longer merges into main: main moved under it (Forgejo: " + refusal + "). " +
 			"Merge main into the branch with `git merge origin/main` (the clone's origin/main is main at this session's start), " +
 			"resolve every conflict keeping both main's changes and this task's, run the tests of the packages you touched, and end the session. " +

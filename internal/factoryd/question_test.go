@@ -15,9 +15,7 @@ import (
 // check-in, the caps, the gates and the sweep compose, with their
 // numbers; a reason no template covers shapes nothing.
 func TestShapedQuestionFamilies(t *testing.T) {
-	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
-	timeFacts := facts
-	timeFacts.CheckinTime = 5 * time.Minute
+	facts := QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
 	prFacts := facts
 	prFacts.PR = 1482
 	for name, tt := range map[string]struct {
@@ -31,7 +29,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		rec    []string
 	}{
 		"call cap": {
-			reason: checkinSpendAsk + "check-in call cap reached",
+			reason: checkinSpendAsk + "check-in call cap reached after 20 calls",
 			facts:  facts,
 			askHas: []string{"no answer within its 20 calls"},
 			whyHas: []string{"spent its calls on evidence and gave no decision", "€4.10 of its €5.00 budget", "€0.84 of it the check-in's €0.90 share"},
@@ -43,19 +41,25 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			facts:  facts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
 			whyHas: []string{"€4.10 of its €5.00 budget"},
-			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
+			info:   "Go on grants the card one more check-in share (€0.30), and the card goes on with your comment as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in share spent, pull request open": {
 			reason: checkinSpendAsk + CheckinShareSpent,
 			facts:  prFacts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
-			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
+			info:   "Go on grants the card one more check-in share (€0.30), and the card goes on with your comment as guidance. The spent budget stays spent.",
+			values: []string{AnswerGrant, AnswerPark, AnswerClose},
+		},
+		"call cap of a stop that named no calls": {
+			reason: checkinSpendAsk + "check-in call cap reached",
+			facts:  facts,
+			askHas: []string{"no answer within its calls. May the card go on?"},
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in time cap": {
-			reason: checkinSpendAsk + checkinTimeCapStop,
-			facts:  timeFacts,
+			reason: checkinSpendAsk + "check-in time cap reached after 5m0s",
+			facts:  facts,
 			askHas: []string{"no answer within its 5 minutes"},
 			whyHas: []string{"spent its time on evidence and gave no decision", "€4.10 of its €5.00 budget"},
 			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance, and the card's budget must cover its rung's session floor of €0.20. The spent budget stays spent.",
@@ -351,21 +355,36 @@ func TestBudgetQuestionButtons(t *testing.T) {
 	}
 }
 
-// The question's numbers: the call cap is the policy's, one check-in
-// conversation's calls, and the share is the card's own as the human's
-// answers widened it.
-func TestQuestionFactsReportTheCapAndTheGrantedShare(t *testing.T) {
+// The question's share is the card's own as the human's answers widened
+// it.
+func TestQuestionFactsReportTheGrantedShare(t *testing.T) {
 	store := newFakeStore()
 	store.checkinSpent = map[string]float64{"t1": 1.2}
 	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinShare: 20}}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
 	task := Task{ID: "t1", BudgetEUR: 5, Usage: TaskUsage{ExtraCheckinShare: 2}}
-	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached")
-	if f.CheckinCap != 20 { // the policy's default calls
-		t.Errorf("CheckinCap = %d, want the policy's 20", f.CheckinCap)
-	}
+	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached after 20 calls")
 	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
 		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
+	}
+}
+
+// A cap stop's question names the cap the check-in ran with, which its
+// reason carries, not the cap of the policy in force when it is asked:
+// card #1491's check-in ran 5 minutes under its pinned version, and the
+// question said 30.
+func TestCapStopQuestionNamesTheCapTheCheckinRanWith(t *testing.T) {
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinTime: 30 * time.Minute, CheckinCalls: 24}}}}
+	r := &Runner{store: newFakeStore(), cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", BudgetEUR: 5}
+	for reason, want := range map[string]string{
+		checkinSpendAsk + "check-in time cap reached after 5m0s":     "The check-in gave no answer within its 5 minutes. May the card go on?",
+		checkinSpendAsk + "check-in time cap reached after 20s":      "The check-in gave no answer within its 20 seconds. May the card go on?",
+		checkinSpendAsk + "check-in call cap reached after 20 calls": "The check-in gave no answer within its 20 calls. May the card go on?",
+	} {
+		if q := ShapedQuestion(reason, r.questionFacts(context.Background(), task, reason), nil); q.Ask != want {
+			t.Errorf("%s: ask %q, want %q", reason, q.Ask, want)
+		}
 	}
 }
 
@@ -493,7 +512,7 @@ func TestSpendStopQuestionCarriesTheWorkState(t *testing.T) {
 	if share.Why != strings.TrimPrefix(body, "\n") {
 		t.Errorf("the share why = %q, want the reason's body %q", share.Why, strings.TrimPrefix(body, "\n"))
 	}
-	callCap := ShapedQuestion(checkinSpendAsk+"check-in call cap reached"+body, QuestionFacts{CheckinCap: 20}, nil)
+	callCap := ShapedQuestion(checkinSpendAsk+"check-in call cap reached after 20 calls"+body, QuestionFacts{}, nil)
 	if callCap.Why != strings.TrimPrefix(body, "\n") {
 		t.Errorf("the call-cap why = %q, want the reason's body %q", callCap.Why, strings.TrimPrefix(body, "\n"))
 	}

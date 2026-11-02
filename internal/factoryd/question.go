@@ -113,8 +113,6 @@ func (q *HumanQuestion) Labels() []string {
 // the caller has them at hand; zero fields leave the ask with the reason's
 // own numbers or without that number.
 type QuestionFacts struct {
-	CheckinCap    int           // the policy's calls of one check-in conversation
-	CheckinTime   time.Duration // the policy's time of one check-in conversation
 	GrantTime     time.Duration // the agent time a grant leaves the next session
 	CheckinSpent  float64       // EUR of the check-in share spent
 	CheckinShare  float64       // EUR, the policy's check-in share of the budget, its grants included
@@ -159,8 +157,8 @@ func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQues
 // their template, every other ask plainQuestion.
 func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	switch {
-	case strings.HasPrefix(reason, checkinSpendAsk+checkinCallCapStop), reason == checkinCallCapStop,
-		strings.HasPrefix(reason, checkinSpendAsk+checkinTimeCapStop), reason == checkinTimeCapStop:
+	case strings.HasPrefix(reason, checkinSpendAsk+checkinCallCapStop), strings.HasPrefix(reason, checkinCallCapStop),
+		strings.HasPrefix(reason, checkinSpendAsk+checkinTimeCapStop), strings.HasPrefix(reason, checkinTimeCapStop):
 		return callCapQuestion(reason, f)
 	case strings.HasPrefix(reason, checkinSpendAsk+"the check-in's share of the budget is spent"),
 		reason == "the check-in's share of the budget is spent":
@@ -268,8 +266,14 @@ const continueInfo = "An answer starts the attempt again: with a pull request it
 // reasonBody is the work state a stop's reason carries under its first
 // line, if it carries any.
 // minutesWord says a duration in whole minutes, as a card's reader counts
-// agent time.
+// agent time, and one under a minute in seconds.
 func minutesWord(d time.Duration) string {
+	if d < time.Minute {
+		if n := int(d.Round(time.Second) / time.Second); n != 1 {
+			return fmt.Sprintf("%d seconds", n)
+		}
+		return "1 second"
+	}
 	if n := int(d.Round(time.Minute) / time.Minute); n != 1 {
 		return fmt.Sprintf("%d minutes", n)
 	}
@@ -288,11 +292,11 @@ func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	switch {
 	case strings.Contains(reason, checkinTimeCapStop):
 		ask, spent = "The check-in gave no answer within its time. May the card go on?", "time"
-		if f.CheckinTime > 0 {
-			ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", minutesWord(f.CheckinTime))
+		if d, err := time.ParseDuration(checkinCapOf(reason, checkinTimeCapStop)); err == nil {
+			ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", minutesWord(d))
 		}
-	case f.CheckinCap > 0:
-		ask = fmt.Sprintf("The check-in gave no answer within its %d calls. May the card go on?", f.CheckinCap)
+	case checkinCapOf(reason, checkinCallCapStop) != "":
+		ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", checkinCapOf(reason, checkinCallCapStop))
 	}
 	info := "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent."
 	if f.FloorEUR > 0 {
@@ -315,7 +319,7 @@ func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 	info := continueInfo
 	if f.CheckinGrant > 0 {
-		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f) and starts the session again with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
+		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f), and the card goes on with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
 	}
 	q := &HumanQuestion{
 		Ask:     ask,
@@ -878,7 +882,7 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 }
 
 // questionFacts reads the numbers the templates fill from: the check-in
-// spend the task has made, the policy's call cap and the card's shares,
+// spend the task has made, the card's shares,
 // the caps and money of the card and of the month wherever a template or
 // the plain tail shows them, and the pull request a budget stop's raise
 // funds. It reads nothing for a reason the templates do not cover.
@@ -934,8 +938,6 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 	}
 	if r.cfg.Policy != nil {
 		limits := r.cfg.Policy().Document.Limits
-		f.CheckinCap = limits.CheckinCallCap()
-		f.CheckinTime = limits.CheckinTimeCap()
 		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
 		f.CheckinGrant = limits.CheckinShareOf(t.BudgetEUR)
 		if t.ModelAlias != "" {
