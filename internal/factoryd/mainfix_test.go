@@ -486,6 +486,76 @@ func TestRollerEndsTheFixCardWhenMainTurnsGreenWithoutIt(t *testing.T) {
 	}
 }
 
+// signalOrder is a Workflows that records, at each signal, how many
+// issues and pull requests f had closed.
+type signalOrder struct {
+	*fakeWorkflows
+	f      *rollForgejo
+	closed []string
+}
+
+func (w *signalOrder) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	w.f.mu.Lock()
+	w.closed = append(w.closed, fmt.Sprintf("%s after %d issues, %d pull requests", taskID, len(w.f.closed), len(w.f.closedPRs)))
+	w.f.mu.Unlock()
+	return w.fakeWorkflows.Signal(ctx, taskID, name, sig)
+}
+
+// Main green ends every remedy of the pause that did not merge, before
+// the queue's heads wake: a revert still pending would merge as an
+// ordinary card and revert a commit on a green main. An agent-lane revert
+// ends through its issue's close, a human-lane one (a project without
+// agents) through its pull request's, which the heal pass takes to the
+// card. A revert that merged made main green itself and stays as it is.
+func TestRollerEndsTheRevertWhenMainTurnsGreenWithoutIt(t *testing.T) {
+	green := "factoryd: main's push run 0 at " + commitC2 + " is green (https://git.example/" + codeRepo + "/actions/runs/0)"
+	for _, tc := range []struct {
+		name     string
+		rev      Task
+		comments []string
+		closed   []string
+		prs      []int64
+	}{
+		{"an agent-lane revert", Task{Kind: "agent", Status: "in-review"},
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue.", "42 " + green + ": main is green without this revert. Closing this issue."},
+			[]string{"40", "42"}, nil},
+		{"a human-lane revert", Task{Kind: "human", Status: "waiting-human"},
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue.", "43 " + green + ": main is green without this revert. Closing this pull request."},
+			[]string{"40"}, []int64{43}},
+		{"a merged revert", Task{Kind: "agent", Status: "merged", MergeCommit: commitC2},
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue."},
+			[]string{"40"}, nil},
+	} {
+		f := &rollForgejo{
+			runs:  []map[string]any{pushRun(59, commitC2, "success"), pushRun(58, commitC1, "failure")},
+			files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+			registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+				gwOldIdx, workerOldIdx, runnerIdx),
+		}
+		roller, store, wf := newTestRoller(t, f)
+		order := &signalOrder{fakeWorkflows: wf, f: f}
+		roller.Workflows = order
+		roller.Forgejo.PublicURL = "https://git.example"
+		store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+		store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
+		store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
+		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+		rev := tc.rev
+		rev.ID, rev.Source, rev.Repository, rev.IssueNumber, rev.PRNumber = "rev1", SourceRevert, codeRepo, 42, 43
+		store.tasks["rev1"] = rev
+		store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "rev1"}}
+		if err := roller.poll(context.Background()); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(f.comments, tc.comments) || !slices.Equal(f.closed, tc.closed) || !slices.Equal(f.closedPRs, tc.prs) {
+			t.Errorf("%s: comments %q, closed issues %q, closed pull requests %v; want %q, %q, %v", tc.name, f.comments, f.closed, f.closedPRs, tc.comments, tc.closed, tc.prs)
+		}
+		if want := []string{fmt.Sprintf("w1 after %d issues, %d pull requests", len(tc.closed), len(tc.prs))}; !slices.Equal(order.closed, want) {
+			t.Errorf("%s: signals %q, want %q: the pause's cards end before the queue's head wakes", tc.name, order.closed, want)
+		}
+	}
+}
+
 // A re-run's pause round-trips through Postgres with no card; the card
 // that follows the re-run's red takes the row and keeps its since, main
 // red since then, and a pause written after the clear has its own.
