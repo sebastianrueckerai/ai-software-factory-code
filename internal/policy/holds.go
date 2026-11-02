@@ -532,15 +532,6 @@ func PremiumMonthSpentSQL(at string) string {
 	return `COALESCE((SELECT sum(eur) FROM ledger WHERE day >= date_trunc('month', ` + at + ` AT TIME ZONE 'UTC')::date AND ` + premiumRef + `), 0)`
 }
 
-// DayFree is the UTC day's free headroom under dayEUR at at, the day's
-// figure FreeHeadroom fits a hold into: dayEUR less the day's spend and
-// every outstanding hold.
-func DayFree(ctx context.Context, db *sql.DB, dayEUR float64, at time.Time) (float64, error) {
-	var free float64
-	err := db.QueryRowContext(ctx, `SELECT ($1 - `+daySpentSQL("$2::timestamptz")+` - `+heldSQL+`)::float8`, dayEUR, at).Scan(&free)
-	return free, err
-}
-
 // now is the clock of the day's and the month's headroom.
 var now = time.Now
 

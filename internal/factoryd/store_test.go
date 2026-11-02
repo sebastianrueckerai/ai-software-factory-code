@@ -74,12 +74,10 @@ type fakeStore struct {
 	liveSessions   map[string]LiveSession
 	pauses         map[string]QueuePause
 	// monthSpend is MonthSpend's answer, capRefusals CapRefusal's by task,
-	// budgetRefused BudgetRefused's by task; DayFree answers the day's cap
-	// less daySpent
+	// budgetRefused BudgetRefused's by task
 	monthSpend    MonthSpend
 	capRefusals   map[string]CapRefusal
 	budgetRefused map[string]bool
-	daySpent      float64
 	// providerRefusals are ProviderRefusal's answers by task
 	providerRefusals map[string]string
 	answered         map[string]bool // ModelAnswered's answer by task
@@ -1791,10 +1789,6 @@ func (s *fakeStore) JudgeEscalations(ctx context.Context, taskID string, filter 
 		}
 	}
 	return nil
-}
-
-func (s *fakeStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
-	return dayEUR - s.daySpent, nil
 }
 
 func (s *fakeStore) alertRows() []Alert {

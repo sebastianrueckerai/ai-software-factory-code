@@ -423,9 +423,6 @@ type Store interface {
 	// Opening is how the newest sessions opened on ref, read for the task
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
-	// DayFree is the UTC day's free headroom under dayEUR now, every
-	// outstanding hold netted (policy.DayFree).
-	DayFree(ctx context.Context, dayEUR float64) (float64, error)
 	// OverHoldCall is the task's agent's newest model call since since
 	// that the gateway booked beyond its hold (COST OVER HOLD), nil for
 	// none.

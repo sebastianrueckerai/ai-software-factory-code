@@ -37,20 +37,21 @@ const (
 
 // capOpenings is, by the refusal's decision, the opening of the reasons of
 // a card stopped at the cap (waiting for a human, and resuming on its own),
-// the source of its escalation alerts and its period.
-var capOpenings = map[string]struct{ waits, resumes, source, period string }{
-	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day"},
-	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month"},
-	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month"},
+// the source of its escalation alerts, its period and its name.
+var capOpenings = map[string]struct{ waits, resumes, source, period, name string }{
+	policy.RefusedDayCap:     {dayCapReached, dayCapResumes, "day_cap", "day", "day cap"},
+	policy.RefusedMonthCap:   {monthCapReached, monthCapResumes, SourceMonthCap, "month", "month cap"},
+	policy.RefusedProjectCap: {projectCapReached, projectCapResumes, "project_cap", "month", "project's month cap"},
 }
 
-// capGateway and capFloor say what refused at the cap decision, which
-// opens the second line of the reason: the gateway a session's call, or
-// the attempt's floor the attempt before it started.
+// capGateway says the gateway refused a session's call at the cap
+// decision; it opens the second line of the reason.
 func capGateway(decision string) string {
 	return "the gateway refused this task's spend (" + decision + ")"
 }
 
+// capFloor says the attempt's floor refused the attempt at the cap
+// decision before it started; it opens the second line of the reason.
 func capFloor(decision string) string {
 	return "the attempt's floor refused the attempt before it started (" + decision + ")"
 }

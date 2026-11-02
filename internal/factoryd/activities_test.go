@@ -2896,6 +2896,7 @@ type capRig struct {
 	store   *fakeStore
 	objects *fakeObjectStore
 	v       *policy.Version
+	at      time.Time
 	day     float64
 	month   float64
 	project float64
@@ -2908,12 +2909,13 @@ type capRig struct {
 func newCapRig(t *testing.T) *capRig {
 	t.Helper()
 	store, objects := newFakeStore(), &fakeObjectStore{}
+	at := time.Date(2026, 10, 31, 23, 40, 0, 0, time.UTC)
 	if err := store.CreateTask(context.Background(), Task{ID: "t1", Repository: "sf/app", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 2, Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
 	store.alerts = []Alert{{ID: 1, Kind: AlertEscalation, Source: "month_cap", TaskID: "t1"}, {ID: 2, Kind: AlertEscalation, Source: "day_cap", TaskID: "t1"},
 		{ID: 3, Kind: AlertEscalation, Source: "month_cap", TaskID: "t2"}, {ID: 4, Kind: AlertEscalation, Source: "project_cap", TaskID: "t1"}}
-	v := &policy.Version{ID: 7, ActivatedAt: time.Now().Add(-time.Hour), Tree: policy.Tree{
+	v := &policy.Version{ID: 7, ActivatedAt: at.Add(-time.Hour), Tree: policy.Tree{
 		Document: policy.Document{
 			Budget: policy.Budget{DayEUR: 40, MonthEUR: 544, SessionFloorFrontierEUR: 0.6},
 			Prices: policy.ToolPrices{MaxOutputTokens: map[string]int{"big": 32768}},
@@ -2922,7 +2924,9 @@ func newCapRig(t *testing.T) *capRig {
 	}}
 	cfg := RunnerConfig{Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}, Prices: stubPrices{price: policy.Price{In: 3e-6, Out: 1.5e-5, MaxOutput: 32768}},
 		Policy: func() policy.Version { return *v }}
-	return &capRig{r: &Runner{store: store, cfg: cfg, timeline: &Timeline{Objects: objects}}, store: store, objects: objects, v: v}
+	g := &capRig{store: store, objects: objects, v: v, at: at}
+	g.r = &Runner{store: store, cfg: cfg, timeline: &Timeline{Objects: objects}, now: func() time.Time { return g.at }}
+	return g
 }
 
 // check is CapResume for decision after the rig's spend, free under the
@@ -2985,7 +2989,7 @@ func TestCapResumeMonthRaise(t *testing.T) {
 	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); res.Resume || !res.Settles.IsZero() {
 		t.Fatalf("544 of 544 EUR spent: %+v, want the wait on", res)
 	}
-	g.v.Document.Budget.MonthEUR, g.v.ID, g.v.ActivatedAt = 600, 8, time.Now().Add(-time.Minute)
+	g.v.Document.Budget.MonthEUR, g.v.ID, g.v.ActivatedAt = 600, 8, g.at.Add(-time.Minute)
 	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); !res.Resume {
 		t.Fatalf("raised to 600: %+v, want the wait's end", res)
 	}
@@ -3006,14 +3010,14 @@ func TestCapResumeMonthRaise(t *testing.T) {
 func TestCapResumeWaitsForTheVersionToSettle(t *testing.T) {
 	g := newCapRig(t)
 	g.month = 544
-	activated := time.Now().Add(-10 * time.Second)
+	activated := g.at.Add(-10 * time.Second)
 	g.v.Document.Budget.MonthEUR, g.v.ActivatedAt = 600, activated
 	res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap})
 	if res.Resume || !res.Settles.Equal(activated.Add(30*time.Second)) {
 		t.Fatalf("raise activated 10 s ago: %+v, want the wait on and Settles at activation + 30 s", res)
 	}
 
-	activated = time.Now().Add(-time.Minute)
+	activated = g.at.Add(-time.Minute)
 	g.v.ActivatedAt = activated
 	settles := activated.Add(30 * time.Second)
 	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap, RefusedAt: settles.Add(20 * time.Second)}); res.Resume || !res.Settles.IsZero() {
@@ -3040,6 +3044,10 @@ func TestCapResumeProjectCap(t *testing.T) {
 	}
 	if got := g.verdicts(); !slices.Equal(got, []string{"/", "/", "/", "real/factoryd"}) {
 		t.Fatalf("alerts %q, want t1's project-cap alert judged", got)
+	}
+	step := timelineStep(t, g.objects, "t1", "cap_resumed")
+	if step["cap"] != policy.RefusedProjectCap || step["why"] != "the project's month cap no longer binds a session (policy version 7)" {
+		t.Fatalf("cap_resumed = %v", step)
 	}
 }
 
@@ -3077,6 +3085,24 @@ func TestCapResumeOtherRefusalsAndTheTurn(t *testing.T) {
 	g.r.cfg.Prices = nil
 	if res := g.check(t, CapCheck{Decision: policy.RefusedMonthCap}); res.Resume {
 		t.Fatalf("no prices: %+v, want the wait on", res)
+	}
+}
+
+// A decision no cap is named by ends nothing and judges no alert: an empty
+// source would match every open escalation of the task.
+func TestCapResumeRefusesAnUnknownDecision(t *testing.T) {
+	g := newCapRig(t)
+	for _, decision := range []string{"", "refused_budget"} {
+		for _, turned := range []bool{false, true} {
+			g.store.capsFree = &policy.Free{Day: 40, Month: 544, Project: 3}
+			res, err := g.r.CapResume(context.Background(), CapCheck{TaskID: "t1", Model: "factory/big", Decision: decision, Turned: turned})
+			if err == nil || !isTerminal(err) || res.Resume {
+				t.Fatalf("decision %q, turned %v: (%+v, %v), want a terminal error", decision, turned, res, err)
+			}
+		}
+	}
+	if got := g.verdicts(); !slices.Equal(got, []string{"/", "/", "/", "/"}) {
+		t.Fatalf("alerts %q, want none judged", got)
 	}
 }
 

@@ -712,12 +712,6 @@ func (s *PGStore) Opening(ctx context.Context, taskID, ref string) (policy.Openi
 	return policy.ReadOpening(ctx, s.db, taskID, ref)
 }
 
-// DayFree is the UTC day's free headroom under dayEUR now, every
-// outstanding hold netted (policy.DayFree).
-func (s *PGStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
-	return policy.DayFree(ctx, s.db, dayEUR, time.Now())
-}
-
 // CallTotals sums the tasks' audit call rows — their tokens and modeled
 // pay-as-you-go cost to date, and the credits the GLM Coding Plan derives
 // from the tokens of each deployment that answered — in one query, with

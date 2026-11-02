@@ -758,13 +758,6 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, call, need, measure, then), nil
 }
 
-// startFits says free headroom f fits the cheapest call of model, a
-// session's start as the attempt's floor prices it.
-func startFits(f policy.Free, taskID, model string, price policy.Price) bool {
-	_, err := policy.Fit(f, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: model, Price: price})
-	return err == nil
-}
-
 // CapCheck is a wait on the cap Decision refused: Turned says its period
 // turned, RefusedAt is set by the check before an ask to the refusal it
 // would ask about.
@@ -794,14 +787,17 @@ type CapResumed struct {
 // end resolves the task's open escalation alerts of the cap, real and the
 // factory's, and is on the timeline.
 func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error) {
-	o := capOpenings[in.Decision]
+	o, known := capOpenings[in.Decision]
+	if !known {
+		return CapResumed{}, terminalError("no cap is named %q", in.Decision)
+	}
 	why := "the UTC " + o.period + " turned"
 	if !in.Turned {
 		if r.cfg.Prices == nil {
 			return CapResumed{}, nil
 		}
 		v := r.cfg.Policy()
-		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); time.Now().Before(settles) {
+		if settles := v.ActivatedAt.Add(gateway.PolicyTTL); r.clock().Before(settles) {
 			return CapResumed{Settles: settles}, nil
 		} else if !in.RefusedAt.IsZero() && !in.RefusedAt.Before(settles) {
 			return CapResumed{}, nil
@@ -816,7 +812,7 @@ func (r *Runner) CapResume(ctx context.Context, in CapCheck) (CapResumed, error)
 		if d, _ := CapDecision(refusal); refusal != "" && d == in.Decision {
 			return CapResumed{}, nil
 		}
-		why = fmt.Sprintf("the %s cap no longer binds a session (policy version %d)", o.period, v.ID)
+		why = fmt.Sprintf("the %s no longer binds a session (policy version %d)", o.name, v.ID)
 		if refusal != "" {
 			why = "the attempt's floor refuses otherwise: " + strings.SplitN(refusal, "\n", 2)[0]
 		}

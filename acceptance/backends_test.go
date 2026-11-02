@@ -829,10 +829,6 @@ func (s *acceptanceStore) JudgeEscalations(context.Context, string, factoryd.Esc
 	return nil
 }
 
-func (s *acceptanceStore) DayFree(_ context.Context, dayEUR float64) (float64, error) {
-	return dayEUR, nil
-}
-
 func (s *acceptanceStore) JudgeTaskAlerts(_ context.Context, taskID, kind, verdict, by string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
