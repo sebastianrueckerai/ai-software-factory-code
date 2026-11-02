@@ -127,11 +127,10 @@ func (s *PGStore) PutReleaseHold(ctx context.Context, repository string, since, 
 	return n > 0, err
 }
 
-func (s *PGStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO releases (repository, held_since, deploy_now) VALUES ($1, $2, $3)
+func (s *PGStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error {
+	return s.releaseWrite(ctx, ended, `INSERT INTO releases (repository, held_since, deploy_now) VALUES ($1, $2, $3)
 		ON CONFLICT (repository) DO UPDATE SET deploy_now = EXCLUDED.deploy_now, held_since = EXCLUDED.held_since, asked_at = NULL`,
 		repository, since, commit)
-	return err
 }
 
 func (s *PGStore) ClearDeployNow(ctx context.Context, repository, commit string) error {
@@ -139,9 +138,35 @@ func (s *PGStore) ClearDeployNow(ctx context.Context, repository, commit string)
 	return err
 }
 
-func (s *PGStore) EndReleaseHold(ctx context.Context, repository string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE releases SET held_since = NULL, asked_at = NULL, deploy_now = '' WHERE repository = $1`, repository)
-	return err
+func (s *PGStore) EndReleaseHold(ctx context.Context, repository string, ended Event) error {
+	return s.releaseWrite(ctx, ended, `UPDATE releases SET held_since = NULL, asked_at = NULL, deploy_now = '' WHERE repository = $1`, repository)
+}
+
+// releaseWrite runs the releases statement and writes ended, the hold's
+// production_released row, in one transaction: the state and the fact of
+// its change land together or not at all. A zero ended writes no row.
+func (s *PGStore) releaseWrite(ctx context.Context, ended Event, query string, args ...any) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	if _, err := tx.ExecContext(ctx, query, args...); err != nil {
+		return err
+	}
+	inserted := false
+	if ended.Kind != "" {
+		if ended, inserted, err = insertEvent(ctx, tx, ended); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if inserted {
+		s.publish(ended)
+	}
+	return nil
 }
 
 func (s *PGStore) ClearToldHeld(ctx context.Context, repository, commit string) error {

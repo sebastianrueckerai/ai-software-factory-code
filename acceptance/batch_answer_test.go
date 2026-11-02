@@ -772,7 +772,7 @@ func (s *accBatchStore) PutReleaseHold(context.Context, string, time.Time, time.
 	panic("unused")
 }
 
-func (s *accBatchStore) SetDeployNow(context.Context, string, string, time.Time) error {
+func (s *accBatchStore) SetDeployNow(context.Context, string, string, time.Time, factoryd.Event) error {
 	panic("unused")
 }
 
@@ -780,7 +780,7 @@ func (s *accBatchStore) ClearDeployNow(context.Context, string, string) error {
 	panic("unused")
 }
 
-func (s *accBatchStore) EndReleaseHold(context.Context, string) error {
+func (s *accBatchStore) EndReleaseHold(context.Context, string, factoryd.Event) error {
 	panic("unused")
 }
 

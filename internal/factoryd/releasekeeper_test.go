@@ -338,7 +338,7 @@ func TestReleaseKeeperFilesNoAskWhereItsWriteLost(t *testing.T) {
 		keeperPass(t, k)
 		return f, store
 	}
-	deployNow := func(s *fakeStore) { s.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(16, 30)) }
+	deployNow := func(s *fakeStore) { s.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(16, 30), Event{}) }
 	pressed := Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(16, 30), DeployNow: demoCommit}
 	for name, asked := range map[string]time.Time{"the first ask": {}, "a later ask": keeperAt(10, 20)} {
 		t.Run(name, func(t *testing.T) {
@@ -480,7 +480,7 @@ type deployNowAfterAsk struct{ *fakeStore }
 func (s *deployNowAfterAsk) PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error) {
 	landed, err := s.fakeStore.PutReleaseHold(ctx, repository, since, asked, was, wasHeld)
 	if landed && !asked.IsZero() {
-		err = errors.Join(err, s.SetDeployNow(ctx, repository, demoCommit, asked))
+		err = errors.Join(err, s.SetDeployNow(ctx, repository, demoCommit, asked, Event{}))
 	}
 	return landed, err
 }
@@ -877,7 +877,7 @@ func TestReleaseKeeperHold(t *testing.T) {
 		t.Errorf("Hold(own) = %+v, %v; want held since 09:40", h, err)
 	}
 	// a standing Deploy now window rides the hold: its commit and its clock
-	if err := store.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(11, 30)); err != nil {
+	if err := store.SetDeployNow(ctx, demoRepo, demoCommit, keeperAt(11, 30), Event{}); err != nil {
 		t.Fatal(err)
 	}
 	if h, err := k.Hold(ctx, demoRepo); err != nil || h.DeployNow != demoCommit || !h.DeployAt.Equal(keeperAt(11, 30)) {

@@ -522,7 +522,10 @@ func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since
 	return true, nil
 }
 
-func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {
+func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error {
+	if err := s.recordEnded(ctx, ended); err != nil {
+		return err
+	}
 	s.putRelease(repository, func(r *Release) { r.DeployNow, r.HeldSince, r.AskedAt = commit, since, time.Time{} })
 	return nil
 }
@@ -535,12 +538,26 @@ func (s *fakeStore) ClearDeployNow(ctx context.Context, repository, commit strin
 	return nil
 }
 
-func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string) error {
+func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string, ended Event) error {
+	if err := s.recordEnded(ctx, ended); err != nil {
+		return err
+	}
 	if r, ok := s.releases[repository]; ok {
 		r.HeldSince, r.AskedAt, r.DeployNow = time.Time{}, time.Time{}, ""
 		s.releases[repository] = r
 	}
 	return nil
+}
+
+// recordEnded writes a hold's fact before the release state it closes,
+// as PGStore's one transaction holds them: a refused fact changes
+// nothing. A zero ended writes none.
+func (s *fakeStore) recordEnded(ctx context.Context, ended Event) error {
+	if ended.Kind == "" {
+		return nil
+	}
+	_, err := s.Record(ctx, ended)
+	return err
 }
 
 func (s *fakeStore) ClearToldHeld(ctx context.Context, repository, commit string) error {

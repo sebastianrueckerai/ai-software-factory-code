@@ -2459,10 +2459,9 @@ func figureInHours(f Figure) Figure {
 
 // metricDivideGroupHours — panel 7: how long a group stayed open, the
 // mean milliseconds over the groups whose first plan_closed row lands
-// in the span. A group opens at its first actual child merge — the
-// same opening OpenGroups reads: the earliest pull_request_merged row
-// of a plan child, else the finish of a child with its own merge
-// commit, reverted children out — and closes at its first closure, so
+// in the span. A group opens at its first actual child merge, the
+// opening OpenGroups reads (groupOpenings), and closes at its first
+// closure, so
 // duplicate merge or closure rows move nothing and a group opened
 // before the span counts its whole wait, never clipped to the span's
 // start: the wait belongs to the span its closure lands in. A closed
@@ -2472,15 +2471,7 @@ func figureInHours(f Figure) Figure {
 func metricDivideGroupHours(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, GroupHoursCoverage, error) {
 	// starts: each plan's first opening, OpenGroups' own contract;
 	// closed: each plan's first plan_closed row below the spark's end
-	const ctes = `WITH starts AS (
-			SELECT c.parent_task AS plan,
-				COALESCE(min(e.at), min(c.finished_at) FILTER (WHERE c.merge_commit <> '')) AS first_merge
-			FROM tasks c
-			LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
-			WHERE c.repository = $1 AND c.source = 'plan' AND c.plan_key IS NOT NULL
-				AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
-			GROUP BY c.parent_task
-		), closed AS (
+	const ctes = `WITH starts AS (` + groupOpenings + `), closed AS (
 			SELECT pc.task_id AS plan, min(pc.at) AS closed_at
 			FROM events pc JOIN tasks t ON t.id = pc.task_id
 			WHERE ` + dcCardReach + ` AND pc.kind = 'plan_closed' AND pc.at < $3
@@ -2525,14 +2516,8 @@ func metricDivideGroupHours(ctx context.Context, db *sql.DB, repo string, w metr
 	}
 	// open at the report: an opening the project holds and no closure
 	// ever closed, whatever window its closure would have landed in
-	if err := db.QueryRowContext(ctx, `SELECT count(*)::int FROM (
-			SELECT c.parent_task AS plan FROM tasks c
-			LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
-			WHERE c.repository = $1 AND c.source = 'plan' AND c.plan_key IS NOT NULL
-				AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
-			GROUP BY c.parent_task
-		) s
-		WHERE NOT EXISTS (SELECT 1 FROM events pc WHERE pc.task_id = s.plan AND pc.kind = 'plan_closed')`,
+	if err := db.QueryRowContext(ctx, `SELECT count(*)::int FROM (`+groupOpenings+`) s
+		WHERE s.repository = $1 AND NOT EXISTS (SELECT 1 FROM events pc WHERE pc.task_id = s.plan AND pc.kind = 'plan_closed')`,
 		repo).Scan(&cov.Open); err != nil {
 		return ms, Figure{}, GroupHoursCoverage{}, err
 	}

@@ -60,6 +60,35 @@ func TestPGStoreReleases(t *testing.T) {
 	if want := []string{"sf/a", "sf/c", "sf/d"}; !reflect.DeepEqual(repositories, want) {
 		t.Errorf("Releases after the removal = %v, want %v", repositories, want)
 	}
+
+	// a release whose fact the store refuses rolls back, the hold
+	// standing; with its fact both land, the fact once however often
+	// the release is written
+	held := time.Date(2026, 10, 29, 11, 0, 0, 0, time.UTC)
+	end := func(repository string) error {
+		return s.EndReleaseHold(ctx, "sf/tx", released(repository, "closed", held, held.Add(time.Hour), FactoryDecider, ViaFactoryd, "", ""))
+	}
+	if err := s.SetDeployNow(ctx, "sf/tx", "t9", held, Event{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := end(""); err == nil {
+		t.Fatal("EndReleaseHold with a refused fact = nil, want its error")
+	}
+	if r, err := s.Release(ctx, "sf/tx"); err != nil || !r.HeldSince.Equal(held) || r.DeployNow != "t9" {
+		t.Fatalf("Release after the refused fact = %+v, %v; want the hold standing since %v", r, err, held)
+	}
+	for range 2 {
+		if err := end("sf/tx"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if r, err := s.Release(ctx, "sf/tx"); err != nil || !r.HeldSince.IsZero() || r.DeployNow != "" {
+		t.Fatalf("Release after the release = %+v, %v; want no hold", r, err)
+	}
+	var facts int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE repository = 'sf/tx' AND kind = $1`, EventProductionReleased).Scan(&facts); err != nil || facts != 1 {
+		t.Fatalf("production_released rows of sf/tx = %d, %v; want the one fact", facts, err)
+	}
 }
 
 func TestFakeStoreReleases(t *testing.T) {
@@ -116,7 +145,7 @@ func checkReleaseRows(t *testing.T, s Store) {
 	want.AskedAt = at(10, 20)
 	check("the ask", want)
 
-	must(s.SetDeployNow(ctx, "sf/a", "c9", at(10, 30)))
+	must(s.SetDeployNow(ctx, "sf/a", "c9", at(10, 30), Event{}))
 	want.DeployNow, want.HeldSince, want.AskedAt = "c9", at(10, 30), time.Time{}
 	check("Deploy now", want)
 	hold("sf/a", at(10, 0), at(10, 35), at(10, 20), at(10, 0), false)
@@ -136,8 +165,8 @@ func checkReleaseRows(t *testing.T, s Store) {
 	check("ClearDeployNow", want)
 	must(s.ClearDeployNow(ctx, "sf/none", "c9"))
 
-	must(s.SetDeployNow(ctx, "sf/a", "c9", at(11, 0)))
-	must(s.EndReleaseHold(ctx, "sf/a"))
+	must(s.SetDeployNow(ctx, "sf/a", "c9", at(11, 0), Event{}))
+	must(s.EndReleaseHold(ctx, "sf/a", Event{}))
 	want.HeldSince, want.AskedAt = time.Time{}, time.Time{}
 	check("the release", want)
 
@@ -150,7 +179,7 @@ func checkReleaseRows(t *testing.T, s Store) {
 	hold("sf/c", at(10, 0), at(10, 20), at(9, 0), at(9, 0), true)
 	newHold := Release{Repository: "sf/c", HeldSince: at(10, 0), AskedAt: at(10, 20)}
 	check("PutReleaseHold on no row", newHold)
-	must(s.SetDeployNow(ctx, "sf/d", "d9", at(11, 0)))
+	must(s.SetDeployNow(ctx, "sf/d", "d9", at(11, 0), Event{}))
 	newDeploy := Release{Repository: "sf/d", HeldSince: at(11, 0), DeployNow: "d9"}
 	check("SetDeployNow on no row", newDeploy)
 

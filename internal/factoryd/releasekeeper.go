@@ -65,8 +65,8 @@ type ReleaseStore interface {
 	Release(ctx context.Context, repository string) (Release, error)
 	Releases(ctx context.Context) ([]Release, error)
 	PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error)
-	SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error
-	EndReleaseHold(ctx context.Context, repository string) error
+	SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error
+	EndReleaseHold(ctx context.Context, repository string, ended Event) error
 	ClearToldHeld(ctx context.Context, repository, commit string) error
 	FixesMergedSince(ctx context.Context, repository string, since time.Time) ([]Task, error)
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
@@ -144,12 +144,7 @@ func (k *ReleaseKeeper) keep(ctx context.Context, row Release, groups []Group) e
 		} else if err != nil {
 			return err
 		}
-		// the end's fact before the clock's end: a failed write returns,
-		// the hold stands and the next pass retries the same identity
-		if err := k.released(ctx, repository, "closed", row.HeldSince, now, FactoryDecider, ViaFactoryd, "", ""); err != nil {
-			return err
-		}
-		if err := k.Store.EndReleaseHold(ctx, repository); err != nil {
+		if err := k.Store.EndReleaseHold(ctx, repository, released(repository, "closed", row.HeldSince, now, FactoryDecider, ViaFactoryd, "", "")); err != nil {
 			return err
 		}
 		ended = true
@@ -411,10 +406,10 @@ func (k *ReleaseKeeper) Hold(ctx context.Context, repository string) (Hold, erro
 }
 
 // DeployNow releases main's newest push commit of held repository to
-// production, by whom, via what and decided by whom: the release's fact
-// recorded first, then the commit, the clock's restart and the cleared
-// ask in one write, the standing ask closed. The roller, /release and
-// the next Pass do the rest. A newest run that concluded red refuses
+// production, by whom, via what and decided by whom: the commit, the
+// clock's restart, the cleared ask and the ended hold's fact in one
+// write, the standing ask closed. The roller, /release and the next Pass
+// do the rest. A newest run that concluded red refuses
 // (ErrMainRed); one still running is taken.
 func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, decider string) (string, error) {
 	h, err := k.Hold(ctx, repository)
@@ -436,15 +431,7 @@ func (k *ReleaseKeeper) DeployNow(ctx context.Context, repository, by, via, deci
 		return "", ErrMainRed{Commit: head.CommitSHA}
 	}
 	now, commit := k.Now(), head.CommitSHA
-	// the hold's end before Deploy now restarts the clock: a failed
-	// write returns, the releases row stands unchanged and the next
-	// press retries the same identity — the wait is lost to no lost
-	// write, and the union of the standing clock and the recorded end
-	// holds the still-running time once
-	if err := k.released(ctx, repository, "deploy_now", h.Since, now, by, via, commit, decider); err != nil {
-		return "", err
-	}
-	if err := k.Store.SetDeployNow(ctx, repository, commit, now); err != nil {
+	if err := k.Store.SetDeployNow(ctx, repository, commit, now, released(repository, "deploy_now", h.Since, now, by, via, commit, decider)); err != nil {
 		return "", err
 	}
 	note := fmt.Sprintf("factoryd: %s chose Deploy now: main at %s goes to production. Closing this issue.", by, commit[:min(7, len(commit))])
@@ -508,17 +495,15 @@ func (k *ReleaseKeeper) closeAsk(ctx context.Context, repository, comment string
 	return err
 }
 
-// released records the end of repository's hold, held since since: how,
-// by actor via via, and Deploy now's commit and who decided it. The
-// fact's identity is the repository and the instant the hold began, so
-// however often passes or retries write the same hold's end, one row
-// stands; hours is the precise wait, never a truncated whole. The row
-// is written before the state it closes — the clock's end, Deploy
-// now's restart — and a failed write is returned, not logged: the
-// caller leaves the hold standing and the next public pass or press
-// retries the same identity, so the interval is lost to no lost write
-// and doubled by no retry.
-func (k *ReleaseKeeper) released(ctx context.Context, repository, how string, since, now time.Time, actor, via, commit, decider string) error {
+// released is the end of repository's hold, held since since: how, by
+// actor via via, and Deploy now's commit and who decided it. The fact's
+// identity is the repository and the instant the hold began, so however
+// often passes or retries write the same hold's end, one row stands;
+// hours is the precise wait, never a truncated whole. The store writes
+// it with the state it closes, in one transaction: a failed write
+// changes neither, and the next pass or press records the hold's end as
+// it then happens.
+func released(repository, how string, since, now time.Time, actor, via, commit, decider string) Event {
 	fact := HoldIntervalFact{Repository: repository, HeldSince: since, How: how, Hours: now.Sub(since).Hours()}
 	event := fact.Event()
 	event.At, event.Actor, event.Via = now, actor, via
@@ -528,5 +513,5 @@ func (k *ReleaseKeeper) released(ctx context.Context, repository, how string, si
 	if decider != "" {
 		event.Detail["decider"] = decider
 	}
-	return k.Timeline.RecordFactRow(ctx, event)
+	return event
 }

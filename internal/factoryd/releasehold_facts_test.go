@@ -150,15 +150,14 @@ func TestDivideConquerHoldRetries(t *testing.T) {
 }
 
 // TestReleaseKeeperHoldFactRetry holds the durability boundary of the
-// hold's fact: the production_released row is written before the
-// releases row it closes changes, and a write the store refuses is
-// returned, never logged away, so the public retry recovers the
-// interval exactly once. A pass whose fact was refused ends nothing —
-// the releases row holds as before and the next pass writes the same
-// identity, one row. A press whose fact was refused changes nothing —
-// no commit, the clock keeps running — and the next press lands the
-// same interval once, its hours, commit, decider, actor and via
-// intact.
+// hold's fact: the production_released row and the releases change it
+// records land together, and a write the store refuses is returned,
+// never logged away. A pass whose write was refused ends nothing — the
+// hold stands — and the next pass, minutes later, ends it then: one
+// row, its end and hours the retry's. A press whose write was refused
+// changes nothing — no commit, the clock keeps running — and the next
+// press lands its own interval once, its hours, commit, decider, actor
+// and via those of the press that took effect.
 func TestReleaseKeeperHoldFactRetry(t *testing.T) {
 	ctx := context.Background()
 	f := &chainForgejo{runs: map[string][]map[string]any{demoRepo: {pushRun(21, demoCommit, "success")}},
@@ -184,12 +183,13 @@ func TestReleaseKeeperHoldFactRetry(t *testing.T) {
 	if n := len(releasedRows(store)); n != 0 {
 		t.Fatalf("%d facts after the refused write; want none", n)
 	}
-	// the next pass retries the same identity and lands it once
+	// the next pass, five minutes on, ends the hold then and lands it once
 	store.recordFails = nil
+	*clock = keeperAt(18, 5)
 	keeperPass(t, k)
 	want := []Event{
-		{At: keeperAt(18, 0), Repository: demoRepo, Kind: EventProductionReleased, Actor: "factoryd", Via: ViaFactoryd,
-			Detail:      map[string]any{"how": "closed", "held_since": "2026-10-29T10:00:00Z", "hours": 8.0},
+		{At: keeperAt(18, 5), Repository: demoRepo, Kind: EventProductionReleased, Actor: "factoryd", Via: ViaFactoryd,
+			Detail:      map[string]any{"how": "closed", "held_since": "2026-10-29T10:00:00Z", "hours": (8*time.Hour + 5*time.Minute).Hours()},
 			IdentityKey: "production_released sf/demo-app 2026-10-29T10:00:00Z"},
 	}
 	if got := releasedRows(store); !reflect.DeepEqual(got, want) {
@@ -212,18 +212,20 @@ func TestReleaseKeeperHoldFactRetry(t *testing.T) {
 	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(18, 30)}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("row %+v, want %+v: the refused press changed nothing", got, want)
 	}
-	// the next press lands the interval once, its linkage intact
+	// the next press, ten minutes on, lands its interval once, its
+	// linkage intact
 	store.recordFails = nil
+	*clock = keeperAt(20, 40)
 	if commit, err := k.DeployNow(ctx, demoRepo, "sebastian", ViaButton, "member"); err != nil || commit != demoCommit {
 		t.Fatalf("DeployNow = %q, %v; want %s", commit, err, demoCommit)
 	}
-	want = append(want, Event{At: keeperAt(20, 30), Repository: demoRepo, Kind: EventProductionReleased, Actor: "sebastian", Via: ViaButton,
-		Detail:      map[string]any{"how": "deploy_now", "held_since": "2026-10-29T18:30:00Z", "hours": 2.0, "commit": demoCommit, "decider": "member"},
+	want = append(want, Event{At: keeperAt(20, 40), Repository: demoRepo, Kind: EventProductionReleased, Actor: "sebastian", Via: ViaButton,
+		Detail:      map[string]any{"how": "deploy_now", "held_since": "2026-10-29T18:30:00Z", "hours": (2*time.Hour + 10*time.Minute).Hours(), "commit": demoCommit, "decider": "member"},
 		IdentityKey: "production_released sf/demo-app 2026-10-29T18:30:00Z"})
 	if got := releasedRows(store); !reflect.DeepEqual(got, want) {
 		t.Fatalf("facts %+v, want one row per hold %+v", got, want)
 	}
-	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(20, 30), DeployNow: demoCommit}); !reflect.DeepEqual(got, want) {
+	if got, want := releaseRow(store, demoRepo), (Release{Repository: demoRepo, AsksAt: keeperAt(9, 0), HeldSince: keeperAt(20, 40), DeployNow: demoCommit}); !reflect.DeepEqual(got, want) {
 		t.Fatalf("row %+v, want %+v: the retried press restarted the clock at the commit", got, want)
 	}
 }

@@ -1834,13 +1834,21 @@ func TestDivideConquerGroupHoursSQL(t *testing.T) {
 	dcGroupChild(t, s, "t-gh-pre-1", "t-gh-pre", "sf/dc12", 411)
 	dcMerged(t, s, "t-gh-pre-1", "sf/dc12", from.AddDate(0, 0, -1).Add(22*time.Hour))
 	dcClosed(t, s, "t-gh-pre", "sf/dc12", from.Add(2*time.Hour))
-	// g-win: opened Oct 3 06:00, its merge row doubled half an hour
-	// later and its closure doubled the day after — minima both, so the
-	// group is the eight hours its first facts name
+	// g-win: opened Oct 3 06:00 by a child whose merge commit alone
+	// speaks, no event; a second child's merge row at 08:00, doubled
+	// half an hour later, opens nothing earlier; its closure doubled the
+	// day after — minima all, so the group is the eight hours its first
+	// facts name
 	dcPlan(t, s, "t-gh-win", "sf/dc12", 402)
 	dcGroupChild(t, s, "t-gh-win-1", "t-gh-win", "sf/dc12", 412)
-	dcMerged(t, s, "t-gh-win-1", "sf/dc12", from.AddDate(0, 0, 5).Add(6*time.Hour))
-	dcMerged(t, s, "t-gh-win-1", "sf/dc12", from.AddDate(0, 0, 5).Add(6*time.Hour+30*time.Minute))
+	dcMerged(t, s, "t-gh-win-1", "sf/dc12", from.AddDate(0, 0, 5).Add(8*time.Hour))
+	dcMerged(t, s, "t-gh-win-1", "sf/dc12", from.AddDate(0, 0, 5).Add(8*time.Hour+30*time.Minute))
+	dcGroupChild(t, s, "t-gh-win-2", "t-gh-win", "sf/dc12", 418)
+	if _, err := s.db.ExecContext(context.Background(),
+		`UPDATE tasks SET merge_commit = 'mc-win', finished_at = $2 WHERE id = $1`,
+		"t-gh-win-2", from.AddDate(0, 0, 5).Add(6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
 	dcClosed(t, s, "t-gh-win", "sf/dc12", from.AddDate(0, 0, 5).Add(14*time.Hour))
 	dcClosed(t, s, "t-gh-win", "sf/dc12", from.AddDate(0, 0, 6).Add(9*time.Hour))
 	// g-early: the previous window's own, its opening a merge commit
