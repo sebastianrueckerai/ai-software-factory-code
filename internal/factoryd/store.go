@@ -600,14 +600,16 @@ type Store interface {
 	// four. Only the keeper's Pass calls it.
 	PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error)
 	// SetDeployNow releases commit: the clock restarts at since and the
-	// last ask is cleared.
-	SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error
+	// last ask is cleared, with ended, the ended hold's fact, in the same
+	// transaction (none when zero).
+	SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error
 	// ClearDeployNow ends the Deploy now window of commit; a newer Deploy
 	// now stands.
 	ClearDeployNow(ctx context.Context, repository, commit string) error
 	// EndReleaseHold is the release: the clock, the last ask and Deploy now
-	// cleared.
-	EndReleaseHold(ctx context.Context, repository string) error
+	// cleared, with ended, the hold's fact, in the same transaction (none
+	// when zero).
+	EndReleaseHold(ctx context.Context, repository string, ended Event) error
 	// ClearToldHeld forgets commit as told held; a newer one stands.
 	ClearToldHeld(ctx context.Context, repository, commit string) error
 	// FixesMergedSince are repository's fix cards (fixSources) merged

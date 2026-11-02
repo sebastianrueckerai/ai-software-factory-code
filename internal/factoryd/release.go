@@ -127,11 +127,10 @@ func (s *PGStore) PutReleaseHold(ctx context.Context, repository string, since, 
 	return n > 0, err
 }
 
-func (s *PGStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO releases (repository, held_since, deploy_now) VALUES ($1, $2, $3)
-		ON CONFLICT (repository) DO UPDATE SET deploy_now = EXCLUDED.deploy_now, held_since = EXCLUDED.held_since, asked_at = NULL`,
-		repository, since, commit)
-	return err
+func (s *PGStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error {
+	return s.releaseWrite(ctx, ended, `INSERT INTO releases (repository, held_since, deploy_now) VALUES ($1, $3, $4)
+		ON CONFLICT (repository) DO UPDATE SET deploy_now = EXCLUDED.deploy_now, held_since = EXCLUDED.held_since, asked_at = NULL
+		WHERE `+heldAsRead, repository, since, commit)
 }
 
 func (s *PGStore) ClearDeployNow(ctx context.Context, repository, commit string) error {
@@ -139,9 +138,56 @@ func (s *PGStore) ClearDeployNow(ctx context.Context, repository, commit string)
 	return err
 }
 
-func (s *PGStore) EndReleaseHold(ctx context.Context, repository string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE releases SET held_since = NULL, asked_at = NULL, deploy_now = '' WHERE repository = $1`, repository)
-	return err
+func (s *PGStore) EndReleaseHold(ctx context.Context, repository string, ended Event) error {
+	return s.releaseWrite(ctx, ended, `UPDATE releases SET held_since = NULL, asked_at = NULL, deploy_now = ''
+		WHERE repository = $1 AND `+heldAsRead, repository)
+}
+
+// heldAsRead is the releases write's guard: the row still holds the hold
+// its fact ($2) ends, or no clock yet; a write with no fact is unguarded.
+const heldAsRead = `($2::timestamptz IS NULL OR releases.held_since IS NULL OR releases.held_since = $2::timestamptz)`
+
+// ErrHoldMoved refuses a release whose hold changed after it was read:
+// another pass or press ended or restarted it. Read the hold again.
+var ErrHoldMoved = errors.New("the production hold changed since it was read; read it again")
+
+// releaseWrite runs the releases statement, its $2 the hold ended's fact
+// names, and writes ended, the hold's production_released row, in one
+// transaction: the state and the fact of its change land together or not
+// at all, and a hold that moved since it was read refuses with
+// ErrHoldMoved. A zero ended writes no row and guards nothing.
+func (s *PGStore) releaseWrite(ctx context.Context, ended Event, query string, args ...any) error {
+	var held any
+	if ended.Kind != "" {
+		held = ended.Detail["held_since"]
+	}
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback()
+	res, err := tx.ExecContext(ctx, query, append([]any{args[0], held}, args[1:]...)...)
+	if err != nil {
+		return err
+	}
+	if n, err := res.RowsAffected(); err != nil {
+		return err
+	} else if n == 0 && held != nil {
+		return ErrHoldMoved
+	}
+	inserted := false
+	if ended.Kind != "" {
+		if ended, inserted, err = insertEvent(ctx, tx, ended); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if inserted {
+		s.publish(ended)
+	}
+	return nil
 }
 
 func (s *PGStore) ClearToldHeld(ctx context.Context, repository, commit string) error {

@@ -111,6 +111,10 @@ type AcceptanceRig struct {
 	// change check, a failed reload or audit row, a file switched under a
 	// change between its two reads — plus the pool the policy in force holds, which only a reload's activation (onReload)
 	// changes, never an acknowledgement alone.
+	// forgejo is the configuration repository fake's own URL, set once
+	// before it serves, for the tests that call its guarded endpoints
+	// directly.
+	forgejo    string
 	infra      map[string]string
 	branches   map[string][]AccFileChange
 	prBranch   map[int64]string
@@ -172,6 +176,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 	}
 	fg := httptest.NewServer(http.HandlerFunc(a.serveForgejo))
 	t.Cleanup(fg.Close)
+	a.forgejo = fg.URL
 	gw := httptest.NewServer(http.HandlerFunc(a.serveGateway))
 	t.Cleanup(gw.Close)
 

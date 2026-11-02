@@ -186,6 +186,11 @@ func (a *AcceptanceRig) InfraCalls() []string {
 	return slices.Clone(a.infraCalls)
 }
 
+// InfraAPI answers the configuration repository fake's own API root, for
+// the tests that call its guarded endpoints directly; the fake's guards
+// answer them as they answer the console's own writes.
+func (a *AcceptanceRig) InfraAPI() string { return a.forgejo + accInfra }
+
 // InfraCommits answers the guarded commits the fake landed, oldest
 // first.
 func (a *AcceptanceRig) InfraCommits() []AccInfraCommit {
