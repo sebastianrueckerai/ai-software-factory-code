@@ -152,8 +152,7 @@
 <button type="submit" title="{{.Evidence}}">Close: acceptance green</button>
 </form>{{end}}{{end}}
 {{if or .Card.IssueURL .Waiting}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
-{{end}}{{if and .Approver .Card.EscalationAlert}}<p class="meta">Was this escalation a real problem?</p>
-{{template "verdict" (verdictForm .Card.EscalationAlert .CSRF .Back)}}{{end}}
+{{end}}
 {{end}}
 
 {{define "brief-block"}}{{if .IDSuffix}}{{with .Brief}}<p class="need-line brief">{{.}}</p>{{end}}{{else}}{{with .Brief}}<p class="need-line brief">{{askline .}}</p>{{end}}{{end}}{{if .IDSuffix}}{{with .Detail}}<div class="reason detail">{{markup .}}</div>{{end}}{{end}}{{if not .Brief}}{{with .BriefShort}}<p class="need-line brief">{{.}}</p>{{end}}{{with .BriefFund}}<form method="post" action="/tasks/{{$.TaskID}}/fund" hx-post="/tasks/{{$.TaskID}}/fund" hx-target="#note" hx-swap="innerHTML" class="inline fund">
