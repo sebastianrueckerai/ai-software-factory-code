@@ -817,6 +817,26 @@ details.tool pre, .proposal pre { margin: 0; padding: 6px 10px 8px 23px; border-
 .proposal .pfoot button { margin: 0; }
 .proposal .doit { height: 28px; }
 button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text); }
+/* the pool proposal's own half (the pool-chat-controls plan): the
+   cent-precision amount, the reason fixed at the capture, and the
+   ceiling preview that follows the edited number */
+form.pool-edit { margin: 8px 0 0; padding: 8px 10px; border: 1px dashed var(--line-strong); font-size: 13px; }
+form.pool-edit label { display: flex; align-items: center; gap: 6px; margin: 0; }
+form.pool-edit input[type=number] { width: 7rem; }
+.pool-reason { margin: 6px 0 0; color: var(--text-muted); font-size: 12.5px; }
+.pool-preview { margin: 6px 0 0; color: var(--text); font: 12px var(--font-mono); }
+/* the panel's pool control under the log, above the composer: the pool
+   line the settings and policy pages read, and the ask an approver
+   alone may start */
+.pool-host:empty { display: none; }
+.poolctl { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
+.poolctl .pool-note { margin: 0 0 6px; color: var(--text-muted); font-size: 12.5px; }
+form.poolctl { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+form.poolctl label { margin: 0; }
+form.poolctl input[type=number] { width: 7rem; }
+form.poolctl input[type=text] { width: 14rem; max-width: 100%; }
+form.poolctl button { height: 28px; background: none; color: var(--text); border-color: var(--btn-line); }
+.poolctl .pool-why { flex: 1 0 100%; margin: 6px 0 0; color: var(--text-faint); font-size: 11.5px; }
 .applied { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 10px 0 0; color: var(--text-muted); font: 12px/1.6 var(--font-mono); }
 .applied .ok { color: var(--st-done); }
 .applied .undone { color: var(--text-faint); }

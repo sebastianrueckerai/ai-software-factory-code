@@ -1590,6 +1590,7 @@ func TestChatTextReply(t *testing.T) {
 			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}],` +
+			`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"},` +
 			`"open_question":"what is open?"}`})
 }
 
@@ -4323,11 +4324,13 @@ func TestChatNewConversation(t *testing.T) {
 	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"login":"sebastian","number":2,"title":"world","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
-		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
+		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}],`+
+		`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"}}`)
 	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
-		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
+		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}],`+
+		`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"}}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
 		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
 			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},`+
