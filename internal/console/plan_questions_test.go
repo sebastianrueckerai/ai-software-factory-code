@@ -286,7 +286,7 @@ func TestAnswerToolRefusalNamesTheError(t *testing.T) {
 	in := toolInput{TaskID: "t-p", Revision: 1, Answers: []PlanAnswerInput{{Question: 1, Text: "60 seconds"}, {Question: 2, Text: "30 days"}}}
 	equal(t, "the tool result", trn.runTool(tool, args, in),
 		"Refused: The answers could not be recorded: plan t-x revision 1: idx 2 out of range. "+
-			"Read the plan (the plan tool) and answer the open questions of its newest revision.")
+			"Read the plan again and answer the open questions of its newest revision.")
 }
 
 // q1Line and q2Line are the rig's two questions as the plan read numbers

@@ -628,7 +628,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %v. Read the plan (the plan tool) and answer the open questions of its newest revision.", err))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
 	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
@@ -719,7 +719,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %v. Read the plan (the plan tool) and answer the open questions of its newest revision.", err))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
 	}
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
