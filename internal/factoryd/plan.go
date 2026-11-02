@@ -2613,6 +2613,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
+	if r.Namer != nil && t.PlanName == "" {
+		go r.namePlan(context.WithoutCancel(ctx), t, p)
+	}
 	if st.newest != nil && n > st.revision {
 		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
@@ -2622,15 +2625,12 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if err != nil {
 		return PlanResult{}, err
 	}
-	if r.Namer != nil && t.PlanName == "" {
-		go r.namePlan(context.WithoutCancel(ctx), t, p)
-	}
 	r.noteFiled(taskID, PlanResult{Revision: n, SHA256: sha, Gate: gate})
 	return PlanResult{Revision: n, SHA256: sha, Gate: gate}, nil
 }
 
-// planNameBudget bounds one plan's naming, whole.
-const planNameBudget = 2 * time.Minute
+// planNameBudget bounds one plan's naming, whole; a test shortens it.
+var planNameBudget = 2 * time.Minute
 
 // namePlan names plan t from its first revision p, off the filing's
 // path: the file_plan answer has 30 seconds and naming may take minutes.

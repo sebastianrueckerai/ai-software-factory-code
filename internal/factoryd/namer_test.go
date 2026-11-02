@@ -5,6 +5,8 @@ import (
 	"errors"
 	"net/http"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -308,28 +310,58 @@ func TestNameOpenPlansStopsOnARevisionReadError(t *testing.T) {
 }
 
 // signalNameStore tells when a plan's name is stored, so a test waits for
-// naming that runs off the filing's path.
+// naming that runs off the filing's path. Its first OpenPlanNames waits
+// for hold, which the test closes once the filing has returned: naming on
+// the filing's path never reaches that, waits out holdWait and sets
+// heldTooLong.
 type signalNameStore struct {
 	NameStore
-	named chan struct{}
+	named       chan struct{}
+	hold        chan struct{}
+	once        sync.Once
+	heldTooLong atomic.Bool
 }
 
+const holdWait = 3 * time.Second
+
 func newSignalNameStore(s NameStore) *signalNameStore {
-	return &signalNameStore{NameStore: s, named: make(chan struct{}, 4)}
+	return &signalNameStore{NameStore: s, named: make(chan struct{}, 4), hold: make(chan struct{})}
+}
+
+func (s *signalNameStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
+	s.once.Do(func() {
+		select {
+		case <-s.hold:
+		case <-time.After(holdWait):
+			s.heldTooLong.Store(true)
+		}
+	})
+	return s.NameStore.OpenPlanNames(ctx, projectID, excludeID)
 }
 
 func (s *signalNameStore) SetPlanName(ctx context.Context, id, name string) error {
-	err := s.NameStore.SetPlanName(ctx, id, name)
+	// a database write fails on a dead context, as ExecContext does
+	err := ctx.Err()
+	if err == nil {
+		err = s.NameStore.SetPlanName(ctx, id, name)
+	}
 	s.named <- struct{}{}
 	return err
 }
 
-func (s *signalNameStore) wait(t *testing.T) {
+// released lets the held naming go and waits for the name; it fails when
+// the naming had to wait out the hold, as naming on the filing's path
+// does.
+func (s *signalNameStore) released(t *testing.T) {
 	t.Helper()
+	close(s.hold)
 	select {
 	case <-s.named:
 	case <-time.After(10 * time.Second):
 		t.Fatal("the plan was not named in 10s")
+	}
+	if s.heldTooLong.Load() {
+		t.Fatal("naming ran before the filing returned")
 	}
 }
 

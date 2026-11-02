@@ -8,6 +8,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 	"unicode"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -35,6 +36,9 @@ const (
 // nameAttempts bounds the naming asks: past the third bad answer the
 // slug names the plan.
 const nameAttempts = 3
+
+// recordWindow bounds the write of a name.
+const recordWindow = 10 * time.Second
 
 // nameFactsBytes bounds each fact a naming ask carries.
 const nameFactsBytes = 600
@@ -135,6 +139,10 @@ func (n *Namer) NameOpenPlans(ctx context.Context) int {
 // record stores the plan's name; a store that refuses it leaves the
 // plan nameless for the next sweep, never an error for the filing.
 func (n *Namer) record(ctx context.Context, t Task, name string) {
+	// the write has a window of its own: the asks may have spent the
+	// caller's whole budget, and the slug still names the plan
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), recordWindow)
+	defer cancel()
 	if err := n.Store.SetPlanName(ctx, t.ID, name); err != nil {
 		log.Printf("names: plan %s of %s: %v", t.ID, t.Repository, err)
 	}
