@@ -61,9 +61,9 @@ type BoardTask struct {
 // deployLive is the SQL test that a finished card's change runs on the
 // cluster (roadmap 297): a card that never opened a pull request, or that
 // a green run covers — the run that carried its change is recorded and
-// the newest green run on main, the head row or any card's carry row,
-// sits at or after it, so a green run later than its own red carry
-// deploys it — or that no chain names at all and that finished before the
+// the newest green run on main, the head row, the green row or any card's
+// carry row, sits at or after it, so a green run later than its own red
+// carry deploys it — or that no chain names at all and that finished before the
 // chain began recording runs (none recorded yet: every card, while none
 // is; a done card only — a merged one is live through coverage alone).
 // A carry run with no green run at or after it keeps the card
