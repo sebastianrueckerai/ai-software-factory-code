@@ -234,7 +234,8 @@ func TestCheckinRepeatNamesTheBranchHead(t *testing.T) {
 // only while the card's limits are unchanged: a raise of the budget, which
 // widens the share in euros, or of the sessions, is a change, and the
 // repeat is asked as a stop of its own. A first stop recorded before the
-// change carries no share in euros, and its 0 is no raise. A run from
+// change carries no share in euros, and its 0 cannot tell no raise from a
+// budget raise, so the repeat is asked as a stop of its own too. A run from
 // before the change compares the granted shares and the line raises alone.
 func TestCheckinRepeatGuardSeesARaise(t *testing.T) {
 	for name, tc := range map[string]struct {
@@ -246,7 +247,8 @@ func TestCheckinRepeatGuardSeesARaise(t *testing.T) {
 		"unchanged":                          {1, 1, 0, false, true},
 		"budget raised":                      {1, 3, 0, false, false},
 		"sessions raised":                    {1, 1, 2, false, false},
-		"first stop from before the change":  {0, 1, 0, false, true},
+		"first stop from before the change":  {0, 1, 0, false, false},
+		"budget raised across the roll":      {0, 3, 0, false, false},
 		"budget raised, before the change":   {1, 3, 0, true, true},
 		"sessions raised, before the change": {1, 1, 2, true, true},
 	} {

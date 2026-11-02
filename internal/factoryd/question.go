@@ -288,11 +288,18 @@ func reasonBody(reason string) string {
 }
 
 func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
-	ask, spent := "The check-in gave no answer within its calls. May the card go on?", "calls"
+	ask := "The check-in gave no answer within its calls. May the card go on?"
+	why := "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."
 	switch {
 	case strings.Contains(reason, checkinTimeCapStop):
-		ask, spent = "The check-in gave no answer within its time. May the card go on?", "time"
-		if d, err := time.ParseDuration(checkinCapOf(reason, checkinTimeCapStop)); err == nil {
+		ask = "The check-in gave no answer within its time. May the card go on?"
+		why = "The check-in spent its time on evidence and gave no decision: the session stopped, and its checks from here go to a person."
+		d, err := time.ParseDuration(checkinCapOf(reason, checkinTimeCapStop))
+		switch {
+		case err == nil && d <= 0:
+			ask = "The session's time ran out before its check-in could answer. May the card go on?"
+			why = "The session's time ran out before its check-in made a call: the session stopped, and its checks from here go to a person."
+		case err == nil:
 			ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", minutesWord(d))
 		}
 	case checkinCapOf(reason, checkinCallCapStop) != "":
@@ -304,7 +311,7 @@ func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 	q := &HumanQuestion{
 		Ask:     ask,
-		Why:     spendWhy(reason, f, "The check-in spent its "+spent+" on evidence and gave no decision: the session stopped, and its checks from here go to a person."),
+		Why:     spendWhy(reason, f, why),
 		Info:    info,
 		Choices: continueChoices(),
 	}

@@ -2707,15 +2707,14 @@ func (t *taskRun) grant(u *TaskUsage) {
 // own when it repeats the stop with prev, "" for none: the restart's
 // unchanged head when prev's answer bought one, else the deadlock's when
 // the head and the card's limits are unchanged. fixed compares as a run at
-// versionCheckinAnswer does: the branch's head, the share in euros, which
-// a mark from before the change does not carry, and the sessions the
-// console raised.
+// versionCheckinAnswer does: the branch's head, the share in euros and the
+// sessions the console raised.
 func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
 	was, head := prev.Head, mark.Head
 	same := prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines
 	if fixed {
 		was, head = prev.Tip, mark.Tip
-		same = same && (prev.ShareEUR == 0 || prev.ShareEUR == mark.ShareEUR) && prev.RaisedSessions == mark.RaisedSessions
+		same = same && prev.ShareEUR == mark.ShareEUR && prev.RaisedSessions == mark.RaisedSessions
 	}
 	if was == "" || was != head {
 		return ""

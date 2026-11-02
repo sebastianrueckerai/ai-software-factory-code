@@ -1124,11 +1124,8 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s), ask: &ask}
-		// the session's deadline sits sessionGrace before the activity's:
-		// the room the time cap's stop takes to land
-		timeCap := min(limits.CheckinTimeCap(), time.Until(deadline).Round(time.Second))
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), timeCap)
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
 		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id
@@ -1143,6 +1140,13 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	// check-in was asked, and its brief carries no handover note
 	brief("")
 	return nil, false
+}
+
+// startCheckinTime is a start check-in's time cap: the policy's, cut at
+// the session's deadline, which sits sessionGrace before the activity's,
+// the room the time cap's stop takes to land; 0 once the deadline passed.
+func startCheckinTime(limits policy.Limits, deadline time.Time) time.Duration {
+	return max(0, min(limits.CheckinTimeCap(), time.Until(deadline).Round(time.Second)))
 }
 
 // pace states where the card stands for a check-in: the spend from a fresh

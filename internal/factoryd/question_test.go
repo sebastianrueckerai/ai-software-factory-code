@@ -388,6 +388,19 @@ func TestCapStopQuestionNamesTheCapTheCheckinRanWith(t *testing.T) {
 	}
 }
 
+// A start check-in whose session's deadline had passed got no time and
+// made no call: its question says the session's time ran out, not that
+// the check-in spent its time on evidence.
+func TestCapStopWithNoTimeSaysTheSessionsTimeRanOut(t *testing.T) {
+	q := ShapedQuestion(checkinSpendAsk+"check-in time cap reached after 0s", QuestionFacts{}, nil)
+	if want := "The session's time ran out before its check-in could answer. May the card go on?"; q.Ask != want {
+		t.Errorf("ask %q, want %q", q.Ask, want)
+	}
+	if want := "The session's time ran out before its check-in made a call: the session stopped, and its checks from here go to a person."; q.Why != want {
+		t.Errorf("why %q, want %q", q.Why, want)
+	}
+}
+
 // Each human-card template asks one line under MaxAsk, fills its why and
 // info, and offers exactly its answers in order.
 func TestHumanCardQuestions(t *testing.T) {

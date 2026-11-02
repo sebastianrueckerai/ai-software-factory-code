@@ -4628,6 +4628,23 @@ func TestRunSessionStartCheckinStopsAtTheSessionsDeadline(t *testing.T) {
 	}
 }
 
+// A start check-in's time cap is the policy's, cut at the session's
+// deadline, and 0 once that deadline passed, never a negative time.
+func TestStartCheckinTimeIsCutAtTheDeadline(t *testing.T) {
+	for name, tc := range map[string]struct {
+		left time.Duration // the time to the session's deadline
+		want time.Duration
+	}{
+		"the deadline is far":   {2 * time.Hour, 30 * time.Minute},
+		"the deadline is close": {5 * time.Minute, 5 * time.Minute},
+		"the deadline passed":   {-12 * time.Second, 0},
+	} {
+		if got := startCheckinTime(policy.Limits{}, time.Now().Add(tc.left)); got != tc.want {
+			t.Errorf("%s: startCheckinTime = %s, want %s", name, got, tc.want)
+		}
+	}
+}
+
 // The gate moment's check-in opens with the policy's 20 calls too.
 func TestRunSessionGateCheckinOpensWithThePolicysCalls(t *testing.T) {
 	runner, _, _, _, chat, _, _ := checkinRig(t,
