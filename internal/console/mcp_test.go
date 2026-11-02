@@ -963,3 +963,135 @@ func TestMCPOwnThreadDropsItsThreadWhenTheClientLeaves(t *testing.T) {
 		t.Fatalf("the human's threads = %+v, want none", list)
 	}
 }
+
+// confirmed is chat_confirm's answer on session, decoded.
+func confirmed(t *testing.T, session *mcp.ClientSession, id string) sendAnswer {
+	t.Helper()
+	var a sendAnswer
+	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_confirm", map[string]any{"proposal": id})), &a); err != nil {
+		t.Fatal(err)
+	}
+	return a
+}
+
+// raised is the id of the one proposal chat_send answers to message.
+func raised(t *testing.T, session *mcp.ClientSession, message string) string {
+	t.Helper()
+	var a sendAnswer
+	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": message})), &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Proposals) != 1 {
+		t.Fatalf("chat_send raised %+v, want one proposal", a.Proposals)
+	}
+	return a.Proposals[0].ID
+}
+
+func TestMCPChatConfirmApplies(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman}}
+	args := `{"title":"Cache metrics","body":"Track the cache hit rate.\n\nAcceptance:\n- The metrics report works\n","track":"direct","track_reason":"a small read","size":"small"}`
+	g.replies = [][]string{{call(1, "new_card", args)}}
+	session := tokenSession(t, r)
+	id := raised(t, session, "file a card for cache metrics")
+	before := r.events.count()
+	g.replies = [][]string{}
+	filed := "Filed sf/code#41 on track direct."
+	a := confirmed(t, session, id)
+	equal(t, "the answer", a, sendAnswer{Conversation: 2, Tools: []mcpTool{{Name: "new_card", Result: filed}},
+		Proposals: []mcpProposal{}, Applied: []mcpApplied{{Tool: "new_card", Result: filed}}, Ended: true})
+	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", IssueNumber: 41, Kind: factoryd.EventCardFiled,
+		Detail: map[string]any{"track": "direct", "reason": "a small read", "title": "Cache metrics", "size": "small", "autonomy": "manual", "merge_rule": "human",
+			"decider": "member", "chat_task": factoryd.ChatTaskID("ai-software-factory-code", time.Now()), "thread": int64(2)}})
+	if p, _ := r.chat.proposal(id); p.used.IsZero() {
+		t.Fatal("the confirmed proposal is still unused")
+	}
+}
+
+func TestMCPChatConfirmApprovesMergeAsTheHuman(t *testing.T) {
+	r, _, g := newChatRig(t)
+	g.replies = [][]string{{call(1, "approve_merge", `{"task_id":"t-m"}`)}}
+	session := tokenSession(t, r)
+	id := raised(t, session, "approve #5")
+	r.fg.calls = nil
+	g.replies = [][]string{}
+	a := confirmed(t, session, id)
+	if a.Error != "" || !a.Ended || len(a.Applied) != 1 || a.Applied[0].Tool != "approve_merge" {
+		t.Fatalf("chat_confirm = %+v, want approve_merge applied", a)
+	}
+	want := "POST /api/v1/repos/sf/code/pulls/9/reviews Bearer fj-sebastian"
+	var reviews []string
+	for _, c := range r.fg.calls {
+		if strings.Contains(c, "/reviews") {
+			reviews = append(reviews, c)
+		}
+	}
+	equal(t, "the review calls", reviews, []string{want})
+	if rv := r.fg.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "abc123" {
+		t.Fatalf("review = %v, want APPROVED at abc123", rv)
+	}
+}
+
+func TestMCPChatConfirmNamesARefusedForgejoToken(t *testing.T) {
+	r, _, g := newChatRig(t)
+	g.replies = [][]string{{call(1, "approve_merge", `{"task_id":"t-m"}`)}}
+	session := tokenSession(t, r)
+	id := raised(t, session, "approve #5")
+	r.fg.revoked = "fj-sebastian"
+	g.replies = [][]string{{say("It was refused.")}}
+	a := confirmed(t, session, id)
+	const want = "the Forgejo token behind chat token laptop was refused; make a new chat token"
+	if a.Error != want || len(a.Applied) != 0 || len(r.fg.reviews) != 0 {
+		t.Fatalf("chat_confirm = %+v, reviews %v, want the error %q and no review", a, r.fg.reviews, want)
+	}
+}
+
+func TestMCPChatConfirmRefusesNonApprover(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	srv := httptest.NewServer(r.c)
+	t.Cleanup(srv.Close)
+	session := opened(t, srv, &door{auth: "Bearer " + r.chatTokenOf(t, "anna", "sf/code", nil)})
+	if err := r.chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: "p-anna-proposal", Kind: "proposal", Repository: "sf/code", Login: "anna",
+		Tool: "approve_merge", Args: json.RawMessage(`{"task_id":"t-m"}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say("Only an approver may.")}}
+	a := confirmed(t, session, "p-anna-proposal")
+	const refusal = "Only the approvers of project ai-software-factory-code may authorize spend."
+	if a.Error != refusal || len(a.Applied) != 0 || len(r.fg.reviews) != 0 || r.approvals.get(4).Status != "pending" {
+		t.Fatalf("chat_confirm = %+v, reviews %v, want the button's refusal %q and nothing approved", a, r.fg.reviews, refusal)
+	}
+	equal(t, "the tools", a.Tools, []mcpTool{{Name: "approve_merge", Result: "Refused: " + refusal}})
+}
+
+func TestMCPChatConfirmUsedOnce(t *testing.T) {
+	r, _, g := newChatRig(t)
+	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}}
+	session := tokenSession(t, r)
+	id := raised(t, session, "close #5")
+	g.replies = [][]string{}
+	confirmed(t, session, id)
+	for _, id := range []string{id, "no-such-proposal"} {
+		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": id})
+		if err != nil || !refused || text != "There is no such proposal or undo; it may have expired." {
+			t.Fatalf("chat_confirm(%s) = %q, refused %v, %v, want the used-or-expired refusal", id, text, refused, err)
+		}
+	}
+}
+
+func TestMCPChatConfirmRefusesOtherHumansProposal(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	if err := r.chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: "p-anna-proposal", Kind: "proposal", Repository: "sf/code", Login: "anna",
+		Tool: "close", Args: json.RawMessage(`{"task_id":"t-m"}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	text, refused, err := callTool(tokenSession(t, r), "chat_confirm", map[string]any{"proposal": "p-anna-proposal"})
+	if err != nil || !refused || text != "It is another human's." {
+		t.Fatalf("chat_confirm = %q, refused %v, %v, want the button's refusal", text, refused, err)
+	}
+	if p, _ := r.chat.proposal("p-anna-proposal"); !p.used.IsZero() {
+		t.Fatal("a refused confirm used anna's proposal")
+	}
+}

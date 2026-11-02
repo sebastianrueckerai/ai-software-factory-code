@@ -65,6 +65,7 @@ type fakeForgejo struct {
 	spent     map[string]bool // refresh tokens used once: Forgejo invalidates them on use
 	tokenN    int
 	failAPI   bool
+	revoked   string // the Forgejo token whose every API call answers 401
 	// tokens maps a Forgejo token to its login for /user; the token
 	// probes answer 200 where adminReach or notificationReach is set, else
 	// 403, as a token of read:user, write:repository and write:issue gets
@@ -156,6 +157,10 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
+	if f.revoked != "" && r.Header.Get("Authorization") == "Bearer "+f.revoked {
+		http.Error(w, `{"message":"token is required"}`, http.StatusUnauthorized)
+		return
+	}
 	if f.failAPI {
 		http.Error(w, "boom", http.StatusForbidden)
 		return

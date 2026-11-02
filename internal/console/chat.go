@@ -1422,58 +1422,62 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, err)
 		return
 	}
+	if err := t.press(r.PathValue("id"), fix, func() { t.open(w) }); err != nil {
+		c.fail(w, r, err)
+	}
+}
+
+// press runs the member's proposal id, corrected by fix when it is one,
+// as chatProposal's Do it does. A refusal before the stream opens is the
+// error; open starts the stream once the proposal is taken and its
+// thread bound.
+func (t *turn) press(id string, fix *poolCorrection, open func()) error {
+	c := t.c
 	if fix != nil {
-		p, err := t.peek("proposal", r.PathValue("id"))
+		p, err := t.peek("proposal", id)
 		if err != nil {
-			c.fail(w, r, err)
-			return
+			return err
 		}
 		if err := fix.against(p); err != nil {
-			c.fail(w, r, err)
-			return
+			return err
 		}
 	}
-	p, err := t.take("proposal", r.PathValue("id"))
+	p, err := t.take("proposal", id)
 	if err != nil {
-		c.fail(w, r, err)
-		return
+		return err
 	}
 	if p.Pool != nil {
 		if err := t.readmit(p.Tool); err != nil {
-			c.fail(w, r, err)
-			return
+			return err
 		}
 		if err := t.stalePool(p.Pool.Source); err != nil {
-			c.fail(w, r, err)
-			return
+			return err
 		}
 		if err := t.inThread(p.Conversation); err != nil {
-			c.fail(w, r, err)
-			return
+			return err
 		}
 		pr := t.poolPress(p, fix)
 		if pr.err != nil {
-			c.fail(w, r, pr.err)
-			return
+			return pr.err
 		}
 		pos, wait := c.turns.enter(t.key())
 		defer c.turns.leave(t.key())
 		t.detach()
-		t.open(w)
+		open()
 		t.takeTurn(pos, wait)
 		t.poolLanded(p, fix, pr)
-		return
+		return nil
 	}
 	if err := t.inThread(p.Conversation); err != nil {
-		c.fail(w, r, err)
-		return
+		return err
 	}
 	pos, wait := c.turns.enter(t.key())
 	defer c.turns.leave(t.key())
 	t.detach()
-	t.open(w)
+	open()
 	t.takeTurn(pos, wait)
 	t.apply(p, fix)
+	return nil
 }
 
 // poolCorrection is a member's correction of a set_pool proposal's

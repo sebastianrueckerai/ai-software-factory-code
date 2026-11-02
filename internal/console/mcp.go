@@ -143,6 +143,13 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 		func(ctx context.Context, _ *mcp.CallToolRequest, in readInput) (*mcp.CallToolResult, any, error) {
 			return c.chatRead(ctx, call, in)
 		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "chat_confirm", Description: "Confirm one proposal of the project agent of " + call.p.Name +
+		", as the console's Do it does, and wait up to 4 minutes for the turn's end. You may confirm every proposal you could press in the console, " +
+		"a merge approval included, which Forgejo records as your own review. Each proposal runs once and expires. The answer is chat_send's: " +
+		"what ran is in applied, a refusal in error."},
+		func(_ context.Context, _ *mcp.CallToolRequest, in confirmInput) (*mcp.CallToolResult, any, error) {
+			return c.chatConfirm(r.Context(), call, in)
+		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_threads", Description: "List your conversations with the project agent of " + call.p.Name +
 		": each one's number, title, time of its last message, and whether it holds a reply you have not read."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -367,6 +374,38 @@ func (c *Console) chatSend(ctx context.Context, call tokenCall, in sendInput) (*
 	a, err := k.wait(ctx, func() error { return t.say(msg, func() {}) })
 	if err != nil {
 		return nil, nil, err
+	}
+	return jsonAnswer(a)
+}
+
+// confirmInput is chat_confirm's arguments.
+type confirmInput struct {
+	Proposal string `json:"proposal" jsonschema:"a proposal's id from chat_send or chat_read"`
+}
+
+// chatConfirm presses the token's human's proposal through the button's
+// own path, in the thread that raised it. A tool the press ran and the
+// policy or Forgejo refused is the answer's error as well as its tool
+// block.
+func (c *Console) chatConfirm(ctx context.Context, call tokenCall, in confirmInput) (*mcp.CallToolResult, any, error) {
+	if c.cfg.Operator == nil {
+		return nil, nil, errors.New("the console has no chat")
+	}
+	t := c.sessionTurn(ctx, call.p, call.s, 0)
+	p, err := t.peek("proposal", in.Proposal)
+	if err != nil {
+		return nil, nil, err
+	}
+	k := &collector{a: sendAnswer{Conversation: p.Conversation, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
+	t.send, t.unread = k.send, true
+	a, err := k.wait(ctx, func() error { return t.press(in.Proposal, nil, func() {}) })
+	if err != nil {
+		return nil, nil, err
+	}
+	for _, tl := range a.Tools {
+		if why, refused := strings.CutPrefix(tl.Result, "Refused: "); refused && tl.Name == p.Tool && a.Error == "" {
+			a.Error = why
+		}
 	}
 	return jsonAnswer(a)
 }
