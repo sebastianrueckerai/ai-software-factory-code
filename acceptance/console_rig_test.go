@@ -743,6 +743,21 @@ func (a *AcceptanceRig) FundCard(ctx context.Context, id string, eur float64, _ 
 	return a.RaiseTaskBudget(ctx, id, eur)
 }
 
+func (a *AcceptanceRig) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.tasks {
+		if a.tasks[i].ID == id {
+			from := a.tasks[i].BudgetEUR
+			a.tasks[i].BudgetEUR += eur
+			a.tasks[i].Usage.ExtraAttempts += sessions
+			a.tasks[i].Usage.ExtraLines += lines
+			return from, a.tasks[i].BudgetEUR, nil
+		}
+	}
+	return 0, 0, factoryd.ErrNotFound
+}
+
 func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }
 
 func (a *AcceptanceRig) RemoveTaskDeps(context.Context, string, []string) error { return nil }
@@ -1297,17 +1312,26 @@ func (a *AcceptanceRig) AbandonChatMessage(context.Context, string, string, int6
 	return nil, nil
 }
 
-func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) error {
+func (a *AcceptanceRig) StartQueued(_ context.Context, _, _ string, id int64) (int64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id && m.Queued })
 	if i < 0 {
-		return nil
+		return 0, nil
 	}
 	m := a.msgs[i]
 	a.msgs = slices.Delete(a.msgs, i, i+1)
 	m.ID, m.Queued, m.At = a.nextID(), false, time.Now()
 	a.msgs = append(a.msgs, m)
+	return m.ID, nil
+}
+
+func (a *AcceptanceRig) RequeueChatMessage(_ context.Context, _, _ string, id int64) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if i := slices.IndexFunc(a.msgs, func(m accMessage) bool { return m.ID == id }); i >= 0 {
+		a.msgs[i].Queued = true
+	}
 	return nil
 }
 

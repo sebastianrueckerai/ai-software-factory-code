@@ -7,7 +7,9 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"slices"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 
@@ -101,6 +103,17 @@ type NamedCount struct {
 	Count float64 `json:"count"`
 }
 
+// NamedFigure is one bucket's whole comparison: the window's count of
+// the name, the equal window before it and each of the seven weeks, the
+// plain-count Figure semantics — a span the name does not reach holds a
+// zero, not an absence, and a name only the previous window or a week
+// holds is not lost. Plans by rounds, card filings by round and replans
+// by origin compare through it.
+type NamedFigure struct {
+	Name   string `json:"name"`
+	Figure Figure `json:"figure"`
+}
+
 // SizeIntercept is one size's fixed euros per card: the intercept of an
 // ordinary least squares of actual euros on changed lines across the
 // window's merged cards of that size. Available false means the fit is
@@ -123,6 +136,26 @@ type EconomicsCoverage struct {
 	MissingCost  int `json:"missing_cost"`  // of them, cards the ledger holds no row for
 	MissingLines int `json:"missing_lines"` // of them, cards without a gate_head reading
 	MissingSize  int `json:"missing_size"`  // of them, readings that carry no size
+}
+
+// GateBoundCoverage names how far the size-bound panel reaches: the
+// window's merge-gate readings and the holes among them. A reading
+// measures its card only complete — the fact's identity, a bound, both
+// line counts and the size whose bound it planned. Every hole is
+// counted, none guessed and none filled: a missing bound or missing
+// lines never borrow the policy in force now or the card's metadata,
+// a size the reading never carried and an explicitly unsized card
+// measure nothing, and an identity-less legacy row is no reading the
+// panel can stand on. Unknown is not measured passing: the figure
+// stands on the measured rest.
+type GateBoundCoverage struct {
+	Readings     int `json:"readings"`      // merge-gate readings in the window
+	Measured     int `json:"measured"`      // of them, readings complete enough to measure
+	MissingBound int `json:"missing_bound"` // of them, readings that carry no bound
+	MissingLines int `json:"missing_lines"` // of them, readings without insertions or deletions
+	UnknownSize  int `json:"unknown_size"`  // of them, readings that carry no size
+	UnsizedSize  int `json:"unsized_size"`  // of them, readings of an explicitly unsized card
+	Identityless int `json:"identityless"`  // of them, legacy rows without the fact identity
 }
 
 // The divide-and-conquer fact contracts (roadmap 336): one payload per
@@ -264,9 +297,9 @@ func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 const EventGateHead = "gate_head"
 
 // GateHeadFact is that reading: the merge decision's snapshot of the card
-// as the gates judged it — the card's size, the bound that size planned
-// under the policy the gates read (cardLineBound, never the policy's
-// large_lines standing in for a smaller size's bound), the policy version
+// as the gates judged it — the card's size, the effective bound under
+// the policy the gates read (the size's plan plus the raises its extend
+// answers added), the policy version
 // and the lines the gates counted. Decision is "auto" (the gates let it
 // merge) or "approval" (a person decides). Identity: the card and the
 // head; one head, one row.
@@ -276,7 +309,7 @@ type GateHeadFact struct {
 	Gate          string
 	Decision      string
 	Size          string
-	Bound         int // the size's effective cardLineBound at the reading
+	Bound         int // the effective line bound at the reading
 	PolicyVersion int64
 	Files         int
 	Insertions    int
@@ -468,6 +501,23 @@ type SessionsCoverage struct {
 	PartialStarts int `json:"partial_starts"` // of them, cards whose ends name sessions no start row names
 }
 
+// ReviewEvidence names how far the review panel reaches: the span's
+// genuine answers — the measured denominator the not-reviewed count
+// stands over, "2 of 3" — and the model_review rows no usable evidence
+// covers. An answer is genuine only complete: the fact's attempt
+// identity, head and round, the persistence contract that keeps one
+// attempt one row so a replay adds no answer, and the classification
+// the payload wrote — reviewed true, the answer judged the head (a
+// negative verdict among them: concerns judged the change), or
+// reviewed false with its bounded reason. A row without its identity
+// or without a usable classification is unknown evidence, never an
+// inferred success: it measures nothing, and the coverage counts it
+// rather than any panel guessing it an answer.
+type ReviewEvidence struct {
+	Answers Figure `json:"answers"` // genuine answers, a fact even at zero
+	Unknown Figure `json:"unknown"` // rows without their attempt identity or classification
+}
+
 // DivideConquer measures the divide-and-conquer plan (roadmap 336, doc
 // docs/plans/2026-10-29-divide-and-conquer.md): whether cards stay
 // within their size bound, what one costs in sessions and euros, and
@@ -498,8 +548,12 @@ type SessionsCoverage struct {
 type DivideConquer struct {
 	CoveredFrom time.Time `json:"covered_from"`
 
-	GateAboveBound  Figure       `json:"gate_above_bound"`
-	SessionsPerCard []SizeFigure `json:"sessions_per_card"`
+	GateAboveBound Figure `json:"gate_above_bound"`
+	// GateBoundCoverage counts the window's merge-gate readings and the
+	// holes the panel above reads around; the figure stands on the
+	// measured rest.
+	GateBoundCoverage GateBoundCoverage `json:"gate_bound_coverage"`
+	SessionsPerCard   []SizeFigure      `json:"sessions_per_card"`
 	// SessionsCoverage counts the window's first-merged cards and the
 	// holes panel 2's averages read around — unknown or unsized
 	// historical size, missing or partial start evidence — so an old
@@ -513,16 +567,37 @@ type DivideConquer struct {
 	// EconomicsCoverage counts the window's first-merged cards and the
 	// holes the two economics panels above read around; both stand on
 	// the measured rest.
-	EconomicsCoverage  EconomicsCoverage `json:"economics_coverage"`
-	Cuts               Figure            `json:"cuts"`
-	CutGroupsClosed    Figure            `json:"cut_groups_closed"`
-	GroupOpenHours     Figure            `json:"group_open_hours"`
-	HoldWaitHours      Figure            `json:"hold_wait_hours"`
-	ReviewsNotReviewed Figure            `json:"reviews_not_reviewed"`
-	PlansByRounds      []NamedCount      `json:"plans_by_rounds"`
-	CardsFirstRound    Figure            `json:"cards_first_round"`
-	CardsLaterRounds   Figure            `json:"cards_later_rounds"`
-	ReplansByOrigin    []NamedCount      `json:"replans_by_origin"`
+	EconomicsCoverage EconomicsCoverage `json:"economics_coverage"`
+	// Cuts counts the window's applied cuts; CutGroupsClosed the groups
+	// those cuts left that the span's own end saw closed.
+	Cuts               Figure `json:"cuts"`
+	CutGroupsClosed    Figure `json:"cut_groups_closed"`
+	GroupOpenHours     Figure `json:"group_open_hours"`
+	HoldWaitHours      Figure `json:"hold_wait_hours"`
+	ReviewsNotReviewed Figure `json:"reviews_not_reviewed"`
+	// ReviewEvidence measures panel 9's coverage: the genuine answers
+	// the count above stands over, and the rows no usable evidence
+	// covers — unknown, never an inferred success.
+	ReviewEvidence ReviewEvidence `json:"review_evidence"`
+	// PlansByRounds counts the window's closed plans by the rounds each
+	// ran to its closure; CardsFirstRound and CardsLaterRounds count the
+	// window's new card filings of the first round against later ones;
+	// ReplansByOrigin the window's applied replans by who asked them.
+	// What no explicit round or origin covers keeps its own unknown
+	// bucket, never a guess.
+	PlansByRounds    []NamedCount `json:"plans_by_rounds"`
+	CardsFirstRound  Figure       `json:"cards_first_round"`
+	CardsLaterRounds Figure       `json:"cards_later_rounds"`
+	ReplansByOrigin  []NamedCount `json:"replans_by_origin"`
+	// PlansByRoundsSpans compares panel 10's named counts over the
+	// window, the equal window before it and all seven weeks; CardsByRound
+	// panel 11's original filings by the round each stamped, rounds past
+	// the first each its own name beside the first/later totals above.
+	// The unknown round is an explicit bucket in both; the names order
+	// fewest round first, unknown last, and a name only the previous
+	// window or a weekly bucket holds is not lost.
+	PlansByRoundsSpans []NamedFigure `json:"plans_by_rounds_spans"`
+	CardsByRound       []NamedFigure `json:"cards_by_round"`
 }
 
 // MetricsReport is every figure of one project over one window, the
@@ -584,6 +659,14 @@ func metricBucketFrom(col, spark string) string {
 	return fmt.Sprintf(`floor(EXTRACT(EPOCH FROM (%s - %s::timestamptz)) / 604800)::int`, col, spark)
 }
 
+// metricBucketEnd is the exclusive end of col's weekly bucket over the
+// same spark: the instant a bucket's own answer freezes at, so a fact
+// that lands later — a closure, an end — never rewrites it.
+func metricBucketEnd(col, spark string) string {
+	return fmt.Sprintf(`%s::timestamptz + ((floor(EXTRACT(EPOCH FROM (%s - %s::timestamptz)) / 604800)) + 1) * interval '7 days'`,
+		spark, col, spark)
+}
+
 func metricScalar(ctx context.Context, db *sql.DB, query string, args ...any) (float64, bool, error) {
 	var v sql.NullFloat64
 	if err := db.QueryRowContext(ctx, query, args...).Scan(&v); err != nil {
@@ -617,6 +700,47 @@ func metricRatio(num, den float64) (float64, bool) {
 		return 0, false
 	}
 	return num / den, true
+}
+
+// metricNamedWeeks reads a named-weekly query — rows of (bucket, name,
+// count) — into each name's seven buckets, the shape the named
+// comparisons below are assembled from.
+func metricNamedWeeks(ctx context.Context, db *sql.DB, query string, args ...any) (map[string][7]float64, error) {
+	rows, err := db.QueryContext(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string][7]float64{}
+	for rows.Next() {
+		var b int
+		var name string
+		var v float64
+		if err := rows.Scan(&b, &name, &v); err != nil {
+			return nil, err
+		}
+		if b >= 0 && b < 7 {
+			ws := out[name]
+			ws[b] = v
+			out[name] = ws
+		}
+	}
+	return out, rows.Err()
+}
+
+// metricNamedWeeksTotals sums each name's weekly buckets: the name's
+// own total across the spark, beside the window's and the previous
+// window's counts.
+func metricNamedWeeksTotals(weeks map[string][7]float64) map[string]float64 {
+	out := make(map[string]float64, len(weeks))
+	for name, ws := range weeks {
+		var total float64
+		for _, v := range ws {
+			total += v
+		}
+		out[name] = total
+	}
+	return out
 }
 
 // metricCount is the shape of every plain count: a fact even at zero.
@@ -1566,10 +1690,13 @@ func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricW
 }
 
 // metricDivideConquer populates the divide-and-conquer block the store
-// answers today: CoveredFrom, GateAboveBound, SessionsPerCard with its
-// coverage, SessionEnds and ReviewsNotReviewed. The economics panels
-// (panels 4, 5, 7, 8, 10, 11, 12) land on another card; their fields
-// stay zero until then.
+// answers today: CoveredFrom, GateAboveBound with GateBoundCoverage,
+// SessionsPerCard with its coverage, SessionEnds, ReviewsNotReviewed
+// with ReviewEvidence, the cuts with their closed groups, and the
+// planning panels — plans by rounds, card filings by round, replans by
+// origin. The economics panels (4 and 5) compose beside this at the
+// caller; the group and hold times (panels 7 and 8) land on another
+// card, their fields staying zero until then.
 func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
 	var d DivideConquer
 	var covered sql.NullTime
@@ -1582,7 +1709,7 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 		d.CoveredFrom = covered.Time
 	}
 	var err error
-	if d.GateAboveBound, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
+	if d.GateAboveBound, d.GateBoundCoverage, err = metricDivideGateBound(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	if d.SessionsPerCard, d.SessionsCoverage, err = metricDivideSessions(ctx, db, repo, w); err != nil {
@@ -1591,7 +1718,19 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 	if d.SessionEnds, err = metricDivideSessionEnds(ctx, db, repo, w); err != nil {
 		return d, err
 	}
-	if d.ReviewsNotReviewed, err = metricDivideReviews(ctx, db, repo, w); err != nil {
+	if d.ReviewsNotReviewed, d.ReviewEvidence, err = metricDivideReviews(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.Cuts, d.CutGroupsClosed, err = metricDivideCuts(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.PlansByRounds, d.PlansByRoundsSpans, err = metricDividePlansByRounds(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.CardsFirstRound, d.CardsLaterRounds, d.CardsByRound, err = metricDivideCardFilings(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.ReplansByOrigin, err = metricDivideReplans(ctx, db, repo, w); err != nil {
 		return d, err
 	}
 	return d, nil
@@ -1600,15 +1739,39 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 // metricDivideGateBound — panel 1: distinct cards reaching the merge
 // gate above their size bound (target: none). A card counts once
 // however many heads and retries crossed; the bound and the lines are
-// the ones the reading captured, never today's policy. Without a
-// reading in the span the panel is unknown, not zero.
-func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+// the ones the reading captured, never today's policy or the card's
+// metadata now. Only a complete reading is evidence — the fact's
+// identity, a bound, both line counts and the size whose bound it
+// planned; a hole the coverage names measures nothing, so a span no
+// complete reading covers is unknown, not zero.
+func metricDivideGateBound(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, GateBoundCoverage, error) {
 	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
 		WHERE ` + dcCardReach + ` AND e.kind = 'gate_head' AND e.detail->>'gate' = 'merge' AND e.at >= %s AND e.at < $3`
+	// measured: the reading carries its whole comparison — the fact's
+	// identity, the bound, both line counts and a size that planned the
+	// bound; none of it is filled from the policy in force now
+	const measured = `e.identity_key IS NOT NULL AND (e.detail->>'bound') IS NOT NULL
+		AND (e.detail->>'insertions') IS NOT NULL AND (e.detail->>'deletions') IS NOT NULL
+		AND COALESCE(e.detail->>'size', '') <> ''`
 	const over = `(e.detail->>'insertions')::int + (e.detail->>'deletions')::int > (e.detail->>'bound')::int`
-	return metricEvidenceCount(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT count(DISTINCT e.task_id) FILTER (WHERE `+over+`), count(DISTINCT e.task_id)`+from, "$2"),
-		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+over+`)`+from+` GROUP BY 1`, "$2"))
+	f, err := metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(DISTINCT e.task_id) FILTER (WHERE `+measured+` AND `+over+`),
+			count(DISTINCT e.task_id) FILTER (WHERE `+measured+`)`+from, "$2"),
+		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(DISTINCT e.task_id) FILTER (WHERE "+measured+` AND `+over+`)`+from+` GROUP BY 1`, "$2"))
+	var cov GateBoundCoverage
+	if err != nil {
+		return f, cov, err
+	}
+	err = db.QueryRowContext(ctx, `SELECT count(*)::int, count(*) FILTER (WHERE `+measured+`)::int,
+		count(*) FILTER (WHERE (e.detail->>'bound') IS NULL)::int,
+		count(*) FILTER (WHERE (e.detail->>'insertions') IS NULL OR (e.detail->>'deletions') IS NULL)::int,
+		count(*) FILTER (WHERE (e.detail->>'size') IS NULL)::int,
+		count(*) FILTER (WHERE e.detail->>'size' = '')::int,
+		count(*) FILTER (WHERE e.identity_key IS NULL)::int`+fmt.Sprintf(from, "$2"),
+		repo, w.From, w.To).
+		Scan(&cov.Readings, &cov.Measured, &cov.MissingBound, &cov.MissingLines,
+			&cov.UnknownSize, &cov.UnsizedSize, &cov.Identityless)
+	return f, cov, err
 }
 
 // metricDivideSessions — panel 2: mean lifetime distinct named starts
@@ -1824,14 +1987,338 @@ func metricDivideSessionEnds(ctx context.Context, db *sql.DB, repo string, w met
 }
 
 // metricDivideReviews — panel 9: reviews that answered not reviewed
-// (target: none). A review that returned no verdict carries reviewed
-// false and a bounded reason; without a model_review row in the span
-// the panel is unknown, not zero.
-func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
+// (target: none). Only a genuine answer is evidence: a row that carries
+// its attempt identity — head and round, the persistence contract that
+// keeps one attempt one row, so a replay of one attempt adds no answer
+// while a second genuine round of the same head and a round of another
+// head each stay their own — and the classification the payload wrote:
+// reviewed true, the answer judged the head, a negative verdict among
+// them, or reviewed false with its bounded reason. A row without its
+// identity or without a usable classification is unknown evidence,
+// never an inferred success: the count stands on the genuine rest, and
+// a span no genuine answer covers is unknown, not zero.
+func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, ReviewEvidence, error) {
 	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
 		WHERE ` + dcCardReach + ` AND e.kind = 'model_review' AND e.at >= %s AND e.at < $3`
-	const notReviewed = `e.detail->>'reviewed' = 'false'`
-	return metricEvidenceCount(ctx, db, repo, w,
-		fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+notReviewed+`), count(*)`+from, "$2"),
+	// COALESCE holds the classification boolean to FALSE where the
+	// payload wrote none: an AND with SQL's NULL would answer NULL, and
+	// NOT NULL drops the row from the unknown filter too — a keyed row
+	// without its classification would count nowhere, hole or answer
+	const genuine = `e.identity_key IS NOT NULL AND COALESCE(e.detail->>'reviewed' IN ('true', 'false'), FALSE)`
+	const notReviewed = genuine + ` AND e.detail->>'reviewed' = 'false'`
+	const unknown = `NOT (` + genuine + `)`
+	// the evidence of Answers and Unknown is every model_review row: a
+	// span rows cover measures, its genuine answers and its holes apart
+	of := func(what string) (string, string) {
+		return fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+what+`), count(*)`+from, "$2"),
+			fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(*) FILTER (WHERE "+what+`)`+from+` GROUP BY 1`, "$2")
+	}
+	f, err := metricEvidenceCount(ctx, db, repo, w,
+		fmt.Sprintf(`SELECT count(*) FILTER (WHERE `+notReviewed+`), count(*) FILTER (WHERE `+genuine+`)`+from, "$2"),
 		fmt.Sprintf(`SELECT `+metricBucket("e.at")+", count(*) FILTER (WHERE "+notReviewed+`)`+from+` GROUP BY 1`, "$2"))
+	var ev ReviewEvidence
+	if err != nil {
+		return f, ev, err
+	}
+	scalar, weeks := of(genuine)
+	if ev.Answers, err = metricEvidenceCount(ctx, db, repo, w, scalar, weeks); err != nil {
+		return f, ev, err
+	}
+	scalar, weeks = of(unknown)
+	ev.Unknown, err = metricEvidenceCount(ctx, db, repo, w, scalar, weeks)
+	return f, ev, err
+}
+
+// dcLegacyFiling keeps a plan_replanned row of the identity contract's
+// era apart from one producers wrote before it: an identity-less row
+// survives only where no canonical revision-level row of its own
+// repository holds the replan as of asOf — a predicate on k.at the
+// caller phrases in its span's own bounds, a closure reading inclusive
+// (evidence the closure itself recorded holds the replan as of it) and
+// a window's end exclusive, the bound its own cohort keeps, so a
+// replacement exactly at the end — outside the cohort — suppresses
+// nothing it cannot count, and one arriving later never rewrites the
+// older answer. A replacement another repository recorded, however
+// near, suppresses nothing here. A card's own canonical filing row
+// never suppresses a revision-level one — the two are separate
+// identities.
+func dcLegacyFiling(asOf string) string {
+	return `e.identity_key IS NOT NULL OR NOT EXISTS (
+	SELECT 1 FROM events k WHERE k.task_id = e.task_id AND k.repository = e.repository AND k.kind = 'plan_replanned'
+		AND k.identity_key IS NOT NULL AND k.detail->>'card' IS NULL
+		AND k.detail->>'revision' = e.detail->>'revision' AND ` + asOf + `)`
+}
+
+// dcRoundOf reads the round a filing row names, 0 where it names none —
+// a plan filed before rounds names no round, and none is guessed.
+const dcRoundOf = `CASE WHEN (e.detail->>'round') ~ '^[0-9]+$' THEN (e.detail->>'round')::int ELSE 0 END`
+
+// dcRoundCounts reads one span's named counts — query answers rows of
+// (name, count) over the span's own $2 and $3 bounds and the project's
+// $1 — into the span's name-to-count map.
+func dcRoundCounts(ctx context.Context, db *sql.DB, repo, query string, from, to time.Time) (map[string]float64, error) {
+	rows, err := db.QueryContext(ctx, query, repo, from, to)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]float64{}
+	for rows.Next() {
+		var name string
+		var n float64
+		if err := rows.Scan(&name, &n); err != nil {
+			return nil, err
+		}
+		out[name] = n
+	}
+	return out, rows.Err()
+}
+
+// dcNamedFigures assembles the named comparison from the three spans'
+// own answers: every name any span holds — a name only the previous
+// window or a weekly bucket holds is not lost — each a plain count's
+// Figure, zero wherever the span does not hold it, never absent.
+func dcNamedFigures(cur, prev map[string]float64, weeks map[string][7]float64) []NamedFigure {
+	names := map[string]bool{}
+	for name := range cur {
+		names[name] = true
+	}
+	for name := range prev {
+		names[name] = true
+	}
+	for name := range weeks {
+		names[name] = true
+	}
+	out := make([]NamedFigure, 0, len(names))
+	for name := range names {
+		out = append(out, NamedFigure{Name: name, Figure: Figure{
+			Value: cur[name], Prev: prev[name], Has: true, PrevHas: true, Weeks: weeks[name]}})
+	}
+	return out
+}
+
+// dcRoundFigureOrder orders the named round figures in place: explicit
+// rounds fewest first, every name that is no number — the unknown
+// bucket among them — after them and alphabetical among themselves.
+func dcRoundFigureOrder(figs []NamedFigure) {
+	sort.Slice(figs, func(i, j int) bool {
+		a, aErr := strconv.Atoi(figs[i].Name)
+		b, bErr := strconv.Atoi(figs[j].Name)
+		switch {
+		case aErr == nil && bErr == nil && a != b:
+			return a < b
+		case aErr != bErr:
+			return aErr == nil
+		default:
+			return figs[i].Name < figs[j].Name
+		}
+	})
+}
+
+// metricDivideCuts — panel 6: the window's applied cuts, and the cut
+// groups the span's own end saw closed. A cut is the CutFact row the
+// replan that applied it records — identity the plan and the cut card,
+// so a retried filing counts once and a request never does: the
+// console's card_replanned, a pending cut step, a plan_replanned row of
+// origin cut are asks, not cuts. A group closes when its plan's
+// plan_closed row lands; each span reads closure only at its own end —
+// the window at To, a bucket at the bucket's end — so a closure later
+// than that never rewrites the older answer, and a group cut twice is
+// still one group.
+func metricDivideCuts(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, error) {
+	const from = ` FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE ` + dcCardReach + ` AND e.kind = 'cut' AND e.identity_key IS NOT NULL AND e.at >= $2 AND e.at < $3`
+	// closed(end): the cut's group holds its plan_closed row before end,
+	// on the project's own plan task
+	closed := func(end string) string {
+		return `EXISTS (SELECT 1 FROM events pc JOIN tasks gt ON gt.id = pc.task_id
+			WHERE pc.task_id = e.detail->>'group' AND pc.kind = 'plan_closed' AND pc.at < ` + end + `
+				AND gt.repository = $1)`
+	}
+	cuts, err := metricCount(ctx, db, repo, w,
+		`SELECT count(DISTINCT e.identity_key)`+from,
+		`SELECT `+metricBucket("e.at")+", count(DISTINCT e.identity_key)"+from+` GROUP BY 1`)
+	if err != nil {
+		return cuts, Figure{}, err
+	}
+	groups, err := metricCount(ctx, db, repo, w,
+		`SELECT count(DISTINCT e.detail->>'group')`+from+` AND `+closed("$3"),
+		`SELECT `+metricBucket("e.at")+", count(DISTINCT e.detail->>'group')"+from+
+			` AND `+closed(metricBucketEnd("e.at", "$2"))+` GROUP BY 1`)
+	return cuts, groups, err
+}
+
+// metricDividePlansByRounds — panel 10: the plans the span saw close,
+// by the rounds each ran to its closure. A plan closes once, at its
+// first actual plan_closed row — a duplicate close, in the span or
+// before it, inflates nothing — and belongs to the span that closure
+// lands in. A plan's rounds are its maximum explicit round as of that
+// closure — the round a filing's rows name, and the plan_revisions the
+// store kept, none later than the closure itself: never a count of
+// revisions, never a round a revision filed after the close, never a
+// canonical replacement that arrived after it. A plan no explicit round
+// covers, filed before rounds, keeps its own unknown bucket. The scalar
+// keeps the window's own names; the spans compare every name the
+// window, the equal window before it and the seven weeks hold.
+func metricDividePlansByRounds(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, []NamedFigure, error) {
+	// rounds(c): the maximum explicit round no later than the closure,
+	// over the repository's own eligible evidence alone — a row another
+	// repository recorded on the same task, however high the round it
+	// names, inflates nothing. The legacy double of a revision a
+	// canonical revision-level row holds is dropped at the closure's own
+	// cutoff, so evidence a later row would carry never rewrites the
+	// closed answer.
+	body := `WITH closed AS (
+			SELECT e.task_id, min(e.at) AS closed_at
+			FROM events e JOIN tasks t ON t.id = e.task_id
+			WHERE ` + dcCardReach + ` AND e.kind = 'plan_closed' AND e.at < $3
+			GROUP BY e.task_id
+		)
+		SELECT c.closed_at, GREATEST(
+			COALESCE((SELECT max(` + dcRoundOf + `) FROM events e
+				WHERE e.task_id = c.task_id AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.at <= c.closed_at
+					AND (` + dcLegacyFiling("k.at <= c.closed_at") + `)), 0),
+			COALESCE((SELECT max((v.plan->>'round')::int) FROM plan_revisions v
+				WHERE v.task_id = c.task_id AND (v.plan->>'round') ~ '^[0-9]+$' AND v.created_at <= c.closed_at), 0)
+		) AS rounds
+		FROM closed c WHERE c.closed_at >= $2 AND c.closed_at < $3`
+	counts := fmt.Sprintf(`SELECT CASE WHEN r.rounds > 0 THEN r.rounds::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) r GROUP BY 1`, body)
+	weeks := fmt.Sprintf(`SELECT %s, CASE WHEN r.rounds > 0 THEN r.rounds::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) r GROUP BY 1, 2`, metricBucketFrom("r.closed_at", "$2"), body)
+	cur, err := dcRoundCounts(ctx, db, repo, counts, w.From, w.To)
+	if err != nil {
+		return nil, nil, err
+	}
+	prev, err := dcRoundCounts(ctx, db, repo, counts, w.PrevFrom, w.PrevTo)
+	if err != nil {
+		return nil, nil, err
+	}
+	wk, err := metricNamedWeeks(ctx, db, weeks, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return nil, nil, err
+	}
+	spans := dcNamedFigures(cur, prev, wk)
+	dcRoundFigureOrder(spans)
+	// the scalar keeps the window's own names alone, fewest round first
+	var scalar []NamedCount
+	for name, n := range cur {
+		scalar = append(scalar, NamedCount{Name: name, Count: n})
+	}
+	slices.SortFunc(scalar, func(a, b NamedCount) int {
+		an, aErr := strconv.Atoi(a.Name)
+		bn, bErr := strconv.Atoi(b.Name)
+		if aErr != bErr {
+			if aErr == nil {
+				return -1
+			}
+			return 1
+		}
+		if aErr == nil && an != bn {
+			return an - bn
+		}
+		return strings.Compare(a.Name, b.Name)
+	})
+	return scalar, spans, nil
+}
+
+// metricDivideCardFilings — panel 11: the span's new card filings, the
+// first round's against later rounds', and each explicit round its own
+// named figure. A filing is a card's own canonical plan_replanned row —
+// the card's issue and plan key on it, the round the filing stamped —
+// and the original filing's round and instant count once: each card
+// key's original filing is selected across repository history before
+// any cohort bound, so a key first filed in an earlier window and
+// refiled in this one contributes only at its original time and round,
+// wherever the panels read it, and a retained card, which refiles
+// nothing, adds none. A filing that names no round, of a plan filed
+// before rounds, is neither first nor later and keeps the explicit
+// unknown bucket of the named comparison; the panel never guesses it a
+// round.
+func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, []NamedFigure, error) {
+	// one row per plan and key, the earliest across repository history:
+	// DISTINCT ON keeps the original filing of a key any later revision
+	// filed again, before the span bounds below choose their cohorts —
+	// and the repository's own rows alone are eligible, so a row another
+	// repository recorded on the same task files no card here
+	const filings = `SELECT DISTINCT ON (e.task_id, e.detail->>'key') e.at, ` + dcRoundOf + ` AS round
+		FROM events e JOIN tasks t ON t.id = e.task_id
+		WHERE ` + dcCardReach + ` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.identity_key IS NOT NULL
+			AND e.detail->>'card' IS NOT NULL
+		ORDER BY e.task_id, e.detail->>'key', e.at, e.id`
+	counts := fmt.Sprintf(`SELECT CASE WHEN f.round > 0 THEN f.round::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) f WHERE f.at >= $2 AND f.at < $3 GROUP BY 1`, filings)
+	weeks := fmt.Sprintf(`SELECT %s, CASE WHEN f.round > 0 THEN f.round::text ELSE 'unknown' END AS name, count(*)::float8
+		FROM (%s) f WHERE f.at >= $2 AND f.at < $3 GROUP BY 1, 2`, metricBucketFrom("f.at", "$2"), filings)
+	cur, err := dcRoundCounts(ctx, db, repo, counts, w.From, w.To)
+	if err != nil {
+		return Figure{}, Figure{}, nil, err
+	}
+	prev, err := dcRoundCounts(ctx, db, repo, counts, w.PrevFrom, w.PrevTo)
+	if err != nil {
+		return Figure{}, Figure{}, nil, err
+	}
+	wk, err := metricNamedWeeks(ctx, db, weeks, repo, w.SparkFrom, w.To)
+	if err != nil {
+		return Figure{}, Figure{}, nil, err
+	}
+	figs := dcNamedFigures(cur, prev, wk)
+	dcRoundFigureOrder(figs)
+	// the first/later totals stand on the same named counts: round 1
+	// alone, and every explicit later round summed — the rounds past the
+	// first keep their own names beside the total
+	var first, later Figure
+	first.Has, first.PrevHas, later.Has, later.PrevHas = true, true, true, true
+	for _, nf := range figs {
+		if nf.Name == "1" {
+			first = nf.Figure
+			continue
+		}
+		if n, err := strconv.Atoi(nf.Name); err == nil && n >= 2 {
+			later.Value += nf.Figure.Value
+			later.Prev += nf.Figure.Prev
+			for b, v := range nf.Figure.Weeks {
+				later.Weeks[b] += v
+			}
+		}
+	}
+	return first, later, figs, nil
+}
+
+// metricDivideReplans — panel 12: the window's applied replans by who
+// asked them — a person, a cut, a round. A replan is the revision's own
+// plan_replanned row, one per plan and revision however many cards the
+// revision filed; the cards' rows answer the filings panel, not this
+// one, and never suppress a revision's own. Only the repository's own
+// rows are eligible, scoped before the deduplication: a row another
+// repository recorded on the same task — its task's reach holds it —
+// neither wins the revision's origin nor replaces the local one. A row
+// the identity contract never covered, one no canonical revision-level
+// row of its revision holds as of the window's own end, keeps the
+// origin its detail names — or its own unknown bucket where it names
+// none; nothing guesses a name, and a canonical replacement arriving
+// after the window never rewrites the older answer.
+func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricWindow) ([]NamedCount, error) {
+	rows, err := db.QueryContext(ctx, `SELECT r.name, count(*)::float8 FROM (
+			SELECT DISTINCT ON (e.task_id, e.detail->>'revision')
+				CASE WHEN e.detail->>'origin' IN ('`+ReplanPerson+`', '`+ReplanCut+`', '`+ReplanRound+`')
+					THEN e.detail->>'origin' ELSE 'unknown' END AS name
+			FROM events e JOIN tasks t ON t.id = e.task_id
+			WHERE `+dcCardReach+` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
+				AND e.at >= $2 AND e.at < $3 AND (`+dcLegacyFiling("k.at < $3")+`)
+			ORDER BY e.task_id, e.detail->>'revision', e.identity_key IS NULL, e.at, e.id
+		) r GROUP BY 1 ORDER BY count(*) DESC, 1`, repo, w.From, w.To) // #nosec G202 -- the query is built from the package's constant fragments
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []NamedCount
+	for rows.Next() {
+		var nc NamedCount
+		if err := rows.Scan(&nc.Name, &nc.Count); err != nil {
+			return nil, err
+		}
+		out = append(out, nc)
+	}
+	return out, rows.Err()
 }

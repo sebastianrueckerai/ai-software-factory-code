@@ -246,11 +246,6 @@ func failedPlanCard(r *rig) {
 	}
 }
 
-func verdictAlert(r *rig) {
-	r.alerts.rows = []factoryd.Alert{{ID: 3, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"}}
-	r.tasks.set("", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
-}
-
 func standingResource(r *rig) {
 	r.resources.rows = []cloudres.Resource{{ID: 11, Kind: "server", Repo: "sf/code", OwnerRef: "t-res", HoldID: 7, State: "live",
 		Size: "cx33", LeaseExpires: time.Now().Add(time.Hour)}}
@@ -283,8 +278,6 @@ var actions = []action{
 		map[string]any{"pr": 9, "action": "request_changes"}, nil, url.Values{"note": {"split it"}, "action": {"request_changes"}}),
 	boardAction("deny reject", "/approvals/4/deny", factoryd.EventMergeDenied, "sf/code", "t-m",
 		map[string]any{"pr": 9, "action": "reject"}, nil, url.Values{"note": {"not wanted"}, "action": {"reject"}}),
-	boardAction("verdict", "/alerts/3/verdict", factoryd.EventAlertVerdict, "sf/code", "t-e",
-		map[string]any{"alert": 3, "verdict": "real"}, verdictAlert, url.Values{"verdict": {"real"}}),
 	boardAction("setSummary", "/tasks/t-m/summary", factoryd.EventSummarySet, "sf/code", "t-m",
 		map[string]any{"summary": "a short summary"}, queuedCard, url.Values{"summary": {"a short summary"}}),
 	boardAction("closeCard", "/tasks/t-m/close", factoryd.EventCardClosed, "sf/code", "t-m",

@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 	"time"
 
@@ -349,6 +350,12 @@ func RetryID(id string) string {
 	return "t-" + hex.EncodeToString(sum[:6])
 }
 
+// retryMarker is the marker on a retry's issue, so a retry that stopped
+// between the filing and the link finds the issue it filed.
+func retryMarker(id string) string {
+	return fmt.Sprintf("<!-- factoryd retry of %s -->", id)
+}
+
 // RetryPlanCard files failed plan card taskID again for by (item 119). One
 // transaction puts the replacement in its place, once: the key, the
 // dependencies and the dependents; its base stays the failed card's. Then
@@ -412,15 +419,26 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 		return fmt.Errorf("the retry of %s as %s stopped at %s (Retry finishes it): %w", old.ID, t.ID, step, err)
 	}
 	if t.IssueNumber == 0 {
-		title, body, _ := strings.Cut(t.Objective, "\n\n")
-		ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body)
+		all, err := r.forgejo.Issues(ctx, repo.Owner, repo.Name)
 		if err != nil {
-			return 0, stopped("filing its issue", err)
+			return 0, stopped("searching its issue", err)
 		}
-		if err := r.store.SetTaskIssue(ctx, t.ID, ref.Number); err != nil {
-			return 0, stopped("linking its issue #"+fmt.Sprint(ref.Number), err)
+		title, body, _ := strings.Cut(t.Objective, "\n\n")
+		marker := retryMarker(old.ID)
+		if i := slices.IndexFunc(all, func(is webhookIssue) bool {
+			return is.Poster.UserName == r.forgejo.BotUser && strings.Contains(is.Body, marker)
+		}); i >= 0 {
+			t.IssueNumber = all[i].Index
+		} else {
+			ref, err := r.forgejo.CreateIssue(ctx, repo.Owner, repo.Name, title, body+"\n\n"+marker)
+			if err != nil {
+				return 0, stopped("filing its issue", err)
+			}
+			t.IssueNumber = ref.Number
 		}
-		t.IssueNumber = ref.Number
+		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
+			return 0, stopped("linking its issue #"+fmt.Sprint(t.IssueNumber), err)
+		}
 		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID, "track": t.Track})
 	}
 	// a retry that stopped at the labels labels it the next time

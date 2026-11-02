@@ -344,6 +344,8 @@ type rollForgejo struct {
 	updateConflict bool                // every pull request update answers a conflict
 	prs            map[int64]string    // pull request number -> its head branch
 	closedPRs      []int64             // the numbers of the pull requests closed
+	mergedPRs      []int64             // the pull requests a person merged on the forge
+	refusedCloses  []string            // the issues whose close Forgejo refuses (422)
 	titles         map[int64]string    // pull request number -> its title
 	titleFails     map[int64]bool      // pull requests whose read answers 500
 	deleted        []string            // the fork branches deleted
@@ -597,15 +599,15 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 			if err != nil {
 				t.Errorf("pull request path %s: %v", p, err)
 			}
-			state := "open"
-			if slices.Contains(f.closedPRs, n) {
+			state, merged := "open", slices.Contains(f.mergedPRs, n)
+			if slices.Contains(f.closedPRs, n) || merged {
 				state = "closed"
 			}
 			if f.titleFails[n] {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return
 			}
-			reply(map[string]any{"number": n, "state": state, "title": f.titles[n]})
+			reply(map[string]any{"number": n, "state": state, "merged": merged, "title": f.titles[n]})
 		case repo == codeRepo && r.Method == "PATCH" && strings.HasPrefix(p, "/pulls/"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)
@@ -751,6 +753,8 @@ func (f *rollForgejo) srv(t *testing.T) (*Forgejo, *Registry) {
 		case r.Method == "GET" && f.job(strings.TrimSuffix(p, "/logs")):
 			// as Forgejo's actions.Logs serves it
 			http.ServeContent(w, r, "", time.Time{}, strings.NewReader(f.logs[strings.TrimSuffix(p, "/logs")]))
+		case repo == codeRepo && r.Method == "PATCH" && slices.Contains(f.refusedCloses, strings.TrimPrefix(p, "/issues/")):
+			http.Error(w, "refused", http.StatusUnprocessableEntity)
 		case repo == codeRepo && r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
 			var in map[string]string
 			json.NewDecoder(r.Body).Decode(&in)

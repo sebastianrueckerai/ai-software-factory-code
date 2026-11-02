@@ -107,6 +107,7 @@ func main() {
 		Delegator:        factoryd,
 		DeploymentReader: factoryd,
 		ImageLooker:      factoryd,
+		Digester:         factoryd,
 		Cloud:            cloud,
 		Telemetry:        tel,
 		FactorydToken:    cfg.FactorydToken,

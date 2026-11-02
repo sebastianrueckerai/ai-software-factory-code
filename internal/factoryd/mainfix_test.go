@@ -132,6 +132,7 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	}
 
 	// the bound: no fix landed in two hours
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
 	f.runs = []map[string]any{pushRun(58, commitC1, "failure")}
 	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}}
 	var reverted []string
@@ -167,6 +168,161 @@ func TestRollerEndsThePauseOnGreenAndRevertsAfterTheBound(t *testing.T) {
 	}
 	if len(f.pulls) != 1 || len(reverted) != 1 {
 		t.Fatalf("pull requests %q, reverts %q; want one of each", f.pulls, reverted)
+	}
+}
+
+// A red main gets one remedy at a time. Past the bound, a fix-forward
+// card still at work gives way: the revert is filed and the fix card's
+// issue closes, naming the revert, which stops its session (on
+// 2026-10-20 fix #1154 and revert #1157 merged 2 seconds apart). A fix
+// card in its merge gate, or merged, files no revert; a failed one is left
+// as it is beside the revert.
+func TestRollerRevertReplacesTheFixForwardCard(t *testing.T) {
+	for _, tc := range []struct {
+		name, status, gate string
+		merge              string
+		forgeMerged        bool
+		reverts            bool
+		closesFix          bool
+	}{
+		{name: "at work", status: "running", reverts: true, closesFix: true},
+		{name: "in review", status: "in-review", gate: GateApproval, reverts: true, closesFix: true},
+		{name: "merging", status: "in-review", gate: GateMerge},
+		{name: "merged", status: "merged", merge: "m9"},
+		{name: "merged, its merge commit not yet read", status: "in-review", merge: "m9"},
+		{name: "in review, its pull request merged on the forge", status: "in-review", gate: GateApproval, forgeMerged: true},
+		{name: "failed", status: "failed", reverts: true},
+	} {
+		f := &rollForgejo{
+			runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+			files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+			registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+				gwOldIdx, workerOldIdx, runnerIdx),
+		}
+		if tc.forgeMerged {
+			f.mergedPRs = []int64{41}
+		}
+		roller, store, _ := newTestRoller(t, f)
+		store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: tc.status, Gate: tc.gate, MergeCommit: tc.merge, Repository: codeRepo, IssueNumber: 40, PRNumber: 41}
+		since := time.Now().Add(-mainRedBound - time.Minute)
+		store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: since, FixTask: "fix1"}}
+		saved := groupRevertBranch
+		groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+			return "", nil
+		}
+		for range 2 {
+			if err := roller.poll(context.Background()); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+		}
+		groupRevertBranch = saved
+		rev := store.pauses[codeRepo].RevertTask
+		if _, filed := store.tasks[rev]; filed != tc.reverts || len(f.pulls) != map[bool]int{false: 0, true: 1}[tc.reverts] {
+			t.Errorf("%s: revert card %q filed %t, pull requests %q; want a revert: %t", tc.name, rev, filed, f.pulls, tc.reverts)
+			continue
+		}
+		var comments, closed []string
+		if tc.closesFix {
+			comments = []string{"40 factoryd: no fix landed by " + since.Add(mainRedBound).UTC().Format(time.RFC3339) +
+				": the revert #31 replaces this card. Closing this issue."}
+			closed = []string{"40"}
+		}
+		if !slices.Equal(f.comments, comments) || !slices.Equal(f.closed, closed) {
+			t.Errorf("%s: comments %q, closed issues %q; want %q, %q", tc.name, f.comments, f.closed, comments, closed)
+		}
+	}
+}
+
+// A fix-forward card that enters its merge while the revert files keeps
+// its issue: the revert's filing reads the card again before it ends it,
+// and the merge gate holds the revert.
+func TestRollerRevertLeavesAFixThatEnteredItsMerge(t *testing.T) {
+	f := &rollForgejo{
+		runs:  []map[string]any{pushRun(58, commitC1, "failure")},
+		files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+		registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+			gwOldIdx, workerOldIdx, runnerIdx),
+	}
+	roller, store, _ := newTestRoller(t, f)
+	store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "in-review", Gate: GateApproval, Repository: codeRepo, IssueNumber: 40, PRNumber: 41}
+	store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-mainRedBound - time.Minute), FixTask: "fix1"}}
+	saved := groupRevertBranch
+	t.Cleanup(func() { groupRevertBranch = saved })
+	groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+		fix := store.tasks["fix1"]
+		fix.Gate = GateMerge
+		store.tasks["fix1"] = fix
+		return "", nil
+	}
+	if err := roller.poll(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if _, filed := store.tasks[store.pauses[codeRepo].RevertTask]; !filed || len(f.comments) != 0 || len(f.closed) != 0 {
+		t.Fatalf("revert filed %t, comments %q, closed %q; want the revert filed and the merging fix card left as it is", filed, f.comments, f.closed)
+	}
+}
+
+// A remedy of the pause that merged while main's newest push run is red at
+// another commit goes to a human: the pause takes the human card as its
+// own, on the new red run, the failed fix-forward card it replaces closes,
+// and the next poll files nothing more. A red run still at the pause's own
+// commit changes nothing: the merge's run has not started yet. Neither
+// does a red pushed by hand before the remedy's merge has a run.
+func TestRollerStillRedAfterTheRemedyGoesToAHuman(t *testing.T) {
+	for _, tc := range []struct {
+		name, sha, merge string
+		files            bool
+	}{
+		{"red at the revert's merge", commitC2, commitC2, true},
+		{"red at the pause's own commit", commitC1, commitC2, false},
+		{"red pushed by hand before the revert's run", commitC2, "m-revert", false},
+	} {
+		f := &rollForgejo{
+			runs:  []map[string]any{pushRun(60, tc.sha, "failure"), pushRun(58, commitC1, "failure")},
+			files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+			registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+				gwOldIdx, workerOldIdx, runnerIdx),
+		}
+		roller, store, _ := newTestRoller(t, f)
+		roller.Forgejo.PublicURL = "https://git.example"
+		store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "failed", Repository: codeRepo, IssueNumber: 40}
+		store.tasks["rev1"] = Task{ID: "rev1", Source: SourceRevert, Kind: "agent", Status: "merged", MergeCommit: tc.merge, Repository: codeRepo, IssueNumber: 42, PRNumber: 43}
+		since := time.Now().Add(-mainRedBound - time.Minute)
+		pause := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC1, Since: since, FixTask: "fix1", RevertTask: "rev1"}
+		store.pauses = map[string]QueuePause{codeRepo: pause}
+		saved := groupRevertBranch
+		groupRevertBranch = func(ctx context.Context, fj *Forgejo, repo Repo, shas []string, salvage string, salvageExists bool, branch string) (string, error) {
+			t.Errorf("%s: reverted %q on %s", tc.name, shas, branch)
+			return "", nil
+		}
+		for range 2 {
+			if err := roller.poll(context.Background()); err != nil {
+				t.Fatalf("%s: %v", tc.name, err)
+			}
+		}
+		groupRevertBranch = saved
+		got := store.pauses[codeRepo]
+		if !tc.files {
+			if !reflect.DeepEqual(got, pause) || len(f.issues) != 0 || len(f.closed) != 0 {
+				t.Errorf("%s: pause %+v, issues %q, closed %q; want the pause as it stood and nothing filed or closed", tc.name, got, f.issues, f.closed)
+			}
+			continue
+		}
+		if want := []string{"40 factoryd: main is still red at c2c2c2c after the revert #42 merged: the human card #31 replaces this card. Closing this issue."}; !slices.Equal(f.comments, want) || !slices.Equal(f.closed, []string{"40"}) {
+			t.Errorf("%s: comments %q, closed %q; want the failed fix card closed with %q", tc.name, f.comments, f.closed, want)
+		}
+		card := store.tasks[got.FixTask]
+		if got.RunID != 60 || got.SHA != commitC2 || !got.Since.Equal(since) || got.RevertTask != "rev1" ||
+			card.Source != SourceStillRed || card.Kind != "human" || card.Status != "waiting-human" || card.SHA != commitC2 {
+			t.Errorf("%s: pause %+v, card %+v; want the pause on run 60's red with the human card", tc.name, got, card)
+		}
+		if len(f.issues) != 1 || !strings.HasPrefix(f.issues[0], "main is still red at c2c2c2c after the revert #42 merged") ||
+			!strings.Contains(f.issues[0], "https://git.example/"+codeRepo+"/actions/runs/0") {
+			t.Errorf("%s: issues %q, want the one human card naming the revert and the red run", tc.name, f.issues)
+		}
 	}
 }
 
@@ -369,6 +525,102 @@ func TestRollerEndsTheFixCardWhenMainTurnsGreenWithoutIt(t *testing.T) {
 		if !slices.Equal(f.comments, comments) || !slices.Equal(f.closed, closed) {
 			t.Errorf("a %s fix card: comments %q, closed issues %q, want %q and %q", tc.status, f.comments, f.closed, comments, closed)
 		}
+	}
+}
+
+// signalOrder is a Workflows that records, at each signal, how many
+// issues and pull requests f had closed.
+type signalOrder struct {
+	*fakeWorkflows
+	f      *rollForgejo
+	closed []string
+}
+
+func (w *signalOrder) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	w.f.mu.Lock()
+	w.closed = append(w.closed, fmt.Sprintf("%s after %d issues, %d pull requests", taskID, len(w.f.closed), len(w.f.closedPRs)))
+	w.f.mu.Unlock()
+	return w.fakeWorkflows.Signal(ctx, taskID, name, sig)
+}
+
+// Main green ends every remedy of the pause that did not merge, before
+// the queue's heads wake: a revert still pending would merge as an
+// ordinary card and revert a commit on a green main. An agent-lane revert
+// ends through its issue's close, a human-lane one (a project without
+// agents) through its pull request's, which the heal pass takes to the
+// card. A revert that merged made main green itself and stays as it is.
+func TestRollerEndsTheRevertWhenMainTurnsGreenWithoutIt(t *testing.T) {
+	green := "factoryd: main's push run 0 at " + commitC2 + " is green (https://git.example/" + codeRepo + "/actions/runs/0)"
+	for _, tc := range []struct {
+		name        string
+		rev         Task
+		forgeMerged bool
+		comments    []string
+		closed      []string
+		prs         []int64
+	}{
+		{"an agent-lane revert", Task{Kind: "agent", Status: "in-review"}, false,
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue.", "42 " + green + ": main is green without this revert. Closing this issue."},
+			[]string{"40", "42"}, nil},
+		{"a human-lane revert", Task{Kind: "human", Status: "waiting-human"}, false,
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue.", "43 " + green + ": main is green without this revert. Closing this pull request."},
+			[]string{"40"}, []int64{43}},
+		{"a merged revert", Task{Kind: "agent", Status: "merged", MergeCommit: commitC2}, false,
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue."},
+			[]string{"40"}, nil},
+		{"a revert in review whose pull request a person merged on the forge", Task{Kind: "agent", Status: "in-review"}, true,
+			[]string{"40 " + green + ": the red this card was filed for is gone. Closing this issue."},
+			[]string{"40"}, nil},
+	} {
+		f := &rollForgejo{
+			runs:  []map[string]any{pushRun(59, commitC2, "success"), pushRun(58, commitC1, "failure")},
+			files: map[string]map[string]string{codeRepo + "@main": mainPins()},
+			registry: registryOf(map[string]string{"sf/factory-gateway/manifests/c2c2c2c": gwOldIdx, "sf/opencode-worker/manifests/c2c2c2c": workerOldIdx, "sf/ci-runner/manifests/c2c2c2c": runnerIdx},
+				gwOldIdx, workerOldIdx, runnerIdx),
+		}
+		if tc.forgeMerged {
+			f.mergedPRs = []int64{43}
+		}
+		roller, store, wf := newTestRoller(t, f)
+		order := &signalOrder{fakeWorkflows: wf, f: f}
+		roller.Workflows = order
+		roller.Forgejo.PublicURL = "https://git.example"
+		store.tasks["t-roll0"] = Task{ID: "t-roll0", Source: SourceRoll, Status: "done", Repository: codeRepo, PRNumber: 14}
+		store.tasks["w1"] = Task{ID: "w1", Status: "in-review", Repository: codeRepo, Gate: GateMergeQueue}
+		store.queue = append(store.queue, queueEntry{project: codeRepo, task: "w1", at: time.Now()})
+		store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+		rev := tc.rev
+		rev.ID, rev.Source, rev.Repository, rev.IssueNumber, rev.PRNumber = "rev1", SourceRevert, codeRepo, 42, 43
+		store.tasks["rev1"] = rev
+		store.pauses = map[string]QueuePause{codeRepo: {Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "rev1"}}
+		if err := roller.poll(context.Background()); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if !slices.Equal(f.comments, tc.comments) || !slices.Equal(f.closed, tc.closed) || !slices.Equal(f.closedPRs, tc.prs) {
+			t.Errorf("%s: comments %q, closed issues %q, closed pull requests %v; want %q, %q, %v", tc.name, f.comments, f.closed, f.closedPRs, tc.comments, tc.closed, tc.prs)
+		}
+		if want := []string{fmt.Sprintf("w1 after %d issues, %d pull requests", len(tc.closed), len(tc.prs))}; !slices.Equal(order.closed, want) {
+			t.Errorf("%s: signals %q, want %q: the pause's cards end before the queue's head wakes", tc.name, order.closed, want)
+		}
+	}
+}
+
+// endPauseCard ends the pause's two cards each on its own: a close
+// Forgejo refuses on the fix-forward card keeps the revert from nothing,
+// and the answer joins the error.
+func TestEndPauseCardEndsTheRevertPastAFixCardsRefusal(t *testing.T) {
+	f := &rollForgejo{refusedCloses: []string{"40"}}
+	roller, store, _ := newTestRoller(t, f)
+	roller.Forgejo.PublicURL = "https://git.example"
+	store.tasks["fix1"] = Task{ID: "fix1", Source: SourceMainFix, Kind: "agent", Status: "running", Repository: codeRepo, IssueNumber: 40}
+	store.tasks["rev1"] = Task{ID: "rev1", Source: SourceRevert, Kind: "agent", Status: "in-review", Repository: codeRepo, IssueNumber: 42, PRNumber: 43}
+	pause := QueuePause{Project: codeRepo, RunID: 58, SHA: commitC1, Since: time.Now().Add(-3 * time.Hour), FixTask: "fix1", RevertTask: "rev1"}
+	err := roller.endPauseCard(context.Background(), pause, ActionRun{ID: 59, Index: 7, CommitSHA: commitC2})
+	if err == nil || !strings.Contains(err.Error(), "issues/40") {
+		t.Fatalf("error = %v, want the refused close of #40", err)
+	}
+	if !slices.Equal(f.closed, []string{"42"}) {
+		t.Fatalf("closed issues %q, want the revert's #42 closed all the same", f.closed)
 	}
 }
 

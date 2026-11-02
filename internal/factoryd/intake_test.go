@@ -1543,6 +1543,8 @@ func newPRCardRig(t *testing.T, pr string) *prCardRig {
 				out = append(out, map[string]any{"id": i + 1, "body": b, "user": map[string]string{"login": "factory-agent"}})
 			}
 			json.NewEncoder(w).Encode(out)
+		case r.Method == http.MethodGet && p == issue+"/dependencies":
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPatch && p == issue:
 			if g.closeFails > 0 {
 				g.closeFails--

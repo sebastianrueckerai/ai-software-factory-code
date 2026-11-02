@@ -207,6 +207,8 @@ func (s *templateForgejo) server(t *testing.T) *httptest.Server {
 			s.issues[n-1].labels = pl.Labels
 			s.labels[n] = slices.Clone(pl.Labels)
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet && strings.HasPrefix(p, up+"/issues/") && strings.HasSuffix(p, "/dependencies"):
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodPatch && strings.HasPrefix(p, up+"/issues/") && strings.Count(p, "/") == 7:
 			if body["state"] == "closed" {
 				var n int64

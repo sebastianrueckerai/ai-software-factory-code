@@ -10,6 +10,7 @@ package main
 // grep.
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -23,6 +24,7 @@ import (
 	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -72,7 +74,8 @@ func (c *checkinServe) waitBrief(log func(string, ...any)) harness.BriefPush {
 // serve mounts the check-in's three endpoints under the /message bearer:
 // the tools the check-in's model calls, the handover that starts the
 // conversation, and the parent session's record; and POST /image, a
-// workspace image's bytes for a look.
+// workspace image's bytes for a look, and POST /file, a workspace text
+// file's bytes for a digest.
 func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter, *http.Request) bool) {
 	mux.HandleFunc("POST /tool", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
@@ -101,25 +104,8 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 			Cut    bool   `json:"cut"`
 		}{out, cut})
 	})
-	mux.HandleFunc("POST /image", func(w http.ResponseWriter, r *http.Request) {
-		if !authorized(w, r) {
-			return
-		}
-		var in struct {
-			Path string `json:"path"`
-		}
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 4<<10)).Decode(&in); err != nil || in.Path == "" {
-			http.Error(w, `want {"path": "..."}`, http.StatusBadRequest)
-			return
-		}
-		b, status, err := c.image(in.Path)
-		if err != nil {
-			http.Error(w, err.Error(), status)
-			return
-		}
-		w.Header().Set("Content-Type", http.DetectContentType(b))
-		w.Write(b) // #nosec G104 -- best-effort response write
-	})
+	mux.HandleFunc("POST /image", serveRead(authorized, c.image))
+	mux.HandleFunc("POST /file", serveRead(authorized, c.text))
 	mux.HandleFunc("POST /brief", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
 			return
@@ -243,12 +229,73 @@ func (c *checkinServe) under(path string) (string, error) {
 	return p, nil
 }
 
-// image reads the image file at path, absolute inside the workspace or
-// relative to the repo, through the workspace's os.Root: a symlink out of
-// it refuses at the open itself, so the agent cannot swap one in after a
-// check. A FIFO or another non-regular file refuses without a read. A
-// refusal is one sentence for the agent, with the status to answer it by.
+// serveRead answers {"path"} with that workspace file's bytes as read
+// returns them, typed as they sniff; a refusal is read's sentence and
+// status. The body holds a path the gateway admits, 4096 bytes, even with
+// every byte JSON-escaped to six.
+func serveRead(authorized func(http.ResponseWriter, *http.Request) bool, read func(string) ([]byte, int, error)) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !authorized(w, r) {
+			return
+		}
+		var in struct {
+			Path string `json:"path"`
+		}
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 32<<10)).Decode(&in); err != nil || in.Path == "" {
+			http.Error(w, `want {"path": "..."}`, http.StatusBadRequest)
+			return
+		}
+		b, status, err := read(in.Path)
+		if err != nil {
+			http.Error(w, err.Error(), status)
+			return
+		}
+		w.Header().Set("Content-Type", http.DetectContentType(b))
+		w.Write(b) // #nosec G104 -- best-effort response write
+	}
+}
+
+// image reads the image file at path for a look: PNG, JPEG, WebP or GIF
+// of at most policy.MaxLookBytes.
 func (c *checkinServe) image(path string) ([]byte, int, error) {
+	b, status, err := c.read(path, policy.MaxLookBytes, path+" is a directory, not an image file")
+	switch {
+	case err != nil:
+		return nil, status, err
+	case len(b) > policy.MaxLookBytes:
+		return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("%s is larger than %d MiB", path, policy.MaxLookBytes>>20)
+	}
+	if ct := http.DetectContentType(b); !slices.Contains(policy.LookTypes, ct) {
+		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("%s is %s, not a PNG, JPEG, WebP or GIF image", path, ct)
+	}
+	return b, http.StatusOK, nil
+}
+
+// text reads the text file at path for a digest: UTF-8 without a NUL
+// byte, not empty, of at most policy.MaxDigestBytes.
+func (c *checkinServe) text(path string) ([]byte, int, error) {
+	b, status, err := c.read(path, policy.MaxDigestBytes, path+" is a directory: digest one file in it")
+	switch {
+	case err != nil:
+		return nil, status, err
+	case len(b) > policy.MaxDigestBytes:
+		return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("%s is larger than %d KiB, more than one digest reads: read the part you need with the read tool's offset and limit",
+			path, policy.MaxDigestBytes>>10)
+	case len(b) == 0:
+		return nil, http.StatusBadRequest, fmt.Errorf("%s is empty: there is nothing to digest", path)
+	case !utf8.Valid(b) || bytes.IndexByte(b, 0) >= 0:
+		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("%s is not UTF-8 text, which a digest reads", path)
+	}
+	return b, http.StatusOK, nil
+}
+
+// read reads at most max+1 bytes of the file at path, absolute inside the
+// workspace or relative to the repo, through the workspace's os.Root: a
+// symlink out of it refuses at the open itself, so the agent cannot swap
+// one in after a check. A FIFO or another non-regular file refuses
+// without a read, a directory with dir. A refusal is one sentence for the
+// agent, with the status to answer it by.
+func (c *checkinServe) read(path string, max int, dir string) ([]byte, int, error) {
 	p := path
 	if !filepath.IsAbs(p) {
 		p = filepath.Join(c.repo(), p)
@@ -265,8 +312,10 @@ func (c *checkinServe) image(path string) ([]byte, int, error) {
 	defer root.Close() // #nosec G307 -- a read-only root's close failure is not worth an answer
 	f, err := root.OpenFile(rel, os.O_RDONLY|syscall.O_NONBLOCK, 0)
 	switch {
-	case errors.Is(err, os.ErrNotExist):
+	case errors.Is(err, os.ErrNotExist), errors.Is(err, syscall.ENOTDIR):
 		return nil, http.StatusNotFound, fmt.Errorf("no file %s in the workspace", path)
+	case errors.Is(err, syscall.ENAMETOOLONG), errors.Is(err, syscall.EINVAL):
+		return nil, http.StatusBadRequest, fmt.Errorf("%s is not a path a file can have: name a file of the workspace", path)
 	case errors.Is(err, os.ErrPermission):
 		return nil, http.StatusForbidden, fmt.Errorf("%s cannot be read", path)
 	case err != nil:
@@ -278,19 +327,13 @@ func (c *checkinServe) image(path string) ([]byte, int, error) {
 	case err != nil:
 		return nil, http.StatusBadRequest, fmt.Errorf("%s: %w", path, err)
 	case fi.IsDir():
-		return nil, http.StatusBadRequest, fmt.Errorf("%s is a directory, not an image file", path)
+		return nil, http.StatusBadRequest, errors.New(dir)
 	case !fi.Mode().IsRegular():
 		return nil, http.StatusBadRequest, fmt.Errorf("%s is not a regular file", path)
 	}
-	b, err := io.ReadAll(io.LimitReader(f, policy.MaxLookBytes+1))
+	b, err := io.ReadAll(io.LimitReader(f, int64(max)+1))
 	if err != nil {
 		return nil, http.StatusBadRequest, fmt.Errorf("%s: %w", path, err)
-	}
-	if len(b) > policy.MaxLookBytes {
-		return nil, http.StatusRequestEntityTooLarge, fmt.Errorf("%s is larger than %d MiB", path, policy.MaxLookBytes>>20)
-	}
-	if ct := http.DetectContentType(b); !slices.Contains(policy.LookTypes, ct) {
-		return nil, http.StatusUnsupportedMediaType, fmt.Errorf("%s is %s, not a PNG, JPEG, WebP or GIF image", path, ct)
 	}
 	return b, http.StatusOK, nil
 }

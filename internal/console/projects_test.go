@@ -321,10 +321,15 @@ type infraFake struct {
 	contentsStatus int
 	// files are main's files a GET contents reads, by path, and reads
 	// the Authorization of each read; shas, when set, answer a file's
-	// GET with its blob sha in place of blob1
-	files map[string]string
-	shas  map[string]string
-	reads []string
+	// GET with its blob sha in place of blob1. shaOnRead, when set,
+	// overrides that sha on the nth read of infra's contents (1-based
+	// across every read): a test moves a file between one read and the
+	// next, as a second writer landing in the gap between a guard's
+	// check and its write does.
+	files     map[string]string
+	shas      map[string]string
+	shaOnRead func(read int) string
+	reads     []string
 }
 
 // barrier holds the first n callers of wait until all n came; later ones
@@ -388,7 +393,13 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 				return
 			}
 			f.reads = append(f.reads, req.Header.Get("Authorization"))
-			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": cmp.Or(f.shas[key], "blob1")})
+			sha := cmp.Or(f.shas[key], "blob1")
+			if f.shaOnRead != nil {
+				if s := f.shaOnRead(len(f.reads)); s != "" {
+					sha = s
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": sha})
 		case req.Method == http.MethodPost && req.URL.Path == "/api/v1/repos/sf/infra/contents":
 			c := rec()
 			f.contents = append(f.contents, c)

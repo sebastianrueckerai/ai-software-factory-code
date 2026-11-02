@@ -31,7 +31,7 @@ func messageTokenHash(token string) string {
 var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout}
 
 // workerReads has no timeout of its own: a check-in tool call or an image
-// read runs as long as its own bound (checkinToolTimeout, imageReadTimeout)
+// read runs as long as its own bound (checkinToolTimeout, fileReadTimeout)
 // says, and the context holds it.
 var workerReads = &http.Client{}
 

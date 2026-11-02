@@ -4539,12 +4539,16 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	// the coder card's 0.3 EUR budget at the default 10 percent share
 	store.checkinSpent = map[string]float64{"t2": 0.03}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
-		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}},
+			Review: &Review{Verdict: "concerns", Summary: "the undefined name breaks the build"}}}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend || res.CheckIn.Reason != "the check-in's share of the budget is spent" {
 		t.Fatalf("result = (%+v, %v), want the human ask under spend on the share", res, err)
+	}
+	if !slices.Equal(res.CheckIn.Findings, []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}) || res.CheckIn.Review == nil || res.CheckIn.Review.Verdict != "concerns" {
+		t.Fatalf("the stop's work state = %+v, want the ask's findings and review", res.CheckIn)
 	}
 	if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
 		t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
@@ -5068,4 +5072,29 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
 		}
 	})
+}
+
+// The worker pod carries the card's line bound as LINE_BOUND: the size's
+// plan plus the raises its extend answers added — the same effective
+// number the gate and the supervisor read. An unsized card is bound by
+// the policy's large_lines, like every line-bound check.
+func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
+	spec := sessionSpec{id: "s-1", policy: policy.Document{Risk: policy.Risk{LargeLines: 400}}}
+	pod := func(t Task) map[string]string {
+		p := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(t, spec)
+		vars := map[string]string{}
+		for _, e := range p["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)["env"].([]map[string]any) {
+			vars[e["name"].(string)] = e["value"].(string)
+		}
+		return vars
+	}
+	if got := pod(Task{ID: "t1", Size: "small"})["LINE_BOUND"]; got != "120" {
+		t.Fatalf("LINE_BOUND = %q for a small card under large_lines 400, want 120", got)
+	}
+	if got := pod(Task{ID: "t1", Size: "small", Usage: TaskUsage{ExtraLines: 30}})["LINE_BOUND"]; got != "150" {
+		t.Fatalf("LINE_BOUND = %q for a small card raised by 30, want 150", got)
+	}
+	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
+		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)
+	}
 }

@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"math"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -31,6 +32,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -75,8 +77,10 @@ type workflowHarness struct {
 	finishAt    time.Time
 	escalated   []string // Escalate reasons, in order
 	escalatedAt []time.Time
-	choices     [][]string // Escalate choices, in order
+	choices     [][]string       // Escalate choices, in order
+	successions []SuccessorInput // Successor filings, in order
 	usage       []TaskUsage
+	rowUsage    TaskUsage     // what ReadUsage reads back: the last recorded usage
 	logs        *lockedBuffer // the workflow's log
 	recorded    []recordedStep
 	infoAsked   []string    // RequestInfo reasons, in order
@@ -90,6 +94,8 @@ type workflowHarness struct {
 	configPins []int64
 	// reconcileAfter is how long Reconcile takes on the workflow's clock
 	reconcileAfter time.Duration
+	// escalateAfter is how long Escalate takes on the workflow's clock
+	escalateAfter time.Duration
 	// branchHead answers BranchHead; branchReads counts its calls
 	branchHead  string
 	branchReads int
@@ -155,10 +161,20 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityPullRequestMerged: func(ctx context.Context, taskID string, number int64) (bool, error) { return false, nil },
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
+		ActivityUnjudgedCriteria:  func(ctx context.Context, taskID string) ([]string, error) { return nil, nil },
+		ActivityHoldMerge:         func(ctx context.Context, taskID string, pr int64, commit, approver string) error { return nil },
 		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
 		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
 		ActivityEscalate:          func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
-		ActivityRecordUsage:       func(ctx context.Context, taskID string, u TaskUsage) error { return nil },
+		ActivityRecordUsage: func(ctx context.Context, taskID string, u TaskUsage) error {
+			h.rowUsage = u
+			return nil
+		},
+		ActivityReadUsage: func(ctx context.Context, taskID string) (TaskUsage, error) { return h.rowUsage, nil },
+		ActivitySuccessor: func(ctx context.Context, in SuccessorInput) (string, error) {
+			h.successions = append(h.successions, in)
+			return "t-succ", nil
+		},
 		ActivityGatePolicy: func(ctx context.Context, taskID string, pr int64, commit string, pin int64) (PolicyGate, error) {
 			return PolicyGate{}, nil
 		},
@@ -238,6 +254,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySessionFunded:   func(ctx context.Context, taskID, model string) (string, error) { return "", nil },
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityDayResume:       func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
+		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
 		ActivityParkForTool:     func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
 		ActivityImageArrived:    func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
 		ActivityLeaveImagePark:  func(ctx context.Context, taskID, toolTask string) error { return nil },
@@ -280,7 +297,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return nil
 		})
 	h.env.OnActivity(ActivityRecordUsage, mock.Anything, "t1", mock.Anything).Return(
-		func(ctx context.Context, taskID string, u TaskUsage) error { h.usage = append(h.usage, u); return nil })
+		func(ctx context.Context, taskID string, u TaskUsage) error {
+			h.usage, h.rowUsage = append(h.usage, u), u
+			return nil
+		})
 	h.env.OnActivity(ActivityEscalate, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 			h.escalated = append(h.escalated, reason)
@@ -290,7 +310,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 				return h.escalationIDs[n-1], h.escalateErr
 			}
 			return int64(600 + len(h.escalated)), h.escalateErr
-		})
+		}).AfterFn(func() time.Duration { return h.escalateAfter })
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string) (int64, error) {
 			h.infoAsked = append(h.infoAsked, reason)
@@ -2775,38 +2795,78 @@ func TestWorkflowProviderRefusalBeforeTheChange(t *testing.T) {
 	}
 }
 
-// dayCapRun is what a dayCapHarness saw: when each session began, when
-// each DayResume check ran before the day's turn and at it, and from when
-// a check finds the day funding a session (zero: never).
-type dayCapRun struct {
-	began, checks, turns []time.Time
-	funded               time.Time
+// capRun is what a capHarness saw: when each session's result came
+// (began); when CapResume checked before an ask (asks), in a wait before
+// the period's turn (checks) and at it (turns), with each check's input
+// (inputs); and when a run from before versionCapWait checked through
+// DayResume (dayChecks, dayTurns). A check finds the cap no longer binding
+// from funded on (zero: never), or as verdict says when set; each takes
+// takes.
+type capRun struct {
+	began, asks, checks, turns, dayChecks, dayTurns []time.Time
+	inputs                                          []CapCheck
+	funded                                          time.Time
+	verdict                                         func(now time.Time) CapResumed
+	takes                                           time.Duration
 }
 
-// dayCapHarness starts at 2026-10-14 20:43 UTC, card #784's session, and
+// capHarness starts at 2026-10-14 20:43 UTC, card #784's session, and
 // answers RunSession with results in order, each session taking took.
-func dayCapHarness(t *testing.T, took time.Duration, results ...SessionResult) (*workflowHarness, *dayCapRun) {
-	h, run := newWorkflowHarness(t), &dayCapRun{}
-	h.env.SetStartTime(time.Date(2026, 10, 14, 20, 43, 0, 0, time.UTC))
+func capHarness(t *testing.T, took time.Duration, results ...SessionResult) (*workflowHarness, *capRun) {
+	h, run := newWorkflowHarness(t), &capRun{}
+	h.env.SetStartTime(oct(14, 20, 43))
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions, run.began = append(h.sessions, in), append(run.began, h.env.Now())
 			return results[min(len(h.sessions), len(results))-1], nil
 		}).After(took)
+	run.onChecks(h)
+	return h, run
+}
+
+// onChecks answers h's CapResume and DayResume checks by the run's
+// script and records them; a turn's check ends the wait.
+func (run *capRun) onChecks(h *workflowHarness) {
+	verdict := func(now time.Time) CapResumed {
+		if run.verdict != nil {
+			return run.verdict(now)
+		}
+		return CapResumed{Resume: !run.funded.IsZero() && !now.Before(run.funded)}
+	}
+	h.env.OnActivity(ActivityCapResume, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in CapCheck) (CapResumed, error) {
+			now := h.env.Now()
+			run.inputs = append(run.inputs, in)
+			switch {
+			case in.Turned:
+				run.turns = append(run.turns, now)
+				return CapResumed{Resume: true}, nil
+			case !in.RefusedAt.IsZero():
+				run.asks = append(run.asks, now)
+			default:
+				run.checks = append(run.checks, now)
+			}
+			return verdict(now), nil
+		}).AfterFn(func() time.Duration { return run.takes })
 	h.env.OnActivity(ActivityDayResume, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, taskID, model string, turned bool) (bool, error) {
 			if turned {
-				run.turns = append(run.turns, h.env.Now())
+				run.dayTurns = append(run.dayTurns, h.env.Now())
 				return true, nil
 			}
-			run.checks = append(run.checks, h.env.Now())
-			return !run.funded.IsZero() && !h.env.Now().Before(run.funded), nil
+			run.dayChecks = append(run.dayChecks, h.env.Now())
+			return verdict(h.env.Now()).Resume, nil
 		})
-	return h, run
 }
 
 // oct is 2026-10-day at h:m UTC.
 func oct(day, h, m int) time.Time { return time.Date(2026, 10, day, h, m, 0, 0, time.UTC) }
+
+// oct31 is 2026-10-31 at h:m:s UTC, the night of cards #1352 and #1353.
+func oct31(h, m, s int) time.Time { return time.Date(2026, 10, 31, h, m, s, 0, time.UTC) }
+
+// novFirst is 2026-11-01 00:00 UTC, the turn of October's month.
+var novFirst = time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
 
 // sameTimes says a and b hold the same instants.
 func sameTimes(a, b []time.Time) bool { return slices.EqualFunc(a, b, time.Time.Equal) }
@@ -2820,6 +2880,12 @@ func every(first, last time.Time, step time.Duration) []time.Time {
 	return out
 }
 
+// isCheck says in is a check of task t1 on model at cap decision, before
+// an ask about the refusal at refusedAt (zero: in a wait).
+func isCheck(in CapCheck, model, decision string, refusedAt time.Time) bool {
+	return in.TaskID == "t1" && in.Model == model && in.Decision == decision && !in.Turned && in.RefusedAt.Equal(refusedAt)
+}
+
 var (
 	dayRefusal = CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedDayCap, Reason: "free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"},
 		At: oct(14, 20, 43)}
@@ -2828,14 +2894,38 @@ var (
 	dayQuestion = "the day cap is reached: the card resumes on its own once the day's free headroom " +
 		"funds a session, at the latest when the UTC day turns at 2026-10-15T00:00:00Z. Raise budget.day_eur in policy.yaml to resume it sooner, or close the card."
 	dayReason = dayQuestion + "\nthe gateway refused this task's spend (refused_day_cap): free headroom -23.439417 EUR (task 2.000000, day -23.439417, month 54.546612)"
+
+	// monthRefusal is card #1352's: the gateway's own hold under policy
+	// version 971 refused its first call at 23:22:52
+	monthRefusal = CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 0.000001)"},
+		At: oct31(23, 22, 52)}
+	// monthCapped is the session as RunSession returns it: an escalation
+	// with the reason a run from before versionCapWait asks, and the
+	// refusal
+	monthCapped = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(monthRefusal.Refusal), Capped: &monthRefusal,
+		Findings: []string{"previous session ended without a pushed commit: the model call failed: refused_month_cap"}}
+	monthQuestion = "the month cap is reached: the card resumes on its own once the month's free headroom " +
+		"funds a session, at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card."
+	monthReason = monthQuestion + "\nthe gateway refused this task's spend (refused_month_cap): free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 0.000001)"
 )
 
+// monthCappedAt is monthCapped refused at at, by a call the gateway
+// allowed one of the session's before (allowed) or its first.
+func monthCappedAt(at time.Time, allowed bool) SessionResult {
+	refused := monthRefusal
+	refused.At, refused.Allowed = at, allowed
+	res := monthCapped
+	res.Capped = &refused
+	return res
+}
+
 // A session the day cap refused at its first call (card #784, roadmap 240)
-// spends no further session that day and is no attempt: the card waits on
-// a human with the refusal, checks the day's headroom every five minutes,
-// and at 00:00 UTC runs the session again with the same input.
+// spends no further session that day and is no attempt: the check before
+// the ask, at the refusal's 20:43, finds the day spent, so the card waits
+// on a human with the refusal, checks the day's headroom every five
+// minutes, and at 00:00 UTC runs the session again with the same input.
 func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
-	h, run := dayCapHarness(t, 0, dayCapped, pushed("s2", "c1"))
+	h, run := capHarness(t, 0, dayCapped, pushed("s2", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
@@ -2845,10 +2935,16 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 	if !slices.Equal(h.escalated, []string{dayReason}) || escalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's refusal once", h.escalated)
 	}
+	if !sameTimes(run.asks, []time.Time{oct(14, 20, 43)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedDayCap, oct(14, 20, 43)) {
+		t.Fatalf("checks before the ask at %v, first input %+v; want one at 20:43 about the 20:43 refusal", run.asks, run.inputs[0])
+	}
 	// 197 minutes to the turn: 39 checks five minutes apart, the turn two
 	// minutes after the last
 	if !sameTimes(run.checks, every(oct(14, 20, 48), oct(14, 23, 58), dayCheck)) || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
 		t.Fatalf("checks %v, turns %v; want every five minutes from 20:48 to 23:58, the turn at 00:00", run.checks, run.turns)
+	}
+	if len(run.dayChecks) != 0 || len(run.dayTurns) != 0 {
+		t.Fatalf("DayResume ran at %v and %v, want CapResume alone", run.dayChecks, run.dayTurns)
 	}
 	if len(run.began) != 2 || !run.began[1].Equal(oct(15, 0, 0)) {
 		t.Fatalf("sessions began at %v, want the second at 00:00", run.began)
@@ -2861,12 +2957,35 @@ func TestWorkflowDayCapWaitsForTheDayToTurn(t *testing.T) {
 	}
 }
 
+// A run from before versionCapWait checks the day cap's wait through
+// DayResume every five minutes from 20:48, its turn at 00:00, with no
+// check before the ask, and a policy load does not wake it.
+func TestWorkflowDayCapBeforeCapWaitChecksThroughDayResume(t *testing.T) {
+	h, run := capHarness(t, 0, dayCapped, pushed("s2", "c1"))
+	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) {
+		t.Fatalf("final %q, escalations %q; want done after the day cap's ask", final, h.escalated)
+	}
+	if !sameTimes(run.dayChecks, every(oct(14, 20, 48), oct(14, 23, 58), dayCheck)) || !sameTimes(run.dayTurns, []time.Time{oct(15, 0, 0)}) || len(run.inputs) != 0 {
+		t.Fatalf("DayResume checks %v, turns %v, CapResume inputs %+v; want DayResume every five minutes from 20:48, the turn at 00:00, no CapResume",
+			run.dayChecks, run.dayTurns, run.inputs)
+	}
+	if len(run.began) != 2 || !run.began[1].Equal(oct(15, 0, 0)) || h.sessions[1].Attempt != 1 {
+		t.Fatalf("sessions began at %v (%+v), want attempt 1 again at 00:00", run.began, h.sessions)
+	}
+}
+
 // An attempt the floor refuses at the day cap waits for the day as a
-// session the day cap refused does, with no human: the escalation is the
-// day cap's, and at 00:00 UTC the floor funds the attempt, which starts
-// as attempt 1.
+// session the day cap refused does, with no human and no check before the
+// ask, the floor having just read the cap: the escalation is the day
+// cap's, and at 00:00 UTC the floor funds the attempt, which starts as
+// attempt 1.
 func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
-	h, run := dayCapHarness(t, 0, pushed("s1", "c1"))
+	h, run := capHarness(t, 0, pushed("s1", "c1"))
 	const state = "0.010000 EUR of the day's 20.00 EUR (budget.day_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
 		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
@@ -2885,22 +3004,24 @@ func TestWorkflowDayCapAtTheGateWaitsForTheDay(t *testing.T) {
 	if want := dayQuestion + "\nthe attempt's floor refused the attempt before it started (refused_day_cap): " + state; !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "day_cap" {
 		t.Fatalf("escalations = %q, want the day cap's wait once: %q", h.escalated, want)
 	}
-	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) || h.sessions[0].Attempt != 1 || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
-		t.Fatalf("sessions began at %v (%+v), turns %v; want attempt 1 at 00:00", run.began, h.sessions, run.turns)
+	if len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) || h.sessions[0].Attempt != 1 || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) || len(run.asks) != 0 {
+		t.Fatalf("sessions began at %v (%+v), turns %v, checks before an ask %v; want attempt 1 at 00:00 and no check before the ask", run.began, h.sessions, run.turns, run.asks)
 	}
 }
 
 // A check that finds the day's free headroom funding a session (holds
-// settled, budget.day_eur raised) ends the wait before the turn.
+// settled, budget.day_eur raised) ends the wait before the turn; the check
+// before the ask at 20:43 came before the 21:10 raise.
 func TestWorkflowDayCapResumesWhenTheDayFundsASession(t *testing.T) {
-	h, run := dayCapHarness(t, 0, dayCapped, pushed("s2", "c1"))
+	h, run := capHarness(t, 0, dayCapped, pushed("s2", "c1"))
 	run.funded = oct(14, 21, 10)
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" || len(run.began) != 2 || !run.began[1].Equal(oct(14, 21, 13)) || len(run.turns) != 0 ||
-		!sameTimes(run.checks, every(oct(14, 20, 48), oct(14, 21, 13), dayCheck)) {
-		t.Fatalf("final %q, sessions at %v, checks %v, turns %v; want the second session at the 21:13 check", final, run.began, run.checks, run.turns)
+		!sameTimes(run.asks, []time.Time{oct(14, 20, 43)}) || !sameTimes(run.checks, every(oct(14, 20, 48), oct(14, 21, 13), dayCheck)) {
+		t.Fatalf("final %q, sessions at %v, checks before the ask %v, checks %v, turns %v; want the second session at the 21:13 check",
+			final, run.began, run.asks, run.checks, run.turns)
 	}
 }
 
@@ -2911,14 +3032,18 @@ func TestWorkflowDayCapCountsASessionThatMadeCalls(t *testing.T) {
 	worked.Allowed = true
 	capped := dayCapped
 	capped.Capped = &worked
-	h, run := dayCapHarness(t, 10*time.Minute, capped, pushed("s2", "c1"))
+	h, run := capHarness(t, 10*time.Minute, capped, pushed("s2", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	// each session's time is its end's, ten minutes after its start: the
-	// wait from 20:53 ends at the turn
+	// check before the ask runs at the first's end, about its 20:43
+	// refusal, and the wait from 20:53 ends at the turn
 	if final := h.run(t); final != "done" || !sameTimes(run.began, []time.Time{oct(14, 20, 53), oct(15, 0, 10)}) {
 		t.Fatalf("final %q, sessions ended at %v; want done, the first at 20:53, the second at 00:10", final, run.began)
+	}
+	if !sameTimes(run.asks, []time.Time{oct(14, 20, 53)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedDayCap, oct(14, 20, 43)) {
+		t.Fatalf("checks before the ask at %v, first input %+v; want one at 20:53 about the 20:43 refusal", run.asks, run.inputs[0])
 	}
 	if u := h.usage[0]; u.Attempts != 1 || u.AgentTime != 10*time.Minute {
 		t.Fatalf("usage after the refused session = %+v, want attempt 1 and its 10 minutes", u)
@@ -2931,7 +3056,7 @@ func TestWorkflowDayCapCountsASessionThatMadeCalls(t *testing.T) {
 // A human's answer during the wait runs the next session after its burst
 // and stops the checks; a closed issue ends the card at once.
 func TestWorkflowDayCapWaitTakesAnAnswerOrTheClose(t *testing.T) {
-	h, run := dayCapHarness(t, 0, dayCapped, pushed("s2", "c1"))
+	h, run := capHarness(t, 0, dayCapped, pushed("s2", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "day_eur raised", Comment: 700})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
@@ -2949,38 +3074,44 @@ func TestWorkflowDayCapWaitTakesAnAnswerOrTheClose(t *testing.T) {
 		t.Fatalf("answers = %q, want %q", h.sessions[1].Answers, want)
 	}
 
-	h, _ = dayCapHarness(t, 0, dayCapped)
+	h, _ = capHarness(t, 0, dayCapped)
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 	if final := h.run(t); final != "closed" || len(h.sessions) != 1 || !h.finishAt.Equal(oct(14, 21, 43)) {
 		t.Fatalf("final = %q after %d sessions at %v, want closed after one at 21:43", final, len(h.sessions), h.finishAt)
 	}
 }
 
-// A refusal whose day turned before the workflow read it waits for nothing.
+// A refusal whose day turned before the workflow read it waits for
+// nothing, and runs no check.
 func TestWorkflowDayCapPastItsTurnRunsAtOnce(t *testing.T) {
 	yesterday := dayRefusal
 	yesterday.At = oct(13, 23, 59)
 	turned := dayCapped
 	turned.Capped = &yesterday
-	h, run := dayCapHarness(t, 0, turned, pushed("s2", "c1"))
+	h, run := capHarness(t, 0, turned, pushed("s2", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
-	if final := h.run(t); final != "done" || len(h.escalated) != 0 || len(run.began) != 2 || !run.began[1].Equal(run.began[0]) {
-		t.Fatalf("final = %q, escalations %q, sessions at %v; want done, none asked, the second at once", final, h.escalated, run.began)
+	if final := h.run(t); final != "done" || len(h.escalated) != 0 || len(run.began) != 2 || !run.began[1].Equal(run.began[0]) || len(run.inputs) != 0 {
+		t.Fatalf("final = %q, escalations %q, sessions at %v, checks %+v; want done, none asked or checked, the second at once", final, h.escalated, run.began, run.inputs)
 	}
 }
 
 // A healed run of a card waiting on the day cap waits on with the day
-// cap's reason, not the restart's, and resumes on its own.
+// cap's reason, not the restart's, checks at once and then every five
+// minutes, and resumes on its own: checks from 20:43 to 23:58, the turn at
+// 00:00.
 func TestWorkflowDayCapWaitSurvivesAHeal(t *testing.T) {
-	h, run := dayCapHarness(t, 0, pushed("s1", "c1"))
-	h.state = RunState{Status: "waiting-human", Question: dayQuestion, DayCap: dayReason, DayCapUntil: oct(15, 0, 0)}
+	h, run := capHarness(t, 0, pushed("s1", "c1"))
+	h.state = RunState{Status: "waiting-human", Question: dayQuestion, Cap: dayReason, CapUntil: oct(15, 0, 0)}
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{dayReason}) || len(run.began) != 1 || !run.began[0].Equal(oct(15, 0, 0)) {
 		t.Fatalf("final %q, escalations %q, sessions at %v; want the day cap's reason again and the session at 00:00", final, h.escalated, run.began)
+	}
+	if !sameTimes(run.checks, every(oct(14, 20, 43), oct(14, 23, 58), dayCheck)) || !sameTimes(run.turns, []time.Time{oct(15, 0, 0)}) {
+		t.Fatalf("checks %v, turns %v; want every five minutes from 20:43, the turn at 00:00", run.checks, run.turns)
 	}
 	if in := h.sessions[0]; in.Attempt != 1 {
 		t.Fatalf("session = %+v, want attempt 1", in)
@@ -2989,7 +3120,7 @@ func TestWorkflowDayCapWaitSurvivesAHeal(t *testing.T) {
 
 // A run from before versionDayCap takes a day cap's refusal as no push.
 func TestWorkflowDayCapBeforeTheChange(t *testing.T) {
-	h, run := dayCapHarness(t, 0, dayCapped, pushed("s2", "c1"))
+	h, run := capHarness(t, 0, dayCapped, pushed("s2", "c1"))
 	h.env.OnGetVersion("day-cap", workflow.DefaultVersion, versionDayCap).Return(workflow.DefaultVersion)
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
@@ -2999,6 +3130,453 @@ func TestWorkflowDayCapBeforeTheChange(t *testing.T) {
 	}
 	if in := h.sessions[1]; in.Attempt != 2 || !slices.Equal(in.Findings, dayCapped.Findings) {
 		t.Fatalf("second session = %+v, want attempt 2 with the refusal's findings", in)
+	}
+}
+
+// Card #1352 (2026-10-31): the month cap refused its first call at
+// 23:22:52. The check before the ask finds the cap binding, so the card
+// asks the month's wait and waits on its own. Version 972's load at
+// 23:31:02 wakes the wait, whose check 30 seconds later
+// (gateway.PolicyTTL), at 23:31:32, finds the raise and resumes the card
+// with no answer: the next session starts then as attempt 1 with the
+// first's input. No check ran between the ask and the wake: the hourly one
+// would have come at 00:00, the month's turn.
+func TestWorkflowMonthCapResumesOnAPolicyLoad(t *testing.T) {
+	h, run := capHarness(t, 0, monthCapped, pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(23, 22, 52))
+	run.funded = oct31(23, 31, 32)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(8*time.Minute+10*time.Second, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // 23:31:02
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if !slices.Equal(h.escalated, []string{monthReason}) || escalationSource(h.escalated[0]) != SourceMonthCap {
+		t.Fatalf("escalations = %q, want the month cap's wait once, source month_cap: %q", h.escalated, monthReason)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(23, 22, 52)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedMonthCap, oct31(23, 22, 52)) {
+		t.Fatalf("checks before the ask at %v, first input %+v; want one at 23:22:52 about the 23:22:52 refusal", run.asks, run.inputs[0])
+	}
+	if !sameTimes(run.checks, []time.Time{oct31(23, 31, 32)}) || len(run.turns) != 0 || !isCheck(run.inputs[1], "factory/small", policy.RefusedMonthCap, time.Time{}) {
+		t.Fatalf("checks %v, turns %v, inputs %+v; want the month's check at 23:31:32 alone", run.checks, run.turns, run.inputs)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(23, 22, 52), oct31(23, 31, 32)}) {
+		t.Fatalf("sessions began at %v, want the second at 23:31:32", run.began)
+	}
+	if in := h.sessions[1]; in.Attempt != 1 || in.ParentSessionID != "" || len(in.Findings) != 0 || len(in.Answers) != 0 {
+		t.Fatalf("second session = %+v, want attempt 1 with the first's input and no answer", in)
+	}
+}
+
+// Card #1353 (2026-10-31): a session that made calls was refused at the
+// month cap at 23:28 and ended at 23:51:36, after version 972's raise
+// settled at 23:31:32. The check before the ask, about the 23:28 refusal,
+// finds the cap lifted: the card asks nothing, and the next session starts
+// at once as attempt 2, a child of the first with its findings, its
+// check-in asked about the dead round.
+func TestWorkflowMonthCapLiftedBeforeTheAskAsksNothing(t *testing.T) {
+	h, run := capHarness(t, 0, monthCappedAt(oct31(23, 28, 0), true), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(23, 51, 36))
+	h.taskConfig = askTaskConfig()
+	run.funded = oct31(23, 31, 32)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || len(h.escalated) != 0 {
+		t.Fatalf("final %q, escalations %q; want done with nothing asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(23, 51, 36)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedMonthCap, oct31(23, 28, 0)) || len(run.checks) != 0 {
+		t.Fatalf("checks before the ask at %v, inputs %+v, wait checks %v; want one at 23:51:36 about the 23:28 refusal, no wait", run.asks, run.inputs, run.checks)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(23, 51, 36), oct31(23, 51, 36)}) {
+		t.Fatalf("sessions began at %v, want the second at once", run.began)
+	}
+	in := h.sessions[1]
+	if in.Attempt != 2 || in.ParentSessionID != "s1" || !slices.Equal(in.Findings, monthCapped.Findings) {
+		t.Fatalf("second session = %+v, want attempt 2, child of s1, with its findings", in)
+	}
+	if ask := in.CheckInAsk; ask == nil || ask.Moment != CheckInDead || ask.ParentSession != "s1" {
+		t.Fatalf("check-in ask = %+v, want the dead round of s1", ask)
+	}
+}
+
+// A month cap's wait that nothing lifts checks every hour and ends at the
+// UTC month's turn: refused at 21:10 on 2026-10-31, it checks at 22:10 and
+// 23:10, then 50 minutes later at 00:00 on 2026-11-01, the turn's check,
+// and the session runs then as attempt 1.
+func TestWorkflowMonthCapWaitEndsAtTheMonthsTurn(t *testing.T) {
+	h, run := capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want done after the month cap's wait", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(22, 10, 0), oct31(23, 10, 0)}) || !sameTimes(run.turns, []time.Time{novFirst}) {
+		t.Fatalf("checks before the ask %v, checks %v, turns %v; want 21:10, then 22:10 and 23:10, the turn at 00:00", run.asks, run.checks, run.turns)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), novFirst}) || h.sessions[1].Attempt != 1 {
+		t.Fatalf("sessions began at %v (%+v), want attempt 1 again at 00:00", run.began, h.sessions)
+	}
+}
+
+// An attempt the floor refuses at the month cap waits on its own as the
+// day cap's does, with no check before the ask, the floor having just
+// read the cap: the card asks the month's wait with the floor's state,
+// checks every hour from 21:10, and the 23:10 check, the first after the
+// 22:30 raise, starts attempt 1 with no answer. The policy load at 21:09,
+// during the two minutes Reconcile takes from 21:08, came before the
+// floor's read and wakes nothing (a wake would check at 21:10:30).
+func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
+	h, run := capHarness(t, 0, pushed("s1", "c1"))
+	h.env.SetStartTime(oct31(21, 8, 0))
+	h.reconcileAfter = 2 * time.Minute
+	h.signalAfter(time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	run.funded = oct31(22, 30, 0)
+	const state = "0.000001 EUR of the month's 544.00 EUR (budget.month_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
+		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, model string) (string, error) {
+			if h.env.Now().Before(run.funded) {
+				return "the month cap cannot fund a call: Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer.\n" + state, nil
+			}
+			return "", nil
+		})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	want := "the month cap is reached: the card resumes on its own once the month's free headroom funds a session, at the latest when the UTC month turns at " +
+		"2026-11-01T00:00:00Z. Raise budget.month_eur in policy.yaml to resume it sooner, or close the card.\n" +
+		"the attempt's floor refused the attempt before it started (refused_month_cap): " + state
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != SourceMonthCap {
+		t.Fatalf("escalations = %q, want the month cap's wait once: %q", h.escalated, want)
+	}
+	if len(run.asks) != 0 || !sameTimes(run.checks, []time.Time{oct31(22, 10, 0), oct31(23, 10, 0)}) || len(run.turns) != 0 ||
+		!isCheck(run.inputs[0], "factory/small", policy.RefusedMonthCap, time.Time{}) {
+		t.Fatalf("checks before an ask %v, checks %v, turns %v, inputs %+v; want hourly month checks at 22:10 and 23:10 alone", run.asks, run.checks, run.turns, run.inputs)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(23, 10, 0)}) || h.sessions[0].Attempt != 1 || len(h.sessions[0].Answers) != 0 {
+		t.Fatalf("sessions began at %v (%+v), want attempt 1 at 23:10 with no answer", run.began, h.sessions)
+	}
+}
+
+// A healed run of a card waiting on the month cap asks the month's wait
+// again and checks at once, so a raise during the restart is seen then,
+// and hourly after: from 21:10 the checks at 21:10 and 22:10, the latter
+// past the 22:00 raise, which starts the session. The check at once reads
+// the cap in force, so the policy load at 21:09, during the two minutes
+// Reconcile takes from 21:08, wakes nothing (a wake would check again at
+// 21:10:30).
+func TestWorkflowMonthCapWaitSurvivesAHeal(t *testing.T) {
+	h, run := capHarness(t, 0, pushed("s1", "c1"))
+	h.env.SetStartTime(oct31(21, 8, 0))
+	h.reconcileAfter = 2 * time.Minute
+	h.signalAfter(time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	run.funded = oct31(22, 0, 0)
+	h.state = RunState{Status: "waiting-human", Question: monthQuestion, Cap: monthReason, CapUntil: novFirst}
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap's reason again", final, h.escalated)
+	}
+	if !sameTimes(run.checks, []time.Time{oct31(21, 10, 0), oct31(22, 10, 0)}) || len(run.asks) != 0 || len(run.turns) != 0 ||
+		!isCheck(run.inputs[0], "factory/small", policy.RefusedMonthCap, time.Time{}) {
+		t.Fatalf("checks %v, checks before an ask %v, turns %v, inputs %+v; want month checks at 21:10 and 22:10", run.checks, run.asks, run.turns, run.inputs)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(22, 10, 0)}) || h.sessions[0].Attempt != 1 {
+		t.Fatalf("sessions began at %v (%+v), want attempt 1 at 22:10", run.began, h.sessions)
+	}
+}
+
+// A run from before versionCapWait waits on a human at the month cap: it
+// asks capRefused's reason, runs no check of either kind, the policy load
+// at 23:31:02 changes nothing, the refused session counts as an attempt,
+// and only the answer at 00:22:52 starts the next, after its 30-second
+// quiet window.
+func TestWorkflowMonthCapBeforeTheChangeWaitsOnAHuman(t *testing.T) {
+	h, run := capHarness(t, 0, monthCapped, pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(23, 22, 52))
+	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
+	run.funded = oct31(23, 31, 32)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(8*time.Minute+10*time.Second, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "raised", Comment: 700})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	want := "the month cap is reached: the gateway refused this task's spend (refused_month_cap): free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 0.000001)"
+	if !slices.Equal(h.escalated, []string{want}) {
+		t.Fatalf("escalations = %q, want %q", h.escalated, want)
+	}
+	if len(run.inputs) != 0 || len(run.dayChecks) != 0 || len(run.dayTurns) != 0 {
+		t.Fatalf("CapResume inputs %+v, DayResume checks %v and turns %v; want no check", run.inputs, run.dayChecks, run.dayTurns)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(23, 22, 52), time.Date(2026, 11, 1, 0, 23, 22, 0, time.UTC)}) {
+		t.Fatalf("sessions began at %v, want the second at 00:23:22, the answer's quiet window after 00:22:52", run.began)
+	}
+	if h.usage[0].Attempts != 1 || h.sessions[1].Attempt != 2 {
+		t.Fatalf("usage %+v, second session %+v; want the refused session counted, the next attempt 2", h.usage, h.sessions[1])
+	}
+}
+
+// A refusal inside the gateway's cache window still asks: the first call
+// was refused at 23:31:10 under the cached version 971, after version 972
+// activated at 23:31:02. The check before the ask finds 972 binding at the
+// gateway only from 23:31:32 (Settles), so the card asks, and the wait's
+// first check runs then, 22 seconds later rather than an hour, and
+// resumes the card. No session ran between.
+func TestWorkflowMonthCapRefusedInTheCacheWindow(t *testing.T) {
+	h, run := capHarness(t, 0, monthCappedAt(oct31(23, 31, 10), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(23, 31, 10))
+	settles := oct31(23, 31, 32)
+	run.verdict = func(now time.Time) CapResumed {
+		if now.Before(settles) {
+			return CapResumed{Settles: settles}
+		}
+		return CapResumed{Resume: true}
+	}
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(23, 31, 10)}) || !sameTimes(run.checks, []time.Time{settles}) {
+		t.Fatalf("checks before the ask %v, checks %v; want 23:31:10, then 23:31:32", run.asks, run.checks)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(23, 31, 10), settles}) {
+		t.Fatalf("sessions began at %v, want the second at 23:31:32 and none between", run.began)
+	}
+}
+
+// A policy load drains where the cap was last read, the check before the
+// ask. One signalled before that read brings no early check: the load at
+// 21:05 came during the session that ended at 21:10 (each session's time
+// is its end's), so the wait's first check is the hourly one at 22:10,
+// which finds the 22:00 raise; a wake would have checked at 21:10:30.
+// Loads after the read, during the minute Escalate takes from 21:10, wake
+// the wait that starts at 21:11: its check comes 30 seconds later, at
+// 21:11:30, and finds the 21:11 raise. Three of them in one burst arm one
+// 30-second timer.
+func TestWorkflowCapWaitWakesOnLoadsAfterTheRead(t *testing.T) {
+	h, run := capHarness(t, 10*time.Minute, monthCappedAt(oct31(21, 0, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 0, 0))
+	run.funded = oct31(22, 0, 0)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(22, 10, 0)}) {
+		t.Fatalf("checks before the ask %v, checks %v; want 21:10, then 22:10 alone", run.asks, run.checks)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(22, 20, 0)}) {
+		t.Fatalf("sessions ended at %v, want the second to start at 22:10 and end at 22:20", run.began)
+	}
+
+	h, run = capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	h.escalateAfter = time.Minute
+	run.funded = oct31(21, 11, 0)
+	var wakes []time.Time
+	h.env.SetOnTimerScheduledListener(func(_ string, d time.Duration) {
+		// answerQuiet is 30 s too; only the burst's re-arm before the first check is a wake.
+		if d == gateway.PolicyTTL && len(run.checks) == 0 {
+			wakes = append(wakes, h.env.Now())
+		}
+	})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	for range 3 {
+		h.signalAfter(30*time.Second, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	}
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(21, 11, 30)}) || !sameTimes(wakes, []time.Time{oct31(21, 11, 0)}) {
+		t.Fatalf("checks before the ask %v, checks %v, 30-second timers at %v; want 21:10, then 21:11:30, one timer at 21:11", run.asks, run.checks, wakes)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(21, 11, 30)}) {
+		t.Fatalf("sessions began at %v, want the second at 21:11:30", run.began)
+	}
+}
+
+// A check whose Settles the workflow's clock already passed (the runner's
+// clock lags it) brings the next check settleRetry later, not an hour
+// later: the check before the ask at 21:10 and the check at 21:10:10 both
+// answer Settles 21:09:50, and the check at 21:10:20 resumes the card.
+func TestWorkflowCapWaitChecksSoonOnAPassedSettles(t *testing.T) {
+	h, run := capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run.verdict = func(now time.Time) CapResumed {
+		if now.Before(oct31(21, 10, 20)) {
+			return CapResumed{Settles: oct31(21, 9, 50)}
+		}
+		return CapResumed{Resume: true}
+	}
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(21, 10, 10), oct31(21, 10, 20)}) {
+		t.Fatalf("checks before the ask %v, checks %v; want 21:10, then 21:10:10 and 21:10:20", run.asks, run.checks)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(21, 10, 20)}) {
+		t.Fatalf("sessions began at %v, want the second at 21:10:20", run.began)
+	}
+}
+
+// The project's month cap waits as the month's does: refused at its first
+// call at 21:10, the check before the ask finds it binding, the card asks
+// with the project's file named, checks every hour, and the 23:10 check,
+// the first after the 22:30 raise, starts attempt 1 with no answer.
+func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
+	const refusal = "free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 40.000000, project 0.000001); " +
+		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
+	refused := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedProjectCap, Reason: refusal}, At: oct31(21, 10, 0)}
+	capped := SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(refused.Refusal), Capped: &refused}
+	h, run := capHarness(t, 0, capped, pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run.funded = oct31(22, 30, 0)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	want := "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+		"the gateway refused this task's spend (refused_project_cap): " + refusal
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "project_cap" {
+		t.Fatalf("escalations = %q, want the project cap's wait once: %q", h.escalated, want)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedProjectCap, oct31(21, 10, 0)) ||
+		!sameTimes(run.checks, []time.Time{oct31(22, 10, 0), oct31(23, 10, 0)}) || !isCheck(run.inputs[1], "factory/small", policy.RefusedProjectCap, time.Time{}) {
+		t.Fatalf("checks before the ask %v, checks %v, inputs %+v; want 21:10, then project checks at 22:10 and 23:10", run.asks, run.checks, run.inputs)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(23, 10, 0)}) || h.sessions[1].Attempt != 1 || len(h.sessions[1].Answers) != 0 {
+		t.Fatalf("sessions began at %v (%+v), want attempt 1 again at 23:10 with no answer", run.began, h.sessions)
+	}
+}
+
+// A policy load while a check runs arms the next check gateway.PolicyTTL
+// after that check, not an hour after it. Each check takes a minute, its
+// time its end's: the check before the ask ends at 21:11, the hourly one
+// runs from 22:11 to 22:12 with the load at 22:11:30 during it, and the
+// next runs from 22:12:30 to 22:13:30, past the 22:13 raise.
+func TestWorkflowCapWaitTakesALoadDuringACheck(t *testing.T) {
+	h, run := capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run.funded, run.takes = oct31(22, 13, 0), time.Minute
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour+90*time.Second, SignalPolicyLoaded, TaskSignal{Author: "factoryd"}) // 22:11:30
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 11, 0)}) || !sameTimes(run.checks, []time.Time{oct31(22, 12, 0), oct31(22, 13, 30)}) {
+		t.Fatalf("checks before the ask %v, checks %v; want 21:11, then 22:12 and 22:13:30", run.asks, run.checks)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(22, 13, 30)}) {
+		t.Fatalf("sessions began at %v, want the second at 22:13:30", run.began)
+	}
+}
+
+// stampedPolicy is a policy store that activates each version it records at
+// activate, the test environment's clock.
+type stampedPolicy struct {
+	memPolicy
+	activate time.Time
+}
+
+func (p *stampedPolicy) RecordPolicy(ctx context.Context, commit string, tree policy.Tree) (policy.Version, bool, error) {
+	v, inserted, err := p.memPolicy.RecordPolicy(ctx, commit, tree)
+	if inserted {
+		v.ActivatedAt = p.activate
+		p.memPolicy.mu.Lock()
+		p.memPolicy.versions[len(p.memPolicy.versions)-1] = v
+		p.memPolicy.mu.Unlock()
+	}
+	return v, inserted, err
+}
+
+// A card waits at the month cap of 544 EUR, its session refused at its
+// first call (21:10). A commit raising budget.month_eur to 600 loads at
+// 21:30: the loader's Wake signals the waiting workflow, and the check
+// gateway.PolicyTTL later, at 21:30:30, finds the cap lifted by the version
+// now in force. The card starts its next session then, with no answer and
+// no restart of any part; the timeline holds cap_resumed. The hourly check
+// (22:10) never came.
+func TestWorkflowPolicyLoadResumesAMonthCapWait(t *testing.T) {
+	ctx := context.Background()
+	h, run := capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	g := newCapRig(t)
+	if _, err := g.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: monthReason, CreatedAt: oct31(21, 10, 0)}); err != nil {
+		t.Fatal(err)
+	}
+	src, pol := &memSource{}, &stampedPolicy{activate: oct31(20, 0, 0)}
+	policyYAML := func(monthEUR string) map[string][]byte {
+		return testFiles(strings.Replace(testPolicyYAML, "month_eur: 50", "month_eur: "+monthEUR, 1))
+	}
+	l := &PolicyLoader{Source: src, Store: pol}
+	waits := &CapWaits{Store: g.store, Signal: func(_ context.Context, id string) error {
+		h.env.SignalWorkflow(SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+		return nil
+	}}
+	src.push("c1", policyYAML("544"))
+	if err := l.Boot(ctx); err != nil {
+		t.Fatal(err)
+	}
+	l.Wake = waits.Wake
+	g.r.now, g.r.cfg.Policy = h.env.Now, l.Current
+	run.verdict = func(time.Time) CapResumed {
+		g.store.capsFree = &policy.Free{Day: math.Inf(1), Month: l.Current().Document.Budget.MonthEUR - 544, Project: math.Inf(1)}
+		res, err := g.r.CapResume(ctx, run.inputs[len(run.inputs)-1])
+		if err != nil {
+			t.Errorf("CapResume: %v", err)
+		}
+		return res
+	}
+	h.env.RegisterDelayedCallback(func() {
+		src.push("c2", policyYAML("600"))
+		pol.activate = h.env.Now()
+		if err := l.Load(ctx); err != nil {
+			t.Errorf("Load: %v", err)
+		}
+	}, 20*time.Minute)
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(21, 30, 30)}) || len(h.sessions) != 2 || h.sessions[1].Attempt != 1 || len(h.sessions[1].Answers) != 0 {
+		t.Fatalf("sessions began at %v (%+v), want the second at 21:30:30, attempt 1, no answer", run.began, h.sessions)
+	}
+	if !sameTimes(run.checks, []time.Time{oct31(21, 30, 30)}) {
+		t.Fatalf("checks at %v, want the one 30 s after the load", run.checks)
+	}
+	if !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("escalations = %q, want the cap's wait once", h.escalated)
+	}
+	if step := timelineStep(t, g.objects, "t1", "cap_resumed"); step["cap"] != policy.RefusedMonthCap || step["why"] != "the month cap no longer binds a session (policy version 2)" {
+		t.Fatalf("cap_resumed = %v", step)
 	}
 }
 
@@ -3142,9 +3720,12 @@ func reportHarness(t *testing.T, results ...ReportResult) (h *workflowHarness, b
 }
 
 // A report session the gateway refused at a cap fails no report task
-// (roadmap 240): at the day cap it waits for the day's turn on its own and
-// runs again; at a month's it waits on a human. A run from before the
-// change fails as before.
+// (roadmap 240): it waits on its own and runs again, at the day cap for
+// the day's turn. At the month's (versionCapWait) the check before the ask
+// at 21:10 finds the month spent, and the hourly check at 22:10, past the
+// 22:00 raise, runs the session again. A run from before versionCapWait
+// waits on a human at a month's cap, and one from before versionDayCap
+// fails as before.
 func TestWorkflowReportWaitsOnACap(t *testing.T) {
 	h, began, _ := reportHarness(t, ReportResult{Capped: &dayRefusal}, ReportResult{})
 	h.env.SetStartTime(oct(14, 20, 43))
@@ -3152,16 +3733,32 @@ func TestWorkflowReportWaitsOnACap(t *testing.T) {
 		t.Fatalf("final %q, escalations %q, sessions at %v; want done after the second session at 00:00", final, h.escalated, *began)
 	}
 
+	refused := monthRefusal
+	refused.At = oct31(21, 10, 0)
+	h, began, _ = reportHarness(t, ReportResult{Capped: &refused}, ReportResult{})
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run := &capRun{funded: oct31(22, 0, 0)}
+	run.onChecks(h)
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) || !sameTimes(*began, []time.Time{oct31(21, 10, 0), oct31(22, 10, 0)}) {
+		t.Fatalf("final %q, escalations %q, sessions at %v; want done after the month's wait, the second session at 22:10", final, h.escalated, *began)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(22, 10, 0)}) {
+		t.Fatalf("checks before the ask %v, checks %v; want 21:10, then 22:10", run.asks, run.checks)
+	}
+
 	month := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "spent"}}
 	h, began, _ = reportHarness(t, ReportResult{Capped: &month}, ReportResult{})
+	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
 	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "raised", Comment: 700})
-	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthCapReached + "spent"}) || len(*began) != 2 {
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{capRefused(month.Refusal)}) || len(*began) != 2 {
 		t.Fatalf("final %q, escalations %q, %d sessions; want done after a human's answer", final, h.escalated, len(*began))
 	}
 
+	// a history from before day-cap is from before cap-wait too
 	h, _, _ = reportHarness(t, ReportResult{Capped: &month})
 	h.env.OnGetVersion("day-cap", workflow.DefaultVersion, versionDayCap).Return(workflow.DefaultVersion)
-	if final := h.run(t); final != "failed" || h.finals[0][1] != "report session: the report session ended without a report: "+monthCapReached+"spent" {
+	h.env.OnGetVersion("cap-wait", workflow.DefaultVersion, versionCapWait).Return(workflow.DefaultVersion)
+	if final := h.run(t); final != "failed" || h.finals[0][1] != "report session: the report session ended without a report: "+capRefused(month.Refusal) {
 		t.Fatalf("finals %v, want the report task failed", h.finals)
 	}
 }
@@ -4142,6 +4739,165 @@ func TestCheckinSpendLiveReVerifiesOpenPR(t *testing.T) {
 	}
 }
 
+// The fabricated spend stop carries its work state: the findings and the
+// last review verdict ride the escalation under the spend reason, so the
+// card's ask holds the work, not the spend number alone.
+func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason:   CheckinShareSpent,
+			Findings: []CheckFinding{{Text: "the migration runs outside its transaction"}, {Text: "the flag is read before it is set"}},
+			Review:   &Review{Verdict: "concerns", Summary: "two faults block the merge"},
+			Record:   &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 1 {
+		t.Fatalf("escalations = %q, want the one spend stop", h.escalated)
+	}
+	for _, want := range []string{CheckinShareSpent, "- the migration runs outside its transaction", "- the flag is read before it is set", "- review: concerns"} {
+		if !strings.Contains(h.escalated[0], want) {
+			t.Errorf("the escalation %q misses %q", h.escalated[0], want)
+		}
+	}
+}
+
+// A spend stop repeated on the same head and the same limits is not asked
+// again: the second ask states plainly that no reply can change it and
+// names the exits.
+func TestCheckinSpendStopRepeatedWithNoChangeNamesTheExits(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	if h.escalated[1] == h.escalated[0] {
+		t.Fatalf("the repeat ask equals the first ask: %q", h.escalated[1])
+	}
+	for _, want := range []string{"No reply can change this", "the head c1", "Extend the card, overrule the review, end the card, or leave it waiting"} {
+		if !strings.Contains(h.escalated[1], want) {
+			t.Errorf("the repeat ask %q misses %q", h.escalated[1], want)
+		}
+	}
+}
+
+// An answer that bought a restart which pushed nothing names the unchanged
+// commit (the parked spec's loop: each grant re-ran the gates on the same
+// head).
+func TestCheckinRestartThatPushedNothingNamesTheCommit(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	for _, want := range []string{"no new commit", "the head is still c1"} {
+		if !strings.Contains(h.escalated[1], want) {
+			t.Errorf("the repeat ask %q misses %q", h.escalated[1], want)
+		}
+	}
+}
+
+// A stop whose head moved since the last one is asked normally: the guard
+// compares the head, and a session that pushed clears it.
+func TestCheckinStopAfterAMovedHeadAsksAgainNormally(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.taskConfig.Sessions = 6
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		pushed("s3", "c2"),
+		checkinStopped("s4", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s4", ParentSession: "s3"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 || !strings.Contains(h.escalated[1], CheckinShareSpent) || strings.Contains(h.escalated[1], "No reply can change this") {
+		t.Fatalf("escalations = %q, want the second stop asked ordinarily on the moved head", h.escalated)
+	}
+}
+
+// A run from before the change repeats its stop as before: the guard is
+// versioned, and an old history never sees the replacement ask.
+func TestCheckinRepeatGuardIsVersioned(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.env.OnGetVersion("checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat).Return(workflow.DefaultVersion - 1)
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: checkinCallCapStop, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 || h.escalated[1] != h.escalated[0] {
+		t.Fatalf("escalations = %q, want the unversioned run repeating its ask", h.escalated)
+	}
+}
+
 // A dead-moment check-in that refuses runs the round on: its session was
 // sent back with the first session's stop lines and an empty handover
 // brief, and the dead moment dissolves into those stop lines — the next
@@ -4985,5 +5741,42 @@ func TestReplanRefusedAtTheStartVerifiesAgain(t *testing.T) {
 	}
 	if len(h.sessions) != 0 || !slices.Equal(*asked, []string{"c1"}) {
 		t.Fatalf("sessions %d, approval requests on %q; want none, [c1]", len(h.sessions), *asked)
+	}
+}
+
+// An extend answer raises the limits the guard reads: the row the extend
+// form raised reaches the run when the answer wakes it (change id
+// "extend-raise"), so the stop after an extend is an ordinary ask, not
+// the deadlock headline again.
+func TestExtendAnswerRaisesTheLimitsTheGuardReads(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	h.taskConfig.Sessions = 6
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(
+		func(ctx context.Context, taskID string) (TaskUsage, error) {
+			return TaskUsage{ExtraLines: 500}, nil
+		})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "extend it", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.escalated) != 2 {
+		t.Fatalf("escalations = %q, want the stop and its repeat", h.escalated)
+	}
+	if strings.Contains(h.escalated[1], "No reply can change this") || !strings.Contains(h.escalated[1], CheckinShareSpent) {
+		t.Errorf("the ask after the extend = %q, want the ordinary share ask: the raise changed the limits", h.escalated[1])
 	}
 }

@@ -9,7 +9,9 @@ import (
 	"fmt"
 	"log"
 	"slices"
+	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -69,6 +71,12 @@ type Waker struct {
 	// RoadmapHead reads the doc repository's head of docs/roadmap.md, the
 	// identity the pull checks and stamps. Nil: the pull never fires.
 	RoadmapHead func(ctx context.Context, docRepo string) (string, error)
+
+	// flights are the repositories whose wake turn runs; a pass leaves
+	// such a project to its turn instead of waiting on it
+	mu      sync.Mutex
+	flights map[string]bool
+	wg      sync.WaitGroup
 }
 
 const (
@@ -122,6 +130,56 @@ func (w *Waker) Pass(ctx context.Context) error {
 	return nil
 }
 
+// launch takes repository's wake turn for this Waker: false when one
+// already runs, so the caller leaves the project to it.
+func (w *Waker) launch(repository string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	if w.flights == nil {
+		w.flights = map[string]bool{}
+	}
+	if w.flights[repository] {
+		return false
+	}
+	w.flights[repository] = true
+	w.wg.Add(1)
+	return true
+}
+
+// land gives repository's wake turn back.
+func (w *Waker) land(repository string) {
+	w.mu.Lock()
+	delete(w.flights, repository)
+	w.mu.Unlock()
+	w.wg.Done()
+}
+
+// flying says repository's wake turn runs.
+func (w *Waker) flying(repository string) bool {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	return w.flights[repository]
+}
+
+// drain waits for every wake turn a pass started.
+func (w *Waker) drain() { w.wg.Wait() }
+
+// goWake runs one wake turn on its own goroutine, one at a time per
+// project: turn starts it and keeps its own bookkeeping — the marks, the
+// row deletes, the cursor — and its error lands in the log, for a turn
+// minutes long must hold no pass and no other project back.
+func (w *Waker) goWake(ctx context.Context, repository string, turn func(ctx context.Context) error) {
+	if !w.launch(repository) {
+		return
+	}
+	go func() {
+		defer w.land(repository)
+		if err := turn(ctx); err != nil {
+			log.Printf("wake %s: %v", repository, err)
+		}
+	}()
+}
+
 // pendingAsk is one unhandled ask of a batch, with its mark key.
 type pendingAsk struct {
 	e   Event
@@ -133,8 +191,12 @@ type pendingAsk struct {
 // nothing new wakes from only moves the cursor. The turn mark and the
 // cooldown each hold a wake and the cursor back, and a refused wake (a
 // stopped chat's ErrChatUnfunded among them) marks the cooldown, so its
-// cause stays and a later pass takes it.
+// cause stays and a later pass takes it. A wake turn still running holds
+// the project's passes too: its bookkeeping lands when it ends.
 func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, p policy.ProjectConfig, now time.Time) error {
+	if w.flying(p.Repository) {
+		return nil
+	}
 	if err := w.fireTimer(ctx, name, p, now); err != nil {
 		return err
 	}
@@ -171,8 +233,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 			continue // the month cap refuses the agent's own calls: its ask wakes nobody
 		}
 		if e.Kind == EventQuestionAsked && p.Autonomy == policy.AutonomyAutonomous {
-			sum := sha256.Sum256([]byte(askSentence(e)))
-			key := "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
+			key := askKey(e)
 			if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {
 				return err
 			} else if done {
@@ -208,31 +269,34 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	}
 	if len(watched) > 0 {
 		c := watched[0]
-		if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
-			if errors.Is(err, ErrWakeVenueGone) {
+		w.goWake(ctx, p.Repository, func(ctx context.Context) error {
+			if err := w.Start.StartWake(ctx, name, c.watch.Login, c.watch.Conversation, "wake_card", w.cardText(ctx, c.e)); err != nil {
+				if errors.Is(err, ErrWakeVenueGone) {
+					log.Printf("wake %s: %v", name, err)
+					// the watch's thread is gone for good: the row goes with it,
+					// and this card no longer holds the batch back
+					if _, err := w.Store.RemoveChatWatch(ctx, p.Repository, c.watch.Login, c.watch.TaskID); err != nil {
+						return err
+					}
+					if len(pending) == 0 && len(watched) == 1 {
+						return w.Store.SetWakeCursor(ctx, p.Repository, newest)
+					}
+					return nil
+				}
 				log.Printf("wake %s: %v", name, err)
-				// the watch's thread is gone for good: the row goes with it,
-				// and this card no longer holds the batch back
-				if _, err := w.Store.RemoveChatWatch(ctx, p.Repository, c.watch.Login, c.watch.TaskID); err != nil {
+				return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+			}
+			for _, key := range []string{"card:" + c.e.TaskID, "turn"} {
+				if err := w.Store.WakeMark(ctx, p.Repository, key, now); err != nil {
 					return err
 				}
-				if len(pending) == 0 && len(watched) == 1 {
-					return w.Store.SetWakeCursor(ctx, p.Repository, newest)
-				}
-				return nil
 			}
-			log.Printf("wake %s: %v", name, err)
-			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
-		}
-		for _, key := range []string{"card:" + c.e.TaskID, "turn"} {
-			if err := w.Store.WakeMark(ctx, p.Repository, key, now); err != nil {
-				return err
+			if len(pending) == 0 && len(watched) == 1 {
+				return w.Store.SetWakeCursor(ctx, p.Repository, newest)
 			}
-		}
-		if len(pending) == 0 && len(watched) == 1 {
-			return w.Store.SetWakeCursor(ctx, p.Repository, newest)
-		}
-		return nil // the rest of the batch stays for the next pass
+			return nil // the rest of the batch stays for the next pass
+		})
+		return nil
 	}
 	logins := pokeTo(v.Tree, p.Repository)
 	if len(logins) == 0 {
@@ -242,19 +306,23 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 	if err != nil {
 		return err
 	}
-	if err := w.Start.StartWake(ctx, name, logins[0], conv, "wake_ask", w.askText(ctx, pending, v.ApproversOf(p.Repository), logins[0])); err != nil {
-		log.Printf("wake %s: %v", name, err)
-		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
-	}
-	for _, a := range pending {
-		if err := w.Store.WakeMark(ctx, p.Repository, a.key, now); err != nil {
+	asks, text := pending, w.askText(ctx, pending, v.ApproversOf(p.Repository), logins[0])
+	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
+		if err := w.Start.StartWake(ctx, name, logins[0], conv, "wake_ask", text); err != nil {
+			log.Printf("wake %s: %v", name, err)
+			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+		}
+		for _, a := range asks {
+			if err := w.Store.WakeMark(ctx, p.Repository, a.key, now); err != nil {
+				return err
+			}
+		}
+		if err := w.Store.WakeMark(ctx, p.Repository, "turn", now); err != nil {
 			return err
 		}
-	}
-	if err := w.Store.WakeMark(ctx, p.Repository, "turn", now); err != nil {
-		return err
-	}
-	return w.Store.SetWakeCursor(ctx, p.Repository, newest)
+		return w.Store.SetWakeCursor(ctx, p.Repository, newest)
+	})
+	return nil
 }
 
 // pendingCard is one watched card's move of a batch, with the watch its
@@ -265,7 +333,8 @@ type pendingCard struct {
 }
 
 // fireTimer wakes the oldest due timer's own thread with its note, then
-// the row is gone: one timer at a time, never combined with anything. A
+// the row is gone: one timer at a time, never combined with anything. The
+// wake turn runs on its own goroutine and keeps its own bookkeeping. A
 // held turn or cooldown, and a refused wake (a stopped chat's among them),
 // each leave the row for a later pass.
 func (w *Waker) fireTimer(ctx context.Context, name string, p policy.ProjectConfig, now time.Time) error {
@@ -279,19 +348,22 @@ func (w *Waker) fireTimer(ctx context.Context, name string, p policy.ProjectConf
 	} else if held {
 		return nil
 	}
-	if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
-		if errors.Is(err, ErrWakeVenueGone) {
+	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
+		if err := w.Start.StartWake(ctx, name, t.Login, t.Conversation, "wake_timer", timerText(t)); err != nil {
+			if errors.Is(err, ErrWakeVenueGone) {
+				log.Printf("wake %s: %v", name, err)
+				// the timer's thread is gone for good: the row goes with it
+				return w.Store.DeleteChatTimer(ctx, p.Repository, t.ID)
+			}
 			log.Printf("wake %s: %v", name, err)
-			// the timer's thread is gone for good: the row goes with it
-			return w.Store.DeleteChatTimer(ctx, p.Repository, t.ID)
+			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
 		}
-		log.Printf("wake %s: %v", name, err)
-		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
-	}
-	if err := w.Store.DeleteChatTimer(ctx, p.Repository, t.ID); err != nil {
-		return err
-	}
-	return w.Store.WakeMark(ctx, p.Repository, "turn", now)
+		if err := w.Store.DeleteChatTimer(ctx, p.Repository, t.ID); err != nil {
+			return err
+		}
+		return w.Store.WakeMark(ctx, p.Repository, "turn", now)
+	})
+	return nil
 }
 
 // fireRefill wakes the roadmap pull (2026-11-01): when the project's
@@ -346,14 +418,17 @@ func (w *Waker) fireRefill(ctx context.Context, v policy.Version, name string, p
 	if err != nil {
 		return err
 	}
-	if err := w.Start.StartWake(ctx, name, logins[0], conv, "queue_refill", refillText(name, below)); err != nil {
-		log.Printf("wake %s: %v", name, err)
-		return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
-	}
-	if err := w.Store.SetRoadmapPullStamp(ctx, p.Repository, head, now); err != nil {
-		return err
-	}
-	return w.Store.WakeMark(ctx, p.Repository, "turn", now)
+	w.goWake(ctx, p.Repository, func(ctx context.Context) error {
+		if err := w.Start.StartWake(ctx, name, logins[0], conv, "queue_refill", refillText(name, below)); err != nil {
+			log.Printf("wake %s: %v", name, err)
+			return w.Store.WakeMark(ctx, p.Repository, "cooldown", now)
+		}
+		if err := w.Store.SetRoadmapPullStamp(ctx, p.Repository, head, now); err != nil {
+			return err
+		}
+		return w.Store.WakeMark(ctx, p.Repository, "turn", now)
+	})
+	return nil
 }
 
 // refillText is the roadmap pull's wake: what the turn reads and files.
@@ -409,6 +484,35 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	}
 	b.WriteString(" For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
 	return b.String()
+}
+
+// askKey is the ask's own identity on its mark: the issue comment the ask
+// filed, so a new ask wakes however it is worded, for two asks of one
+// sentence are two asks, and a reprocessed batch still wakes once, the
+// same comment keeping its key. An ask that files no comment (the
+// planner's) falls back to its sentence's hash.
+func askKey(e Event) string {
+	if id := askCommentID(e); id != "" {
+		return "ask:" + e.TaskID + ":" + id
+	}
+	sum := sha256.Sum256([]byte(askSentence(e)))
+	return "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
+}
+
+// askCommentID is the issue comment the ask filed, decimal, empty when the
+// ask carried none.
+func askCommentID(e Event) string {
+	switch id := e.Detail["comment"].(type) {
+	case float64:
+		if id > 0 {
+			return strconv.FormatInt(int64(id), 10)
+		}
+	case int64:
+		if id > 0 {
+			return strconv.FormatInt(id, 10)
+		}
+	}
+	return ""
 }
 
 // askSentence is the ask event's own words: a shaped ask carries its full

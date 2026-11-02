@@ -396,12 +396,16 @@ func (t *taskRun) onFindings(s policy.Stage, g GateResults, findings []string, c
 	return verdict{}, false
 }
 
-// cheatFindings sends the policy gate's anti-cheat findings and its images
-// file's where the checks stage's on_findings sends its own: the policy
-// stage's rule is fail by a floor and would fail the task for a skipped
-// test.
+// cheatFindings sends the policy gate's anti-cheat findings, its images
+// file's and the card's line-bound refusal where the checks stage's
+// on_findings sends its own: the policy stage's rule is fail by a floor
+// and would fail the task for a skipped test — and the over-bound head
+// still has its exits, the agent's merge or a human's extend.
 func (t *taskRun) cheatFindings(g GateResults, capped, card *[]string) (verdict, bool) {
 	findings := slices.Concat(g.Policy.Cheats, g.Policy.Images)
+	if g.Policy.OverBound != "" {
+		findings = append(findings, g.Policy.OverBound)
+	}
 	if len(findings) == 0 {
 		return verdict{}, false
 	}
@@ -478,6 +482,18 @@ func (t *taskRun) sessionCapCard(last string, findings []string) string {
 			lines = append(lines, f)
 		}
 	}
+	packed, leftOut := packCardLines(lines)
+	head := capReached + "\nlast: " + textutil.Truncate(last, maxCardLine)
+	if leftOut > 0 {
+		head += fmt.Sprintf("\n- (%d earlier findings left out)", leftOut)
+	}
+	return head + packed
+}
+
+// packCardLines packs lines as the card's work state: each a "- " line at
+// most maxCardLine long, the newest kept when they outgrow the card.
+// leftOut counts the lines dropped off the front.
+func packCardLines(lines []string) (packed string, leftOut int) {
 	for i, l := range lines {
 		lines[i] = "\n- " + textutil.Truncate(l, maxCardLine)
 	}
@@ -486,11 +502,21 @@ func (t *taskRun) sessionCapCard(last string, findings []string) string {
 		from--
 		size += len(lines[from])
 	}
-	head := capReached + "\nlast: " + textutil.Truncate(last, maxCardLine)
-	if from > 0 {
-		head += fmt.Sprintf("\n- (%d earlier findings left out)", from)
+	return strings.Join(lines[from:], ""), from
+}
+
+// workStateLines is the work state a stop hands the human: each finding
+// and the last review's verdict as a "- " line, the newest kept.
+func workStateLines(findings []CheckFinding, review *Review) string {
+	lines := make([]string, 0, len(findings)+1)
+	for _, f := range findings {
+		lines = append(lines, f.Text)
 	}
-	return head + strings.Join(lines[from:], "")
+	if review != nil && review.Verdict != "" {
+		lines = append(lines, "review: "+review.Verdict)
+	}
+	packed, _ := packCardLines(lines)
+	return packed
 }
 
 func appendNew(list []string, s string) []string {
@@ -1117,7 +1143,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 		}
 		t.approvalRequested = workflow.Now(t.ctx)
-		if v = t.awaitApproval(commit, covered); !v.reask {
+		if v = t.awaitApproval(commit, g, covered); !v.reask {
 			break
 		}
 	}
@@ -1338,7 +1364,7 @@ func (t *taskRun) report(stronger bool, refusals int) (string, error) {
 		}
 		return t.report(stronger, refusals)
 	case res.Capped != nil && t.dayCap < versionDayCap:
-		return t.finish("failed", "report session: the report session ended without a report: "+res.Capped.reason())
+		return t.finish("failed", "report session: the report session ended without a report: "+t.capReason(*res.Capped))
 	case res.Capped != nil:
 		if final, why, _ := t.awaitCap(*res.Capped, model); final != "" {
 			return t.finish(final, why)

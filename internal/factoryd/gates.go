@@ -65,6 +65,11 @@ type PolicyGate struct {
 	// Unread is the finding on a diff past maxDiffRead, which no gate
 	// reads: a person approves the change (Outcome requires_approval).
 	Unread string `json:",omitempty"`
+	// OverBound is the card's line-bound refusal — the same rule the
+	// worker enforces on every push, met on a head however the over-bound
+	// diff was made: findings to the agent, and no approval lifts it. An
+	// extend raise empties it.
+	OverBound string `json:",omitempty"`
 }
 
 // large: the pull request is class large by its lines.
@@ -281,7 +286,7 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 			met = append(met, "the model review approves and finds the change a strict improvement with no drawback")
 		}
 	case "":
-		unmet = append(unmet, "no model review verdict: "+rv.Note)
+		unmet = append(unmet, noVerdictLine+rv.Note)
 	default:
 		unmet = append(unmet, "the model review's verdict is "+rv.Verdict)
 	}
@@ -394,9 +399,8 @@ func (r *Runner) AutoMergeNote(ctx context.Context, taskID string, pr int64, com
 // in Forgejo — stays unknown; nothing reconstructs its reading from the
 // policy in force now. A failed row is logged, never a failed decision.
 func (r *Runner) recordGateHead(ctx context.Context, t Task, head, decision string, g PolicyGate) {
-	bound, _ := cardLineBound(t.Size, g.LargeLines)
 	r.timeline.RecordFact(ctx, GateHeadFact{Task: t.ID, Head: head, Gate: GateMerge, Decision: decision,
-		Size: t.Size, Bound: bound, PolicyVersion: g.PolicyVersion,
+		Size: t.Size, Bound: EffectiveLineBound(t.Size, g.LargeLines, t.Usage.ExtraLines), PolicyVersion: g.PolicyVersion,
 		Files: g.Files, Insertions: g.Insertions, Deletions: g.Deletions}.Event(t.Repository, t.IssueNumber))
 }
 
@@ -512,6 +516,10 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if g.Outcome == policy.OutcomeForbidden && factoryPRSources(t.Source) {
 		g.Outcome, g.Factory = policy.OutcomeRequiresApproval, true
 	}
+	if over := lines - EffectiveLineBound(t.Size, v.Document.Risk.LargeLines, t.Usage.ExtraLines); over > 0 {
+		g.OverBound = fmt.Sprintf("the pull request's diff is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
+			over, lines-over)
+	}
 	diffFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr)
 	switch {
 	case errors.Is(err, ErrDiffTooLong):
@@ -553,6 +561,9 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 	if g.Unread != "" {
 		msg += "\n\n" + g.Unread
 	}
+	if g.OverBound != "" {
+		msg += "\n\n" + g.OverBound
+	}
 	if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, pr, msg); err != nil {
 		return PolicyGate{}, err
 	}
@@ -560,6 +571,9 @@ func (r *Runner) GatePolicy(ctx context.Context, taskID string, pr int64, commit
 		"paths": g.Paths, "migrations": g.Migrations, "changed": g.Changed, "lines": g.Lines, "policy_version": v.ID, "merge_rule": g.MergeRule, "cheats": g.Cheats, "images": g.Images}
 	if g.Unread != "" {
 		detail["unread"] = g.Unread
+	}
+	if g.OverBound != "" {
+		detail["over_bound"] = g.OverBound
 	}
 	r.record(ctx, t.ID, "gate_policy", gateEnd(t, GatePolicy, detail))
 	return g, nil
@@ -1289,17 +1303,75 @@ func invalidNote(why, content string) string {
 	return "model review answer invalid (" + why + "): " + textutil.Truncate(content, 300)
 }
 
+// refusedByGateway opens callNote's note of a call the gateway refused,
+// its decision next.
+const refusedByGateway = "model review refused by the gateway ("
+
 // callNote says why a review call has no answer: the gateway refused it,
 // or it failed; "" when it answered.
 func callNote(err error) string {
 	var refusal *policy.Refusal
 	switch {
 	case errors.As(err, &refusal):
-		return "model review refused by the gateway (" + refusal.Decision + "): " + refusal.Reason
+		return refusedByGateway + refusal.Decision + "): " + refusal.Reason
 	case err != nil:
 		return "model review failed: " + textutil.Truncate(err.Error(), 500)
 	}
 	return ""
+}
+
+// reviewUnblocks are what lifts each money refusal of the gateway, in the
+// month-cap question's sentence.
+var reviewUnblocks = map[string]string{
+	policy.RefusedMonthCap:   "The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends.",
+	policy.RefusedProjectCap: "The gateway refuses every further call of the project (refused_project_cap) until the project's cap is raised or the month ends.",
+	policy.RefusedDayCap:     "The gateway refuses every further call (refused_day_cap) until the day cap is raised or the UTC day ends.",
+	policy.RefusedPremiumCap: "The gateway refuses every further premium call (refused_premium_cap) until the premium cap is raised or the month ends.",
+	policy.RefusedBudget:     "The gateway refuses the card's further calls (refused_budget) until its budget is raised.",
+}
+
+// refusalOf is the gateway's decision a review note names, "" for a note
+// of no refusal.
+func refusalOf(note string) string {
+	_, rest, ok := strings.Cut(note, refusedByGateway)
+	if !ok {
+		return ""
+	}
+	decision, _, _ := strings.Cut(rest, ")")
+	return decision
+}
+
+// notRunReason joins the note of a review that did not run to a merge
+// ask's reason.
+const notRunReason = ". The model review did not run: "
+
+// noVerdictLine opens AutoMerge's unmet line of a review without a verdict;
+// notRunLine opens namedReview's line; reviewNotStarted opens the note of a
+// review ModelReview never started.
+const (
+	noVerdictLine    = "no model review verdict: "
+	notRunLine       = "The model review did not run: "
+	reviewNotStarted = "model review not run: "
+)
+
+// namedReview is a merge ask's reason and why-human lines with rv named
+// when it did not run: its note on the reason, and first in why a human
+// decides one fixed line with what lifts a money refusal, in place of the
+// auto merge's bare no-verdict line and of the line an earlier review that
+// did not run left. A review with no note leaves both.
+func namedReview(reason string, whyHuman []string, rv Review) (string, []string) {
+	if rv.Note == "" {
+		return reason, whyHuman
+	}
+	said := strings.TrimPrefix(rv.Note, reviewNotStarted)
+	line := notRunLine + strings.TrimSuffix(said, ".") + "."
+	if unblock := reviewUnblocks[refusalOf(rv.Note)]; unblock != "" {
+		line += " " + unblock
+	}
+	rest := slices.DeleteFunc(slices.Clone(whyHuman), func(l string) bool {
+		return l == noVerdictLine+rv.Note || strings.HasPrefix(l, notRunLine)
+	})
+	return reason + notRunReason + said, append([]string{line}, rest...)
 }
 
 // reviewAnswer is one review call's answer: the parsed verdict, or a note
@@ -1392,7 +1464,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	model := r.callModel(t, policy.PurposeReview)
 	notRun := func(why string) (Review, error) {
-		rv := Review{Note: "model review not run: " + why}
+		rv := Review{Note: reviewNotStarted + why}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model, Note: rv.Note}); err != nil {
@@ -1468,7 +1540,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if why, err := r.unfunded(ctx, t.ID, model, policy.PurposeReview, calls); err != nil {
 		return Review{}, err
 	} else if why != "" {
-		return notRun(why)
+		remedy := unfundedRemedy
+		if criteria != nil && roleOf(criteria.plan, t.PlanKey) == RoleIntegration {
+			remedy = integrationRemedy
+		}
+		return notRun(why + remedy)
 	}
 	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
 	if err != nil {
@@ -1618,6 +1694,9 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		}
 	}
 	g := in.Gates.Policy
+	reason, whyHuman := namedReview(fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
+		in.WhyHuman, in.Review)
+	in.WhyHuman = whyHuman
 	if g.Factory {
 		line := "factoryd opened this pull request, no agent: below full auto a human approves its change to paths forbidden to agents (risk class %s): %s"
 		if !mechanicalSource(t.Source) {
@@ -1625,28 +1704,35 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		}
 		in.WhyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
 	}
-	spec, err := json.Marshal(MergeSpec{
+	if err := r.openMergeRequest(ctx, t, in.PR.Number, in.Commit, MergeSpec{
 		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
 		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
 		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
 		Recommendation: t.AgentSummary, WhyHuman: in.WhyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
 		Factory: in.Factory, RedChecks: in.RedChecks,
-	})
-	if err != nil {
+	}, reason); err != nil {
 		return err
 	}
-	id, err := r.store.OpenApproval(ctx, ApprovalRequest{
-		Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: in.PR.Number, Spec: spec,
-		Reason: fmt.Sprintf("pull request #%d at %s is on the card (risk class %s): a human decides the merge", in.PR.Number, in.Commit, g.Class),
-	})
-	if err != nil {
-		return err
-	}
-	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": in.PR.Number, "commit": in.Commit, "class": in.Gates.Policy.Class})
-	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": in.PR.Number, "class": in.Gates.Policy.Class,
-		"factory": in.Factory, "red_checks": in.RedChecks}
-	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, detail)
 	r.recordGateHead(ctx, t, in.Commit, "approval", in.Gates.Policy)
+	return nil
+}
+
+// openMergeRequest files task t's merge request of spec for pull request
+// pr at commit, and records it: the timeline's step and the
+// approval_requested row the inbox's poke answers.
+func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit string, spec MergeSpec, reason string) error {
+	b, err := json.Marshal(spec)
+	if err != nil {
+		return err
+	}
+	id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: t.ID, Project: t.Repository, PRNumber: pr, Spec: b, Reason: reason})
+	if err != nil {
+		return err
+	}
+	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "pr": pr, "commit": commit, "class": spec.RiskClass})
+	detail := map[string]any{"approval": id, "kind": ApprovalMerge, "pr": pr, "class": spec.RiskClass,
+		"factory": spec.Factory, "red_checks": spec.RedChecks}
+	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd, detail)
 	return nil
 }
 
@@ -1794,6 +1880,18 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	} else if stale {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the plan's revision %d drops the card %s", newest, t.PlanKey)), nil
 	}
+	if why, err := r.revertRefusal(ctx, t); err != nil {
+		return MergeResult{}, err
+	} else if why != "" {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, why), nil
+	}
+	// an integration card whose criteria no review judged holds its merge
+	// on every path: the approval press, the retry timer, the auto approvers
+	if never, err := r.unjudgedCriteria(ctx, t); err != nil {
+		return MergeResult{}, err
+	} else if len(never) > 0 {
+		return r.holdMerge(ctx, t, repo, pr, commit, approver, len(never)), nil
+	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
 	}
@@ -1935,6 +2033,120 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
 	return res
+}
+
+// UnjudgedCriteria are the ids of the criteria no verdict row holds when
+// task taskID is its plan's integration card (unjudgedCriteria): the
+// press's read before its merge (versionReviewHoldsMerge).
+func (r *Runner) UnjudgedCriteria(ctx context.Context, taskID string) ([]string, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	never, err := r.unjudgedCriteria(ctx, t)
+	var ids []string
+	for _, c := range never {
+		ids = append(ids, c.ID)
+	}
+	return ids, err
+}
+
+// HoldMerge is holdMerge on a press whose review run again did not run
+// (versionReviewHoldsMerge): no merge is tried, and the ask is on the
+// human's surface again naming the note.
+func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit, approver string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	never, err := r.unjudgedCriteria(ctx, t)
+	if err != nil {
+		return err
+	}
+	if len(never) == 0 {
+		// the rows landed since the press's read: nothing is held
+		r.note(ctx, t, "waiting: every criterion has a verdict row now: approve again to merge")
+		return nil
+	}
+	r.holdMerge(ctx, t, repo, pr, commit, approver, len(never))
+	return nil
+}
+
+// holdMerge refuses the merge of a plan's integration card while n of its
+// criteria have no verdict row, naming the last review's note, and puts
+// the merge ask on the human's surface again: the workflow answers a
+// plain refusal with a new approval wait and no retry, so without the ask
+// the card would stall unseen. Approving it runs the review again
+// (versionReviewHoldsMerge). An auto merge's hold files no ask: the
+// workflow's request follows it.
+func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, n int) MergeResult {
+	note, _ := r.lastReviewNote(ctx, t.ID)
+	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(n, "criterion was", "criteria were"))
+	if note != "" {
+		why += ", the model review did not run (" + note + ")"
+	} else {
+		why += " by a model review"
+	}
+	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
+	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: %s\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", res.Refusal, commit))
+	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
+	r.awaitApprovalAgain(ctx, t)
+	if approver != AutoApprover {
+		r.askHeldMerge(ctx, t, pr, commit, note)
+	}
+	r.note(ctx, t, "waiting: "+res.Refusal)
+	return res
+}
+
+// askHeldMerge files task t's merge ask anew from its newest merge request,
+// the refused review with note named on it (namedReview) and the judged
+// review it replaces kept as earlier. A request that names note already,
+// or no note to name, files nothing: holdMerge's note re-opens that one.
+func (r *Runner) askHeldMerge(ctx context.Context, t Task, pr int64, commit, note string) {
+	if note == "" {
+		return
+	}
+	q, ok, err := r.store.NewestApproval(ctx, t.ID, ApprovalMerge)
+	if err != nil {
+		log.Printf("task %s: the held merge's request: %v", t.ID, err)
+		return
+	}
+	base, _, _ := strings.Cut(q.Reason, notRunReason)
+	if named, _ := namedReview(base, nil, Review{Note: note}); !ok || q.Status == "denied" || q.PRNumber != pr || q.Reason == named {
+		return
+	}
+	var spec MergeSpec
+	if err := json.Unmarshal(q.Spec, &spec); err != nil {
+		log.Printf("task %s: the held merge's request %d: %v", t.ID, q.ID, err)
+		return
+	}
+	if spec.Review.Verdict != "" {
+		spec.EarlierReviews = append(spec.EarlierReviews, spec.Review)
+	}
+	spec.Review, spec.VerdictSummary = Review{Note: note}, note
+	reason, why := namedReview(base, spec.WhyHuman, spec.Review)
+	spec.WhyHuman = why
+	if err := r.openMergeRequest(ctx, t, pr, commit, spec, reason); err != nil {
+		log.Printf("task %s: ask the held merge again: %v", t.ID, err)
+	}
+}
+
+// lastReviewNote is the note of task id's last model_review step; ok
+// false when its timeline holds none or cannot be read.
+func (r *Runner) lastReviewNote(ctx context.Context, id string) (note string, ok bool) {
+	if r.timeline == nil {
+		return "", false
+	}
+	body, err := r.timeline.Objects.Get(ctx, "sessions/"+id+"/timeline.jsonl")
+	if err != nil {
+		return "", false
+	}
+	step := lastStep(body, "model_review")
+	if step == nil {
+		return "", false
+	}
+	note, _ = step["note"].(string)
+	return note, true
 }
 
 // movedHead answers a merge Forgejo refused because the agent had moved

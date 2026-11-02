@@ -409,8 +409,9 @@ func tailWords(parts []string) string {
 	return " (" + strings.Join(parts, ", ") + ")"
 }
 
-// doAlertVerdict is POST /alerts/{id}/verdict's action: the factory
-// approver's verdict on an open escalation alert.
+// doAlertVerdict is the alert_verdict tool's action: a verdict on an open
+// escalation alert, the agent's own or a factory approver's confirmed one.
+// Only a human's counts as an intervention.
 func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v string) (string, error) {
 	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
 		return "", refuse(http.StatusBadRequest, "the verdict is real or noise")
@@ -428,7 +429,9 @@ func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v strin
 	}
 	log.Printf("console: %s judged alert %d %s via %s", a.s.user, id, v, a.via)
 	c.alertVerdictRecord(ctx, a, id, v)
-	c.cfg.Metrics.Intervened(ctx, factoryd.InterventionAlertVerdict, "none", "none")
+	if a.decider != "agent" {
+		c.cfg.Metrics.Intervened(ctx, factoryd.InterventionAlertVerdict, "none", "none")
+	}
 	return fmt.Sprintf("Alert %d is judged %s.", id, v), nil
 }
 

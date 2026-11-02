@@ -190,7 +190,13 @@ type Chat interface {
 	// Clear old sweeps the thread's old rows from the member's view: the
 	// marker rides the seen marker's table, the record keeps the rows
 	MarkCleared(ctx context.Context, repository, login string, n int64) error
-	StartQueued(ctx context.Context, repository, login string, id int64) error
+	// StartQueued lands queued row id in its place: the row takes the
+	// next id, after every row of the turns before it, and is queued no
+	// longer. It answers the landed row's new id, 0 when another turn
+	// already landed it. RequeueChatMessage puts a landed row back to
+	// the queue for the retry turn of a turn that read it and failed.
+	StartQueued(ctx context.Context, repository, login string, id int64) (int64, error)
+	RequeueChatMessage(ctx context.Context, repository, login string, id int64) error
 	// the inbox thread, made the first time it is asked for; the archive
 	// and its restore; the hard delete, which answers the rows it took
 	EnsureInbox(ctx context.Context, repository, login string) (int64, error)
