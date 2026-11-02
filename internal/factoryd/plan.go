@@ -3162,10 +3162,6 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		r.record(ctx, t.ID, "plan_refused", map[string]any{"revision": revision, "findings": findings})
 		return ChildrenResult{Refused: findings}, nil
 	}
-	sha, err := r.forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
-	if err != nil {
-		return ChildrenResult{}, err
-	}
 	step, pending, err := r.pendingReplan(ctx, t)
 	if err != nil {
 		return ChildrenResult{}, err
@@ -3178,7 +3174,7 @@ func (r *Runner) fileRevision(ctx context.Context, t Task, repo Repo, v policy.V
 		return ChildrenResult{}, fmt.Errorf("record %s: %w", stepFiling, err)
 	}
 	author := cmp.Or(t.Author, r.forgejo.BotUser)
-	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, sha, revision, step.Origin, old)
+	cards, err := r.fileChildren(ctx, t, repo, v, process, fmt.Sprintf("plan #%d", t.IssueNumber), p, author, t.AuthorWriter, revision, step.Origin, old)
 	if err != nil {
 		return ChildrenResult{}, err
 	}
@@ -3251,7 +3247,9 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 
 // fileChildren files p's cards of task t, its process's, the cards of
 // of (plan #n), in topological order as task rows queued on the direct
-// track at base sha and bot issues found by their markers or filed,
+// track with no base stamp, so a card's first session starts at main's
+// head as it is then, after the cards it depends on merged, and bot
+// issues found by their markers or filed,
 // records the edges in Forgejo and task_deps, then starts each under the
 // work bound, where a card waits for the cards it depends on (plans do not
 // nest: a plan's card is never a plan). approver authors the cards, with
@@ -3261,7 +3259,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // unless a row of its key started or ended: it files at the old card's
 // base, and its branch is the old card's before its issue exists; an old
 // card whose branch is gone leaves it to start from main. One whose old
-// card was taken off main files at main's head and lands that work again
+// card was taken off main starts from main too and lands that work again
 // from its merge in main's history (againLine). A card of an earlier round
 // is merged: its row in old stands for it, and nothing is filed, recorded
 // or started for it. The filing that gives a card of the round its issue
@@ -3272,7 +3270,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 // one, and a card that already holds its issue — kept by this filing, or
 // filed before the rows were — records none, so a legacy card stays
 // unknown.
-func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, sha string, revision int, origin string, old []Task) ([]Task, error) {
+func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.Version, process, of string, p Plan, approver string, writer bool, revision int, origin string, old []Task) ([]Task, error) {
 	edges := planEdges(p)
 	order := planOrder(p, edges)
 	_, project, _ := v.ProjectOf(t.Repository)
@@ -3311,7 +3309,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 		// a row of the key that started or ended runs on its own work; one
 		// that never started is copied to again, which keeps a branch a
 		// filing already put there
-		base, start := sha, ""
+		base, start := "", ""
 		from, continues := byRef[c.From]
 		if row, filed := rows[c.Key]; c.From == "" || filed && (row.PlanRevision > 0 || Final(row.Status)) {
 			continues = false
