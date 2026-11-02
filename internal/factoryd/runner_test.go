@@ -2170,7 +2170,7 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
 		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR " +
-		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would end before it could push."
+		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
 	}
@@ -2185,8 +2185,8 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	}
 }
 
-// A factory with no price source opens every session as before, a card
-// whose budget is spent included: no floor can be read.
+// A factory with no price source opens every session, a card whose
+// budget is spent included: no floor can be read.
 func TestRunSessionOpensWhenNoPricesAreConfigured(t *testing.T) {
 	task := Task{ID: "t4l", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 2}
 	kube := newFakeKube()

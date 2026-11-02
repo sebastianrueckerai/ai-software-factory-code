@@ -4731,8 +4731,8 @@ func TestTaskReadNetsHolds(t *testing.T) {
 	}
 }
 
-// A card with no hold of its own reads as before: another card's hold is
-// not its, so 4.50 of 5.00 spent leaves 0.50.
+// A card with no hold of its own reads its settled spend: another card's
+// hold is not its, so 4.50 of 5.00 spent leaves 0.50.
 func TestTaskReadWithoutHoldsIsUnchanged(t *testing.T) {
 	s := heldStore(t)
 	putHold(t, s, "t-other", 0.4, "1 hour")

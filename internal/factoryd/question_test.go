@@ -320,19 +320,20 @@ func TestBudgetNeed(t *testing.T) {
 }
 
 // The budget refusal's numbers parse wherever its state puts its own
-// numbers between the headroom and the need (holds among them), and the
-// raise covers the shortfall to the need in whole cents.
+// numbers between the free figure and the need (holds among them), and
+// the raise covers the shortfall to the need in whole cents: 0.30 less
+// 0.07 is 0.23.
 func TestBudgetNumbersSurviveTheHoldsDetail(t *testing.T) {
 	reason := "the remaining budget cannot fund a call: raise it.\n" +
-		"0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.100000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would end before it could push."
+		"0.070 EUR of the 5.000 EUR budget remains after outstanding holds of 0.100 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out before its work is done."
 	if got := BudgetNeed(reason); got != 0.3 {
 		t.Errorf("BudgetNeed = %v, want 0.3", got)
 	}
-	if got := BudgetRemains(reason); got != 0.17 {
-		t.Errorf("BudgetRemains = %v, want 0.17", got)
+	if got := BudgetRemains(reason); got != 0.07 {
+		t.Errorf("BudgetRemains = %v, want 0.07", got)
 	}
-	if got := FundRaise(reason); got != 0.13 {
-		t.Errorf("FundRaise = %v, want 0.13, the shortfall in whole cents", got)
+	if got := FundRaise(reason); got != 0.23 {
+		t.Errorf("FundRaise = %v, want 0.23, the shortfall in whole cents", got)
 	}
 }
 

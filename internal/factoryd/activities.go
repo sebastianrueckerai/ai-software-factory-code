@@ -590,7 +590,8 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 // openingRefused is the start failure of a fresh session the task's own
 // money cannot open (SessionFunded), nil when it can or another refusal
 // binds: at a cap the gateway refuses the session's first call, and the
-// loop waits on the cap.
+// loop waits on the cap; a model the floor cannot price (floorUnread) is
+// not about the task's money, and opens too.
 func (r *Runner) openingRefused(ctx context.Context, taskID, model string) (*startFailure, error) {
 	why, err := r.SessionFunded(ctx, taskID, model)
 	if err != nil || !BudgetRefusal(why) {
@@ -730,7 +731,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 				key = "budget.session_floor_frontier_eur"
 			}
 			need, call, measure, then = floor, "a session on "+model, "the floor of its rung, "+key+" in policy.yaml",
-				"a session started now would end before it could push"
+				"a session started now would run out before its work is done"
 		}
 	}
 	own, free, err := r.store.Free(ctx, req)
@@ -746,7 +747,10 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		return "", err
 	}
 
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", own.Headroom, t.BudgetEUR)
+	// the free figure rounds down to the tenth of a cent it prints, so a
+	// raise read off it (FundRaise) covers the need; 1e-6 takes up float noise
+	left := math.Floor(max(own.Free(), 0)*1000+1e-6) / 1000
+	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
 	act := "Raise the budget (Fund on the board) and answer, or close the card."
 	switch refused.Decision {
 	case policy.RefusedDayCap:
@@ -761,8 +765,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
 	default:
 		if own.Holds > 0 {
-			state += fmt.Sprintf(", outstanding holds take %.6f EUR of it (%d, the earliest expiring %s), so %.6f EUR is free",
-				own.Held, own.Holds, stamp(own.Expires), max(own.Free(), 0))
+			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
 			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
 		}
 	}
