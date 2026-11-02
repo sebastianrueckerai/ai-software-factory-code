@@ -1084,6 +1084,36 @@ func TestPoolProposalTopUp(t *testing.T) {
 	}
 	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
 	equal(t, "the stale attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
+
+	// a file that moves in the press's own gap — after the pre-stream
+	// guard read it, before the writer's locked recheck — answers the
+	// same 409 before the stream, never an SSE refusal: the attempt is
+	// valid, its token spent, nothing is rebased onto the moved file
+	// and nothing written; the replay is 404
+	g.replies = [][]string{{call(1, "ask", bound)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"offer the top-up once more, between the guard and the write"}})
+	ask, token = askRow()
+	g.replies = nil
+	infra.mu.Lock()
+	guard := len(infra.reads)
+	infra.shaOnRead = func(n int) string {
+		if n > guard+1 {
+			return "blob4"
+		}
+		return ""
+	}
+	infra.mu.Unlock()
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	equal(t, "the press in the guard's gap", []any{code, body[0]}, []any{http.StatusConflict,
+		"projects/ai-software-factory-code.yaml changed since the change was proposed (its blob is now blob4): read it again and propose the change anew"})
+	if len(infra.contents) != 2 || len(infra.pulls) != 2 || len(infra.merges) != 2 {
+		t.Fatalf("the press in the gap wrote: %d commits, %d pull requests, %d merges", len(infra.contents), len(infra.pulls), len(infra.merges))
+	}
+	if n := len(g.calls()); n != 5 {
+		t.Fatalf("%d model calls after the gap's refusal, want the offers' alone", n)
+	}
+	code, body, _ = chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {"1"}, "message": {strconv.FormatInt(ask, 10)}, "choice": {"top it up by 4 EUR"}})
+	equal(t, "the gap attempt's replay", []any{code, body[0]}, []any{http.StatusNotFound, "There is no such proposal or undo; it may have expired."})
 }
 
 // A rung on new_card reaches the issue as a Rung line with its reason

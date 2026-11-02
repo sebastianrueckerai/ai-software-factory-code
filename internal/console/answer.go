@@ -91,17 +91,22 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // the bound tool call in code as the human's session, streamed, the
 // do- row landing as a Do it's does, any other press feeds the agent a
 // turn, which reads the row as their answer. A bound set_pool choice
-// runs the offer's captured change — the one press the confirmation:
-// no second proposal, no model turn, no fresh read — guarded before
-// the stream on the blob the offer read, so a file that moved since
-// the offer answers 409, the attempt valid and its token spent, and
-// nothing rebases the change onto the moved file. Taking the binding
-// settles the ask: a second press hears it is gone, another human's
-// that it is not theirs; a binding expired leaves the question an
-// ordinary ask, every press of it settling.
+// confirms the offer's captured change as a Do it's press does — the
+// one press the confirmation: no second proposal, no model turn, no
+// fresh read. The member is re-admitted and the change writes once
+// through the guarded writer before the stream opens, so only its
+// successful result streams: a file that moved since the offer, or in
+// the gap between the pre-stream guard and the writer's locked
+// recheck, answers the press's real 409 — never an SSE refusal — the
+// attempt valid and its token spent, and nothing rebases the change
+// onto the moved file. Taking the binding settles the ask: a second
+// press hears it is gone, another human's that it is not theirs; a
+// binding expired leaves the question an ordinary ask, every press of
+// it settling.
 func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
 	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
 	gone := errors.Is(err, factoryd.ErrNoProposal)
+	var landed *poolPress
 	switch {
 	case err == nil:
 		if err := t.inThread(p.Conversation); err != nil {
@@ -109,13 +114,26 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 			return
 		}
 		if choice == p.Choice && p.Pool != nil {
-			// the bound pool choice confirms the offer's capture, so its
-			// guard runs before the stream, as a Do it's does: the write
-			// never lands against a file the offer did not read
+			// the bound pool choice runs the captured change as a Do
+			// it's press does: re-admitted, guarded and written once
+			// before the stream, so a file that moved — before the
+			// press or in the gap between this guard and the writer's
+			// locked recheck — answers its real status with no write,
+			// and nothing rebases the change onto it
+			if err := t.readmit(p.Tool); err != nil {
+				c.fail(w, r, err)
+				return
+			}
 			if err := t.stalePool(p.Pool.Source); err != nil {
 				c.fail(w, r, err)
 				return
 			}
+			pr := t.poolPress(p, nil)
+			if pr.err != nil {
+				c.fail(w, r, pr.err)
+				return
+			}
+			landed = &pr
 		}
 	case errors.Is(err, factoryd.ErrOthersProposal):
 		http.Error(w, "It is another human's.", http.StatusForbidden)
@@ -138,6 +156,10 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 		return
 	}
 	if err == nil && choice == p.Choice {
+		if landed != nil {
+			t.poolLanded(p, nil, *landed)
+			return
+		}
 		t.apply(p, nil)
 		return
 	}
