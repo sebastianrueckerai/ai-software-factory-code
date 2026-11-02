@@ -74,11 +74,13 @@ const (
 )
 
 // The plan's caps: a card's directories and acceptance items, the
-// questions, the outline's parts, and an outline part's length in runes.
+// questions, the outline's parts, and a question's and an outline part's
+// length in runes.
 const (
 	maxCardDirs       = 10
 	MaxCardAcceptance = 10
 	maxQuestions      = 5
+	MaxQuestion       = 300
 	maxOutline        = 10
 	maxOutlinePart    = 100
 )
@@ -487,8 +489,8 @@ func outlineFindings(outline []string) []string {
 }
 
 // questionFindings are the findings on a plan's questions: 0 to 5, each
-// with a text, 2 to 5 distinct choices of 1 to 60 and an origin of
-// self_attack or none.
+// with a text of 1 to 300, 2 to 5 distinct choices of 1 to 60 and an
+// origin of self_attack or none.
 func questionFindings(qs []PlanQuestion) []string {
 	var out []string
 	if len(qs) > maxQuestions {
@@ -501,8 +503,11 @@ func questionFindings(qs []PlanQuestion) []string {
 		if q.Origin != "" && q.Origin != CatchSelfAttack {
 			add("origin %q, want self_attack or none", q.Origin)
 		}
-		if utf8.RuneCountInString(q.Text) == 0 {
+		switch n := utf8.RuneCountInString(q.Text); {
+		case n == 0:
 			add("text empty")
+		case n > MaxQuestion:
+			add("text is over %d characters", MaxQuestion)
 		}
 		if n := len(q.Choices); n < 2 || n > MaxChoices {
 			add("%d choices; want 2 to %d", n, MaxChoices)

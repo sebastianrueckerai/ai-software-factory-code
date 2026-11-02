@@ -76,6 +76,20 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	}
 }
 
+// A question's text is bounded in runes, not bytes, so the planner reads
+// the bound and files again before the card fills the column.
+func TestQuestionFindingsRefuseATextOverTheBound(t *testing.T) {
+	q := func(text string) []PlanQuestion {
+		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}}}
+	}
+	if got, want := questionFindings(q(strings.Repeat("q", 301))), []string{"plan: question 1: text is over 300 characters"}; !slices.Equal(got, want) {
+		t.Errorf("301 runes: findings %q, want %q", got, want)
+	}
+	if got := questionFindings(q(strings.Repeat("ü", 300))); len(got) != 0 {
+		t.Errorf("300 runes of ü (600 bytes): findings %q, want none", got)
+	}
+}
+
 // The store keeps a revision's questions in order and each answer once;
 // the confirmation question (piece 5) appends after them once, and the
 // newest revision whose confirmation is answered is the one later

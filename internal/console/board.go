@@ -2423,7 +2423,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
 		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-			k.Escalation = e.Escalation
+			k.Escalation = cardReason(e.Escalation)
 		}
 		d.Status.NeedYou++
 		if wide {
