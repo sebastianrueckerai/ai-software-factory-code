@@ -205,9 +205,24 @@ func (f *fakeImageLooker) LookAtImage(_ context.Context, taskID string, in Analy
 	return f.text, f.err
 }
 
+type fakeDigester struct {
+	mu    sync.Mutex
+	calls []string
+	text  string
+	err   error
+}
+
+func (f *fakeDigester) Digest(_ context.Context, taskID string, in DigestIn) (string, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID+"|"+in.Path+"|"+in.Ask)
+	return f.text, f.err
+}
+
 type toolEnv struct {
 	deployments *fakeDeploymentReader
 	looker      *fakeImageLooker
+	digester    *fakeDigester
 	store       *memStore
 	providers   *fakeProviders
 	escalator   *fakeEscalator
@@ -228,13 +243,14 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	delegator := &fakeDelegator{}
 	deployments := &fakeDeploymentReader{text: "deployment web: 2/2 ready"}
 	looker := &fakeImageLooker{text: "img1.png (Screenshot.png): a login form, the button grey"}
+	digester := &fakeDigester{text: "docs/plan.md: two cards, the store first"}
 	s := NewServer(ServerOptions{
 		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: "s-1"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
 		Escalator: esc, PlanFiler: filer, HoldoutVerdicter: verdicter, Delegator: delegator,
-		DeploymentReader: deployments, ImageLooker: looker,
+		DeploymentReader: deployments, ImageLooker: looker, Digester: digester,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
@@ -244,7 +260,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, deployments: deployments, looker: looker, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, verdicter: verdicter, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -300,7 +316,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,escalate,fal_run,file_plan,file_verdict,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_verdict,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1658,6 +1674,111 @@ func TestAnalyzeImageToolNeedsARunningTaskWhoseClassListsIt(t *testing.T) {
 	}
 	if len(e.looker.calls)+len(e2.looker.calls) != 0 {
 		t.Fatalf("calls = %v %v", e.looker.calls, e2.looker.calls)
+	}
+}
+
+// digest hands the file and the ask to factoryd, whose Small call answers
+// on the card's account: the tool books nothing itself, and the answer is
+// factoryd's text as it came.
+func TestDigestTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolDigest, map[string]any{"path": " docs/plan.md ", "ask": " which cards, in which order? "})
+	if isErr || text != "docs/plan.md: two cards, the store first" {
+		t.Fatalf("result = %q, %v", text, isErr)
+	}
+	if !slices.Equal(e.digester.calls, []string{"42|docs/plan.md|which cards, in which order?"}) {
+		t.Fatalf("calls = %v", e.digester.calls)
+	}
+	if a := e.lastAudit(t); a.Decision != "digested" || a.Tool != policy.ToolDigest || a.Reason != "docs/plan.md" || len(e.toolLedger()) != 0 {
+		t.Fatalf("audit = %+v, tool ledger %v", a, e.toolLedger())
+	}
+
+	e.digester.err = errors.New("docs/huge.md is larger than 128 KiB, more than one digest reads: read the part you need with the read tool's offset and limit")
+	if text, isErr := e.call(t, policy.ToolDigest, map[string]any{"path": "docs/huge.md"}); !isErr ||
+		text != "docs/huge.md is larger than 128 KiB, more than one digest reads: read the part you need with the read tool's offset and limit" {
+		t.Fatalf("refusal = %q, %v", text, isErr)
+	}
+	if a := e.lastAudit(t); a.Decision != "error_digest" {
+		t.Fatalf("audit = %+v", a)
+	}
+}
+
+// A digest names one path, which its schema requires; its ask is at most
+// 2000 characters, counted as characters, not bytes.
+func TestDigestToolRefusesBadArguments(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	for _, tc := range []struct {
+		args map[string]any
+		want string
+	}{
+		{map[string]any{"path": "  ", "ask": "the cards"}, "path is required: a text file of the workspace, absolute under /workspace or relative to the repository"},
+		{map[string]any{"path": strings.Repeat("a", 4097)}, "path is longer than 4096 bytes"},
+		{map[string]any{"path": "a.md", "ask": strings.Repeat("a", 2001)}, "ask is longer than 2000 characters: ask for the one thing you need from the file"},
+	} {
+		want := "refused by the factory policy (refused_arguments): " + tc.want + ". The tool did not run; do not retry this call."
+		if text, isErr := e.call(t, policy.ToolDigest, tc.args); !isErr || text != want {
+			t.Errorf("%.60v = %q, want %q", tc.args, text, want)
+		}
+	}
+	if text, isErr := e.call(t, policy.ToolDigest, map[string]any{}); !isErr || !strings.Contains(text, `missing properties: ["path"]`) {
+		t.Errorf("no path = %q, want the schema's refusal naming path", text)
+	}
+	for _, ok := range []map[string]any{
+		{"path": strings.Repeat("a", 4096)},
+		{"path": "a.md", "ask": strings.Repeat("é", 2000)},
+	} {
+		if text, isErr := e.call(t, policy.ToolDigest, ok); isErr {
+			t.Errorf("refused: %q", text)
+		}
+	}
+	if len(e.digester.calls) != 2 {
+		t.Fatalf("calls = %d, want only the two valid ones", len(e.digester.calls))
+	}
+}
+
+func TestDigestToolNeedsARunningTaskWhoseClassListsIt(t *testing.T) {
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	delete(v.Document.Classes["coder"].Tools, policy.ToolDigest)
+	e := newToolEnv(t, running("coder"), v)
+	if text, isErr := e.call(t, policy.ToolDigest, map[string]any{"path": "docs/plan.md"}); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("unlisted = %q", text)
+	}
+	review := running("coder")
+	review.Status = "review"
+	e2 := newToolEnv(t, review, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	if text, isErr := e2.call(t, policy.ToolDigest, map[string]any{"path": "docs/plan.md"}); !isErr || !strings.Contains(text, "refused_task_status") {
+		t.Fatalf("in review = %q", text)
+	}
+	if len(e.digester.calls)+len(e2.digester.calls) != 0 {
+		t.Fatalf("calls = %v %v", e.digester.calls, e2.digester.calls)
+	}
+}
+
+func TestFactorydDigestClient(t *testing.T) {
+	var path, auth, body string
+	status, reply := http.StatusOK, `{"text":"docs/plan.md: two cards"}`
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		b, _ := io.ReadAll(r.Body)
+		path, auth, body = r.URL.Path, r.Header.Get("Authorization"), string(b)
+		w.WriteHeader(status)
+		io.WriteString(w, reply)
+	}))
+	defer srv.Close()
+	f := &Factoryd{BaseURL: srv.URL, Token: "shared", HTTP: srv.Client()}
+	text, err := f.Digest(context.Background(), "t-1", DigestIn{Path: "docs/plan.md", Ask: "the cards"})
+	if err != nil || text != "docs/plan.md: two cards" {
+		t.Fatalf("text %q err %v", text, err)
+	}
+	if path != "/internal/digest" || auth != "Bearer shared" || body != `{"task_id":"t-1","path":"docs/plan.md","ask":"the cards"}` {
+		t.Fatalf("%s auth %q body %s", path, auth, body)
+	}
+	status, reply = http.StatusNotFound, "no file docs/x.md in the workspace\n"
+	if _, err := f.Digest(context.Background(), "t-1", DigestIn{Path: "docs/x.md"}); err == nil || err.Error() != "no file docs/x.md in the workspace" {
+		t.Fatalf("404: err = %v", err)
+	}
+	status, reply = http.StatusInternalServerError, "boom"
+	if _, err := f.Digest(context.Background(), "t-1", DigestIn{Path: "docs/plan.md"}); err == nil || err.Error() != "factoryd answered 500" {
+		t.Fatalf("5xx err = %v", err)
 	}
 }
 

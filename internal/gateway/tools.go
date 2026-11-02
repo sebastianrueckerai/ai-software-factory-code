@@ -15,6 +15,7 @@ import (
 	"slices"
 	"strings"
 	"time"
+	"unicode/utf8"
 
 	"github.com/google/jsonschema-go/jsonschema"
 	"github.com/modelcontextprotocol/go-sdk/mcp"
@@ -85,6 +86,12 @@ type ImageLooker interface {
 	LookAtImage(ctx context.Context, taskID string, in AnalyzeImageIn) (string, error)
 }
 
+// Digester has the Small model answer an ask over one workspace file (the
+// digest tool). Implemented by Factoryd; tests substitute a fake.
+type Digester interface {
+	Digest(ctx context.Context, taskID string, in DigestIn) (string, error)
+}
+
 // HoldoutVerdicter files an audit session's hold-out verdict (the
 // file_verdict tool): factoryd checks it against the hold-out the audit
 // runs on and stores it as the session's answer. Implemented by Factoryd;
@@ -142,6 +149,7 @@ var (
 	_ HoldoutVerdicter = (*Factoryd)(nil)
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
+	_ Digester         = (*Factoryd)(nil)
 )
 
 // Factoryd is the gateway's client to factoryd's internal endpoint.
@@ -245,6 +253,18 @@ func (f *Factoryd) LookAtImage(ctx context.Context, taskID string, in AnalyzeIma
 		struct {
 			TaskID string `json:"task_id"`
 			AnalyzeImageIn
+		}{taskID, in})
+	return factorydText(b, err)
+}
+
+// Digest returns the Small model's answer over the workspace file in in,
+// as LookAtImage its look.
+func (f *Factoryd) Digest(ctx context.Context, taskID string, in DigestIn) (string, error) {
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/digest",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string `json:"task_id"`
+			DigestIn
 		}{taskID, in})
 	return factorydText(b, err)
 }
@@ -404,6 +424,17 @@ const (
 	maxImageAsk  = 2000
 )
 
+type DigestIn struct {
+	Path string `json:"path" jsonschema:"a text file in the workspace: absolute under /workspace or relative to the repository"`
+	Ask  string `json:"ask,omitempty" jsonschema:"what you need from the file, at most 2000 characters; leave it out for a summary"`
+}
+
+// The bounds of a digest's arguments; the file's is policy.MaxDigestBytes.
+const (
+	maxDigestPath = 4096
+	maxDigestAsk  = 2000
+)
+
 type FileVerdictIn struct {
 	Idx      int    `json:"idx" jsonschema:"the hold-out's idx, from the task card"`
 	Verdict  string `json:"verdict" jsonschema:"wrong_test, real_gap or spec_question"`
@@ -526,6 +557,12 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"Name exactly one of path and card_image; ask says what to look for. PNG, JPEG, WebP or GIF of at most 8 MiB. Spends on the card's budget as a model call."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in AnalyzeImageIn) (*mcp.CallToolResult, any, error) {
 			return s.analyzeImage(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDigest, Description: "Have a small model read one text file of your workspace and answer your ask about it: " +
+		"only its answer enters your context, never the file's text. Use it on a big file with a pointed ask, such as what a function returns or which cards a plan names, " +
+		"and read raw only the part its answer points at. UTF-8 text of at most 128 KiB. Books as a call of the cheap model on the card's account."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in DigestIn) (*mcp.CallToolResult, any, error) {
+			return s.digest(ctx, c, in), nil, nil
 		})
 	if s.opts.Cloud != nil {
 		s.addCloudTools(srv, c)
@@ -967,6 +1004,10 @@ const deploymentHealthTimeout = 20 * time.Second
 // opencode's 150 s on an MCP call.
 const imageLookTimeout = 145 * time.Second
 
+// digestTimeout bounds a digest at factoryd as imageLookTimeout a look:
+// the file's read and the Small call.
+const digestTimeout = 145 * time.Second
+
 // admitTool refuses a tool none of the task's classes lists in the policy.
 func (s *Server) admitTool(c *toolCaller, tool string) *mcp.CallToolResult {
 	switch {
@@ -1145,6 +1186,37 @@ func (s *Server) analyzeImage(ctx context.Context, c *toolCaller, in AnalyzeImag
 		return toolError(err.Error())
 	}
 	s.auditTool(c, tool, "image_looked", cmp.Or(in.CardImage, in.Path), &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
+}
+
+// digest has factoryd read one workspace file and answer the ask over it
+// with the Small model. Free, for the classes that list it; the call
+// books on the task's account as a model call.
+func (s *Server) digest(ctx context.Context, c *toolCaller, in DigestIn) *mcp.CallToolResult {
+	tool := policy.ToolDigest
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	in.Path, in.Ask = strings.TrimSpace(in.Path), strings.TrimSpace(in.Ask)
+	switch {
+	case in.Path == "":
+		return s.refuseTool(c, tool, "refused_arguments", "path is required: a text file of the workspace, absolute under /workspace or relative to the repository")
+	case len(in.Path) > maxDigestPath:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("path is longer than %d bytes", maxDigestPath))
+	case utf8.RuneCountInString(in.Ask) > maxDigestAsk:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("ask is longer than %d characters: ask for the one thing you need from the file", maxDigestAsk))
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), digestTimeout)
+	defer cancel()
+	text, err := s.opts.Digester.Digest(ctx, c.task.ID, in)
+	if err != nil {
+		s.auditTool(c, tool, "error_digest", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError(err.Error())
+	}
+	s.auditTool(c, tool, "digested", in.Path, &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: text}}}
 }
 
