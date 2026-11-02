@@ -549,8 +549,11 @@ var chatView = (function () {
     // reason ride a plain message, no policy write of its own
     poolHost.addEventListener("submit", function (e) {
       var f = e.target.closest("[data-pool-ctl]");
-      if (!f || busy(openRef())) return;
+      if (!f) return;
+      // the native submission dies first: a press while a turn runs must
+      // not navigate away with the amount and reason in the URL
       e.preventDefault();
+      if (busy(openRef())) return;
       var eur = f.elements.eur.value.trim(), reason = f.elements.reason.value.trim();
       if (!eur || !reason) return;
       var text = f.dataset.present === "true"
@@ -1357,13 +1360,19 @@ var chatView = (function () {
         // the one correction the row takes, the eur alone, as JSON. The
         // card keeps its buttons: a press the server refuses — a malformed
         // amount among them — leaves the proposal pending, the error line
-        // beside it, and the member corrects and presses again
-        var eur = Number(edit.elements.eur.value);
-        if (edit.elements.eur.value !== "" && isFinite(eur) && eur !== Number(edit.dataset.suggested)) {
-          body = JSON.stringify({correction: {eur: eur}});
-        }
+        // beside it, and the member corrects and presses again. A blank or
+        // malformed edit posts nothing at all — an empty body would
+        // confirm the suggested amount the preview no longer shows
+        var raw = edit.elements.eur.value.trim(), eur = Number(raw);
         out = document.createElement("div");
         foot.after(out);
+        if (raw === "" || !isFinite(eur)) {
+          add(out, "<p class=\"chat-error\">Enter a valid EUR amount: nothing was sent, the proposal still stands.</p>");
+          return;
+        }
+        if (eur !== Number(edit.dataset.suggested)) {
+          body = JSON.stringify({correction: {eur: eur}});
+        }
       } else {
         foot.textContent = "";
       }
@@ -1386,8 +1395,14 @@ var chatView = (function () {
   });
   // Fund and go on: the stopped chat's budget rises by the amount, and the
   // thread's own stopped turn goes on under it, streamed; the thread read
-  // again settles the stop
+  // again settles the stop. Enter in a pool proposal's edit form carries
+  // nothing: the edit stays for its Do it press, no native submission
+  // navigates the page away
   log.addEventListener("submit", function (e) {
+    if (e.target.closest("form[data-pool]")) {
+      e.preventDefault();
+      return;
+    }
     var f = e.target.closest("[data-fund]");
     if (!f) return;
     e.preventDefault();

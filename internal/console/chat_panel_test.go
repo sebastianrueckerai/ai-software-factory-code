@@ -1083,8 +1083,10 @@ Promise.resolve().then(function () {
 // panel's contextual Set the pool control — an approver's alone, a
 // reader of the line for anyone else — starts a normal chat turn with
 // the amount and the reason; a Do it on the edited amount posts exactly
-// the correction object, the one number the row may change. Run under
-// node, which the test needs.
+// the correction object, the one number the row may change. A blank or
+// malformed edit posts nothing and keeps the pending card; Enter in the
+// edit form stays a keystroke, and a control press while a turn runs
+// stays on the page. Run under node, which the test needs.
 func TestPoolProposalPanel(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1164,6 +1166,9 @@ function cardFake(tok, pool) {
   return {card: card, foot: foot, edit: edit, input: input, preview: preview, doit: btn("data-doit"), skip: btn("data-skip")};
 }
 var poolSet = {action: "set", eur: 10, from_eur: 0, to_eur: 10, reason: "the month's two verified findings"};
+var cleared = null, brokenEnter = null, enterPrevented = false, busyPrevented = false, chatPosts = 0;
+var busyCtl = {dataset: {present: "false"}, elements: {eur: {value: "20"}, reason: {value: "a third finding"}}, resets: 0,
+  reset: function () { this.resets++; }};
 var out = {setHTML: chatView.proposalHTML({id: "tok1", tool: "set_pool", arguments: '{"action":"set","eur":10,"reason":"the month\'s two verified findings"}',
   description: "Set the pool", pool: poolSet}),
   readerCtl: chatView.poolCtlHTML({present: false, can_ask: false, words: poolLine.words})};
@@ -1191,6 +1196,26 @@ Promise.resolve().then(function () {
 }).then(function () {
   var press = posts.filter(function (p) { return /\/proposals\/tok1$/.test(p.url); })[0];
   out.correctionBody = !!press && press.body === '{"correction":{"eur":12}}' && press.type === "application/json" && press.csrf === "tok";
+  cleared = cardFake("tok1", poolSet);
+  cleared.input.value = "";
+  fire(byId["chat-log"], "click", {target: cleared.doit});
+  brokenEnter = cardFake("tok1", poolSet);
+  brokenEnter.input.value = "12";
+  fire(byId["chat-log"], "submit", {target: {closest: function (sel) { return sel === "form[data-pool]" ? brokenEnter.edit : null; }},
+    preventDefault: function () { enterPrevented = true; }});
+  return tick().then(tick); // the refused press and the Enter ask nothing
+}).then(function () {
+  out.clearedPostsNothing = posts.filter(function (p) { return /\/proposals\//.test(p.url); }).length === 1;
+  out.clearedKeepsCard = !!cleared.foot.aftered && made.join("\n").indexOf("Enter a valid EUR amount") >= 0 && cleared.card.gone !== true;
+  out.enterKeepsEdit = enterPrevented === true && brokenEnter.input.value === "12";
+  chatPosts = posts.filter(function (p) { return /\/chat$/.test(p.url); }).length;
+  var ctlTarget = {closest: function (sel) { return sel === "[data-pool-ctl]" ? busyCtl : null; }};
+  fire(poolHostEl, "submit", {target: ctlTarget, preventDefault: function () {}});
+  fire(poolHostEl, "submit", {target: ctlTarget, preventDefault: function () { busyPrevented = true; }});
+  return tick().then(tick); // the second press meets the turn the first started
+}).then(function () {
+  out.busyPressStays = busyPrevented === true && busyCtl.resets === 1 &&
+    posts.filter(function (p) { return /\/chat$/.test(p.url); }).length === chatPosts + 1;
   console.log(JSON.stringify(out));
 });`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
@@ -1222,6 +1247,10 @@ Promise.resolve().then(function () {
 		{"renderAndSkipAskNothing", "rendering or Skip asked the console for something"},
 		{"controlStartsATurn", "the Set the pool control does not start a normal chat turn for the amount and the reason"},
 		{"correctionBody", "a Do it on the corrected EUR 12 does not post exactly the correction object"},
+		{"clearedPostsNothing", "a cleared amount posts to the proposal anyway"},
+		{"clearedKeepsCard", "a cleared amount does not leave the refusal line on a pending card"},
+		{"enterKeepsEdit", "Enter on the pool-edit form navigates away instead of keeping the edit"},
+		{"busyPressStays", "a pool control press while a turn runs navigates away instead of staying"},
 	} {
 		if got[c.name] != true {
 			t.Error(c.why)
@@ -1232,9 +1261,10 @@ Promise.resolve().then(function () {
 // The top-up proposal's panel half: the increment input holds the
 // suggestion against the captured allowance, the preview follows the
 // edited number before any confirmation asks the console for anything,
-// and the corrected press posts the increment alone. A proposal of
-// another tool keeps its normal renderer and its empty-body
-// confirmation. Run under node, which the test needs.
+// and the corrected press posts the increment alone. A malformed
+// increment posts nothing. A proposal of another tool keeps its normal
+// renderer and its empty-body confirmation. Run under node, which the
+// test needs.
 func TestPoolTopUpPanel(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -1310,6 +1340,7 @@ function cardFake(tok, pool) {
   return {card: card, foot: foot, edit: edit, input: input, preview: preview, doit: btn("data-doit"), skip: btn("data-skip")};
 }
 var topUp = {action: "top_up", eur: 5, from_eur: 10, to_eur: 15, reason: "a second verified finding"};
+var malformed = null;
 var out = {topUpHTML: chatView.proposalHTML({id: "tok7", tool: "set_pool", arguments: "{}", description: "Top up the pool", pool: topUp}),
   plainHTML: chatView.proposalHTML({id: "tok2", tool: "new_card", arguments: '{"title":"Cache metrics","track":"direct"}',
     description: "File a card, title Cache metrics, track direct"})};
@@ -1332,6 +1363,13 @@ Promise.resolve().then(function () {
 }).then(function () {
   var press = posts.filter(function (p) { return /\/proposals\/tok2$/.test(p.url); })[0];
   out.plainEmptyBody = !!press && press.body === "" && press.type === "application/x-www-form-urlencoded";
+  malformed = cardFake("tok7", topUp);
+  malformed.input.value = "abc";
+  fire(byId["chat-log"], "click", {target: malformed.doit});
+  return tick().then(tick); // the malformed press refuses before any request
+}).then(function () {
+  out.nonFinitePostsNothing = posts.filter(function (p) { return /\/proposals\/tok7$/.test(p.url); }).length === 1 &&
+    !!malformed.foot.aftered && made.join("\n").indexOf("Enter a valid EUR amount") >= 0;
   console.log(JSON.stringify(out));
 });`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
@@ -1362,6 +1400,7 @@ Promise.resolve().then(function () {
 		{"previewAsksNothing", "the preview asked the console for something before the confirmation"},
 		{"correctedIncrement", "a Do it on the corrected increment does not post exactly the correction object"},
 		{"plainEmptyBody", "an unrelated proposal's Do it does not post an empty body as before"},
+		{"nonFinitePostsNothing", "a malformed increment posts to the proposal instead of the refusal line"},
 	} {
 		if got[c.name] != true {
 			t.Error(c.why)
