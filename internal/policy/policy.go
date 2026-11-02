@@ -351,7 +351,8 @@ type Limits struct {
 	// DefaultCheckinCalls.
 	CheckinCalls int `yaml:"checkin_calls,omitempty" json:"checkin_calls,omitempty"`
 	// CheckinTime is how long one check-in conversation may run before
-	// its ask goes to a human; 0 means DefaultCheckinTime.
+	// its ask goes to a human; 0 means CheckinCallTime for each of its
+	// calls (CheckinTimeCap).
 	CheckinTime time.Duration `yaml:"checkin_time,omitempty" json:"checkin_time,omitempty"`
 	// CheckinShare is the most percent of the card's budget the check-in's
 	// calls may spend. Absent: DefaultCheckinShare.
@@ -426,7 +427,7 @@ func (l Limits) NoPushShare() float64 {
 // version pinned before they existed (the escalation ladder's plan D).
 const (
 	DefaultCheckinCalls         = 20
-	DefaultCheckinTime          = 5 * time.Minute
+	CheckinCallTime             = 90 * time.Second
 	DefaultCheckinShare         = 10
 	DefaultCheckinTailKiB       = 24
 	DefaultCheckinHandoverChars = 2000
@@ -439,8 +440,10 @@ const (
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
 
 // CheckinTimeCap is how long one check-in conversation may run,
-// limits.checkin_time or DefaultCheckinTime.
-func (l Limits) CheckinTimeCap() time.Duration { return cmp.Or(l.CheckinTime, DefaultCheckinTime) }
+// limits.checkin_time or CheckinCallTime for each call of its call cap.
+func (l Limits) CheckinTimeCap() time.Duration {
+	return cmp.Or(l.CheckinTime, time.Duration(l.CheckinCallCap())*CheckinCallTime)
+}
 
 // CheckinShareOf is CheckinShare as a share of budget, its default
 // where unset.
