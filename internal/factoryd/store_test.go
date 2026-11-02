@@ -522,7 +522,10 @@ func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since
 	return true, nil
 }
 
-func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {
+func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error {
+	if err := s.recordEnded(ctx, repository, ended, true); err != nil {
+		return err
+	}
 	s.putRelease(repository, func(r *Release) { r.DeployNow, r.HeldSince, r.AskedAt = commit, since, time.Time{} })
 	return nil
 }
@@ -535,12 +538,33 @@ func (s *fakeStore) ClearDeployNow(ctx context.Context, repository, commit strin
 	return nil
 }
 
-func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string) error {
+func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string, ended Event) error {
+	if err := s.recordEnded(ctx, repository, ended, false); err != nil {
+		return err
+	}
 	if r, ok := s.releases[repository]; ok {
 		r.HeldSince, r.AskedAt, r.DeployNow = time.Time{}, time.Time{}, ""
 		s.releases[repository] = r
 	}
 	return nil
+}
+
+// recordEnded writes a hold's fact before the release state it closes,
+// as PGStore's one transaction holds them: a refused fact changes
+// nothing, and a hold that moved from the one the fact ends refuses with
+// ErrHoldMoved, as does a missing row the write cannot create. A zero
+// ended writes none and guards nothing.
+func (s *fakeStore) recordEnded(ctx context.Context, repository string, ended Event, creates bool) error {
+	if ended.Kind == "" {
+		return nil
+	}
+	r, ok := s.releases[repository]
+	held, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(ended.Detail["held_since"]))
+	if !ok && !creates || ok && !r.HeldSince.IsZero() && !r.HeldSince.Equal(held) {
+		return ErrHoldMoved
+	}
+	_, err := s.Record(ctx, ended)
+	return err
 }
 
 func (s *fakeStore) ClearToldHeld(ctx context.Context, repository, commit string) error {
