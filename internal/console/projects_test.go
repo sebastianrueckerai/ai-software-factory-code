@@ -291,6 +291,7 @@ type infraFake struct {
 	mu          sync.Mutex
 	pull        map[string]any // GET pulls/<its number>; nil: 404
 	pullAuth    []string
+	revoked     string // the Forgejo token whose every call answers 401
 	contents    []recorded
 	pulls       []recorded
 	pullsStatus int              // the pull request's opening; 0: 201
@@ -377,6 +378,10 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 		}
 		f.mu.Lock()
 		defer f.mu.Unlock()
+		if f.revoked != "" && req.Header.Get("Authorization") == "Bearer "+f.revoked {
+			http.Error(w, `{"message":"token is required"}`, http.StatusUnauthorized)
+			return
+		}
 		rec := func() recorded {
 			var body map[string]any
 			json.NewDecoder(req.Body).Decode(&body)

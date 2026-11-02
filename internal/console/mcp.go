@@ -146,7 +146,7 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_confirm", Description: "Confirm one proposal of the project agent of " + call.p.Name +
 		", as the console's Do it does, and wait up to 4 minutes for the turn's end. You may confirm every proposal you could press in the console, " +
 		"a merge approval included, which Forgejo records as your own review. Each proposal runs once and expires. The answer is chat_send's: " +
-		"what ran is in applied, a refusal in error."},
+		"what ran is in applied and a refused action in error; a proposal that cannot be pressed is refused as the tool's error."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in confirmInput) (*mcp.CallToolResult, any, error) {
 			return c.chatConfirm(r.Context(), call, in)
 		})
@@ -373,7 +373,7 @@ func (c *Console) chatSend(ctx context.Context, call tokenCall, in sendInput) (*
 	t.send, t.unread = k.send, true
 	a, err := k.wait(ctx, func() error { return t.say(msg, func() {}) })
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.New(t.sentence(err))
 	}
 	return jsonAnswer(a)
 }
@@ -394,17 +394,18 @@ func (c *Console) chatConfirm(ctx context.Context, call tokenCall, in confirmInp
 	t := c.sessionTurn(ctx, call.p, call.s, 0)
 	p, err := t.peek("proposal", in.Proposal)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.New(t.sentence(err))
 	}
 	k := &collector{a: sendAnswer{Conversation: p.Conversation, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
 	t.send, t.unread = k.send, true
 	a, err := k.wait(ctx, func() error { return t.press(in.Proposal, nil, func() {}) })
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, errors.New(t.sentence(err))
 	}
 	for _, tl := range a.Tools {
-		if why, refused := strings.CutPrefix(tl.Result, "Refused: "); refused && tl.Name == p.Tool && a.Error == "" {
+		if why, refused := strings.CutPrefix(tl.Result, "Refused: "); refused && tl.Name == p.Tool {
 			a.Error = why
+			break
 		}
 	}
 	return jsonAnswer(a)

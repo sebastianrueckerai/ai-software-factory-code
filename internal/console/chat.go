@@ -1427,7 +1427,7 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// press runs the member's proposal id, corrected by fix when it is one,
+// press runs the human's proposal id, corrected by fix when it is one,
 // as chatProposal's Do it does. A refusal before the stream opens is the
 // error; open starts the stream once the proposal is taken and its
 // thread bound.

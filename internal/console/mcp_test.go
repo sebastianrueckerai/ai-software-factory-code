@@ -1073,25 +1073,66 @@ func TestMCPChatConfirmUsedOnce(t *testing.T) {
 	id := raised(t, session, "close #5")
 	g.replies = [][]string{}
 	confirmed(t, session, id)
-	for _, id := range []string{id, "no-such-proposal"} {
-		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": id})
+	for _, again := range []string{id, "no-such-proposal"} {
+		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": again})
 		if err != nil || !refused || text != "There is no such proposal or undo; it may have expired." {
-			t.Fatalf("chat_confirm(%s) = %q, refused %v, %v, want the used-or-expired refusal", id, text, refused, err)
+			t.Fatalf("chat_confirm(%s) = %q, refused %v, %v, want the used-or-expired refusal", again, text, refused, err)
 		}
 	}
 }
 
 func TestMCPChatConfirmRefusesOtherHumansProposal(t *testing.T) {
 	r, _, _ := newChatRig(t)
-	if err := r.chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: "p-anna-proposal", Kind: "proposal", Repository: "sf/code", Login: "anna",
-		Tool: "close", Args: json.RawMessage(`{"task_id":"t-m"}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
-		t.Fatal(err)
+	put := func(token, login, repository string) {
+		t.Helper()
+		if err := r.chat.PutProposal(t.Context(), factoryd.ChatProposal{Token: token, Kind: "proposal", Repository: repository, Login: login,
+			Tool: "close", Args: json.RawMessage(`{"task_id":"t-m"}`), ExpiresAt: time.Now().Add(time.Hour), Conversation: 1}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	text, refused, err := callTool(tokenSession(t, r), "chat_confirm", map[string]any{"proposal": "p-anna-proposal"})
-	if err != nil || !refused || text != "It is another human's." {
-		t.Fatalf("chat_confirm = %q, refused %v, %v, want the button's refusal", text, refused, err)
+	put("p-anna-proposal", "anna", "sf/code")
+	put("p-elsewhere-proposal", "sebastian", "linkshort/linkshort")
+	session := tokenSession(t, r)
+	for token, want := range map[string]string{"p-anna-proposal": "It is another human's.",
+		"p-elsewhere-proposal": "There is no such proposal or undo; it may have expired."} {
+		text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": token})
+		if err != nil || !refused || text != want {
+			t.Fatalf("chat_confirm(%s) = %q, refused %v, %v, want %q", token, text, refused, err, want)
+		}
+		if p, _ := r.chat.proposal(token); !p.used.IsZero() {
+			t.Fatalf("a refused confirm used %s", token)
+		}
 	}
-	if p, _ := r.chat.proposal("p-anna-proposal"); !p.used.IsZero() {
-		t.Fatal("a refused confirm used anna's proposal")
+}
+
+func TestMCPChatConfirmPoolWithARefusedForgejoToken(t *testing.T) {
+	r, g, infra := poolChatRig(t, 8, 3)
+	g.replies = [][]string{{call(1, "set_pool", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`)}}
+	session := tokenSession(t, r)
+	id := raised(t, session, "a pool for the findings")
+	infra.revoked = "fj-sebastian"
+	text, refused, err := callTool(session, "chat_confirm", map[string]any{"proposal": id})
+	const want = "the Forgejo token behind chat token laptop was refused; make a new chat token"
+	if err != nil || !refused || text != want {
+		t.Fatalf("chat_confirm = %q, refused %v, %v, want the tool's error %q", text, refused, err, want)
+	}
+	if len(infra.contents) != 0 || len(infra.pulls) != 0 {
+		t.Fatalf("a refused press wrote: %d commits, %d pull requests", len(infra.contents), len(infra.pulls))
+	}
+}
+
+// storeFails is the rig's chat store that cannot store a message.
+type storeFails struct{ *fakeChat }
+
+func (storeFails) AddChatMessage(context.Context, string, string, factoryd.ChatMessage) (int64, error) {
+	return 0, errors.New("the database is down")
+}
+
+func TestMCPChatSendWordsAFailureBeforeTheStream(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.c.cfg.Chat = storeFails{r.chat}
+	text, refused, err := callTool(tokenSession(t, r), "chat_send", map[string]any{"message": "hello"})
+	if err != nil || !refused || text != "cannot store the message" {
+		t.Fatalf("chat_send = %q, refused %v, %v, want the worded refusal without the driver's text", text, refused, err)
 	}
 }
