@@ -1093,7 +1093,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	for key, issue := range map[string]int64{"foundation": 2, "links-api": 3, "redirects": 4, "integration": 5} {
 		c := cards[key]
 		if c.IssueNumber != issue || c.Status != "queued" || c.Track != policy.TrackDirect || !slices.Equal(c.RequiredCapabilities, []string{policy.ClassCoder}) ||
-			c.SHA != "m1" || c.Process != "spec" || c.Source != SourcePlan || c.Parent != "t-plan" || c.Author != "alice" || !c.AuthorWriter ||
+			c.SHA != "" || c.Process != "spec" || c.Source != SourcePlan || c.Parent != "t-plan" || c.Author != "alice" || !c.AuthorWriter ||
 			c.Kind != "agent" || c.Priority != 2 {
 			t.Fatalf("card %s = %+v", key, c)
 		}
@@ -4523,8 +4523,9 @@ func TestPlanCommentNamesTakeOffMain(t *testing.T) {
 	}
 }
 
-// A card whose from names a card taken off main files at main's head,
-// with no branch copied, and its issue says to land the work again from
+// A card whose from names a card taken off main files with no base stamp,
+// its first session's start at main's head, with no branch copied, and its
+// issue says to land the work again from
 // the salvage branch.
 func TestFilingLandsAgainFromSalvage(t *testing.T) {
 	ctx := context.Background()
@@ -4552,8 +4553,8 @@ func TestFilingLandsAgainFromSalvage(t *testing.T) {
 	again := cardsByKey(t, store)["links-api-2"]
 	line := fmt.Sprintf("Lands again the work of #%d (links-api), which was taken off main: apply its changes from the salvage branch, salvage in your clone "+
 		"(git diff 4f1c2a9e^1 4f1c2a9e shows them), make it build green, and land it.", api.IssueNumber)
-	if again.SHA != "m1" || !strings.Contains(fj.issues[again.IssueNumber].body, "\n"+line+"\n") {
-		t.Fatalf("links-api-2 at %s, its issue:\n%s\nwant main's head m1 and the line %q", again.SHA, fj.issues[again.IssueNumber].body, line)
+	if again.SHA != "" || !strings.Contains(fj.issues[again.IssueNumber].body, "\n"+line+"\n") {
+		t.Fatalf("links-api-2 at %q, its issue:\n%s\nwant no base stamp and the line %q", again.SHA, fj.issues[again.IssueNumber].body, line)
 	}
 	if slices.ContainsFunc(fj.calls, func(c string) bool { return strings.HasPrefix(c, "POST fork branches") }) {
 		t.Fatalf("calls %q, want no branch copied", fj.calls)
