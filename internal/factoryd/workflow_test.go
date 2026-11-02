@@ -3390,7 +3390,8 @@ func TestWorkflowCapWaitWakesOnLoadsAfterTheRead(t *testing.T) {
 	run.funded = oct31(21, 11, 0)
 	var wakes []time.Time
 	h.env.SetOnTimerScheduledListener(func(_ string, d time.Duration) {
-		if d == gateway.PolicyTTL {
+		// answerQuiet is 30 s too; only the burst's re-arm before the first check is a wake.
+		if d == gateway.PolicyTTL && len(run.checks) == 0 {
 			wakes = append(wakes, h.env.Now())
 		}
 	})
