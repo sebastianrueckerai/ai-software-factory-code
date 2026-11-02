@@ -657,7 +657,8 @@ func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) 
 // against (policy.FitResource; outstanding holds netted, roadmap 243)
 // under the caps of the version in force — so the floor is read here,
 // never restated. A model that cannot be priced refuses the attempt:
-// nothing could bound its calls.
+// nothing could bound its calls. No model at all, a card with no alias
+// whose class names no session_model, is not judged.
 func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool) (string, error) {
 	t, ok, err := r.store.Task(ctx, taskID)
 	if err != nil {
@@ -674,6 +675,9 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	// commit changed the class's session_model since the task started
 	v := r.cfg.Policy()
 	model = sessionModel(v.Document, t, model)
+	if model == "" {
+		return "", nil
+	}
 	alias := aliasOf(model)
 	price, err := r.price(ctx, alias)
 	if err != nil {

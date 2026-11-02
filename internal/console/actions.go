@@ -1243,11 +1243,9 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 
 // unfundedAnswer is the answer path's floor: the refusal a card's remaining
 // budget owes an answer, the session it would start being unfunded
-// (SessionFunded), "" when one can run. A card with no session yet (no model
-// to price) answers as before: the workflow's floor refuses the session
-// anyway; a failed read refuses the answer with a verdict of its own, so the
-// answer never dies mid-request. An answer at a cap is taken: its session
-// waits for the cap's period on its own.
+// (SessionFunded), "" when one can run. A failed read refuses the answer
+// with a verdict of its own, so the answer never dies mid-request. An answer
+// at a cap is taken: its session waits for the cap's period on its own.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) (string, error) {
 	why, err := c.unfundedSession(ctx, t)
 	if err != nil {
@@ -1261,9 +1259,10 @@ func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) (string, 
 
 // unfundedSession is the refusal a card's remaining budget owes a session's
 // opening calls (SessionFunded), "" when they can run or the card cannot be
-// judged; the error is the failed read the caller answers with a verdict.
+// judged; the error is the failed read the caller answers with a verdict. A
+// card with no alias yet is priced on its class's session model.
 func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string, error) {
-	if c.cfg.SessionFunded == nil || t.ModelAlias == "" {
+	if c.cfg.SessionFunded == nil {
 		return "", nil
 	}
 	return c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)

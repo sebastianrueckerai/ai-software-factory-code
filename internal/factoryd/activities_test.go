@@ -3620,6 +3620,40 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 	}
 }
 
+// A card with no model yet (the console passes its row's empty alias)
+// is priced on its class's session_model; a class without one leaves
+// nothing to price, so the card is not judged and no price is read.
+func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
+	store := newFakeStore()
+	for _, tsk := range []Task{
+		{ID: "t-coder", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "direct", RequiredCapabilities: []string{"coder"}},
+		{ID: "t-plan", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan", RequiredCapabilities: []string{"planner"}},
+	} {
+		if err := store.CreateTask(context.Background(), tsk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
+		SessionModel: policy.Premium}
+	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	asked := &askedPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}}
+	r := &Runner{store: store, cfg: RunnerConfig{Prices: asked, Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+
+	if why, err := r.SessionFunded(ctx, "t-coder", ""); err != nil || why != "" || len(asked.aliases) != 0 {
+		t.Fatalf("coder card with no model = (%q, %v), prices read %q; want not judged, nothing read", why, err, asked.aliases)
+	}
+	why, err := r.SessionFunded(ctx, "t-plan", "")
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on premium needs 0.600000 EUR "+
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("plan card with no model at 0.50 free = (%q, %v), want the frontier floor on premium", why, err)
+	}
+}
+
 // The floors check the day's, the month's and the project's month
 // headroom too, against the same call (roadmap 243): 3 EUR of the task's
 // budget is free, but 0.01 EUR under a cap cannot fund the cheapest call's
