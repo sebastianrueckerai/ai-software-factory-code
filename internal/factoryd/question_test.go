@@ -325,7 +325,7 @@ func TestBudgetNeed(t *testing.T) {
 // 0.07 is 0.23.
 func TestBudgetNumbersSurviveTheHoldsDetail(t *testing.T) {
 	reason := "the remaining budget cannot fund a call: raise it.\n" +
-		"0.070 EUR of the 5.000 EUR budget remains after outstanding holds of 0.100 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out before its work is done."
+		"0.070 EUR of the 5.000 EUR budget remains after outstanding holds of 0.100 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
 	if got := BudgetNeed(reason); got != 0.3 {
 		t.Errorf("BudgetNeed = %v, want 0.3", got)
 	}
@@ -334,6 +334,30 @@ func TestBudgetNumbersSurviveTheHoldsDetail(t *testing.T) {
 	}
 	if got := FundRaise(reason); got != 0.23 {
 		t.Errorf("FundRaise = %v, want 0.23, the shortfall in whole cents", got)
+	}
+}
+
+// With no free headroom the first raise is the need rounded up to the
+// cent: an opening of 0.123456 EUR asks 0.13, since 0.12 does not cover it
+// and the floor would refuse again. A need on a whole cent stays on it: 1.10.
+func TestFundRaiseRoundsAnUncoveredNeedUpToTheCent(t *testing.T) {
+	reason := budgetRefused + ": 0.000 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.123456 EUR (the largest of the newest 5 sessions' openings on factory/small, as the holds take them); it cannot start."
+	if got := FundRaise(reason); got != 0.13 {
+		t.Errorf("FundRaise = %v, want 0.13", got)
+	}
+	q := ShapedQuestion(reason, QuestionFacts{FloorEUR: 0.3}, nil)
+	want := []QuestionChoice{
+		{FundChoiceValue(0.13), "Fund 0.13 EUR and go on"},
+		{FundChoiceValue(0.3), "Fund 0.30 EUR and go on"},
+		{FundChoiceValue(2), "Fund 2.00 EUR and go on"},
+		{AnswerPark, "Park it"},
+	}
+	if !slices.Equal(q.Choices, want) {
+		t.Errorf("choices = %v, want %v", q.Choices, want)
+	}
+	whole := strings.Replace(reason, "0.123456 EUR", "1.100000 EUR", 1)
+	if got := FundRaise(whole); got != 1.1 {
+		t.Errorf("FundRaise = %v, want 1.1", got)
 	}
 }
 

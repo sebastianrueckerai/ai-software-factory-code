@@ -3568,7 +3568,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 
 	why, err := r.SessionFunded(ctx, "t-1", "factory/big")
 	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/big needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out before its work is done.") {
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done.") {
 		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "big"); err != nil || !BudgetRefusal(why) ||
@@ -3686,7 +3686,7 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
 		"0.100 EUR of the 5.000 EUR budget remains after outstanding holds of 0.400 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), " +
 		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); " +
-		"a session started now would run out before its work is done."; err != nil || why != want {
+		"a session started now would run out of money before its work is done."; err != nil || why != want {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 

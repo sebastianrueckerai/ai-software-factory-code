@@ -731,7 +731,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 				key = "budget.session_floor_frontier_eur"
 			}
 			need, call, measure, then = floor, "a session on "+model, "the floor of its rung, "+key+" in policy.yaml",
-				"a session started now would run out before its work is done"
+				"a session started now would run out of money before its work is done"
 		}
 	}
 	own, free, err := r.store.Free(ctx, req)

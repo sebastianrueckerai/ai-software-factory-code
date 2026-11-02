@@ -478,8 +478,8 @@ func BudgetRemains(reason string) float64 {
 
 // FundRaise is the EUR raise that funds one more session off a budget
 // refusal's numbers: the shortfall to the session's need, rounded up to
-// a cent; the need itself when the reason states no free headroom; 0
-// when the reason carries no amount at all.
+// a cent; the need itself, rounded up to a cent, when the reason states
+// no free headroom; 0 when the reason carries no amount at all.
 func FundRaise(reason string) float64 {
 	need := BudgetNeed(reason)
 	if need <= 0 {
@@ -492,7 +492,11 @@ func FundRaise(reason string) float64 {
 		}
 		return float64(cents) / 100
 	}
-	return need
+	cents := Cents(need)
+	if float64(cents)/100 < need {
+		cents++ // a need between two cents rounds up, or the raise would not cover it
+	}
+	return float64(cents) / 100
 }
 
 // FundChoiceValue is a premade fund answer's value: the fund marker and
