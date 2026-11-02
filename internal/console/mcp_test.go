@@ -122,8 +122,15 @@ func TestMCPRefusesWithoutValidBearer(t *testing.T) {
 	}
 	expired := r.chatTokenOf(t, "sebastian", "sf/code", func(row *factoryd.ChatToken) { row.Expires = time.Now().Add(-time.Minute) })
 	revoked := r.chatTokenOf(t, "sebastian", "sf/code", func(row *factoryd.ChatToken) { row.Revoked = time.Now().Add(-time.Minute) })
+	foreign, err := sealed.Seal(r.c.cfg.SessionKey, chatTokenKeyLabel, "fj-sebastian", "another hash")
+	if err != nil {
+		t.Fatal(err)
+	}
+	misSealed := r.chatTokenOf(t, "sebastian", "sf/code", func(row *factoryd.ChatToken) { row.Sealed = foreign })
+	unsealed := r.chatTokenOf(t, "sebastian", "sf/code", func(row *factoryd.ChatToken) { row.Sealed = "" })
 	for _, tc := range []struct{ name, auth string }{
 		{"none", ""}, {"unknown", "Bearer " + unknown}, {"expired", "Bearer " + expired}, {"revoked", "Bearer " + revoked},
+		{"sealed under another hash", "Bearer " + misSealed}, {"sealed empty", "Bearer " + unsealed},
 	} {
 		d := &door{auth: tc.auth}
 		if _, err := d.open(srv); err == nil || d.status != http.StatusUnauthorized || d.body != "unknown, expired or revoked chat token\n" {
@@ -150,6 +157,12 @@ func TestMCPRefusesTokenScheme(t *testing.T) {
 	}
 }
 
+// deadlined is a recorder whose write deadline moves, as a server
+// connection's does.
+type deadlined struct{ *httptest.ResponseRecorder }
+
+func (deadlined) SetWriteDeadline(time.Time) error { return nil }
+
 // A pasted bearer keeps its doubled space and its line end, which no
 // client sends over the wire, so the request is served in process.
 func TestMCPTrimsPastedBearer(t *testing.T) {
@@ -159,7 +172,8 @@ func TestMCPTrimsPastedBearer(t *testing.T) {
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json, text/event-stream")
 	req.Header.Set("Authorization", "Bearer  "+bearer+"\n")
-	rec := r.do(req)
+	rec := httptest.NewRecorder()
+	r.c.ServeHTTP(deadlined{rec}, req)
 	var answer struct {
 		Result struct {
 			Content []struct{ Text string }
@@ -171,8 +185,11 @@ func TestMCPTrimsPastedBearer(t *testing.T) {
 	}
 }
 
+// The writer check comes before the seal opens: a former writer's token
+// with no Forgejo token behind it gets the writer's refusal too.
 func TestMCPRefusesFormerWriter(t *testing.T) {
 	r, srv, bearer := mcpRig(t)
+	unsealed := r.chatTokenOf(t, "sebastian", "sf/code", func(row *factoryd.ChatToken) { row.Sealed = "" })
 	for _, tc := range []struct {
 		name  string
 		repos []string
@@ -186,9 +203,11 @@ func TestMCPRefusesFormerWriter(t *testing.T) {
 		}
 		r.writers.mu.Unlock()
 		r.forgetWriters()
-		d := &door{auth: "Bearer " + bearer}
-		if _, err := d.open(srv); err == nil || d.status != http.StatusForbidden || d.body != "sebastian no longer writes sf/code\n" {
-			t.Errorf("%s: open = %v, %d %q; want 403 sebastian no longer writes sf/code", tc.name, err, d.status, d.body)
+		for _, b := range []string{bearer, unsealed} {
+			d := &door{auth: "Bearer " + b}
+			if _, err := d.open(srv); err == nil || d.status != http.StatusForbidden || d.body != "sebastian no longer writes sf/code\n" {
+				t.Errorf("%s: open = %v, %d %q; want 403 sebastian no longer writes sf/code", tc.name, err, d.status, d.body)
+			}
 		}
 	}
 }
@@ -329,5 +348,20 @@ func TestMCPOutlivesWriteTimeout(t *testing.T) {
 	bearer := r.chatTokenOf(t, "sebastian", "sf/code", nil)
 	if got := threadsOf(t, opened(t, srv, &door{auth: "Bearer " + bearer})); got != "[]" {
 		t.Fatalf("chat_threads past the write timeout = %q, want []", got)
+	}
+}
+
+// mcpHandler mounted without bearer serves no tool: its server needs the
+// token's call.
+func TestMCPServesNothingWithoutBearer(t *testing.T) {
+	r := newRig(t)
+	req := httptest.NewRequest(http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"chat_threads","arguments":{}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	rec := httptest.NewRecorder()
+	r.c.mcpHandler().ServeHTTP(deadlined{rec}, req)
+	if rec.Code != http.StatusBadRequest || rec.Body.String() != "no server available\n" {
+		t.Fatalf("POST /mcp without bearer = %d %q, want 400 no server available", rec.Code, rec.Body.String())
 	}
 }

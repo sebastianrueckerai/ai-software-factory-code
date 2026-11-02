@@ -60,6 +60,7 @@ type fakeForgejo struct {
 	comments  map[string]string // path -> body
 	expiresIn int
 	refuse    bool            // token endpoint answers 400
+	noRefresh bool            // token endpoint answers no refresh token
 	failEdit  bool            // issue PATCHes answer 500
 	spent     map[string]bool // refresh tokens used once: Forgejo invalidates them on use
 	tokenN    int
@@ -146,8 +147,12 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			}
 		}
 		f.tokenN++
-		json.NewEncoder(w).Encode(map[string]any{"access_token": fmt.Sprintf("access-%d", f.tokenN),
-			"refresh_token": fmt.Sprintf("refresh-%d", f.tokenN), "token_type": "bearer", "expires_in": f.expiresIn})
+		answer := map[string]any{"access_token": fmt.Sprintf("access-%d", f.tokenN),
+			"refresh_token": fmt.Sprintf("refresh-%d", f.tokenN), "token_type": "bearer", "expires_in": f.expiresIn}
+		if f.noRefresh {
+			delete(answer, "refresh_token")
+		}
+		json.NewEncoder(w).Encode(answer)
 		return
 	}
 	f.calls = append(f.calls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
@@ -2226,6 +2231,32 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 	}
 	if len(r.sessions.rows) != 0 {
 		t.Fatal("session kept after the refresh was refused")
+	}
+}
+
+// A token endpoint answer without a refresh token is refused, so every
+// cookie session holds one: the login fails, and a refresh keeps the
+// row's pair.
+func TestTokenAnswerWithoutRefreshTokenIsRefused(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.setTokenExpiry(t, ck, time.Now())
+	r.fg.mu.Lock()
+	r.fg.noRefresh = true
+	r.fg.mu.Unlock()
+
+	if _, err := r.c.tokenFor(context.Background(), r.readSession(t, ck), time.Minute); err == nil || err.Error() != "token endpoint: no refresh token" {
+		t.Fatalf("the refresh = %v, want token endpoint: no refresh token", err)
+	}
+	if access, refresh := r.tokens(t, ck); access != "expired-access" || refresh != "refresh-1" {
+		t.Fatalf("the row holds %q and %q, want expired-access and refresh-1", access, refresh)
+	}
+
+	rows := len(r.sessions.rows)
+	other, cb := r.login(t)
+	if other != nil || cb.Code != http.StatusBadGateway || cb.Body.String() != "login failed at the code exchange\n" || len(r.sessions.rows) != rows {
+		t.Fatalf("the login = %d %q, cookie %v, %d sessions; want 502 login failed at the code exchange and no new session",
+			cb.Code, cb.Body.String(), other, len(r.sessions.rows))
 	}
 }
 

@@ -58,16 +58,7 @@ func (c *Console) bearer(next http.Handler) http.Handler {
 			http.Error(w, "cannot read the chat tokens", http.StatusServiceUnavailable)
 			return
 		}
-		live := ok && row.Revoked.IsZero() && now.Before(row.Expires)
-		var forgejo string
-		if live {
-			if forgejo, err = sealed.Open(c.cfg.SessionKey, chatTokenKeyLabel, row.Sealed, row.Hash); err != nil {
-				// the row is not this key's: the token is over
-				log.Printf("console: chat token %d of %s: %v", row.ID, row.Login, err)
-				live = false
-			}
-		}
-		if !live {
+		if !ok || !row.Revoked.IsZero() || !now.Before(row.Expires) {
 			unauthorized(w, chatTokenRefused)
 			return
 		}
@@ -94,6 +85,13 @@ func (c *Console) bearer(next http.Handler) http.Handler {
 			http.Error(w, row.Login+" no longer writes "+row.Repository, http.StatusForbidden)
 			return
 		}
+		forgejo, err := sealed.Open(c.cfg.SessionKey, chatTokenKeyLabel, row.Sealed, row.Hash)
+		if err != nil || forgejo == "" {
+			// the row is not this key's, or holds no Forgejo token: the token is over
+			log.Printf("console: chat token %d of %s opens no Forgejo token: %v", row.ID, row.Login, err)
+			unauthorized(w, chatTokenRefused)
+			return
+		}
 		if err := c.cfg.ChatTokens.TouchChatToken(ctx, row.ID, now); err != nil {
 			log.Printf("console: the last use of chat token %d: %v", row.ID, err)
 		}
@@ -118,7 +116,10 @@ func (c *Console) mcpHandler() http.Handler {
 
 // mcpServer is the MCP server of one request that bearer admitted.
 func (c *Console) mcpServer(r *http.Request) *mcp.Server {
-	call, _ := tokenFrom(r.Context())
+	call, ok := tokenFrom(r.Context())
+	if !ok {
+		return nil
+	}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "factory-chat", Version: "1"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_threads", Description: "List your conversations with the project agent of " + call.p.Name +
 		": each one's number, title, time of its last message, and whether it holds a reply you have not read."},

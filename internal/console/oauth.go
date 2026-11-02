@@ -182,6 +182,9 @@ func (c *Console) token(ctx context.Context, s *session, form url.Values) error 
 	if t.AccessToken == "" {
 		return errors.New("token endpoint: no access token")
 	}
+	if t.RefreshToken == "" {
+		return errors.New("token endpoint: no refresh token")
+	}
 	s.access, s.refresh = t.AccessToken, t.RefreshToken
 	s.expiry = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)
 	return nil

@@ -509,10 +509,10 @@ func (c *Console) postRoutes() []postRoute {
 	routines := func() bool { return c.cfg.Routines != nil }
 	messengers := func() bool { return c.cfg.Messengers != nil }
 	tokens := c.chatTokensOn
-	door := func() bool { return c.cfg.ChatTokens != nil && c.cfg.Chat != nil }
+	chatDoor := func() bool { return c.cfg.ChatTokens != nil && c.cfg.Chat != nil }
 	return []postRoute{
 		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
-		{"POST /mcp", c.bearer(c.mcpHandler()), door},
+		{"POST /mcp", c.bearer(c.mcpHandler()), chatDoor},
 		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
 		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
 		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},
