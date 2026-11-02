@@ -34,7 +34,7 @@ const ghostEl = ".card.ghost .ref, .card.ghost .ttl, .card.ghost .line2, .card.g
 // as contrastEl is
 const notifyEl = ".notify th[scope=row], .notify td, .notify .dim, .notify .addr, .notify caption, .notify td.act a, .notify td.act button, .notify select";
 
-// tokenEl are the chat token's text (C42): the label on a token's row,
+// tokenEl are the chat token's text (C43): the label on a token's row,
 // the Tokens section and its shown-once block, measured as contrastEl is
 const tokenEl = ".msg .who .via, .msg.tok .who .name, .once-w, .once-l, .once-k, .cline .ps, .cline code, .cline button, .mint > summary, " +
   ".notify.once h3, .notify td, .notify th[scope=row], .notify .dim, .notify caption, .notify td.act button";
@@ -396,7 +396,7 @@ async function text(page) {
     if (await xp.count()) { await p.page.keyboard.press("Escape"); await p.page.waitForTimeout(200); }
     for (const w of words) if (!low.includes(w.toLowerCase())) fails.push(sc + ': missing "' + w + '"');
     if (sc === "tokens") {
-      // a token's rows (C42): the dashed avatar and "via" with the token's
+      // a token's rows (C43): the dashed avatar and "via" with the token's
       // name on each, nothing on the row the browser sent
       const rows = await p.page.evaluate(() => Array.from(document.querySelectorAll("#chat-log .msg.you")).map((m) => ({
         tok: m.classList.contains("tok"), via: (m.querySelector(".who .via") || {}).textContent || "",
@@ -1748,7 +1748,7 @@ async function text(page) {
     if (tails.some((g) => g > 24)) fails.push("panel: the act controls leave an empty tail to the row's rule: " + tails.join(","));
     await np.ctx.close();
   }
-  // the chat token (C42): a 64-character name cuts with an ellipsis on the
+  // the chat token (C43): a 64-character name cuts with an ellipsis on the
   // phone and keeps the row's time in view; the Tokens section lights the
   // used token's lamp and leaves the unused one dark, the form folds once
   // a token exists; the answer to the form shows the block on the first

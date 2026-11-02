@@ -165,7 +165,7 @@ async function main() {
           }, false);
         }
         if (s === "tokens") {
-          // the chat token (C42): a token's rows beside the browser's, the
+          // the chat token (C43): a token's rows beside the browser's, the
           // Tokens section, and the answer to its form with the block
           // shown once, at the desk and on the phone
           await shot("chat-tokens-1440.png", desk, "/", async (p) => {

@@ -1734,7 +1734,7 @@ document.addEventListener("keydown", function (e) {
   });
 })();
 // a Copy button copies the text of the element it names, the shown-once
-// chat token and its line (C42), and says so for 2 s through its live
+// chat token and its line (C43), and says so for 2 s through its live
 // label; where the clipboard refuses, it selects the text for the human's
 // own copy and says that
 document.addEventListener("click", function (e) {

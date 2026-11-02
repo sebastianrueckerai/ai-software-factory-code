@@ -1264,7 +1264,7 @@ button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text)
 .notify th[scope=row] { color: var(--text); font: 400 12px var(--font-mono); white-space: normal; }
 .notify td.act { width: 100%; text-align: right; }
 @media (min-width: 900px) { .notify th[scope=row], .notify td:not(.act) { white-space: nowrap; } }
-/* a token's name and project cut at 24 characters on the desk, the whole in the tooltip; the phone wraps them (C42) */
+/* a token's name and project cut at 24 characters on the desk, the whole in the tooltip; the phone wraps them (C43) */
 .notify .cut { display: inline-block; max-width: 24ch; overflow: hidden; text-overflow: ellipsis; vertical-align: top; }
 .notify td.act form.inline { white-space: nowrap; }
 .notify .dim { color: var(--text-muted); }
@@ -1414,12 +1414,12 @@ summary.strip .cell[data-tip]:hover::after, summary.strip .cell[data-tip]:focus-
 /* the input's drag seam lights the composer's top rule, the divider's
    own way of saying it drags */
 form.composer:has(> .growbar:hover), form.composer:has(> .growbar:focus-visible) { border-top-color: var(--accent); }
-/* a human row a chat token sent (C42): the avatar's ring dashed, the
+/* a human row a chat token sent (C43): the avatar's ring dashed, the
    human at a remove, and "via" and the token's name after the human's */
 .msg.you.tok .av { border-style: dashed; background: none; color: var(--accent); }
 .msg .who .via { min-width: 0; overflow: hidden; color: var(--text-muted); text-overflow: ellipsis; white-space: nowrap; }
 .msg .who time { flex: none; }
-/* the Tokens section (C42): the shown-once block above the page's
+/* the Tokens section (C43): the shown-once block above the page's
    sections, C14's cyan rule at its left, each value in a dark line with
    its Copy button; a lamp on the last use, lit while a used token lives;
    the form folds once a token exists */

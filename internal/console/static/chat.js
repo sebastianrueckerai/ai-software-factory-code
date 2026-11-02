@@ -58,7 +58,7 @@ var chatView = (function () {
   function whoHTML(name, at, via) {
     return "<p class=\"who\"><span class=\"name\">" + esc(name) + "</span>" + (via || "") + " <time>" + stamp(at) + "</time></p>";
   }
-  // a row a chat token sent carries the token's name (C42): its avatar a
+  // a row a chat token sent carries the token's name (C43): its avatar a
   // dashed ring, "via" and the name after the human's in the who line
   function userHTML(login, text, at, queued, images, docs, token) {
     // the row's images: their own names as thumbnails, the optimistic
