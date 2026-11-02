@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"reflect"
 	"testing"
 	"time"
@@ -85,9 +86,41 @@ func TestPGStoreReleases(t *testing.T) {
 	if r, err := s.Release(ctx, "sf/tx"); err != nil || !r.HeldSince.IsZero() || r.DeployNow != "" {
 		t.Fatalf("Release after the release = %+v, %v; want no hold", r, err)
 	}
-	var facts int
-	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE repository = 'sf/tx' AND kind = $1`, EventProductionReleased).Scan(&facts); err != nil || facts != 1 {
-		t.Fatalf("production_released rows of sf/tx = %d, %v; want the one fact", facts, err)
+	facts := func(repository string) (n int) {
+		if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE repository = $1 AND kind = $2`, repository, EventProductionReleased).Scan(&n); err != nil {
+			t.Fatal(err)
+		}
+		return n
+	}
+	if n := facts("sf/tx"); n != 1 {
+		t.Fatalf("production_released rows of sf/tx = %d; want the one fact", n)
+	}
+
+	// a new hold since 13:00, read by two presses and a pass: the first
+	// press restarts it at 14:00 with its fact, the second press and the
+	// pass refuse, the restart and its fact standing
+	next := held.Add(2 * time.Hour)
+	press := func(at time.Time) error {
+		return s.SetDeployNow(ctx, "sf/tx", "t9", at, released("sf/tx", "deploy_now", next, at, "sebastian", ViaButton, "t9", "member"))
+	}
+	if err := s.SetDeployNow(ctx, "sf/tx", "t9", next, Event{}); err != nil {
+		t.Fatal(err)
+	}
+	if err := press(next.Add(time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	if err := press(next.Add(70 * time.Minute)); !errors.Is(err, ErrHoldMoved) {
+		t.Fatalf("a second press on the hold the first restarted = %v, want ErrHoldMoved", err)
+	}
+	stale := released("sf/tx", "closed", next, next.Add(80*time.Minute), FactoryDecider, ViaFactoryd, "", "")
+	if err := s.EndReleaseHold(ctx, "sf/tx", stale); !errors.Is(err, ErrHoldMoved) {
+		t.Fatalf("a stale end of the restarted hold = %v, want ErrHoldMoved", err)
+	}
+	if r, err := s.Release(ctx, "sf/tx"); err != nil || !r.HeldSince.Equal(next.Add(time.Hour)) || r.DeployNow != "t9" {
+		t.Fatalf("Release after the stale writes = %+v, %v; want the restart at %v", r, err, next.Add(time.Hour))
+	}
+	if n := facts("sf/tx"); n != 2 {
+		t.Fatalf("production_released rows of sf/tx = %d after the stale writes; want the two holds' ends", n)
 	}
 }
 

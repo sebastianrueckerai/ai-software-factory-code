@@ -2542,8 +2542,15 @@ type holdInterval struct{ start, end time.Time }
 // waited, evidence or none — the sum of an empty union, never an
 // unknown.
 func metricDivideHoldWaits(ctx context.Context, db *sql.DB, repo string, w metricWindow, asof time.Time) (Figure, Figure, HoldWaitCoverage, error) {
+	// the ended holds and the running clock read in one snapshot, so a
+	// release committing between the two reads is in exactly one of them
+	tx, err := db.BeginTx(ctx, &sql.TxOptions{Isolation: sql.LevelRepeatableRead, ReadOnly: true})
+	if err != nil {
+		return Figure{}, Figure{}, HoldWaitCoverage{}, err
+	}
+	defer tx.Rollback()
 	// one interval per ended hold, earliest row first
-	rows, err := db.QueryContext(ctx, `SELECT COALESCE(detail->>'held_since', ''), at FROM events
+	rows, err := tx.QueryContext(ctx, `SELECT COALESCE(detail->>'held_since', ''), at FROM events
 		WHERE repository = $1 AND kind = 'production_released' ORDER BY at, id`, repo)
 	if err != nil {
 		return Figure{}, Figure{}, HoldWaitCoverage{}, err
@@ -2577,7 +2584,7 @@ func metricDivideHoldWaits(ctx context.Context, db *sql.DB, repo string, w metri
 	}
 	// the hold still on at the report: the releases row's running clock
 	var held sql.NullTime
-	if err := db.QueryRowContext(ctx, `SELECT min(held_since) FROM releases WHERE repository = $1`, repo).Scan(&held); err != nil {
+	if err := tx.QueryRowContext(ctx, `SELECT min(held_since) FROM releases WHERE repository = $1`, repo).Scan(&held); err != nil {
 		return Figure{}, Figure{}, HoldWaitCoverage{}, err
 	}
 	if held.Valid {

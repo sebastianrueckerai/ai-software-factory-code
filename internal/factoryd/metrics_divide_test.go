@@ -2047,7 +2047,8 @@ func TestDivideConquerProductionHoldSQL(t *testing.T) {
 	// before it — past now itself at its far end, past at its near one
 	// — ends the hold at its own end, exactly its fourteen days
 	asofFrom := time.Now().UTC().Truncate(time.Hour).AddDate(0, 0, -1)
-	t1 := time.Now().UTC()
+	// the as-of is cut to the store's microsecond, so the bound below is too
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
 	future, err := s.ProjectMetrics(context.Background(), "sf/dc13", asofFrom, asofFrom.AddDate(0, 0, 13))
 	t2 := time.Now().UTC()
 	if err != nil {
