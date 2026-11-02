@@ -81,9 +81,8 @@ func AtTimeCap(escalation string) bool { return strings.HasPrefix(escalation, ti
 
 // checkinShareStop heads the card of a check-in stopped on its spent
 // share of the budget, not its call cap: the share a human's answer
-// grants one more width of (versionCheckinGrant). A card with a green
-// head answers by verifying the head again (versionCheckinSpend), which
-// the lifecycle asks first.
+// grants one more width of (versionCheckinGrant), beside a verification
+// of the head when the pull request is open (versionCheckinAnswer).
 const checkinShareStop = "check-in: " + CheckSpend + ": " + CheckinShareSpent
 
 // AtCheckinShareStop: escalation is the card of a check-in's share stop,
@@ -127,9 +126,8 @@ const checkinCallCapStop = "check-in call cap reached"
 const checkinTimeCapStop = "check-in time cap reached"
 
 // atCheckinSpend: escalation is a check-in stopped under spend, at its
-// call cap or on the budget's share. The share stop's answer verifies the
-// head again, no session, for one would stop at the same share before any
-// model call; the call cap's answer buys the session (atCheckinCallCap).
+// call cap or on the budget's share; checkinAnswer says what its answer
+// buys.
 func atCheckinSpend(escalation string) bool {
 	return strings.HasPrefix(escalation, checkinSpendAsk)
 }
@@ -291,6 +289,7 @@ func (t *taskRun) runStages(commit string) verdict {
 // the request will name; its findings are card findings, for the human
 // (versionCriteriaGate).
 func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
+	t.head = commit
 	if t.criteriaGate >= versionCriteriaGate {
 		var res CriteriaResult
 		v, decided, err := t.criteria(&res, commit)
@@ -575,6 +574,7 @@ const maxHeadHolds = 3
 // the checks moves head.
 func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Review) (findings []string, v verdict, stop bool) {
 	commit := *head
+	t.head = commit
 	failed := func(what string, err error) (verdict, bool) {
 		return verdict{final: "failed", reason: what + ": " + errMessage(err)}, true
 	}
@@ -1126,6 +1126,7 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // head comes back here. A refused switch to the plan track asks for the
 // approval again (versionReplan).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
+	t.head = commit
 	v, stop, red := t.headGreen(commit, g, &card)
 	if stop {
 		return v

@@ -1098,12 +1098,12 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord))
 	}
-	eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
 		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
-			Findings: ask.Findings, Review: ask.Review, Record: rec}, true
+			Findings: ask.Findings, Review: ask.Review, Record: rec, Share: share}, true
 	}
 	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
 		lines := -1
@@ -1126,6 +1126,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			facts: checkinFacts(t, s), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
+		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id
 		}
@@ -1184,12 +1185,12 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
 		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
-	eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
 		return Decision{Action: ActionEscalate, Reason: CheckinShareSpent}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
-			Findings: ask.Findings, Review: ask.Review, Record: record}, true
+			Findings: ask.Findings, Review: ask.Review, Record: record, Share: share}, true
 	}
 	alias := r.callModel(t, policy.PurposeCheckin)
 	if alias == "" {
@@ -1202,6 +1203,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
+	out.Share = share
 	switch out.Decision {
 	case "continue":
 		return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
@@ -1227,17 +1229,18 @@ func unjudged(trip *Trip, reason string) Decision {
 	return Decision{Action: ActionContinue, Reason: reason}
 }
 
-// checkinBudget is what is left of the card's check-in share of its
-// budget: the policy's share widened by every share a human's answer to
-// its spend stop granted (TaskUsage.ExtraCheckinShare;
+// checkinBudget is the card's check-in share of its budget and what is
+// left of it: the policy's share widened by every share a human's answer
+// to its spend stop granted (TaskUsage.ExtraCheckinShare;
 // versionCheckinGrant). A read error is logged and reads as zero spent,
 // as the check-in proceeds on it.
-func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (eurLeft float64, err error) {
+func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (share, eurLeft float64, err error) {
 	spent, err := r.store.CheckinSpent(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	}
-	return limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
+	share = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
+	return share, share - spent, err
 }
 
 // pushBrief delivers the session's brief: its handover note, "" for none,

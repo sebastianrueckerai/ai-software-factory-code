@@ -1285,6 +1285,25 @@ const (
 	// when the sizing step writes the size and read from the row on a
 	// later run. A run from before the change keeps the class's time.
 	versionSizeTime workflow.Version = 1
+	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
+	// check-in stop goes on from the session's own push, not the head it
+	// started from; the answer to a share stop with the pull request open
+	// grants the share its question promises beside the verification of
+	// that head, recorded at once, for the next check-in reads the share
+	// from the row; a repeated stop compares the branch's head at the stop,
+	// the share in euros and the sessions the console raised. Read where an
+	// answer or a repeat first differs, not at the run's start, so a run
+	// waiting at a stop at the roll takes it. A run from before verifies the
+	// start head and grants nothing, and its next check-in stops at the same
+	// share before any model call.
+	versionCheckinAnswer workflow.Version = 1
+	// versionVerifiedHead (change id "verified-head"): verify returns the
+	// head its stages ended on (a moved head held, the merge queue's sync,
+	// a re-run of the checks), and its callers keep that head and count it
+	// judged. Read where a verification ended on another head than it
+	// began. A run from before keeps the head it verified, and an answer
+	// verifies it again and spends a head hold on the move.
+	versionVerifiedHead workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1330,14 +1349,19 @@ const (
 )
 
 // checkinStopMark is a check-in stop's state: what a repeated stop
-// compares itself against (versionCheckinRepeat). Share is the count of
-// share raises its answers added, ExtraLines the line-bound raises;
+// compares itself against (versionCheckinRepeat). Head is the head the
+// session started from, Tip the branch's head at the stop: the session's
+// own push, else Head (versionCheckinAnswer). Share is the count of share
+// raises its answers added, ShareEUR the share in euros, ExtraLines and
+// RaisedSessions the console's raises of the line bound and the sessions;
 // Granted says the stop's answer bought a restart that pushed nothing.
 type checkinStopMark struct {
-	Kind, Head string
-	Share      int
-	ExtraLines int
-	Granted    bool
+	Kind, Head, Tip string
+	Share           int
+	ShareEUR        float64
+	ExtraLines      int
+	RaisedSessions  int
+	Granted         bool
 }
 
 type taskRun struct {
@@ -1411,6 +1435,7 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
+	head              string           // the head the running verification's last stage ran on, which verify returns
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
@@ -1491,6 +1516,9 @@ type verdict struct {
 	// the gates read again from the first stage before any merge
 	// (versionCompanions)
 	recheck bool
+	// head: the head verify's stages ended on, its commit or one a stage
+	// adopted past it (taskRun.head)
+	head string
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1614,6 +1642,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		// the cap card, not the approval card, takes the findings
 		t.lastRound, startRef = false, head
 		if v = t.verify(head); v.final == "" {
+			startRef = t.adopted(v, head)
 			answered = apply(v)
 		}
 		return head, v, answered
@@ -1799,18 +1828,14 @@ func (t *taskRun) lifecycle() (string, error) {
 				strings.HasPrefix(st.Question, podNeverStarted), strings.HasPrefix(st.Question, providerRefused):
 				// the live loop answers these waits with the next
 				// session alone
-			case t.checkinRaise >= versionCheckinRaise && atCheckinCallCap(st.Question):
-				// the call cap's stop: the answer buys the session, whose
-				// check-in runs with the policy's calls; placed before
-				// the spend case, for a call-cap stop is a spend stop too
-				buy()
-			case t.checkinSpend >= versionCheckinSpend && st.PR.Number != 0 && atCheckinSpend(st.Question):
-				// a spent check-in's answer verifies again, as the gate's
-				// stop does, but with no session: a bought one would stop
-				// at the same cap before any model call, so the answer
-				// rides the findings the review weighs instead. A head
-				// the agent moved past the gates is held, not died on
-				// (versionResumeHold)
+			case atCheckinSpend(st.Question):
+				stop := checkinStop{spend: true, share: AtCheckinShareStop(st.Question), callCap: atCheckinCallCap(st.Question)}
+				if _, verify := t.checkinAnswer(&u, stop, st.PR.Number != 0, "", st.Head); !verify {
+					buy()
+					break
+				}
+				// a head the agent moved past the gates is held, not died
+				// on (versionResumeHold)
 				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 				v := t.resumeVerify(&st.Head)
 				startRef = st.Head
@@ -1818,14 +1843,6 @@ func (t *taskRun) lifecycle() (string, error) {
 					return t.finish(v.final, v.reason)
 				}
 				apply(v)
-			case t.checkinGrant >= versionCheckinGrant && AtCheckinShareStop(st.Question):
-				// the share stop (issue 959): the answer grants the card
-				// one more share of the check-in budget beside the
-				// session it buys, so the next check-in moment runs where
-				// this one stopped the card; a run from before the change
-				// replays its answer-buys-session wait below, unanswered
-				t.grantCheckin(&u, true)
-				buy()
 			case st.PR.Number != 0 && (atGateStop(st.Question) || atQueueLeft(st.Question) || atReproStart(st.Question)):
 				// a gate's answer verifies again, as the live gate does:
 				// here from the first stage, change requests back to the
@@ -1876,12 +1893,13 @@ func (t *taskRun) lifecycle() (string, error) {
 			setFindings(st.Findings, "changes")
 		case st.PR.Number != 0:
 			// the task's work is pushed and in review: verify it, no new session
-			t.pr, startRef = st.PR, st.Head
+			t.pr = st.PR
 			t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
 			v := t.verify(st.Head)
 			if v.final != "" {
 				return t.finish(v.final, v.reason)
 			}
+			startRef = t.adopted(v, st.Head)
 			apply(v)
 		case t.v16 >= versionStages && u.Attempts == 0 && (t.replan < versionReplan || !st.ScreeningPassed):
 			final, why, more := t.screen()
@@ -2219,15 +2237,24 @@ func (t *taskRun) lifecycle() (string, error) {
 			// card's question holds the findings and the review verdict
 			reason := "check-in: " + cmp.Or(res.CheckIn.ReasonKind, cmp.Or(moment, "gate")) + ": " + res.Reason + workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
 			if t.checkinRepeat >= versionCheckinRepeat {
-				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Share: u.ExtraCheckinShare, ExtraLines: u.ExtraLines}
-				if prev := t.lastCheckinStop; prev.Kind == mark.Kind && prev.Head != "" && prev.Head == mark.Head {
-					sha := mark.Head
+				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef), Share: u.ExtraCheckinShare,
+					ShareEUR: res.CheckIn.Share, ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
+				if prev := t.lastCheckinStop; prev.Kind == mark.Kind && prev.Tip != "" {
+					was, head := prev.Head, mark.Head
+					same := prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines
+					if t.checkinAnswers() {
+						was, head = prev.Tip, mark.Tip
+						same = same && prev.ShareEUR == mark.ShareEUR && prev.RaisedSessions == mark.RaisedSessions
+					}
+					sha := head
 					if len(sha) > 7 {
 						sha = sha[:7]
 					}
-					if prev.Granted {
+					switch {
+					case was == "" || was != head:
+					case prev.Granted:
 						reason = checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
-					} else if prev.Share == mark.Share && prev.ExtraLines == mark.ExtraLines {
+					case same:
 						reason = checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
 					}
 				}
@@ -2249,24 +2276,14 @@ func (t *taskRun) lifecycle() (string, error) {
 				// session the close makes pointless
 				return t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review))
 			}
-			if t.checkinRaise >= versionCheckinRaise && res.CheckIn.ReasonKind == CheckSpend && (res.Reason == checkinCallCapStop || res.Reason == checkinTimeCapStop) {
-				// the call cap's stop falls through to buy(), never the
-				// verify break: the answer buys the session
-				t.lastCheckinStop.Granted = true
-			} else if t.checkinSpend >= versionCheckinSpend && res.CheckIn.ReasonKind == CheckSpend && t.pr.Number != 0 && startRef != "" {
-				// a spent check-in with the pull request open verifies the
-				// head it judged below, like a dropped check-in: a bought
-				// session would stop at the same cap before any model call
-				// while the head sits waiting on the approval
+			spend := res.CheckIn.ReasonKind == CheckSpend
+			stop := checkinStop{spend: spend, share: spend && res.CheckIn.Reason == CheckinShareSpent,
+				callCap: spend && (res.Reason == checkinCallCapStop || res.Reason == checkinTimeCapStop)}
+			var verify bool
+			if startRef, verify = t.checkinAnswer(&u, stop, t.pr.Number != 0 && startRef != "", res.Commit, startRef); verify {
+				// verified below, as a dropped check-in's head is
 				res.Commit = startRef
 				break
-			} else if t.checkinGrant >= versionCheckinGrant && res.CheckIn.ReasonKind == CheckSpend && res.CheckIn.Reason == CheckinShareSpent {
-				// the share stop (issue 959): the answer grants the card
-				// one more share of the check-in budget beside the session
-				// it buys (versionCheckinGrant), so the next check-in
-				// moment runs where this one stopped the card
-				t.grantCheckin(&u, true)
-				t.lastCheckinStop.Granted = true
 			}
 			buy()
 			continue
@@ -2352,6 +2369,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if v.final != "" {
 			return t.finish(v.final, v.reason)
 		}
+		startRef = t.adopted(v, res.Commit)
 		apply(v)
 	}
 	return t.finish("failed", fmt.Sprintf("%d attempts exhausted; last: %s", t.cfg.MaxSessions+u.SessionsAdded(), reason))
@@ -2543,6 +2561,7 @@ func (t *taskRun) roll(head string) (string, error) {
 		if last = t.verify(head); last.final != "" {
 			return t.finish(last.final, last.reason)
 		}
+		head = t.adopted(last, head)
 	}
 }
 
@@ -2679,6 +2698,46 @@ func (t *taskRun) grant(u *TaskUsage) {
 	t.grantTime(u)
 }
 
+// checkinStop is a check-in stop as its answer reads it: under spend, and
+// of those the budget's share spent, or the call cap or the time cap
+// reached.
+type checkinStop struct{ spend, share, callCap bool }
+
+// checkinAnswer takes a human's answer to a check-in stop whose session
+// started from head and pushed pushed, "" for nothing. from is the head
+// the card goes on from: the session's own push (versionCheckinAnswer).
+// verify: the answer verifies from again instead of buying the session,
+// as a spend stop's does with the pull request open (versionCheckinSpend);
+// the call cap's and the time cap's buys the session (versionCheckinRaise).
+// The share stop's answer grants one more share (versionCheckinGrant),
+// beside the verification too (versionCheckinAnswer), recorded at once
+// there, for the runner reads the share from the row at the next check-in.
+func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, head string) (from string, verify bool) {
+	if pushed != "" && pushed != head && t.checkinAnswers() {
+		head = pushed
+	}
+	switch {
+	case s.callCap && t.checkinRaise >= versionCheckinRaise:
+		t.lastCheckinStop.Granted = true
+	case s.spend && open && t.checkinSpend >= versionCheckinSpend:
+		if s.share && t.checkinAnswers() {
+			t.grantCheckin(u, true)
+			t.recordUsage(*u)
+		}
+		return head, true
+	case s.share && t.checkinGrant >= versionCheckinGrant:
+		t.grantCheckin(u, true)
+		t.lastCheckinStop.Granted = true
+	}
+	return head, false
+}
+
+// checkinAnswers: the run takes the checkin-answer change
+// (versionCheckinAnswer), read where an answer or a repeat first differs.
+func (t *taskRun) checkinAnswers() bool {
+	return workflow.GetVersion(t.ctx, "checkin-answer", workflow.DefaultVersion, versionCheckinAnswer) >= versionCheckinAnswer
+}
+
 // grantCheckin is the share of the check-in budget an answer to its share
 // stop buys beside the attempt (versionCheckinGrant, issue 959): one more
 // of the policy's CheckinShareOf widths, so the stretch the answer pays
@@ -2786,8 +2845,10 @@ func (t *taskRun) readRaise(u *TaskUsage) {
 // card's workflow (roadmap 187) has that pull request already: with
 // versionFactoryPRCard and RunState's FactoryPR set, verify skips
 // OpenPullRequest and takes the head straight to the stages.
-func (t *taskRun) verify(commit string) verdict {
+func (t *taskRun) verify(commit string) (v verdict) {
 	t.judged = append(t.judged, commit)
+	t.head = commit
+	defer func() { v.head = t.head }()
 	if t.factoryPRCard >= versionFactoryPRCard && t.orphanPR {
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
@@ -2858,7 +2919,20 @@ func (t *taskRun) resumeVerify(head *string) verdict {
 		*head = branch
 		v = t.verify(branch)
 	}
+	*head = t.adopted(v, *head)
 	return v
+}
+
+// adopted is the head a verification of commit ended on (verdict.head):
+// one a stage adopted past commit, judged as commit was
+// (versionVerifiedHead); commit when none did, or in a run from before.
+func (t *taskRun) adopted(v verdict, commit string) string {
+	if v.head == "" || v.head == commit ||
+		workflow.GetVersion(t.ctx, "verified-head", workflow.DefaultVersion, versionVerifiedHead) < versionVerifiedHead {
+		return commit
+	}
+	t.judged = append(t.judged, v.head)
+	return v.head
 }
 
 // gate takes a commit with green checks through the gates, the model

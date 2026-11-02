@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -4590,6 +4591,9 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	if !slices.Equal(res.CheckIn.Findings, []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}) || res.CheckIn.Review == nil || res.CheckIn.Review.Verdict != "concerns" {
 		t.Fatalf("the stop's work state = %+v, want the ask's findings and review", res.CheckIn)
 	}
+	if math.Abs(res.CheckIn.Share-0.03) > 1e-9 {
+		t.Fatalf("the stop's share = %v, want the card's €0.03", res.CheckIn.Share)
+	}
 	if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
 		t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
 	}
@@ -4644,6 +4648,9 @@ func TestRunSessionCheckinShareGrantedByAnAnswerRuns(t *testing.T) {
 	}
 	if chat.calls != 1 {
 		t.Fatalf("check-in calls = %d, want the one conversation the grant paid for", chat.calls)
+	}
+	if math.Abs(res.CheckIn.Share-0.06) > 1e-9 {
+		t.Fatalf("the check-in's share = %v, want the card's €0.03 widened by the grant to €0.06", res.CheckIn.Share)
 	}
 }
 

@@ -148,6 +148,9 @@ type CheckInOutcome struct {
 	// fabricated stop names the work, not the spend alone
 	Findings []CheckFinding `json:",omitempty"`
 	Review   *Review        `json:",omitempty"`
+	// Share is the card's check-in share in euros when the check-in ran:
+	// the policy's share of the budget, widened by every granted share
+	Share float64 `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under

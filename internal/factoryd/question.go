@@ -314,9 +314,7 @@ func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
 	info := continueInfo
-	// with the pull request open the answer verifies its head again and
-	// grants nothing (versionCheckinSpend)
-	if f.CheckinGrant > 0 && f.PR == 0 {
+	if f.CheckinGrant > 0 {
 		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f) and starts the session again with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
 	}
 	q := &HumanQuestion{
@@ -882,13 +880,13 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // questionFacts reads the numbers the templates fill from: the check-in
 // spend the task has made, the policy's call cap and the card's shares,
 // the caps and money of the card and of the month wherever a template or
-// the plain tail shows them, and the card's pull request, which a budget
-// stop's raise funds and a check-in share stop's answer verifies. It reads
-// nothing for a reason the templates do not cover.
+// the plain tail shows them, and the pull request a budget stop's raise
+// funds. It reads nothing for a reason the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
-	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan, PR: t.PRNumber}
+	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
 		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+		track.PR = t.PRNumber
 		return track
 	}
 	f := track

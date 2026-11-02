@@ -50,7 +50,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			reason: checkinSpendAsk + CheckinShareSpent,
 			facts:  prFacts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
-			info:   "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent.",
+			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in time cap": {
@@ -213,8 +213,8 @@ func TestPlainCheckinStopCarriesThePace(t *testing.T) {
 
 // The stop templates' numbers, read per prefix: the month's spend and
 // cap at a month-cap stop, the card's caps, grants and money at the
-// caps and the plain check-in tail, the pull request at a budget stop and
-// at a check-in share stop, the grant's share at the check-in spend stops.
+// caps and the plain check-in tail, the pull request at a budget stop,
+// the grant's share at the check-in spend stops.
 func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	store := newFakeStore()
 	store.checkinSpent = map[string]float64{"t1": 1.2}
@@ -242,8 +242,8 @@ func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	if f := r.questionFacts(context.Background(), task, budgetRefused+": detail"); f.PR != 4711 {
 		t.Errorf("the budget stop reads no pull request: %d", f.PR)
 	}
-	if f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent); f.CheckinGrant != 1 || f.PR != 4711 {
-		t.Errorf("CheckinGrant = %v, PR = %d, want the base share 1 and the pull request 4711", f.CheckinGrant, f.PR)
+	if f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent); f.CheckinGrant != 1 {
+		t.Errorf("CheckinGrant = %v, want the base share 1", f.CheckinGrant)
 	}
 }
 
