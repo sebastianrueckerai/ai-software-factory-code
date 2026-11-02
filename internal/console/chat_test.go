@@ -1052,6 +1052,12 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.serveTitle(w, r)
 		return
 	}
+	// the call arrives whole: a stop the test sends once it arrived may
+	// cancel the request before its body is sent
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !g.lenient {
+		g.t.Errorf("model call body: %v", err)
+	}
 	if g.arrived != nil {
 		g.arrived <- struct{}{}
 	}
@@ -1064,10 +1070,6 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	time.Sleep(slow)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !g.lenient {
-		g.t.Errorf("model call body: %v", err)
-	}
 	task := factoryd.ChatTaskID(cmp.Or(g.project, "ai-software-factory-code"), time.Now())
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeCompact {
 		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.Small || body["max_tokens"] != float64(2048) {
