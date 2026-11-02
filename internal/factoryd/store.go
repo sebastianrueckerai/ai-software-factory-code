@@ -1727,7 +1727,7 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 		return 0, 0, err
 	}
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	e, _, err = insertEvent(ctx, tx, e)
+	e, _, err = s.insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1765,7 +1765,7 @@ func (s *PGStore) ExtendCard(ctx context.Context, id string, sessions, lines int
 	}
 	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
 	e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, from, to
-	e, _, err = insertEvent(ctx, tx, e)
+	e, _, err = s.insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -2309,9 +2309,14 @@ func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) err
 	return nil
 }
 
+// supersededNote is the decision note of a request a newer one of its
+// kind replaced.
+const supersededNote = "superseded by a newer request"
+
 // OpenApproval records approval request a and answers its id, in one
 // transaction that first denies the task's pending request of a merge or
-// plan kind as superseded (a retry, a new head, a new revision).
+// plan kind as superseded (a retry, a new head, a new revision), and
+// resolves a superseded merge request's case.
 // RequestApproval, RequestPlan and the verdict's gap question call it.
 func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2321,8 +2326,13 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	if a.Kind == ApprovalMerge || a.Kind == ApprovalPlan {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = 'superseded by a newer request'
-			 WHERE task_id = $1 AND kind = $3 AND status = 'pending'`, a.TaskID, FactoryDecider, a.Kind); err != nil {
+			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = $4
+			 WHERE task_id = $1 AND kind = $3 AND status = 'pending'`, a.TaskID, FactoryDecider, a.Kind, supersededNote); err != nil {
+			return 0, err
+		}
+	}
+	if a.Kind == ApprovalMerge {
+		if err := endMergeCase(ctx, tx, a.TaskID, "denied", FactoryDecider, supersededNote); err != nil {
 			return 0, err
 		}
 	}
@@ -2341,43 +2351,106 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 }
 
 // ResolveApprovals decides the task's pending requests of kind ("" =
-// every kind) — status, by whom, why. The gates' merges and refusals,
-// the plan's denials, a switch to plan and the verdict's criteria
-// grants call it; nothing pending is a no-op, no error.
+// every kind) — status, by whom, why — and resolves a decided merge
+// request's case with them. The gates' merges and refusals, the plan's
+// denials, a switch to plan and the verdict's criteria grants call it;
+// nothing pending is a no-op, no error.
 func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
-		 WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending'`, taskID, kind, status, by, note)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var merges int
+	if err := tx.QueryRowContext(ctx,
+		`WITH decided AS (
+		     UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
+		     WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending' RETURNING kind
+		 )
+		 SELECT count(*) FROM decided WHERE kind = $6`, taskID, kind, status, by, note, ApprovalMerge).Scan(&merges); err != nil {
+		return err
+	}
+	if merges > 0 {
+		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
-// UndecideApproval puts request id back to pending, undecided. The
-// gates' decide-and-signal path is its sole caller, undoing its decision
-// when the signal fails; it decides no guard — any row goes back.
+// UndecideApproval puts request id back to pending, undecided, and a
+// merge request's case with it. The gates' decide-and-signal path is its
+// sole caller, undoing its decision when the signal fails; it decides no
+// guard — any row goes back.
 func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = ''
-		WHERE id = $1`, id)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = ''
+		WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if err := openMergeCase(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ReopenApproval puts the task's newest request of kind, pending or
 // approved, back to pending with note — why the approval has not taken
-// effect (a refused or failed merge); a denied one stays denied. The
-// gates' merge refusal note is its sole caller.
+// effect (a refused or failed merge) — and a merge request's case with
+// it; a denied one stays denied. The gates' merge refusal note is its
+// sole caller.
 func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = $3
-		WHERE id = (SELECT max(id) FROM approval_requests WHERE task_id = $1 AND kind = $2) AND status <> 'denied'`, taskID, kind, note)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var id int64
+	err = tx.QueryRowContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = $3
+		WHERE id = (SELECT max(id) FROM approval_requests WHERE task_id = $1 AND kind = $2) AND status <> 'denied' RETURNING id`,
+		taskID, kind, note).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if err := openMergeCase(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// DecideApproval decides one pending approval request of kind: a human's
-// approve or deny in the console, or the gates' decide-and-signal pass.
-// ErrNotFound when no such request is pending.
+// DecideApproval decides one pending approval request of kind, and a
+// merge request's case with it: a human's approve or deny in the
+// console, or the gates' decide-and-signal pass. ErrNotFound when no
+// such request is pending.
 func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var taskID string
+	err = tx.QueryRowContext(ctx,
 		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
-		 WHERE id = $1 AND kind = $2 AND status = 'pending'`, id, kind, status, by, note)
-	return oneRow(res, err, fmt.Sprintf("pending %s approval request %d", kind, id))
+		 WHERE id = $1 AND kind = $2 AND status = 'pending' RETURNING task_id`, id, kind, status, by, note).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("pending %s approval request %d: %w", kind, id, ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if kind == ApprovalMerge {
+		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ApprovalRequests lists the requests in status, oldest first (by id):

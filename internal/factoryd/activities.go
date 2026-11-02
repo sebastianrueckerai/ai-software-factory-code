@@ -1422,7 +1422,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	// values, and park and keep waiting record an answer without posting
 	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason)}
+	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
+		"reason": textutil.Truncate(reason, 300)}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
 		if shaped.Recommendation != "" {

@@ -2297,13 +2297,15 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	want := []Event{
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent",
-				"ask": "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first"}},
+				"reason": "The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first",
+				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first"}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor"}},
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
 			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor",
-				"ask": "This card stopped and needs your decision: how should it go on?",
-				"why": "supervisor escalated: the check cannot pass", "info": plainInfo,
+				"reason": "supervisor escalated: the check cannot pass\n\nProgress: 3 commands",
+				"ask":    "This card stopped and needs your decision: how should it go on?",
+				"why":    "supervisor escalated: the check cannot pass", "info": plainInfo,
 				"choices": []string{"Go on", "Leave it waiting", "End the card"}}},
 	}
 	if !reflect.DeepEqual(rows.rows, want) {

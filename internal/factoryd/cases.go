@@ -136,7 +136,7 @@ const (
 
 const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution`
 
-func scanCase(row interface{ Scan(...any) error }) (Case, error) {
+func scanCase(row rowScanner) (Case, error) {
 	var c Case
 	var facts, money, resolution []byte
 	if err := row.Scan(&c.ID, &c.TaskID, &c.Repository, &c.Kind, &c.StateKey, &c.Status, &c.Problem, &facts, &money,
@@ -161,8 +161,17 @@ func scanCase(row interface{ Scan(...any) error }) (Case, error) {
 
 // OpenCase inserts c unless an open or at_human case with the same
 // task, kind and state key exists; then it returns that case and false,
-// and changes nothing on it. An empty Status opens the case as open.
+// and changes nothing on it. An empty Status opens the case as open; a
+// status other than open or at_human is refused.
 func (s *PGStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
+	return openCase(ctx, s.db, c)
+}
+
+func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
+	c.Status = cmp.Or(c.Status, CaseOpen)
+	if c.Status != CaseOpen && c.Status != CaseAtHuman {
+		return Case{}, false, fmt.Errorf("OpenCase opens a case only as open or at_human, not %s; ResolveCase or WithdrawCase ends it", c.Status)
+	}
 	if c.Facts == nil {
 		c.Facts = map[string]any{}
 	}
@@ -176,24 +185,34 @@ func (s *PGStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 			return Case{}, false, err
 		}
 	}
-	got, err := scanCase(s.db.QueryRowContext(ctx,
-		`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, comment_id, follows)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, NULLIF($10::bigint, 0))
-		 ON CONFLICT (task_id, kind, state_key) WHERE `+caseLive+` DO NOTHING
-		 RETURNING `+caseColumns,
-		c.TaskID, c.Repository, c.Kind, c.StateKey, cmp.Or(c.Status, CaseOpen), c.Problem, facts, money, c.CommentID, c.Follows))
-	if !errors.Is(err, sql.ErrNoRows) {
-		return got, err == nil, err
+	// the live case the insert met may end before the select reads it:
+	// then the insert goes in on its second try
+	for try := 0; ; try++ {
+		got, err := scanCase(q.QueryRowContext(ctx,
+			`INSERT INTO cases (task_id, repository, kind, state_key, status, problem, facts, money, comment_id, follows)
+			 VALUES ($1, $2, $3, $4, $5, $6, $7::jsonb, $8::jsonb, $9, NULLIF($10::bigint, 0))
+			 ON CONFLICT (task_id, kind, state_key) WHERE `+caseLive+` DO NOTHING
+			 RETURNING `+caseColumns,
+			c.TaskID, c.Repository, c.Kind, c.StateKey, c.Status, c.Problem, facts, money, c.CommentID, c.Follows))
+		if !errors.Is(err, sql.ErrNoRows) {
+			return got, err == nil, err
+		}
+		got, err = scanCase(q.QueryRowContext(ctx,
+			`SELECT `+caseColumns+` FROM cases WHERE task_id = $1 AND kind = $2 AND state_key = $3 AND `+caseLive,
+			c.TaskID, c.Kind, c.StateKey))
+		if !errors.Is(err, sql.ErrNoRows) || try == 1 {
+			return got, false, err
+		}
 	}
-	got, err = scanCase(s.db.QueryRowContext(ctx,
-		`SELECT `+caseColumns+` FROM cases WHERE task_id = $1 AND kind = $2 AND state_key = $3 AND `+caseLive,
-		c.TaskID, c.Kind, c.StateKey))
-	return got, false, err
 }
 
 // AppendCaseStep inserts step st of its case and answers its id. StartedAt
 // is the store's now; an empty Outcome is in_progress.
 func (s *PGStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
+	return appendCaseStep(ctx, s.db, st)
+}
+
+func appendCaseStep(ctx context.Context, q rowQuerier, st CaseStep) (int64, error) {
 	read, err := toJSON(nonNil(st.Read))
 	if err != nil {
 		return 0, err
@@ -203,7 +222,7 @@ func (s *PGStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error
 		return 0, err
 	}
 	var id int64
-	err = s.db.QueryRowContext(ctx,
+	err = q.QueryRowContext(ctx,
 		`INSERT INTO case_steps (case_id, rung, actor, read, found, did, decision, grounds, cost_eur, outcome)
 		 VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10) RETURNING id`,
 		st.CaseID, st.Rung, st.Actor, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, cmp.Or(st.Outcome, StepInProgress)).Scan(&id)
@@ -214,6 +233,9 @@ func (s *PGStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error
 // found, did, decided and cost; ErrNotFound when no such step is in
 // progress, as after its case ended.
 func (s *PGStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
+	if outcome == StepInProgress {
+		return errors.New("EndCaseStep ends a step as resolved, handed_up or withdrawn, not in_progress")
+	}
 	b, err := toJSON(nonNil(did))
 	if err != nil {
 		return err
@@ -229,6 +251,9 @@ func (s *PGStore) EndCaseStep(ctx context.Context, id int64, outcome, found stri
 // ErrNotFound when the case is not live. ResolveCase and WithdrawCase
 // end a case.
 func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	if status != CaseOpen && status != CaseAtHuman {
+		return errors.New("SetCaseStatus moves a case only to open or at_human; ResolveCase or WithdrawCase ends it")
+	}
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND `+caseLive, id, status)
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
@@ -236,23 +261,31 @@ func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) er
 // ResolveCase ends live case id as resolved by r, and its in-progress
 // steps with it; ErrNotFound when the case is not live.
 func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution) error {
-	return s.endCase(ctx, id, CaseResolved, StepResolved, r)
+	return resolveCase(ctx, s.db, id, r)
+}
+
+func resolveCase(ctx context.Context, q rowQuerier, id int64, r CaseResolution) error {
+	return endCase(ctx, q, id, CaseResolved, StepResolved, r)
 }
 
 // WithdrawCase ends live case id as withdrawn by the factory for reason,
 // and its in-progress steps with it; ErrNotFound when the case is not
 // live.
 func (s *PGStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
-	return s.endCase(ctx, id, CaseWithdrawn, StepWithdrawn, CaseResolution{By: "factory", Rung: 0, Action: "withdraw", Reason: reason})
+	return withdrawCase(ctx, s.db, id, reason)
 }
 
-func (s *PGStore) endCase(ctx context.Context, id int64, status, outcome string, r CaseResolution) error {
+func withdrawCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
+	return endCase(ctx, q, id, CaseWithdrawn, StepWithdrawn, CaseResolution{By: "factory", Rung: 0, Action: "withdraw", Reason: reason})
+}
+
+func endCase(ctx context.Context, q rowQuerier, id int64, status, outcome string, r CaseResolution) error {
 	b, err := toJSON(r)
 	if err != nil {
 		return err
 	}
 	var n int
-	err = s.db.QueryRowContext(ctx,
+	err = q.QueryRowContext(ctx,
 		`WITH ended AS (
 		     UPDATE cases SET status = $2, resolved_at = now(), resolution = $3::jsonb WHERE id = $1 AND `+caseLive+` RETURNING id
 		 ), steps AS (

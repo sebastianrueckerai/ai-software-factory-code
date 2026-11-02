@@ -35,7 +35,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	ctx := context.Background()
 	s := caseStore(t)
 	capped := Case{TaskID: "t1", Repository: "sf/r", Kind: CaseSessionCap, StateKey: "k1", Problem: "the session cap stopped the card",
-		Facts: map[string]any{"session": "s-1"}, Money: &CaseMoney{Kind: "session", BudgetEUR: 2.5, SpentEUR: 2.5, NeedEUR: 1}}
+		Facts: map[string]any{"session": "s-1"}, Money: &CaseMoney{Kind: "session", BudgetEUR: 2.5, SpentEUR: 2.5, NeedEUR: 1}, CommentID: 27001}
 	a, opened, err := s.OpenCase(ctx, capped)
 	if err != nil || !opened || a.ID == 0 {
 		t.Fatalf("OpenCase k1 = %d, %v, %v; want a new case", a.ID, opened, err)
@@ -69,6 +69,14 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	b, opened, err := s.OpenCase(ctx, k2)
 	if err != nil || !opened || b.ID == a.ID {
 		t.Fatalf("OpenCase k2 = %d, %v, %v; want a new case beside %d", b.ID, opened, err, a.ID)
+	}
+	if err := s.SetCaseStatus(ctx, b.ID, CaseResolved); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetCaseStatus to resolved = %v, want a refusal that names ResolveCase", err)
+	}
+	ended := k2
+	ended.StateKey, ended.Status = "k3", CaseResolved
+	if _, _, err := s.OpenCase(ctx, ended); err == nil {
+		t.Fatal("OpenCase of a resolved case = nil error, want a refusal")
 	}
 
 	step, err := s.AppendCaseStep(ctx, CaseStep{CaseID: a.ID, Rung: 3, Actor: "sebastian", Outcome: StepInProgress})
@@ -148,6 +156,9 @@ func TestCaseStepsKeepTheirOrderAndTheirEnd(t *testing.T) {
 	}
 	if steps[1].EndedAt != nil || steps[1].Outcome != StepInProgress || len(steps[1].Read) != 0 || len(steps[1].Did) != 0 {
 		t.Fatalf("running step = %+v", steps[1])
+	}
+	if err := s.EndCaseStep(ctx, s2, StepInProgress, "", nil, "", "", 0); err == nil || errors.Is(err, ErrNotFound) {
+		t.Fatalf("EndCaseStep to in_progress = %v, want a refusal", err)
 	}
 	if err := s.EndCaseStep(ctx, s1, StepResolved, "", nil, "", "", 0); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("EndCaseStep of an ended step = %v, want ErrNotFound", err)

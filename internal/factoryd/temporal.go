@@ -517,7 +517,8 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 	if in != nil {
 		pullQueued(ctx, in.Store, in.Workflows, t.Repository)
 	}
-	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment}
+	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "source": "stale",
+		"reason": textutil.Truncate(reason, 300)}
 	if shaped != nil {
 		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info
 		asked["choices"] = shaped.Labels()
