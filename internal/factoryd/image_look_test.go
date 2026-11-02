@@ -54,11 +54,16 @@ type lookEnv struct {
 	serve    map[string][]byte
 }
 
+// planText is the workspace's docs/plan.md.
+const planText = "# Plan\n\nTwo cards: the store, then the page.\n"
+
 // newLookEnv is a runner whose coder class names vision_model vision,
 // task t-1 on card sf/app#12 running a session in pod factory-agents-x/p1,
 // and child t-2 (card #13, no images of its own) of parent t-1. Card #12
 // carries img1.png on its issue and two image.png and a notes.txt on a
-// comment; the workspace holds shots/home.png and a text file.
+// comment; the workspace holds shots/home.png, docs/plan.md, docs/big.md
+// a byte over the digest's cap (a worker that ignores it) and docs/huge.md,
+// which the worker refuses as too large.
 func newLookEnv(t *testing.T) *lookEnv {
 	t.Helper()
 	e := &lookEnv{store: newFakeStore(), vision: &fakeVision{}, serve: map[string][]byte{
@@ -108,6 +113,12 @@ func newLookEnv(t *testing.T) *lookEnv {
 		case "shots/home.png":
 			w.Header().Set("Content-Type", "image/png")
 			w.Write(pngBytes)
+		case "docs/plan.md":
+			io.WriteString(w, planText)
+		case "docs/big.md":
+			w.Write(bytes.Repeat([]byte("x"), policy.MaxDigestBytes+1))
+		case "docs/huge.md":
+			http.Error(w, "docs/huge.md is larger than 128 KiB, more than one digest reads: read the part you need with the read tool's offset and limit", http.StatusRequestEntityTooLarge)
 		case "/etc/hostname":
 			http.Error(w, "/etc/hostname is outside the workspace", http.StatusForbidden)
 		case "old.png":

@@ -491,6 +491,9 @@ func main() {
 	// on the card's account
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}
 	mux.Handle("POST /internal/image-look", requireBearer(gatewayToken, runner.ImageLookHandler(operator)))
+	// the gateway's hand-over of a session's digest: the chat's Small
+	// digest, on the card's account
+	mux.Handle("POST /internal/digest", requireBearer(gatewayToken, runner.DigestHandler(operator)))
 	mux.Handle("GET /tasks/{id}", requireBearer(intakeToken, func(w http.ResponseWriter, r *http.Request) {
 		task, ok, err := store.Task(r.Context(), r.PathValue("id"))
 		if err != nil {

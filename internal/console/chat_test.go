@@ -4815,4 +4815,8 @@ func TestChatAnalyzeImageAskIsBounded(t *testing.T) {
 	if len(g.visions) != 0 {
 		t.Fatalf("%d vision calls, want none", len(g.visions))
 	}
+	g.replies = [][]string{{call(1, "analyze_image", `{"name":"img1","ask":"`+strings.Repeat("é", 2000)+`"}`)}, {say("Seen.")}}
+	if _, events, _ = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is in img1?"}}); len(g.visions) != 1 {
+		t.Fatalf("an ask of 2000 characters in 4000 bytes = %v, %d vision calls, want one", events, len(g.visions))
+	}
 }

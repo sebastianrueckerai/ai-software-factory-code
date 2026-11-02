@@ -27,9 +27,9 @@ type Visioner interface {
 	Vision(ctx context.Context, taskID, alias, thread, ask string, image []byte, contentType string) (string, error)
 }
 
-// imageReadTimeout bounds the read of the image a look names, from
-// Forgejo or the session's pod; the vision call has its own.
-const imageReadTimeout = 20 * time.Second
+// fileReadTimeout bounds the read of the file a look or a digest names,
+// from Forgejo or the session's pod; the model call has its own.
+const fileReadTimeout = 20 * time.Second
 
 // imageExts are the file name extensions of a card's images.
 var imageExts = []string{".png", ".jpg", ".jpeg", ".webp", ".gif"}
@@ -88,12 +88,12 @@ func (r *Runner) ImageLookHandler(v Visioner) http.HandlerFunc {
 			http.Error(w, fmt.Sprintf("the classes %q of task %s name no vision_model, which a look calls", t.RequiredCapabilities, t.ID), http.StatusConflict)
 			return
 		}
-		rctx, cancel := context.WithTimeout(ctx, imageReadTimeout)
+		rctx, cancel := context.WithTimeout(ctx, fileReadTimeout)
 		var name, from string
 		var data []byte
 		if in.Path != "" {
-			from = "the session's sandbox"
-			name, data, err = r.workspaceImage(rctx, t, in.Path)
+			from, name = "the session's sandbox", in.Path
+			data, err = r.workspaceFile(rctx, t, "/image", in.Path, policy.MaxLookBytes, in.Path+" is larger than 8 MiB")
 		} else {
 			from = "Forgejo"
 			name, data, err = r.cardImage(rctx, t, in.CardImage)
@@ -225,48 +225,49 @@ func imageNames(images []IssueAsset) string {
 	return strings.Join(out, ", ")
 }
 
-// workspaceImage is file p of task t's running session's workspace, which
-// the pod's worker reads (POST /image): its refusal is the worker's
-// sentence with its status.
-func (r *Runner) workspaceImage(ctx context.Context, t Task, p string) (string, []byte, error) {
+// workspaceFile is file p of task t's running session's workspace, which
+// the pod's worker reads at route (POST /image, POST /file), refused with
+// tooLarge past max bytes: the worker's refusal is its sentence with its
+// status.
+func (r *Runner) workspaceFile(ctx context.Context, t Task, route, p string, max int, tooLarge string) ([]byte, error) {
 	live, ok, err := r.store.LiveSession(ctx, t.ID)
 	if err != nil {
-		return p, nil, err
+		return nil, err
 	}
 	if !ok {
-		return p, nil, &lookRefusal{http.StatusConflict, fmt.Sprintf("task %s runs no session now: a workspace file is read from the running session's sandbox", t.ID)}
+		return nil, &lookRefusal{http.StatusConflict, fmt.Sprintf("task %s runs no session now: a workspace file is read from the running session's sandbox", t.ID)}
 	}
 	ip, err := r.kube.PodIP(ctx, live.Namespace, live.Pod)
 	if err != nil {
-		return p, nil, fmt.Errorf("pod address: %w", err)
+		return nil, fmt.Errorf("pod address: %w", err)
 	}
 	body, err := json.Marshal(map[string]string{"path": p})
 	if err != nil {
-		return p, nil, err
+		return nil, err
 	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+"/image", bytes.NewReader(body))
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+route, bytes.NewReader(body))
 	if err != nil {
-		return p, nil, err
+		return nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+live.MessageToken)
 	req.Header.Set("Content-Type", "application/json")
 	resp, err := workerReads.Do(req)
 	if err != nil {
-		return p, nil, err
+		return nil, err
 	}
 	defer resp.Body.Close()
-	data, err := io.ReadAll(io.LimitReader(resp.Body, policy.MaxLookBytes+1))
+	data, err := io.ReadAll(io.LimitReader(resp.Body, int64(max)+1))
 	switch {
 	case err != nil:
-		return p, nil, err
-	case resp.StatusCode == http.StatusOK && len(data) > policy.MaxLookBytes:
-		return p, nil, &lookRefusal{http.StatusRequestEntityTooLarge, p + " is larger than 8 MiB"}
+		return nil, err
+	case resp.StatusCode == http.StatusOK && len(data) > max:
+		return nil, &lookRefusal{http.StatusRequestEntityTooLarge, tooLarge}
 	case resp.StatusCode == http.StatusOK:
-		return p, data, nil
+		return data, nil
 	case resp.StatusCode == http.StatusNotFound && strings.TrimSpace(string(data)) == "404 page not found":
-		return p, nil, &lookRefusal{http.StatusConflict, fmt.Sprintf("task %s's session runs a worker without the workspace read: its next session has it", t.ID)}
+		return nil, &lookRefusal{http.StatusConflict, fmt.Sprintf("task %s's session runs a worker without the workspace read: its next session has it", t.ID)}
 	case resp.StatusCode >= 400 && resp.StatusCode < 500 && resp.StatusCode != http.StatusUnauthorized:
-		return p, nil, &lookRefusal{resp.StatusCode, strings.TrimSpace(string(data))}
+		return nil, &lookRefusal{resp.StatusCode, strings.TrimSpace(string(data))}
 	}
-	return p, nil, fmt.Errorf("worker answered %d: %s", resp.StatusCode, textutil.Truncate(string(bytes.TrimSpace(data)), 300))
+	return nil, fmt.Errorf("worker answered %d: %s", resp.StatusCode, textutil.Truncate(string(bytes.TrimSpace(data)), 300))
 }

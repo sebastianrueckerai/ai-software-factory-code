@@ -428,14 +428,34 @@ func TestValidatePlanOneCard(t *testing.T) {
 	}
 }
 
+// The guide maps before it reads and keeps the conventions sentence; it
+// names digest only to a session whose tools hold it.
+func TestPlanGuideReadDiscipline(t *testing.T) {
+	conventions := "The issue's text tells what to build; every card follows the repository's conventions. "
+	mapFirst := "Map the repository before you read it: grep and glob find where things are, and the task tool's explore agent searches it on the cheaper model. " +
+		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
+	digest := "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
+	with := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan, policy.ToolDigest})
+	if !strings.Contains(with, conventions+mapFirst+digest+"Draft the spec before the cards") {
+		t.Fatalf("planGuide with digest = %q, want %q", with, conventions+mapFirst+digest)
+	}
+	without := planGuide(testShape, testLimits, nil, []string{policy.ToolFilePlan})
+	if !strings.Contains(without, conventions+mapFirst+"Draft the spec before the cards") || strings.Contains(strings.ToLower(without), "digest") {
+		t.Fatalf("planGuide without digest = %q, want the map-first passage and no digest", without)
+	}
+	if strings.Contains(with, "Read it and the repository") {
+		t.Fatal("planGuide still asks to read the repository")
+	}
+}
+
 // The guide tells the planner a change that fits one card answers one
 // card when the process allows it, and stays quiet when it does not.
 func TestPlanGuideOneCard(t *testing.T) {
 	want := "A change that fits one card answers one card, its own integration, citing every criterion."
-	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(policy.PlanShape{MinCards: 1, MaxCards: 12, Foundation: true, Integration: true}, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want no one-card sentence under a two-card minimum", got)
 	}
 }
@@ -472,11 +492,11 @@ func TestPlanCardNamesAPinnedImage(t *testing.T) {
 func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 	pins := map[string]policy.ImagePin{"video": {Tools: []string{"ffmpeg"}}, "browser": {Tools: []string{"chromium", "fonts-liberation"}}}
 	want := "Images: browser (chromium, fonts-liberation), video (ffmpeg); a card that needs one names it in image, any other card runs the default."
-	got := planGuide(testShape, testLimits, pins)
+	got := planGuide(testShape, testLimits, pins, nil)
 	if !strings.Contains(got, want) || !strings.Contains(got, `"rung_reason": "one line", "image": "..."}`) {
 		t.Fatalf("planGuide = %q, want the image field and %q", got, want)
 	}
-	if got := planGuide(testShape, testLimits, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
+	if got := planGuide(testShape, testLimits, nil, nil); strings.Contains(got, "Images:") || strings.Contains(got, `"image"`) || !strings.Contains(got, `"rung_reason": "one line"}]`) {
 		t.Fatalf("planGuide without pins = %q, want no image field and no Images line", got)
 	}
 }
@@ -485,7 +505,7 @@ func TestPlanGuideListsTheProjectsImages(t *testing.T) {
 // step budget (the guide gives no time estimate any more).
 func TestPlanGuideCardSizeSentence(t *testing.T) {
 	want := "A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -494,7 +514,7 @@ func TestPlanGuideCardSizeSentence(t *testing.T) {
 // and in the field rules. The line figures are readPlan's size
 // findings (roadmap 186).
 func TestPlanGuideSizes(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	if !strings.Contains(got, `"size": "small|medium|large"`) ||
 		!strings.Contains(got, "size: small, medium or large; anything bigger is two cards.") {
 		t.Fatalf("planGuide = %q, want the three sizes", got)
@@ -507,7 +527,7 @@ func TestPlanGuideSizes(t *testing.T) {
 // works on (the spec-intake concept, piece 2).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
 	want := "acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -516,7 +536,7 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 // dictates the criteria block's json shape, the kinds' field rules, the
 // citation rule, and the integration card's one item per criterion.
 func TestPlanGuideCriteria(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
 		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human"`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
@@ -547,7 +567,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 // confirmation that fixes the criteria, and the planner's one attack on
 // its own draft.
 func TestPlanGuideSpec(t *testing.T) {
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order"`,
 		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
@@ -568,7 +588,7 @@ func TestPlanGuideSpec(t *testing.T) {
 // out, so the planner answers it again, not the whole plan. A shape
 // without a foundation card reads no foundation in the paragraph.
 func TestPlanGuideRounds(t *testing.T) {
-	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil)
+	bare := planGuide(policy.PlanShape{MaxCards: 12, Integration: true}, testLimits, nil, nil)
 	want := "A feature too big for one round of cards is planned in rounds: file the first round's cards and keep the rest in outline; " +
 		"once every card of a round is done, you plan the next round from the outline, on top of what the round built. " +
 		"The merged cards of earlier rounds are not in your last plan. " +
@@ -576,7 +596,7 @@ func TestPlanGuideRounds(t *testing.T) {
 	if !strings.Contains(bare, want) || strings.Contains(bare, "foundation first") || strings.Contains(bare, "but a foundation") {
 		t.Fatalf("planGuide without a foundation = %q, want %q and no foundation in it", bare, want)
 	}
-	got := planGuide(testShape, testLimits, nil)
+	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
 		`"summary": "a paragraph: what gets built and in which order", "outline": ["..."]`,
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
@@ -600,10 +620,10 @@ func TestPlanGuideRounds(t *testing.T) {
 func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 	want := "The foundation's brief names the contracts every card builds on: how a handler gets the logged-in user (the function and its package), " +
 		"the store (its interface, its implementation's package, the methods stubbed), and the server constructor tests import (internal/server.New unless the template says otherwise)."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
-	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil), want) {
+	if strings.Contains(planGuide(policy.PlanShape{MaxCards: 2, Foundation: false, Integration: true}, testLimits, nil, nil), want) {
 		t.Fatal("a shape with no foundation card still gets the foundation's contracts sentence")
 	}
 }
@@ -612,7 +632,7 @@ func TestPlanGuideFoundationContractsSentence(t *testing.T) {
 // bash check, so it never asks a card to verify some other way.
 func TestPlanGuideBashCheckLine(t *testing.T) {
 	want := "Every card's agent and CI run bash check; do not ask a card to verify with a tool the check does not run."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -621,7 +641,7 @@ func TestPlanGuideBashCheckLine(t *testing.T) {
 // the planner's guide does not ask for it.
 func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 	for _, shape := range []policy.PlanShape{testShape, {MaxCards: 12}} {
-		if got := planGuide(shape, testLimits, nil); strings.Contains(got, "AGENTS.md") {
+		if got := planGuide(shape, testLimits, nil, nil); strings.Contains(got, "AGENTS.md") {
 			t.Fatalf("planGuide = %q, want no AGENTS.md", got)
 		}
 	}
@@ -632,7 +652,7 @@ func TestPlanGuideLeavesAGENTSmdToTheHarness(t *testing.T) {
 // so this sentence is the rule's only carrier.
 func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 	want := "Every card adds its routes in its own internal/server/routes_<key>.go, so no two cards edit one route list."
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -641,7 +661,7 @@ func TestPlanGuideKeepsOneRouteFilePerCard(t *testing.T) {
 // (defect 178): RunPlan refuses a session that ends without filing one.
 func TestPlanGuideFilesThroughTheTool(t *testing.T) {
 	want := "You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding "
-	if got := planGuide(testShape, testLimits, nil); !strings.Contains(got, want) {
+	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
 }
@@ -2584,8 +2604,9 @@ func TestPGStoreCatches(t *testing.T) {
 }
 
 // A planner session that ends without filing a plan says so, with its
-// last message and the files it read beside the finding; a filing an
-// earlier session left is stale, not this session's answer.
+// last message and the files it read beside the finding, which points a
+// class that lists digest at it, as its guide does; a filing an earlier
+// session left is stale, not this session's answer.
 func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
@@ -2593,6 +2614,7 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, plan, kube, &fakeObjectStore{})
 	pinned := fixtureVersion(t)
+	pinned.Document.Classes["planner"].Tools[policy.ToolDigest] = policy.ToolCap{}
 	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	runner.noteFiled("t-plan", PlanResult{Revision: 9}) // a session already ended on this
 	said := "I need to know whether accounts use passwords or magic links before I can split this."
@@ -2611,13 +2633,14 @@ func TestRunPlanEchoesALastMessageWithoutAPlan(t *testing.T) {
 		t.Fatalf("RunPlan: %v", err)
 	}
 	want := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner's last message: " + said,
-		"the planner session read 1 files before it ended: /workspace/repo/go.mod. File the plan from what they hold; read a file again only where the plan needs a detail."}
+		"the planner session read 1 files before it ended: /workspace/repo/go.mod. Their text ended with it: " +
+			"digest the files where the plan needs their detail, and read raw only the part a digest points at."}
 	if !slices.Equal(res.Findings, want) || res.Revision != 0 || res.Escalate != "" {
 		t.Fatalf("result %+v, want findings %q", res, want)
 	}
 	env := podEnv(kube.podAt(0))
 	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "You are the planner") ||
-		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") ||
+		!strings.Contains(env["REPORT_GUIDE"], "one package, one page, or one set of endpoints") || !strings.Contains(env["REPORT_GUIDE"], digestBig) ||
 		env["FINDINGS"] != `["an earlier finding"]` {
 		t.Fatalf("pod env %v", env)
 	}
@@ -3998,10 +4021,18 @@ func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 }
 
 func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
-	got := readsFinding([]string{"/workspace/repo/a.go", "/workspace/docs/b.md"})
-	want := "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. File the plan from what they hold; read a file again only where the plan needs a detail."
+	paths := []string{"/workspace/repo/a.go", "/workspace/docs/b.md"}
+	got := readsFinding(paths, []string{policy.ToolFilePlan, policy.ToolDigest})
+	want := "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. Their text ended with it: " +
+		"digest the files where the plan needs their detail, and read raw only the part a digest points at."
 	if got != want {
 		t.Fatalf("readsFinding = %q, want %q", got, want)
+	}
+	got = readsFinding(paths, []string{policy.ToolFilePlan})
+	want = "the planner session read 2 files before it ended: /workspace/repo/a.go, /workspace/docs/b.md. Their text ended with it: " +
+		"grep the files for what the plan needs, and read only that part."
+	if got != want {
+		t.Fatalf("readsFinding without digest = %q, want %q", got, want)
 	}
 }
 
@@ -4012,7 +4043,7 @@ func TestReadsFindingNamesThePathsAndTheWayOn(t *testing.T) {
 // time top the next session up to half the cap (10m + 2m grace); the
 // human's 5m neither block that nor grow.
 func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
-	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. File the plan from what they hold; read a file again only where the plan needs a detail."}
+	found := []string{"plan: the session ended without filing a plan through the file_plan tool", "the planner session read 1 files before it ended: /w/a.go. Their text ended with it: grep the files for what the plan needs, and read only that part."}
 	h := newPlanHarness(t, PlanResult{Findings: found}, PlanResult{Revision: 1, SHA256: "sha-1"})
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, ExtraTime: 5 * time.Minute, Attempts: 1}}
 	var budgets []time.Duration

@@ -1128,20 +1128,31 @@ func againLine(k Task) string {
 		"(git diff %s^1 %s shows them), make it build green, and land it.", k.IssueNumber, k.PlanKey, k.MergeCommit, k.MergeCommit)
 }
 
+// mapFirst is the planner's read discipline: discovery by grep, glob and
+// the cheap explore agent, a whole read kept for what the plan needs;
+// digestBig its digest, for a session whose tools hold it.
+const (
+	mapFirst = "Map the repository before you read it: grep and glob find where things are, and the task tool's explore agent searches it on the cheaper model. " +
+		"A file you read whole stays in your context to the end, so read only the part the plan needs. "
+	digestBig = "Digest a big file with a pointed ask, and read raw only the part its answer points at. "
+)
+
 // planGuide is the planner's guide: the spec is the issue, the answer a
 // plan filed with the file_plan tool, a card one session of the pinned
 // limits. The shape's mechanical rules (counts, keys, bounds, cycles) are
 // readPlan's findings, not this prose (roadmap 186). pins are the
-// project's images a card may name.
-func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) string {
+// project's images a card may name, tools the session's.
+func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin, tools []string) string {
 	first, butFoundation := "file the first round's cards", ""
 	if shape.Foundation {
 		first, butFoundation = "file the first round's cards, foundation first,", " but a foundation"
 	}
 	g := "You are the planner. " +
-		"The issue's text tells what to build. Read it and the repository: " +
-		"every card follows the repository's conventions. " +
-		"Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
+		"The issue's text tells what to build; every card follows the repository's conventions. " + mapFirst
+	if slices.Contains(tools, policy.ToolDigest) {
+		g += digestBig
+	}
+	g += "Draft the spec before the cards: the outcome in a few sentences, a glossary that names each component once, then the criteria; " +
 		"when the repository carries a spec skeleton at docs/spec.md, draft into its shape and carry its standing criteria. " +
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
@@ -2422,7 +2433,8 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	}
 	r.takeFiled(taskID) // a filing an earlier session left is stale here
 	began := time.Now()
-	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository)), findings, answers, extra)
+	tools := v.Document.Tools(t.RequiredCapabilities, t.Source)
+	end, err := r.reportSession(ctx, t, repo, model, t.Standing(), true, pin, planGuide(shape, v.Document.Limits, projectPins(r.cfg.Policy(), t.Repository), tools), findings, answers, extra)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -2451,7 +2463,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		found = append(found, "the planner's last message: "+textutil.Truncate(strings.TrimSpace(text), maxPlanEcho))
 	}
 	if len(end.reads) > 0 {
-		found = append(found, readsFinding(end.reads))
+		found = append(found, readsFinding(end.reads, tools))
 	}
 	r.record(ctx, taskID, "plan_invalid", map[string]any{"findings": found})
 	res := PlanResult{Findings: found, Capped: end.capped}
@@ -2494,10 +2506,15 @@ func (r *Runner) planRecord(ctx context.Context, t Task, tl []byte, findings []s
 	return extra, findings, nil
 }
 
-// readsFinding tells the next planner session what the last one read.
-func readsFinding(paths []string) string {
-	return fmt.Sprintf("the planner session read %d files before it ended: %s. File the plan from what they hold; read a file again only where the plan needs a detail.",
-		len(paths), textutil.Truncate(strings.Join(paths, ", "), maxPlanEcho))
+// readsFinding tells the next planner session, of tools, what the last
+// one read.
+func readsFinding(paths, tools []string) string {
+	way := "grep the files for what the plan needs, and read only that part."
+	if slices.Contains(tools, policy.ToolDigest) {
+		way = "digest the files where the plan needs their detail, and read raw only the part a digest points at."
+	}
+	return fmt.Sprintf("the planner session read %d files before it ended: %s. Their text ended with it: %s",
+		len(paths), textutil.Truncate(strings.Join(paths, ", "), maxPlanEcho), way)
 }
 
 // FilePlan is the file_plan tool's hand-over: the complete plan json of
