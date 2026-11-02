@@ -1161,7 +1161,7 @@ func TestCloseAPlanBetweenRounds(t *testing.T) {
 	r.tasks.mu.Unlock()
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	closeForm := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" hx-target="#note" hx-swap="innerHTML" ` +
+	closeForm := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" ` +
 		`hx-confirm="Close #50? Its issue closes as you, and the card ends." class="inline close" data-to="closed">`
 	if face := faceOf(t, body, "t-br"); !strings.Contains(face, closeForm) {
 		t.Errorf("the plan between rounds' face =\n%s\nwant it to hold\n%s", face, closeForm)
@@ -1188,7 +1188,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 	r, _ := newWritesRig(t)
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" hx-target="#note" hx-swap="innerHTML" ` +
+	closeForm := `<form method="post" action="/tasks/t-plan/close" hx-post="/tasks/t-plan/close" ` +
 		`hx-confirm="Close #40? Its issue closes as you, and the card ends." class="inline close" data-to="closed">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<input type="hidden" name="view" value="wide">` +

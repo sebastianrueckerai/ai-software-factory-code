@@ -386,8 +386,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 		t.Fatalf("bare text: %d %q", rec.Code, rec.Body)
 	}
 	// the night's answer: confirm with the words as findings
-	if rec := press("revision", "2", "index", "1", "decision", "confirm", "answer", night); rec.Code != http.StatusOK ||
-		rec.Body.String() != `<p class="note" role="status">Confirmed plan #1; its cards file.</p>` ||
+	if rec := press("revision", "2", "index", "1", "decision", "confirm", "answer", night); !pressRefreshes(rec) ||
 		!slices.Contains(r.fg.calls, "SIGNAL plan_answered t-plan 2 1 by sebastian") ||
 		r.fg.comments[comments] != "Answer 1: confirm · "+night {
 		t.Fatalf("the night's confirm: %d %q, calls %v, comment %q", rec.Code, rec.Body, r.fg.calls, r.fg.comments[comments])
@@ -398,8 +397,7 @@ func TestPlanCardDecidesTheConfirmation(t *testing.T) {
 	}
 	// Request changes with words, on a fresh round
 	r.tasks.questions["t-plan 2"][0] = factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}
-	if rec := press("revision", "2", "index", "1", "decision", "revise", "answer", "keep the slate clean"); rec.Code != http.StatusOK ||
-		rec.Body.String() != `<p class="note" role="status">Your changes are on plan #1; the planner answers a new revision.</p>` ||
+	if rec := press("revision", "2", "index", "1", "decision", "revise", "answer", "keep the slate clean"); !pressRefreshes(rec) ||
 		r.fg.comments[comments] != "Answer 1: revise · keep the slate clean" {
 		t.Fatalf("the revise: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments[comments])
 	}
@@ -465,9 +463,9 @@ func TestChatDecidesTheConfirmation(t *testing.T) {
 }
 
 // A Confirm on a revision that also asked real questions files nothing
-// yet: the answers go to the planner's next revision, and the note says
-// so. A bare confirm in a batch is the decision alone: no words, the
-// note and the comment name the decision.
+// yet: the answers go to the planner's next revision. A bare confirm in a
+// batch is the decision alone: no words, the note and the comment name
+// the decision.
 func TestConfirmBesideRealQuestions(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
@@ -477,7 +475,7 @@ func TestConfirmBesideRealQuestions(t *testing.T) {
 	ck, s := r.loggedIn(t)
 	rec := r.do(htmxPost("/tasks/t-plan/plan/answer", url.Values{"csrf": {s.csrf}, "project": {"linkshort"}, "revision": {"2"}, "index": {"2"},
 		"decision": {"confirm"}}), ck)
-	if rec.Code != http.StatusOK || rec.Body.String() != `<p class="note" role="status">Confirmed plan #1; the answers go to the next planner round.</p>` ||
+	if !pressRefreshes(rec) ||
 		r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"] != "Answer 2: confirm" {
 		t.Fatalf("the confirm beside a real question: %d %q, comment %q", rec.Code, rec.Body, r.fg.comments["/api/v1/repos/linkshort/linkshort/issues/1/comments"])
 	}

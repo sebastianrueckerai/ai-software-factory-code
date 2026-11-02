@@ -207,7 +207,7 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 		"Foundation first, then the API, then the acceptance tests.",
 		"<legend>1. How long are the results kept?</legend>",
 		`<p class="meta">1 question open. The answers go to the planner; its next revision with no open question files the cards.</p>`,
-		`hx-post="/tasks/t-plan/plan/changes" hx-target="#note" hx-swap="innerHTML"`,
+		`hx-post="/tasks/t-plan/plan/changes"`,
 	} {
 		if !strings.Contains(card, want) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
@@ -366,7 +366,7 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String() +
 		r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String()
 	failed := col(t, body, "Done")
-	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" hx-target="#note" hx-swap="innerHTML" class="inline">` +
+	form := `<form method="post" action="/tasks/t-c7/retry" hx-post="/tasks/t-c7/retry" class="inline">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `"><input type="hidden" name="project" value="linkshort">` +
 		`<button type="submit" aria-label="Retry #7">Retry</button></form>`
 	if !strings.Contains(failed, form) || !strings.Contains(failed, `action="/tasks/t-c9/retry"`) {
@@ -404,7 +404,7 @@ func TestRetryFilesTheReplacement(t *testing.T) {
 		t.Fatalf("alice retries: %d %q, retried %v, forgejo %v", rec.Code, rec.Body, r.retried, r.fg.calls)
 	}
 	rec := retry(ck, s.csrf)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "Retried #7 as #9; it starts once a work slot is free.") {
+	if !pressRefreshes(rec) {
 		t.Fatalf("retry: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.retried, []string{"t-c7 by sebastian"}) || len(r.fg.labelled) != 0 {
@@ -442,7 +442,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), "The factory runs it as #16; card #15 closes.") {
+	if !pressRefreshes(rec) {
 		t.Fatalf("the go: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.handed, []string{"t-wait by sebastian"}) {

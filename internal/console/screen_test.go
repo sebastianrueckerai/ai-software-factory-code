@@ -552,9 +552,11 @@ func TestWideViewKeepsTheStatesAndSurvivesThePoll(t *testing.T) {
 	form := url.Values{"csrf": {s.csrf}, "summary": {"the links"}, "project": {"linkshort"}, "view": {"wide"}}
 	req := post("/tasks/t-c2/summary", form)
 	req.Header.Set("HX-Request", "true")
-	if rec := r.do(req, ck); rec.Code != http.StatusOK || rec.Body.String() != `<p class="note" role="status">The card&#39;s summary is set.</p>` ||
-		rec.Header().Get("HX-Trigger") != "board-refresh" {
+	if rec := r.do(req, ck); !pressRefreshes(rec) {
 		t.Errorf("a form of the wide view answers %d: %s", rec.Code, rec.Body)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), "t-c2"); task.HumanSummary != "the links" {
+		t.Errorf("the wide view's form stored the summary %q, want the links", task.HumanSummary)
 	}
 	if rec := r.do(post("/tasks/t-c2/summary", form), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=linkshort&view=wide" {
 		t.Errorf("a browser's form of the wide view: %d to %q", rec.Code, rec.Header().Get("Location"))
@@ -892,7 +894,7 @@ Next: the tests.</p></div>
 
 // A steer from the drawer is the member's own act, so no proposal: the
 // steer function at once, its row with the text, and the Chat tab again
-// with the message in it and the steer's note; a GitHub token in it
+// with the message in it and no note; a GitHub token in it
 // reaches neither the session, the row, the stream nor the answer; a
 // card that runs no session refuses it and records nothing.
 func TestDrawerSteer(t *testing.T) {
@@ -919,9 +921,11 @@ func TestDrawerSteer(t *testing.T) {
 	if !slices.Equal(steered, []string{"t-run sebastian: Rebase on main first."}) {
 		t.Errorf("steered %q", steered)
 	}
+	if strings.Contains(rec.Body.String(), `class="note"`) {
+		t.Errorf("the steer's answer holds a note:\n%s", rec.Body)
+	}
 	for _, want := range []string{drawerTabMarkup("t-run", "chat", "Session", true),
-		`<div id="drawer-panel" class="drawer-body" role="tabpanel">
-<p class="note" role="status">The session of #11 has your message.</p>`,
+		`<div id="drawer-panel" class="drawer-body" role="tabpanel">`,
 		`<div class="msg you" data-key="e` + strconv.FormatInt(row.ID, 10) + `"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>` + row.At.UTC().Format("01-02 15:04") +
 			`Z</time></p><p class="said">Rebase on main first.</p></div>`} {
 		if !strings.Contains(rec.Body.String(), want) {
@@ -940,8 +944,7 @@ func TestDrawerSteer(t *testing.T) {
 	if got := strings.Join(nextMessage(t, br), "\n"); !strings.Contains(got, `"detail":{"text":"Push with [token] now."}`) || strings.Contains(got, token) {
 		t.Errorf("the stream carries %s", got)
 	}
-	if body := rec.Body.String(); strings.Contains(body, token) || !strings.Contains(body, `<p class="said">Push with [token] now.</p>`) ||
-		!strings.Contains(body, `<p class="note" role="status">The session of #11 has your message. I removed a GitHub token from it; it was not stored or sent.</p>`) {
+	if body := rec.Body.String(); strings.Contains(body, token) || !strings.Contains(body, `<p class="said">Push with [token] now.</p>`) || strings.Contains(body, `class="note"`) {
 		t.Errorf("the answer to a steer with a token:\n%s", body)
 	}
 	before = r.events.count()
@@ -1058,7 +1061,7 @@ func TestNeedsYouMergeItemIsBrief(t *testing.T) {
 	start := strings.Index(body, `aria-labelledby="approval-4"`)
 	card := body[start : start+strings.Index(body[start:], "</article>")]
 	for _, want := range []string{`<span class="chip risk">high risk</span> <span class="chip migration">migration</span>`,
-		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" hx-target="#note" hx-swap="innerHTML" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
+		`action="/approvals/4/approve"`, `<button type="button" class="deny" aria-expanded="false" aria-controls="deny-4">Deny</button>`, `<form method="post" action="/approvals/4/deny" hx-post="/approvals/4/deny" data-to="in-review" class="deny-box" id="deny-4" hidden>`, `<a href="#card=t-m:reviews" class="details">Details</a>`} {
 		if !strings.Contains(card, want) {
 			t.Errorf("the merge item lacks %s:\n%s", want, card)
 		}

@@ -345,15 +345,15 @@ func (c *Console) rerun(w http.ResponseWriter, r *http.Request) {
 }
 
 // decideButton runs a button's decision on the approval request the path
-// names and shows the board the form carried with its note.
+// names and answers the press.
 func (c *Console) decideButton(w http.ResponseWriter, r *http.Request, decision func(ctx context.Context, a actor, id int64) (string, error)) {
 	id, err := strconv.ParseInt(r.PathValue("id"), 10, 64)
 	if err != nil {
 		http.NotFound(w, r)
 		return
 	}
-	note, err := decision(r.Context(), button(r), id)
-	c.pressNote(w, r, note, err)
+	_, err = decision(r.Context(), button(r), id)
+	c.pressed(w, r, err)
 }
 
 // review submits a pull request review on q's pull request: as a's

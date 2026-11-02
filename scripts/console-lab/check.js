@@ -337,7 +337,7 @@ async function cardPress(page, fails) {
   }
   const query = await page.evaluate(() => document.getElementById("board").dataset.query);
   const waiting = await (await page.request.get(base + "/board" + query, { headers: { "HX-Request": "true" } })).text();
-  answer = (r) => r.fulfill({ status: 200, contentType: "text/html", headers: { "HX-Trigger": "board-refresh" }, body: '<p class="note" role="status">Answered: Postgres.</p>' });
+  answer = (r) => r.fulfill({ status: 204, headers: { "HX-Trigger": "board-refresh" } });
   await page.evaluate((k) => { location.hash = "#card=" + k; }, id);
   await page.waitForSelector("#drawer .open-need button");
   posts = 0;
@@ -1181,8 +1181,8 @@ async function text(page) {
       await p.page.waitForTimeout(600);
       await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').getByRole("button", { name: "Skip Weekly bump once" }).click();
       await p.page.waitForTimeout(800);
-      const note = await p.page.locator("#note .note").allInnerTexts();
-      if (!note.some((t) => t.includes("Skipped once"))) fails.push("routines: Skip once does not show Skipped once in the note outlet (" + note.join(" | ") + ")");
+      const skipped = await p.page.locator('#board [data-ghost="ai-software-factory-code/weekly-bump"]').innerText();
+      if (!skipped.includes("skipped once") || !skipped.includes("Undo skip")) fails.push("routines: after Skip once the ghost reads " + JSON.stringify(skipped) + ", want skipped once and Undo skip");
       await p.page.goto(base + "/?routines=none", { waitUntil: "load" });
       await p.page.waitForTimeout(600);
       if (await p.page.locator("#board .card.ghost").count()) fails.push("routines: ?routines=none leaves a ghost");

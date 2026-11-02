@@ -170,24 +170,24 @@ func htmxPost(path string, form url.Values) *http.Request {
 	return req
 }
 
-// Skip once marks the routine's next run for the member and answers with
-// the run after it; the undo clears the mark. Each is one event with its
-// via on the project's repository.
-func TestRoutineSkipAnswersWithTheNextRun(t *testing.T) {
+// Skip once marks the routine's next run for the member and answers the
+// board alone; the undo clears the mark. Each is one event with its via
+// on the project's repository.
+func TestRoutineSkipAnswersWithTheBoardAlone(t *testing.T) {
 	r := newRig(t)
 	r.routines.views = []factoryd.RoutineView{weeklyBump()}
 	ck, s := r.loggedIn(t)
 	const path = "/routines/ai-software-factory-code/weekly-bump/skip"
 
 	rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Skipped once · next Mon 20 Oct 06:00</p>`) {
+	if !pressRefreshes(rec) {
 		t.Fatalf("skip = %d:\n%s", rec.Code, rec.Body)
 	}
 	if by := r.routines.skips["ai-software-factory-code/weekly-bump"]; by != "sebastian" {
 		t.Fatalf("the skip reached the port as %q", by)
 	}
 	rec = r.do(htmxPost(path, url.Values{"csrf": {s.csrf}, "undo": {"1"}}), ck)
-	if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">Skip once undone</p>`) {
+	if !pressRefreshes(rec) {
 		t.Fatalf("undo = %d:\n%s", rec.Code, rec.Body)
 	}
 	if by, ok := r.routines.skips["ai-software-factory-code/weekly-bump"]; !ok || by != "" {
@@ -244,7 +244,7 @@ func TestRoutineToggle(t *testing.T) {
 	r.routines.views = []factoryd.RoutineView{weeklyBump(), audit(), overridden, roll}
 	ck, s := r.loggedIn(t)
 	queued := col(t, r.do(httptest.NewRequest(http.MethodGet, codeBoard, nil), ck).Body.String(), "Queued")
-	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me" hx-target="#note" hx-swap="innerHTML">` +
+	form := `<form method="post" action="/routines/ai-software-factory-code/%s/needs-me" hx-post="/routines/ai-software-factory-code/%s/needs-me">` +
 		`<input type="hidden" name="csrf" value="` + s.csrf + `">%s<input type="hidden" name="project" value="ai-software-factory-code">` +
 		`<button type="submit" class="xs" aria-label="%s">%s</button></form>`
 	bumpG := ghostIn(t, queued, "weekly-bump")
@@ -270,15 +270,15 @@ func TestRoutineToggle(t *testing.T) {
 	}
 
 	for _, tt := range []struct {
-		routine, field, note, side string
+		routine, field, side string
 	}{
-		{"weekly-bump", "needs_me=0", "Weekly bump runs on its own.", "agent by sebastian"},
-		{"audit", "needs_me=1", "Audit needs you.", "human by sebastian"},
-		{"nightly-hold", "undo=1", "Nightly hold follows its config.", ""},
+		{"weekly-bump", "needs_me=0", "agent by sebastian"},
+		{"audit", "needs_me=1", "human by sebastian"},
+		{"nightly-hold", "undo=1", ""},
 	} {
 		name, value, _ := strings.Cut(tt.field, "=")
 		rec := r.do(htmxPost("/routines/ai-software-factory-code/"+tt.routine+"/needs-me", url.Values{"csrf": {s.csrf}, name: {value}}), ck)
-		if rec.Code != http.StatusOK || !strings.Contains(rec.Body.String(), `<p class="note" role="status">`+tt.note+`</p>`) {
+		if !pressRefreshes(rec) {
 			t.Fatalf("%s = %d:\n%s", tt.field, rec.Code, rec.Body)
 		}
 		if got := r.routines.needsMe["ai-software-factory-code/"+tt.routine]; got != tt.side {
@@ -304,9 +304,10 @@ func TestRoutineToggle(t *testing.T) {
 	}
 }
 
-// Run now starts a run and the drawer answers with what it did once its
+// Run now starts a run and the action answers with what it did once its
 // outcome is in: the card it filed and the column it waits in, the hold
-// that kept it, or "Filing…" when no outcome came within the wait.
+// that kept it, or "Filing…" when no outcome came within the wait. The
+// button's press answers the board alone.
 func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	wait, poll := runNowWait, runNowPoll
 	runNowWait, runNowPoll = 50*time.Millisecond, 5*time.Millisecond
@@ -323,17 +324,11 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	note := func(hook func(string, string) (factoryd.RoutineRun, error)) string {
 		t.Helper()
 		r.routines.runNow = hook
-		rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}, "from": {"drawer"}, "tab": {"runs"}}), ck)
-		if rec.Code != http.StatusOK {
-			t.Fatalf("run now = %d %s", rec.Code, rec.Body)
+		text, err := r.c.doRoutineRun(t.Context(), actor{s: s, via: factoryd.ViaButton}, "ai-software-factory-code", "weekly-bump")
+		if err != nil {
+			t.Fatalf("run now: %v", err)
 		}
-		body := rec.Body.String()
-		i := strings.Index(body, `<p class="note" role="status">`)
-		if i < 0 {
-			t.Fatalf("no note:\n%s", body)
-		}
-		body = body[i+len(`<p class="note" role="status">`):]
-		return body[:strings.Index(body, "</p>")]
+		return text
 	}
 	// laterCron is a Run now whose held run a cron run lands after
 	laterCron := func(project, routine string) (factoryd.RoutineRun, error) {
@@ -373,7 +368,7 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 	})
 
 	// a pending Skip once stays for the run it was set for
-	if rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/skip", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusOK {
+	if rec := r.do(htmxPost("/routines/ai-software-factory-code/weekly-bump/skip", url.Values{"csrf": {s.csrf}}), ck); !pressRefreshes(rec) {
 		t.Fatalf("skip = %d %s", rec.Code, rec.Body)
 	}
 	equal(t, "a Run now beside a skip", note(leaves(factoryd.RoutineRun{Outcome: "no change"})), "No change")
@@ -381,11 +376,14 @@ func TestRoutineRunNowAnswersHeld(t *testing.T) {
 		t.Fatalf("the Run now took the skip: %q", by)
 	}
 
+	if rec := r.do(htmxPost(path, url.Values{"csrf": {s.csrf}}), ck); !pressRefreshes(rec) {
+		t.Fatalf("the board's run now = %d %s", rec.Code, rec.Body)
+	}
 	before := r.events.count()
 	if rec := r.do(htmxPost("/routines/ai-software-factory-code/nightly/run", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusNotFound {
 		t.Fatalf("an unknown routine = %d %s", rec.Code, rec.Body)
 	}
-	if r.events.count() != before || len(r.routines.ran) != 8 {
+	if r.events.count() != before || len(r.routines.ran) != 9 {
 		t.Fatal("an unknown routine ran or left an event")
 	}
 }

@@ -64,8 +64,8 @@ const runDue = "Mon 2 Jan 15:04"
 // head's line and Rows the top block; Acts carries the ghost's forms.
 // Runs are the newest runs, three on the Overview, and Older those past
 // the Runs tab's list; Config is the routine as its project file holds
-// it, Factory says the file is policy.yaml. Note is what the member's act
-// did, Problems what could not be read.
+// it, Factory says the file is policy.yaml. Problems are what could not
+// be read.
 type routineDrawerData struct {
 	View     factoryd.RoutineView
 	Tab      string
@@ -78,7 +78,6 @@ type routineDrawerData struct {
 	Older    int
 	Config   string
 	Factory  bool
-	Note     string
 	Problems []string
 }
 
@@ -128,13 +127,12 @@ func (c *Console) routineDrawer(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, "tab must be overview, runs or config", http.StatusBadRequest)
 		return
 	}
-	c.showRoutineDrawer(w, r, tab, "")
+	c.showRoutineDrawer(w, r, tab)
 }
 
-// showRoutineDrawer renders the drawer of the path's routine on tab with
-// note, what the member's act did; an act's drawer keeps the board's
-// filter its form carried.
-func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab, note string) {
+// showRoutineDrawer renders the drawer of the path's routine on tab; an
+// act's drawer keeps the board's filter its form carried.
+func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab string) {
 	if c.cfg.Routines == nil {
 		http.NotFound(w, r)
 		return
@@ -158,7 +156,7 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab,
 		f = formFilter(r)
 	}
 	f.Project = cmp.Or(f.Project, project)
-	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Note: note, Factory: rv.State.Project == "",
+	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Factory: rv.State.Project == "",
 		Acts: ghost{Project: project, Name: name, Title: rt.Title, Skipped: rv.State.SkipNext, Files: rt.Files, Side: rv.FilesInForce(),
 			Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: current(r).csrf, Drawer: true, Tab: tab}}
 	v, ok := c.inForce(ctx)
