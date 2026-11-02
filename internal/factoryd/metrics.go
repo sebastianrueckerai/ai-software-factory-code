@@ -518,10 +518,36 @@ type ReviewEvidence struct {
 	Unknown Figure `json:"unknown"` // rows without their attempt identity or classification
 }
 
+// GroupHoursCoverage names how far the group-open panel reaches: the
+// window's closed groups and the holes among them. A closed group
+// measures only from an actual opening — its first child merge the
+// OpenGroups contract reads — and a group that merge opened but no
+// plan_closed row closed yet is open, not finished. Every hole is
+// counted, none guessed: the mean stands on the measured rest, and the
+// open and the startless groups never enter it.
+type GroupHoursCoverage struct {
+	Groups       int `json:"groups"`        // groups whose closure lands in the window
+	MissingStart int `json:"missing_start"` // of them, groups no child merge covers
+	Open         int `json:"open"`          // groups a child merge opened and no closure closed, at the report
+}
+
+// HoldWaitCoverage names the production holds the hold-wait panel read:
+// the ended holds their rows cover, the one the releases row holds open
+// at the report, and the rows no usable interval covers — a
+// production_released row whose held_since no start names measures
+// nothing, never a zero-length hold.
+type HoldWaitCoverage struct {
+	Ended   int `json:"ended"`   // distinct ended holds the rows name, duplicates once
+	Open    int `json:"open"`    // holds the releases row still holds at the report
+	Missing int `json:"missing"` // rows whose held_since covers no interval
+}
+
 // DivideConquer measures the divide-and-conquer plan (roadmap 336, doc
 // docs/plans/2026-10-29-divide-and-conquer.md): whether cards stay
 // within their size bound, what one costs in sessions and euros, and
-// how the plan's rounds and cuts behave. Durations are hours.
+// how the plan's rounds and cuts behave. Duration panels answer in
+// milliseconds, precise where an hour's rounding would blur them,
+// beside their legacy hour fields the console kept reading.
 //
 // Every panel reads hard rows the factory already stores, one row per
 // fact, each recorded through the fact payload that names its identity:
@@ -570,11 +596,32 @@ type DivideConquer struct {
 	EconomicsCoverage EconomicsCoverage `json:"economics_coverage"`
 	// Cuts counts the window's applied cuts; CutGroupsClosed the groups
 	// those cuts left that the span's own end saw closed.
-	Cuts               Figure `json:"cuts"`
-	CutGroupsClosed    Figure `json:"cut_groups_closed"`
-	GroupOpenHours     Figure `json:"group_open_hours"`
-	HoldWaitHours      Figure `json:"hold_wait_hours"`
-	ReviewsNotReviewed Figure `json:"reviews_not_reviewed"`
+	Cuts            Figure `json:"cuts"`
+	CutGroupsClosed Figure `json:"cut_groups_closed"`
+	// GroupOpenMillis is panel 7's duration: the mean milliseconds a
+	// group stayed open, over the groups whose first plan_closed row
+	// lands in the span — from each group's first actual child merge,
+	// however much of the wait falls before the span — undefined over
+	// an empty cohort. GroupOpenHours is the same mean in hours, the
+	// legacy unit the console kept reading. GroupHoursCoverage counts
+	// the cohort's holes: an open group, a closed group no merge
+	// covers.
+	GroupOpenHours     Figure             `json:"group_open_hours"`
+	GroupOpenMillis    Figure             `json:"group_open_milliseconds"`
+	GroupHoursCoverage GroupHoursCoverage `json:"group_hours_coverage"`
+	// HoldWaitMillis is panel 8's total: milliseconds the project spent
+	// waiting on a production hold, each hold a half-open interval —
+	// held_since to its production_released row's at, or to the
+	// report's captured as-of where the releases row still holds —
+	// clipped to the span and unioned, so overlapping and duplicate
+	// rows wait their time once; a hold that only touches the span's
+	// boundary holds none of it. HoldWaitHours is the same total in
+	// hours, the legacy unit the console kept reading.
+	// HoldWaitCoverage counts the evidence the total stands on.
+	HoldWaitHours      Figure           `json:"hold_wait_hours"`
+	HoldWaitMillis     Figure           `json:"hold_wait_milliseconds"`
+	HoldWaitCoverage   HoldWaitCoverage `json:"hold_wait_coverage"`
+	ReviewsNotReviewed Figure           `json:"reviews_not_reviewed"`
 	// ReviewEvidence measures panel 9's coverage: the genuine answers
 	// the count above stands over, and the rows no usable evidence
 	// covers — unknown, never an inferred success.
@@ -1567,6 +1614,11 @@ func metricReviewAcceptance(ctx context.Context, db *sql.DB, repo string, w metr
 func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, to time.Time) (MetricsReport, error) {
 	db, w := s.db, newMetricWindow(from, to)
 	r := MetricsReport{Repository: repository, From: w.From, To: w.To.AddDate(0, 0, -1)}
+	// asof is the instant this report was taken, captured once at the
+	// store's microsecond precision: the one end every still-open
+	// interval — a production hold — clips to, so the panels of one
+	// report agree on it
+	asof := time.Now().UTC().Truncate(time.Microsecond)
 	deploys, leadTime := metricDeploys, metricLeadTime
 	if s.SelfRepository != "" && repository == s.SelfRepository {
 		deploys, leadTime = metricSelfDeploys, metricSelfLeadTime
@@ -1650,7 +1702,7 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 	if r.CIDuration, err = metricCIDuration(ctx, db, repository, w); err != nil {
 		return r, err
 	}
-	if r.DivideConquer, err = metricDivideConquer(ctx, db, repository, w); err != nil {
+	if r.DivideConquer, err = metricDivideConquer(ctx, db, repository, w, asof); err != nil {
 		return r, err
 	}
 	if r.DivideConquer.EurPerMergedLine, r.DivideConquer.FixedEurPerCard, r.DivideConquer.EconomicsCoverage, err = metricEconomics(ctx, db, repository, w); err != nil {
@@ -1697,12 +1749,11 @@ func metricEvidenceCount(ctx context.Context, db *sql.DB, repo string, w metricW
 // metricDivideConquer populates the divide-and-conquer block the store
 // answers today: CoveredFrom, GateAboveBound with GateBoundCoverage,
 // SessionsPerCard with its coverage, SessionEnds, ReviewsNotReviewed
-// with ReviewEvidence, the cuts with their closed groups, and the
-// planning panels — plans by rounds, card filings by round, replans by
-// origin. The economics panels (4 and 5) compose beside this at the
-// caller; the group and hold times (panels 7 and 8) land on another
-// card, their fields staying zero until then.
-func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow) (DivideConquer, error) {
+// with ReviewEvidence, the cuts with their closed groups, the group and
+// hold times (panels 7 and 8) and the planning panels — plans by
+// rounds, card filings by round, replans by origin. The economics
+// panels (4 and 5) compose beside this at the caller.
+func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricWindow, asof time.Time) (DivideConquer, error) {
 	var d DivideConquer
 	var covered sql.NullTime
 	if err := db.QueryRowContext(ctx,
@@ -1727,6 +1778,12 @@ func metricDivideConquer(ctx context.Context, db *sql.DB, repo string, w metricW
 		return d, err
 	}
 	if d.Cuts, d.CutGroupsClosed, err = metricDivideCuts(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.GroupOpenMillis, d.GroupOpenHours, d.GroupHoursCoverage, err = metricDivideGroupHours(ctx, db, repo, w); err != nil {
+		return d, err
+	}
+	if d.HoldWaitMillis, d.HoldWaitHours, d.HoldWaitCoverage, err = metricDivideHoldWaits(ctx, db, repo, w, asof); err != nil {
 		return d, err
 	}
 	if d.PlansByRounds, d.PlansByRoundsSpans, err = metricDividePlansByRounds(ctx, db, repo, w); err != nil {
@@ -2382,4 +2439,217 @@ func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricW
 	figs := dcNamedFigures(cur, prev, namedWeeks)
 	sort.Slice(figs, func(i, j int) bool { return figs[i].Name < figs[j].Name })
 	return scalar, figs, nil
+}
+
+// msPerHour is the milliseconds one hour holds: panels 7 and 8 answer
+// in precise milliseconds, the legacy hour-valued fields beside them
+// scaled from the same numbers, their unit never reinterpreted.
+const msPerHour = 3.6e6
+
+// figureInHours is the duration figure f scaled from milliseconds to
+// whole and fraction hours: group_open_hours and hold_wait_hours keep
+// the legacy unit the console kept reading.
+func figureInHours(f Figure) Figure {
+	h := Figure{Value: f.Value / msPerHour, Prev: f.Prev / msPerHour, Has: f.Has, PrevHas: f.PrevHas}
+	for i, ms := range f.Weeks {
+		h.Weeks[i] = ms / msPerHour
+	}
+	return h
+}
+
+// metricDivideGroupHours — panel 7: how long a group stayed open, the
+// mean milliseconds over the groups whose first plan_closed row lands
+// in the span. A group opens at its first actual child merge — the
+// same opening OpenGroups reads: the earliest pull_request_merged row
+// of a plan child, else the finish of a child with its own merge
+// commit, reverted children out — and closes at its first closure, so
+// duplicate merge or closure rows move nothing and a group opened
+// before the span counts its whole wait, never clipped to the span's
+// start: the wait belongs to the span its closure lands in. A closed
+// group no merge covers and a group still open sit the mean out — the
+// coverage counts them — and over an empty cohort the mean is
+// undefined, never zero.
+func metricDivideGroupHours(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, Figure, GroupHoursCoverage, error) {
+	// starts: each plan's first opening, OpenGroups' own contract;
+	// closed: each plan's first plan_closed row below the spark's end
+	const ctes = `WITH starts AS (
+			SELECT c.parent_task AS plan,
+				COALESCE(min(e.at), min(c.finished_at) FILTER (WHERE c.merge_commit <> '')) AS first_merge
+			FROM tasks c
+			LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
+			WHERE c.repository = $1 AND c.source = 'plan' AND c.plan_key IS NOT NULL
+				AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
+			GROUP BY c.parent_task
+		), closed AS (
+			SELECT pc.task_id AS plan, min(pc.at) AS closed_at
+			FROM events pc JOIN tasks t ON t.id = pc.task_id
+			WHERE ` + dcCardReach + ` AND pc.kind = 'plan_closed' AND pc.at < $3
+			GROUP BY pc.task_id
+		)`
+	// the mean wait in milliseconds — EXTRACT(EPOCH) keeps the fraction
+	// an integer-hour cast would blur — over the span's own closure
+	// cohort, each opening however much earlier
+	const measured = `s.first_merge IS NOT NULL`
+	scalar := ctes + `
+		SELECT avg(EXTRACT(EPOCH FROM (cl.closed_at - s.first_merge)) * 1000)::float8
+		FROM closed cl JOIN starts s ON s.plan = cl.plan
+		WHERE cl.closed_at >= $2 AND cl.closed_at < $3 AND ` + measured
+	ms := Figure{}
+	if v, has, err := metricScalar(ctx, db, scalar, repo, w.From, w.To); err != nil {
+		return ms, Figure{}, GroupHoursCoverage{}, err
+	} else {
+		ms.Value, ms.Has = v, has
+	}
+	if v, has, err := metricScalar(ctx, db, scalar, repo, w.PrevFrom, w.PrevTo); err != nil {
+		return ms, Figure{}, GroupHoursCoverage{}, err
+	} else {
+		ms.Prev, ms.PrevHas = v, has
+	}
+	// a closure lands in its own weekly bucket alone
+	weeks, err := metricWeeks(ctx, db, ctes+fmt.Sprintf(`
+		SELECT %s,
+		avg(EXTRACT(EPOCH FROM (cl.closed_at - s.first_merge)) * 1000)::float8
+		FROM closed cl JOIN starts s ON s.plan = cl.plan
+		WHERE cl.closed_at >= $2 AND cl.closed_at < $3 AND %s GROUP BY 1`,
+		metricBucketFrom("cl.closed_at", "$2"), measured), repo, w.SparkFrom, w.To)
+	if err != nil {
+		return ms, Figure{}, GroupHoursCoverage{}, err
+	}
+	ms.Weeks = weeks
+	var cov GroupHoursCoverage
+	if err := db.QueryRowContext(ctx, ctes+`
+		SELECT count(*) FILTER (WHERE `+measured+`)::int, count(*) FILTER (WHERE s.first_merge IS NULL)::int
+		FROM closed cl LEFT JOIN starts s ON s.plan = cl.plan
+		WHERE cl.closed_at >= $2 AND cl.closed_at < $3`, repo, w.From, w.To).Scan(&cov.Groups, &cov.MissingStart); err != nil {
+		return ms, Figure{}, GroupHoursCoverage{}, err
+	}
+	// open at the report: an opening the project holds and no closure
+	// ever closed, whatever window its closure would have landed in
+	if err := db.QueryRowContext(ctx, `SELECT count(*)::int FROM (
+			SELECT c.parent_task AS plan FROM tasks c
+			LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
+			WHERE c.repository = $1 AND c.source = 'plan' AND c.plan_key IS NOT NULL
+				AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
+			GROUP BY c.parent_task
+		) s
+		WHERE NOT EXISTS (SELECT 1 FROM events pc WHERE pc.task_id = s.plan AND pc.kind = 'plan_closed')`,
+		repo).Scan(&cov.Open); err != nil {
+		return ms, Figure{}, GroupHoursCoverage{}, err
+	}
+	return ms, figureInHours(ms), cov, nil
+}
+
+// holdInterval is one production hold's wait: [start, end), end zero
+// while the hold still runs at the report.
+type holdInterval struct{ start, end time.Time }
+
+// metricDivideHoldWaits — panel 8: how long the project waited on
+// production holds, milliseconds over the span. Each hold is a
+// half-open interval — its releases clock's held_since to its
+// production_released row's at, the fact the ReleaseKeeper records
+// exactly once — clipped to the span and unioned, so overlapping,
+// duplicate and nested rows wait their time once and a hold that only
+// touches the span's boundary holds none of it. A hold still open at
+// the report ends at the captured as-of, one end every span of this
+// report reads; a span that ends sooner ends it at its own end the
+// sooner. A row whose held_since names no instant measures nothing and
+// counts in the coverage. The total is a fact even at zero — no hold
+// waited, evidence or none — the sum of an empty union, never an
+// unknown.
+func metricDivideHoldWaits(ctx context.Context, db *sql.DB, repo string, w metricWindow, asof time.Time) (Figure, Figure, HoldWaitCoverage, error) {
+	// one interval per ended hold, earliest row first
+	rows, err := db.QueryContext(ctx, `SELECT COALESCE(detail->>'held_since', ''), at FROM events
+		WHERE repository = $1 AND kind = 'production_released' ORDER BY at, id`, repo)
+	if err != nil {
+		return Figure{}, Figure{}, HoldWaitCoverage{}, err
+	}
+	defer rows.Close()
+	var cov HoldWaitCoverage
+	var holds []holdInterval
+	ended := map[[2]time.Time]bool{}
+	for rows.Next() {
+		var since string
+		var at time.Time
+		if err := rows.Scan(&since, &at); err != nil {
+			return Figure{}, Figure{}, HoldWaitCoverage{}, err
+		}
+		start, perr := time.Parse(time.RFC3339, since)
+		if perr != nil {
+			cov.Missing++
+			continue
+		}
+		// two rows naming one interval — a retried write's duplicate, a
+		// legacy double — are one hold that waited once
+		if ended[[2]time.Time{start, at}] {
+			continue
+		}
+		ended[[2]time.Time{start, at}] = true
+		cov.Ended++
+		holds = append(holds, holdInterval{start: start, end: at})
+	}
+	if err := rows.Err(); err != nil {
+		return Figure{}, Figure{}, HoldWaitCoverage{}, err
+	}
+	// the hold still on at the report: the releases row's running clock
+	var held sql.NullTime
+	if err := db.QueryRowContext(ctx, `SELECT min(held_since) FROM releases WHERE repository = $1`, repo).Scan(&held); err != nil {
+		return Figure{}, Figure{}, HoldWaitCoverage{}, err
+	}
+	if held.Valid {
+		cov.Open = 1
+		holds = append(holds, holdInterval{start: held.Time})
+	}
+	// every span the same evidence: the window, the equal window before
+	// it and each weekly bucket of the spark
+	ms := Figure{Has: true, PrevHas: true}
+	ms.Value = holdUnionMillis(holds, w.From, w.To, asof)
+	ms.Prev = holdUnionMillis(holds, w.PrevFrom, w.PrevTo, asof)
+	for i := range ms.Weeks {
+		ms.Weeks[i] = holdUnionMillis(holds, w.SparkFrom.AddDate(0, 0, 7*i), w.SparkFrom.AddDate(0, 0, 7*(i+1)), asof)
+	}
+	return ms, figureInHours(ms), cov, nil
+}
+
+// holdUnionMillis is the length of the holds' union inside [from, to):
+// each interval clipped to the span — one still open at the report's
+// captured as-of ends there, a span that ends sooner at its own end —
+// the pieces sorted and merged, so overlapping, duplicate and nested
+// intervals wait their time once and one that only touches the span's
+// boundary holds none of it.
+func holdUnionMillis(holds []holdInterval, from, to, asof time.Time) float64 {
+	type piece struct{ start, end time.Time }
+	var pieces []piece
+	for _, h := range holds {
+		end := h.end
+		if end.IsZero() || end.After(asof) {
+			end = asof
+		}
+		start, stop := h.start, end
+		if start.Before(from) {
+			start = from
+		}
+		if stop.After(to) {
+			stop = to
+		}
+		if start.Before(stop) {
+			pieces = append(pieces, piece{start, stop})
+		}
+	}
+	slices.SortFunc(pieces, func(a, b piece) int {
+		if c := a.start.Compare(b.start); c != 0 {
+			return c
+		}
+		return a.end.Compare(b.end)
+	})
+	var total time.Duration
+	for i := 0; i < len(pieces); {
+		start, end := pieces[i].start, pieces[i].end
+		for i++; i < len(pieces) && !pieces[i].start.After(end); i++ {
+			if pieces[i].end.After(end) {
+				end = pieces[i].end
+			}
+		}
+		total += end.Sub(start)
+	}
+	return float64(total) / float64(time.Millisecond)
 }
