@@ -26,7 +26,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 	}
 	switch e.Kind {
 	case EventQuestionAsked:
-		return askCase(ctx, tx, e)
+		_, err := askCase(ctx, tx, e)
+		return err
 	case EventQuestionAnswered, EventSessionGranted:
 		// a grant is the console's answer at a session cap, as
 		// question_answered is the webhook's: one row per answer comment
@@ -55,26 +56,26 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 }
 
 // askCase opens the case of question_asked event e, or appends a step to
-// the live case it asks again.
-func askCase(ctx context.Context, tx *sql.Tx, e Event) error {
+// the live case it asks again, and tells whether it opened one.
+func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, e.TaskID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	var head string
 	err = tx.QueryRowContext(ctx, `SELECT COALESCE(detail->>'head', '') FROM events WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`,
 		t.ID, EventGateHead).Scan(&head)
 	if err != nil && !errors.Is(err, sql.ErrNoRows) {
-		return err
+		return false, err
 	}
 	c, err := caseFromAsk(t, e, head)
 	if err != nil {
 		// an ask with no words opens no case: its event stands
 		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
-		return nil
+		return false, nil
 	}
 	step := CaseStep{Rung: 3, Actor: "factory"}
 	healed := e.Detail["reason"] == healedReason
@@ -83,16 +84,17 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) error {
 		// to the card's live ask, whatever that ask's key
 		step.Found = "asked again after a restart"
 		if step.CaseID, err = newestAskCase(ctx, tx, t.ID); err != nil {
-			return err
+			return false, err
 		}
 	}
+	opened := false
 	if step.CaseID == 0 {
 		if c.Follows, err = newestEndedCase(ctx, tx, t.ID); err != nil {
-			return err
+			return false, err
 		}
-		got, opened, err := openCase(ctx, tx, c)
-		if err != nil {
-			return err
+		var got Case
+		if got, opened, err = openCase(ctx, tx, c); err != nil {
+			return false, err
 		}
 		step.CaseID = got.ID
 		if !opened && !healed {
@@ -100,7 +102,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) error {
 		}
 	}
 	_, err = appendCaseStep(ctx, tx, step)
-	return err
+	return opened, err
 }
 
 // cardMoneyKinds are the cases whose answer pays from the card's own
@@ -265,9 +267,7 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) error {
 }
 
 // endMergeCase ends task taskID's live merge case by its request's
-// decision: status approved or denied, by whom, with note. The factory's
-// denial (a superseded head, an ended card, a queue left) decides no
-// merge: it withdraws the case with note.
+// decision: status approved or denied, by whom, with note.
 func endMergeCase(ctx context.Context, q rowQuerier, taskID, status, by, note string) error {
 	var id int64
 	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND `+caseLive+` ORDER BY id DESC LIMIT 1`,
@@ -278,14 +278,22 @@ func endMergeCase(ctx context.Context, q rowQuerier, taskID, status, by, note st
 	if err != nil {
 		return err
 	}
+	_, err = decideMergeCase(ctx, q, id, status, by, note)
+	return caseEnded(err)
+}
+
+// decideMergeCase ends live merge case id by its request's decision and
+// answers how it ended. The factory's denial (a superseded head, an ended
+// card, a queue left) decides no merge: it withdraws the case with note.
+func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, note string) (string, error) {
 	if by == FactoryDecider && status == "denied" {
-		return caseEnded(withdrawCase(ctx, q, id, note))
+		return CaseWithdrawn, withdrawCase(ctx, q, id, note)
 	}
 	action := "deny"
 	if status == "approved" {
 		action = "approve"
 	}
-	return caseEnded(resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: action, Reason: note}))
+	return CaseResolved, resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: action, Reason: note})
 }
 
 // newestAskCase is the id of task taskID's newest live case an answer on

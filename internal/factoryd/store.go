@@ -767,6 +767,7 @@ type Store interface {
 	CasesOf(ctx context.Context, taskID string) ([]Case, error)
 	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
 	OpenCasesIn(ctx context.Context, repository string) ([]Case, error)
+	ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error)
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning

@@ -57,6 +57,7 @@ type fakeStore struct {
 	recordFails map[string]int
 	deliveries  map[string]bool
 	pruned      []time.Duration
+	reconciled  []string // the repositories ReconcileCases ran on, in order
 	approvals   []ApprovalRequest
 	gates       []string // "task gate since", in order
 	projects    []Project
@@ -1171,6 +1172,11 @@ func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, er
 
 func (s *fakeStore) OpenCasesIn(ctx context.Context, repository string) ([]Case, error) {
 	return nil, nil
+}
+
+func (s *fakeStore) ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error) {
+	s.reconciled = append(s.reconciled, repository)
+	return CaseHealReport{}, nil
 }
 
 // Requires a disposable Postgres: FACTORYD_TEST_DATABASE_URL must point at a

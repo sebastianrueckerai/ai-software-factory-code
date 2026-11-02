@@ -699,6 +699,9 @@ func (s *accBatchStore) CaseSteps(ctx context.Context, caseID int64) ([]factoryd
 func (s *accBatchStore) OpenCasesIn(ctx context.Context, repository string) ([]factoryd.Case, error) {
 	panic("unused")
 }
+func (s *accBatchStore) ReconcileCases(ctx context.Context, repository string) (factoryd.CaseHealReport, error) {
+	panic("unused")
+}
 func (s *accBatchStore) InsertSession(ctx context.Context, sess factoryd.Session) error {
 	panic("unused")
 }

@@ -44,7 +44,8 @@ type Intake struct {
 	// Policy is the configuration in force: a new task's budget.
 	Policy func() policy.Tree
 	// Projects are where the heal pass looks for open issues no webhook
-	// turned into a task: every active project's repository.
+	// turned into a task, on every active project's repository, and for
+	// the cases to reconcile, on every project's.
 	Projects interface {
 		Projects(ctx context.Context) ([]Project, error)
 	}

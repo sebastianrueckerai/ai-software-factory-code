@@ -1281,6 +1281,10 @@ func (s *acceptanceStore) OpenCasesIn(context.Context, string) ([]factoryd.Case,
 	return nil, nil
 }
 
+func (s *acceptanceStore) ReconcileCases(context.Context, string) (factoryd.CaseHealReport, error) {
+	return factoryd.CaseHealReport{}, nil
+}
+
 // RoutineRunOfTask: no routine files a card here.
 func (s *acceptanceStore) RoutineRunOfTask(context.Context, string) (factoryd.RoutineRun, bool, error) {
 	return factoryd.RoutineRun{}, false, nil

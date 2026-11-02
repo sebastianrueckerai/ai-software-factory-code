@@ -13,16 +13,23 @@ import (
 const caseTask = "t1410"
 
 // caseEventStore is a store whose one task, caseTask, waits on a human
-// with a budget of 5 EUR, its cases, events and approvals empty.
+// with a budget of 5 EUR, its cases, events, intake rows, approvals and
+// plans empty.
 func caseEventStore(t *testing.T) *PGStore {
 	t.Helper()
+	return cardCaseStore(t, "cases_events")
+}
+
+// cardCaseStore is caseEventStore on database name.
+func cardCaseStore(t *testing.T, name string) *PGStore {
+	t.Helper()
 	ctx := context.Background()
-	s, err := OpenStore(ctx, schematest.DSN(t, "cases_events"))
+	s, err := OpenStore(ctx, schematest.DSN(t, name))
 	if err != nil {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	t.Cleanup(func() { s.db.Close() })
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE cases, events, tasks, approval_requests, plan_revisions, plan_questions CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE cases, events, intake_events, tasks, approval_requests, plan_revisions, plan_questions CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: caseTask, Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "sf/r",

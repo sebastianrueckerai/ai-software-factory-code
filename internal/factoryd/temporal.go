@@ -237,7 +237,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // gets a new run through Reopen, which Start would refuse: a reopen that
 // moved the row but did not start the run.
 //
-// It also forgets webhook deliveries older than DeliveryRetention.
+// It also forgets webhook deliveries older than DeliveryRetention, and
+// reconciles every project's cases (ReconcileCases).
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error)) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
@@ -316,6 +317,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 		pullQueued(ctx, store, wf, repository)
 	}
 	signalQueueHeads(ctx, store, wf)
+	reconcileCases(ctx, store, in.Projects)
 }
 
 // reopenCompleted starts a new run of open card t when its last run
