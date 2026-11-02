@@ -996,6 +996,10 @@ func (a *AcceptanceRig) ChatMessages(_ context.Context, repository, login string
 	return all[max(0, len(all)-limit):], nil
 }
 
+func (a *AcceptanceRig) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
+	return nil, nil
+}
+
 func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()

@@ -10,6 +10,7 @@ import (
 	"net/url"
 	"reflect"
 	"regexp"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -191,8 +192,16 @@ func TestTellCardAtRunningSession(t *testing.T) {
 			t.Errorf("the proposal's description lacks %q:\n%s", want, desc)
 		}
 	}
+	r.mu.Lock()
+	i := slices.IndexFunc(r.proposals, func(p *accProposal) bool { return p.Token == token })
+	if i < 0 {
+		r.mu.Unlock()
+		t.Fatalf("no stored proposal %s", token)
+	}
+	expires, _ := json.Marshal(r.proposals[i].ExpiresAt)
+	r.mu.Unlock()
 	equal(t, "the turn's stream", events, []string{`proposal {"arguments":{"task_id":"t-r","text":"Rebase on main first."},` +
-		`"description":"` + jsonQuote(tellRunDescription) + `","id":"` + token + `","tool":"tell_card"}`, `done {}`})
+		`"description":"` + jsonQuote(tellRunDescription) + `","expires":` + string(expires) + `,"id":"` + token + `","tool":"tell_card"}`, `done {}`})
 	if len(r.Steered()) != 0 {
 		t.Fatalf("a proposed tell ran without the member: %+v", r.Steered())
 	}

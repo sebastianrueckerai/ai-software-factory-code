@@ -186,7 +186,7 @@ func TestChatGithubExport(t *testing.T) {
 	g.replies = [][]string{{call(1, "github_export", args)}}
 	_, events, tokens := chatPost(t, r, ck, s, demo, url.Values{"message": {"export to acme/app"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":` + ran + `,"description":"Export to GitHub, remote acme/app, mode mirror","id":"TOKEN","tool":"github_export"}`, `done {}`})
+		`proposal {"arguments":` + ran + `,"description":"Export to GitHub, remote acme/app, mode mirror","expires":"EXPIRES","id":"TOKEN","tool":"github_export"}`, `done {}`})
 	equal(t, "Forgejo calls before Do it", r.mirrors.took(), []string(nil))
 	_, done, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
 	set := "GitHub export of demo-app to acme/app is set: Forgejo pushes every branch and tag on each commit and every 8 h."

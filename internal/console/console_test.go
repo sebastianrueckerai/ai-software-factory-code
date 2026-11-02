@@ -1211,8 +1211,8 @@ func newRig(t *testing.T) *rig {
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.tasks.events = r.events
-	r.chat = &fakeChat{tasks: r.tasks}
 	r.chatTokens = &fakeChatTokens{}
+	r.chat = &fakeChat{tasks: r.tasks, chatTokens: r.chatTokens}
 	r.sessions = newFakeSessions()
 	c, err := New(Config{
 		Metrics:   metrics,

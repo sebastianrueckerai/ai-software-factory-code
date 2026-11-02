@@ -117,7 +117,7 @@ func TestChatClose(t *testing.T) {
 	args := `{"task_id":"t-m","note":"Superseded by #7."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "close", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\", note Superseded by #7.","id":"TOKEN","tool":"close"}`,
+		`proposal {"arguments":` + args + `,"description":"Close a card, #5 t-m \"Fix the cache. It drops entries.\", note Superseded by #7.","expires":"EXPIRES","id":"TOKEN","tool":"close"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("close", args, "Closed #5; factoryd ends the card."))
 	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/5/comments", "PATCH /api/v1/repos/sf/code/issues/5"})
@@ -178,7 +178,7 @@ func TestChatEdit(t *testing.T) {
 	args := `{"task_id":"t-m","title":"Fix the cache eviction"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "edit", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction","id":"TOKEN","tool":"edit"}`,
+		`proposal {"arguments":` + args + `,"description":"Edit a card, #5 t-m \"Fix the cache. It drops entries.\", title Fix the cache eviction","expires":"EXPIRES","id":"TOKEN","tool":"edit"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("edit", args, "Edited #5; the card's next session reads the edit."))
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/5 {"title":"Fix the cache eviction"}`})
@@ -223,7 +223,7 @@ func TestChatGrantSession(t *testing.T) {
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","id":"TOKEN","tool":"grant_session"}`,
+		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"grant_session"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("grant_session", args, "Your answer is on #14; it grants the card one session."))
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
@@ -273,7 +273,7 @@ func TestChatSetDependency(t *testing.T) {
 	args := `{"task_id":"t-b","depends_on":"t-a"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "set_dependency", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", depends on #21 t-a \"Add the API.\"","id":"TOKEN","tool":"set_dependency"}`,
+		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", depends on #21 t-a \"Add the API.\"","expires":"EXPIRES","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
 	set := "#22 depends on #21 now."
 	equal(t, "Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + set + `"}`,
@@ -314,7 +314,7 @@ func TestChatSetDependency(t *testing.T) {
 	args = `{"task_id":"t-b","depends_on":"t-a","remove":true}`
 	proposed, done, undo := proposeAndDo(t, r, g, "set_dependency", args)
 	equal(t, "removal's proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", no longer depends on #21 t-a \"Add the API.\"","id":"TOKEN","tool":"set_dependency"}`,
+		`proposal {"arguments":` + args + `,"description":"Set a dependency, #22 t-b \"Add the web UI.\", no longer depends on #21 t-a \"Add the API.\"","expires":"EXPIRES","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
 	gone := "#22 no longer depends on #21."
 	equal(t, "removal's Do it", done, []string{`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_dependency","result":"` + gone + `"}`,
@@ -360,7 +360,7 @@ func TestChatNewCardSize(t *testing.T) {
 	args := `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., track direct, track_reason one small change, size large, acceptance The hits count","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Cache metrics, body Count hits., track direct, track_reason one small change, size large, acceptance The hits count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Count hits.\n\nAcceptance:\n- The hits count\n\nSize: large")
@@ -430,7 +430,7 @@ func TestChatNewCardCarriesAPullRequest(t *testing.T) {
 	args := `{"title":"Re-land the feed fix","body":"Carry pull request #9 to green checks.","acceptance":["The checks are green"],"track":"direct","track_reason":"the fix is known","size":"small","carry_pr":9}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, carries #9, acceptance The checks are green","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Re-land the feed fix, body Carry pull request #9 to green checks., track direct, track_reason the fix is known, size small, carries #9, acceptance The checks are green","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Carry pull request #9 to green checks.\n\nAcceptance:\n- The checks are green\n\nSize: small\nCarries: #9")
@@ -549,8 +549,8 @@ func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 	g.replies = [][]string{{call(1, "set_autonomy", `{"autonomy":"assisted"}`, "set_autonomy", `{"autonomy":"assisted","queue_cap":3}`)}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"go assisted"}})
 	equal(t, "proposals", events, []string{
-		`proposal {"arguments":{"autonomy":"assisted"},"description":"Set the autonomy level, autonomy assisted, queue cap 5 stays","id":"TOKEN","tool":"set_autonomy"}`,
-		`proposal {"arguments":{"autonomy":"assisted","queue_cap":3},"description":"Set the autonomy level, autonomy assisted, queue cap 3","id":"TOKEN","tool":"set_autonomy"}`,
+		`proposal {"arguments":{"autonomy":"assisted"},"description":"Set the autonomy level, autonomy assisted, queue cap 5 stays","expires":"EXPIRES","id":"TOKEN","tool":"set_autonomy"}`,
+		`proposal {"arguments":{"autonomy":"assisted","queue_cap":3},"description":"Set the autonomy level, autonomy assisted, queue cap 3","expires":"EXPIRES","id":"TOKEN","tool":"set_autonomy"}`,
 		`done {}`})
 }
 
@@ -677,7 +677,7 @@ func TestPoolProposal(t *testing.T) {
 	equal(t, "the proposal", events, []string{
 		`proposal {"arguments":{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"},` +
 			`"description":"Set the pool, the pool stands at 8.00 EUR, set it at 10.00 EUR, reason Allow two small verified follow-ups, it would stand at 10.00 EUR",` +
-			`"id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":8,"to_eur":10,"reason":"Allow two small verified follow-ups"},` +
+			`"expires":"EXPIRES","id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":8,"to_eur":10,"reason":"Allow two small verified follow-ups"},` +
 			`"tool":"set_pool"}`,
 		`done {}`})
 	if len(tokens) != 1 {
@@ -833,7 +833,7 @@ func TestPoolProposalAccess(t *testing.T) {
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
 	equal(t, "the proposal at full auto", events, []string{
 		`proposal {"arguments":` + setArgs + `,"description":"Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR",` +
-			`"id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":10,"to_eur":10,"reason":"the findings cost money"},` +
+			`"expires":"EXPIRES","id":"TOKEN","pool":{"action":"set","eur":10,"from_eur":10,"to_eur":10,"reason":"the findings cost money"},` +
 			`"tool":"set_pool"}`,
 		`done {}`})
 
@@ -991,7 +991,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 	equal(t, "the proposal", events, []string{
 		`proposal {"arguments":` + args + `,` +
 			`"description":"Set the pool, the pool stands at 10.00 EUR, top it up by 5.00 EUR, reason a second finding, it would stand at 15.00 EUR",` +
-			`"id":"TOKEN","pool":{"action":"top_up","eur":5,"from_eur":10,"to_eur":15,"reason":"a second finding"},` +
+			`"expires":"EXPIRES","id":"TOKEN","pool":{"action":"top_up","eur":5,"from_eur":10,"to_eur":15,"reason":"a second finding"},` +
 			`"tool":"set_pool"}`,
 		`done {}`})
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":4}}`)

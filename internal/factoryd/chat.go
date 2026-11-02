@@ -400,8 +400,10 @@ func (s *PGStore) changeThread(ctx context.Context, set, where, repository, logi
 // DeleteConversation hard-deletes login's thread n on repository: its
 // messages, its images' rows, its proposals and undos, its seen marker
 // and the thread, and answers how many messages went with the ids of
-// the images it removed, their objects the caller's to sweep. The inbox
-// stays: ErrNotFound for it, as for no thread.
+// the images it removed, their objects the caller's to sweep. A chat
+// token whose own thread it was has none again, so its next turn makes a
+// fresh one rather than reuse the number. The inbox stays: ErrNotFound
+// for it, as for no thread.
 func (s *PGStore) DeleteConversation(ctx context.Context, repository, login string, n int64) (int64, []int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -446,7 +448,8 @@ func (s *PGStore) DeleteConversation(ctx context.Context, repository, login stri
 		return 0, nil, err
 	}
 	for _, q := range []string{`DELETE FROM chat_seen WHERE repository = $1 AND login = $2 AND conversation = $3`,
-		`DELETE FROM chat_proposals WHERE repository = $1 AND login = $2 AND conversation = $3`} {
+		`DELETE FROM chat_proposals WHERE repository = $1 AND login = $2 AND conversation = $3`,
+		`UPDATE chat_tokens SET conversation = 0 WHERE repository = $1 AND login = $2 AND conversation = $3`} {
 		if _, err := tx.ExecContext(ctx, q, repository, login, n); err != nil {
 			return 0, nil, err
 		}
@@ -973,13 +976,32 @@ func (s *PGStore) RequeueChatMessage(ctx context.Context, repository, login stri
 // ChatMessages are the newest limit messages of login's conversation on
 // repository, oldest first: the current one for conversation 0.
 func (s *PGStore) ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut, token FROM (
+	rows, err := s.db.QueryContext(ctx, `SELECT `+chatMessageColumns+` FROM (
 		SELECT * FROM chat_messages WHERE repository = $1 AND login = $2 AND conversation = coalesce(nullif($3::bigint, 0), `+currentConversation+`)
 		ORDER BY id DESC LIMIT $4) newest ORDER BY id`,
 		repository, login, conversation, limit)
 	if err != nil {
 		return nil, err
 	}
+	return scanChatMessages(rows)
+}
+
+// ChatMessagesAfter is login's thread conversation on repository from
+// the row after id after on, oldest first, at most limit rows: a reader
+// behind by more than limit pages forward.
+func (s *PGStore) ChatMessagesAfter(ctx context.Context, repository, login string, conversation, after int64, limit int) ([]ChatMessage, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT `+chatMessageColumns+` FROM chat_messages
+		WHERE repository = $1 AND login = $2 AND conversation = $3 AND id > $4 ORDER BY id LIMIT $5`,
+		repository, login, conversation, after, limit)
+	if err != nil {
+		return nil, err
+	}
+	return scanChatMessages(rows)
+}
+
+const chatMessageColumns = `id, role, content, tool_calls, at, conversation, kind, choices, decider, task_id, repeats, queued, birth_kind, proposal, cut, token`
+
+func scanChatMessages(rows *sql.Rows) ([]ChatMessage, error) {
 	defer rows.Close()
 	var out []ChatMessage
 	for rows.Next() {

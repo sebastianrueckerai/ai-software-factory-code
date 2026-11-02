@@ -54,19 +54,20 @@ const (
 
 // keep stores a proposal (kind proposal) or an applied action's undo
 // (kind undo) of tool with args for the member on the project, for
-// chatTTL under a fresh token, which it answers, and forgets the expired
-// ones but a used proposal; "" when the store fails. A proposal holds
-// what its call captured beside its arguments, an undo nothing, and an
-// ask binding is stored by askBinding, which carries a set_pool offer's
-// capture the same way.
-func (t *turn) keep(kind, tool string, args json.RawMessage, description string) string {
+// chatTTL under a fresh token, and answers the row stored, and forgets
+// the expired ones but a used proposal; its Token "" when the store
+// fails. A proposal holds what its call captured beside its arguments,
+// an undo nothing, and an ask binding is stored by askBinding, which
+// carries a set_pool offer's capture the same way.
+func (t *turn) keep(kind, tool string, args json.RawMessage, description string) factoryd.ChatProposal {
 	p := factoryd.ChatProposal{Token: randomToken(), Kind: kind, Repository: t.p.Repository, Login: t.owner,
 		Tool: tool, Args: args, Description: description, ExpiresAt: time.Now().Add(chatTTL), Conversation: t.conv}
 	if kind == "proposal" {
 		p.Pool = t.pool
 	}
 	t.pool = nil
-	return t.store(p)
+	p.Token = t.store(p)
+	return p
 }
 
 // store is keep's row put under a fresh token, which it answers; "" when
@@ -674,18 +675,21 @@ func (t *turn) input(text string) (turnInput, error) {
 		text = m
 	}
 	var in turnInput
-	var scrubbed bool
-	if in.Message, scrubbed = scrubTokens(text); scrubbed {
-		in.Notice = "I removed a GitHub token from your message; it was not stored or sent. " + t.c.exportForm(t.p.Name)
+	var github, chat bool
+	if in.Message, github, chat = scrubTokens(text); github || chat {
+		in.Notice = "I removed " + removedTokens(github, chat) + " from your message; it was not stored or sent."
+	}
+	if github {
+		in.Notice += " " + t.c.exportForm(t.p.Name)
 	}
 	return in, nil
 }
 
 // names says the next message is th's first and names it (roadmap 304):
-// never the inbox's, whose title stays, a card thread's, whose "#task"
-// stays, or a titled thread's, which no model title replaces.
+// never the inbox's, whose title stays, nor a card thread's, whose
+// "#task" stays.
 func names(th factoryd.ChatConversation) bool {
-	return th.Messages == 0 && th.Title == "" && !th.Inbox && th.TaskID == ""
+	return th.Messages == 0 && !th.Inbox && th.TaskID == ""
 }
 
 // say runs the turn on in in the turn's thread: it files the month's chat
@@ -977,10 +981,22 @@ func chatDocuments(r *http.Request) ([]chatDocument, string) {
 }
 
 // scrubTokens is text with every GitHub token and chat token replaced by
-// tokenMask, and whether it held one.
-func scrubTokens(text string) (string, bool) {
-	out := redact.ChatToken.ReplaceAllLiteralString(redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask), tokenMask)
-	return out, out != text
+// tokenMask, and whether it held a GitHub token and a chat token.
+func scrubTokens(text string) (out string, github, chat bool) {
+	gh := redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask)
+	out = redact.ChatToken.ReplaceAllLiteralString(gh, tokenMask)
+	return out, gh != text, out != gh
+}
+
+// removedTokens names the tokens scrubTokens removed.
+func removedTokens(github, chat bool) string {
+	switch {
+	case github && chat:
+		return "a GitHub token and a chat token"
+	case github:
+		return "a GitHub token"
+	}
+	return "a chat token"
 }
 
 // run answers the conversation's newest message: the server's notice
@@ -1275,22 +1291,17 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string) {
 		if !reflect.DeepEqual(in, asked) {
 			raw, _ = json.Marshal(in)
 		}
-		// the preview is taken after the ask-side capture filled the
-		// change and before keep hands it to the row: the shared
-		// lifecycle stays as it is, and the stream carries the same
-		// safe display fields the stored row later answers
-		preview := t.pool.Preview()
-		id := t.keep("proposal", tool.name, raw, desc)
-		if id == "" {
+		p := t.keep("proposal", tool.name, raw, desc)
+		if p.Token == "" {
 			result = "The proposal could not be stored; nothing runs."
 			break
 		}
-		event := map[string]any{"id": id, "tool": tool.name, "arguments": raw, "description": desc}
-		if preview != nil {
+		event := map[string]any{"id": p.Token, "tool": tool.name, "arguments": raw, "description": desc, "expires": p.ExpiresAt}
+		if preview := p.Pool.Preview(); preview != nil {
 			event["pool"] = preview
 		}
 		t.send("proposal", event)
-		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), id
+		return fmt.Sprintf("Proposed to %s: %s. Nothing runs until they press Do it.", t.a.s.user, strings.TrimSuffix(desc, ".")), p.Token
 	}
 	t.block(call.Name, args, 0, result)
 	return result, ""
@@ -1334,7 +1345,7 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) string {
 	applied := map[string]string{"tool": tool.name, "result": out}
 	if inv != nil {
 		args, _ := json.Marshal(inv.args)
-		applied["undo"] = t.keep("undo", inv.tool, args, tool.name)
+		applied["undo"] = t.keep("undo", inv.tool, args, tool.name).Token
 	}
 	if applied["undo"] != "" {
 		result += " The human may undo it."

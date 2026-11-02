@@ -95,6 +95,18 @@ func (f *fakeChatTokens) ClaimChatTokenConversation(_ context.Context, id, n int
 	return 0, sql.ErrNoRows
 }
 
+// free gives the tokens whose own thread was login's n on repository
+// none, as the store's thread delete does.
+func (f *fakeChatTokens) free(repository, login string, n int64) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, t := range f.rows {
+		if t.Repository == repository && t.Login == login && t.Conversation == n {
+			f.rows[i].Conversation = 0
+		}
+	}
+}
+
 // tokenRig is the rig with the notifications page and the chat tokens, and
 // sebastian logged in.
 func tokenRig(t *testing.T) (*rig, *http.Cookie, *session) {
@@ -239,9 +251,9 @@ func TestRevokeChatTokenOnlyOwn(t *testing.T) {
 
 func TestScrubTokensRemovesChatToken(t *testing.T) {
 	bearer := "sfc_" + strings.Repeat("aBcD-_", 7) + "a"
-	got, scrubbed := scrubTokens("my key is " + bearer + " ok")
-	if !scrubbed || got != "my key is "+tokenMask+" ok" {
-		t.Fatalf("scrubTokens = %q, %v", got, scrubbed)
+	got, github, chat := scrubTokens("my key is " + bearer + " ok")
+	if github || !chat || got != "my key is "+tokenMask+" ok" {
+		t.Fatalf("scrubTokens = %q, GitHub %v, chat %v", got, github, chat)
 	}
 }
 

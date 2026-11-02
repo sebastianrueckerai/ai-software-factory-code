@@ -2,6 +2,8 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
+	"slices"
 	"testing"
 	"time"
 
@@ -210,5 +212,66 @@ func TestChatMessageTokenRoundTrip(t *testing.T) {
 	got, err := s.ChatMessages(ctx, "acme/app", "sebastian", 0, 10)
 	if err != nil || len(got) != 2 || got[0].Token != "laptop" || got[1].Token != "" {
 		t.Errorf("messages = %+v, %v", got, err)
+	}
+}
+
+func TestDeleteConversationFreesItsChatToken(t *testing.T) {
+	ctx := context.Background()
+	s := chatTokenStore(t)
+	own := addChatToken(t, s, "h1", "sebastian")
+	other := addChatToken(t, s, "h2", "sebastian")
+	alices := addChatToken(t, s, "h3", "alice")
+	for _, c := range []struct {
+		id, n int64
+		login string
+	}{{own, 2, "sebastian"}, {other, 3, "sebastian"}, {alices, 2, "alice"}} {
+		if _, err := s.AddChatMessage(ctx, "acme/app", c.login, ChatMessage{Role: "user", Content: "hi", Conversation: c.n}); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := s.ClaimChatTokenConversation(ctx, c.id, c.n); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.DeleteConversation(ctx, "acme/app", "sebastian", 2); err != nil {
+		t.Fatal(err)
+	}
+	for hash, want := range map[string]int64{"h1": 0, "h2": 3, "h3": 2} {
+		if got, _, err := s.ChatTokenByHash(ctx, hash); err != nil || got.Conversation != want {
+			t.Errorf("token %s's conversation = %d, %v; want %d", hash, got.Conversation, err, want)
+		}
+	}
+}
+
+func TestChatMessagesAfterPagesForward(t *testing.T) {
+	ctx := context.Background()
+	s := chatTokenStore(t)
+	var ids []int64
+	for i := range 5 {
+		id, err := s.AddChatMessage(ctx, "acme/app", "sebastian", ChatMessage{Role: "user", Content: fmt.Sprint("m", i), Conversation: 2})
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids = append(ids, id)
+	}
+	if _, err := s.AddChatMessage(ctx, "acme/app", "sebastian", ChatMessage{Role: "user", Content: "elsewhere", Conversation: 3}); err != nil {
+		t.Fatal(err)
+	}
+	for _, c := range []struct {
+		after int64
+		limit int
+		want  []string
+	}{
+		{ids[0], 2, []string{"m1", "m2"}},
+		{ids[2], 2, []string{"m3", "m4"}},
+		{ids[4], 2, nil},
+	} {
+		rows, err := s.ChatMessagesAfter(ctx, "acme/app", "sebastian", 2, c.after, c.limit)
+		var got []string
+		for _, m := range rows {
+			got = append(got, m.Content)
+		}
+		if err != nil || !slices.Equal(got, c.want) {
+			t.Errorf("after %d, %d rows = %q, %v; want %q", c.after, c.limit, got, err, c.want)
+		}
 	}
 }

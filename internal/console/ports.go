@@ -138,6 +138,9 @@ type Chat interface {
 	EnsureChatTask(ctx context.Context, name, repository string, budget float64, at time.Time) (factoryd.Task, error)
 	AddChatMessage(ctx context.Context, repository, login string, m factoryd.ChatMessage) (int64, error)
 	ChatMessages(ctx context.Context, repository, login string, conversation int64, limit int) ([]factoryd.ChatMessage, error)
+	// ChatMessagesAfter is a thread's rows after id after, oldest first,
+	// at most limit: a reader behind by more pages forward.
+	ChatMessagesAfter(ctx context.Context, repository, login string, conversation, after int64, limit int) ([]factoryd.ChatMessage, error)
 	// ChatOpenQuestion is the thread's open question, the line its last
 	// human message asked that no reply has answered, and whether a reply
 	// has already passed it once; PutChatQuestion stores both, an empty

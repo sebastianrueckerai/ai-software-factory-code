@@ -1885,7 +1885,7 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 // supervisor's message path, marked as theirs, every GitHub token in it
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
-	text, scrubbed := scrubTokens(strings.TrimSpace(text))
+	text, github, chat := scrubTokens(strings.TrimSpace(text))
 	if text == "" || len(text) > 8<<10 {
 		return "", refuse(http.StatusBadRequest, "a message of up to 8 KiB is required")
 	}
@@ -1908,8 +1908,8 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 	log.Printf("console: %s steered %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSteered, map[string]any{"text": text})
 	note := fmt.Sprintf("The session of #%d has your message.", t.IssueNumber)
-	if scrubbed {
-		note += " I removed a GitHub token from it; it was not stored or sent."
+	if github || chat {
+		note += " I removed " + removedTokens(github, chat) + " from it; it was not stored or sent."
 	}
 	return note, nil
 }

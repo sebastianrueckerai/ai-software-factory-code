@@ -107,10 +107,10 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 		return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
 	}
 	tu := c.sessionTurn(context.WithoutCancel(ctx), p, a.s, conv)
-	text, scrubbed := scrubTokens(text)
+	text, github, chat := scrubTokens(text)
 	notice := ""
-	if scrubbed {
-		notice = "I removed a GitHub token from your answer; it was not stored or sent."
+	if github || chat {
+		notice = "I removed " + removedTokens(github, chat) + " from your answer; it was not stored or sent."
 	}
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, p.Name, p.Repository, tu.cfg.MonthlyEUR, time.Now())
 	if err != nil {

@@ -131,8 +131,10 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 		" as yourself, as the console's chat does, and wait up to 4 minutes for the turn's end: its reply, the tools it called, " +
 		"the proposals it raised, which run only once you confirm them, and what it applied. Without a conversation it writes in " +
 		"this token's own conversation. A turn that outlasts the wait goes on; chat_read reads its end."},
-		func(ctx context.Context, _ *mcp.CallToolRequest, in sendInput) (*mcp.CallToolResult, any, error) {
-			return c.chatSend(ctx, call, in)
+		func(_ context.Context, _ *mcp.CallToolRequest, in sendInput) (*mcp.CallToolResult, any, error) {
+			// the request's own context: the SDK ends the handler's with it
+			// on its newest protocol only, and a client that gives up ends it
+			return c.chatSend(r.Context(), call, in)
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_read", Description: "Read a conversation with the project agent of " + call.p.Name +
 		": its last 40 messages, or those after a message id, each with its id, role, text, time, source (console, or the name " +
@@ -183,7 +185,7 @@ type readInput struct {
 
 // tokenThread is the thread a token's tool works in: n, which must be
 // one of its human's threads in the project, or with n 0 the token's
-// own, Number 0 before its first turn.
+// own, Number 0 before its first turn and once its human deleted it.
 func (c *Console) tokenThread(ctx context.Context, call tokenCall, n int64) (factoryd.ChatConversation, error) {
 	own := n == 0
 	if own {
@@ -200,8 +202,7 @@ func (c *Console) tokenThread(ctx context.Context, call tokenCall, n int64) (fac
 		return list[i], nil
 	}
 	if own {
-		// its human deleted it: the turn's first row makes it again
-		return factoryd.ChatConversation{Number: n}, nil
+		return factoryd.ChatConversation{}, nil
 	}
 	return factoryd.ChatConversation{}, fmt.Errorf("conversation %d is not yours in %s", n, call.row.Repository)
 }
@@ -259,11 +260,13 @@ type mcpApplied struct {
 
 // collector is a token's turn's event stream read into chat_send's
 // answer. The turn sends from its own goroutine and from its tools';
-// once the answer went out, every later event drops.
+// once the answer went out, every later event drops. joined: the message
+// joined another turn, whose end is not this one's.
 type collector struct {
-	mu   sync.Mutex
-	a    sendAnswer
-	gone bool
+	mu     sync.Mutex
+	a      sendAnswer
+	gone   bool
+	joined bool
 }
 
 func (k *collector) send(event string, data any) {
@@ -286,7 +289,8 @@ func (k *collector) send(event string, data any) {
 		id, _ := m["id"].(string)
 		tool, _ := m["tool"].(string)
 		what, _ := m["description"].(string)
-		k.a.Proposals = append(k.a.Proposals, mcpProposal{ID: id, Tool: tool, What: what, Expires: time.Now().Add(chatTTL)})
+		expires, _ := m["expires"].(time.Time)
+		k.a.Proposals = append(k.a.Proposals, mcpProposal{ID: id, Tool: tool, What: what, Expires: expires})
 	case "applied":
 		m, _ := data.(map[string]string)
 		k.a.Applied = append(k.a.Applied, mcpApplied{Tool: m["tool"], Result: m["result"]})
@@ -297,14 +301,20 @@ func (k *collector) send(event string, data any) {
 	case "error":
 		m, _ := data.(map[string]string)
 		k.a.Error = m["message"]
+	case "stopped":
+		if s, ok := data.(stopEvent); ok {
+			k.a.Error = s.Message.Content
+		}
+	case "joined":
+		k.joined = true
 	}
 }
 
 // wait runs turn, which returns at the turn's end, and answers what the
-// stream said by then or by chatSendWait, whichever comes first; the
-// turn goes on detached past the wait. A refusal before the stream opened
-// is the error.
-func (k *collector) wait(turn func() error) (sendAnswer, error) {
+// stream said by then, by chatSendWait or by ctx's end, whichever comes
+// first; the turn goes on detached past the wait. A refusal before the
+// stream opened is the error.
+func (k *collector) wait(ctx context.Context, turn func() error) (sendAnswer, error) {
 	ended := make(chan error, 1)
 	go func() { ended <- turn() }()
 	timer := time.NewTimer(chatSendWait)
@@ -315,10 +325,11 @@ func (k *collector) wait(turn func() error) (sendAnswer, error) {
 	case err = <-ended:
 		done = true
 	case <-timer.C:
+	case <-ctx.Done():
 	}
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	k.gone, k.a.Ended = true, done
+	k.gone, k.a.Ended = true, done && !k.joined
 	return k.a, err
 }
 
@@ -347,10 +358,11 @@ func (c *Console) chatSend(ctx context.Context, call tokenCall, in sendInput) (*
 		th.Title = call.row.Name
 		t.conv, t.a.thread = th.Number, th.Number
 	}
-	msg.Names = names(th)
+	// a titled thread keeps its title: the token's own, or one its human named
+	msg.Names = names(th) && th.Title == ""
 	k := &collector{a: sendAnswer{Conversation: th.Number, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
 	t.send, t.unread = k.send, true
-	a, err := k.wait(func() error { return t.say(msg, func() {}) })
+	a, err := k.wait(ctx, func() error { return t.say(msg, func() {}) })
 	if err != nil {
 		return nil, nil, err
 	}
@@ -359,17 +371,24 @@ func (c *Console) chatSend(ctx context.Context, call tokenCall, in sendInput) (*
 
 // mcpMessage is a thread's row as chat_read answers it.
 type mcpMessage struct {
-	ID       int64     `json:"id"`
-	Role     string    `json:"role"`
-	Text     string    `json:"text"`
-	At       time.Time `json:"at"`
-	Source   string    `json:"source"`
-	Proposal string    `json:"proposal,omitempty"`
-	State    string    `json:"state,omitempty"`
+	ID        int64              `json:"id"`
+	Role      string             `json:"role"`
+	Text      string             `json:"text"`
+	At        time.Time          `json:"at"`
+	Source    string             `json:"source"`
+	Proposals []mcpProposalState `json:"proposals,omitempty"`
 }
 
-// chatRead answers a thread's last 40 rows, or those after in.After,
-// from the store: it never marks the thread seen nor opens it.
+type mcpProposalState struct {
+	ID    string `json:"id"`
+	State string `json:"state"`
+}
+
+// chatReadMax bounds chat_read's rows.
+const chatReadMax = 40
+
+// chatRead answers a thread's last chatReadMax rows, or as many after
+// in.After, from the store: it never marks the thread seen nor opens it.
 func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*mcp.CallToolResult, any, error) {
 	th, err := c.tokenThread(ctx, call, in.Conversation)
 	if err != nil {
@@ -379,34 +398,41 @@ func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*
 	if th.Number == 0 {
 		return jsonAnswer(out)
 	}
-	rows, err := c.cfg.Chat.ChatMessages(ctx, call.row.Repository, call.row.Login, th.Number, 40)
+	var rows []factoryd.ChatMessage
+	if in.After > 0 {
+		rows, err = c.cfg.Chat.ChatMessagesAfter(ctx, call.row.Repository, call.row.Login, th.Number, in.After, chatReadMax)
+	} else {
+		rows, err = c.cfg.Chat.ChatMessages(ctx, call.row.Repository, call.row.Login, th.Number, chatReadMax)
+	}
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", call.row.Login, call.row.Repository, err)
 		return nil, nil, errors.New("cannot read the conversation")
 	}
 	var tokens []string
 	for _, m := range rows {
-		if m.ID <= in.After {
-			continue
-		}
 		row := mcpMessage{ID: m.ID, Role: m.Role, Text: m.Content, At: m.At, Source: cmp.Or(m.Token, "console")}
-		if i := slices.IndexFunc(m.ToolCalls, func(tc factoryd.ChatToolCall) bool { return tc.Proposal != "" }); i >= 0 {
-			row.Proposal = m.ToolCalls[i].Proposal
-			tokens = append(tokens, row.Proposal)
+		for _, tc := range m.ToolCalls {
+			if tc.Proposal != "" {
+				row.Proposals = append(row.Proposals, mcpProposalState{ID: tc.Proposal})
+				tokens = append(tokens, tc.Proposal)
+			}
 		}
 		out = append(out, row)
 	}
-	if len(tokens) > 0 {
-		states, err := c.cfg.Chat.ProposalStates(ctx, call.row.Repository, call.row.Login, tokens, time.Now())
-		if err != nil {
-			log.Printf("console: the chat proposals of %s on %s: %v", call.row.Login, call.row.Repository, err)
-		}
-		for _, st := range states {
-			for i := range out {
-				if out[i].Proposal == st.Token {
-					out[i].State = st.State
-				}
-			}
+	if len(tokens) == 0 {
+		return jsonAnswer(out)
+	}
+	states, err := c.cfg.Chat.ProposalStates(ctx, call.row.Repository, call.row.Login, tokens, time.Now())
+	if err != nil {
+		log.Printf("console: the chat proposals of %s on %s: %v", call.row.Login, call.row.Repository, err)
+	}
+	state := make(map[string]string, len(states))
+	for _, st := range states {
+		state[st.Token] = st.State
+	}
+	for i := range out {
+		for j := range out[i].Proposals {
+			out[i].Proposals[j].State = state[out[i].Proposals[j].ID]
 		}
 	}
 	return jsonAnswer(out)

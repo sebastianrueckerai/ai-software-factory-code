@@ -203,7 +203,7 @@ func TestReplanCard(t *testing.T) {
 	_, events, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"replan #11"}})
 	equal(t, "the proposal", events, []string{
 		`proposal {"arguments":{"note":"` + note + `","task_id":"t-r"},"description":"Replan a card, #11 t-r \"Speed up the board.\", note ` + note +
-			`","id":"TOKEN","tool":"replan"}`, `done {}`})
+			`","expires":"EXPIRES","id":"TOKEN","tool":"replan"}`, `done {}`})
 	calls = len(asked)
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{

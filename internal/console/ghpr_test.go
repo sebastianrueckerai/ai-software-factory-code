@@ -92,10 +92,10 @@ func TestChatGithubSync(t *testing.T) {
 	g.replies = [][]string{{call(1, "github_export", `{"remote":"acme/app","mode":"pull_requests"}`)}}
 	_, events, _ := chatPost(t, r, ck, s, demo, url.Values{"message": {"export"}})
 	equal(t, "export's proposal", events[0][:strings.Index(events[0], `,"id"`)],
-		`proposal {"arguments":{"remote":"acme/app","mode":"pull_requests"},"description":"Export to GitHub, remote acme/app, mode pull_requests"`)
+		`proposal {"arguments":{"remote":"acme/app","mode":"pull_requests"},"description":"Export to GitHub, remote acme/app, mode pull_requests","expires":"EXPIRES"`)
 	g.replies = [][]string{{call(1, "github_sync", `{}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, demo, url.Values{"message": {"sync from GitHub"}})
-	equal(t, "stream", events, []string{`proposal {"arguments":{},"description":"Sync from GitHub","id":"TOKEN","tool":"github_sync"}`, `done {}`})
+	equal(t, "stream", events, []string{`proposal {"arguments":{},"description":"Sync from GitHub","expires":"EXPIRES","id":"TOKEN","tool":"github_sync"}`, `done {}`})
 	before := r.events.count()
 	_, done, _ := chatPost(t, r, ck, s, demo+"/proposals/"+tokens[0], nil)
 	started := "Sync from GitHub of demo-app started: its result arrives as an event and on the projects page's export row."

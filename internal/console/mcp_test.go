@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"slices"
 	"strings"
 	"sync"
@@ -422,6 +423,9 @@ func TestMCPChatSendAnswersReply(t *testing.T) {
 		t.Fatalf("chat_send = %s\nwant %s", got, want)
 	}
 	equal(t, "the side thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: hello"})
+	if titles := g.titles(); len(titles) != 0 {
+		t.Fatalf("the token's titled thread was named: %v", titles)
+	}
 	if cur, _ := chat.CurrentConversation(t.Context(), "sf/code", "sebastian"); cur != 1 {
 		t.Fatalf("the current conversation = %d, want 1 still", cur)
 	}
@@ -511,24 +515,23 @@ func TestMCPChatSendRaisesProposal(t *testing.T) {
 	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "#22 waits on #21"})), &a); err != nil {
 		t.Fatal(err)
 	}
-	after := time.Now()
 	if len(a.Proposals) != 1 || len(a.Tools) != 0 || len(a.Applied) != 0 || a.Reply != "" || !a.Ended {
 		t.Fatalf("chat_send = %+v, want one proposal, no tool, nothing applied, ended", a)
 	}
 	p := a.Proposals[0]
-	if p.Tool != "set_dependency" || p.What != `Set a dependency, #22 t-b "Add the web UI.", depends on #21 t-a "Add the API."` ||
-		p.Expires.Before(before.Add(30*time.Minute)) || p.Expires.After(after.Add(30*time.Minute)) {
-		t.Fatalf("the proposal = %+v, want set_dependency's, expiring 30 minutes on", p)
-	}
 	stored, ok := r.chat.proposal(p.ID)
 	if !ok || stored.Login != "sebastian" || stored.Conversation != 2 || !stored.used.IsZero() {
 		t.Fatalf("the stored proposal = %+v (%v), want sebastian's unused one in thread 2", stored, ok)
+	}
+	if p.Tool != "set_dependency" || p.What != `Set a dependency, #22 t-b "Add the web UI.", depends on #21 t-a "Add the API."` ||
+		!p.Expires.Equal(stored.ExpiresAt) || p.Expires.Before(before.Add(30*time.Minute)) {
+		t.Fatalf("the proposal = %+v, want set_dependency's, expiring as stored at %v", p, stored.ExpiresAt)
 	}
 	if len(r.issueDeps) != 0 {
 		t.Fatalf("a proposal acted: %q", r.issueDeps)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
-		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"console","proposal":"`+p.ID+`","state":"pending"}]`; got != want {
+		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"console","proposals":[{"id":"`+p.ID+`","state":"pending"}]}]`; got != want {
 		t.Fatalf("chat_read = %s\nwant %s", got, want)
 	}
 }
@@ -561,11 +564,13 @@ func TestMCPChatSendOutlastsWait(t *testing.T) {
 	t.Cleanup(func() { chatSendWait = wait })
 	g.replies = [][]string{{say("late hello")}}
 	g.hold = make(chan struct{})
+	release := sync.OnceFunc(func() { close(g.hold) })
+	defer release()
 	session := tokenSession(t, r)
 	if got := answerOf(t, session, "chat_send", map[string]any{"message": "hi"}); got != sent(2, "", "", false) {
 		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
-	close(g.hold)
+	release()
 	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"console"},` +
 		`{"id":2,"role":"assistant","text":"late hello","at":"2026-10-11T09:30:02Z","source":"console"}]`
 	got := ""
@@ -609,6 +614,8 @@ func TestMCPChatSendRevokedMidTurn(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	g.replies = [][]string{{say("still here")}}
 	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	release := sync.OnceFunc(func() { close(g.hold) })
+	defer release()
 	srv := httptest.NewServer(r.c)
 	t.Cleanup(srv.Close)
 	d := &door{auth: "Bearer " + r.chatTokenOf(t, "sebastian", "sf/code", nil)}
@@ -629,7 +636,7 @@ func TestMCPChatSendRevokedMidTurn(t *testing.T) {
 	if ok, err := r.chatTokens.RevokeChatToken(t.Context(), 1, "sebastian", time.Now()); !ok || err != nil {
 		t.Fatalf("revoke = %v, %v", ok, err)
 	}
-	close(g.hold)
+	release()
 	if got := <-answer; got != sent(2, "still here", "", true) {
 		t.Fatalf("chat_send across the revoke = %s\nwant %s", got, sent(2, "still here", "", true))
 	}
@@ -683,4 +690,228 @@ func TestMCPChatReadSource(t *testing.T) {
 		`[{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}]`; got != want {
 		t.Fatalf("chat_read after 2 = %s\nwant %s", got, want)
 	}
+}
+
+// The human deletes the token's thread after opening it, and the number
+// comes back as a thread of their own: the token's next turn makes a
+// fresh thread, never writes in theirs and never becomes their current one.
+func TestMCPChatSendAfterItsThreadIsDeleted(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("first")}, {say("second")}}
+	session := tokenSession(t, r)
+	answerOf(t, session, "chat_send", map[string]any{"message": "hi"})
+	ctx := t.Context()
+	if err := chat.OpenConversation(ctx, "sf/code", "sebastian", 2); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := chat.DeleteConversation(ctx, "sf/code", "sebastian", 2); err != nil {
+		t.Fatal(err)
+	}
+	mine, _ := chat.CurrentConversation(ctx, "sf/code", "sebastian")
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "user", Content: "my own thread", Conversation: mine}); err != nil {
+		t.Fatal(err)
+	}
+	if mine != 2 {
+		t.Fatalf("the human's new thread = %d, want the freed number 2", mine)
+	}
+	if got := answerOf(t, session, "chat_send", map[string]any{"message": "again"}); got != sent(3, "second", "", true) {
+		t.Fatalf("chat_send after the delete = %s\nwant %s", got, sent(3, "second", "", true))
+	}
+	equal(t, "the human's thread", rowsOf(t, chat, "sebastian", 2), []string{"user: my own thread"})
+	equal(t, "the token's new thread", rowsOf(t, chat, "sebastian", 3), []string{"user: again", "assistant: second"})
+	if cur, _ := chat.CurrentConversation(ctx, "sf/code", "sebastian"); cur != 2 {
+		t.Fatalf("the current conversation = %d, want the human's 2", cur)
+	}
+	if th, ok, _ := chat.Conversation(ctx, "sf/code", "sebastian", 3); !ok || th.Title != "laptop" {
+		t.Fatalf("thread 3 = %+v, %v; want the token's, titled laptop", th, ok)
+	}
+}
+
+// A message sent while the thread's turn runs joins that turn: its answer
+// says the turn has not ended, and chat_read reads the reply to both.
+func TestMCPChatSendJoinsTheRunningTurn(t *testing.T) {
+	r, _, g := newChatRig(t)
+	wait := chatSendWait
+	chatSendWait = 50 * time.Millisecond
+	t.Cleanup(func() { chatSendWait = wait })
+	g.replies = [][]string{{say("one")}, {say("two")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 2)
+	release := sync.OnceFunc(func() { close(g.hold) })
+	defer release()
+	session := tokenSession(t, r)
+	if got := answerOf(t, session, "chat_send", map[string]any{"message": "hi"}); got != sent(2, "", "", false) {
+		t.Fatalf("the first chat_send = %s\nwant %s", got, sent(2, "", "", false))
+	}
+	<-g.arrived
+	if got := answerOf(t, session, "chat_send", map[string]any{"message": "and more"}); got != sent(2, "", "", false) {
+		t.Fatalf("the joining chat_send = %s\nwant %s", got, sent(2, "", "", false))
+	}
+	release()
+	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"console"},` +
+		`{"id":3,"role":"assistant","text":"one","at":"2026-10-11T09:30:03Z","source":"console"},` +
+		`{"id":4,"role":"user","text":"and more","at":"2026-10-11T09:30:04Z","source":"console"},` +
+		`{"id":5,"role":"assistant","text":"two","at":"2026-10-11T09:30:05Z","source":"console"}]`
+	got := ""
+	for deadline := time.Now().Add(5 * time.Second); got != want && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		got = answerOf(t, session, "chat_read", map[string]any{})
+	}
+	if got != want {
+		t.Fatalf("chat_read after the turn = %s\nwant %s", got, want)
+	}
+}
+
+// A human's stop in the browser ends the token's turn: the answer says so
+// in its error.
+func TestMCPChatSendStoppedByTheHuman(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{say("never said")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	defer close(g.hold)
+	session := tokenSession(t, r)
+	answer := make(chan string, 1)
+	go func() {
+		text, refused, err := callTool(session, "chat_send", map[string]any{"message": "hi"})
+		if err != nil || refused {
+			t.Errorf("chat_send = %q, %v", text, err)
+		}
+		answer <- text
+	}()
+	select {
+	case <-g.arrived:
+	case got := <-answer:
+		t.Fatalf("chat_send answered %q before its model call", got)
+	}
+	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/stop", url.Values{"conversation": {"2"}}); code != http.StatusNoContent {
+		t.Fatalf("the stop = %d %q", code, body)
+	}
+	if got := <-answer; got != sent(2, "", "Stopped by sebastian.", true) {
+		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, "", "Stopped by sebastian.", true))
+	}
+	equal(t, "the thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: Stopped by sebastian."})
+}
+
+// An MCP request its client gives up on ends at once; its turn goes on.
+func TestMCPChatSendLeavesWithItsRequest(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("late")}}
+	g.hold, g.arrived = make(chan struct{}), make(chan struct{}, 1)
+	release := sync.OnceFunc(func() { close(g.hold) })
+	defer release()
+	ctx, cancel := context.WithCancel(context.Background())
+	req := httptest.NewRequestWithContext(ctx, http.MethodPost, "/mcp",
+		strings.NewReader(`{"jsonrpc":"2.0","id":1,"method":"tools/call","params":{"name":"chat_send","arguments":{"message":"hi"}}}`))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Accept", "application/json, text/event-stream")
+	req.Header.Set("Authorization", "Bearer "+r.chatTokenOf(t, "sebastian", "sf/code", nil))
+	served := make(chan struct{})
+	go func() {
+		r.c.ServeHTTP(deadlined{httptest.NewRecorder()}, req)
+		close(served)
+	}()
+	<-g.arrived
+	cancel()
+	select {
+	case <-served:
+	case <-time.After(5 * time.Second):
+		t.Fatal("the cancelled request still waits for its turn")
+	}
+	release()
+	var rows []string
+	for deadline := time.Now().Add(5 * time.Second); len(rows) < 2 && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
+		rows = rowsOf(t, chat, "sebastian", 2)
+	}
+	equal(t, "the thread", rows, []string{"user: hi", "assistant: late"})
+}
+
+func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
+	r, _, g := newChatRig(t)
+	g.replies = [][]string{
+		{call(1, "card", `{"task_id":"t-m"}`, "set_summary", `{"task_id":"t-m","summary":"Cache fix"}`)},
+		{say("Done.")},
+	}
+	var a struct {
+		Reply   string
+		Tools   []map[string]string
+		Applied []map[string]string
+		Ended   bool
+	}
+	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "summarize #5"})), &a); err != nil {
+		t.Fatal(err)
+	}
+	card := "#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
+		"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
+		"merge request 4 pending for pull request #9, risk high; a human deci…"
+	equal(t, "the answer", a, struct {
+		Reply   string
+		Tools   []map[string]string
+		Applied []map[string]string
+		Ended   bool
+	}{"Done.", []map[string]string{{"name": "card", "result": card}, {"name": "set_summary", "result": "The summary of #5 is set."}},
+		[]map[string]string{{"tool": "set_summary", "result": "The summary of #5 is set."}}, true})
+	if k, _, _ := r.tasks.Task(t.Context(), "t-m"); k.HumanSummary != "Cache fix" {
+		t.Fatalf("summary = %q, want Cache fix", k.HumanSummary)
+	}
+}
+
+func TestMCPChatReadTwoProposalsOnARow(t *testing.T) {
+	r, g := newWritesRig(t)
+	g.replies = [][]string{{call(1, "set_dependency", `{"task_id":"t-b","depends_on":"t-a"}`,
+		"new_card", `{"title":"Cache metrics","body":"Count hits.","acceptance":["The hits count"],"track":"direct","track_reason":"one small change","size":"large"}`)}}
+	session := tokenSession(t, r)
+	var a struct{ Proposals []struct{ ID string } }
+	if err := json.Unmarshal([]byte(answerOf(t, session, "chat_send", map[string]any{"message": "two things"})), &a); err != nil {
+		t.Fatal(err)
+	}
+	if len(a.Proposals) != 2 {
+		t.Fatalf("chat_send raised %+v, want two proposals", a.Proposals)
+	}
+	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
+		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"console","proposals":[{"id":"`+a.Proposals[0].ID+
+			`","state":"pending"},{"id":"`+a.Proposals[1].ID+`","state":"pending"}]}]`; got != want {
+		t.Fatalf("chat_read = %s\nwant %s", got, want)
+	}
+}
+
+func TestMCPChatSendScrubsAChatToken(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	g.replies = [][]string{{say("Noted.")}}
+	bearer := "sfc_" + strings.Repeat("aBcD-_", 7) + "a"
+	const notice = "I removed a chat token from your message; it was not stored or sent."
+	if got := answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "my token is " + bearer}); got != sent(2, notice+"\n\nNoted.", "", true) {
+		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, notice+"\n\nNoted.", "", true))
+	}
+	equal(t, "the thread", rowsOf(t, chat, "sebastian", 2), []string{"user: my token is [token]", "assistant: " + notice, "assistant: Noted."})
+}
+
+// chat_read pages forward from after past the last 40 rows.
+func TestMCPChatReadPagesForward(t *testing.T) {
+	r, srv, bearer := mcpRig(t)
+	for i := range 45 {
+		if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: 2, Role: "user", Content: fmt.Sprint("m", i+1)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := opened(t, srv, &door{auth: "Bearer " + bearer})
+	ids := func(args map[string]any) []int64 {
+		var rows []struct{ ID int64 }
+		if err := json.Unmarshal([]byte(answerOf(t, session, "chat_read", args)), &rows); err != nil {
+			t.Fatal(err)
+		}
+		var out []int64
+		for _, m := range rows {
+			out = append(out, m.ID)
+		}
+		return out
+	}
+	span := func(from, to int64) []int64 {
+		var out []int64
+		for id := from; id <= to; id++ {
+			out = append(out, id)
+		}
+		return out
+	}
+	equal(t, "the last 40", ids(map[string]any{"conversation": 2}), span(6, 45))
+	equal(t, "40 after 1", ids(map[string]any{"conversation": 2, "after": 1}), span(2, 41))
+	equal(t, "after 41", ids(map[string]any{"conversation": 2, "after": 41}), span(42, 45))
 }

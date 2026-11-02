@@ -243,7 +243,7 @@ func TestPageWriteToolsProduceProposals(t *testing.T) {
 		before := r.events.count()
 		proposed, done, _ := proposeAndDo(t, r, g, c.tool, c.args)
 		equal(t, c.tool+"'s proposal", proposed, []string{
-			`proposal {"arguments":` + c.args + `,"description":"` + c.desc + `","id":"TOKEN","tool":"` + c.tool + `"}`, `done {}`})
+			`proposal {"arguments":` + c.args + `,"description":"` + c.desc + `","expires":"EXPIRES","id":"TOKEN","tool":"` + c.tool + `"}`, `done {}`})
 		equal(t, c.tool+"'s Do it", done, ran(c.tool, c.args, c.result))
 		chatRows(t, r.events, before, "sebastian", c.row)
 	}

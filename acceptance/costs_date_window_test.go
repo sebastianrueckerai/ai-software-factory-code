@@ -826,7 +826,7 @@ func (f *acceptChat) NewConversation(_ context.Context, repository, login string
 	return highest + 1, nil
 }
 
-// SideConversation is a thread past the member's highest that never
+// SideConversation is a thread past the human's highest that never
 // becomes current.
 func (f *acceptChat) SideConversation(_ context.Context, repository, login, _ string) (int64, error) {
 	f.mu.Lock()
@@ -896,6 +896,10 @@ func (f *acceptChat) ChatMessages(_ context.Context, repository, login string, c
 		out = out[len(out)-limit:]
 	}
 	return out, nil
+}
+
+func (f *acceptChat) ChatMessagesAfter(context.Context, string, string, int64, int64, int) ([]factoryd.ChatMessage, error) {
+	return nil, nil
 }
 
 func (f *acceptChat) ProposalStates(_ context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error) {

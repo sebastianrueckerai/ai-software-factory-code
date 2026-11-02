@@ -177,7 +177,7 @@ func TestInvite(t *testing.T) {
 	g.replies = [][]string{{call(1, "invite", `{"login":"dave"}`)}}
 	_, events, tokens := chatPost(t, r, ck, s, "/projects/demo/chat", url.Values{"message": {"invite dave"}})
 	equal(t, "stream", events, []string{
-		`proposal {"arguments":{"login":"dave"},"description":"Invite a human, login dave","id":"TOKEN","tool":"invite"}`, `done {}`})
+		`proposal {"arguments":{"login":"dave"},"description":"Invite a human, login dave","expires":"EXPIRES","id":"TOKEN","tool":"invite"}`, `done {}`})
 	if len(r.invited) != 0 {
 		t.Fatalf("a proposal invited %v", r.invited)
 	}

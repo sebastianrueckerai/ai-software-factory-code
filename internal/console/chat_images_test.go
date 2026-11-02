@@ -132,7 +132,7 @@ func TestChatNewCardImage(t *testing.T) {
 	args := `{"title":"Shoot the page","body":"Screenshot the landing page.","acceptance":["The page is shot"],"track":"direct","track_reason":"one screenshot","size":"small","image":"chromium"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "new_card", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, acceptance The page is shot","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + args + `,"description":"File a card, title Shoot the page, body Screenshot the landing page., track direct, track_reason one screenshot, size small, image chromium, acceptance The page is shot","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("new_card", args, "Filed sf/code#41 on track direct."))
 	equal(t, "the issue's body", r.fg.issues[0]["body"], "Screenshot the landing page.\n\nAcceptance:\n- The page is shot\n\nSize: small\nImage: chromium")
@@ -177,7 +177,7 @@ func TestChatRequestImage(t *testing.T) {
 	args := `{"image":"video","need":"cut the demo video","tool":"ffmpeg"}`
 	proposed, done, _ := proposeAndDo(t, r, g, "request_image", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Ask for a sandbox tool, tool ffmpeg, need cut the demo video, image video","id":"TOKEN","tool":"request_image"}`,
+		`proposal {"arguments":` + args + `,"description":"Ask for a sandbox tool, tool ffmpeg, need cut the demo video, image video","expires":"EXPIRES","id":"TOKEN","tool":"request_image"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("request_image", args, `Filed tool card #50 t-tool \"Add ffmpeg to image video\".`+after))
 	equal(t, "the ask", r.imageAsks, []string{"sf/code: ffmpeg | cut the demo video | video, by sebastian"})

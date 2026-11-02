@@ -783,7 +783,7 @@ func TestPoolProposalDisplay(t *testing.T) {
 	g.replies = [][]string{{call(1, "new_card", cardArgs)}}
 	_, events, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the count"}})
 	equal(t, "the generic proposal", events, []string{
-		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, track direct, track_reason one count","id":"TOKEN","tool":"new_card"}`,
+		`proposal {"arguments":` + cardArgs + `,"description":"File a card, title Cache metrics, track direct, track_reason one count","expires":"EXPIRES","id":"TOKEN","tool":"new_card"}`,
 		`done {}`})
 	if st := states()[tokens[0]]; st.Pool != nil {
 		t.Errorf("a generic proposal carries a pool preview: %+v", st)
