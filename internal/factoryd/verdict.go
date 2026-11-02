@@ -905,8 +905,10 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
 			return
 		}
-		if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteria, "denied", FactoryDecider, "the plan card was closed"); err != nil {
-			log.Printf("plan %s: deny the criteria approval: %v", parent, err)
+		for _, kind := range criteriaKinds {
+			if err := r.store.ResolveApprovals(ctx, parent, kind, "denied", FactoryDecider, "the plan card was closed"); err != nil {
+				log.Printf("plan %s: deny the %s approval: %v", parent, kind, err)
+			}
 		}
 		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main.")
 		return
@@ -945,8 +947,10 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if r.planClosed(ctx, parent) || (integration.Status != "merged" && integration.Status != "done") || !r.planAtRest(ctx, t) {
 			return
 		}
-		if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteria, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
-			log.Printf("plan %s: close the criteria approval: %v", parent, err)
+		for _, kind := range criteriaKinds {
+			if err := r.store.ResolveApprovals(ctx, parent, kind, "approved", FactoryDecider, "every criterion is met or waived"); err != nil {
+				log.Printf("plan %s: close the %s approval: %v", parent, kind, err)
+			}
 		}
 		r.closePlan(ctx, t, repo, len(p.Criteria), "factoryd: every criterion of this plan is met or waived; the plan is closed.")
 		return
@@ -956,9 +960,18 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return
 	}
-	if !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
-		r.openGap(ctx, t, repo, p, openCriteria(p, rows), integration)
+	if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+		return
 	}
+	open := openCriteria(p, rows)
+	if never := neverJudged(p, rows); len(never) > 0 {
+		unmet := slices.DeleteFunc(open, func(c PlanCriterion) bool {
+			return slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.ID })
+		})
+		r.askRerun(ctx, t, repo, never, unmet, integration)
+		return
+	}
+	r.openGap(ctx, t, repo, open, integration)
 }
 
 // closePlan says why plan t closed on its issue, unless comment is
@@ -975,14 +988,59 @@ func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int,
 	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
 }
 
+// criteriaKinds are the asks of a plan whose cards ran out with a
+// criterion open: a gap, and criteria never judged.
+var criteriaKinds = []string{ApprovalCriteria, ApprovalCriteriaRerun}
+
 // openGap opens the plan's criteria approval once per shape of gap, while
-// the plan is at rest.
-func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []PlanCriterion, integration Task) {
-	var ids []string
-	for _, c := range open {
-		ids = append(ids, c.ID)
+// the plan is at rest: open are criteria whose rows say not met.
+func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCriterion, integration Task) {
+	ids, lines := criteriaLines(open, "")
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteria, fmt.Sprintf("criteria not met with the plan's cards done: %s", strings.Join(ids, ", ")),
+		"factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
+			"\n\nGrant one more bounded card, or waive a criterion with your reason.", ids, integration)
+}
+
+// askRerun opens the plan's criteria_rerun approval once per shape, while
+// the plan is at rest: never are criteria no row holds, which the
+// integration card's review never judged, named with its last note, or
+// "the review never ran" when it has none; unmet those whose rows say not
+// met, named beside them.
+func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task) {
+	why := "did not run (the review never ran)"
+	if note, ok := r.lastReviewNote(ctx, integration.ID); ok && note != "" {
+		why = "did not run (" + note + ")"
+	} else if ok {
+		why = "wrote no verdict for them"
 	}
-	reason := fmt.Sprintf("criteria not met with the plan's cards done: %s", strings.Join(ids, ", "))
+	ids, lines := criteriaLines(never, " — never judged")
+	reason := fmt.Sprintf("criteria never judged: the review of card #%d %s: %s", integration.IssueNumber, why, strings.Join(ids, ", "))
+	if len(unmet) > 0 {
+		more, unmetLines := criteriaLines(unmet, " — not met")
+		reason += "; not met: " + strings.Join(more, ", ")
+		ids, lines = append(ids, more...), append(lines, unmetLines...)
+	}
+	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
+		fmt.Sprintf("factoryd: the plan's cards are done, and criteria were never judged: the review of card #%d %s.\n\n", integration.IssueNumber, why)+
+			strings.Join(lines, "\n")+"\n\nApprove runs the review of the criteria never judged against the merged feature; "+
+			"or waive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+}
+
+// criteriaLines are cs's ids and one comment line each, tail after it.
+func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
+	for _, c := range cs {
+		ids = append(ids, c.ID)
+		lines = append(lines, fmt.Sprintf("- %s (%s): %s%s", c.ID, c.Kind, cmp.Or(c.Test, c.Claim), tail))
+	}
+	return ids, lines
+}
+
+// openPlanAsk opens plan t's ask of kind, one of criteriaKinds, with
+// reason, comments it on the plan's issue and pokes: never beside a
+// pending ask of either kind, so the two never stack, nor again after a
+// denied one of the same kind and reason, only once the plan is at rest.
+// Its spec names the integration card, whose rows the decisions read.
+func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reason, comment string, ids []string, integration Task) {
 	for _, status := range []string{"pending", "denied"} {
 		all, err := r.store.ApprovalRequests(ctx, status)
 		if err != nil {
@@ -990,7 +1048,7 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 			return
 		}
 		for _, q := range all {
-			if q.TaskID == t.ID && q.Kind == ApprovalCriteria && (status == "pending" || q.Reason == reason) {
+			if q.TaskID == t.ID && slices.Contains(criteriaKinds, q.Kind) && (status == "pending" || q.Kind == kind && q.Reason == reason) {
 				return
 			}
 		}
@@ -1002,22 +1060,15 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, p Plan, open []
 	if err != nil {
 		return
 	}
-	id, err := r.store.OpenApproval(ctx, ApprovalRequest{
-		Kind: ApprovalCriteria, TaskID: t.ID, Project: t.Repository, Spec: spec, Reason: reason,
-	})
+	id, err := r.store.OpenApproval(ctx, ApprovalRequest{Kind: kind, TaskID: t.ID, Project: t.Repository, Spec: spec, Reason: reason})
 	if err != nil {
-		log.Printf("plan %s: open the criteria approval: %v", t.ID, err)
+		log.Printf("plan %s: open the %s approval: %v", t.ID, kind, err)
 		return
 	}
-	var lines []string
-	for _, c := range open {
-		lines = append(lines, fmt.Sprintf("- %s (%s): %s", c.ID, c.Kind, cmp.Or(c.Test, c.Claim)))
-	}
-	r.commentOnce(ctx, t, repo, t.IssueNumber, "factoryd: the plan's cards ran out with a criterion still unmet.\n\n"+strings.Join(lines, "\n")+
-		"\n\nGrant one more bounded card, or waive a criterion with your reason.")
-	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": ids})
+	r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
+	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "kind": kind, "criteria": ids})
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
-		map[string]any{"approval": id, "kind": ApprovalCriteria, "criteria": ids})
+		map[string]any{"approval": id, "kind": kind, "criteria": ids})
 }
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the

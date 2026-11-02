@@ -746,6 +746,11 @@ const (
 	// approver grants one more bounded card or waives (Spec a
 	// criteriaSpec).
 	ApprovalCriteria = "criteria"
+	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
+	// no verdict row holds, a review that never judged them: the approver
+	// runs it on the merged feature (CriteriaRerun) or waives (Spec a
+	// CriteriaSpec).
+	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
 // ApprovalRequest is a decision the factory waits on a human for (ruling
