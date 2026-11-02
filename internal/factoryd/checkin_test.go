@@ -166,6 +166,7 @@ func TestCheckinStatement(t *testing.T) {
 		"transcript_search",
 		"transcript_read",
 		"card_facts",
+		"card_step",
 		"gates",
 		"read_file",
 		"grep",
@@ -588,6 +589,48 @@ func TestCheckinSessionHandoverNeedsItsNote(t *testing.T) {
 	}
 }
 
+// The check-in's card_facts is the card's digest, a blank line, then the
+// facts the runner holds, read in factoryd, never posted to the pod.
+func TestCheckinCardFactsLeadsWithTheDigest(t *testing.T) {
+	g := skeletonRig(t)
+	facts := `{"budget_eur":5,"spent_eur":4.92,"attempt":5,"sessions":3}`
+	tools := &runnerTools{r: g.r, taskID: "t1410", facts: facts}
+	out, cut, err := tools.Tool(t.Context(), "card_facts", nil)
+	want := "#1410 · plan #1344 session-metrics · budget 5.00 spent 4.92 holds 0.00 EUR · slot held · in-review, approval\n" +
+		"   1 +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
+		"   2 +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
+		"   3 +0:58   review                 → concerns, findings " + idA + " " + idB + "\n" +
+		"   4 +1:02   checkin gate           → confirmed " + idA + " " + idB + ", handover\n" +
+		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
+		"   6 +9:40   answer by sebastian    → Grant one session\n" +
+		"   7 +9:41   session 4 small        → no push ×2\n" +
+		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4), slot_held_by_wait(approval)\n" +
+		"\n" + facts
+	if out != want || cut || err != nil {
+		t.Fatalf("card_facts = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)
+	}
+}
+
+// The check-in's card_step is one step of the card's digest in full, by
+// the number its line carries, read in factoryd; a number the digest
+// lacks is an error the model reads.
+func TestCheckinCardStepReturnsOneStep(t *testing.T) {
+	g := skeletonRig(t)
+	tools := &runnerTools{r: g.r, taskID: "t1410"}
+	out, cut, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 1.0})
+	want := "#1410 step 1 of 8 at 2026-11-01 00:00:00 UTC\n" +
+		"   1 +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
+		"filed by planner, size medium, budget 5.00 EUR\n" +
+		"plan #1344 session-metrics, revision 2\n" +
+		"depends on #1402 (done)\n"
+	if out != want || cut || err != nil {
+		t.Fatalf("card_step 1 = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)
+	}
+	if _, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 9.0}); err == nil || err.Error() != "no step 9 on #1410" {
+		t.Fatalf("card_step 9 = %v, want no step 9 on #1410", err)
+	}
+}
+
 // runnerTools answers the transcript and card questions itself and runs
 // the workspace tools through the worker's /tool endpoint: the local
 // answers, the posted ones with their bearer, a non-200 the model sees,
@@ -619,9 +662,6 @@ func TestRunnerTools(t *testing.T) {
 	if _, _, err := tools.Tool(t.Context(), "transcript_read", map[string]any{"from": 9.0, "to": 12.0}); err == nil ||
 		!strings.Contains(err.Error(), "the parent record holds 3 lines") {
 		t.Fatalf("read past the end = %v, want the record's size named", err)
-	}
-	if out, _, err := tools.Tool(t.Context(), "card_facts", nil); out != tools.facts || err != nil {
-		t.Fatalf("card_facts = (%q, %v), want the card's facts", out, err)
 	}
 	if out, _, err := tools.Tool(t.Context(), "gates", nil); err != nil || !strings.Contains(out, `"Pin":7`) {
 		t.Fatalf("gates = (%q, %v), want the ask's gates serialized", out, err)

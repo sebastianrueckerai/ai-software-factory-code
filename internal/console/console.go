@@ -329,6 +329,13 @@ type Config struct {
 	// (factoryd's Runner.MessageSession); nil offers the project agent no
 	// steer.
 	Steer func(ctx context.Context, taskID, user, text string) error
+	// CardDigest is a card's digest (factoryd's Runner.CardDigest), which
+	// the card read leads with; CardStep one step of it in full, a step
+	// the digest lacks factoryd.ErrNoStep (Runner.CardStep); BoardDigest
+	// a project's board in a few lines (Runner.BoardDigest).
+	CardDigest  func(ctx context.Context, taskID string) (factoryd.CardDigest, error)
+	CardStep    func(ctx context.Context, taskID string, n int) (string, error)
+	BoardDigest func(ctx context.Context, repository string) (factoryd.BoardDigest, error)
 	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
 	// "" when the task's free headroom can fund a session's opening calls and
 	// its rung's floor on model, else the refusal (factoryd's

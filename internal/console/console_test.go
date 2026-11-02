@@ -1146,6 +1146,10 @@ type rig struct {
 	events     *fakeEvents
 	chat       *fakeChat
 	chatTokens *fakeChatTokens
+	// cardSteps are card_step's answers by task id, step 1 first, and
+	// boardDigests the board digests by repository
+	cardSteps    map[string][]string
+	boardDigests map[string]factoryd.BoardDigest
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1262,6 +1266,24 @@ func newRig(t *testing.T) *rig {
 			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
 		},
 		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, ChatTokens: r.chatTokens, Mirrors: r.mirrors, Routines: r.routines,
+		CardDigest: func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
+			k, _, err := r.tasks.Task(ctx, taskID)
+			return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
+				Status: k.Status, Gate: k.Gate}}, err
+		},
+		CardStep: func(ctx context.Context, taskID string, n int) (string, error) {
+			k, _, err := r.tasks.Task(ctx, taskID)
+			if err != nil {
+				return "", err
+			}
+			if steps := r.cardSteps[taskID]; n >= 1 && n <= len(steps) {
+				return steps[n-1], nil
+			}
+			return "", factoryd.ErrNoStep(fmt.Sprintf("no step %d on #%d", n, k.IssueNumber))
+		},
+		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
+			return r.boardDigests[repository], nil
+		},
 		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {

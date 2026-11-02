@@ -957,9 +957,9 @@ func TestMCPChatSendListsToolsAndApplied(t *testing.T) {
 	if err := json.Unmarshal([]byte(answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "summarize #5"})), &a); err != nil {
 		t.Fatal(err)
 	}
-	card := "#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
-		"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
-		"merge request 4 pending for pull request #9, risk high; a human deci…"
+	card := "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
+		"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nm…"
 	equal(t, "the answer", a, struct {
 		Reply   string
 		Tools   []map[string]string

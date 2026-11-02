@@ -1989,7 +1989,7 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 		want         []string
 	}{
 		{"alice", "ai-software-factory-code", slices.DeleteFunc(slices.Clone(policy.ChatTools), func(s string) bool { return s == "steer" })},
-		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "costs", "diff", "plan", "pr",
+		{"controller", "ai-software-factory-code", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
@@ -1997,7 +1997,7 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
-		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
+		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
@@ -2048,6 +2048,43 @@ func TestChatNamesACardByItsIssue(t *testing.T) {
 		`proposal {"arguments":{"task_id":"t-m","depends_on":"t-r"},"description":"Set a dependency, #5 t-m \"Fix the cache. It drops entries.\", ` +
 			`depends on #11 t-r \"Speed up the board.\"","expires":"EXPIRES","id":"TOKEN","tool":"set_dependency"}`,
 		`done {}`})
+}
+
+// The card read leads with the card's digest, then a blank line, then
+// the card in full.
+func TestChatCardLeadsWithTheDigest(t *testing.T) {
+	r, _, g := newChatRig(t)
+	got := reads(t, r, g, "card", `{"task_id":"#5"}`)[0]
+	if want := "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n"; !strings.HasPrefix(got, want) {
+		t.Fatalf("the card read =\n%s\nwant it to start\n%s", got, want)
+	}
+}
+
+// card_step is one step of a card's digest, the card named by its issue;
+// a step the digest lacks is refused with factoryd's words.
+func TestChatCardStepReturnsOneStep(t *testing.T) {
+	r, _, g := newChatRig(t)
+	filed := "#5 step 1 of 1 at 2026-10-11 09:00:00 UTC\n   1 +0:00   filed by sebastian     → queued\nfiled by sebastian, size small, budget 3.00 EUR\n"
+	r.cardSteps = map[string][]string{"t-m": {filed}}
+	equal(t, "the step reads", reads(t, r, g, "card_step", `{"task_id":"#5","step":1}`, "card_step", `{"task_id":"#5","step":2}`),
+		[]string{filed, "Refused: no step 2 on #5"})
+}
+
+// board_digest is the chat project's board in a few lines.
+func TestChatBoardDigestRendersTheBoard(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.boardDigests = map[string]factoryd.BoardDigest{"sf/code": {
+		Cards: []factoryd.BoardDigestCard{{Issue: 11, Status: "running", Gate: factoryd.GateSession, Age: 90 * time.Minute, SlotHeld: true}},
+		Queue: []factoryd.BoardDigestQueued{{Issue: 5, TaskID: "t-m", Reason: "next"}},
+		Slots: factoryd.BoardDigestSlots{Held: 1, Bound: 2},
+		Caps:  []factoryd.BoardDigestCap{{Name: "project month", SpentEUR: 0.4, CapEUR: 50}}}}
+	equal(t, "the board digest", reads(t, r, g, "board_digest", `{}`), []string{"cards 2 live · slots 1 of 2 · queue 1\n" +
+		"#11    running, session      1h30m    slot\n" +
+		"queue:\n" +
+		"#5     next\n" +
+		"caps:\n" +
+		"project month 0.40 of 50.00 EUR\n"})
 }
 
 // The turn's opening context is the standing prompt and the project's
@@ -2213,7 +2250,8 @@ func TestChatReadThenReply(t *testing.T) {
 	g.replies = [][]string{{call(1, "card", `{"task_id":"t-m"}`)}, {say("#5 waits for a work slot.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what about #5?"}})
 	equal(t, "stream", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\ntrack direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nmerge request 4 pending for pull request #9, risk high; a human deci…"}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"card","result":"#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n` +
+			`#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\ntrack direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\nm…"}`,
 		`text {"text":"#5 waits for a work slot."}`, `done {}`})
 	chatRows(t, r.events, before, "sebastian")
 	calls := g.calls()
@@ -2222,7 +2260,8 @@ func TestChatReadThenReply(t *testing.T) {
 	equal(t, "the second call's last messages", msgs[2:], []map[string]any{
 		{"role": "assistant", "content": "", "tool_calls": []any{map[string]any{"id": "call_1", "type": "function",
 			"function": map[string]any{"name": "card", "arguments": `{"task_id":"t-m"}`}}}},
-		{"role": "tool", "tool_call_id": "call_1", "content": "#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
+		{"role": "tool", "tool_call_id": "call_1", "content": "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
+			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
 			"merge request 4 pending for pull request #9, risk high; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
@@ -4561,8 +4600,8 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 			"Refused: Card #15 "+human+", not a running session: approve_merge or deny_merge decide its merge request."),
 	})
 	for i, wantPrefix := range []string{
-		`#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
-		`#15 t-mr \"Add the index.\" waiting-human (` + human + `)`,
+		`#14 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n#14 t-cap \"Trim the logs.\" waiting-human (` + human + `)`,
+		`#15 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n#15 t-mr \"Add the index.\" waiting-human (` + human + `)`,
 	} {
 		line := events[6+i]
 		wantFragment := `"result":"` + wantPrefix
@@ -4577,11 +4616,13 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 		factoryd.Event{Repository: "sf/code", TaskID: "t-r", IssueNumber: 11, Kind: factoryd.EventCardSteered,
 			Detail: map[string]any{"text": "yes", "thread": 1}})
 	stored, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 0, 1)
-	equal(t, "the capped card", stored[0].ToolCalls[5].Result, "#14 t-cap \"Trim the logs.\" waiting-human ("+human+")\n"+
+	equal(t, "the capped card", stored[0].ToolCalls[5].Result, "#14 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n"+
+		"#14 t-cap \"Trim the logs.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/14\nsessions: 3 of 3\nat its session cap: 3 of 3 sessions used, 0 granted\ncost: no model calls\n"+
 		"the question it waits on: the session cap is reached: every finding sent to the agent so far goes to a human\nlast: the checks failed\n"+
 		"objective: Trim the logs.")
-	equal(t, "the card with a merge request", stored[0].ToolCalls[6].Result, "#15 t-mr \"Add the index.\" waiting-human ("+human+")\n"+
+	equal(t, "the card with a merge request", stored[0].ToolCalls[6].Result, "#15 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n"+
+		"#15 t-mr \"Add the index.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
 		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low\n"+
 		"objective: Add the index.")

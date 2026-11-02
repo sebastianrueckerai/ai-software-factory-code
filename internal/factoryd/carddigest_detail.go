@@ -15,9 +15,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
+// ErrNoStep refuses a step number the card's digest lacks.
+type ErrNoStep string
+
+func (e ErrNoStep) Error() string { return string(e) }
+
 // CardStep returns one step of the card's digest in full: a session's steps, a gate's full result,
 // a check-in's record with its calls, an ask's five parts and its answer, a funding event's detail.
-// n is the step's number before the fold.
+// n is the step's number before the fold; one the digest lacks is ErrNoStep.
 func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, error) {
 	rows, err := r.readCard(ctx, taskID)
 	if err != nil {
@@ -28,7 +33,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, er
 		return "", err
 	}
 	if n < 1 || n > len(d.Steps) {
-		return "", fmt.Errorf("no step %d on #%d", n, d.Head.Issue)
+		return "", ErrNoStep(fmt.Sprintf("no step %d on #%d", n, d.Head.Issue))
 	}
 	s := d.Steps[n-1]
 	var b strings.Builder
@@ -91,11 +96,20 @@ func filedDetail(b *strings.Builder, by string, t Task, h DigestHead, deps []Dep
 }
 
 // sessionDetail is session id's timeline lines, one each, at their
-// offsets from the card's start, and the tool that reads its transcript.
+// offsets from the card's start, and, when the timeline holds its start,
+// the session_steps call that reads its transcript: n is its place among
+// the card's session starts, oldest first, as session_steps counts them.
 func sessionDetail(b *strings.Builder, taskID, id string, lines [][]byte, start time.Time) {
 	var out []string
+	starts, n := 0, 0
 	for i, raw := range lines {
 		m := lineFields(raw)
+		if m != nil && m["step"] == "session_start" {
+			starts++
+			if n == 0 && m["session"] == id {
+				n = starts
+			}
+		}
 		if m == nil || m["session"] != id {
 			continue
 		}
@@ -116,7 +130,9 @@ func sessionDetail(b *strings.Builder, taskID, id string, lines [][]byte, start 
 	for _, l := range out {
 		b.WriteString(l + "\n")
 	}
-	fmt.Fprintf(b, "transcript: session_steps task %s session %s\n", taskID, id)
+	if n > 0 {
+		fmt.Fprintf(b, "transcript: session_steps task %s n %d\n", taskID, n)
+	}
 }
 
 // askDetail is the ask's five parts, the answer that came before the next
@@ -184,9 +200,9 @@ func askAnswer(events []Event) string {
 	return "Answer: none yet"
 }
 
-// checkinDetail is a check-in's line: its moment, decision, calls and
-// cost, its reason, its verdict on each finding with the evidence, and the
-// calls its record holds.
+// checkinDetail is a check-in's line: its moment and decision, its calls
+// and cost when the line has a record, its reason, its verdict on each
+// finding with the evidence, and the calls its record holds.
 func checkinDetail(b *strings.Builder, raw []byte) {
 	var l timelineLine
 	_ = json.Unmarshal(raw, &l)
@@ -194,7 +210,7 @@ func checkinDetail(b *strings.Builder, raw []byte) {
 	var rec CheckInRecord
 	if l.Record != nil {
 		rec = *l.Record
-		moment, decision = cmp.Or(rec.Moment, moment), rec.Decision
+		moment, decision = cmp.Or(rec.Moment, moment), cmp.Or(rec.Decision, decision)
 	}
 	fmt.Fprintf(b, "moment %s, decision %s", moment, cmp.Or(decision, "none"))
 	if l.Record != nil {

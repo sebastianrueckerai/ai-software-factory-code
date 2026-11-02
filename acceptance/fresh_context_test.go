@@ -31,10 +31,12 @@ const (
 	// undo of it rides the applied event, not the tool block.
 	summaryNote = "The summary of #5 is set."
 	// oldCardHead and newCardHead are #5 as the card tool reads it before
-	// and after the summary is set; the fixture files it with a budget of
-	// 3 EUR.
-	oldCardHead = `#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00`
-	newCardHead = `#5 t-m "Cache fix" queued (waits for a free work slot, in filing order), €0.00 of €3.00`
+	// and after the summary is set, its digest's head first; the fixture
+	// files it with a budget of 3 EUR.
+	oldCardHead = "#5 · budget 3.00 spent 0.00 holds 0.00 EUR · queued\nflags: none\n\n" +
+		`#5 t-m "Fix the cache." queued (waits for a free work slot, in filing order), €0.00 of €3.00`
+	newCardHead = "#5 · budget 3.00 spent 0.00 holds 0.00 EUR · queued\nflags: none\n\n" +
+		`#5 t-m "Cache fix" queued (waits for a free work slot, in filing order), €0.00 of €3.00`
 	// statusHead and statusTail end every turn's system message around
 	// today's date, built at use time — a const holds no runtime value —:
 	// the code project's status line, #11 running and #5 waiting in the

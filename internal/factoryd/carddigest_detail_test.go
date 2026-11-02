@@ -19,9 +19,16 @@ func TestCardStepReturnsASessionsStepsForASessionLine(t *testing.T) {
 		" +0:41   line 1  session_start: attempt 1, model factory/small\n" +
 		" +0:55   line 2  session_end: attempt 1, model factory/small, outcome pushed, started 2026-11-01T00:41:00Z, summary done\n" +
 		" +0:55   line 3  pushed: branch factory/t1410, commit a1b2c3d4e5f6a7b8\n" +
-		"transcript: session_steps task t1410 session s-1-41\n"
+		"transcript: session_steps task t1410 n 1\n"
 	if got != want {
 		t.Fatalf("CardStep =\n%s\nwant\n%s", got, want)
+	}
+	third, err := g.r.CardStep(context.Background(), "t1410", 8)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if !strings.HasSuffix(third, "\ntranscript: session_steps task t1410 n 3\n") {
+		t.Fatalf("CardStep of the card's third session =\n%s\nwant session_steps n 3", third)
 	}
 }
 
@@ -92,6 +99,21 @@ func TestCardStepStatesNoCallsForACheckinWithoutARecord(t *testing.T) {
 	}
 	if want := "\nmoment gate, decision handover\n- " + idA + " confirmed: " + findingA + "\n"; !strings.HasSuffix(got, want) {
 		t.Fatalf("CardStep =\n%s\nwant it to end\n%s", got, want)
+	}
+}
+
+// A check-in whose record holds no decision states the line's: the
+// record's empty decision does not hide the one the line carries.
+func TestCardStepKeepsTheLinesDecisionOverAnEmptyRecord(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 10, "checkin", map[string]any{"round": 1, "decision": CheckHandover, "moment": CheckInGate,
+		"record": CheckInRecord{Moment: CheckInGate, ToolCalls: 2}})
+	got, err := g.r.CardStep(context.Background(), "t1410", 2)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if want := "\nmoment gate, decision handover, 2 tool calls, 0.00 EUR\n"; !strings.Contains(got, want) {
+		t.Fatalf("CardStep =\n%s\nwant it to hold\n%s", got, want)
 	}
 }
 

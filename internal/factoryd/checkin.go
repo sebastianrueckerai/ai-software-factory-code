@@ -320,7 +320,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 
-		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's facts), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
+		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
 	}
 	if ask.Pace != nil {
 		b.WriteString(ask.Pace.Line() + "\n\n")
@@ -453,7 +453,9 @@ var checkinTools = []CheckinTool{
 		Parameters: toolSchema(map[string]any{"query": toolArg("the text to find")}, "query")},
 	{Name: "transcript_read", Description: "read a span of the parent session's record by event number",
 		Parameters: toolSchema(map[string]any{"from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}}, "from", "to")},
-	{Name: "card_facts", Description: "the card's facts: budget, spend, rounds and reviews", Parameters: toolSchema(nil)},
+	{Name: "card_facts", Description: "the card's digest, its steps and flags, then its budget, spend, attempt and sessions", Parameters: toolSchema(nil)},
+	{Name: "card_step", Description: "one step of the card's digest in full, by the number its line starts with",
+		Parameters: toolSchema(map[string]any{"step": map[string]any{"type": "integer", "minimum": 1, "description": "the step's number"}}, "step")},
 	{Name: "gates", Description: "the gates' full results for the round", Parameters: toolSchema(nil)},
 	{Name: "read_file", Description: "read a file in the workspace",
 		Parameters: toolSchema(map[string]any{"path": toolArg("the file's path under the workspace")}, "path")},

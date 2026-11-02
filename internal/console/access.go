@@ -157,7 +157,7 @@ var accessTable = map[string]accessRule{
 	"POST /routines/{project}/{name}/needs-me":  rProject,
 
 	// chat tools: reads
-	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
+	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember, "card_step": rMember, "board_digest": rMember,
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "tree": rMember, "grep": rMember, "web_search": rMember,
 	"web_scrape": rMember, "research": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
