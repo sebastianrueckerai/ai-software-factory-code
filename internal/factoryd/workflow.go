@@ -1235,14 +1235,16 @@ const (
 	// t-6eadec8912ab's answer re-entered the gate on PR #1385's moved head
 	// and the task died, its fix unmerged).
 	versionResumeHold workflow.Version = 1
-	// versionReviewHoldsMerge (change id "review-holds-merge"): a press
-	// that would merge a plan's integration card whose criteria no review
-	// judged runs the model review again first (rejudge): findings go back
-	// to the sessions, a review that did not run again holds the merge
-	// and asks again (HoldMerge), a judging review merges. Read at the
-	// press, not at the run's start, so a run waiting on its approval at
-	// the roll takes it on its next press; a history that pressed before
-	// the change keeps the merge it recorded.
+	// versionReviewHoldsMerge (change id "review-holds-merge-<n>", n the
+	// run's press on a plan card): a press that would merge a plan's
+	// integration card whose criteria no review judged runs the model
+	// review again first (rejudge): findings go back to the sessions, a
+	// review that did not run again holds the merge and asks again
+	// (HoldMerge), a judging review merges. Read at each press, not at the
+	// run's start, and under each press's own id, since a change id's
+	// version is fixed by its first read: a press a history recorded
+	// before the change keeps the merge it recorded, and every press after
+	// the roll takes the review.
 	versionReviewHoldsMerge workflow.Version = 1
 )
 
@@ -1405,6 +1407,9 @@ type taskRun struct {
 	// versionChecksRerun
 	redHead   string // the last head whose checks failed
 	rerunHead string // the head the last RerunChecks made
+	// presses are this run's approval presses on a plan card, each its own
+	// change id (versionReviewHoldsMerge)
+	presses int
 	// beside are the gates scheduled beside the checks wait, in their
 	// stages' order (versionReviewParallel, versionAuditBeside)
 	beside []*besideRun
@@ -2976,8 +2981,11 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		}
 		cancelRetry = nil
 		retry = nil
-		if signalled && t.source == SourcePlan &&
-			workflow.GetVersion(t.ctx, "review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge) >= versionReviewHoldsMerge {
+		if signalled && t.source == SourcePlan {
+			t.presses++
+		}
+		if signalled && t.source == SourcePlan && workflow.GetVersion(t.ctx, fmt.Sprintf("review-holds-merge-%d", t.presses),
+			workflow.DefaultVersion, versionReviewHoldsMerge) >= versionReviewHoldsMerge {
 			v, stop, held := t.rejudge(commit, g, approver)
 			if stop {
 				return v
@@ -3099,7 +3107,9 @@ func (t *taskRun) rejudge(commit string, g GateResults, approver string) (v verd
 	switch review.Verdict {
 	case "":
 		if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
-			workflow.GetLogger(t.ctx).Warn("hold the merge", "task", t.taskID, "error", err)
+			// the press decided the request, so a hold that failed leaves
+			// the card waiting with no ask to press: the log names it
+			workflow.GetLogger(t.ctx).Error("hold the merge: the ask may be off the human's surface", "task", t.taskID, "error", err)
 		}
 		return verdict{}, false, true
 	case "concerns":

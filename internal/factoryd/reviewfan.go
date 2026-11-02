@@ -161,8 +161,12 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 }
 
 // unfundedRemedy is what the merge card offers a person in place of a
-// review or an audit the card cannot pay for.
-const unfundedRemedy = " Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+// review or an audit the card cannot pay for; integrationRemedy the plan's
+// integration card's, whose merge holds while its criteria are unjudged.
+const (
+	unfundedRemedy    = " Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
+	integrationRemedy = " Raise the card's budget, then approve again: its merge waits on the review of the plan's criteria."
+)
 
 // callPrice is what an estimate prices one alias's calls at: the request,
 // calibrated on the ref's settled calls (Store.CalibrateEstimate), and

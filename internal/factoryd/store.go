@@ -535,6 +535,9 @@ type Store interface {
 	// ApprovalRequests lists the requests in status, oldest first: the
 	// console's approval cards.
 	ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error)
+	// NewestApproval is the task's newest request of kind, whatever its
+	// status; false when it has none.
+	NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error)
 	// SetGate records that the task entered gate at since; a finished
 	// task enters none.
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
@@ -2286,26 +2289,47 @@ func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by
 // the console's board, chat and answer pages and factoryd's senders,
 // gates and plan passes read them. Rows are read whole, spec included.
 func (s *PGStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
-		        status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error
-		 FROM approval_requests WHERE status = $1 ORDER BY id`, status)
+	rows, err := s.db.QueryContext(ctx, `SELECT `+approvalColumns+` FROM approval_requests WHERE status = $1 ORDER BY id`, status)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
 	var out []ApprovalRequest
 	for rows.Next() {
-		var a ApprovalRequest
-		var spec []byte
-		if err := rows.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
-			&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError); err != nil {
+		a, err := scanApproval(rows)
+		if err != nil {
 			return nil, err
 		}
-		a.Spec = spec
 		out = append(out, a)
 	}
 	return out, rows.Err()
+}
+
+// NewestApproval is task taskID's newest request of kind, whatever its
+// status; false when it has none. The merge hold reads the request a
+// press decided.
+func (s *PGStore) NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error) {
+	a, err := scanApproval(s.db.QueryRowContext(ctx, `SELECT `+approvalColumns+` FROM approval_requests
+		WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT 1`, taskID, kind))
+	if errors.Is(err, sql.ErrNoRows) {
+		return ApprovalRequest{}, false, nil
+	}
+	return a, err == nil, err
+}
+
+// approvalColumns are an approval request's columns, in scanApproval's
+// order.
+const approvalColumns = `id, kind, task_id, project, COALESCE(pr_number, 0), spec, reason, monthly_eur::float8,
+	status, decided_by, decided_at, decision_note, created_at, brief, detail, brief_error`
+
+// scanApproval reads one row of approvalColumns.
+func scanApproval(row interface{ Scan(...any) error }) (ApprovalRequest, error) {
+	var a ApprovalRequest
+	var spec []byte
+	err := row.Scan(&a.ID, &a.Kind, &a.TaskID, &a.Project, &a.PRNumber, &spec, &a.Reason, &a.MonthlyEUR,
+		&a.Status, &a.DecidedBy, &a.DecidedAt, &a.DecisionNote, &a.CreatedAt, &a.Brief, &a.Detail, &a.BriefError)
+	a.Spec = spec
+	return a, err
 }
 
 // RollRecorded reports whether a roll of sha on image is recorded. The

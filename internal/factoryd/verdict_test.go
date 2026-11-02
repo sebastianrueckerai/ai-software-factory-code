@@ -982,14 +982,19 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		if c.name != "mixed" {
 			continue
 		}
-		// the rows the rerun writes, unmet, file no gap ask beside the
-		// pending rerun ask; met or waived every one, the close resolves it
+		// rows for every criterion, some unmet, leave the rerun ask nothing
+		// to run: it is resolved, and the gap ask names what stays open;
+		// met or waived every one, the close resolves that
 		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}); err != nil {
 			t.Fatal(err)
 		}
 		r.CriteriaPass(ctx)
-		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 1 || again[0].ID != pending[0].ID {
-			t.Fatalf("mixed: pending %+v, want the rerun ask alone", again)
+		if again, _ := s.ApprovalRequests(ctx, "pending"); len(again) != 1 || again[0].Kind != ApprovalCriteria ||
+			again[0].Reason != "criteria not met with the plan's cards done: c1, c2, c3" {
+			t.Fatalf("mixed: pending %+v, want the gap ask alone", again)
+		}
+		if resolved, _ := s.ApprovalRequests(ctx, "approved"); len(resolved) != 1 || resolved[0].ID != pending[0].ID || resolved[0].DecidedBy != FactoryDecider {
+			t.Fatalf("mixed: approved %+v, want the rerun ask resolved by factoryd", resolved)
 		}
 		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{
 			{Criterion: "c1", Verdict: "waived"}, {Criterion: "c2", Verdict: "met"}, {Criterion: "c3", Verdict: "waived"}}); err != nil {

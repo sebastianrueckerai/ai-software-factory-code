@@ -833,6 +833,28 @@ func TestModelReviewTheCardCannotPayForIsANote(t *testing.T) {
 	}
 }
 
+// An integration card's review the card cannot pay for names the budget
+// as the remedy: approving its merge holds until the plan's criteria are
+// judged, so the merge card's Approve or Deny is no way on.
+func TestModelReviewAnIntegrationCardCannotPayForNamesTheBudget(t *testing.T) {
+	r, _, ll := fundedReview(t, 0.01, 1e-9, 1e-5, nil)
+	store := r.store.(*fakeStore)
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	card := store.tasks["t1"]
+	card.Source, card.Parent, card.PlanKey = SourcePlan, "t-plan", "integration"
+	store.tasks["t1"] = card
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	want := " Raise the card's budget, then approve again: its merge waits on the review of the plan's criteria."
+	if !strings.HasPrefix(rv.Note, "model review not run: ") || !strings.HasSuffix(rv.Note, want) || len(ll.chats) != 0 {
+		t.Fatalf("review = %+v after %d calls, want a note ending %q", rv, len(ll.chats), want)
+	}
+}
+
 // The estimate reads the requests' bytes as the gateway does: four parts
 // of 40 KiB of diff each are over 160 KiB of request, over 0.16 EUR at
 // 1e-6 EUR a byte uncalibrated, past 0.15 EUR free. A settled call on
@@ -1386,6 +1408,7 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 	month := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
 	day := "parts 1 to 3 of 3: model review refused by the gateway (refused_day_cap): day headroom 0.00 EUR."
 	invalid := "model review answer invalid (no summary): {}"
+	unpaid := "model review not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it."
 	for _, c := range []struct {
 		name   string
 		review Review
@@ -1404,6 +1427,9 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 		{"no money refusal", Review{Note: invalid}, []string{"schema migration"},
 			base + ". The model review did not run: " + invalid,
 			[]string{"The model review did not run: " + invalid + ".", "schema migration"}},
+		{"a review not started", Review{Note: unpaid}, nil,
+			base + ". The model review did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it.",
+			[]string{"The model review did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. Read the diff, then Approve the merge or Deny it."}},
 		{"a review that ran", Review{Verdict: "approve", Summary: "fine"}, []string{"schema migration"},
 			base, []string{"schema migration"}},
 	} {
@@ -1548,6 +1574,19 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	if len(fj.merges) != 0 || len(pending) != 1 || !strings.HasSuffix(pending[0].Reason, ". The model review did not run: "+note) ||
 		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the model review did not run ("+note+")" {
 		t.Fatalf("merges %d, pending %+v: want no merge and the ask naming the note", len(fj.merges), pending)
+	}
+	// rows that landed between the read and the hold leave nothing held:
+	// the ask says so and asks for the press again
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c3", Verdict: "met"}}); err != nil {
+		t.Fatal(err)
+	}
+	comments := len(fj.comments)
+	if _, err := execActivity(t, r, ActivityHoldMerge, "t1", int64(9), "c1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	if pending, _ = store.ApprovalRequests(ctx, "pending"); len(pending) != 1 || len(fj.comments) != comments ||
+		pending[0].DecisionNote != "waiting: every criterion has a verdict row now: approve again to merge" {
+		t.Fatalf("pending %+v, %d comments more: want the ask asking for the press again", pending, len(fj.comments)-comments)
 	}
 }
 

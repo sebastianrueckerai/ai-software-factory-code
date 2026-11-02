@@ -972,6 +972,12 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		r.askRerun(ctx, t, repo, never, unmet, integration)
 		return
 	}
+	// a waiver or a confirmation judged what a rerun ask named: it has
+	// nothing left to run, and the gap ask names what stays open
+	if err := r.store.ResolveApprovals(ctx, parent, ApprovalCriteriaRerun, "approved", FactoryDecider, "every criterion has a verdict row"); err != nil {
+		log.Printf("plan %s: resolve the criteria rerun: %v", parent, err)
+		return
+	}
 	r.openGap(ctx, t, repo, open, integration)
 }
 

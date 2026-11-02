@@ -1239,6 +1239,15 @@ func (s *fakeStore) ReopenApproval(ctx context.Context, taskID, kind, note strin
 	return nil
 }
 
+func (s *fakeStore) NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error) {
+	for i := len(s.approvals) - 1; i >= 0; i-- {
+		if a := s.approvals[i]; a.TaskID == taskID && a.Kind == kind {
+			return a, true, nil
+		}
+	}
+	return ApprovalRequest{}, false, nil
+}
+
 func (s *fakeStore) ApprovalRequests(ctx context.Context, status string) ([]ApprovalRequest, error) {
 	var out []ApprovalRequest
 	for _, a := range s.approvals {
@@ -2495,6 +2504,44 @@ func TestPGStoreBrieflessApprovalsRetry(t *testing.T) {
 	}
 	if len(rows) != 1 || rows[0].ID != marked {
 		t.Fatalf("the briefless rows = %+v, want the once-marked %d alone: the budget refusal and the terminal failure stay marked, the briefed row is done", rows, marked)
+	}
+}
+
+// NewestApproval is the task's newest request of the kind, whatever its
+// status: a superseded one gives way to its successor, decided or not.
+func TestPGStoreNewestApproval(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, approval_requests CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "a1", Status: "in-review", Repository: "sf/r", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok, err := s.NewestApproval(ctx, "a1", ApprovalMerge); err != nil || ok {
+		t.Fatalf("before any request: ok %v, %v; want none", ok, err)
+	}
+	if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "a1", Project: "sf/r", PRNumber: 9, Reason: "r1"}); err != nil {
+		t.Fatal(err)
+	}
+	second, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "a1", Project: "sf/r", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c2"}`), Reason: "r2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.DecideApproval(ctx, second, ApprovalMerge, "approved", "sebastian", "approved in the console"); err != nil {
+		t.Fatal(err)
+	}
+	q, ok, err := s.NewestApproval(ctx, "a1", ApprovalMerge)
+	if err != nil || !ok || q.ID != second || q.Status != "approved" || q.Reason != "r2" || q.PRNumber != 9 || string(q.Spec) != `{"head_sha": "c2"}` {
+		t.Fatalf("newest = %+v, %v, %v; want the approved second", q, ok, err)
+	}
+	if _, ok, err := s.NewestApproval(ctx, "a1", ApprovalPlan); err != nil || ok {
+		t.Fatalf("another kind: ok %v, %v; want none", ok, err)
 	}
 }
 

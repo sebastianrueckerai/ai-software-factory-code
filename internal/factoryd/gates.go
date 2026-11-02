@@ -1346,10 +1346,12 @@ func refusalOf(note string) string {
 const notRunReason = ". The model review did not run: "
 
 // noVerdictLine opens AutoMerge's unmet line of a review without a verdict;
-// notRunLine opens namedReview's line.
+// notRunLine opens namedReview's line; reviewNotStarted opens the note of a
+// review ModelReview never started.
 const (
-	noVerdictLine = "no model review verdict: "
-	notRunLine    = "The model review did not run: "
+	noVerdictLine    = "no model review verdict: "
+	notRunLine       = "The model review did not run: "
+	reviewNotStarted = "model review not run: "
 )
 
 // namedReview is a merge ask's reason and why-human lines with rv named
@@ -1361,14 +1363,15 @@ func namedReview(reason string, whyHuman []string, rv Review) (string, []string)
 	if rv.Note == "" {
 		return reason, whyHuman
 	}
-	line := notRunLine + strings.TrimSuffix(rv.Note, ".") + "."
+	said := strings.TrimPrefix(rv.Note, reviewNotStarted)
+	line := notRunLine + strings.TrimSuffix(said, ".") + "."
 	if unblock := reviewUnblocks[refusalOf(rv.Note)]; unblock != "" {
 		line += " " + unblock
 	}
 	rest := slices.DeleteFunc(slices.Clone(whyHuman), func(l string) bool {
 		return l == noVerdictLine+rv.Note || strings.HasPrefix(l, notRunLine)
 	})
-	return reason + notRunReason + rv.Note, append([]string{line}, rest...)
+	return reason + notRunReason + said, append([]string{line}, rest...)
 }
 
 // reviewAnswer is one review call's answer: the parsed verdict, or a note
@@ -1461,7 +1464,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	}
 	model := r.callModel(t, policy.PurposeReview)
 	notRun := func(why string) (Review, error) {
-		rv := Review{Note: "model review not run: " + why}
+		rv := Review{Note: reviewNotStarted + why}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model, Note: rv.Note}); err != nil {
@@ -1537,7 +1540,11 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if why, err := r.unfunded(ctx, t.ID, model, policy.PurposeReview, calls); err != nil {
 		return Review{}, err
 	} else if why != "" {
-		return notRun(why + unfundedRemedy)
+		remedy := unfundedRemedy
+		if criteria != nil && roleOf(criteria.plan, t.PlanKey) == RoleIntegration {
+			remedy = integrationRemedy
+		}
+		return notRun(why + remedy)
 	}
 	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
 	if err != nil {
@@ -2051,6 +2058,11 @@ func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit,
 	if err != nil {
 		return err
 	}
+	if len(never) == 0 {
+		// the rows landed since the press's read: nothing is held
+		r.note(ctx, t, "waiting: every criterion has a verdict row now: approve again to merge")
+		return nil
+	}
 	r.holdMerge(ctx, t, repo, pr, commit, approver, len(never))
 	return nil
 }
@@ -2089,21 +2101,13 @@ func (r *Runner) askHeldMerge(ctx context.Context, t Task, pr int64, commit, not
 	if note == "" {
 		return
 	}
-	var q ApprovalRequest
-	for _, status := range []string{"pending", "approved"} {
-		all, err := r.store.ApprovalRequests(ctx, status)
-		if err != nil {
-			log.Printf("task %s: the held merge's request: %v", t.ID, err)
-			return
-		}
-		for _, a := range all {
-			if a.TaskID == t.ID && a.Kind == ApprovalMerge && a.PRNumber == pr && a.ID > q.ID {
-				q = a
-			}
-		}
+	q, ok, err := r.store.NewestApproval(ctx, t.ID, ApprovalMerge)
+	if err != nil {
+		log.Printf("task %s: the held merge's request: %v", t.ID, err)
+		return
 	}
 	base, _, _ := strings.Cut(q.Reason, notRunReason)
-	if q.ID == 0 || q.Reason == base+notRunReason+note {
+	if named, _ := namedReview(base, nil, Review{Note: note}); !ok || q.Status == "denied" || q.PRNumber != pr || q.Reason == named {
 		return
 	}
 	var spec MergeSpec
