@@ -1391,7 +1391,7 @@ func (c *Console) chatProposal(w http.ResponseWriter, r *http.Request) {
 		t.detach()
 		t.open(w)
 		t.takeTurn(pos, wait)
-		t.landed(p, fix, pr)
+		t.poolLanded(p, fix, pr)
 		return
 	}
 	if err := t.inThread(p.Conversation); err != nil {

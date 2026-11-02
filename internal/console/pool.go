@@ -325,11 +325,11 @@ func (t *turn) poolPress(p factoryd.ChatProposal, fix *poolCorrection) poolPress
 		t.p.Name, res.to, res.from, t.c.cfg.InfraRepo, res.pr)}
 }
 
-// landed streams a pool press's already-landed result: the tool block and
+// poolLanded streams a pool press's already-landed result: the tool block and
 // the applied line of the write that happened before the stream opened,
 // the row in the conversation naming the member who pressed, and done.
 // Nothing writes here.
-func (t *turn) landed(p factoryd.ChatProposal, fix *poolCorrection, pr poolPress) {
+func (t *turn) poolLanded(p factoryd.ChatProposal, fix *poolCorrection, pr poolPress) {
 	t.a.decider = "member"
 	start := time.Now()
 	args := string(p.Args)
