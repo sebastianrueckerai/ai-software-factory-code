@@ -43,6 +43,7 @@ type DigestHead struct {
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
 // session it is the attempt and the model, for a check-in its moment.
+// A session's Outcome leaves out its cost and calls, which Render adds.
 // Findings are the ids (findingID) of the findings a review, checks or an
 // audit raised, or a check-in confirmed. Count is how many identical steps
 // in a row the step stands for: 1 before Folded.
@@ -58,6 +59,8 @@ type DigestStep struct {
 	// state is the word the flags read: a session's outcome, "" while it
 	// runs; a review's verdict; a check-in's decision, "" when it was cut
 	state string
+	// calls are a session's model calls, by the audit rows
+	calls int
 }
 
 // DigestRef names the rows a step was read from, whichever apply: its
@@ -112,9 +115,11 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 	if err != nil {
 		return CardDigest{}, err
 	}
-	budget, err := r.expectedBudget(ctx, t, events)
-	if err != nil {
-		return CardDigest{}, err
+	budget := t.BudgetEUR
+	if !copiesBudget(t, events) {
+		if budget, err = r.expectedBudget(ctx, t, events); err != nil {
+			return CardDigest{}, err
+		}
 	}
 	steps := slices.Concat([]DigestStep{filedStep(t, deps)}, eventSteps(t, events, cases, deps), lines, criteriaSteps(verdicts))
 	slices.SortStableFunc(steps, func(a, b DigestStep) int { return a.At.Compare(b.At) })
@@ -130,17 +135,17 @@ func (r *Runner) digestHead(ctx context.Context, t Task) (DigestHead, error) {
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
 	}
-	switch {
-	case t.Source == SourcePlan && t.Parent != "":
+	if t.Track == policy.TrackPlan {
+		h.Plan, h.PlanName = h.Issue, t.PlanName
+	}
+	if t.Parent != "" {
 		p, ok, err := r.store.Task(ctx, t.Parent)
 		if err != nil {
 			return DigestHead{}, err
 		}
-		if ok {
+		if ok && p.Track == policy.TrackPlan {
 			h.Plan, h.PlanName = int(p.IssueNumber), p.PlanName
 		}
-	case t.Track == policy.TrackPlan:
-		h.Plan, h.PlanName = h.Issue, t.PlanName
 	}
 	own, _, err := r.store.Free(ctx, policy.HoldRequest{TaskID: t.ID, ProjectEUR: math.Inf(1)})
 	if err != nil {
@@ -379,8 +384,12 @@ func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([
 		}
 		out = append(out, step)
 	}
-	for _, s := range sessions {
-		step, err := r.sessionStep(ctx, taskID, s)
+	for i, s := range sessions {
+		var next *digestSession
+		if i+1 < len(sessions) {
+			next = sessions[i+1]
+		}
+		step, err := r.sessionStep(ctx, taskID, s, next)
 		if err != nil {
 			return nil, err
 		}
@@ -391,11 +400,16 @@ func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([
 
 // sessionStep is session s's step: its outcome, with the head it pushed,
 // and its cost and calls from the task's audit rows between its start and
-// its end, or now while it runs.
-func (r *Runner) sessionStep(ctx context.Context, taskID string, s *digestSession) (DigestStep, error) {
-	end := s.end
-	if end.IsZero() {
-		end = r.clock()
+// its end. A session with no end ran up to the next session's start, next,
+// or runs still when it is the last.
+func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digestSession) (DigestStep, error) {
+	end, outcome := s.end, strings.ReplaceAll(cmp.Or(s.outcome, "ended"), "_", " ")
+	switch {
+	case !end.IsZero():
+	case next != nil:
+		end, outcome = next.start, "no end"
+	default:
+		end, outcome = r.clock(), "running"
 	}
 	cost, err := r.store.SpendBetween(ctx, taskID, s.start, end)
 	if err != nil {
@@ -405,18 +419,11 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s *digestSessio
 	if err != nil {
 		return DigestStep{}, err
 	}
-	outcome := "running"
-	if !s.end.IsZero() {
-		outcome = strings.ReplaceAll(cmp.Or(s.outcome, "ended"), "_", " ")
-	}
 	if s.outcome == string(OutcomePushed) && s.commit != "" {
 		outcome += " " + s.commit[:min(7, len(s.commit))]
 	}
-	if calls > 0 {
-		outcome += fmt.Sprintf(", %.2f EUR, %s", cost, textutil.Plural(calls, "call", "calls"))
-	}
 	return DigestStep{At: s.start, Kind: "session", Actor: strings.TrimSpace(fmt.Sprintf("%d %s", s.attempt, aliasOf(s.model))),
-		Outcome: outcome, CostEUR: cost, Ref: DigestRef{Session: s.id, Step: strconv.Itoa(s.line)}, state: s.outcome}, nil
+		Outcome: outcome, CostEUR: cost, Ref: DigestRef{Session: s.id, Step: strconv.Itoa(s.line)}, state: s.outcome, calls: calls}, nil
 }
 
 // checkinStep is a check-in's step: its moment, its verdicts by state
@@ -464,75 +471,6 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 		out[i].Outcome += v.Criterion + " " + cmp.Or(v.Verdict, "undecided")
 	}
 	return out
-}
-
-// Folded is the steps with each run of steps in a row of the same kind,
-// actor and outcome folded into its first: Count is the run's length and
-// CostEUR the run's cost.
-func (d CardDigest) Folded() []DigestStep {
-	var out []DigestStep
-	for _, s := range d.Steps {
-		if n := len(out); n > 0 && out[n-1].Kind == s.Kind && out[n-1].Actor == s.Actor && out[n-1].Outcome == s.Outcome {
-			out[n-1].Count++
-			out[n-1].CostEUR += s.CostEUR
-			continue
-		}
-		out = append(out, s)
-	}
-	return out
-}
-
-// Render is the digest as text: the head, one line per folded step, and
-// the flags.
-func (d CardDigest) Render() string {
-	h := d.Head
-	head := []string{fmt.Sprintf("#%d", h.Issue)}
-	if h.Plan > 0 {
-		head = append(head, strings.TrimSpace(fmt.Sprintf("plan #%d %s", h.Plan, h.PlanName)))
-	}
-	head = append(head, fmt.Sprintf("budget %.2f spent %.2f holds %.2f EUR", h.BudgetEUR, h.SpentEUR, h.HoldsEUR))
-	if h.SlotHeld {
-		head = append(head, "slot held")
-	}
-	var b strings.Builder
-	b.WriteString(strings.Join(append(head, statusText(h.Status, h.Gate)), " · ") + "\n")
-	for _, s := range d.Folded() {
-		label := s.Kind
-		switch {
-		case s.Actor == "":
-		case s.Kind == "session" || s.Kind == "checkin":
-			label += " " + s.Actor
-		default:
-			label += " by " + s.Actor
-		}
-		outcome := s.Outcome
-		if s.Count > 1 {
-			outcome += fmt.Sprintf(" ×%d", s.Count)
-		}
-		fmt.Fprintf(&b, " %-6s  %-22s → %s\n", offsetText(s.Offset), label, outcome)
-	}
-	flags := make([]string, len(d.Flags))
-	for i, f := range d.Flags {
-		flags[i] = f.Name
-		if f.Detail != "" {
-			flags[i] += "(" + f.Detail + ")"
-		}
-	}
-	b.WriteString("flags: " + cmp.Or(strings.Join(flags, ", "), "none") + "\n")
-	return b.String()
-}
-
-// statusText is a status and its gate as the digest prints them.
-func statusText(status, gate string) string {
-	if gate == "" {
-		return status
-	}
-	return status + ", " + gate
-}
-
-// offsetText is d as +h:mm, the hours unbounded.
-func offsetText(d time.Duration) string {
-	return fmt.Sprintf("+%d:%02d", int(d/time.Hour), int(d%time.Hour/time.Minute))
 }
 
 // digestText is the first line of s, cut to fit a digest line.

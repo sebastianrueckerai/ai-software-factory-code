@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -114,7 +115,7 @@ func skeletonRig(t *testing.T) digestRig {
 		"comment": 27001, "source": "cap", "reason": "the card used its sessions"})
 	g.event(580, EventQuestionAnswered, "sebastian", map[string]any{"answer": "Grant one session", "comment": 27002})
 	g.session(t, 581, 590, 4, "no_push")
-	g.session(t, 600, 610, 4, "no_push")
+	g.session(t, 600, 610, 5, "no_push")
 	g.store.cases = []Case{
 		{ID: 1, TaskID: "t1410", Kind: CaseSessionCap, StateKey: "k-cap", Status: CaseResolved, CommentID: 27001,
 			Money: &CaseMoney{Kind: string(CaseSessionCap), BudgetEUR: 5, SpentEUR: 4.10}},
@@ -160,13 +161,46 @@ func TestCardDigestFoldsConsecutiveIdenticalSteps(t *testing.T) {
 		t.Fatalf("Folded = %d steps, want 7: %+v", len(folded), folded)
 	}
 	last := folded[6]
-	if last.Kind != "session" || last.Count != 2 || last.N != 7 || last.Ref.Session != "s-4-581" {
+	if last.Kind != "session" || last.Actor != "4 small" || last.Count != 2 || last.N != 7 || last.Ref.Session != "s-4-581" {
 		t.Fatalf("folded last = %+v, want session s-4-581, step 7, count 2", last)
 	}
 	for _, s := range folded[:6] {
 		if s.Count != 1 {
 			t.Fatalf("folded step %d count = %d, want 1", s.N, s.Count)
 		}
+	}
+}
+
+// Two sessions without a push fold into one line with the run's cost and
+// calls: 0.10 + 0.20 over two rows.
+func TestCardDigestFoldsSessionsWhoseCostsDiffer(t *testing.T) {
+	g := newDigestRig(nil)
+	g.session(t, 5, 10, 2, "no_push")
+	g.session(t, 15, 20, 3, "no_push")
+	g.spend(digestAt(6), 0.10)
+	g.spend(digestAt(16), 0.20)
+	want := " +0:05   session 2 small        → no push ×2, 0.30 EUR, 2 calls\n"
+	if got := g.digest(t).Render(); !strings.Contains(got, want) {
+		t.Fatalf("Render =\n%s\nwant the line\n%s", got, want)
+	}
+}
+
+// A session with no end before another session costs up to the next
+// one's start: the row at +25 is the second session's alone.
+func TestCardDigestBoundsASessionWithNoEndAtTheNextStart(t *testing.T) {
+	g := newDigestRig(nil)
+	g.r.now = func() time.Time { return digestAt(60) }
+	g.line(t, 10, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
+	g.session(t, 20, 30, 2, "no_push")
+	g.spend(digestAt(12), 0.10)
+	g.spend(digestAt(25), 0.20)
+	d := g.digest(t)
+	first, second := d.Steps[1], d.Steps[2]
+	if first.Ref.Session != "s-1" || first.Outcome != "no end" || first.CostEUR != 0.10 {
+		t.Fatalf("first session = %+v, want s-1 with no end at 0.10 EUR", first)
+	}
+	if second.Ref.Session != "s-2-20" || second.CostEUR != 0.20 {
+		t.Fatalf("second session = %+v, want s-2-20 at 0.20 EUR", second)
 	}
 }
 
@@ -232,7 +266,11 @@ func TestCardDigestFlagsMoneyAskHidingFindings(t *testing.T) {
 	if got, want := g.digest(t).Flags, []DigestFlag{{"money_ask_hides_findings", ""}}; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
 	}
-	g.line(t, 20, "model_review", map[string]any{"verdict": "approve", "round": 2})
+	g.line(t, 15, "model_review", map[string]any{"round": 2})
+	if got, want := g.digest(t).Flags, []DigestFlag{{"money_ask_hides_findings", ""}}; !slices.Equal(got, want) {
+		t.Fatalf("Flags after a review with no verdict = %v, want %v", got, want)
+	}
+	g.line(t, 20, "model_review", map[string]any{"verdict": "approve", "round": 3})
 	if got := g.digest(t).Flags; len(got) != 0 {
 		t.Fatalf("Flags after an approving review = %v, want none", got)
 	}
@@ -285,6 +323,10 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseSessionCap, StateKey: "k1", Status: CaseAtHuman}}
 		}, []DigestFlag{{"issue_open_after_end", "session_cap"}}},
 		{"a budget no event moved", func(c *Task) { c.BudgetEUR = 7 }, nil, []DigestFlag{{"budget_moved_no_event", "7.00 EUR not 5.00 EUR"}}},
+		{"a successor's budget, copied from its card", func(c *Task) { c.Source, c.BudgetEUR = SourceSuccessor, 7 }, nil, nil},
+		{"a retry's budget, copied from the card it replaces", func(c *Task) { c.Source, c.BudgetEUR = SourcePlan, 7 }, func(t *testing.T, g digestRig) {
+			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "plan": "t1344", "replaces": "t1300"})
+		}, nil},
 		{"a human card, which spends no budget", func(c *Task) { c.Kind, c.BudgetEUR = "human", 0 }, nil, nil},
 		{"a budget a fund and an extend moved", func(c *Task) { c.BudgetEUR = 7.5 }, func(t *testing.T, g digestRig) {
 			g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 2.0})
@@ -300,6 +342,14 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 				t.Fatalf("Flags = %v, want %v", got, tc.want)
 			}
 		})
+	}
+}
+
+func TestCardDigestNamesThePlanOfASuccessorsParent(t *testing.T) {
+	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourceSuccessor, "t1344", "k1" })
+	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics"}
+	if h := g.digest(t).Head; h.Plan != 1344 || h.PlanName != "session-metrics" {
+		t.Fatalf("Head = %+v, want plan #1344 session-metrics", h)
 	}
 }
 

@@ -1000,6 +1000,15 @@ func (s *acceptanceStore) Dependencies(_ context.Context, id string) ([]factoryd
 		t := s.tasks[d]
 		out = append(out, factoryd.Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
 	}
+	done := func(d factoryd.Dependency) int {
+		if d.Status == "done" {
+			return 1
+		}
+		return 0
+	}
+	slices.SortFunc(out, func(a, b factoryd.Dependency) int {
+		return cmp.Or(cmp.Compare(done(a), done(b)), cmp.Compare(a.Issue, b.Issue), strings.Compare(a.TaskID, b.TaskID))
+	})
 	return out, nil
 }
 

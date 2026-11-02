@@ -34,6 +34,16 @@ func (r *Runner) expectedBudget(ctx context.Context, t Task, events []Event) (fl
 	return eur, nil
 }
 
+// copiesBudget reports whether card t took its budget from another card:
+// a successor, or a retry's replacement, whose funding rows stay with the
+// card it replaces.
+func copiesBudget(t Task, events []Event) bool {
+	return t.Source == SourceSuccessor || slices.ContainsFunc(events, func(e Event) bool {
+		replaces, _ := e.Detail["replaces"].(string)
+		return e.Kind == EventCardCreated && replaces != ""
+	})
+}
+
 // digestFlags are the patterns the card's life shows, by name: one pass
 // over the steps, then the cases, the row and the dependencies.
 func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, budget float64) []DigestFlag {
@@ -74,7 +84,9 @@ func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, bu
 				add("session_no_push", runFirst)
 			}
 		case "review":
-			review = s.state
+			if s.state != "" {
+				review = s.state
+			}
 		case "checkin":
 			if s.state == "" {
 				add("checkin_cut", offsetText(s.Offset))
