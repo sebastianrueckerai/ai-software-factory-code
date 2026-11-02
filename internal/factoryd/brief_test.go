@@ -388,7 +388,8 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 }
 
 // A criteria_rerun request's brief reads the same criteria facts, the
-// writer fetching them itself, and names what its Approve runs.
+// writer fetching them itself, and names its answers, none of which runs
+// the review.
 func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	spec, _ := json.Marshal(CriteriaSpec{Task: "t-int"})
 	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
@@ -401,7 +402,7 @@ func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	if m := facts.(map[string]any); fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) || m["verdict_rows_of"] != "t-int" {
 		t.Errorf("facts = %v, want the criteria and their rows' card", m)
 	}
-	for _, want := range []string{"Approve runs the model review", "merged feature", "Waive", "Confirm"} {
+	for _, want := range []string{"Waive", "Confirm", "Deny", "No button runs the review"} {
 		if !strings.Contains(acts, want) {
 			t.Errorf("acts %q lack %q", acts, want)
 		}

@@ -1545,11 +1545,11 @@ var tools = []chatTool{
 		}},
 	{name: "answer_criteria", title: "Answer a criteria gap", write: true,
 		params: map[string]any{"task_id": taskParam,
-			"action":    enum("waive, grant a card, rerun the review, or confirm", "waive", "grant", "rerun", "confirm"),
+			"action":    enum("waive unmet, grant one more card, or confirm delivered", "waive", "grant", "confirm"),
 			"criterion": str("the criterion the waiver names, cN"),
 			"reason":    str("the waiver's one-line reason")},
 		required: []string{"task_id", "action"},
-		about:    "Decide a plan's criteria ask on the human's word: waive, grant, rerun, or confirm.",
+		about:    "Decide a plan's criteria ask on the human's word: waive, grant, or confirm.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			line, ok, err := t.humanAnswerLine()
 			if err != nil {
@@ -1567,20 +1567,14 @@ var tools = []chatTool{
 			case "waive":
 				note, err := t.c.doWaive(t.r.Context(), t.a, q.ID, in.Criterion, in.Reason)
 				return note, nil, err
-			case "grant", "rerun":
-				switch {
-				case in.Action == "grant" && q.Kind == factoryd.ApprovalCriteriaRerun:
-					return "", nil, refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: its approve runs the model review on them (action rerun), it grants no card.", q.TaskID))
-				case in.Action == "rerun" && q.Kind == factoryd.ApprovalCriteria:
-					return "", nil, refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is a criteria gap: its approve grants one more bounded card (action grant), it runs no review.", q.TaskID))
-				}
+			case "grant":
 				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
 				return note, nil, err
 			case "confirm":
 				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
 				return note, nil, err
 			}
-			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant, rerun or confirm.")
+			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant or confirm.")
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},

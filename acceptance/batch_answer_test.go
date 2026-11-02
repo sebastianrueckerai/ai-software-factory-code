@@ -710,6 +710,9 @@ func (s *accBatchStore) UndecideApproval(ctx context.Context, id int64) error { 
 func (s *accBatchStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
 	panic("unused")
 }
+func (s *accBatchStore) NewestApproval(ctx context.Context, taskID, kind string) (factoryd.ApprovalRequest, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
 	panic("unused")
 }

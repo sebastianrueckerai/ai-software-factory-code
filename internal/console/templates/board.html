@@ -181,10 +181,10 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
 <button type="submit" aria-label="Re-run the checks of PR #{{.PRNumber}} of {{.TaskID}}">Re-run the checks</button>
 </form>{{else if .Returns}}<div class="acts">{{else if .Approver}}{{if eq .Kind "resource"}}<p class="meta">Approves this task's request once; a wider envelope for the project is a change to its file in Git.</p>
-{{end}}{{if not .Grantable}}<p class="meta">Every criterion is met or waived; the request closes on the next sweep.</p>
-{{end}}<div class="acts">{{if .Grantable}}<form method="post" action="/approvals/{{.ID}}/approve" hx-post="/approvals/{{.ID}}/approve" hx-target="#note" hx-swap="innerHTML" data-to="{{.TaskStatus}}">
+{{end}}{{if and (not .Grantable) (ne .Kind "criteria_rerun")}}<p class="meta">Every criterion is met or waived; the request closes on the next sweep.</p>
+{{end}}<div class="acts">{{if and .Grantable (ne .Kind "criteria_rerun")}}<form method="post" action="/approvals/{{.ID}}/approve" hx-post="/approvals/{{.ID}}/approve" hx-target="#note" hx-swap="innerHTML" data-to="{{.TaskStatus}}">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Filter}}
-<button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else if eq .Kind "criteria_rerun"}}the criteria rerun {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
+<button type="submit" aria-label="Approve {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Approve</button>
 </form>{{end}}{{else}}<p class="meta">Only the project's approvers may approve.</p>
 <div class="acts">{{end}}{{if not .Returns}}<button type="button" class="deny" aria-expanded="false" aria-controls="deny-{{.ID}}{{.IDSuffix}}">{{if .Merge.Factory}}Close{{else}}Deny{{end}}</button>{{end}}
 </div>
@@ -197,7 +197,7 @@
 <label><input type="radio" name="action" value="reject"> {{if .Returns}}close it (closes the pull request){{else}}rejecting (closes the pull request){{end}}</label>
 </fieldset>{{end}}
 {{if .Merge.Factory}}<button type="submit" class="deny" aria-label="Close PR #{{.PRNumber}} of {{.TaskID}} and its card">Close</button>
-{{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else if eq .Kind "criteria_rerun"}}the criteria rerun {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
+{{else if .Returns}}<button type="submit" class="deny" aria-label="Return or close PR #{{.PRNumber}} of {{.TaskID}}">Send</button>{{else}}<button type="submit" class="deny" aria-label="Deny {{if eq .Kind "merge"}}merge PR #{{.PRNumber}}{{else if eq .Kind "criteria"}}the criteria grant {{.ID}}{{else if eq .Kind "criteria_rerun"}}the criteria never judged {{.ID}}{{else}}resource request {{.ID}}{{end}} of {{.TaskID}}">Deny</button>{{end}}
 </form>
 <p class="need-foot">{{if and (eq .Kind "merge") (not .IDSuffix)}}<a href="#card={{.TaskID}}:reviews" class="details">Details</a> · {{end}}{{if eq .Kind "merge"}}<a href="{{.PRURL}}.diff" target="_blank" rel="noopener">diff</a> · {{end}}{{if .IssueURL}}<a href="{{.IssueURL}}" target="_blank" rel="noopener">issue</a> · {{end}}<a href="/tasks/{{.TaskID}}/timeline">timeline</a></p>{{end}}
 </article>{{end}}
@@ -226,9 +226,8 @@
 
 {{define "criteria"}}{{$name := "Criteria gap"}}{{if eq .Kind "criteria_rerun"}}{{$name = "Criteria never judged"}}{{end}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">{{$name}}</a>{{else}}{{$name}}{{end}} {{if .IssueURL}}<a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{end}}, revision {{.CriteriaSpec.Revision}}</h4>
 {{template "brief-block" .}}
-{{if eq .Kind "criteria_rerun"}}<p class="meta">The plan's cards are done. No review judged these criteria. Approve runs the model review on them against the merged feature, on the integration card's budget; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep.</p>
-{{with .DecisionNote}}<p class="problem" role="status">{{.}}</p>
-{{end}}{{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
+{{if eq .Kind "criteria_rerun"}}<p class="meta">The plan's cards are done. No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards. Every criterion met or waived ends the request on the next sweep.</p>
+{{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
 {{end}}{{range .Criteria}}<fieldset class="question"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}</legend>
 <p class="meta">{{if .Test}}{{.Test}}{{else}}{{.Claim}}{{end}}</p>

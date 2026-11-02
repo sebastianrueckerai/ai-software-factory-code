@@ -232,11 +232,6 @@ type Config struct {
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.
 	ConfirmDeliveredCriteria func(ctx context.Context, id, by, line string) (int, error)
-	// RerunCriteria starts the review of plan id's criteria no verdict row
-	// holds on by's approval of its criteria_rerun ask, beside the answer
-	// (factoryd's Runner.StartCriteriaRerun): one that runs already is
-	// factoryd.ErrRerunRunning.
-	RerunCriteria func(ctx context.Context, id, by string) error
 	// RetryPlanCard files failed plan card taskID again for by and returns
 	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
 	// is factoryd.ErrNoRetry.

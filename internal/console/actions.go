@@ -2046,17 +2046,9 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "granted"})
 		return fmt.Sprintf("Granted one more bounded card for %d criteria; the planner drafts it and the board shows it.", n), nil
 	case factoryd.ApprovalCriteriaRerun:
-		// the rerun's model calls outlast the answer: it runs beside it and
-		// decides the request itself once its rows stand
-		switch err := c.cfg.RerunCriteria(ctx, q.TaskID, a.approver()); {
-		case errors.Is(err, factoryd.ErrRerunRunning):
-			return "", refuse(http.StatusConflict, "The review of the plan's criteria runs already; the board shows its verdicts when it ends.")
-		case err != nil:
-			log.Printf("console: %s's rerun of the criteria of %s: %v", a.s.user, q.TaskID, err)
-			return "", refuse(http.StatusInternalServerError, "the review could not start; see the factoryd log")
-		}
-		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "rerun"})
-		return "The model review runs on the criteria never judged, against the merged feature; the board shows its verdicts, or why it did not run.", nil
+		// no task can pay for the review that never judged them: the
+		// gateway takes no hold of a finished card
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards.", q.TaskID))
 	case factoryd.ApprovalMerge:
 		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
 		if err != nil {
@@ -2170,7 +2162,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "verb": "denied"})
 		if q.Kind == factoryd.ApprovalCriteriaRerun {
-			return "Denied the review's run; waive a criterion instead if it should not hold.", nil
+			return "Denied the ask; waive a criterion instead if it should not hold.", nil
 		}
 		return "Denied the grant; waive a criterion instead if it should not hold.", nil
 	case factoryd.ApprovalMerge:

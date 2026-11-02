@@ -13,7 +13,6 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The spec's verdict as data (the spec-intake concept, pieces 7 and 8,
@@ -1029,8 +1028,7 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 	}
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
 		fmt.Sprintf("factoryd: the plan's cards are done, and criteria were never judged: the review of card #%d %s.\n\n", integration.IssueNumber, why)+
-			strings.Join(lines, "\n")+"\n\nApprove runs the review of the criteria never judged against the merged feature; "+
-			"or waive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
+			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
 }
 
 // criteriaLines are cs's ids and one comment line each, tail after it.
@@ -1076,127 +1074,6 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 	r.record(ctx, t.ID, "approval_requested", map[string]any{"approval": id, "kind": kind, "criteria": ids})
 	r.timeline.RecordRow(ctx, t.ID, EventApprovalRequested, FactoryDecider, ViaFactoryd,
 		map[string]any{"approval": id, "kind": kind, "criteria": ids})
-}
-
-// ErrRerunRunning refuses a plan's criteria rerun while one runs.
-var ErrRerunRunning = errors.New("the review of the plan's criteria runs already")
-
-// StartCriteriaRerun runs CriteriaRerun on plan id beside its caller, the
-// console's Approve, whose answer cannot wait on the model calls; a plan
-// whose rerun runs already is refused. A rerun that fails notes its ask,
-// which stays pending for the next press.
-func (r *Runner) StartCriteriaRerun(ctx context.Context, id, by string) error {
-	if _, running := r.reruns.LoadOrStore(id, true); running {
-		return ErrRerunRunning
-	}
-	go func() {
-		defer r.reruns.Delete(id)
-		ctx := context.WithoutCancel(ctx)
-		if _, _, err := r.CriteriaRerun(ctx, id, by); err != nil {
-			log.Printf("plan %s: the criteria rerun: %v", id, err)
-			r.noteRerun(ctx, id, "the review could not run: "+textutil.Truncate(err.Error(), 300)+"; approve again")
-		}
-	}()
-	return nil
-}
-
-// CriteriaRerun judges the criteria of plan id no verdict row holds, on
-// by's approval of its criteria_rerun ask: the review's criteria half
-// without its diff half, one call per criterion and part over the merged
-// feature (planCalls, no behaviours call), on the integration card's
-// account. A card whose free headroom cannot pay for the calls (unfunded)
-// or a call without an answer judges nothing: the ask stays pending with
-// the note. Otherwise the rows are stored with source review, the
-// criteria_verdicts step is recorded, the outcome commented on the plan's
-// issue and the ask resolved as by's; the next CriteriaPass closes the
-// plan, or asks about what the rows say unmet. judged counts the rows.
-func (r *Runner) CriteriaRerun(ctx context.Context, id, by string) (judged int, note string, err error) {
-	t, repo, err := r.task(ctx, id)
-	if err != nil {
-		return 0, "", err
-	}
-	p, _, err := planOfStore(ctx, r.store, id, id)
-	if err != nil {
-		return 0, "", err
-	}
-	integration, err := integrationCard(ctx, r.store, id, p)
-	if err != nil {
-		return 0, "", err
-	}
-	cc := r.criteriaContext(ctx, integration)
-	if cc == nil {
-		return 0, "", terminalError("plan %s answers no criteria", id)
-	}
-	rows, err := r.store.CriteriaVerdicts(ctx, integration.ID)
-	if err != nil {
-		return 0, "", err
-	}
-	sub := cc.plan
-	if sub.Criteria = neverJudged(cc.plan, rows); len(sub.Criteria) == 0 {
-		return 0, "", r.store.ResolveApprovals(ctx, id, ApprovalCriteriaRerun, "approved", by, "every criterion has a verdict row")
-	}
-	notRun := func(why string) (int, string, error) {
-		r.noteRerun(ctx, id, "the review did not run: "+why)
-		return 0, why, nil
-	}
-	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, integration.PRNumber)
-	if errors.Is(err, ErrDiffTooLong) {
-		return notRun("model review not run: " + err.Error())
-	}
-	if err != nil {
-		return 0, "", err
-	}
-	feature, err := r.featureCards(ctx, integration, repo, cc.plan, diffBytes(prFiles))
-	if errors.Is(err, ErrDiffTooLong) {
-		return notRun("model review not run: " + err.Error())
-	}
-	if err != nil {
-		return 0, "", err
-	}
-	pinned, err := r.pinned(ctx, 0)
-	if err != nil {
-		return 0, "", err
-	}
-	title, brief := cardText(cc.plan, integration)
-	calls, of := planCalls(sub, briefObjective(integration.Objective, false), feature,
-		featureCard{Key: integration.PlanKey, Title: title, Brief: brief, Files: prFiles}, pinned.Limits.ReviewDiffBytes())
-	calls = calls[:len(of)]
-	model := r.callModel(integration, policy.PurposeReview)
-	if why, err := r.unfunded(ctx, integration.ID, model, policy.PurposeReview, calls); err != nil {
-		return 0, "", err
-	} else if why != "" {
-		return notRun("model review not run: " + why + " Raise the integration card's budget and approve again, or waive the criteria.")
-	}
-	results, err := r.callAll(ctx, integration.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
-	if err != nil {
-		return 0, "", err
-	}
-	verdicts, _, note := readPlanCalls(sub, calls, of, results)
-	if note != "" {
-		return notRun(note)
-	}
-	judgedRows, _ := normalizeCriteria(sub, verdicts, nil)
-	if err := r.store.PutCriteriaVerdicts(ctx, integration.ID, "review", FactoryDecider, judgedRows); err != nil {
-		return 0, "", err
-	}
-	r.record(ctx, integration.ID, "criteria_verdicts", map[string]any{"rerun": true, "by": by, "criteria": judgedRows})
-	lines := make([]string, len(judgedRows))
-	for i, v := range judgedRows {
-		lines[i] = fmt.Sprintf("- Criterion %s: **%s**. %s", v.Criterion, cmp.Or(v.Verdict, "the human decides"), v.Evidence)
-	}
-	r.comment(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: the review of the criteria never judged ran on the merged feature of card #%d, on %s's approval.\n\n%s\n\n"+
-		"The next sweep closes the plan once every criterion stands met or waived, or asks about what stays unmet.", integration.IssueNumber, by, strings.Join(lines, "\n")))
-	if err := r.store.ResolveApprovals(ctx, id, ApprovalCriteriaRerun, "approved", by, fmt.Sprintf("judged %d criteria on the merged feature", len(judgedRows))); err != nil {
-		return 0, "", err
-	}
-	return len(judgedRows), "", nil
-}
-
-// noteRerun puts why on plan id's criteria_rerun ask, which stays pending.
-func (r *Runner) noteRerun(ctx context.Context, id, why string) {
-	if err := r.store.ReopenApproval(ctx, id, ApprovalCriteriaRerun, textutil.Truncate(why, 1000)); err != nil {
-		log.Printf("plan %s: note the criteria rerun: %v", id, err)
-	}
 }
 
 // CriteriaPass is the criteria sweep, run beside the stale sweep, over the

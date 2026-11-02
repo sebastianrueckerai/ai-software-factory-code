@@ -281,7 +281,7 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact) (any, strin
 		m["criteria"] = criteria
 		acts = "Waive ends one criterion with your one-line reason; Approve grants one more bounded card, which the planner drafts for the criteria still open; Confirm records the delivered cards as meeting every criterion, offered once every child card is done. Every criterion met or waived ends the request on the next sweep; no final press."
 		if a.Kind == ApprovalCriteriaRerun {
-			acts = "Approve runs the model review on the criteria never judged against the merged feature, on the integration card's budget; Waive ends one criterion with your one-line reason; Confirm records the delivered cards as meeting every criterion. Every criterion met or waived ends the request on the next sweep."
+			acts = "Waive ends one criterion with your one-line reason; Confirm records the delivered cards as meeting every criterion; Deny ends the request with your reason. No button runs the review that never judged them. Every criterion met or waived ends the request on the next sweep."
 		}
 	default:
 		return nil, "", terminalError("kind %q carries no brief", a.Kind)

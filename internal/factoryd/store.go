@@ -761,8 +761,9 @@ const (
 	ApprovalCriteria = "criteria"
 	// ApprovalCriteriaRerun is a plan whose cards ran out with criteria
 	// no verdict row holds, a review that never judged them: the approver
-	// runs it on the merged feature (CriteriaRerun) or waives (Spec a
-	// CriteriaSpec).
+	// waives, or confirms the delivered cards (Spec a CriteriaSpec). No
+	// Approve runs that review: the gateway takes no hold of a finished
+	// card.
 	ApprovalCriteriaRerun = "criteria_rerun"
 )
 

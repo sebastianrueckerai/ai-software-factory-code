@@ -1100,23 +1100,19 @@ func TestWorkflowPressReviewConcernsGoBackToTheSessions(t *testing.T) {
 	}
 }
 
-// A press a history recorded before the change merges as it did, the
-// review not run again, and the merge guard holds it; each press reads
-// its own change id, so the next press, live after the roll, runs the
-// review and merges.
-func TestWorkflowPressBeforeReviewHoldsMergePinsOnlyItself(t *testing.T) {
-	g, unjudged, _ := rejudgeHarness(t, [][]string{{"c1"}}, Review{Verdict: "approve", Summary: "judged"})
-	g.merge = []MergeResult{{Refusal: "the merge is held: 1 criterion was never judged"}, {Merged: true}}
-	g.env.OnGetVersion("review-holds-merge-1", workflow.DefaultVersion, versionReviewHoldsMerge).Return(workflow.DefaultVersion)
+// A run from before the change merges on the press, the review not run
+// again: the merge guard holds it on its own.
+func TestWorkflowBeforeReviewHoldsMergeMergesOnThePress(t *testing.T) {
+	g, unjudged, _ := rejudgeHarness(t, [][]string{{"c1"}})
+	g.env.OnGetVersion("review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
+		t.Fatalf("final = %q", final)
 	}
-	if want := "policy, repro c1, review c1, criteria c1, approval c1, merge, review c1, merge"; strings.Join(g.steps, ", ") != want || *unjudged != 1 {
-		t.Fatalf("steps = %v, unjudged reads %d; want %s and one", g.steps, *unjudged, want)
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, merge"; strings.Join(g.steps, ", ") != want || *unjudged != 0 {
+		t.Fatalf("steps = %v, unjudged reads %d; want %s and none", g.steps, *unjudged, want)
 	}
 }
 
