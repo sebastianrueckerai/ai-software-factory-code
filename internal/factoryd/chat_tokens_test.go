@@ -26,6 +26,23 @@ func newChatToken(hash, login string) ChatToken {
 		Expires: time.Date(2027, 1, 2, 3, 4, 5, 0, time.UTC)}
 }
 
+func addChatToken(t *testing.T, s *PGStore, hash, login string) int64 {
+	t.Helper()
+	id, err := s.AddChatToken(context.Background(), newChatToken(hash, login))
+	if err != nil {
+		t.Fatalf("AddChatToken %s: %v", hash, err)
+	}
+	return id
+}
+
+func TestChatTokenRefusesDuplicateHash(t *testing.T) {
+	s := chatTokenStore(t)
+	addChatToken(t, s, "h1", "sebastian")
+	if _, err := s.AddChatToken(context.Background(), newChatToken("h1", "bob")); err == nil {
+		t.Error("a second token with the same hash was stored")
+	}
+}
+
 func TestChatTokenRoundTrip(t *testing.T) {
 	ctx := context.Background()
 	s := chatTokenStore(t)
@@ -58,7 +75,7 @@ func TestChatTokenByHashMissesUnknown(t *testing.T) {
 func TestRevokeChatTokenOnlyOwn(t *testing.T) {
 	ctx := context.Background()
 	s := chatTokenStore(t)
-	id, _ := s.AddChatToken(ctx, newChatToken("h1", "sebastian"))
+	id := addChatToken(t, s, "h1", "sebastian")
 	now := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
 	if ok, err := s.RevokeChatToken(ctx, id, "bob", now); ok || err != nil {
 		t.Fatalf("bob revoked: %v, %v", ok, err)
@@ -80,13 +97,17 @@ func TestRevokeChatTokenOnlyOwn(t *testing.T) {
 func TestChatTokensOfLeavesOutRevoked(t *testing.T) {
 	ctx := context.Background()
 	s := chatTokenStore(t)
-	a, _ := s.AddChatToken(ctx, newChatToken("h1", "sebastian"))
-	b, _ := s.AddChatToken(ctx, newChatToken("h2", "sebastian"))
-	s.AddChatToken(ctx, newChatToken("h3", "bob"))
+	a := addChatToken(t, s, "h1", "sebastian")
+	b := addChatToken(t, s, "h2", "sebastian")
+	addChatToken(t, s, "h3", "bob")
+	got, err := s.ChatTokensOf(ctx, "sebastian")
+	if err != nil || len(got) != 2 || got[0].ID != b || got[1].ID != a {
+		t.Fatalf("newest first: tokens = %+v, %v", got, err)
+	}
 	if _, err := s.RevokeChatToken(ctx, a, "sebastian", time.Now()); err != nil {
 		t.Fatal(err)
 	}
-	got, err := s.ChatTokensOf(ctx, "sebastian")
+	got, err = s.ChatTokensOf(ctx, "sebastian")
 	if err != nil || len(got) != 1 || got[0].ID != b {
 		t.Errorf("tokens = %+v, %v", got, err)
 	}
@@ -95,7 +116,7 @@ func TestChatTokensOfLeavesOutRevoked(t *testing.T) {
 func TestTouchChatTokenAtMostOncePerMinute(t *testing.T) {
 	ctx := context.Background()
 	s := chatTokenStore(t)
-	id, _ := s.AddChatToken(ctx, newChatToken("h1", "sebastian"))
+	id := addChatToken(t, s, "h1", "sebastian")
 	t0 := time.Date(2026, 11, 2, 10, 0, 0, 0, time.UTC)
 	for _, c := range []struct{ at, want time.Duration }{{0, 0}, {30 * time.Second, 0}, {61 * time.Second, 61 * time.Second}} {
 		if err := s.TouchChatToken(ctx, id, t0.Add(c.at)); err != nil {
@@ -111,7 +132,7 @@ func TestTouchChatTokenAtMostOncePerMinute(t *testing.T) {
 func TestClaimChatTokenConversationFirstWins(t *testing.T) {
 	ctx := context.Background()
 	s := chatTokenStore(t)
-	id, _ := s.AddChatToken(ctx, newChatToken("h1", "sebastian"))
+	id := addChatToken(t, s, "h1", "sebastian")
 	for _, n := range []int64{7, 9} {
 		if got, err := s.ClaimChatTokenConversation(ctx, id, n); err != nil || got != 7 {
 			t.Errorf("claim %d = %d, %v; want 7", n, got, err)
@@ -140,6 +161,40 @@ func TestSideConversationKeepsCurrent(t *testing.T) {
 	var title string
 	if err := s.db.QueryRow(`SELECT title FROM chat_conversations WHERE repository = 'acme/app' AND login = 'sebastian' AND conversation = 5`).Scan(&title); err != nil || title != "laptop" {
 		t.Errorf("title = %q, %v", title, err)
+	}
+}
+
+func TestSideConversationSkipsLegacyOne(t *testing.T) {
+	ctx := context.Background()
+	s := chatTokenStore(t)
+	if _, err := s.db.Exec(`INSERT INTO chat_messages (repository, login, role, content) VALUES ('acme/app', 'sebastian', 'user', 'old')`); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.SideConversation(ctx, "acme/app", "sebastian", "laptop"); err != nil || n != 2 {
+		t.Errorf("side = %d, %v; want 2", n, err)
+	}
+}
+
+func TestSideConversationConcurrentCallersGetTwoThreads(t *testing.T) {
+	ctx := context.Background()
+	s := chatTokenStore(t)
+	got := make(chan int64, 2)
+	errs := make(chan error, 2)
+	for range 2 {
+		go func() {
+			n, err := s.SideConversation(ctx, "acme/app", "sebastian", "laptop")
+			got <- n
+			errs <- err
+		}()
+	}
+	a, b := <-got, <-got
+	for range 2 {
+		if err := <-errs; err != nil {
+			t.Fatal(err)
+		}
+	}
+	if a == b || a+b != 5 {
+		t.Errorf("threads %d and %d, want 2 and 3", a, b)
 	}
 }
 

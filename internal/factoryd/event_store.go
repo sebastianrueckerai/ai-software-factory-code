@@ -134,8 +134,8 @@ const EventChatBudgetSpent = "chat_budget_spent"
 // EventChatTokenMade and EventChatTokenRevoked are the console's record of
 // a human making or revoking a chat token: detail {"name"}, the token's name.
 const (
-	EventChatTokenMade    = "chat_token_made"
-	EventChatTokenRevoked = "chat_token_revoked"
+	EventChatTokenMade    = "chat_token_made"    // #nosec G101 -- an event kind
+	EventChatTokenRevoked = "chat_token_revoked" // #nosec G101 -- an event kind
 )
 
 // The pulse's own events, historical kinds: the pulse band the console

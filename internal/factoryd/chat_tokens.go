@@ -5,6 +5,8 @@ import (
 	"database/sql"
 	"errors"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgconn"
 )
 
 // ChatToken is a human's chat token: the bearer's hash, the human it acts
@@ -21,7 +23,7 @@ type ChatToken struct {
 	LastUsed, Revoked time.Time // zero: never
 }
 
-const chatTokenColumns = `id, hash, login, repository, name, sealed, conversation, created_at, expires_at, last_used, revoked_at`
+const chatTokenColumns = `id, hash, login, repository, name, sealed, conversation, created_at, expires_at, last_used, revoked_at` // #nosec G101 -- column names
 
 func scanChatToken(row interface{ Scan(...any) error }) (ChatToken, error) {
 	var t ChatToken
@@ -98,12 +100,21 @@ func (s *PGStore) ClaimChatTokenConversation(ctx context.Context, id, n int64) (
 }
 
 // SideConversation opens a thread titled title one past login's highest
-// on repository and answers its number. The current thread stays the
-// current one, and an empty current thread is never reused.
+// on repository (never below 2: conversation 1 is chat_messages' legacy
+// default) and answers its number. The current thread stays the current
+// one, and an empty current thread is never reused. Two callers racing for
+// one number retry on the unique violation.
 func (s *PGStore) SideConversation(ctx context.Context, repository, login, title string) (int64, error) {
 	var n int64
-	err := s.db.QueryRowContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, current)
-		SELECT $1, $2, coalesce(max(conversation), 0) + 1, $3, false FROM chat_conversations WHERE repository = $1 AND login = $2
-		RETURNING conversation`, repository, login, title).Scan(&n)
+	var err error
+	for range 3 {
+		err = s.db.QueryRowContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, current)
+			SELECT $1, $2, coalesce(max(conversation), 1) + 1, $3, false FROM chat_conversations WHERE repository = $1 AND login = $2
+			RETURNING conversation`, repository, login, title).Scan(&n)
+		var pe *pgconn.PgError
+		if !errors.As(err, &pe) || pe.Code != "23505" {
+			break
+		}
+	}
 	return n, err
 }
