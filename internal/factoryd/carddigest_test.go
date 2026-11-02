@@ -128,13 +128,13 @@ func skeletonRig(t *testing.T) digestRig {
 func TestCardDigestRendersTheSkeleton(t *testing.T) {
 	d := skeletonRig(t).digest(t)
 	want := "#1410 · plan #1344 session-metrics · budget 5.00 spent 4.92 holds 0.00 EUR · slot held · in-review, approval\n" +
-		" +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
-		" +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
-		" +0:58   review                 → concerns, findings " + idA + " " + idB + "\n" +
-		" +1:02   checkin gate           → confirmed " + idA + " " + idB + ", handover\n" +
-		" +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
-		" +9:40   answer by sebastian    → Grant one session\n" +
-		" +9:41   session 4 small        → no push ×2\n" +
+		"   1 +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
+		"   2 +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
+		"   3 +0:58   review                 → concerns, findings " + idA + " " + idB + "\n" +
+		"   4 +1:02   checkin gate           → confirmed " + idA + " " + idB + ", handover\n" +
+		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
+		"   6 +9:40   answer by sebastian    → Grant one session\n" +
+		"   7 +9:41   session 4 small        → no push ×2\n" +
 		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4), slot_held_by_wait(approval)\n"
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
@@ -179,7 +179,7 @@ func TestCardDigestFoldsSessionsWhoseCostsDiffer(t *testing.T) {
 	g.session(t, 15, 20, 3, "no_push")
 	g.spend(digestAt(6), 0.10)
 	g.spend(digestAt(16), 0.20)
-	want := " +0:05   session 2 small        → no push ×2, 0.30 EUR, 2 calls\n"
+	want := "   2 +0:05   session 2 small        → no push ×2, 0.30 EUR, 2 calls\n"
 	if got := g.digest(t).Render(); !strings.Contains(got, want) {
 		t.Fatalf("Render =\n%s\nwant the line\n%s", got, want)
 	}
@@ -359,8 +359,8 @@ func TestCardDigestWithoutATimelineRendersTheEventsAlone(t *testing.T) {
 	g.event(30, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which file should change?", "comment": 27003,
 		"source": "agent", "reason": "Which file should change?"})
 	want := "#1410 · budget 5.00 spent 1.00 holds 0.00 EUR · waiting-human\n" +
-		" +0:00   filed by webhook       → direct card\n" +
-		" +0:30   ask                    → agent_escalate: Which file should change?\n" +
+		"   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:30   ask                    → agent_escalate: Which file should change?\n" +
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
@@ -414,25 +414,25 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		{Criterion: "C2", Verdict: "met", Source: FinderApprover, DecidedBy: "sebastian", CreatedAt: digestAt(20)},
 	}}
 	want := "#1410 · budget 6.50 spent 0.00 holds 0.00 EUR · done\n" +
-		" +0:00   filed by webhook       → depends on #1409 (done)\n" +
-		" +0:01   dependency by sebastian → depends on #1409\n" +
-		" +0:02   status                 → queued, intake\n" +
-		" +0:03   status                 → running, session\n" +
-		" +0:05   funded by sebastian    → 1.00 EUR\n" +
-		" +0:06   extended by sebastian  → 2 sessions, 100 lines, 0.50 EUR\n" +
-		" +0:07   checks                 → failure at f00dfee, findings 4285c299662c\n" +
-		" +0:08   audit                  → findings d095c64ba7a3\n" +
-		" +0:09   handover               → Fix the vet finding first.\n" +
-		" +0:11   approval               → merge, pull request #12\n" +
-		" +0:12   retried by sebastian   → as #1411\n" +
-		" +0:13   replanned by sebastian → asked for a new plan\n" +
-		" +0:14   cut by factoryd        → revision 3 into #1412, #1413 at session 2\n" +
-		" +0:15   granted by sebastian   → one more session\n" +
-		" +0:16   answer by sebastian    → Keep the table\n" +
-		" +0:17   merged                 → pull request #12\n" +
-		" +0:18   ended                  → done\n" +
-		" +0:19   criteria by factoryd   → C1 met, C2 undecided\n" +
-		" +0:20   criteria by sebastian  → C2 met\n" +
+		"   1 +0:00   filed by webhook       → depends on #1409 (done)\n" +
+		"   2 +0:01   dependency by sebastian → depends on #1409\n" +
+		"   3 +0:02   status                 → queued, intake\n" +
+		"   4 +0:03   status                 → running, session\n" +
+		"   5 +0:05   funded by sebastian    → 1.00 EUR\n" +
+		"   6 +0:06   extended by sebastian  → 2 sessions, 100 lines, 0.50 EUR\n" +
+		"   7 +0:07   checks                 → failure at f00dfee, findings 4285c299662c\n" +
+		"   8 +0:08   audit                  → findings d095c64ba7a3\n" +
+		"   9 +0:09   handover               → Fix the vet finding first.\n" +
+		"  10 +0:11   approval               → merge, pull request #12\n" +
+		"  11 +0:12   retried by sebastian   → as #1411\n" +
+		"  12 +0:13   replanned by sebastian → asked for a new plan\n" +
+		"  13 +0:14   cut by factoryd        → revision 3 into #1412, #1413 at session 2\n" +
+		"  14 +0:15   granted by sebastian   → one more session\n" +
+		"  15 +0:16   answer by sebastian    → Keep the table\n" +
+		"  16 +0:17   merged                 → pull request #12\n" +
+		"  17 +0:18   ended                  → done\n" +
+		"  18 +0:19   criteria by factoryd   → C1 met, C2 undecided\n" +
+		"  19 +0:20   criteria by sebastian  → C2 met\n" +
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)

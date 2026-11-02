@@ -41,7 +41,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int) (string, er
 	case s.Kind == "criteria":
 		criteriaDetail(&b, s, rows.verdicts)
 	case s.Kind == "session":
-		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At)
+		sessionDetail(&b, rows.task.ID, s.Ref.Session, lines, d.Steps[0].At)
 	case s.Kind == "ask":
 		if err := r.askDetail(ctx, &b, s, rows); err != nil {
 			return "", err
@@ -91,8 +91,8 @@ func filedDetail(b *strings.Builder, by string, t Task, h DigestHead, deps []Dep
 }
 
 // sessionDetail is session id's timeline lines, one each, at their
-// offsets from the card's start.
-func sessionDetail(b *strings.Builder, id string, lines [][]byte, start time.Time) {
+// offsets from the card's start, and the tool that reads its transcript.
+func sessionDetail(b *strings.Builder, taskID, id string, lines [][]byte, start time.Time) {
 	var out []string
 	for i, raw := range lines {
 		m := lineFields(raw)
@@ -116,6 +116,7 @@ func sessionDetail(b *strings.Builder, id string, lines [][]byte, start time.Tim
 	for _, l := range out {
 		b.WriteString(l + "\n")
 	}
+	fmt.Fprintf(b, "transcript: session_steps task %s session %s\n", taskID, id)
 }
 
 // askDetail is the ask's five parts, the answer that came before the next
@@ -195,8 +196,11 @@ func checkinDetail(b *strings.Builder, raw []byte) {
 		rec = *l.Record
 		moment, decision = cmp.Or(rec.Moment, moment), rec.Decision
 	}
-	fmt.Fprintf(b, "moment %s, decision %s, %s, %.2f EUR\n", moment, cmp.Or(decision, "none"),
-		textutil.Plural(rec.ToolCalls, "tool call", "tool calls"), rec.CostEUR)
+	fmt.Fprintf(b, "moment %s, decision %s", moment, cmp.Or(decision, "none"))
+	if l.Record != nil {
+		fmt.Fprintf(b, ", %s, %.2f EUR", textutil.Plural(rec.ToolCalls, "tool call", "tool calls"), rec.CostEUR)
+	}
+	b.WriteString("\n")
 	if rec.Reason != "" {
 		reason := rec.Reason
 		if rec.ReasonKind != "" {

@@ -14,11 +14,12 @@ func TestCardStepReturnsASessionsStepsForASessionLine(t *testing.T) {
 		t.Fatalf("CardStep: %v", err)
 	}
 	want := "#1410 step 2 of 8 at 2026-11-01 00:41:00 UTC\n" +
-		" +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
+		"   2 +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
 		"session s-1-41, 3 timeline lines:\n" +
 		" +0:41   line 1  session_start: attempt 1, model factory/small\n" +
 		" +0:55   line 2  session_end: attempt 1, model factory/small, outcome pushed, started 2026-11-01T00:41:00Z, summary done\n" +
-		" +0:55   line 3  pushed: branch factory/t1410, commit a1b2c3d4e5f6a7b8\n"
+		" +0:55   line 3  pushed: branch factory/t1410, commit a1b2c3d4e5f6a7b8\n" +
+		"transcript: session_steps task t1410 session s-1-41\n"
 	if got != want {
 		t.Fatalf("CardStep =\n%s\nwant\n%s", got, want)
 	}
@@ -37,7 +38,7 @@ func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 		t.Fatalf("CardStep: %v", err)
 	}
 	want := "#1410 step 2 of 2 at 2026-11-01 00:30:00 UTC\n" +
-		" +0:30   ask                    → session_cap: Grant one more session?\n" +
+		"   2 +0:30   ask                    → session_cap: Grant one more session?\n" +
 		"Ask: Grant one more session?\n" +
 		"Why: The card used its 3 sessions.\n" +
 		"Info: Session 3 pushed nothing.\n" +
@@ -76,6 +77,21 @@ func TestCardStepRefusesAnUnknownStep(t *testing.T) {
 		if want := fmt.Sprintf("no step %d on #1410", n); err == nil || err.Error() != want {
 			t.Fatalf("CardStep(%d) error = %v, want %q", n, err, want)
 		}
+	}
+}
+
+// A check-in line with no record states no calls and no cost: the line
+// does not hold them.
+func TestCardStepStatesNoCallsForACheckinWithoutARecord(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 10, "checkin", map[string]any{"round": 1, "decision": CheckHandover, "moment": CheckInGate,
+		"verdicts": map[string]CheckVerdict{findingA: {State: CheckConfirmed}}})
+	got, err := g.r.CardStep(context.Background(), "t1410", 2)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if want := "\nmoment gate, decision handover\n- " + idA + " confirmed: " + findingA + "\n"; !strings.HasSuffix(got, want) {
+		t.Fatalf("CardStep =\n%s\nwant it to end\n%s", got, want)
 	}
 }
 

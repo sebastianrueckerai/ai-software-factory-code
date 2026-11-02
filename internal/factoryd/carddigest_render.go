@@ -57,9 +57,9 @@ func (d CardDigest) Render() string {
 	return b.String()
 }
 
-// digestLine is step s as one line of the digest: its offset, its kind
-// with its actor, and its outcome, with the run's length and a session's
-// cost and calls.
+// digestLine is step s as one line of the digest: its number before the
+// fold, the one CardStep takes, its offset, its kind with its actor, and
+// its outcome, with the run's length and a session's cost and calls.
 func digestLine(s DigestStep) string {
 	label := s.Kind
 	switch {
@@ -76,7 +76,7 @@ func digestLine(s DigestStep) string {
 	if s.calls > 0 {
 		outcome += fmt.Sprintf(", %.2f EUR, %s", s.CostEUR, textutil.Plural(s.calls, "call", "calls"))
 	}
-	return fmt.Sprintf(" %-6s  %-22s → %s\n", offsetText(s.Offset), label, outcome)
+	return fmt.Sprintf(" %3d %-6s  %-22s → %s\n", s.N, offsetText(s.Offset), label, outcome)
 }
 
 // flagsText is flags by name, each with its detail in brackets.

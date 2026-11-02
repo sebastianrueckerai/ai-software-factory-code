@@ -32,10 +32,12 @@ type BoardDigestCard struct {
 	Flags        []DigestFlag
 }
 
-// BoardDigestQueued is a queued card and what holds it: "no issue",
-// "waits on #N", "project month cap", "work bound H of B", or "next".
+// BoardDigestQueued is a queued card, by issue and task id (the one name
+// a card without an issue has), and what holds it: "no issue", "waits on
+// #N", "project month cap", "work bound H of B", or "next".
 type BoardDigestQueued struct {
 	Issue  int
+	TaskID string
 	Reason string
 }
 
@@ -93,7 +95,7 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 				why = fmt.Sprintf("work bound %d of %d", held, b.Slots.Bound)
 			}
 		}
-		b.Queue = append(b.Queue, BoardDigestQueued{Issue: int(t.IssueNumber), Reason: why})
+		b.Queue = append(b.Queue, BoardDigestQueued{Issue: int(t.IssueNumber), TaskID: t.ID, Reason: why})
 	}
 	if b.Plans, err = r.boardPlans(ctx, repository); err != nil {
 		return BoardDigest{}, err
@@ -155,9 +157,9 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 	return out, nil
 }
 
-// planStatusOrder is the order a plan's cards are counted in: done, the
-// live statuses from the last a card reaches back to queued, then the
-// ended ones.
+// planStatusOrder is the order a plan's cards are counted in: done, then
+// the live statuses in the reverse of their order in Statuses, then
+// failed and closed.
 var planStatusOrder = func() []string {
 	live := slices.DeleteFunc(slices.Clone(Statuses), Final)
 	slices.Reverse(live)
@@ -178,14 +180,18 @@ func (b BoardDigest) Render() string {
 			flags = "flags " + flagsText(c.Flags)
 		}
 		age := fmt.Sprintf("%dh%02dm", int(c.Age/time.Hour), int(c.Age%time.Hour/time.Minute))
-		line := fmt.Sprintf("%-6s %-21s %-5s  %-4s  %s", fmt.Sprintf("#%d", c.Issue), statusText(c.Status, c.Gate), age, slot, flags)
+		line := fmt.Sprintf("%-6s %-21s %-7s  %-4s  %s", fmt.Sprintf("#%d", c.Issue), statusText(c.Status, c.Gate), age, slot, flags)
 		s.WriteString(strings.TrimRight(line, " ") + "\n")
 	}
 	if len(b.Queue) > 0 {
 		s.WriteString("queue:\n")
 	}
 	for _, q := range b.Queue {
-		fmt.Fprintf(&s, "%-6s %s\n", fmt.Sprintf("#%d", q.Issue), q.Reason)
+		card := fmt.Sprintf("#%d", q.Issue)
+		if q.Issue == 0 {
+			card += " " + q.TaskID
+		}
+		fmt.Fprintf(&s, "%-5s  %s\n", card, q.Reason)
 	}
 	if len(b.Plans) > 0 {
 		s.WriteString("plans:\n")

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,13 +110,13 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.store.enforced = policy.Enforced{Day: 12.4, Month: 544}
 
 	want := "cards 6 live · slots 3 of 3 · queue 3\n" +
-		"#1410  in-review, approval   9h40m  slot  flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings, slot_held_by_wait(approval)\n" +
-		"#1452  waiting-deps          3h02m  slot  flags dependency_failed(#1451), slot_held_by_wait(waiting-deps)\n" +
-		"#1472  running, session      0h12m  slot\n" +
+		"#1410  in-review, approval   9h40m    slot  flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings, slot_held_by_wait(approval)\n" +
+		"#1452  waiting-deps          3h02m    slot  flags dependency_failed(#1451), slot_held_by_wait(waiting-deps)\n" +
+		"#1472  running, session      0h12m    slot\n" +
 		"queue:\n" +
 		"#1414  work bound 3 of 3\n" +
 		"#1453  waits on #1451\n" +
-		"#0     no issue\n" +
+		"#0 t-noissue  no issue\n" +
 		"plans:\n" +
 		"#1344 session-metrics  done 2 · running 1 · waiting-deps 1 · queued 2 · failed 1\n" +
 		"caps:\n" +
@@ -129,8 +130,11 @@ func TestBoardDigestNamesAQueuedCardWithoutAnIssue(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{})
 	g.card("t-noissue", 0, "queued", "", 0, child("k1"))
 	b := g.digest(t)
-	if want := []BoardDigestQueued{{Issue: 0, Reason: "no issue"}}; !slices.Equal(b.Queue, want) || len(b.Cards) != 0 {
+	if want := []BoardDigestQueued{{Issue: 0, TaskID: "t-noissue", Reason: "no issue"}}; !slices.Equal(b.Queue, want) || len(b.Cards) != 0 {
 		t.Fatalf("Queue = %+v, Cards = %+v; want %+v and no card", b.Queue, b.Cards, want)
+	}
+	if got, want := b.Render(), "queue:\n#0 t-noissue  no issue\n"; !strings.Contains(got, want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", got, want)
 	}
 }
 
@@ -155,7 +159,7 @@ func TestBoardDigestNamesEachQueueReason(t *testing.T) {
 			g.store.deps = map[string][]string{"t1500": {"t9"}}
 			g.store.projectSpend = map[string]float64{"sf/app": tc.spent}
 			b := g.digest(t)
-			if want := []BoardDigestQueued{{Issue: 1500, Reason: tc.want}}; !slices.Equal(b.Queue, want) {
+			if want := []BoardDigestQueued{{Issue: 1500, TaskID: "t1500", Reason: tc.want}}; !slices.Equal(b.Queue, want) {
 				t.Fatalf("Queue = %+v, want %+v", b.Queue, want)
 			}
 			if tc.project.Budget != nil && b.Caps[2] != (BoardDigestCap{Name: "project", SpentEUR: tc.spent, CapEUR: 10}) {
