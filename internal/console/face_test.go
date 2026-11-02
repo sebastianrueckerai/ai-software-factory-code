@@ -1453,3 +1453,30 @@ func TestAskLessAndQuestionLessCardsKeepTheirForms(t *testing.T) {
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
 }
+
+// A plan that filed its cards ends done as a compact row; a named plan's
+// row carries the same chip as its live face, an unnamed plan's row none.
+func TestDonePlanRowCarriesTheName(t *testing.T) {
+	r := newRig(t)
+	withLinkshort(r)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Track: "plan", Process: "spec", Objective: "Link shortener",
+			Repository: "linkshort/linkshort", IssueNumber: 1, PlanName: "fix prod latency"}},
+	}
+	get := func() string {
+		return r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String()
+	}
+	face := faceOf(t, get(), "t-plan")
+	if !strings.Contains(face, "face final") || !strings.Contains(face, `<span class="chip plan">#1 · fix prod latency</span>`) {
+		t.Errorf("a named plan's done row lacks its chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName = ""
+	if face := faceOf(t, get(), "t-plan"); strings.Contains(face, "chip plan") {
+		t.Errorf("an unnamed plan's done row carries a chip:\n%s", face)
+	}
+	r.tasks.tasks[0].PlanName, r.tasks.tasks[0].IssueNumber = "fix prod latency", 0
+	if face := faceOf(t, get(), "t-plan"); !strings.Contains(face, `<span class="chip plan">fix prod latency</span>`) || strings.Contains(face, "#0") {
+		t.Errorf("a named plan without an issue number lacks the bare name or shows #0:\n%s", face)
+	}
+}
