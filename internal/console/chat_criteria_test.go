@@ -76,6 +76,34 @@ func TestChatGrantsTheCriteriaCardOnTheHumansWord(t *testing.T) {
 		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criteria": 2, "verb": "granted"}})
 }
 
+// On a criteria_rerun ask the chat's rerun starts the review on the
+// human's word, and a grant refuses naming the rerun: that ask grants no
+// card.
+func TestChatRerunsTheCriteriaNeverJudgedOnTheHumansWord(t *testing.T) {
+	r, _, g := newChatRig(t)
+	verdictRig(r)
+	r.approvals.rows[len(r.approvals.rows)-1].Kind = factoryd.ApprovalCriteriaRerun
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	var calls []string
+	r.c.cfg.RerunCriteria = func(_ context.Context, id, by string) error {
+		calls = append(calls, "rerun "+id+" by "+by)
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"grant"}`)}, {call(2, "answer_criteria", `{"task_id":"t-plan","action":"rerun"}`)}, {say("It runs.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"run the review on them"}})
+	refusal := "Refused: Plan t-plan's ask is criteria never judged: its approve runs the model review on them (action rerun), it grants no card."
+	note := "The model review runs on the criteria never judged, against the merged feature; the board shows its verdicts, or why it did not run."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":{"task_id":"t-plan","action":"grant"},"duration_ms":0,"name":"answer_criteria","result":"` + refusal + `"}`,
+		`tool {"arguments":{"task_id":"t-plan","action":"rerun"},"duration_ms":0,"name":"answer_criteria","result":"` + note + `"}`,
+		`applied {"result":"` + note + `","tool":"answer_criteria"}`,
+		`text {"text":"It runs."}`, `done {}`})
+	if want := []string{"rerun t-plan by sebastian"}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+}
+
 // The chat confirms the delivered cards on the human's word: their line
 // in the thread is the evidence the confirmation records.
 func TestChatConfirmsTheDeliveredCriteriaOnTheHumansWord(t *testing.T) {

@@ -147,6 +147,8 @@ type Runner struct {
 	startPoll, configGrace time.Duration
 	// workerPort replaces harness.MessagePort in tests
 	workerPort int
+	// reruns are the plans whose criteria rerun runs (StartCriteriaRerun)
+	reruns sync.Map
 
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session

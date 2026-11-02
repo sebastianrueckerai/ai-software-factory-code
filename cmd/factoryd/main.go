@@ -616,6 +616,7 @@ func main() {
 		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
 			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)
 		},
+		RerunCriteria: runner.StartCriteriaRerun,
 		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
 			return runner.RetryPlanCard(ctx, taskID, by)
 		},

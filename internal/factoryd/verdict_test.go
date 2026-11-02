@@ -538,6 +538,95 @@ func TestRefusedIntegrationReviewLeavesItsTrace(t *testing.T) {
 	}
 }
 
+// rerunRunner is featurePlan's merged integration card t1 (key I, pull
+// request 9) under plan t-plan (issue 9, the one the fake Forgejo holds)
+// with no verdict row, its cards A and B done, the plan's criteria_rerun
+// ask pending, and the gateway ll.
+func rerunRunner(t *testing.T, ll *fakeLiteLLM) (*Runner, *fakeStore, *gateForgejo, *fakeObjectStore, int64) {
+	t.Helper()
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey, task.IssueNumber, task.Status = SourcePlan, "t-plan", "I", 1380, "done"
+	fj := &gateForgejo{diffs: featureDiffs}
+	r, store, objects := newGateRunner(t, task, fj)
+	b, _ := json.Marshal(featurePlan())
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 9, Source: SourceChat, Status: "done"}
+	for k, pr := range map[string]int64{"A": 11, "B": 12} {
+		store.tasks["t-"+k] = Task{ID: "t-" + k, Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: k, PRNumber: pr, Status: "done"}
+	}
+	spec, _ := json.Marshal(CriteriaSpec{Task: "t1"})
+	id, err := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/repo", Spec: spec,
+		Reason: "criteria never judged: the review of card #1380 did not run (the review never ran): c1, c2"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	return r, store, fj, objects, id
+}
+
+// The approver's rerun judges the criteria no row holds against the merged
+// feature, the criterion calls alone: rows with source review, the
+// criteria_verdicts step, the outcome on the plan's issue, the ask
+// resolved as theirs; every row met, the next pass closes the plan.
+func TestCriteriaRerunJudgesTheCriteriaNeverJudged(t *testing.T) {
+	ctx := context.Background()
+	ll := &fakeLiteLLM{answer: func(user string) string {
+		return `{"verdict":"met","evidence":"the test covers it","fix":"card"}`
+	}}
+	r, store, fj, objects, id := rerunRunner(t, ll)
+	judged, note, err := r.CriteriaRerun(ctx, "t-plan", "sebastian")
+	if err != nil || judged != 2 || note != "" {
+		t.Fatalf("rerun = %d %q %v, want 2 judged", judged, note, err)
+	}
+	if calls := featureCalls(ll); len(ll.chats) != 2 || len(calls["c1"]) != 1 || len(calls["c2"]) != 1 {
+		t.Errorf("calls %v, want one per criterion and no other", calls)
+	}
+	rows, _ := store.CriteriaVerdicts(ctx, "t1")
+	if len(rows) != 2 || rows[0].Criterion != "c1" || rows[0].Verdict != "met" || rows[0].Source != "review" || rows[1].Criterion != "c2" || rows[1].Verdict != "met" {
+		t.Fatalf("rows = %+v, want c1 and c2 met by the review", rows)
+	}
+	if step := timelineStep(t, objects, "t1", "criteria_verdicts"); step["rerun"] != true {
+		t.Errorf("criteria_verdicts step = %v, want the rerun's", step)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Criterion c1: **met**") {
+		t.Errorf("comments = %q, want the outcome on the plan's issue", fj.comments)
+	}
+	approved, _ := store.ApprovalRequests(ctx, "approved")
+	if len(approved) != 1 || approved[0].ID != id || approved[0].DecidedBy != "sebastian" {
+		t.Fatalf("approved = %+v, want the ask resolved as sebastian's", approved)
+	}
+	r.CriteriaPass(ctx)
+	if closeRows(store) != 1 {
+		t.Fatalf("plan_closed rows = %d, want the plan closed", closeRows(store))
+	}
+}
+
+// A rerun the gateway refuses stores nothing, and the ask stays pending
+// with the note; a second start while one runs is refused.
+func TestCriteriaRerunRefusedKeepsTheAsk(t *testing.T) {
+	ctx := context.Background()
+	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedMonthCap}
+	r, store, _, _, id := rerunRunner(t, ll)
+	judged, note, err := r.CriteriaRerun(ctx, "t-plan", "sebastian")
+	if err != nil || judged != 0 || !strings.HasPrefix(note, "criterion c1: model review refused by the gateway (refused_month_cap)") {
+		t.Fatalf("rerun = %d %q %v, want the refusal's note", judged, note, err)
+	}
+	if rows, _ := store.CriteriaVerdicts(ctx, "t1"); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none", rows)
+	}
+	pending, _ := store.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].ID != id || pending[0].DecisionNote != "the review did not run: "+note {
+		t.Fatalf("pending = %+v, want the ask noted with the refusal", pending)
+	}
+	r.reruns.Store("t-plan", true)
+	if err := r.StartCriteriaRerun(ctx, "t-plan", "sebastian"); !errors.Is(err, ErrRerunRunning) {
+		t.Fatalf("a second start = %v, want ErrRerunRunning", err)
+	}
+}
+
 // A feature card's diff past the 8 MiB bound, or the feature's diffs past
 // it together (5 MiB and 5 MiB beside the card's own): the review notes
 // it, makes no call and writes no row.

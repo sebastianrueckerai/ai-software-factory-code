@@ -861,8 +861,8 @@ func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	return all[i], nil
 }
 
-// criteriaRequest is the pending criteria approval request of plan id in
-// the chat's project.
+// criteriaRequest is the pending criteria or criteria_rerun approval
+// request of plan id in the chat's project.
 func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 	k, err := t.card(in)
 	if err != nil {
@@ -874,7 +874,7 @@ func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
 		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
 	}
 	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalCriteria && q.Project == t.p.Repository
+		return q.TaskID == k.ID && (q.Kind == factoryd.ApprovalCriteria || q.Kind == factoryd.ApprovalCriteriaRerun) && q.Project == t.p.Repository
 	})
 	if i < 0 {
 		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
@@ -1531,11 +1531,11 @@ var tools = []chatTool{
 		}},
 	{name: "answer_criteria", title: "Answer a criteria gap", write: true,
 		params: map[string]any{"task_id": taskParam,
-			"action":    enum("waive unmet, grant one more card, or confirm delivered", "waive", "grant", "confirm"),
+			"action":    enum("waive, grant a card, rerun the review, or confirm", "waive", "grant", "rerun", "confirm"),
 			"criterion": str("the criterion the waiver names, cN"),
 			"reason":    str("the waiver's one-line reason")},
 		required: []string{"task_id", "action"},
-		about:    "Decide a plan's criteria gap on the human's word: waive, grant, or confirm.",
+		about:    "Decide a plan's criteria ask on the human's word: waive, grant, rerun, or confirm.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			line, ok, err := t.humanAnswerLine()
 			if err != nil {
@@ -1553,14 +1553,20 @@ var tools = []chatTool{
 			case "waive":
 				note, err := t.c.doWaive(t.r.Context(), t.a, q.ID, in.Criterion, in.Reason)
 				return note, nil, err
-			case "grant":
+			case "grant", "rerun":
+				switch {
+				case in.Action == "grant" && q.Kind == factoryd.ApprovalCriteriaRerun:
+					return "", nil, refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: its approve runs the model review on them (action rerun), it grants no card.", q.TaskID))
+				case in.Action == "rerun" && q.Kind == factoryd.ApprovalCriteria:
+					return "", nil, refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is a criteria gap: its approve grants one more bounded card (action grant), it runs no review.", q.TaskID))
+				}
 				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
 				return note, nil, err
 			case "confirm":
 				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
 				return note, nil, err
 			}
-			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant or confirm.")
+			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant, rerun or confirm.")
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},

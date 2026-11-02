@@ -387,6 +387,36 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 	}
 }
 
+// A criteria_rerun request's brief reads the same criteria facts, the
+// writer fetching them itself, and names what its Approve runs.
+func TestBriefOfCriteriaNeverJudged(t *testing.T) {
+	spec, _ := json.Marshal(CriteriaSpec{Task: "t-int"})
+	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
+		Reason: "criteria never judged: the review of card #1380 did not run (the review never ran): c1"}
+	criteria := []criterionFact{{ID: "c1", Kind: "test", Text: "go test ./... is green", Verdict: "open"}}
+	facts, acts, err := briefFacts(a, briefTask(), criteria)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if m := facts.(map[string]any); fmt.Sprint(m["criteria"]) != fmt.Sprint(criteria) || m["verdict_rows_of"] != "t-int" {
+		t.Errorf("facts = %v, want the criteria and their rows' card", m)
+	}
+	for _, want := range []string{"Approve runs the model review", "merged feature", "Waive", "Confirm"} {
+		if !strings.Contains(acts, want) {
+			t.Errorf("acts %q lack %q", acts, want)
+		}
+	}
+	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria never judged card") {
+		t.Errorf("the prompt does not name the card: %s", p)
+	}
+	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{{ID: "c1", Kind: "test", Test: "go test ./... is green"}}})
+	store := &fakeBriefStore{revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}}, verdicts: map[string][]CriterionVerdict{}}
+	got, err := (&BriefWriter{Store: store}).criteriaFacts(context.Background(), a)
+	if err != nil || fmt.Sprint(got) != fmt.Sprint(criteria) {
+		t.Fatalf("the writer's criteria = %v (%v), want %v", got, err, criteria)
+	}
+}
+
 // The writer reads a criteria request's plan and verdict rows itself and
 // the model's brief lands on the row, with the criteria as the model
 // reads them (fault 7).

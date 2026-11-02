@@ -114,8 +114,7 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 // ref's settled calls (fanOutPrice), at the ref's mean output but for the
 // last call, at the whole limit. A premium call whose worst case the
 // premium month's headroom cannot hold ends in the note, since the gateway
-// refuses it. The note names what the approval card offers a person
-// instead.
+// refuses it. A merge gate's note adds unfundedRemedy.
 func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, calls []reviewCall) (string, error) {
 	if r.cfg.Prices == nil || model == "" || len(calls) == 0 {
 		return "", nil
@@ -148,19 +147,22 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 			return "", err
 		}
 		if worst := at.cost(len(body), limit, true); worst > capLeft {
-			return fmt.Sprintf("a call's worst case is %.2f EUR, and the premium month cap has %.2f EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened).",
-				worst, max(capLeft, 0)), nil
+			return fmt.Sprintf("a call's worst case is %.2f EUR, and the premium month cap has %.2f EUR free.", worst, max(capLeft, 0)), nil
 		}
 		cost := at.cost(len(body), limit, i == len(calls)-1)
 		capLeft -= cost
 		need += cost
 	}
 	if free := own.Free(); need > free {
-		return fmt.Sprintf("its %s would cost about %.2f EUR, and the card has %.2f EUR free. Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened).",
+		return fmt.Sprintf("its %s would cost about %.2f EUR, and the card has %.2f EUR free.",
 			textutil.Plural(len(calls), "call", "calls"), need, max(free, 0)), nil
 	}
 	return "", nil
 }
+
+// unfundedRemedy is what the merge card offers a person in place of a
+// review or an audit the card cannot pay for.
+const unfundedRemedy = " Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."
 
 // callPrice is what an estimate prices one alias's calls at: the request,
 // calibrated on the ref's settled calls (Store.CalibrateEstimate), and
