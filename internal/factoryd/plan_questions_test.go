@@ -78,15 +78,41 @@ func TestPlanQuestionsFormat(t *testing.T) {
 
 // A question's text is bounded in runes, not bytes, so the planner reads
 // the bound and files again before the card fills the column.
-func TestQuestionFindingsRefuseATextOverTheBound(t *testing.T) {
+func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	q := func(text string) []PlanQuestion {
 		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}}}
 	}
-	if got, want := questionFindings(q(strings.Repeat("q", 301))), []string{"plan: question 1: text is over 300 characters"}; !slices.Equal(got, want) {
+	if got, want := questionBounds(q(strings.Repeat("q", 301))), []string{"plan: question 1: text is over 300 characters"}; !slices.Equal(got, want) {
 		t.Errorf("301 runes: findings %q, want %q", got, want)
 	}
-	if got := questionFindings(q(strings.Repeat("ü", 300))); len(got) != 0 {
+	if got := questionBounds(q(strings.Repeat("ü", 300))); len(got) != 0 {
 		t.Errorf("300 runes of ü (600 bytes): findings %q, want none", got)
+	}
+}
+
+// file_plan, where the planner writes, holds the question bound: a
+// question of 301 characters is refused with the finding and nothing is
+// stored, and the same plan at 300 (of ü, 600 bytes) files as revision 1.
+func TestFilePlanBoundsAQuestion(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	runner, _, store := newTestRunner(t, plan, newFakeKube(), &fakeObjectStore{})
+	v := fixtureVersion(t)
+	runner.cfg.Policy = func() policy.Version { return v }
+	ctx := context.Background()
+	p := questionPlan()
+	p.Questions[0].Text = strings.Repeat("q", 301)
+	res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, p))
+	if want := []string{"plan: question 1: text is over 300 characters"}; err != nil || !slices.Equal(res.Findings, want) || res.Revision != 0 {
+		t.Fatalf("301 characters: (%+v, %v), want the findings %q", res, err, want)
+	}
+	if _, ok, _ := store.PlanRevision(ctx, "t-plan", 0); ok {
+		t.Fatal("a refused plan was stored")
+	}
+	p.Questions[0].Text = strings.Repeat("ü", 300)
+	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, p)); err != nil || res.Revision != 1 || len(res.Findings) != 0 {
+		t.Fatalf("300 characters: (%+v, %v), want revision 1", res, err)
 	}
 }
 

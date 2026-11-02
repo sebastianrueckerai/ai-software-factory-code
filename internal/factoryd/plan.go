@@ -489,8 +489,8 @@ func outlineFindings(outline []string) []string {
 }
 
 // questionFindings are the findings on a plan's questions: 0 to 5, each
-// with a text of 1 to 300, 2 to 5 distinct choices of 1 to 60 and an
-// origin of self_attack or none.
+// with a text, 2 to 5 distinct choices of 1 to 60 and an origin of
+// self_attack or none.
 func questionFindings(qs []PlanQuestion) []string {
 	var out []string
 	if len(qs) > maxQuestions {
@@ -503,11 +503,8 @@ func questionFindings(qs []PlanQuestion) []string {
 		if q.Origin != "" && q.Origin != CatchSelfAttack {
 			add("origin %q, want self_attack or none", q.Origin)
 		}
-		switch n := utf8.RuneCountInString(q.Text); {
-		case n == 0:
+		if q.Text == "" {
 			add("text empty")
-		case n > MaxQuestion:
-			add("text is over %d characters", MaxQuestion)
 		}
 		if n := len(q.Choices); n < 2 || n > MaxChoices {
 			add("%d choices; want 2 to %d", n, MaxChoices)
@@ -523,6 +520,20 @@ func questionFindings(qs []PlanQuestion) []string {
 			case seen[c] == 2:
 				add("choice %q is offered twice", c)
 			}
+		}
+	}
+	return out
+}
+
+// questionBounds are the findings on the length of a plan's questions,
+// at most MaxQuestion runes each. file_plan alone judges them, where the
+// planner writes, so a revision stored before the bound still files its
+// round and its delta cards.
+func questionBounds(qs []PlanQuestion) []string {
+	var out []string
+	for i, q := range qs {
+		if utf8.RuneCountInString(q.Text) > MaxQuestion {
+			out = append(out, fmt.Sprintf("plan: question %d: text is over %d characters", i+1, MaxQuestion))
 		}
 	}
 	return out
@@ -2585,7 +2596,8 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		p.Cards = append(settled, p.Cards...)
 	}
-	if p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository)); len(found) > 0 {
+	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
+	if found = append(found, questionBounds(p.Questions)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
 	// a re-file of the newest revision by value: already stored. By
