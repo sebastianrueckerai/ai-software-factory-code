@@ -24,7 +24,8 @@ while read -r f; do
 		fi
 		;;
 	esac
-	if git show ":$f" 2>/dev/null | grep -Eq '[Rr]ulings? ?R?[0-9]'; then
+	# a citation may wrap: the next line, its comment leader dropped, joins it
+	if git show ":$f" 2>/dev/null | tr '\n' ' ' | sed -E 's%[[:space:]]+(//|#|\*|--|>)[[:space:]]*% %g' | grep -Eq '[Rr]ulings?[[:space:]]*R?[0-9]'; then
 		echo "pre-commit: $f cites a ruling number; state the decision instead" >&2
 		exit 1
 	fi

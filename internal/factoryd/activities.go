@@ -1448,8 +1448,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	return id, nil
 }
 
-// RequestInfo asks the issue's author for what the agent needs (ruling
-// 150): state waiting-poster, mirrored on the issue, and a comment with the
+// RequestInfo asks the issue's author for what the agent needs:
+// state waiting-poster, mirrored on the issue, and a comment with the
 // request that mentions the author and the project's notify list (the
 // project's approvers when it is empty), whose Forgejo bells ring; an
 // info_request alert. It returns the comment's id: only later comments

@@ -953,8 +953,8 @@ func TestWorkflowHealedWaitingPosterWithAnAnswerResumes(t *testing.T) {
 }
 
 // The second review round is given the first review and asked which of its
-// findings the new head addressed; the timeline counts the round (ruling
-// 177). An adjudication the first review carries (roadmap 192) reaches the
+// findings the new head addressed; the timeline counts the round.
+// An adjudication the first review carries (roadmap 192) reaches the
 // model nowhere: its overrule is the human's, not the model's to weigh.
 func TestModelReviewSecondRoundCarriesTheFirst(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/slug.go b/slug.go\n"}

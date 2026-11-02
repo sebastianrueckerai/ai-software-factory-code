@@ -779,8 +779,8 @@ const (
 	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
-// ApprovalRequest is a decision the factory waits on a human for (ruling
-// 116): kind merge is a task's pull request through its gates (Spec a
+// ApprovalRequest is a decision the factory waits on a human for:
+// kind merge is a task's pull request through its gates (Spec a
 // MergeSpec), kind resource a commissioning request (Task 53). Status:
 // pending, approved or denied.
 type ApprovalRequest struct {

@@ -72,8 +72,8 @@ type Registrar struct {
 	GitURL, RegistryHost string
 	// ProjectsUser is factory-projects.
 	ProjectsUser string
-	// HostKey scans Forgejo's SSH host key from inside the cluster (ruling
-	// 165); nil: no FACTORY_SSH_HOST_KEY.
+	// HostKey scans Forgejo's SSH host key from inside the cluster;
+	// nil: no FACTORY_SSH_HOST_KEY.
 	HostKey func(ctx context.Context) (string, error)
 	// OpenBao holds the Forgejo site admin's login at AdminSecret.
 	OpenBao SecretReader

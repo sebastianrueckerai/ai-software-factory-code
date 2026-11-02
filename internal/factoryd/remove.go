@@ -152,8 +152,8 @@ func (rem *Remover) Remove(ctx context.Context, name string, dry bool) ([]string
 // still in the configuration in force (the hourly reconcile would
 // register the project again; the factory's own two projects, whose
 // files are the configuration's repository itself, never pass this —
-// they are projects like any other, found through their files, ruling
-// 179) and while a card of the project is open. Each refusal names the
+// they are projects like any other, found through their files)
+// and while a card of the project is open. Each refusal names the
 // state and what to do. It answers the project's repository: the row's,
 // or the factory ruling's <name>/<name> for a row already gone.
 func (run *removalRun) refusals(ctx context.Context) (Repo, error) {

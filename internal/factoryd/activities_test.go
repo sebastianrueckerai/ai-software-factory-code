@@ -3756,8 +3756,8 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	agree("the day spent", 5.51, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
 }
 
-// The attempt grant's floor is the hold machinery's own minimum (ruling
-// 322): policy.Fit at the task's remaining budget refuses an attempt whose
+// The attempt grant's floor is the hold machinery's own minimum:
+// policy.Fit at the task's remaining budget refuses an attempt whose
 // cheapest call cannot fit policy.MinCallTokens output tokens, and the
 // refusal names the state and the way out. A model that cannot be priced,
 // or has no output limit, refuses the attempt: no hold of it is bounded.
