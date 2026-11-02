@@ -105,7 +105,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil || len(steps) != 1 || steps[0].ID != step || steps[0].Outcome != StepResolved || steps[0].EndedAt == nil {
 		t.Fatalf("CaseSteps after resolve = %+v, %v; want step %d resolved and ended", steps, err, step)
 	}
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "factory", Rung: 1, Action: "wait"}); !errors.Is(err, ErrNotFound) {
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("ResolveCase of a resolved case = %v, want ErrNotFound", err)
 	}
 	if err := s.SetCaseStatus(ctx, a.ID, CaseOpen); !errors.Is(err, ErrNotFound) {
@@ -133,11 +133,11 @@ func TestCaseStepsKeepTheirOrderAndTheirEnd(t *testing.T) {
 		t.Fatalf("OpenCase: %v", err)
 	}
 	read := []CaseRead{{Tool: "card_timeline", Args: "t1", Bytes: 812}}
-	s1, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: "factory", Read: read, Outcome: StepInProgress})
+	s1, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: FactoryDecider, Read: read, Outcome: StepInProgress})
 	if err != nil {
 		t.Fatalf("AppendCaseStep 1: %v", err)
 	}
-	s2, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: "factory"})
+	s2, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 3, Actor: FactoryDecider})
 	if err != nil || s2 <= s1 {
 		t.Fatalf("AppendCaseStep 2 = %d, %v; want an id past %d", s2, err, s1)
 	}
@@ -149,7 +149,7 @@ func TestCaseStepsKeepTheirOrderAndTheirEnd(t *testing.T) {
 		t.Fatalf("CaseSteps = %+v, %v; want [%d %d]", steps, err, s1, s2)
 	}
 	first := steps[0]
-	if first.EndedAt == nil || first.StartedAt.IsZero() || first.CaseID != c.ID || first.Rung != 3 || first.Actor != "factory" ||
+	if first.EndedAt == nil || first.StartedAt.IsZero() || first.CaseID != c.ID || first.Rung != 3 || first.Actor != FactoryDecider ||
 		first.Outcome != StepHandedUp || first.Found != "no new facts" || first.Decision != "ask" || first.Grounds != "" || first.CostEUR != 0.0125 ||
 		!reflect.DeepEqual(first.Did, []CaseAction{{Action: "ask"}}) || !reflect.DeepEqual(first.Read, read) {
 		t.Fatalf("ended step = %+v", first)
@@ -179,7 +179,7 @@ func TestWithdrawCaseRecordsItsReason(t *testing.T) {
 	if err := s.EndCaseStep(ctx, handed, StepHandedUp, "", nil, "ask", "", 0); err != nil {
 		t.Fatalf("EndCaseStep: %v", err)
 	}
-	running, err := s.AppendCaseStep(ctx, CaseStep{CaseID: a.ID, Rung: 3, Actor: "factory", Outcome: StepInProgress})
+	running, err := s.AppendCaseStep(ctx, CaseStep{CaseID: a.ID, Rung: 3, Actor: FactoryDecider, Outcome: StepInProgress})
 	if err != nil {
 		t.Fatalf("AppendCaseStep: %v", err)
 	}
@@ -222,7 +222,7 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	}
 	a := open("t1", "sf/a", CaseDayCap)
 	r := open("t2", "sf/a", CaseDayCap)
-	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: "factory", Rung: 1, Action: "wait"}); err != nil {
+	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	b := open("t3", "sf/b", CaseMergeApproval)

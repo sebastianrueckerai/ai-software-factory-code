@@ -29,13 +29,13 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 		return r, err
 	}
 	ended, err := s.withdrawCases(ctx, `SELECT c.id, 'card ended ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
-		WHERE c.repository = $1 AND c.`+caseLive+` AND t.status IN ('done', 'failed', 'closed')`, repository)
+		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed')`, repository)
 	if err != nil {
 		return r, err
 	}
 	replaced, err := s.withdrawCases(ctx, `SELECT c.id, 'plan revision ' || p.revision || ' replaced it'
 		FROM cases c JOIN LATERAL (SELECT max(revision) AS revision FROM plan_revisions WHERE task_id = c.task_id) p ON true
-		WHERE c.repository = $1 AND c.`+caseLive+` AND c.kind IN ($2, $3) AND (c.facts->>'revision')::int < p.revision`,
+		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind IN ($2, $3) AND (c.facts->>'revision')::int < p.revision`,
 		repository, CasePlanQuestion, CasePlanConfirmation)
 	if err != nil {
 		return r, err
@@ -44,7 +44,7 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	// a merge waits while its card is in review and a plan question is
 	// asked while its planner runs: each has its own end
 	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
-		WHERE c.repository = $1 AND c.`+caseLive+` AND c.kind NOT IN ($2, $3, $4)
+		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4)
 		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')`,
 		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation); err != nil {
 		return r, err
@@ -62,7 +62,7 @@ func (s *PGStore) endDecidedMergeCases(ctx context.Context, repository string) (
 	}
 	ds, err := queryAll(ctx, s.db, `SELECT c.id, a.status, a.decided_by, a.decision_note
 		FROM cases c JOIN approval_requests a ON a.id = (c.facts->>'approval')::bigint
-		WHERE c.repository = $1 AND c.kind = $2 AND c.`+caseLive+` AND a.status <> 'pending'`,
+		WHERE c.repository = $1 AND c.kind = $2 AND c.status IN `+caseLiveStatuses+` AND a.status <> 'pending'`,
 		[]any{repository, CaseMergeApproval}, func(row rowScanner) (d decision, err error) {
 			return d, row.Scan(&d.id, &d.status, &d.by, &d.note)
 		})
@@ -110,33 +110,40 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 }
 
 // openMissedAsks opens the case of each waiting-human card of repository
-// from its newest escalation row with a question, as that ask's
-// question_asked would have, and counts the cases it opened. A card with
-// a live case, or with a case opened since that row, has its case; a
-// card that left waiting-human since that row waits on something else,
-// as a planner on its plan's questions.
+// from its newest escalation row with an ask, as that ask's question_asked
+// would have, and counts the cases it opened. An ask younger than a
+// minute is left to its writer, which records the event after it moves
+// the card. A card with a live case, or with a case opened since that
+// row, has its case; a card that left waiting-human since that row waits
+// on something else, as a planner on its plan's questions.
 func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, error) {
-	asks, err := queryAll(ctx, s.db, `SELECT t.id, esc.body, esc.comment_id, esc.question FROM tasks t
+	asks, err := queryAll(ctx, s.db, `SELECT t.id, t.kind, t.source, esc.body, esc.comment_id, esc.question FROM tasks t
 		JOIN LATERAL (SELECT e.body, e.comment_id, e.question, e.created_at FROM intake_events e
 		    WHERE e.task_id = t.id AND e.kind = $2 AND e.question IS NOT NULL ORDER BY e.id DESC LIMIT 1) esc ON true
-		WHERE t.repository = $1 AND t.status = 'waiting-human'
-		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id AND (c.`+caseLive+` OR c.opened_at >= esc.created_at))
+		WHERE t.repository = $1 AND t.status = 'waiting-human' AND esc.question->>'ask' <> ''
+		AND esc.created_at < now() - interval '1 minute'
+		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id AND (c.status IN `+caseLiveStatuses+` OR c.opened_at >= esc.created_at))
 		AND NOT EXISTS (SELECT 1 FROM events v WHERE v.task_id = t.id AND v.kind = $3 AND v.at > esc.created_at
 		    AND v.detail->>'status' <> 'waiting-human')`,
 		[]any{repository, IntakeEscalation, EventTaskStatus}, func(row rowScanner) (Event, error) {
 			e := Event{Kind: EventQuestionAsked}
-			var body string
+			var kind, source, body string
 			var comment int64
 			var raw []byte
-			if err := row.Scan(&e.TaskID, &body, &comment, &raw); err != nil {
+			if err := row.Scan(&e.TaskID, &kind, &source, &body, &comment, &raw); err != nil {
 				return e, err
 			}
 			var q HumanQuestion
 			if err := json.Unmarshal(raw, &q); err != nil {
 				return e, err
 			}
-			e.Detail = map[string]any{"question": textutil.Truncate(q.Ask, 300), "ask": q.Ask, "why": q.Why, "info": q.Info,
-				"comment": comment, "source": escalationSource(body), "reason": textutil.Truncate(body, 300)}
+			e.Detail = map[string]any{"question": textutil.Truncate(q.Ask, 300), "ask": q.Ask, "why": q.Why, "info": q.Info, "comment": comment}
+			if kind == "human" {
+				// recordAsk's event names the card's source and no reason
+				e.Detail["source"] = source
+			} else {
+				e.Detail["source"], e.Detail["reason"] = escalationSource(body), textutil.Truncate(body, 300)
+			}
 			if q.Recommendation != "" {
 				e.Detail["recommendation"] = q.Recommendation
 			}

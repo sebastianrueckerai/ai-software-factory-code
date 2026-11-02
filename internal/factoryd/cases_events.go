@@ -77,7 +77,7 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		log.Printf("task %s: event %d opens no case: %v", t.ID, e.ID, err)
 		return false, nil
 	}
-	step := CaseStep{Rung: 3, Actor: "factory"}
+	step := CaseStep{Rung: 3, Actor: FactoryDecider}
 	healed := e.Detail["reason"] == healedReason
 	if healed {
 		// a restart asks the question again in other words: its step goes
@@ -262,7 +262,7 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) error {
 	if err != nil || !opened {
 		return err
 	}
-	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: "factory"})
+	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: FactoryDecider})
 	return err
 }
 

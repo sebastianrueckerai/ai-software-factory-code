@@ -122,6 +122,8 @@ func escalationSource(reason string) string {
 		return "content_filter"
 	case strings.HasPrefix(reason, imageWaited), strings.HasPrefix(reason, toolAskedAgain):
 		return "image"
+	case strings.HasPrefix(reason, staleQuiet):
+		return "stale"
 	}
 	return "supervisor"
 }

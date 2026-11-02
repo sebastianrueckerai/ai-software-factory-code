@@ -472,6 +472,9 @@ type staleEscalation struct {
 	Action string    `json:"action"`
 }
 
+// staleQuiet starts the stale sweep's reason.
+const staleQuiet = "The card was quiet for "
+
 // escalateStale moves a still-quiet card to waiting-human the way the
 // runner's Escalate does: the state mirrored on the issue, the reason as
 // a comment whose first line is the question the card shows, the intake
@@ -480,7 +483,7 @@ type staleEscalation struct {
 // the rest is logged, never a reason to stop half-way.
 func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, quiet time.Duration) error {
 	state, action := staleNames(t.Status)
-	reason := fmt.Sprintf("The card was quiet for %s while %s: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: %s.",
+	reason := fmt.Sprintf(staleQuiet+"%s while %s: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: %s.",
 		staleDuration(quiet), state, action)
 	var forgejo *Forgejo
 	var timeline *Timeline

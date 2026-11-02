@@ -112,7 +112,7 @@ func TestAQuestionAskedOpensACaseAtTheHuman(t *testing.T) {
 		t.Fatalf("money = %+v; want the session cap on the card's 5 EUR budget", c.Money)
 	}
 	steps := caseStepsOf(t, s, c.ID)
-	if len(steps) != 1 || steps[0].Rung != 3 || steps[0].Actor != "factory" || steps[0].Outcome != StepInProgress || steps[0].EndedAt != nil {
+	if len(steps) != 1 || steps[0].Rung != 3 || steps[0].Actor != FactoryDecider || steps[0].Outcome != StepInProgress || steps[0].EndedAt != nil {
 		t.Fatalf("steps = %+v; want one running rung 3 step", steps)
 	}
 
@@ -141,7 +141,7 @@ func TestAHealedReAskAppendsAStepAndOpensNoSecondCase(t *testing.T) {
 	steps := caseStepsOf(t, s, c.ID)
 	var found []string
 	for _, st := range steps {
-		if st.Outcome != StepInProgress || st.Rung != 3 || st.Actor != "factory" {
+		if st.Outcome != StepInProgress || st.Rung != 3 || st.Actor != FactoryDecider {
 			t.Fatalf("step = %+v; want a running rung 3 step", st)
 		}
 		found = append(found, st.Found)
@@ -440,12 +440,12 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"content_filter", contentFilterRefusal + "the prompt", CaseContentFilter, nil},
 		{"image", imageWaited + "sf/img:1", CaseImageWait, nil},
 		{"agent", AgentAsks + "Which file should change?", CaseAgentEscalate, nil},
-		{"stale", "The card was quiet for 2 h 0 min while running: is its run gone?", CaseWaitExpired, nil},
+		{"stale", staleQuiet + "2 h 0 min while running: is its run gone?", CaseWaitExpired, nil},
 		{SourceChat, "Should the API keep v1?", CaseAgentEscalate, nil},
 		{"start", startRefused + "c1: the image pull failed", CaseOther, nil},
 		{"", "anything", CaseOther, nil},
 	} {
-		if escalated := tc.source != "stale" && tc.source != SourceChat && tc.source != ""; escalated && escalationSource(tc.reason) != tc.source {
+		if escalated := tc.source != SourceChat && tc.source != ""; escalated && escalationSource(tc.reason) != tc.source {
 			t.Errorf("escalationSource(%q) = %q, want %q", tc.reason, escalationSource(tc.reason), tc.source)
 		}
 		kind, facts := caseKindOf(tc.source, tc.reason)

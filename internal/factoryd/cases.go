@@ -50,9 +50,12 @@ const (
 	CaseWithdrawn = "withdrawn"
 )
 
-// caseLive is the SQL test for a live case, the predicate of the
+// caseLiveStatuses are a live case's statuses, the predicate of the
 // cases_open_key index.
-const caseLive = `status IN ('open', 'at_human')`
+const caseLiveStatuses = `('open', 'at_human')`
+
+// caseLive is the SQL test for a live case in a query on cases alone.
+const caseLive = `status IN ` + caseLiveStatuses
 
 // Case is one problem on a card, from its opening to its end. Follows is
 // the case it comes after, 0 for none; CommentID is its issue comment, 0
