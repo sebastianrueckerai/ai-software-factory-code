@@ -331,11 +331,11 @@ type Config struct {
 	Steer func(ctx context.Context, taskID, user, text string) error
 	// CardDigest is a card's digest (factoryd's Runner.CardDigest), which
 	// the card read leads with; CardStep one step of it in full, a step
-	// the digest lacks factoryd.ErrNoStep (Runner.CardStep); BoardDigest
-	// a project's board in a few lines (Runner.BoardDigest). New refuses
-	// a Config without any of them.
+	// the digest lacks factoryd.ErrNoStep naming cardRead
+	// (Runner.CardStep); BoardDigest a project's board in a few lines
+	// (Runner.BoardDigest). New refuses a Config without any of them.
 	CardDigest  func(ctx context.Context, taskID string) (factoryd.CardDigest, error)
-	CardStep    func(ctx context.Context, taskID string, n int, transcript factoryd.TranscriptPointer) (string, error)
+	CardStep    func(ctx context.Context, taskID string, n int, cardRead string, transcript factoryd.TranscriptPointer) (string, error)
 	BoardDigest func(ctx context.Context, repository string) (factoryd.BoardDigest, error)
 	// OpenCasesOf are a card's open and at_human cases, oldest first, and
 	// CaseSteps a case's steps, oldest first (factoryd's PGStore): the

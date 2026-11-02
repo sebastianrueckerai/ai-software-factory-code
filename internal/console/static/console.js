@@ -730,6 +730,14 @@ function drawerFailed(e) {
 }
 document.addEventListener("htmx:responseError", drawerFailed);
 document.addEventListener("htmx:sendError", drawerFailed);
+// a fold of the card's life whose read failed says so in place of its
+// loading line, which htmx keeps on an error
+function lifeFailed(e) {
+  var line = e.detail.elt.dataset.sec === "life" && e.detail.target.querySelector("p");
+  if (line) line.textContent = "The card's life could not be read; see the factoryd log.";
+}
+document.addEventListener("htmx:responseError", lifeFailed);
+document.addEventListener("htmx:sendError", lifeFailed);
 // after a tab the focus is on the tab shown, after a steer in its input
 document.addEventListener("htmx:afterSwap", function (e) {
   var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer], [data-routine-drawer]");

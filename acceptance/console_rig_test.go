@@ -201,7 +201,7 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
 			Status: k.Status, Gate: k.Gate}}, err
 	}
-	cfg.CardStep = func(context.Context, string, int, factoryd.TranscriptPointer) (string, error) {
+	cfg.CardStep = func(context.Context, string, int, string, factoryd.TranscriptPointer) (string, error) {
 		return "", factoryd.ErrNoStep("the acceptance rig holds no card step")
 	}
 	cfg.BoardDigest = func(context.Context, string) (factoryd.BoardDigest, error) { return factoryd.BoardDigest{}, nil }

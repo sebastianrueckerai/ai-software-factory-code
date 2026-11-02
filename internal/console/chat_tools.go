@@ -1255,7 +1255,7 @@ var tools = []chatTool{
 			if err != nil {
 				return "", nil, err
 			}
-			s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step, func(_ string, n int) string {
+			s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step, "card", func(_ string, n int) string {
 				if n == 0 {
 					return ""
 				}

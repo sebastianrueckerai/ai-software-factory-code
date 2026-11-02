@@ -12,7 +12,7 @@ func readPointer(session string, n int) string { return fmt.Sprintf("read %s n %
 
 func TestCardStepReturnsASessionsStepsForASessionLine(t *testing.T) {
 	g := skeletonRig(t)
-	got, err := g.r.CardStep(context.Background(), "t1410", 2, readPointer)
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
@@ -26,14 +26,14 @@ func TestCardStepReturnsASessionsStepsForASessionLine(t *testing.T) {
 	if got != want {
 		t.Fatalf("CardStep =\n%s\nwant\n%s", got, want)
 	}
-	third, err := g.r.CardStep(context.Background(), "t1410", 8, readPointer)
+	third, err := g.r.CardStep(context.Background(), "t1410", 8, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
 	if !strings.HasSuffix(third, "\ntranscript: read s-5-600 n 3\n") {
 		t.Fatalf("CardStep of the card's third session =\n%s\nwant its read with n 3", third)
 	}
-	none, err := g.r.CardStep(context.Background(), "t1410", 8, func(string, int) string { return "" })
+	none, err := g.r.CardStep(context.Background(), "t1410", 8, "card", func(string, int) string { return "" })
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
@@ -50,7 +50,7 @@ func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 		"info": "Session 3 pushed nothing.", "recommendation": "Grant one session.", "choices": []any{"Grant one session", "Stop the card"}})
 	g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseSessionCap, StateKey: "k1", Status: CaseAtHuman, CommentID: 27001}}
 	g.store.caseSteps = map[int64][]CaseStep{1: {{ID: 1, CaseID: 1, Rung: 3, Actor: "sebastian", Outcome: StepInProgress}}}
-	open, err := g.r.CardStep(ctx, "t1410", 2, readPointer)
+	open, err := g.r.CardStep(ctx, "t1410", 2, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
@@ -71,14 +71,14 @@ func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 	g.event(50, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Card 1410 asks: grant one more?", "comment": 27003,
 		"source": "cap", "reason": "the card used its sessions"})
 	g.event(60, EventQuestionAnswered, "anna", map[string]any{"answer": "Stop the card", "comment": 27004})
-	answered, err := g.r.CardStep(ctx, "t1410", 2, readPointer)
+	answered, err := g.r.CardStep(ctx, "t1410", 2, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
 	if !strings.Contains(answered, "\nAnswer by sebastian: Grant one session\n") || strings.Contains(answered, "anna") {
 		t.Fatalf("CardStep of the answered ask =\n%s\nwant sebastian's answer, not the next ask's", answered)
 	}
-	second, err := g.r.CardStep(ctx, "t1410", 4, readPointer)
+	second, err := g.r.CardStep(ctx, "t1410", 4, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
@@ -90,8 +90,8 @@ func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 func TestCardStepRefusesAnUnknownStep(t *testing.T) {
 	g := skeletonRig(t)
 	for _, n := range []int{0, 9} {
-		_, err := g.r.CardStep(context.Background(), "t1410", n, readPointer)
-		if want := "#1410 has steps 1 to 8; the card read numbers them"; err == nil || err.Error() != want {
+		_, err := g.r.CardStep(context.Background(), "t1410", n, "card", readPointer)
+		if want := "#1410 has steps 1 to 8; card numbers them"; err == nil || err.Error() != want {
 			t.Fatalf("CardStep(%d) error = %v, want %q", n, err, want)
 		}
 	}
@@ -103,7 +103,7 @@ func TestCardStepStatesNoCallsForACheckinWithoutARecord(t *testing.T) {
 	g := newDigestRig(nil)
 	g.line(t, 10, "checkin", map[string]any{"round": 1, "decision": CheckHandover, "moment": CheckInGate,
 		"verdicts": map[string]CheckVerdict{findingA: {State: CheckConfirmed}}})
-	got, err := g.r.CardStep(context.Background(), "t1410", 2, readPointer)
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
@@ -119,7 +119,7 @@ func TestCardStepKeepsTheLinesDecisionOverAnEmptyRecord(t *testing.T) {
 	g := newDigestRig(nil)
 	g.line(t, 10, "checkin", map[string]any{"round": 1, "decision": CheckHandover, "moment": CheckInGate,
 		"record": CheckInRecord{Moment: CheckInGate, ToolCalls: 2}})
-	got, err := g.r.CardStep(context.Background(), "t1410", 2, readPointer)
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
 	if err != nil {
 		t.Fatalf("CardStep: %v", err)
 	}
@@ -147,7 +147,7 @@ func TestCardStepReturnsEachKindsSource(t *testing.T) {
 		{4, []string{"\nmoment gate, decision handover, 4 tool calls, 0.00 EUR\n", "\n- " + idA + " confirmed: " + findingA + "\n"}},
 		{6, []string{"\nanswer: Grant one session\ncomment: 27002\n"}},
 	} {
-		got, err := g.r.CardStep(context.Background(), "t1410", tc.n, readPointer)
+		got, err := g.r.CardStep(context.Background(), "t1410", tc.n, "card", readPointer)
 		if err != nil {
 			t.Fatalf("CardStep(%d): %v", tc.n, err)
 		}

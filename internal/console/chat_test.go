@@ -2069,12 +2069,12 @@ func TestChatCardStepReturnsOneStep(t *testing.T) {
 	r.cardSteps = map[string][]string{"t-m": {filed}}
 	var pointer factoryd.TranscriptPointer
 	read := r.c.cfg.CardStep
-	r.c.cfg.CardStep = func(ctx context.Context, taskID string, n int, transcript factoryd.TranscriptPointer) (string, error) {
+	r.c.cfg.CardStep = func(ctx context.Context, taskID string, n int, cardRead string, transcript factoryd.TranscriptPointer) (string, error) {
 		pointer = transcript
-		return read(ctx, taskID, n, transcript)
+		return read(ctx, taskID, n, cardRead, transcript)
 	}
 	equal(t, "the step reads", reads(t, r, g, "card_step", `{"task_id":"#5","step":1}`, "card_step", `{"task_id":"#5","step":2}`),
-		[]string{filed, "Refused: #5 has steps 1 to 1; the card read numbers them"})
+		[]string{filed, "Refused: #5 has steps 1 to 1; card numbers them"})
 	equal(t, "the transcript read of the card's second session", pointer("s-2", 2), "session_steps task t-m n 2")
 	equal(t, "the transcript read of a session with no start", pointer("s-x", 0), "")
 }

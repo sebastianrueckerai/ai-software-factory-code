@@ -628,11 +628,11 @@ func TestCheckinCardStepReturnsOneStep(t *testing.T) {
 	if out != want || cut || err != nil {
 		t.Fatalf("card_step 1 = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)
 	}
-	if _, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 9.0}); err == nil || err.Error() != "#1410 has steps 1 to 8; the card read numbers them" {
+	if _, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 9.0}); err == nil || err.Error() != "#1410 has steps 1 to 8; card_facts numbers them" {
 		t.Fatalf("card_step 9 = %v, want the range of steps", err)
 	}
 	parent, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 2.0})
-	if err != nil || !strings.HasSuffix(parent, " line 3  pushed: branch factory/t1410, commit a1b2c3d4e5f6a7b8\ntranscript: transcript_read (this session's record)\n") {
+	if err != nil || !strings.HasSuffix(parent, " line 3  pushed: branch factory/t1410, commit a1b2c3d4e5f6a7b8\ntranscript: transcript_read (the parent session's record)\n") {
 		t.Fatalf("card_step 2 = (%v)\n%s\nwant the parent session's lines and transcript_read", err, parent)
 	}
 	other, _, err := tools.Tool(t.Context(), "card_step", map[string]any{"step": 8.0})

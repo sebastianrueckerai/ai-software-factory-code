@@ -1274,7 +1274,7 @@ func newRig(t *testing.T) *rig {
 			return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
 				Status: k.Status, Gate: k.Gate}}, err
 		},
-		CardStep: func(ctx context.Context, taskID string, n int, _ factoryd.TranscriptPointer) (string, error) {
+		CardStep: func(ctx context.Context, taskID string, n int, cardRead string, _ factoryd.TranscriptPointer) (string, error) {
 			k, _, err := r.tasks.Task(ctx, taskID)
 			if err != nil {
 				return "", err
@@ -1283,7 +1283,7 @@ func newRig(t *testing.T) *rig {
 			if n >= 1 && n <= len(steps) {
 				return steps[n-1], nil
 			}
-			return "", factoryd.ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; the card read numbers them", k.IssueNumber, len(steps)))
+			return "", factoryd.ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; %s numbers them", k.IssueNumber, len(steps), cardRead))
 		},
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil

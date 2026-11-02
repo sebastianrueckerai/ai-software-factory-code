@@ -1342,11 +1342,11 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		out, cut := cutToolOutput(d.Render() + "\n" + p.facts)
 		return out, cut, nil
 	case "card_step":
-		step, err := p.r.CardStep(ctx, p.taskID, argInt(args["step"]), func(session string, _ int) string {
+		step, err := p.r.CardStep(ctx, p.taskID, argInt(args["step"]), "card_facts", func(session string, _ int) string {
 			if session != p.ask.ParentSession {
 				return ""
 			}
-			return "transcript_read (this session's record)"
+			return "transcript_read (the parent session's record)"
 		})
 		if err != nil {
 			return "", false, err

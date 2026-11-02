@@ -28,8 +28,9 @@ type TranscriptPointer func(session string, n int) string
 
 // CardStep returns one step of the card's digest in full: a session's steps, a gate's full result,
 // a check-in's record with its calls, an ask's five parts and its answer, a funding event's detail.
-// n is the step's number before the fold; one the digest lacks is ErrNoStep.
-func (r *Runner) CardStep(ctx context.Context, taskID string, n int, transcript TranscriptPointer) (string, error) {
+// n is the step's number before the fold; one the digest lacks is ErrNoStep, which names cardRead,
+// the caller's tool that reads the digest with its numbers.
+func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead string, transcript TranscriptPointer) (string, error) {
 	rows, err := r.readCard(ctx, taskID)
 	if err != nil {
 		return "", err
@@ -39,7 +40,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, transcript 
 		return "", err
 	}
 	if n < 1 || n > len(d.Steps) {
-		return "", ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; the card read numbers them", d.Head.Issue, len(d.Steps)))
+		return "", ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; %s numbers them", d.Head.Issue, len(d.Steps), cardRead))
 	}
 	s := d.Steps[n-1]
 	var b strings.Builder
