@@ -60,8 +60,8 @@ func kindConstants(t *testing.T, pattern string) map[string]string {
 
 // Every migration that adds a kind rewrites the whole check, so of two
 // parallel ones only the last applied keeps its kind: after all migrations,
-// every alert kind, alert verdict, approval kind and roll request state
-// factoryd names is accepted.
+// every alert kind, alert verdict, approval kind, roll request state, case
+// kind, case status and case step outcome factoryd names is accepted.
 func TestKindChecksAccept(t *testing.T) {
 	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds"))
 	if err != nil {
@@ -95,6 +95,30 @@ func TestKindChecksAccept(t *testing.T) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO roll_requests (sha, repository, run_id, state, task_id)
 			VALUES ($1, 'o/r', 1, $1, CASE WHEN $1 = 'skipped' THEN NULL ELSE 't-' || $1 END)`, state); err != nil {
 			t.Errorf("roll request state %s (%q): %v", name, state, err)
+		}
+	}
+	// a Case constant that is no status is a kind
+	statuses := kindConstants(t, `^Case(Open|AtHuman|Resolved|Withdrawn)$`)
+	for name, kind := range kindConstants(t, `^Case[A-Z]`) {
+		if _, ok := statuses[name]; ok {
+			continue
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO cases (task_id, kind, state_key, status, problem) VALUES ($1, $2, 'kinds', 'resolved', 'kinds')`, "t-"+kind, kind); err != nil {
+			t.Errorf("case kind %s (%q): %v", name, kind, err)
+		}
+	}
+	for name, status := range statuses {
+		if _, err := db.ExecContext(ctx, `INSERT INTO cases (task_id, kind, state_key, status, problem) VALUES ($1, 'other', 'kinds', $2, 'kinds')`, "s-"+status, status); err != nil {
+			t.Errorf("case status %s (%q): %v", name, status, err)
+		}
+	}
+	var caseID int64
+	if err := db.QueryRowContext(ctx, `INSERT INTO cases (task_id, kind, state_key, status, problem) VALUES ('steps', 'other', 'kinds', 'resolved', 'kinds') RETURNING id`).Scan(&caseID); err != nil {
+		t.Fatal(err)
+	}
+	for name, outcome := range kindConstants(t, `^Step(InProgress|Resolved|HandedUp|Withdrawn)$`) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO case_steps (case_id, rung, actor, outcome) VALUES ($1, 0, 'kinds', $2)`, caseID, outcome); err != nil {
+			t.Errorf("case step outcome %s (%q): %v", name, outcome, err)
 		}
 	}
 }

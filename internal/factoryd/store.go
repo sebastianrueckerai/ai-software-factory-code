@@ -754,6 +754,19 @@ type Store interface {
 	// AlertByFingerprint is the newest alert row of kind and fingerprint:
 	// an alert card's pre-check reads whether its alert still fires.
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+	// The cases of a card (cases.go): one record per problem, with the
+	// steps of the rungs that worked on it.
+	OpenCase(ctx context.Context, c Case) (Case, bool, error)
+	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
+	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
+	SetCaseStatus(ctx context.Context, id int64, status string) error
+	ResolveCase(ctx context.Context, id int64, r CaseResolution) error
+	WithdrawCase(ctx context.Context, id int64, reason string) error
+	CaseByID(ctx context.Context, id int64) (Case, error)
+	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
+	CasesOf(ctx context.Context, taskID string) ([]Case, error)
+	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
+	OpenCasesIn(ctx context.Context, repository string) ([]Case, error)
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning

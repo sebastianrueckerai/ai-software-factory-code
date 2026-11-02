@@ -1240,6 +1240,47 @@ func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { ret
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
 
+// The cases: nothing here opens one.
+func (s *acceptanceStore) OpenCase(context.Context, factoryd.Case) (factoryd.Case, bool, error) {
+	return factoryd.Case{}, false, nil
+}
+
+func (s *acceptanceStore) AppendCaseStep(context.Context, factoryd.CaseStep) (int64, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []factoryd.CaseAction, string, string, float64) error {
+	return nil
+}
+
+func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution) error {
+	return nil
+}
+
+func (s *acceptanceStore) WithdrawCase(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) CaseByID(context.Context, int64) (factoryd.Case, error) {
+	return factoryd.Case{}, nil
+}
+
+func (s *acceptanceStore) OpenCasesOf(context.Context, string) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) CasesOf(context.Context, string) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) CaseSteps(context.Context, int64) ([]factoryd.CaseStep, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) OpenCasesIn(context.Context, string) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
 // RoutineRunOfTask: no routine files a card here.
 func (s *acceptanceStore) RoutineRunOfTask(context.Context, string) (factoryd.RoutineRun, bool, error) {
 	return factoryd.RoutineRun{}, false, nil

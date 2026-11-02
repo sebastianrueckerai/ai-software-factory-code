@@ -1129,6 +1129,50 @@ func (s *fakeStore) UpdateSession(ctx context.Context, id string, findings []str
 
 var _ Store = (*fakeStore)(nil)
 
+func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
+	return Case{}, false, nil
+}
+
+func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
+	return 0, nil
+}
+
+func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
+	return nil
+}
+
+func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	return nil
+}
+
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution) error {
+	return nil
+}
+
+func (s *fakeStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
+	return nil
+}
+
+func (s *fakeStore) CaseByID(ctx context.Context, id int64) (Case, error) {
+	return Case{}, nil
+}
+
+func (s *fakeStore) OpenCasesOf(ctx context.Context, taskID string) ([]Case, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
+	return nil, nil
+}
+
+func (s *fakeStore) OpenCasesIn(ctx context.Context, repository string) ([]Case, error) {
+	return nil, nil
+}
+
 // Requires a disposable Postgres: FACTORYD_TEST_DATABASE_URL must point at a
 // database this test may wipe. Skipped otherwise; CI stays hermetic.
 func (s *fakeStore) SetTaskRisk(ctx context.Context, id, class string) error {

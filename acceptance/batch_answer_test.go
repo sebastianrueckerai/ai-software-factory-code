@@ -666,6 +666,39 @@ func (s *accBatchStore) Record(ctx context.Context, e factoryd.Event) (int64, er
 func (s *accBatchStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (factoryd.Alert, bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) OpenCase(ctx context.Context, c factoryd.Case) (factoryd.Case, bool, error) {
+	panic("unused")
+}
+func (s *accBatchStore) AppendCaseStep(ctx context.Context, st factoryd.CaseStep) (int64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []factoryd.CaseAction, decision, grounds string, costEUR float64) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	panic("unused")
+}
+func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution) error {
+	panic("unused")
+}
+func (s *accBatchStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
+	panic("unused")
+}
+func (s *accBatchStore) CaseByID(ctx context.Context, id int64) (factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CaseSteps(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenCasesIn(ctx context.Context, repository string) ([]factoryd.Case, error) {
+	panic("unused")
+}
 func (s *accBatchStore) InsertSession(ctx context.Context, sess factoryd.Session) error {
 	panic("unused")
 }
