@@ -283,10 +283,26 @@ type chatGetAnswer struct {
 	Messages     []factoryd.ChatMessage    `json:"messages"`
 	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
 	Budget       *chatBudget               `json:"budget,omitempty"`
+	// Pool is the project's pool line (projectPool) the panel's Set the
+	// pool / Top up control reads, absent while the policy is unreadable:
+	// the same words the settings, policy and project pages read, and
+	// whether the reader is an approver, the only ask a pool change takes.
+	Pool *chatPool `json:"pool,omitempty"`
 	// OpenQuestion is the thread's question a reply passed without
 	// answering, which the next turn's prompt carries (card #1345);
 	// absent while none is open.
 	OpenQuestion string `json:"open_question,omitempty"`
+}
+
+// chatPool is the pool line a chat page read shows the panel's pool
+// control: the loaded policy's words on the project's pool — the same
+// projection the settings, policy and project pages read, with no policy
+// identity or month of its own — and whether the reader may ask: an
+// approver of the project, the access rule set_pool answers a press with.
+type chatPool struct {
+	Present bool   `json:"present"`
+	CanAsk  bool   `json:"can_ask"`
+	Words   string `json:"words"`
 }
 
 // chatGet answers GET /projects/{name}/chat: the member's current
@@ -367,6 +383,10 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		log.Printf("console: the totals of %s: %v", t.threadRef(), err)
 	}
 	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
+	if v, ok := c.inForce(ctx); ok {
+		pl := c.projectPool(ctx, v, t.p, time.Now())
+		answer.Pool = &chatPool{Present: pl.Present, CanAsk: c.isApprover(ctx, t.a.s.user, repo), Words: pl.Words}
+	}
 	if q, passed, err := c.cfg.Chat.ChatOpenQuestion(ctx, repo, owner, t.conv); err != nil {
 		log.Printf("console: the open question of %s on %s: %v", owner, repo, err)
 	} else if passed {

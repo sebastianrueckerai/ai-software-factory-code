@@ -193,10 +193,47 @@ var chatView = (function () {
   // stoppedMarkHTML is the grey mark a stopped turn leaves where the
   // thinking one ran, on the cut answer's row
   var stoppedMarkHTML = "<span class=\"thinking stopped\" aria-hidden=\"true\">stopped</span>";
+  // poolPreview is a pool proposal's resulting ceiling at eur, the
+  // suggested one while none reads: a set stands at eur, a top-up on the
+  // captured allowance plus it — whole figures shown to the cent
+  function poolPreview(pool, eur) {
+    var v = typeof eur === "number" ? eur : Number(eur);
+    if (!isFinite(v)) v = Number(pool.eur);
+    var to = pool.action === "top_up" ? Number(pool.from_eur) + v : v;
+    return "the pool would stand at €" + to.toFixed(2);
+  }
+  // poolFormHTML is a set_pool proposal's own half: the operation, the
+  // cent-precision amount the member may correct, the reason fixed at the
+  // capture, and the ceiling the change would stand at (pool-preview)
+  function poolFormHTML(pool) {
+    var op = pool.action === "top_up" ? "Top up the pool by, EUR" : "Set the pool at, EUR";
+    return "<form class=\"pool-edit\" data-pool data-action=\"" + esc(pool.action) + "\" data-from=\"" + esc(pool.from_eur) +
+      "\" data-suggested=\"" + esc(pool.eur) + "\">" +
+      "<label>" + op + " <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" value=\"" + esc(pool.eur) + "\" aria-label=\"" + op + "\"></label>" +
+      "<p class=\"pool-reason\">reason (fixed): " + esc(pool.reason) + "</p>" +
+      "<p class=\"pool-preview\" data-pool-preview>" + poolPreview(pool) + "</p></form>";
+  }
   function proposalHTML(p) {
-    return "<div class=\"proposal\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" +
-      "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>" +
+    var body = p.pool ? poolFormHTML(p.pool) :
+      "<details class=\"args\"><summary>" + esc(p.tool) + " arguments</summary><pre>" + esc(typeof p.arguments === "string" ? p.arguments : JSON.stringify(p.arguments)) + "</pre></details>";
+    return "<div class=\"proposal" + (p.pool ? " pool" : "") + "\" data-proposal=\"" + esc(p.id) + "\"><p class=\"ptitle\">I will:</p><ul><li>" + inline(esc(p.description)) + "</li></ul>" + body +
       "<p class=\"pfoot\"><button type=\"button\" class=\"doit\" data-doit>Do it</button> <button type=\"button\" class=\"skip\" data-skip>Skip</button></p></div>";
+  }
+  // poolCtlHTML is the panel's pool control under the composer: the pool
+  // line as the settings and policy pages read it, and — an approver of
+  // the project alone — the ask that starts a normal chat turn: the agent
+  // proposes, the member's Do it confirms, nothing writes before that.
+  // Not an approver reads who is, and no dead button stands for them.
+  function poolCtlHTML(pool) {
+    var note = "<p class=\"pool-note\">" + esc(pool.words) + "</p>";
+    if (!pool.can_ask) return "<div class=\"poolctl\" data-pool-ctl>" + note +
+      "<p class=\"pool-why\">Only an approver of the project asks for a pool change.</p></div>";
+    var op = pool.present ? "Top up the pool by, EUR" : "Set the pool to, EUR";
+    return "<form class=\"choices poolctl\" data-pool-ctl data-present=\"" + String(!!pool.present) + "\">" + note +
+      "<label>" + op + " <input type=\"number\" name=\"eur\" step=\"0.01\" min=\"0.01\" required></label> " +
+      "<label>Reason <input type=\"text\" name=\"reason\" maxlength=\"200\" required></label> " +
+      "<button type=\"submit\">" + (pool.present ? "Top up…" : "Set the pool…") + "</button>" +
+      "<p class=\"pool-why\">This starts a normal chat turn: the agent reads the amount and the reason, proposes the change, and nothing writes until your Do it confirms the proposal.</p></form>";
   }
   // appliedHTML is a write that took effect, or an undo's when undone
   function appliedHTML(a, undone) {
@@ -211,8 +248,8 @@ var chatView = (function () {
   // expired one says so under its block. While budget, the stopped chat's
   // fund state, stands, the newest open fund row offers the fund.
   function historyHTML(msgs, login, proposals, budget) {
-    var states = {}, fundAt = -1;
-    (proposals || []).forEach(function (p) { states[p.token] = p.state; });
+    var states = {}, pools = {}, fundAt = -1;
+    (proposals || []).forEach(function (p) { states[p.token] = p.state; pools[p.token] = p.pool; });
     if (budget) msgs.forEach(function (m, i) { if (fundRow(m) && !m.settled) fundAt = i; });
     var out = [], parts = null, at, wake = null;
     function close() {
@@ -250,7 +287,7 @@ var chatView = (function () {
       (m.tool_calls || []).forEach(function (c) {
         var state = c.proposal && states[c.proposal];
         if (state === "pending") {
-          dst.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments,
+          dst.push(proposalHTML({id: c.proposal, tool: c.name, arguments: c.arguments, pool: pools[c.proposal],
             description: c.result.replace(/^Proposed to [^:]*: /, "").replace(/\. Nothing runs until they press Do it\.$/, "")}));
           return;
         }
@@ -489,7 +526,7 @@ var chatView = (function () {
     proposalHTML: proposalHTML, appliedHTML: appliedHTML, historyHTML: historyHTML, factoryHTML: factoryHTML, threadHTML: threadHTML, deleteHTML: deleteHTML, levelMenuHTML: levelMenuHTML, pendingOf: pendingOf, answerHTML: answerHTML, paletteOf: paletteOf, paletteHTML: paletteHTML, expand: expand, when: when, rowsHTML: rowsHTML,
     sumHTML: sumHTML, unreadOf: unreadOf, headHTML: headHTML, eventStream: eventStream, sse: sse, sizeHTML: sizeHTML, clampShare: clampShare,
     queuedHTML: queuedHTML, readHTML: readHTML, callsHTML: callsHTML, earlierCalls: earlierCalls, thinkingHTML: thinkingHTML, trimThink: trimThink,
-    stoppedMarkHTML: stoppedMarkHTML, zoomHTML: zoomHTML,
+    stoppedMarkHTML: stoppedMarkHTML, zoomHTML: zoomHTML, poolPreview: poolPreview, poolCtlHTML: poolCtlHTML,
     openQuestionHTML: openQuestionHTML};
 })();
 
@@ -501,6 +538,28 @@ var chatView = (function () {
   var fresh = document.getElementById("chat-new"), rowsEl = document.getElementById("thread-rows"), head = document.getElementById("thread-head");
   var answerRow = document.getElementById("chat-answer"), pending = null, sending = false;
   var commandsEl = document.getElementById("chat-commands"), palette = document.getElementById("chat-palette"), pal = {list: null, sel: 0};
+  // the pool control's host between the log and the composer: load fills
+  // it from the thread read's pool line
+  var poolHost = null;
+  if (form && form.parentNode) {
+    poolHost = document.createElement("div");
+    poolHost.className = "pool-host";
+    form.parentNode.insertBefore(poolHost, form);
+    // Set the pool / Top up starts a normal chat turn: the amount and the
+    // reason ride a plain message, no policy write of its own
+    poolHost.addEventListener("submit", function (e) {
+      var f = e.target.closest("[data-pool-ctl]");
+      if (!f || busy(openRef())) return;
+      e.preventDefault();
+      var eur = f.elements.eur.value.trim(), reason = f.elements.reason.value.trim();
+      if (!eur || !reason) return;
+      var text = f.dataset.present === "true"
+        ? "Top the month pool up by EUR " + eur + " — " + reason
+        : "Set the month pool to EUR " + eur + " — " + reason;
+      f.reset();
+      turn(text);
+    });
+  }
   var commands = commandsEl ? JSON.parse(commandsEl.textContent || "null") || [] : [];
   var sum = panel.querySelector(".sw-sum");
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
@@ -761,11 +820,12 @@ var chatView = (function () {
     running[k] = (running[k] || 0) + 1;
     lock();
     listThreads();
-    // a string body posts urlencoded; a FormData one (the send with
+    // a string body posts urlencoded — the correction of a pool proposal's
+    // press, one JSON object, posts json; a FormData one (the send with
     // images) leaves the type to the browser, which sets the multipart
     // boundary
     var headers = {"X-CSRF-Token": form.elements.csrf.value};
-    if (typeof body === "string") headers["Content-Type"] = "application/x-www-form-urlencoded";
+    if (typeof body === "string") headers["Content-Type"] = body.charAt(0) === "{" ? "application/json" : "application/x-www-form-urlencoded";
     // drawThink puts the kept reasoning in the fold and follows its
     // newest line while it is open
     function drawThink() {
@@ -1290,8 +1350,24 @@ var chatView = (function () {
       card.remove();
     } else if (b.hasAttribute("data-doit")) {
       var foot = card.querySelector(".pfoot");
-      foot.textContent = "";
-      run(open, openOwner, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), "", foot, expired(foot));
+      var edit = card.querySelector("form[data-pool]");
+      var body = "", out = foot;
+      if (edit) {
+        // a pool proposal's press: the suggested amount as it stands, or
+        // the one correction the row takes, the eur alone, as JSON. The
+        // card keeps its buttons: a press the server refuses — a malformed
+        // amount among them — leaves the proposal pending, the error line
+        // beside it, and the member corrects and presses again
+        var eur = Number(edit.elements.eur.value);
+        if (edit.elements.eur.value !== "" && isFinite(eur) && eur !== Number(edit.dataset.suggested)) {
+          body = JSON.stringify({correction: {eur: eur}});
+        }
+        out = document.createElement("div");
+        foot.after(out);
+      } else {
+        foot.textContent = "";
+      }
+      run(open, openOwner, base + "/proposals/" + encodeURIComponent(card.dataset.proposal), body, out, expired(foot));
     } else if (b.hasAttribute("data-undo")) {
       var out = document.createElement("div");
       out.className = "undoing";
@@ -1299,6 +1375,14 @@ var chatView = (function () {
       b.remove();
       run(open, openOwner, base + "/undo/" + encodeURIComponent(b.dataset.undo), "", out, expired(out));
     }
+  });
+  // a pool proposal's edited amount moves its ceiling preview at once,
+  // before any confirmation asks the server for anything
+  log.addEventListener("input", function (e) {
+    var f = e.target.closest("form[data-pool]");
+    if (!f) return;
+    var p = f.querySelector("[data-pool-preview]");
+    if (p) p.textContent = chatView.poolPreview({action: f.dataset.action, from_eur: Number(f.dataset.from), eur: Number(f.dataset.suggested)}, f.elements.eur.value);
   });
   // Fund and go on: the stopped chat's budget rises by the amount, and the
   // thread's own stopped turn goes on under it, streamed; the thread read
@@ -1352,6 +1436,7 @@ var chatView = (function () {
       data.messages.forEach(function (m) { (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; }); });
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
       log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.openQuestionHTML(data.open_question) + chatView.threadHTML(data.messages, login, data.proposals, data.thread, data.budget) : intro;
+      if (poolHost) poolHost.innerHTML = data.pool && !readOnly && !openOwner ? chatView.poolCtlHTML(data.pool) : "";
       if (form) {
         // an archived thread's composer is one line with restore (C14);
         // another member's archived thread has no restore to offer

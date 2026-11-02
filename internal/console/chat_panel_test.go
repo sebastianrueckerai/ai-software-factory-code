@@ -8,6 +8,7 @@ import (
 	"os"
 	"os/exec"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -1072,5 +1073,451 @@ Promise.resolve().then(function () {
 	}
 	if !got.Reset {
 		t.Error("the bar's double-click no longer resets the composer")
+	}
+}
+
+// The pool proposal's panel half (the pool-chat-controls plan): a
+// set_pool offer renders the operation, the cent-precision EUR input
+// holding the suggestion, the reason fixed at the capture and the
+// ceiling the change would stand at. Rendering and Skip ask nothing; the
+// panel's contextual Set the pool control — an approver's alone, a
+// reader of the line for anyone else — starts a normal chat turn with
+// the amount and the reason; a Do it on the edited amount posts exactly
+// the correction object, the one number the row may change. Run under
+// node, which the test needs.
+func TestPoolProposalPanel(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = [], posts = [], made = [], sends = [], byId = {}, poolHostEl = null;
+var poolLine = {present: false, can_ask: true, words: "no pool: discretionary_eur is absent or 0, every agent raise waits for a member"};
+function el() {
+  var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false,
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    setAttribute: function () {}, focus: function () {}, blur: function () {}, remove: function () { e.gone = true; },
+    appendChild: function (c) { return c; }, insertBefore: function (c) { return c; }, after: function (c) { e.aftered = c; },
+    contains: function () { return true; }, closest: function () { return null; }, firstChild: null, previousElementSibling: null,
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+  e.addEventListener = function (kind, fn) { listeners.push({el: e, kind: kind, fn: fn}); };
+  return e;
+}
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) { var t = el();
+    if (tag === "template") { var html = ""; t.content = {firstElementChild: el()};
+      Object.defineProperty(t, "innerHTML", {get: function () { return html; }, set: function (v) { html = v; made.push(v); }}); }
+    return t; },
+  getElementById: function (id) {
+    if (id === "img-zoom" || id === "thread-dialog" || id === "screen" || id === "chat-divider") return null;
+    return byId[id] || (byId[id] = el());
+  },
+  addEventListener: function (kind, fn) { listeners.push({el: document, kind: kind, fn: fn}); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el(), body: el(), activeElement: null};
+byId["chat-form"] = el();
+byId["chat-form"].elements = {csrf: {value: "tok"}};
+byId["chat-form"].parentNode = el();
+byId["chat-form"].parentNode.insertBefore = function (n) { poolHostEl = n; return n; };
+function sse(text) { var sent = false; return {read: function () {
+  if (!sent) { sent = true; return Promise.resolve({done: false, value: text}); }
+  return Promise.resolve({done: true}); }}; }
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url, opts) {
+    var u = String(url);
+    if (opts && opts.method === "POST") {
+      posts.push({url: u, body: opts.body === undefined ? "" : String(opts.body),
+        type: (opts.headers || {})["Content-Type"] || "", csrf: (opts.headers || {})["X-CSRF-Token"]});
+      if (/\/chat\/(seen|stop)$/.test(u)) return Promise.resolve({ok: true});
+      return Promise.resolve({ok: true, headers: {get: function (h) { return String(h).toLowerCase() === "content-type" ? "text/event-stream" : null; }},
+        body: {getReader: function () { return sse("event: done\ndata: {}\n\n"); }}});
+    }
+    return Promise.resolve({ok: true, json: function () {
+      return Promise.resolve(/\/conversations$/.test(u) ? [] :
+        {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active"}, pool: poolLine}); }});
+  },
+  setInterval: function () { return 0; }, setTimeout: function (done) { done(); return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  FormData: function () { var f = {parts: []}; f.append = function (k, v) { f.parts.push([k, String(v)]); }; sends.push(f); return f; },
+  URLSearchParams: function (p) { this.toString = function () { return Object.keys(p).map(function (k) { return k + "=" + p[k]; }).join("&"); }; },
+  TextDecoder: function () { this.decode = function (v) { return v == null ? "" : String(v); }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
+var chatView = sandbox.chatView;
+var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
+function cardFake(tok, pool) {
+  var preview = el(), input = {value: String(pool.eur)};
+  var edit = {dataset: {action: pool.action, from: String(pool.from_eur), suggested: String(pool.eur)},
+    elements: {eur: input},
+    querySelector: function (sel) { return sel === "[data-pool-preview]" ? preview : null; }};
+  var foot = el(), card = {dataset: {proposal: tok}, gone: false,
+    querySelector: function (sel) { return sel === ".pfoot" ? foot : sel === "form[data-pool]" ? (pool && edit) : null; },
+    remove: function () { card.gone = true; }};
+  var btn = function (attr) { return {hasAttribute: function (a) { return a === attr; },
+    closest: function (sel) { return sel === "button" ? this : sel === ".proposal" ? card : null; }}; };
+  return {card: card, foot: foot, edit: edit, input: input, preview: preview, doit: btn("data-doit"), skip: btn("data-skip")};
+}
+var poolSet = {action: "set", eur: 10, from_eur: 0, to_eur: 10, reason: "the month's two verified findings"};
+var out = {setHTML: chatView.proposalHTML({id: "tok1", tool: "set_pool", arguments: '{"action":"set","eur":10,"reason":"the month\'s two verified findings"}',
+  description: "Set the pool", pool: poolSet}),
+  readerCtl: chatView.poolCtlHTML({present: false, can_ask: false, words: poolLine.words})};
+Promise.resolve().then(function () {
+  return tick(); // the opening read settles: the pool control stands under the log
+}).then(function () {
+  out.ctlRendered = !!poolHostEl && poolHostEl.innerHTML.indexOf("data-pool-ctl") >= 0 &&
+    poolHostEl.innerHTML.indexOf("Set the pool to, EUR") >= 0 && poolHostEl.innerHTML.indexOf("no pool: discretionary_eur") >= 0;
+  var card = cardFake("tok9", poolSet);
+  fire(byId["chat-log"], "click", {target: card.skip});
+  out.skipRemoved = card.card.gone === true;
+  out.renderAndSkipAskNothing = posts.length === 0;
+  var ctl = {dataset: {present: "false"}, elements: {eur: {value: "10"}, reason: {value: "two verified findings"}}, reset: function () {}};
+  fire(poolHostEl, "submit", {target: {closest: function (sel) { return sel === "[data-pool-ctl]" ? ctl : null; }}, preventDefault: function () {}});
+  return tick(); // the ask starts a normal turn
+}).then(function () {
+  var turn = posts.filter(function (p) { return /\/chat$/.test(p.url); })[0];
+  var sent = sends[sends.length - 1];
+  out.controlStartsATurn = !!turn && !!sent && sent.parts.some(function (p) {
+    return p[0] === "message" && p[1] === "Set the month pool to EUR 10 — two verified findings"; });
+  var card = cardFake("tok1", poolSet);
+  card.input.value = "12";
+  fire(byId["chat-log"], "click", {target: card.doit});
+  return tick(); // the corrected press runs
+}).then(function () {
+  var press = posts.filter(function (p) { return /\/proposals\/tok1$/.test(p.url); })[0];
+  out.correctionBody = !!press && press.body === '{"correction":{"eur":12}}' && press.type === "application/json" && press.csrf === "tok";
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	outBytes, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(outBytes, &got); err != nil {
+		t.Fatalf("node said %s: %v", outBytes, err)
+	}
+	if want := `<div class="proposal pool" data-proposal="tok1"><p class="ptitle">I will:</p><ul><li>Set the pool</li></ul>` +
+		`<form class="pool-edit" data-pool data-action="set" data-from="0" data-suggested="10">` +
+		`<label>Set the pool at, EUR <input type="number" name="eur" step="0.01" min="0.01" value="10" aria-label="Set the pool at, EUR"></label>` +
+		`<p class="pool-reason">reason (fixed): the month's two verified findings</p>` +
+		`<p class="pool-preview" data-pool-preview>the pool would stand at €10.00</p></form>` +
+		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["setHTML"] != want {
+		t.Errorf("the set_pool proposal =\n%s\nwant\n%s", got["setHTML"], want)
+	}
+	const poolWords = "no pool: discretionary_eur is absent or 0, every agent raise waits for a member"
+	if want := `<div class="poolctl" data-pool-ctl><p class="pool-note">` + poolWords + `</p>` +
+		`<p class="pool-why">Only an approver of the project asks for a pool change.</p></div>`; got["readerCtl"] != want {
+		t.Errorf("the non-approver's pool line =\n%s\nwant\n%s", got["readerCtl"], want)
+	}
+	for _, c := range []struct{ name, why string }{
+		{"ctlRendered", "the panel's Set the pool control does not stand with the pool line on it"},
+		{"skipRemoved", "Skip does not take the proposal away"},
+		{"renderAndSkipAskNothing", "rendering or Skip asked the console for something"},
+		{"controlStartsATurn", "the Set the pool control does not start a normal chat turn for the amount and the reason"},
+		{"correctionBody", "a Do it on the corrected EUR 12 does not post exactly the correction object"},
+	} {
+		if got[c.name] != true {
+			t.Error(c.why)
+		}
+	}
+}
+
+// The top-up proposal's panel half: the increment input holds the
+// suggestion against the captured allowance, the preview follows the
+// edited number before any confirmation asks the console for anything,
+// and the corrected press posts the increment alone. A proposal of
+// another tool keeps its normal renderer and its empty-body
+// confirmation. Run under node, which the test needs.
+func TestPoolTopUpPanel(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var fs = require("fs"), vm = require("vm");
+var listeners = [], posts = [], made = [], byId = {};
+function el() {
+  var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false,
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    setAttribute: function () {}, focus: function () {}, blur: function () {}, remove: function () { e.gone = true; },
+    appendChild: function (c) { return c; }, insertBefore: function (c) { return c; }, after: function (c) { e.aftered = c; },
+    contains: function () { return true; }, closest: function () { return null; }, firstChild: null, previousElementSibling: null,
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+  e.addEventListener = function (kind, fn) { listeners.push({el: e, kind: kind, fn: fn}); };
+  return e;
+}
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) { var t = el();
+    if (tag === "template") { var html = ""; t.content = {firstElementChild: el()};
+      Object.defineProperty(t, "innerHTML", {get: function () { return html; }, set: function (v) { html = v; made.push(v); }}); }
+    return t; },
+  getElementById: function (id) {
+    if (id === "img-zoom" || id === "thread-dialog" || id === "screen" || id === "chat-divider") return null;
+    return byId[id] || (byId[id] = el());
+  },
+  addEventListener: function (kind, fn) { listeners.push({el: document, kind: kind, fn: fn}); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el(), body: el(), activeElement: null};
+byId["chat-form"] = el();
+byId["chat-form"].elements = {csrf: {value: "tok"}};
+function sse(text) { var sent = false; return {read: function () {
+  if (!sent) { sent = true; return Promise.resolve({done: false, value: text}); }
+  return Promise.resolve({done: true}); }}; }
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url, opts) {
+    var u = String(url);
+    if (opts && opts.method === "POST") {
+      posts.push({url: u, body: opts.body === undefined ? "" : String(opts.body), type: (opts.headers || {})["Content-Type"] || ""});
+      if (/\/chat\/(seen|stop)$/.test(u)) return Promise.resolve({ok: true});
+      return Promise.resolve({ok: true, headers: {get: function (h) { return String(h).toLowerCase() === "content-type" ? "text/event-stream" : null; }},
+        body: {getReader: function () { return sse("event: done\ndata: {}\n\n"); }}});
+    }
+    return Promise.resolve({ok: true, json: function () {
+      return Promise.resolve(/\/conversations$/.test(u) ? [] :
+        {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active"}}); }});
+  },
+  setInterval: function () { return 0; }, setTimeout: function (done) { done(); return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  FormData: function () { return {append: function () {}}; },
+  URLSearchParams: function (p) { this.toString = function () { return Object.keys(p).map(function (k) { return k + "=" + p[k]; }).join("&"); }; },
+  TextDecoder: function () { this.decode = function (v) { return v == null ? "" : String(v); }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
+var chatView = sandbox.chatView;
+var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
+function cardFake(tok, pool) {
+  var preview = el(), input = {value: String(pool ? pool.eur : "")};
+  var edit = pool ? {dataset: {action: pool.action, from: String(pool.from_eur), suggested: String(pool.eur)},
+    elements: {eur: input},
+    querySelector: function (sel) { return sel === "[data-pool-preview]" ? preview : null; }} : null;
+  var foot = el(), card = {dataset: {proposal: tok}, gone: false,
+    querySelector: function (sel) { return sel === ".pfoot" ? foot : sel === "form[data-pool]" ? edit : null; },
+    remove: function () { card.gone = true; }};
+  var btn = function (attr) { return {hasAttribute: function (a) { return a === attr; },
+    closest: function (sel) { return sel === "button" ? this : sel === ".proposal" ? card : null; }}; };
+  return {card: card, foot: foot, edit: edit, input: input, preview: preview, doit: btn("data-doit"), skip: btn("data-skip")};
+}
+var topUp = {action: "top_up", eur: 5, from_eur: 10, to_eur: 15, reason: "a second verified finding"};
+var out = {topUpHTML: chatView.proposalHTML({id: "tok7", tool: "set_pool", arguments: "{}", description: "Top up the pool", pool: topUp}),
+  plainHTML: chatView.proposalHTML({id: "tok2", tool: "new_card", arguments: '{"title":"Cache metrics","track":"direct"}',
+    description: "File a card, title Cache metrics, track direct"})};
+Promise.resolve().then(function () {
+  return tick();
+}).then(function () {
+  var card = cardFake("tok7", topUp);
+  card.input.value = "4";
+  fire(byId["chat-log"], "input", {target: {closest: function (sel) { return sel === "form[data-pool]" ? card.edit : null; }}});
+  out.previewFollows = card.preview.textContent === "the pool would stand at €14.00";
+  out.previewAsksNothing = posts.length === 0;
+  fire(byId["chat-log"], "click", {target: card.doit});
+  return tick(); // the corrected press runs
+}).then(function () {
+  var press = posts.filter(function (p) { return /\/proposals\/tok7$/.test(p.url); })[0];
+  out.correctedIncrement = !!press && press.body === '{"correction":{"eur":4}}' && press.type === "application/json";
+  var plain = cardFake("tok2", null);
+  fire(byId["chat-log"], "click", {target: plain.doit});
+  return tick(); // the unrelated proposal's press runs
+}).then(function () {
+  var press = posts.filter(function (p) { return /\/proposals\/tok2$/.test(p.url); })[0];
+  out.plainEmptyBody = !!press && press.body === "" && press.type === "application/x-www-form-urlencoded";
+  console.log(JSON.stringify(out));
+});`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	outBytes, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got map[string]any
+	if err := json.Unmarshal(outBytes, &got); err != nil {
+		t.Fatalf("node said %s: %v", outBytes, err)
+	}
+	if want := `<div class="proposal pool" data-proposal="tok7"><p class="ptitle">I will:</p><ul><li>Top up the pool</li></ul>` +
+		`<form class="pool-edit" data-pool data-action="top_up" data-from="10" data-suggested="5">` +
+		`<label>Top up the pool by, EUR <input type="number" name="eur" step="0.01" min="0.01" value="5" aria-label="Top up the pool by, EUR"></label>` +
+		`<p class="pool-reason">reason (fixed): a second verified finding</p>` +
+		`<p class="pool-preview" data-pool-preview>the pool would stand at €15.00</p></form>` +
+		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["topUpHTML"] != want {
+		t.Errorf("the top_up proposal =\n%s\nwant\n%s", got["topUpHTML"], want)
+	}
+	if want := `<div class="proposal" data-proposal="tok2"><p class="ptitle">I will:</p><ul><li>File a card, title Cache metrics, track direct</li></ul>` +
+		`<details class="args"><summary>new_card arguments</summary><pre>{&quot;title&quot;:&quot;Cache metrics&quot;,&quot;track&quot;:&quot;direct&quot;}</pre></details>` +
+		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["plainHTML"] != want {
+		t.Errorf("the unrelated proposal =\n%s\nwant\n%s", got["plainHTML"], want)
+	}
+	for _, c := range []struct{ name, why string }{
+		{"previewFollows", "an edited increment of 4 against EUR 10 does not preview EUR 14"},
+		{"previewAsksNothing", "the preview asked the console for something before the confirmation"},
+		{"correctedIncrement", "a Do it on the corrected increment does not post exactly the correction object"},
+		{"plainEmptyBody", "an unrelated proposal's Do it does not post an empty body as before"},
+	} {
+		if got[c.name] != true {
+			t.Error(c.why)
+		}
+	}
+}
+
+// A pool press's partial failures (the pool-chat-controls plan): a
+// merged change the policy in force does not hold yet answers its
+// literal activation-pending words with the pull request's identity, an
+// audit row that could not be written its literal repair words, and
+// neither completed HTTP answer turns the proposal into an applied one —
+// the card keeps its Do it, nothing claims the new ceiling counts, and
+// only the stream's applied line, which names the pull request and the
+// policy holding it, ever says the change loaded. Run under node, which
+// the test needs.
+func TestPoolPanelPending(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const (
+		pending = "The pool change is merged as sf/infra#1482, but the policy in force still holds the pool of demo-app at EUR 10.00: " +
+			"the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it."
+		repair = "The pool change is merged as sf/infra#1482, but its pool_changed row could not be written: the events store is down. " +
+			"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 4.00, to_eur 14.00, " +
+			"reason \"the month's two verified findings\") and do not repeat the change."
+		// the rendered row escapes the reason's quotes
+		repairShown = "The pool change is merged as sf/infra#1482, but its pool_changed row could not be written: the events store is down. " +
+			"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 4.00, to_eur 14.00, " +
+			"reason &quot;the month's two verified findings&quot;) and do not repeat the change."
+		landed = "The pool of demo-app is €14.00 now, was €10.00: sf/infra#1482 carries the change and the policy in force holds it."
+	)
+	const poolDriver = `var fs = require("fs"), vm = require("vm");
+var listeners = [], posts = [], made = [], byId = {}, answers = ANSWERS;
+function el() {
+  var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false,
+    dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
+    classList: {add: function () {}, remove: function () {}, toggle: function () {}, contains: function () { return false; }},
+    setAttribute: function () {}, focus: function () {}, blur: function () {}, remove: function () { e.gone = true; },
+    appendChild: function (c) { return c; }, insertBefore: function (c) { return c; }, after: function (c) { e.aftered = c; },
+    contains: function () { return true; }, closest: function () { return null; }, firstChild: null, previousElementSibling: null,
+    querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+    getBoundingClientRect: function () { return {left: 0, width: 0}; }, clientWidth: 0};
+  e.addEventListener = function (kind, fn) { listeners.push({el: e, kind: kind, fn: fn}); };
+  return e;
+}
+var document = {title: "Factory console", hidden: false,
+  createElement: function (tag) { var t = el();
+    if (tag === "template") { var html = ""; t.content = {firstElementChild: el()};
+      Object.defineProperty(t, "innerHTML", {get: function () { return html; }, set: function (v) { html = v; made.push(v); }}); }
+    return t; },
+  getElementById: function (id) {
+    if (id === "img-zoom" || id === "thread-dialog" || id === "screen" || id === "chat-divider") return null;
+    return byId[id] || (byId[id] = el());
+  },
+  addEventListener: function (kind, fn) { listeners.push({el: document, kind: kind, fn: fn}); },
+  querySelector: function () { return el(); }, querySelectorAll: function () { return []; },
+  documentElement: el(), body: el(), activeElement: null};
+byId["chat-form"] = el();
+byId["chat-form"].elements = {csrf: {value: "tok"}};
+function sse(text) { var sent = false; return {read: function () {
+  if (!sent) { sent = true; return Promise.resolve({done: false, value: text}); }
+  return Promise.resolve({done: true}); }}; }
+var sandbox = {document: document, console: {log: function () {}, error: function () {}},
+  fetch: function (url, opts) {
+    var u = String(url);
+    if (opts && opts.method === "POST") {
+      posts.push({url: u, body: opts.body === undefined ? "" : String(opts.body)});
+      if (/\/chat\/(seen|stop)$/.test(u)) return Promise.resolve({ok: true});
+      var a = answers.shift();
+      if (!a.ok) return Promise.resolve({ok: false, status: a.status, text: function () { return Promise.resolve(a.text); }});
+      return Promise.resolve({ok: true, headers: {get: function (h) { return String(h).toLowerCase() === "content-type" ? "text/event-stream" : null; }},
+        body: {getReader: function () { return sse(a.sse); }}});
+    }
+    return Promise.resolve({ok: true, json: function () {
+      return Promise.resolve(/\/conversations$/.test(u) ? [] :
+        {conversation: 3, messages: [], thread: {number: 3, title: "", state: "active"}}); }});
+  },
+  setInterval: function () { return 0; }, setTimeout: function (done) { done(); return 0; }, clearTimeout: function () {}, clearInterval: function () {},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  URL: {createObjectURL: function () { return ""; }},
+  FormData: function () { return {append: function () {}}; },
+  URLSearchParams: function (p) { this.toString = function () { return Object.keys(p).map(function (k) { return k + "=" + p[k]; }).join("&"); }; },
+  TextDecoder: function () { this.decode = function (v) { return v == null ? "" : String(v); }; },
+  getComputedStyle: function () { return {fontSize: "16px"}; }};
+sandbox.window = sandbox;
+vm.createContext(sandbox);
+vm.runInNewContext(fs.readFileSync(process.argv[1], "utf8"), sandbox);
+var tick = function () { return new Promise(function (done) { setTimeout(done, 0); }); };
+var chatView = sandbox.chatView;
+var fire = function (on, kind, e) { listeners.forEach(function (l) { if (l.el === on && l.kind === kind) l.fn(e); }); };
+function cardFake(tok, pool) {
+  var preview = el(), input = {value: String(pool.eur)};
+  var edit = {dataset: {action: pool.action, from: String(pool.from_eur), suggested: String(pool.eur)},
+    elements: {eur: input},
+    querySelector: function (sel) { return sel === "[data-pool-preview]" ? preview : null; }};
+  var foot = el(), card = {dataset: {proposal: tok},
+    querySelector: function (sel) { return sel === ".pfoot" ? foot : sel === "form[data-pool]" ? edit : null; }};
+  var btn = function (attr) { return {hasAttribute: function (a) { return a === attr; },
+    closest: function (sel) { return sel === "button" ? this : sel === ".proposal" ? card : null; }}; };
+  return {card: card, foot: foot, edit: edit, input: input, doit: btn("data-doit")};
+}
+var poolSet = {action: "set", eur: 10, from_eur: 10, to_eur: 10, reason: "the month's two verified findings"};
+var saw = function (needle) { return made.join("\n").indexOf(needle) >= 0; };
+var applied = function () { return saw("✓ applied"); };
+var out = {};
+var press = function (card, eur) {
+  if (eur != null) card.input.value = eur;
+  fire(byId["chat-log"], "click", {target: card.doit});
+};
+Promise.resolve().then(function () {
+  return tick();
+}).then(function () {
+  press(cardFake("tok1", poolSet));
+  return tick().then(tick); // the press completes: merged, the policy still holds EUR 10.00
+}).then(function () {
+  out.pendingWords = saw(PENDING) && !saw("The pool of") && !applied();
+  out.pendingKeepsCard = posts.filter(function (p) { return /\/proposals\/tok1$/.test(p.url); }).length === 1;
+  var card = cardFake("tok1", poolSet);
+  press(card, "4");
+  return tick().then(tick); // the corrected press completes: the audit row could not be written
+}).then(function () {
+  out.repairWords = saw(REPAIR_SHOWN) && !applied();
+  out.repairKeepsCard = !applied();
+  press(cardFake("tok1", poolSet));
+  return tick().then(tick); // the press runs and lands: the applied line names the pull request
+}).then(function () {
+  out.loadedWords = applied() && saw(LANDED);
+  console.log(JSON.stringify(out));
+});`
+	driver := strings.ReplaceAll(poolDriver, "ANSWERS", `[{"ok":false,"status":503,"text":`+strconv.Quote(pending)+`},
+      {"ok":false,"status":500,"text":`+strconv.Quote(repair)+`},
+      {"ok":true,"sse":"event: applied\ndata: {\"tool\":\"set_pool\",\"result\":"+JSON.stringify(LANDED)+"}\n\nevent: done\ndata: {}\n\n"}]`)
+	driver = strings.ReplaceAll(driver, "PENDING", strconv.Quote(pending))
+	driver = strings.ReplaceAll(driver, "REPAIR_SHOWN", strconv.Quote(repairShown))
+	driver = strings.ReplaceAll(driver, "LANDED", strconv.Quote(landed))
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	outBytes, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got map[string]bool
+	if err := json.Unmarshal(outBytes, &got); err != nil {
+		t.Fatalf("node said %s: %v", outBytes, err)
+	}
+	for _, c := range []struct{ name, why string }{
+		{"pendingWords", "a merged-but-unloaded change does not render its literal activation-pending words alone, with no claim the pool changed"},
+		{"pendingKeepsCard", "a completed HTTP answer alone discards or spends the proposal"},
+		{"repairWords", "a change whose audit row could not be written does not render its literal repair words with no applied line"},
+		{"repairKeepsCard", "the repair answer optimistically activates the change"},
+		{"loadedWords", "the landed change's applied line does not name the pull request and the policy holding it"},
+	} {
+		if !got[c.name] {
+			t.Error(c.why)
+		}
 	}
 }
