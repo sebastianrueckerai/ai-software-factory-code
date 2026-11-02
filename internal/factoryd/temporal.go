@@ -89,6 +89,28 @@ func (w TemporalWorkflows) Signal(ctx context.Context, taskID, name string, sig 
 	return err
 }
 
+// SignalRunning delivers a signal to the task's running workflow and starts
+// nothing. A workflow that ended or never existed has no wait to wake:
+// delivered. Each attempt runs under signalTimeout and is retried once as
+// Signal does.
+func (w TemporalWorkflows) SignalRunning(ctx context.Context, taskID, name string) error {
+	var err error
+	for attempt := 1; attempt <= 2; attempt++ {
+		attemptCtx, cancel := context.WithTimeout(ctx, signalTimeout)
+		err = w.Client.SignalWorkflow(attemptCtx, WorkflowID(taskID), "", name, TaskSignal{Author: "factoryd"})
+		cancel()
+		var missing *serviceerror.NotFound
+		if err == nil || errors.As(err, &missing) {
+			return nil
+		}
+		if ctx.Err() != nil || attempt == 2 || !retryableSignal(err) {
+			break
+		}
+		log.Printf("task %s: signal %s: %v, retrying once", taskID, name, err)
+	}
+	return err
+}
+
 // retryableSignal names the failures one retry can cure: a frontend that
 // was unreachable or answered too slowly.
 func retryableSignal(err error) bool {

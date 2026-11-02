@@ -113,23 +113,26 @@ func (q *HumanQuestion) Labels() []string {
 // the caller has them at hand; zero fields leave the ask with the reason's
 // own numbers or without that number.
 type QuestionFacts struct {
-	CheckinCap    int     // the policy's calls of one check-in conversation
-	CheckinSpent  float64 // EUR of the check-in share spent
-	CheckinShare  float64 // EUR, the policy's check-in share of the budget, its grants included
-	CheckinGrant  float64 // EUR one granted check-in share adds
-	FloorEUR      float64 // the policy's session floor of the card's rung
-	PlanTrack     bool    // the card runs the plan track: its answers steer a planner session
-	SessionCap    int     // sessions the card may run, its grants included
-	SessionGrants int     // sessions the answers granted beyond the policy's cap
-	Attempts      int     // attempts the card has run
-	LineBound     int     // changed lines the card's size plans, its raises included
-	BudgetEUR     float64 // the card's budget
-	SpentEUR      float64 // EUR of the budget spent
-	LeftEUR       float64 // EUR of the budget left
-	PR            int64   // the pull request the card's workflow opened, 0 = none
-	MonthSpentEUR float64 // the factory's EUR spent in the UTC month
-	MonthCapEUR   float64 // the policy's month cap
-	Month         string  // the UTC month the spend counts
+	CheckinCap    int       // the policy's calls of one check-in conversation
+	CheckinSpent  float64   // EUR of the check-in share spent
+	CheckinShare  float64   // EUR, the policy's check-in share of the budget, its grants included
+	CheckinGrant  float64   // EUR one granted check-in share adds
+	FloorEUR      float64   // the policy's session floor of the card's rung
+	PlanTrack     bool      // the card runs the plan track: its answers steer a planner session
+	SessionCap    int       // sessions the card may run, its grants included
+	SessionGrants int       // sessions the answers granted beyond the policy's cap
+	Attempts      int       // attempts the card has run
+	LineBound     int       // changed lines the card's size plans, its raises included
+	BudgetEUR     float64   // the card's budget
+	SpentEUR      float64   // EUR of the budget spent
+	LeftEUR       float64   // EUR of the budget left
+	PR            int64     // the pull request the card's workflow opened, 0 = none
+	MonthSpentEUR float64   // the factory's EUR spent in the UTC month
+	MonthCapEUR   float64   // the policy's month cap
+	Month         string    // the UTC month the spend counts
+	MonthTurn     time.Time // when that month ends: the cap resets then
+	ProjectFile   string    // the project's file, projects/<name>.yaml, whose month cap binds
+	CapCard       int64     // the issue number of the open cap card of the month's cap in force, 0 = none
 }
 
 // ShapedQuestion shapes the question the escalation reason asks: by
@@ -500,40 +503,74 @@ func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 	return q
 }
+
+// monthCapQuestion asks about a card stopped at the month cap or its
+// project's. A reason that opens with the resumes opening (capWaitReason)
+// is a card that waits on its own; a run from before that still waits for
+// an answer, and its question says so.
 func monthCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	project := strings.HasPrefix(reason, projectCapReached)
-	name := "month"
-	if project {
-		name = "project's month"
+	resumes := strings.HasPrefix(reason, monthCapResumes) || strings.HasPrefix(reason, projectCapResumes)
+	turn := f.MonthTurn.UTC().Format("2006-01-02 15:04 MST")
+	var ask, file string
+	switch {
+	case project:
+		file = cmp.Or(f.ProjectFile, "the project's file")
+		ask = "The project's month cap is reached"
+		if f.ProjectFile != "" {
+			ask = "The project's month cap in " + f.ProjectFile + " is reached"
+		}
+		if resumes {
+			ask += ". The card resumes on its own when it is raised or on " + turn + ". Raise it now?"
+		} else {
+			ask += " and the card's session was refused. Raise the cap and answer to let it finish?"
+		}
+	default:
+		file = "policy.yaml"
+		ask = "The month cap is reached"
+		if f.MonthCapEUR > 0 {
+			ask = fmt.Sprintf("The month cap of €%.2f is reached (€%.2f spent, %s)", f.MonthCapEUR, f.MonthSpentEUR, f.Month)
+		}
+		if resumes {
+			ask += ". The card resumes on its own when the cap is raised or on " + turn + ". Raise it now?"
+		} else {
+			ask += " and the card's session was refused. Raise the cap and answer to let it finish?"
+		}
 	}
-	ask := fmt.Sprintf("The %s cap is reached and the card's session was refused. Raise the cap to let it finish?", name)
-	if !project && f.MonthCapEUR > 0 {
-		ask = fmt.Sprintf("The month cap of €%.2f is reached (€%.2f spent, %s) and the card's session was refused. Raise the cap to let it finish?", f.MonthCapEUR, f.MonthSpentEUR, f.Month)
-	}
-	// the gateway's detail, with its numbers, rides as the why whole
-	detail := strings.TrimSpace(capRefusedSuffix(reason))
+	// the refusal's state, with its numbers, rides as the why whole
 	why := "The gateway refuses every further call (refused_month_cap) until the cap is raised or the month ends."
-	if detail != "" {
-		why = "The gateway refused this session: " + detail + " The gateway refuses every further call until the cap is raised or the month ends."
+	if detail := strings.TrimSpace(capRefusedSuffix(reason)); detail != "" {
+		by := "The gateway refused this session: "
+		if _, second, _ := strings.Cut(reason, "\n"); strings.HasPrefix(second, capFloor(capWaitDecision(reason))) {
+			by = "The attempt's floor refused the session before it started: "
+		}
+		why = by + detail + " The gateway refuses every further call until the cap is raised or the month ends."
+	}
+	info := "Raising the cap is a commit to budget.month_eur in " + file + "."
+	if !project && f.CapCard != 0 {
+		info += fmt.Sprintf(" The cap card #%d on the board links its line.", f.CapCard)
+	}
+	if !resumes {
+		info += " This card waits for an answer."
 	}
 	return &HumanQuestion{
 		Ask:  ask,
 		Why:  why,
-		Info: "Raising the cap is a commit to the month_eur line in the policy file; the cap card on the board links it. This card resumes once the cap moves.",
+		Info: info,
 		Choices: []QuestionChoice{
-			{AnswerFund, "Raised it — retry now"},
 			{AnswerPark, "Leave it waiting"},
+			{AnswerFund, "Retry now"},
 			{AnswerClose, "End the card"},
 		},
 	}
 }
 
-// capRefusedSuffix is the gateway's detail after the refusal's opening.
+// capRefusedSuffix is the refusal's state, after the "): " that closes what
+// refused: in the one-line reason of a run from before the cap resumed on
+// its own (capRefused) and in the second line of capWaitReason.
 func capRefusedSuffix(reason string) string {
-	if strings.HasPrefix(reason, projectCapReached) {
-		return strings.TrimPrefix(reason, projectCapReached)
-	}
-	return strings.TrimPrefix(reason, monthCapReached)
+	_, state, _ := strings.Cut(reason, "): ")
+	return state
 }
 
 // waitShape parses the gate stop of the checks: "WaitChecks (attempt %d)
@@ -766,10 +803,10 @@ func configRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 // of limit in month; refusal is the gateway's first refusal, if any.
 func monthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
 	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
-		"a task it refused waits on a human with the refusal on its card. Raising the cap is a commit to the `month_eur` line, " +
+		"a task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."
 	if refusal != "" {
-		info += "\n\nThe first refusal:\n\n" + fenced(refusal)
+		info += "\n\nThe newest refusal:\n\n" + fenced(refusal)
 	}
 	return HumanQuestion{
 		Ask:  fmt.Sprintf("The month cap of %.2f EUR is reached (%s): raise it, or let the factory stand until the month ends?", limit, month),
@@ -838,7 +875,16 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		f.SpentEUR = t.SpentEUR
 		f.LeftEUR = t.BudgetEUR - t.SpentEUR
 	}
+	if strings.HasPrefix(reason, projectCapReached) {
+		f.MonthTurn = monthTurn(time.Now())
+		if r.cfg.Policy != nil {
+			if name, _ := r.cfg.Policy().ProjectCap(t.Repository); name != "" {
+				f.ProjectFile = "projects/" + name + ".yaml"
+			}
+		}
+	}
 	if strings.HasPrefix(reason, monthCapReached) {
+		f.MonthTurn = monthTurn(time.Now())
 		if spend, err := r.store.MonthSpend(ctx, time.Now()); err != nil {
 			log.Printf("task %s: read the month spend: %v", t.ID, err)
 		} else {
@@ -847,6 +893,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		}
 		if r.cfg.Policy != nil {
 			f.MonthCapEUR = r.cfg.Policy().Document.Budget.MonthEUR
+			f.CapCard = r.openCapCard(ctx, t, f.Month, f.MonthCapEUR)
 		}
 	}
 	if !strings.HasPrefix(reason, checkinSpendAsk) {
@@ -867,4 +914,26 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		}
 	}
 	return f
+}
+
+// openCapCard is the issue number of the month cap card of month at capEUR
+// while it waits for a human, 0 for none; a read that fails logs and leaves 0.
+func (r *Runner) openCapCard(ctx context.Context, t Task, month string, capEUR float64) int64 {
+	fp := month + "/100/" + strconv.FormatFloat(capEUR, 'f', -1, 64)
+	alert, ok, err := r.store.AlertByFingerprint(ctx, AlertMonthCap, fp)
+	if err != nil || !ok || alert.TaskID == "" {
+		if err != nil {
+			log.Printf("task %s: read the cap card's alert: %v", t.ID, err)
+		}
+		return 0
+	}
+	card, ok, err := r.store.Task(ctx, alert.TaskID)
+	if err != nil {
+		log.Printf("task %s: read the cap card: %v", t.ID, err)
+		return 0
+	}
+	if !ok || card.Status != "waiting-human" {
+		return 0
+	}
+	return card.IssueNumber
 }

@@ -59,16 +59,16 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			rec:    []string{"Fund the €0.20 raise: the card holds pull request #4711"},
 		},
 		"month cap": {
-			reason: monthCapReached + "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR",
+			reason: capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR"}),
 			facts:  QuestionFacts{MonthSpentEUR: 544.12, MonthCapEUR: 600, Month: "2026-11"},
 			askHas: []string{"month cap of €600.00 is reached", "€544.12 spent", "2026-11", "session was refused"},
 			whyHas: []string{"0.300000 EUR", "0.100000 EUR"},
-			values: []string{AnswerFund, AnswerPark, AnswerClose},
+			values: []string{AnswerPark, AnswerFund, AnswerClose},
 		},
 		"project cap": {
-			reason: projectCapReached + "a session call needs 0.300000 EUR but the project's remaining headroom is 0.100000 EUR",
+			reason: capRefused(policy.Refusal{Decision: policy.RefusedProjectCap, Reason: "a session call needs 0.300000 EUR but the project's remaining headroom is 0.100000 EUR"}),
 			askHas: []string{"project's month cap is reached", "session was refused"},
-			values: []string{AnswerFund, AnswerPark, AnswerClose},
+			values: []string{AnswerPark, AnswerFund, AnswerClose},
 		},
 		"WaitChecks past cap": {
 			reason: gateStopped + "WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.\nRecommendation: Rerun the flaky check once, then close the card.",
@@ -203,8 +203,8 @@ func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	if f := r.questionFacts(context.Background(), task, monthCapReached+"detail"); f.MonthSpentEUR != 544.12 || f.MonthCapEUR != 600 || f.Month != "2026-11" {
 		t.Errorf("month numbers = %v of %v (%s), want 544.12 of 600 (2026-11)", f.MonthSpentEUR, f.MonthCapEUR, f.Month)
 	}
-	if f := r.questionFacts(context.Background(), task, projectCapReached+"detail"); f.MonthCapEUR != 0 {
-		t.Errorf("a project cap stop reads the factory month: %v", f.MonthCapEUR)
+	if f := r.questionFacts(context.Background(), task, projectCapReached+"detail"); f.MonthCapEUR != 0 || f.Month != "" || f.MonthSpentEUR != 0 {
+		t.Errorf("a project cap stop reads the factory month: %+v", f)
 	}
 	if f := r.questionFacts(context.Background(), task, capReached+"\nlast: x"); f.SessionCap != 4 || f.SessionGrants != 1 || f.Attempts != 0 || f.LeftEUR != 0.5 {
 		t.Errorf("cap numbers = cap %d grants %d attempts %d left %v, want 4, 1, 0, 0.5", f.SessionCap, f.SessionGrants, f.Attempts, f.LeftEUR)
@@ -546,5 +546,160 @@ func TestQuestionFactsFillTheExitsLimits(t *testing.T) {
 	}
 	if f.BudgetEUR != 5 || f.SpentEUR != 4.5 || f.LeftEUR != 0.5 {
 		t.Errorf("money = %v of %v (left %v), want 4.5 of 5, 0.5 left", f.SpentEUR, f.BudgetEUR, f.LeftEUR)
+	}
+}
+
+func capQuestionFixture() QuestionFacts {
+	return QuestionFacts{MonthSpentEUR: 543.73, MonthCapEUR: 544, Month: "2026-10",
+		MonthTurn: time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC), ProjectFile: "projects/shop.yaml", CapCard: 1290}
+}
+
+func choiceValues(q *HumanQuestion) []string {
+	var out []string
+	for _, c := range q.Choices {
+		out = append(out, c.Value+"="+c.Label)
+	}
+	return out
+}
+
+// A card that waits on the month cap on its own says when it resumes, who
+// refused it and where the raise goes; its choices never claim a raise is
+// needed to go on.
+func TestMonthCapQuestionResumesOnItsOwn(t *testing.T) {
+	turn := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	state := "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR"
+	choices := []string{AnswerPark + "=Leave it waiting", AnswerFund + "=Retry now", AnswerClose + "=End the card"}
+	tail := " The gateway refuses every further call until the cap is raised or the month ends."
+	for name, tt := range map[string]struct {
+		reason, ask, why, info string
+		facts                  QuestionFacts
+	}{
+		"gateway": {
+			reason: capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), state, turn),
+			facts:  capQuestionFixture(),
+			ask:    "The month cap of €544.00 is reached (€543.73 spent, 2026-10). The card resumes on its own when the cap is raised or on 2026-11-01 00:00 UTC. Raise it now?",
+			why:    "The gateway refused this session: " + state + tail,
+			info:   "Raising the cap is a commit to budget.month_eur in policy.yaml. The cap card #1290 on the board links its line.",
+		},
+		"floor": {
+			reason: capWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), state, turn),
+			facts:  capQuestionFixture(),
+			ask:    "The month cap of €544.00 is reached (€543.73 spent, 2026-10). The card resumes on its own when the cap is raised or on 2026-11-01 00:00 UTC. Raise it now?",
+			why:    "The attempt's floor refused the session before it started: " + state + tail,
+			info:   "Raising the cap is a commit to budget.month_eur in policy.yaml. The cap card #1290 on the board links its line.",
+		},
+		"no figures, no card": {
+			reason: capWaitReason(policy.RefusedMonthCap, capGateway(policy.RefusedMonthCap), state, turn),
+			facts:  QuestionFacts{MonthTurn: turn},
+			ask:    "The month cap is reached. The card resumes on its own when the cap is raised or on 2026-11-01 00:00 UTC. Raise it now?",
+			why:    "The gateway refused this session: " + state + tail,
+			info:   "Raising the cap is a commit to budget.month_eur in policy.yaml.",
+		},
+		"project": {
+			reason: capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "projects/shop.yaml: "+state, turn),
+			facts:  capQuestionFixture(),
+			ask:    "The project's month cap in projects/shop.yaml is reached. The card resumes on its own when it is raised or on 2026-11-01 00:00 UTC. Raise it now?",
+			why:    "The attempt's floor refused the session before it started: projects/shop.yaml: " + state + tail,
+			info:   "Raising the cap is a commit to budget.month_eur in projects/shop.yaml.",
+		},
+		"project without a file": {
+			reason: capWaitReason(policy.RefusedProjectCap, capGateway(policy.RefusedProjectCap), state, turn),
+			facts:  QuestionFacts{MonthTurn: turn},
+			ask:    "The project's month cap is reached. The card resumes on its own when it is raised or on 2026-11-01 00:00 UTC. Raise it now?",
+			why:    "The gateway refused this session: " + state + tail,
+			info:   "Raising the cap is a commit to budget.month_eur in the project's file.",
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := ShapedQuestion(tt.reason, tt.facts, nil)
+			if q.Ask != tt.ask || q.Why != tt.why || q.Info != tt.info {
+				t.Errorf("question = %q / %q / %q, want %q / %q / %q", q.Ask, q.Why, q.Info, tt.ask, tt.why, tt.info)
+			}
+			if got := choiceValues(q); !slices.Equal(got, choices) {
+				t.Errorf("choices = %v, want %v", got, choices)
+			}
+		})
+	}
+}
+
+// The reason of a run from before the cap resumed on its own still waits
+// for an answer, and its question says so.
+func TestMonthCapQuestionOfAnOldRunWaitsForAnAnswer(t *testing.T) {
+	state := "a session call needs 0.300000 EUR but the month's remaining headroom is 0.100000 EUR"
+	choices := []string{AnswerPark + "=Leave it waiting", AnswerFund + "=Retry now", AnswerClose + "=End the card"}
+	tail := " The gateway refuses every further call until the cap is raised or the month ends."
+	q := ShapedQuestion(capRefused(policy.Refusal{Decision: policy.RefusedMonthCap, Reason: state}), capQuestionFixture(), nil)
+	if want := "The month cap of €544.00 is reached (€543.73 spent, 2026-10) and the card's session was refused. Raise the cap and answer to let it finish?"; q.Ask != want {
+		t.Errorf("ask = %q, want %q", q.Ask, want)
+	}
+	if want := "The gateway refused this session: " + state + tail; q.Why != want {
+		t.Errorf("why = %q, want %q", q.Why, want)
+	}
+	if want := "Raising the cap is a commit to budget.month_eur in policy.yaml. The cap card #1290 on the board links its line. This card waits for an answer."; q.Info != want {
+		t.Errorf("info = %q, want %q", q.Info, want)
+	}
+	if got := choiceValues(q); !slices.Equal(got, choices) {
+		t.Errorf("choices = %v, want %v", got, choices)
+	}
+	q = ShapedQuestion(capRefused(policy.Refusal{Decision: policy.RefusedProjectCap, Reason: state}), capQuestionFixture(), nil)
+	if want := "The project's month cap in projects/shop.yaml is reached and the card's session was refused. Raise the cap and answer to let it finish?"; q.Ask != want {
+		t.Errorf("project ask = %q, want %q", q.Ask, want)
+	}
+	if want := "Raising the cap is a commit to budget.month_eur in projects/shop.yaml. This card waits for an answer."; q.Info != want {
+		t.Errorf("project info = %q, want %q", q.Info, want)
+	}
+}
+
+// questionFacts finds the open cap card through the alert of the cap in
+// force, the turn of the month, and for a project cap the project's file.
+func TestQuestionFactsOfTheMonthCapStops(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.73}
+	store.tasks["cap1"] = Task{ID: "cap1", Status: "waiting-human", IssueNumber: 1290}
+	store.tasks["cap0"] = Task{ID: "cap0", Status: "done", IssueNumber: 1200}
+	insert := func(fp, taskID string) {
+		id, _ := store.InsertAlert(ctx, Alert{Kind: AlertMonthCap, Source: "100", Fingerprint: fp, Verdict: VerdictReal})
+		_ = store.SetAlertTask(ctx, id, taskID, nil)
+	}
+	insert("2026-10/100/500", "cap0")
+	insert("2026-10/100/544", "cap1")
+	v := policy.Version{Tree: policy.Tree{
+		Document: policy.Document{Budget: policy.Budget{MonthEUR: 544}},
+		Projects: map[string]policy.ProjectConfig{"shop": {Repository: "acme/shop"}},
+	}}
+	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", Repository: "acme/shop"}
+
+	f := r.questionFacts(ctx, task, monthCapResumes+"\nx")
+	if f.MonthSpentEUR != 543.73 || f.MonthCapEUR != 544 || f.Month != "2026-10" || f.CapCard != 1290 {
+		t.Errorf("month facts = %+v, want 543.73 of 544 (2026-10) with cap card 1290", f)
+	}
+	if want := monthTurn(time.Now()); !f.MonthTurn.Equal(want) {
+		t.Errorf("MonthTurn = %v, want %v", f.MonthTurn, want)
+	}
+
+	store.tasks["cap1"] = Task{ID: "cap1", Status: "done", IssueNumber: 1290}
+	if f := r.questionFacts(ctx, task, monthCapResumes+"\nx"); f.CapCard != 0 {
+		t.Errorf("a done cap card is open: %d", f.CapCard)
+	}
+	v.Document.Budget.MonthEUR = 600
+	store.tasks["cap1"] = Task{ID: "cap1", Status: "waiting-human", IssueNumber: 1290}
+	if f := r.questionFacts(ctx, task, monthCapResumes+"\nx"); f.CapCard != 0 {
+		t.Errorf("the card of another cap is the cap in force's: %d", f.CapCard)
+	}
+
+	f = r.questionFacts(ctx, task, projectCapResumes+"\nx")
+	if f.ProjectFile != "projects/shop.yaml" || f.MonthCapEUR != 0 || f.Month != "" || f.CapCard != 0 || !f.MonthTurn.Equal(monthTurn(time.Now())) {
+		t.Errorf("project facts = %+v, want projects/shop.yaml, the turn, no factory month", f)
+	}
+
+	bare := &Runner{store: store}
+	f = bare.questionFacts(ctx, task, projectCapResumes+"\nx")
+	if f.ProjectFile != "" || !f.MonthTurn.Equal(monthTurn(time.Now())) {
+		t.Errorf("project facts without a policy = %+v, want the turn and no file", f)
+	}
+	if q := ShapedQuestion(projectCapResumes+"\nx", f, nil); !strings.HasPrefix(q.Ask, "The project's month cap is reached. ") || strings.Contains(q.Ask, "0001") {
+		t.Errorf("ask without a policy = %q", q.Ask)
 	}
 }

@@ -1236,15 +1236,14 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 // (SessionFunded), "" when one can run. A card with no session yet (no model
 // to price) answers as before: the workflow's floor refuses the session
 // anyway; a failed read refuses the answer with a verdict of its own, so the
-// answer never dies mid-request. An answer at the day cap is taken: its
-// session waits
-// for the day on its own.
+// answer never dies mid-request. An answer at a cap is taken: its session
+// waits for the cap's period on its own.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) (string, error) {
 	why, err := c.unfundedSession(ctx, t)
 	if err != nil {
 		return "", err
 	}
-	if factoryd.DayCapped(why) {
+	if _, ok := factoryd.CapDecision(why); ok {
 		return "", nil
 	}
 	return why, nil

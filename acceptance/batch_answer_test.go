@@ -731,9 +731,6 @@ func (s *accBatchStore) ScreeningLetRun(ctx context.Context, taskID string) (boo
 func (s *accBatchStore) JudgeEscalations(ctx context.Context, taskID string, filter factoryd.EscalationFilter, verdict, by string) error {
 	panic("unused")
 }
-func (s *accBatchStore) DayFree(ctx context.Context, dayEUR float64) (float64, error) {
-	panic("unused")
-}
 func (s *accBatchStore) OpenReportTask(ctx context.Context, t factoryd.Task) (factoryd.Task, error) {
 	panic("unused")
 }

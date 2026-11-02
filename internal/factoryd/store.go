@@ -423,9 +423,6 @@ type Store interface {
 	// Opening is how the newest sessions opened on ref, read for the task
 	// (policy.ReadOpening).
 	Opening(ctx context.Context, taskID, ref string) (policy.Opening, error)
-	// DayFree is the UTC day's free headroom under dayEUR now, every
-	// outstanding hold netted (policy.DayFree).
-	DayFree(ctx context.Context, dayEUR float64) (float64, error)
 	// OverHoldCall is the task's agent's newest model call since since
 	// that the gateway booked beyond its hold (COST OVER HOLD), nil for
 	// none.
@@ -1553,19 +1550,25 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
-// lines left out, as the gateway's month headroom counts it. The reason is the month's first
-// refused_month_cap of a model call; MonthAlarm.Check is its sole caller, for only a model
-// call finds the cap spent — a reservation or a tool call may be refused while euros remain.
+// lines left out, as the gateway's month headroom counts it. The reason and time are the month's
+// newest refused_month_cap of a model call; MonthAlarm.Check and the question facts of a card
+// stopped at the cap read it, for only a model call finds the cap spent: a reservation or a
+// tool call may be refused while euros remain.
 func (s *PGStore) MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error) {
 	var m MonthSpend
+	var reason sql.NullString
+	var refusedAt sql.NullTime
 	err := s.db.QueryRowContext(ctx,
 		`SELECT to_char($2::timestamptz AT TIME ZONE 'UTC', 'YYYY-MM'),
 		        `+policy.MonthSpentSQL("$2::timestamptz")+`::float8,
-		        COALESCE((SELECT reason FROM audit WHERE decision = $1 AND tool = ''
+		        r.reason, r.ts
+		   FROM (SELECT 1) one
+		   LEFT JOIN LATERAL (SELECT reason, ts FROM audit WHERE decision = $1 AND tool = ''
 		                    AND ts >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 		                    AND ts < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'
-		                  ORDER BY ts, id LIMIT 1), '')`,
-		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &m.Refusal)
+		                  ORDER BY ts DESC, id DESC LIMIT 1) r ON true`,
+		policy.RefusedMonthCap, at).Scan(&m.Month, &m.EUR, &reason, &refusedAt)
+	m.Refusal, m.RefusedAt = reason.String, refusedAt.Time
 	return m, err
 }
 
