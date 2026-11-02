@@ -897,6 +897,10 @@ func (s *accBatchStore) RollHold(ctx context.Context, now time.Time) (factoryd.R
 	panic("unused")
 }
 
+func (*accBatchStore) MonthSpend(context.Context, time.Time) (factoryd.MonthSpend, error) {
+	return factoryd.MonthSpend{}, nil
+}
+
 func (*accBatchStore) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
 	return factoryd.ProjectSpend{}, nil
 }

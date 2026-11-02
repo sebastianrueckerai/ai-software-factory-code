@@ -616,6 +616,9 @@ type Store interface {
 	// ProjectMonthSpend is repository's ledger spend in the UTC month of
 	// at, as the gateway's project headroom counts it.
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (ProjectSpend, error)
+	// MonthSpend is the whole factory's ledger spend in the UTC month of
+	// at, as the month cap counts it.
+	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
