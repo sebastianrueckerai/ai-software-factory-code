@@ -486,14 +486,18 @@ func runnerLost(log []byte, recorded time.Time) (line string, silent time.Durati
 // bot's fork, its pull request, and a factory-PR card the gates and the
 // approval take like a roll's, exempt from the pause. The pause names the
 // card's id before any of it, so a call that finds the id with no card
-// files that card, and one that finds the card does nothing. A pause on a
-// re-run or on a re-run card, its jobs having lost their runner, reverts
-// nothing. A revert that conflicted clones main again only once main's
-// head moved: on the same head it conflicts again.
+// files that card, and one that finds the card only ends the fix card
+// (replaceFix). A pause on a re-run or on a re-run card, its jobs having
+// lost their runner, reverts nothing, and neither does one whose
+// fix-forward card merges or merged (landing): a red main gets one
+// remedy at a time. A revert that conflicted clones main again only once
+// main's head moved: on the same head it conflicts again.
 func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
-	if fix, ok, err := r.Store.Task(ctx, pause.FixTask); err != nil {
+	fix, ok, err := r.Store.Task(ctx, pause.FixTask)
+	if err != nil {
 		return err
-	} else if pause.FixTask == "" || ok && fix.Source == SourceRerun {
+	}
+	if pause.FixTask == "" || ok && (fix.Source == SourceRerun || landing(fix)) {
 		return nil
 	}
 	taskID := pause.RevertTask
@@ -502,8 +506,10 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		if err := r.Store.SetQueuePauseRevert(ctx, pause.Project, taskID); err != nil {
 			return err
 		}
-	} else if _, filed, err := r.Store.Task(ctx, taskID); err != nil || filed {
+	} else if rev, filed, err := r.Store.Task(ctx, taskID); err != nil {
 		return err
+	} else if filed {
+		return r.replaceFix(ctx, pause, fix, rev)
 	}
 	head, err := r.Forgejo.DefaultBranchHeadSHA(ctx, r.Repo.Owner, r.Repo.Name, prBase)
 	if err != nil {
@@ -558,5 +564,41 @@ func (r *Roller) revert(ctx context.Context, pause QueuePause) error {
 		return err
 	}
 	log.Printf("roller: main red since %s with no fix landed: revert card %s, issue #%d, pull request #%d", pause.Since.Format(time.RFC3339), t.ID, ref.Number, pr.Number)
-	return nil
+	return r.replaceFix(ctx, pause, fix, t)
+}
+
+// landing tells a remedy card of a red main whose merge runs (its gate is
+// merge) or ran.
+func landing(t Task) bool {
+	return t.MergeCommit != "" || t.Status == "merged" || !Final(t.Status) && t.Gate == GateMerge
+}
+
+// landedFix is the fix-forward card of the main-red pause whose revert is
+// card t, when that card's merge runs or ran (landing).
+func (r *Runner) landedFix(ctx context.Context, t Task) (Task, bool, error) {
+	if t.Source != SourceRevert {
+		return Task{}, false, nil
+	}
+	p, paused, err := r.store.QueuePause(ctx, t.Repository)
+	if err != nil || !paused || p.RevertTask != t.ID || p.FixTask == "" {
+		return Task{}, false, err
+	}
+	fix, ok, err := r.store.Task(ctx, p.FixTask)
+	return fix, ok && landing(fix), err
+}
+
+// replaceFix ends the pause's fix-forward card fix, which the revert card
+// rev replaces, while its work still runs (stoppable): a comment naming
+// the revert, then the issue's close as factoryd's own, which stops its
+// session. A close recorded already is the heal pass's to finish.
+func (r *Roller) replaceFix(ctx context.Context, pause QueuePause, fix, rev Task) error {
+	if fix.ID == "" || !stoppable(fix) {
+		return nil
+	}
+	events, err := r.Store.IntakeEvents(ctx, fix.ID)
+	if err != nil || botCloseRecorded(events, fix) {
+		return err
+	}
+	return closeIssueAsFactory(ctx, r.Store, r.Forgejo, fix, fmt.Sprintf("factoryd: no fix landed by %s: the revert #%d replaces this card. Closing this issue.",
+		pause.Since.Add(mainRedBound).UTC().Format(time.RFC3339), rev.IssueNumber))
 }
