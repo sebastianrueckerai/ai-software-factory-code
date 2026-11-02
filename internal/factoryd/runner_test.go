@@ -2156,8 +2156,8 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 
 // A fresh session the card's own money cannot open is refused before
 // anything opens: no token, no session row, no pod. The card gets the
-// floor's refusal as a money ask, with the Fund action below it, and no
-// session burns the rest of its budget on calls the gateway must refuse.
+// floor's refusal as its money ask, and no session burns the rest of its
+// budget on calls the gateway must refuse.
 // 0.100 EUR of 2 is left, and the cheap rung's floor asks 0.30.
 func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	task := Task{ID: "t4k", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 1.9}
@@ -2171,9 +2171,11 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
 		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR " +
 		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would end before it could push."
-	reason := why + "\nFund the card (Fund on the board) and answer to start a session again, or close the card."
-	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != reason || res.Model != "factory/small" {
-		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, reason)
+	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
+		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
+	}
+	if !strings.Contains(res.Reason, "(Fund on the board) and answer") {
+		t.Fatalf("reason = %q, want the Fund action", res.Reason)
 	}
 	if got := escalationSource(res.Reason); got != "budget" {
 		t.Fatalf("escalation source = %q, want budget", got)

@@ -2888,10 +2888,9 @@ func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
 }
 
 // A planner session the card's own money cannot open is refused before
-// anything opens, as card #1345's were not: no session row, no pod, and
-// the floor's refusal is the planner's start failure, a money ask with
-// the Fund action below it. 0.100 EUR of 2 is left, and the frontier
-// rung's floor asks 0.60.
+// anything opens: no session row, no pod, and the floor's refusal is the
+// planner's start failure, its money ask. 0.100 EUR of 2 is left, and the
+// frontier rung's floor asks 0.60.
 func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
 		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2, SpentEUR: 1.9,
@@ -2923,9 +2922,8 @@ func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	}
 	want := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
 		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/big needs 0.600000 EUR " +
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would end before it could push.\n" +
-		"Fund the card (Fund on the board) and answer to start a session again, or close the card."
-	if res.Escalate != want || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would end before it could push."
+	if res.Escalate != want || !strings.Contains(res.Escalate, "(Fund on the board) and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
 		t.Fatalf("result %+v, want the money ask %q", res, want)
 	}
 	if len(store.sessions) != 0 || len(kube.podOrder) != 0 {

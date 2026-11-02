@@ -1742,11 +1742,10 @@ const (
 
 // escalation is the failure's escalation reason, then the way on: its
 // first line is the card's question row (escalationQuestion), with the
-// action. The budget's keeps the floor's refusal, which opens the money
-// ask, with the Fund action below it.
+// action. The budget's is the floor's refusal, which names its own way on.
 func (f *startFailure) escalation(then string) string {
 	if f.step == stepBudget {
-		return f.text + "\nFund the card (Fund on the board) and " + strings.TrimPrefix(then, "then ") + "."
+		return f.text
 	}
 	act := "fix the cause below"
 	switch f.step {
