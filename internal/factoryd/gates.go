@@ -2023,6 +2023,38 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	return res
 }
 
+// UnjudgedCriteria are the ids of the criteria no verdict row holds when
+// task taskID is its plan's integration card (unjudgedCriteria): the
+// press's read before its merge (versionReviewHoldsMerge).
+func (r *Runner) UnjudgedCriteria(ctx context.Context, taskID string) ([]string, error) {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	never, err := r.unjudgedCriteria(ctx, t)
+	var ids []string
+	for _, c := range never {
+		ids = append(ids, c.ID)
+	}
+	return ids, err
+}
+
+// HoldMerge is holdMerge on a press whose review run again did not run
+// (versionReviewHoldsMerge): no merge is tried, and the ask is on the
+// human's surface again naming the note.
+func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit, approver string) error {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	never, err := r.unjudgedCriteria(ctx, t)
+	if err != nil {
+		return err
+	}
+	r.holdMerge(ctx, t, repo, pr, commit, approver, len(never))
+	return nil
+}
+
 // holdMerge refuses the merge of a plan's integration card while n of its
 // criteria have no verdict row, naming the last review's note, and puts
 // the merge ask on the human's surface again: the workflow answers a

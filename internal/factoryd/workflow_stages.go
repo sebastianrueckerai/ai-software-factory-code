@@ -1143,7 +1143,7 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 		}
 		t.approvalRequested = workflow.Now(t.ctx)
-		if v = t.awaitApproval(commit, covered); !v.reask {
+		if v = t.awaitApproval(commit, g, covered); !v.reask {
 			break
 		}
 	}

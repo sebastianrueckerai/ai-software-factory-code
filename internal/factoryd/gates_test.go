@@ -1507,6 +1507,50 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 	}
 }
 
+// The press's read names the integration card's criteria without a row,
+// none for any other card; HoldMerge holds without trying the merge and
+// files the ask naming the note.
+func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+	r, store, _ := newGateRunner(t, task, fj)
+	b, _ := json.Marshal(criteriaPlan())
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-found"] = Task{ID: "t-found", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation"}
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it"}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityUnjudgedCriteria, "t1")
+	if ids := getInto[[]string](t, val, err); !slices.Equal(ids, []string{"c1", "c3"}) {
+		t.Fatalf("unjudged = %v, want c1 and c3", ids)
+	}
+	val, err = execActivity(t, r, ActivityUnjudgedCriteria, "t-found")
+	if ids := getInto[[]string](t, val, err); len(ids) != 0 {
+		t.Fatalf("a feature card's unjudged = %v, want none", ids)
+	}
+	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
+	r.record(ctx, "t1", "model_review", map[string]any{"note": note})
+	spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
+	id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
+		Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
+	if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, r, ActivityHoldMerge, "t1", int64(9), "c1", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	pending, _ := store.ApprovalRequests(ctx, "pending")
+	if len(fj.merges) != 0 || len(pending) != 1 || !strings.HasSuffix(pending[0].Reason, ". The model review did not run: "+note) ||
+		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the model review did not run ("+note+")" {
+		t.Fatalf("merges %d, pending %+v: want no merge and the ask naming the note", len(fj.merges), pending)
+	}
+}
+
 // The merge commit's message names the approver, and its trailers the
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).
