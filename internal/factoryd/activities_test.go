@@ -92,8 +92,8 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		f.calls = append(f.calls, r.Method+" "+r.URL.Path)
-		p := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"),
-			"/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app"), "/api/v1/repos/factory-projects/repo")
+		p := strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/sf/repo"),
+			"/api/v1/repos/factory-agent/repo"), "/api/v1/repos/demo-app/demo-app"), "/api/v1/repos/factory-agent/demo-app"), "/api/v1/repos/factory-projects/repo"), "/api/v1/repos/sf/code")
 		switch {
 		case r.Method == "GET" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
 			io.WriteString(w, `[]`)

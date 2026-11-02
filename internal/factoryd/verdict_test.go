@@ -768,8 +768,12 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	objs := &fakeObjectStore{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+	fj := &prForgejo{}
+	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	r.CriteriaPass(ctx)
+	if !slices.Equal(fj.issuesClosed, []int64{7}) {
+		t.Fatalf("issues closed %v, want the plan's #7", fj.issuesClosed)
+	}
 	body, err := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
 	if err != nil {
 		t.Fatal(err)
@@ -784,7 +788,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 
 	// a plan whose cards are done with a criterion open asks its gap once
 	s2 := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
-	r2 := &Runner{store: s2, timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r2 := &Runner{store: s2, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	if err := s2.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 		{Criterion: "c2", Evidence: "read it"},
@@ -836,7 +840,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	(&Runner{store: s3, timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
+	(&Runner{store: s3, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
 	}
@@ -872,7 +876,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		// brings a plan without a verdict row to the pass
 		mergeCard(s, "t-int")
 		objs := &fakeObjectStore{}
-		r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+		r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
 		if c.note != "" || c.name == "mixed" {
 			r.record(ctx, "t-int", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
 		}
@@ -916,6 +920,13 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 			t.Fatalf("mixed: pending %+v, closes %d: want the plan closed and its rerun ask resolved", again, closeRows(s))
 		}
 	}
+}
+
+// planIssues is a Forgejo whose issues stand open until a close (prForgejo,
+// sf/code among its repositories): seedVerdictPlan's plan #7 closes there.
+func planIssues(t *testing.T) *Forgejo {
+	t.Helper()
+	return &Forgejo{BaseURL: (&prForgejo{}).srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
 }
 
 // planWithoutCriteria stores a plan without criteria on task t-plan, issue
@@ -1070,6 +1081,61 @@ func TestPlanCloseCheckAddsNoCommentAfterAllChildrenDone(t *testing.T) {
 	}
 }
 
+// closePlan closes the plan's open issue with its comment, as factoryd's
+// own close, before it records plan_closed: 15 closed plans stood open.
+func TestClosePlanClosesItsOpenIssue(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, fj := planWithoutCriteria(t, "done", "done")
+	r.planCloseCheck(ctx, "t-plan")
+	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	if got := commentBodies(fj); fj.issues[1].state != "closed" || !slices.Equal(got, want) || planCloses(t, objs) != 1 {
+		t.Fatalf("#1 %s, comments %q, plan_closed %d times; want closed, %q, once", fj.issues[1].state, got, planCloses(t, objs), want)
+	}
+	if !botCloseRecorded(s.intakeEvents, s.tasks["t-plan"]) {
+		t.Fatalf("intake events %+v, want factoryd's close of #1 recorded", s.intakeEvents)
+	}
+}
+
+// A plan whose issue a person closed already gets its comment once and
+// no second close.
+func TestClosePlanCommentsOnAClosedIssue(t *testing.T) {
+	ctx := context.Background()
+	r, _, objs, fj := planWithoutCriteria(t, "done", "done")
+	fj.issues[1].state = "closed"
+	r.planCloseCheck(ctx, "t-plan")
+	want := []string{"#1 factoryd: every card of this plan is done or closed; the plan is closed."}
+	if got := commentBodies(fj); slices.Contains(fj.calls, "PATCH issues/1") || !slices.Equal(got, want) || planCloses(t, objs) != 1 {
+		t.Fatalf("calls %q, comments %q, plan_closed %d times; want no close, %q, once", fj.calls, got, planCloses(t, objs), want)
+	}
+}
+
+// A close that fails before its record records no plan_closed, and the
+// next pass closes again; one that fails after its record is the heal
+// pass's to finish, and plan_closed is recorded.
+func TestClosePlanRecordsOnlyAStandingClose(t *testing.T) {
+	ctx := context.Background()
+	r, s, objs, fj := planWithoutCriteria(t, "done", "done")
+	s.failIntakeEvent = errors.New("db down")
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 0 || fj.issues[1].state != "open" || len(fj.comments) != 0 {
+		t.Fatalf("a failed record: plan_closed %d times, #1 %s, comments %q; want none, open, none", n, fj.issues[1].state, commentBodies(fj))
+	}
+	s.failIntakeEvent = nil
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 || fj.issues[1].state != "closed" {
+		t.Fatalf("the next pass: plan_closed %d times, #1 %s; want once, closed", n, fj.issues[1].state)
+	}
+
+	r, s, objs, fj = planWithoutCriteria(t, "done", "done")
+	fj.failCall = "PATCH issues/1"
+	r.planCloseCheck(ctx, "t-plan")
+	if n := planCloses(t, objs); n != 1 || fj.issues[1].state != "open" || !slices.ContainsFunc(s.intakeEvents, func(e IntakeEvent) bool {
+		return e.Kind == IntakeFactoryClosed && e.CommentID == 1
+	}) || s.confirmedCloses[[2]any{"t-plan", int64(1)}] {
+		t.Fatalf("a failed close: plan_closed %d times, #1 %s, intake events %+v; want once, open, the close recorded unconfirmed", n, fj.issues[1].state, s.intakeEvents)
+	}
+}
+
 func TestPlanCloseCheckKeepsAPlanWithoutCriteriaOpen(t *testing.T) {
 	ctx := context.Background()
 	for _, statuses := range [][]string{{"done", "failed"}, {"done", "merged"}} {
@@ -1165,7 +1231,7 @@ func TestCriteriaPassLeavesAPlanUnderReplan(t *testing.T) {
 	}{{"queued", true}, {"closed", true}, {"closed", false}} {
 		cr, _, _ := newTestRunner(t, Task{ID: "t-other", Kind: "agent", Track: policy.TrackDirect, Repository: "sf/code"}, newFakeKube(), &fakeObjectStore{})
 		cs := seedVerdictPlan(t, "t-plan", "t-int", "done")
-		cr.store = cs
+		cr.store, cr.forgejo = cs, planIssues(t)
 		p := cs.tasks["t-plan"]
 		p.Status, p.RequiredCapabilities = c.status, []string{policy.ClassCoder}
 		cs.tasks["t-plan"] = p
@@ -1265,7 +1331,7 @@ func TestCriteriaPassSkipsAnsweredDeltaDues(t *testing.T) {
 	}
 	// the marker holds the sweep's round back: no model call, and the gap
 	// question opens (the cards are done, c2 and c3 open)
-	r := &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	r.CriteriaPass(ctx)
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("pending = %+v, want the gap question alone", pending)
@@ -1292,7 +1358,7 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 			t.Fatal(err)
 		}
 		objs := &fakeObjectStore{}
-		return s, objs, &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+		return s, objs, &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
 	}
 
 	s, objs, r := rig("in-review")
@@ -1354,7 +1420,7 @@ func firstOfRounds(t *testing.T, status string) (*Runner, *fakeStore, *bytes.Buf
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
+	return &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
 }
 
 // A plan with later rounds still to plan does not close with its round's
@@ -1418,7 +1484,7 @@ func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	setStatus(s, "t-plan", "closed")
-	r = &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r = &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 1 || len(pending) != 0 {
 		t.Fatalf("a closed plan with c1 unmet: plan_closed %d, pending %+v; want one close and no question", closeRows(s), pending)
@@ -1438,7 +1504,7 @@ func TestClosedPlanCardDeniesItsCriteriaApproval(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("the failed plan's gap: pending %+v, want the criteria approval", pending)
@@ -1467,7 +1533,7 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].TaskID != "t-plan" {

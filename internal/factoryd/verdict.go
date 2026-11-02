@@ -980,18 +980,49 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	r.openGap(ctx, t, repo, open, integration)
 }
 
-// closePlan says why plan t closed on its issue, unless comment is
-// empty, records plan_closed with the plan's count of criteria, and wakes
-// the project's cards held out of the merge queue for it. A close whose
-// row failed runs again on the next pass; the issue still hears of it
-// once.
+// closePlan closes plan t's issue as factoryd's own close, saying why
+// unless comment is empty; an issue a person closed already only hears
+// why, once. It then records plan_closed with the plan's count of
+// criteria and wakes the project's cards held out of the merge queue for
+// it. A close that fails before its record stands records nothing, and
+// the next pass closes again; one that fails after it is the heal pass's
+// to finish. A close whose row failed runs again on the next pass; the
+// issue still hears of it once.
 func (r *Runner) closePlan(ctx context.Context, t Task, repo Repo, criteria int, comment string) {
-	if comment != "" {
-		r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
+	if t.IssueNumber != 0 && !r.closePlanIssue(ctx, t, repo, comment) {
+		return
 	}
 	r.timeline.recordEvent(ctx, t.ID, EventPlanClosed, map[string]any{"criteria": criteria})
 	r.wakeHeld(ctx, t.Repository)
 	r.record(ctx, t.ID, "plan_closed", map[string]any{"criteria": criteria})
+}
+
+// closePlanIssue closes plan t's issue for closePlan and answers whether
+// the close stands: done, or recorded for the heal pass. An issue Forgejo
+// no longer has stands closed.
+func (r *Runner) closePlanIssue(ctx context.Context, t Task, repo Repo, comment string) bool {
+	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	switch {
+	case forgejoTerminal(err):
+		log.Printf("plan %s: issue #%d: %v: the plan closes without it", t.ID, t.IssueNumber, err)
+		return true
+	case err != nil:
+		log.Printf("plan %s: read issue #%d: %v", t.ID, t.IssueNumber, err)
+		return false
+	case closed:
+		if comment != "" {
+			r.commentOnce(ctx, t, repo, t.IssueNumber, comment)
+		}
+		return true
+	}
+	err = closeIssueAsFactory(ctx, r.store, r.forgejo, t, comment)
+	if err == nil {
+		return true
+	}
+	events, rerr := r.store.IntakeEvents(ctx, t.ID)
+	recorded := rerr == nil && botCloseRecorded(events, t)
+	log.Printf("plan %s: close issue #%d (the heal pass finishes it: %t): %v", t.ID, t.IssueNumber, recorded, err)
+	return recorded
 }
 
 // criteriaKinds are the asks of a plan whose cards ran out with a
