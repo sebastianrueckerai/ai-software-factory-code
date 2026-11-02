@@ -183,7 +183,8 @@ func (c *Console) token(ctx context.Context, s *session, form url.Values) error 
 		return errors.New("token endpoint: no access token")
 	}
 	if t.RefreshToken == "" {
-		return errors.New("token endpoint: no refresh token")
+		// the grant's refresh token is spent, so the session refreshes no more
+		return fmt.Errorf("%w: the token endpoint sent no refresh token", errLoggedOut)
 	}
 	s.access, s.refresh = t.AccessToken, t.RefreshToken
 	s.expiry = time.Now().Add(time.Duration(t.ExpiresIn) * time.Second)

@@ -64,3 +64,11 @@ func (c stampedChat) AddChatMessage(ctx context.Context, repository, login strin
 	}
 	return c.Chat.AddChatMessage(ctx, repository, login, m)
 }
+
+// stampedAttach stamps the analysis_attached row the store writes in its
+// own transaction.
+func stampedAttach(attach func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error) func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error {
+	return func(ctx context.Context, taskID, found, recommendation string, e factoryd.Event) error {
+		return attach(ctx, taskID, found, recommendation, stamped(ctx, e))
+	}
+}

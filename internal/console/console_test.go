@@ -1,6 +1,7 @@
 package console
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -73,6 +74,12 @@ type fakeForgejo struct {
 	adminReach        bool
 	notificationReach bool
 	probeStatus       int // when set, the probes answer it
+	// lacks is the write scope a token misses on the write probes, each an
+	// empty-body POST, which Forgejo answers 403 without the scope and 422
+	// with it, as it judges the scope before it binds the body; probes
+	// are the probes asked, "path body"
+	lacks  string
+	probes []string
 
 	reviews    []map[string]string
 	failReview bool
@@ -164,6 +171,23 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	if f.failAPI {
 		http.Error(w, "boom", http.StatusForbidden)
 		return
+	}
+	if r.Method == http.MethodPost && (strings.HasSuffix(r.URL.Path, "/issues") || strings.HasSuffix(r.URL.Path, "/pulls")) {
+		body, _ := io.ReadAll(r.Body)
+		r.Body = io.NopCloser(bytes.NewReader(body))
+		if string(body) == "{}" {
+			f.probes = append(f.probes, r.URL.Path+" "+string(body))
+			scope := "write:repository"
+			if strings.HasSuffix(r.URL.Path, "/issues") {
+				scope = "write:issue"
+			}
+			if f.lacks == scope {
+				http.Error(w, `{"message":"token does not have at least one of required scope(s): [`+scope+`]"}`, http.StatusForbidden)
+				return
+			}
+			http.Error(w, `[{"fieldNames":["Title"],"classification":"RequiredError","message":"Required"}]`, http.StatusUnprocessableEntity)
+			return
+		}
 	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
@@ -2240,8 +2264,9 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 }
 
 // A token endpoint answer without a refresh token is refused, so every
-// cookie session holds one: the login fails, and a refresh keeps the
-// row's pair.
+// cookie session holds one: the login fails, and a refresh ends the
+// session at once, as a refused refresh does, since the spent refresh
+// token it keeps would refresh nothing.
 func TestTokenAnswerWithoutRefreshTokenIsRefused(t *testing.T) {
 	r := newRig(t)
 	ck, _ := r.loggedIn(t)
@@ -2250,11 +2275,11 @@ func TestTokenAnswerWithoutRefreshTokenIsRefused(t *testing.T) {
 	r.fg.noRefresh = true
 	r.fg.mu.Unlock()
 
-	if _, err := r.c.tokenFor(context.Background(), r.readSession(t, ck), time.Minute); err == nil || err.Error() != "token endpoint: no refresh token" {
-		t.Fatalf("the refresh = %v, want token endpoint: no refresh token", err)
+	if rec := r.do(httptest.NewRequest(http.MethodGet, "/tasks/new", nil), ck); rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Fatalf("a refresh without a refresh token: %d to %q, want 303 to /login", rec.Code, rec.Header().Get("Location"))
 	}
-	if access, refresh := r.tokens(t, ck); access != "expired-access" || refresh != "refresh-1" {
-		t.Fatalf("the row holds %q and %q, want expired-access and refresh-1", access, refresh)
+	if len(r.sessions.rows) != 0 {
+		t.Fatal("session kept after a refresh without a refresh token")
 	}
 
 	rows := len(r.sessions.rows)

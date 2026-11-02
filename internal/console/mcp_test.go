@@ -531,7 +531,7 @@ func TestMCPChatSendRaisesProposal(t *testing.T) {
 		t.Fatalf("a proposal acted: %q", r.issueDeps)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
-		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"laptop","proposals":[{"id":"`+p.ID+`","state":"pending"}]}]`; got != want {
+		`{"messages":[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"laptop","proposals":[{"id":"`+p.ID+`","state":"pending"}]}],"more":false}`; got != want {
 		t.Fatalf("chat_read = %s\nwant %s", got, want)
 	}
 }
@@ -571,8 +571,8 @@ func TestMCPChatSendOutlastsWait(t *testing.T) {
 		t.Fatalf("chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
 	release()
-	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"laptop"},` +
-		`{"id":2,"role":"assistant","text":"late hello","at":"2026-10-11T09:30:02Z","source":"laptop"}]`
+	want := `{"messages":[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"laptop"},` +
+		`{"id":2,"role":"assistant","text":"late hello","at":"2026-10-11T09:30:02Z","source":"laptop"}],"more":false}`
 	got := ""
 	for deadline := time.Now().Add(5 * time.Second); got != want && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		got = answerOf(t, session, "chat_read", map[string]any{})
@@ -608,6 +608,123 @@ func TestMCPChatSendBudgetStop(t *testing.T) {
 		t.Fatalf("chat_send = %+v, want the stop %q, ended", a, stop)
 	}
 	equal(t, "the thread", rowsOf(t, chat, "sebastian", 2), []string{"user: hi", "assistant: " + stop})
+}
+
+// The chat's own budget stop names the action its human may take: an
+// approver funds the chat with chat_fund at the stop's suggestion, a
+// writer hears who funds it; either way the thread goes on by itself.
+func TestMCPChatSendBudgetStopNamesTheFund(t *testing.T) {
+	const then = "this thread then goes on by itself, and chat_read reads it."
+	for _, tc := range []struct{ login, action string }{
+		{"sebastian", "Fund the chat with chat_fund, €1 suggested: " + then},
+		{"anna", "An approver of ai-software-factory-code funds the chat: " + then},
+	} {
+		t.Run(tc.login, func(t *testing.T) {
+			r, chat, g := newChatRig(t)
+			r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+			r.forgetWriters()
+			crumbsChat(t, r)
+			g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}}
+			stop := "The chat's budget for " + time.Now().UTC().Format("January") +
+				" is used up: €14.96 of €15.00 spent, and the next call does not fit what is left.\n" + budgetReason
+			var a struct {
+				Budget, Error string
+				Ended         bool
+			}
+			if err := json.Unmarshal([]byte(answerOf(t, tokenSessionOf(t, r, tc.login, "sf/code"), "chat_send", map[string]any{"message": "hi"})), &a); err != nil {
+				t.Fatal(err)
+			}
+			if want := stop + "\n" + tc.action; a.Budget != want || a.Error != "" || !a.Ended {
+				t.Fatalf("chat_send = %+v, want the stop %q, ended", a, want)
+			}
+			equal(t, "the thread", rowsOf(t, chat, tc.login, 2), []string{"user: hi", "assistant: " + stop})
+		})
+	}
+}
+
+// The door offers the chat's five tools and nothing else.
+func TestMCPListsItsFiveTools(t *testing.T) {
+	_, srv, bearer := mcpRig(t)
+	res, err := opened(t, srv, &door{auth: "Bearer " + bearer}).ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var names []string
+	for _, tool := range res.Tools {
+		names = append(names, tool.Name)
+	}
+	slices.Sort(names)
+	equal(t, "the tools", names, []string{"chat_confirm", "chat_fund", "chat_read", "chat_send", "chat_threads"})
+}
+
+// chat_fund is the console's Fund and go on for an approver: without eur
+// the chat's budget rises by the stop's suggestion, the raise's event
+// names the token, and the thread the budget stopped goes on by itself.
+func TestMCPChatFundResumesTheStoppedThread(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	chat.now = time.Now
+	crumbsChat(t, r)
+	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {say("Going on.")}}
+	session := tokenSession(t, r)
+	answerOf(t, session, "chat_send", map[string]any{"message": "what is open?"})
+	if got, want := answerOf(t, session, "chat_fund", map[string]any{}),
+		`{"from_eur":15,"to_eur":16,"result":"Raised the chat's budget from €15.00 to €16.00. Every thread the budget stopped goes on by itself; chat_read reads it."}`; got != want {
+		t.Fatalf("chat_fund = %s\nwant %s", got, want)
+	}
+	if !waitFor(t, 2*time.Second, func() bool {
+		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", 2, 1)
+		return len(rows) == 1 && rows[0].Content == "Going on."
+	}) {
+		t.Fatal("the stopped thread did not go on")
+	}
+	funds := eventsOf(r, factoryd.EventChatFunded)
+	if len(funds) != 1 || funds[0].Actor != "sebastian" || funds[0].Via != factoryd.ViaChat || funds[0].Detail["amount_eur"] != 1.0 ||
+		funds[0].Detail["reason"] != "funded in the chat" {
+		t.Fatalf("the fund's event rows = %+v", funds)
+	}
+	equal(t, "the fund's token", funds[0].Detail["token"], map[string]any{"id": int64(1), "name": "laptop"})
+}
+
+// A writer who approves nothing is refused with the control's own words
+// and raises nothing.
+func TestMCPChatFundRefusesAWriter(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	chat := stoppedChat(t, r)
+	text, refused, err := callTool(tokenSessionOf(t, r, "anna", "sf/code"), "chat_fund", map[string]any{"eur": 5})
+	if err != nil || !refused || text != "Only the approvers of project ai-software-factory-code may fund the chat." {
+		t.Fatalf("chat_fund = %q refused %v, %v", text, refused, err)
+	}
+	if task, _, _ := r.tasks.Task(t.Context(), chat.ID); task.BudgetEUR != 15 {
+		t.Fatalf("a refused fund moved budget_eur to %v", task.BudgetEUR)
+	}
+	if rows := eventsOf(r, factoryd.EventChatFunded); len(rows) != 0 {
+		t.Fatalf("a refused fund wrote %+v", rows)
+	}
+}
+
+// Where the chat is not stopped no fund is suggested, so chat_fund needs
+// eur; with it, it raises the budget as Fund and go on does there, and no
+// thread goes on.
+func TestMCPChatFundWhereTheChatIsNotStopped(t *testing.T) {
+	r, _, g := newChatRig(t)
+	crumbsChat(t, r)
+	session := tokenSession(t, r)
+	if text, refused, err := callTool(session, "chat_fund", map[string]any{}); err != nil || !refused ||
+		text != "The chat is not stopped, so no fund is suggested: give eur to raise its budget anyway." {
+		t.Fatalf("chat_fund without eur = %q refused %v, %v", text, refused, err)
+	}
+	if rows := eventsOf(r, factoryd.EventChatFunded); len(rows) != 0 {
+		t.Fatalf("a refused fund wrote %+v", rows)
+	}
+	if got, want := answerOf(t, session, "chat_fund", map[string]any{"eur": 2}),
+		`{"from_eur":15,"to_eur":17,"result":"Raised the chat's budget from €15.00 to €17.00. The chat was not stopped."}`; got != want {
+		t.Fatalf("chat_fund = %s\nwant %s", got, want)
+	}
+	if n := len(g.calls()); n != 0 {
+		t.Fatalf("%d model calls, want none: no thread was stopped", n)
+	}
 }
 
 func TestMCPChatSendRevokedMidTurn(t *testing.T) {
@@ -678,16 +795,16 @@ func TestMCPChatReadSource(t *testing.T) {
 		}
 	}
 	session := opened(t, srv, &door{auth: "Bearer " + bearer})
-	if got := answerOf(t, session, "chat_read", map[string]any{}); got != "[]" {
-		t.Fatalf("chat_read before the token's first turn = %s, want []", got)
+	if got, want := answerOf(t, session, "chat_read", map[string]any{}), `{"messages":[],"more":false}`; got != want {
+		t.Fatalf("chat_read before the token's first turn = %s, want %s", got, want)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"conversation": 2}),
-		`[{"id":2,"role":"user","text":"From the laptop","at":"2026-10-11T09:30:02Z","source":"laptop"},`+
-			`{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}]`; got != want {
+		`{"messages":[{"id":2,"role":"user","text":"From the laptop","at":"2026-10-11T09:30:02Z","source":"laptop"},`+
+			`{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}],"more":false}`; got != want {
 		t.Fatalf("chat_read = %s\nwant %s", got, want)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"conversation": 2, "after": 2}),
-		`[{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}]`; got != want {
+		`{"messages":[{"id":3,"role":"user","text":"From the browser","at":"2026-10-11T09:30:03Z","source":"console"}],"more":false}`; got != want {
 		t.Fatalf("chat_read after 2 = %s\nwant %s", got, want)
 	}
 }
@@ -748,10 +865,10 @@ func TestMCPChatSendJoinsTheRunningTurn(t *testing.T) {
 		t.Fatalf("the joining chat_send = %s\nwant %s", got, sent(2, "", "", false))
 	}
 	release()
-	want := `[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"laptop"},` +
+	want := `{"messages":[{"id":1,"role":"user","text":"hi","at":"2026-10-11T09:30:01Z","source":"laptop"},` +
 		`{"id":3,"role":"assistant","text":"one","at":"2026-10-11T09:30:03Z","source":"laptop"},` +
 		`{"id":4,"role":"user","text":"and more","at":"2026-10-11T09:30:04Z","source":"laptop"},` +
-		`{"id":5,"role":"assistant","text":"two","at":"2026-10-11T09:30:05Z","source":"laptop"}]`
+		`{"id":5,"role":"assistant","text":"two","at":"2026-10-11T09:30:05Z","source":"laptop"}],"more":false}`
 	got := ""
 	for deadline := time.Now().Add(5 * time.Second); got != want && time.Now().Before(deadline); time.Sleep(10 * time.Millisecond) {
 		got = answerOf(t, session, "chat_read", map[string]any{})
@@ -868,8 +985,8 @@ func TestMCPChatReadTwoProposalsOnARow(t *testing.T) {
 		t.Fatalf("chat_send raised %+v, want two proposals", a.Proposals)
 	}
 	if got, want := answerOf(t, session, "chat_read", map[string]any{"after": 1}),
-		`[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"laptop","proposals":[{"id":"`+a.Proposals[0].ID+
-			`","state":"pending"},{"id":"`+a.Proposals[1].ID+`","state":"pending"}]}]`; got != want {
+		`{"messages":[{"id":2,"role":"assistant","text":"","at":"2026-10-11T09:30:02Z","source":"laptop","proposals":[{"id":"`+a.Proposals[0].ID+
+			`","state":"pending"},{"id":"`+a.Proposals[1].ID+`","state":"pending"}]}],"more":false}`; got != want {
 		t.Fatalf("chat_read = %s\nwant %s", got, want)
 	}
 }
@@ -894,13 +1011,19 @@ func TestMCPChatReadPagesForward(t *testing.T) {
 		}
 	}
 	session := opened(t, srv, &door{auth: "Bearer " + bearer})
-	ids := func(args map[string]any) []int64 {
-		var rows []struct{ ID int64 }
-		if err := json.Unmarshal([]byte(answerOf(t, session, "chat_read", args)), &rows); err != nil {
+	ids := func(args map[string]any, more bool) []int64 {
+		var a struct {
+			Messages []struct{ ID int64 }
+			More     bool
+		}
+		if err := json.Unmarshal([]byte(answerOf(t, session, "chat_read", args)), &a); err != nil {
 			t.Fatal(err)
 		}
+		if a.More != more {
+			t.Errorf("chat_read %v says more %v, want %v", args, a.More, more)
+		}
 		var out []int64
-		for _, m := range rows {
+		for _, m := range a.Messages {
 			out = append(out, m.ID)
 		}
 		return out
@@ -912,9 +1035,44 @@ func TestMCPChatReadPagesForward(t *testing.T) {
 		}
 		return out
 	}
-	equal(t, "the last 40", ids(map[string]any{"conversation": 2}), span(6, 45))
-	equal(t, "40 after 1", ids(map[string]any{"conversation": 2, "after": 1}), span(2, 41))
-	equal(t, "after 41", ids(map[string]any{"conversation": 2, "after": 41}), span(42, 45))
+	equal(t, "the last 40", ids(map[string]any{"conversation": 2}, false), span(6, 45))
+	equal(t, "40 after 1", ids(map[string]any{"conversation": 2, "after": 1}, true), span(2, 41))
+	equal(t, "after 41", ids(map[string]any{"conversation": 2, "after": 41}, false), span(42, 45))
+}
+
+// chat_read stops at a whole message before its text passes 60 KiB and
+// says more, so after reads on: three messages of 25 KiB answer two
+// (50 KiB; a third makes 75), then the third; one message alone past the
+// bound still answers, so a read always moves on.
+func TestMCPChatReadCapsItsText(t *testing.T) {
+	r, srv, bearer := mcpRig(t)
+	for _, n := range []int{25 << 10, 25 << 10, 25 << 10, 70 << 10} {
+		if _, err := r.chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: 2, Role: "assistant",
+			Content: strings.Repeat("x", n)}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	session := opened(t, srv, &door{auth: "Bearer " + bearer})
+	for _, c := range []struct {
+		after int64
+		ids   []int64
+		more  bool
+	}{{0, []int64{1, 2}, true}, {2, []int64{3}, true}, {3, []int64{4}, false}} {
+		var a struct {
+			Messages []struct{ ID int64 }
+			More     bool
+		}
+		if err := json.Unmarshal([]byte(answerOf(t, session, "chat_read", map[string]any{"conversation": 2, "after": c.after})), &a); err != nil {
+			t.Fatal(err)
+		}
+		var got []int64
+		for _, m := range a.Messages {
+			got = append(got, m.ID)
+		}
+		if !slices.Equal(got, c.ids) || a.More != c.more {
+			t.Errorf("after %d: messages %v, more %v; want %v, more %v", c.after, got, a.More, c.ids, c.more)
+		}
+	}
 }
 
 // leavingClaim is the rig's chat token store whose claim finds its

@@ -87,6 +87,30 @@ func analyses(t *testing.T, s *PGStore, taskID string) []Event {
 	return out
 }
 
+// sebastiansAnalysis is the analysis_attached row sebastian's chat writes.
+var sebastiansAnalysis = Event{Repository: "sf/wake", Actor: "sebastian", Via: ViaChat}
+
+// The row keeps the detail its caller gave, a chat token's stamp, beside
+// the findings the store adds.
+func TestAttachAnalysisKeepsItsEventsDetail(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	e := sebastiansAnalysis
+	e.Detail = map[string]any{"token": map[string]any{"id": 7, "name": "laptop"}}
+	if err := s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", e); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	rows := analyses(t, s, "t-1")
+	if len(rows) != 1 {
+		t.Fatalf("%d analysis rows, want 1", len(rows))
+	}
+	got := rows[0]
+	if token, _ := got.Detail["token"].(map[string]any); got.Actor != "sebastian" || got.IssueNumber != 40 || got.Detail["found"] != "The replica adds 12 ms of lag." ||
+		got.Detail["source"] != "agent" || token["name"] != "laptop" || token["id"] != float64(7) {
+		t.Fatalf("the analysis row = %+v", got)
+	}
+}
+
 // An open ask takes the analysis: its escalation row carries it after the
 // question, the spine holds an analysis_attached row with the findings,
 // and a second attach replaces the row's analysis while the spine keeps
@@ -94,8 +118,8 @@ func analyses(t *testing.T, s *PGStore, taskID string) []Event {
 func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 	s := newAskStore(t)
 	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
-	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
-		"The replica adds 12 ms of lag; the board reads it fine.", "Keep one replica", "sebastian"); err != nil {
+	if err := s.AttachAnalysis(t.Context(), "t-1",
+		"The replica adds 12 ms of lag; the board reads it fine.", "Keep one replica", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := askRow(t, s, "sf/wake", "t-1"),
@@ -120,8 +144,8 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 	if ask.Kind != EventQuestionAsked || ask.Detail["question"] != "Use a replica?" || ask.Detail["found"] != nil {
 		t.Fatalf("the ask's own event changed: %+v", ask)
 	}
-	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
-		"The writes queue behind the replica at the measured peak.", "", "sebastian"); err != nil {
+	if err := s.AttachAnalysis(t.Context(), "t-1",
+		"The writes queue behind the replica at the measured peak.", "", sebastiansAnalysis); err != nil {
 		t.Fatal(err)
 	}
 	if got := askRow(t, s, "sf/wake", "t-1"); !strings.Contains(got, "queue behind the replica") || strings.Contains(got, "12 ms") {
@@ -154,7 +178,7 @@ func TestAttachAnalysisEnrichesCapStop(t *testing.T) {
 		Conversation: conv, Kind: MessageEscalation, TaskID: "t-1", BirthKind: EventQuestionAsked, Content: row}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "One finding is open.", "Grant one session", "sebastian"); err != nil {
+	if err := s.AttachAnalysis(t.Context(), "t-1", "One finding is open.", "Grant one session", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := askRow(t, s, "sf/wake", "t-1"), row+"\nAnalysis: One finding is open.\nRecommendation: Grant one session"; got != want {
@@ -172,7 +196,7 @@ func TestAttachAnalysisRefusesAnsweredAsk(t *testing.T) {
 		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "No"}}); err != nil {
 		t.Fatal(err)
 	}
-	err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "The replica adds 12 ms of lag.", "", "sebastian")
+	err := s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", sebastiansAnalysis)
 	var se *AskSettledError
 	if !errors.As(err, &se) || se.Kind != "question" || se.Word != "answered" || se.By != "sebastian" {
 		t.Fatalf("the refusal = %v, want the question answered by sebastian", err)
@@ -257,7 +281,7 @@ func TestAttachAnalysisReturnsItsRowsCloseError(t *testing.T) {
 	hooked := sql.OpenDB(&hookedConnector{conn})
 	t.Cleanup(func() { hooked.Close() })
 	s.db = hooked
-	err = s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "The replica adds 12 ms of lag.", "", "sebastian")
+	err = s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", sebastiansAnalysis)
 	if !errors.Is(err, errHeldClose) {
 		t.Fatalf("AttachAnalysis = %v, want the rows' close failure", err)
 	}
@@ -324,8 +348,8 @@ func TestAttachAnalysisReachesTheOpenApprovalAsk(t *testing.T) {
 	s := newAskStore(t)
 	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
 	seedApprovalAsk(t, s, "sf/wake", "t-1", 40)
-	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
-		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", "sebastian"); err != nil {
+	if err := s.AttachAnalysis(t.Context(), "t-1",
+		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested),
@@ -350,8 +374,8 @@ func TestAttachAnalysisReachesTheApprovalAskBehindANewerAnswer(t *testing.T) {
 		Kind: EventQuestionAnswered, Actor: "sebastian", Via: ViaChat, Detail: map[string]any{"answer": "Use one replica"}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1",
-		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", "sebastian"); err != nil {
+	if err := s.AttachAnalysis(t.Context(), "t-1",
+		"The replica adds 12 ms of lag; the board reads it fine.", "Waive c1", sebastiansAnalysis); err != nil {
 		t.Fatalf("AttachAnalysis: %v", err)
 	}
 	if got, want := rowContent(t, s, "sf/wake", "t-1", EventApprovalRequested),
@@ -371,7 +395,7 @@ func TestAttachAnalysisRefusalNamesTheAsk(t *testing.T) {
 		Kind: EventPlanChangesRequested, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"changes": "one more card"}}); err != nil {
 		t.Fatal(err)
 	}
-	err := s.AttachAnalysis(t.Context(), "sf/wake", "t-1", "The replica adds 12 ms of lag.", "", "sebastian")
+	err := s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", sebastiansAnalysis)
 	var se *AskSettledError
 	if !errors.As(err, &se) || se.Kind != ApprovalCriteria || se.Word != "rejected" || se.By != "sebastian" {
 		t.Fatalf("the refusal = %v, want the criteria request rejected by sebastian", err)

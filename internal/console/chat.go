@@ -1475,9 +1475,26 @@ func (t *turn) press(id string, fix *poolCorrection, open func()) error {
 	defer c.turns.leave(t.key())
 	t.detach()
 	open()
-	t.takeTurn(pos, wait)
+	leave := t.pressTurn(pos, wait)
+	defer leave()
 	t.apply(p, fix)
 	return nil
+}
+
+// pressTurn takes the thread's turn for a pressed proposal at pos behind
+// wait, its stop entered first, as say's is: a stop reaches the press
+// before a message that comes while its tool runs. The wait runs out, as
+// the proposal is spent and its tool runs; the stop ends the follow-up
+// turn (apply). leave takes the stop back.
+func (t *turn) pressTurn(pos int, wait <-chan struct{}) (leave func()) {
+	sctx, cancel := context.WithCancel(t.r.Context())
+	t.stopEntry = t.c.stops.enter(t.key(), cancel)
+	t.takeTurn(pos, wait)
+	t.sctx = sctx
+	return func() {
+		t.c.stops.leave(t.key(), t.stopEntry)
+		cancel()
+	}
 }
 
 // poolCorrection is a member's correction of a set_pool proposal's
@@ -1674,13 +1691,10 @@ func (t *turn) apply(p factoryd.ChatProposal, fix *poolCorrection) {
 		t.send("done", struct{}{})
 		return
 	}
-	// the follow-up turn is stoppable as a sent message's turn is; the
+	// the follow-up turn is stoppable as a sent message's turn is, on the
+	// press's stop (pressTurn); a stop while the tool ran skips it, and the
 	// applied tool stands
-	sctx, cancel := context.WithCancel(t.r.Context())
-	defer cancel()
-	t.sctx, t.stopEntry = sctx, t.c.stops.enter(t.key(), cancel)
-	defer t.c.stops.leave(t.key(), t.stopEntry)
-	release := t.c.turns.slot(sctx, t.p.Repository, t.parallelTurns())
+	release := t.c.turns.slot(t.sctx, t.p.Repository, t.parallelTurns())
 	if release == nil {
 		t.stopEnd("")
 		return

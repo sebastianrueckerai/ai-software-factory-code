@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -41,11 +42,15 @@ func chatTokenHash(bearer string) string {
 	return hex.EncodeToString(sum[:])
 }
 
-// checkForgejoToken refuses a Forgejo token that is not login's, or that
-// Forgejo lets read the admin API or the notification API. Those two
-// probes catch a token wider than read:user, write:repository and
-// write:issue only where it holds an admin or a notification scope.
-func (c *Console) checkForgejoToken(ctx context.Context, login, tok string) error {
+// checkForgejoToken refuses a Forgejo token that is not login's, that
+// Forgejo lets read the admin API or the notification API, or that lacks
+// write:issue or write:repository on repo. The two reads catch a token
+// wider than read:user, write:repository and write:issue only where it
+// holds an admin or a notification scope. The two writes write nothing:
+// each POSTs an empty body, and Forgejo judges the token's scope before it
+// binds the body, so 403 says the scope is missing, and 422, for the
+// fields the body lacks, says it is there.
+func (c *Console) checkForgejoToken(ctx context.Context, login string, repo factoryd.Repo, tok string) error {
 	var me struct {
 		Login string `json:"login"`
 	}
@@ -67,6 +72,22 @@ func (c *Console) checkForgejoToken(ctx context.Context, login, tok string) erro
 			return refuse(http.StatusBadRequest, "Forgejo refused this token")
 		}
 	}
+	base := "/api/v1/repos/" + url.PathEscape(repo.Owner) + "/" + url.PathEscape(repo.Name)
+	for _, probe := range []struct{ path, scope string }{
+		{base + "/issues", "write:issue"},     // an issue with no title
+		{base + "/pulls", "write:repository"}, // a pull request with no head and no base
+	} {
+		_, err := c.call(ctx, tok, http.MethodPost, probe.path, struct{}{}, http.StatusUnprocessableEntity, answerMax)
+		var ae *apiError
+		switch {
+		case err == nil:
+		case errors.As(err, &ae) && ae.status == http.StatusForbidden:
+			return refuse(http.StatusBadRequest, "this Forgejo token lacks "+probe.scope+"; make one with read:user, write:repository and write:issue")
+		default:
+			log.Printf("console: the Forgejo token of %s: %v", login, err)
+			return refuse(http.StatusBadRequest, "Forgejo refused this token")
+		}
+	}
 	return nil
 }
 
@@ -84,6 +105,9 @@ func (c *Console) makeChatToken(w http.ResponseWriter, r *http.Request) {
 	name := strings.TrimSpace(r.PostFormValue("name"))
 	days, lifeOK := chatTokenLives[r.PostFormValue("life")]
 	switch n := utf8.RuneCountInString(name); {
+	case repository == "":
+		c.fail(w, r, refuse(http.StatusBadRequest, "choose a project you write"))
+		return
 	case n < 1 || n > 64:
 		c.fail(w, r, refuse(http.StatusBadRequest, "the name needs 1 to 64 characters"))
 		return
@@ -111,7 +135,7 @@ func (c *Console) makeChatToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	forgejo := strings.TrimSpace(r.PostFormValue("forgejo"))
-	if err := c.checkForgejoToken(r.Context(), s.user, forgejo); err != nil {
+	if err := c.checkForgejoToken(r.Context(), s.user, p.Repo(), forgejo); err != nil {
 		c.fail(w, r, err)
 		return
 	}
@@ -136,7 +160,7 @@ func (c *Console) makeChatToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.record(r.Context(), button(r), repository, "", 0, factoryd.EventChatTokenMade,
-		map[string]any{"token": row.ID, "name": name, "project": repository})
+		map[string]any{"token": map[string]any{"id": row.ID, "name": name}, "project": repository})
 	line := fmt.Sprintf("claude mcp add --transport http factory-%s %s/mcp --header \"Authorization: Bearer %s\"",
 		p.Name, strings.TrimSuffix(c.cfg.PublicURL, "/"), bearer)
 	data["Shown"] = &shownOnce{Name: name, Bearer: bearer, Line: line}
@@ -177,6 +201,6 @@ func (c *Console) revokeChatToken(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	c.record(r.Context(), button(r), t.Repository, "", 0, factoryd.EventChatTokenRevoked,
-		map[string]any{"token": id, "name": t.Name, "project": t.Repository})
+		map[string]any{"token": map[string]any{"id": id, "name": t.Name}, "project": t.Repository})
 	http.Redirect(w, r, "/notifications", http.StatusSeeOther)
 }

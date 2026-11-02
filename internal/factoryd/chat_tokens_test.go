@@ -166,6 +166,48 @@ func TestSideConversationKeepsCurrent(t *testing.T) {
 	}
 }
 
+// A human whose current thread they deleted keeps the number their
+// browser shows: the side thread takes the next one.
+func TestSideConversationAfterTheCurrentThreadWasDeleted(t *testing.T) {
+	ctx := context.Background()
+	s := chatTokenStore(t)
+	for _, c := range []struct {
+		n   int64
+		cur bool
+	}{{2, false}, {3, false}, {4, true}} {
+		if _, err := s.db.Exec(`INSERT INTO chat_conversations (repository, login, conversation, current) VALUES ('acme/app', 'sebastian', $1, $2)`, c.n, c.cur); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, _, err := s.DeleteConversation(ctx, "acme/app", "sebastian", 4); err != nil {
+		t.Fatal(err)
+	}
+	sideKeepsCurrent(t, s, 4, 5)
+}
+
+// A human with no thread at all keeps conversation 1, which their browser
+// shows: the side thread takes 2.
+func TestSideConversationWithNoThread(t *testing.T) {
+	sideKeepsCurrent(t, chatTokenStore(t), 1, 2)
+}
+
+// sideKeepsCurrent checks that sebastian's current conversation on
+// acme/app is cur before and after a side thread, which is side.
+func sideKeepsCurrent(t *testing.T, s *PGStore, cur, side int64) {
+	t.Helper()
+	ctx := context.Background()
+	if got, err := s.CurrentConversation(ctx, "acme/app", "sebastian"); err != nil || got != cur {
+		t.Fatalf("current before = %d, %v; want %d", got, err, cur)
+	}
+	n, err := s.SideConversation(ctx, "acme/app", "sebastian", "laptop")
+	if err != nil || n != side {
+		t.Fatalf("side = %d, %v; want %d", n, err, side)
+	}
+	if got, err := s.CurrentConversation(ctx, "acme/app", "sebastian"); err != nil || got != cur {
+		t.Errorf("current after = %d, %v; want %d still", got, err, cur)
+	}
+}
+
 func TestSideConversationSkipsLegacyOne(t *testing.T) {
 	ctx := context.Background()
 	s := chatTokenStore(t)

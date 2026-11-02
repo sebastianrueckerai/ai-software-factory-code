@@ -151,7 +151,12 @@ func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, 
 	defer c.turns.leave(t.key())
 	t.detach()
 	t.open(w)
-	t.takeTurn(pos, wait)
+	if err == nil && choice == p.Choice && landed == nil {
+		leave := t.pressTurn(pos, wait)
+		defer leave()
+	} else {
+		t.takeTurn(pos, wait)
+	}
 	if _, ok := t.save(factoryd.ChatMessage{Role: "user", Content: choice}); !ok {
 		return
 	}

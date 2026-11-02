@@ -167,10 +167,15 @@ func TestMakeChatTokenShowsItOnce(t *testing.T) {
 	if err != nil || opened != "fj-secret" {
 		t.Fatalf("Open = %q, %v", opened, err)
 	}
+	equal(t, "the write probes", r.fg.probes, []string{"/api/v1/repos/sf/code/issues {}", "/api/v1/repos/sf/code/pulls {}"})
+	if len(r.fg.issues) != 0 {
+		t.Fatalf("the probes filed %+v", r.fg.issues)
+	}
 	evs := eventsOf(r, factoryd.EventChatTokenMade)
-	if len(evs) != 1 || evs[0].Actor != "sebastian" || evs[0].Via != factoryd.ViaButton || evs[0].Detail["name"] != "laptop" || evs[0].Detail["project"] != "sf/code" || evs[0].Detail["token"] != int64(1) {
+	if len(evs) != 1 || evs[0].Actor != "sebastian" || evs[0].Via != factoryd.ViaButton {
 		t.Fatalf("events = %+v", evs)
 	}
+	equal(t, "the made event's detail", evs[0].Detail, map[string]any{"token": map[string]any{"id": int64(1), "name": "laptop"}, "project": "sf/code"})
 
 	if !strings.Contains(body, time.Now().Format("2006-01-02")) {
 		t.Fatalf("the answer's table misses the created date")
@@ -193,9 +198,14 @@ func TestMakeChatTokenRefuses(t *testing.T) {
 		{"notification reach", func(f *fakeForgejo, _ url.Values) { f.notificationReach = true }, http.StatusBadRequest, "this Forgejo token reaches more than read:user, write:repository and write:issue; make one with only those three scopes"},
 		{"unknown token", func(f *fakeForgejo, form url.Values) { form.Set("forgejo", "nope") }, http.StatusBadRequest, "Forgejo refused this token"},
 		{"project not written", func(_ *fakeForgejo, form url.Values) { form.Set("project", "other/repo") }, http.StatusForbidden, "you do not write other/repo"},
+		{"no project", func(_ *fakeForgejo, form url.Values) { form.Set("project", " ") }, http.StatusBadRequest, "choose a project you write"},
 		{"life 365", func(_ *fakeForgejo, form url.Values) { form.Set("life", "365") }, http.StatusBadRequest, "choose 7, 30 or 90 days"},
 		{"no life", func(_ *fakeForgejo, form url.Values) { form.Del("life") }, http.StatusBadRequest, "choose 7, 30 or 90 days"},
 		{"probe 500", func(f *fakeForgejo, _ url.Values) { f.probeStatus = http.StatusInternalServerError }, http.StatusBadRequest, "Forgejo refused this token"},
+		{"no write:issue", func(f *fakeForgejo, _ url.Values) { f.lacks = "write:issue" }, http.StatusBadRequest,
+			"this Forgejo token lacks write:issue; make one with read:user, write:repository and write:issue"},
+		{"no write:repository", func(f *fakeForgejo, _ url.Values) { f.lacks = "write:repository" }, http.StatusBadRequest,
+			"this Forgejo token lacks write:repository; make one with read:user, write:repository and write:issue"},
 		{"empty name", func(_ *fakeForgejo, form url.Values) { form.Set("name", "  ") }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 		{"long name", func(_ *fakeForgejo, form url.Values) { form.Set("name", strings.Repeat("ä", 65)) }, http.StatusBadRequest, "the name needs 1 to 64 characters"},
 	}
@@ -244,9 +254,10 @@ func TestRevokeChatTokenOnlyOwn(t *testing.T) {
 		t.Fatalf("a second press = %d", rec.Code)
 	}
 	evs := eventsOf(r, factoryd.EventChatTokenRevoked)
-	if len(evs) != 1 || evs[0].Actor != "sebastian" || evs[0].Detail["name"] != "laptop" || evs[0].Detail["token"] != int64(1) {
+	if len(evs) != 1 || evs[0].Actor != "sebastian" {
 		t.Fatalf("events = %+v", evs)
 	}
+	equal(t, "the revoked event's detail", evs[0].Detail, map[string]any{"token": map[string]any{"id": int64(1), "name": "laptop"}, "project": "sf/code"})
 }
 
 func TestScrubTokensRemovesChatToken(t *testing.T) {
@@ -275,6 +286,21 @@ func TestChatTokenFormOffersWrittenProjectsOnly(t *testing.T) {
 	sel := page[i : i+strings.Index(page[i:], "</select>")]
 	if !strings.Contains(sel, `value="demo-app/demo-app"`) || strings.Contains(sel, `value="sf/code"`) {
 		t.Fatalf("select = %s", sel)
+	}
+}
+
+// A human who writes no project gets the sentence that says so in place
+// of the form, whose project select would offer nothing.
+func TestChatTokenFormNeedsAWrittenProject(t *testing.T) {
+	r, sebastian, _ := tokenRig(t)
+	ck, _ := r.writerOf(t, "carol", "other/repo")
+	page := r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), ck).Body.String()
+	if !strings.Contains(page, "You write no project, so you can make no chat token.") || strings.Contains(page, `action="/notifications/tokens"`) {
+		t.Fatalf("the page of a human who writes no project:\n%s", page)
+	}
+	page = r.do(httptest.NewRequest(http.MethodGet, "/notifications", nil), sebastian).Body.String()
+	if strings.Contains(page, "You write no project") || !strings.Contains(page, `action="/notifications/tokens"`) {
+		t.Fatalf("a writer's page lacks the form, or says they write no project")
 	}
 }
 

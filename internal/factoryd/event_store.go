@@ -132,7 +132,8 @@ const EventPlanReplanned = "plan_replanned"
 const EventChatBudgetSpent = "chat_budget_spent"
 
 // EventChatTokenMade and EventChatTokenRevoked are the console's record of
-// a human making or revoking a chat token: detail {"name"}, the token's name.
+// a human making or revoking a chat token: detail {"token": {"id", "name"},
+// "project"}, the token as a token's stamp names it, and its repository.
 const (
 	EventChatTokenMade    = "chat_token_made"    // #nosec G101 -- an event kind
 	EventChatTokenRevoked = "chat_token_revoked" // #nosec G101 -- an event kind

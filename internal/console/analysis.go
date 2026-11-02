@@ -28,7 +28,8 @@ func (t *turn) attachAnalysis(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	err = t.c.cfg.AttachAnalysis(t.r.Context(), t.p.Repository, k.ID, found, recommendation, t.a.s.user)
+	err = t.c.cfg.AttachAnalysis(t.r.Context(), k.ID, found, recommendation,
+		factoryd.Event{Repository: t.p.Repository, Actor: t.a.s.user, Via: factoryd.ViaChat})
 	var settled *factoryd.AskSettledError
 	switch {
 	case errors.As(err, &settled):

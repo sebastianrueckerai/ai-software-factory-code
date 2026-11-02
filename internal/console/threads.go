@@ -230,9 +230,9 @@ func (c *Console) Behind(repository, login string, n int64) (queued bool, land f
 // A turn registers when its POST owns it, before it waits behind the
 // thread's turn in flight or for a model slot, so the stop button the
 // page shows from the POST always reaches a turn. Only the chat's own
-// message path registers a turn: a compaction, a fund's resume, a wake's
-// and a card answer's run unregistered, so a press during them finds
-// nothing and changes nothing.
+// message path and a pressed proposal (pressTurn) register a turn: a
+// compaction, a fund's resume, a wake's and a card answer's run
+// unregistered, so a press during them finds nothing and changes nothing.
 type stopGate struct {
 	mu    sync.Mutex
 	stops map[string][]*stopEntry

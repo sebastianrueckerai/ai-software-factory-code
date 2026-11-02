@@ -137,9 +137,10 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 			return c.chatSend(r.Context(), call, in)
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_read", Description: "Read a conversation with the project agent of " + call.p.Name +
-		": its last 40 messages, or with after at most 40 messages after that message id, oldest first; for more, call again with the " +
-		"last id it answered. Each message has its id, role, text, time, source (console, or the name of the chat token that wrote it) " +
-		"and its proposals' states. Without a conversation it reads this token's own. Reading marks nothing read."},
+		": its last 40 messages, or with after at most 40 messages after that message id, oldest first, and at most about 60 KB of their text. " +
+		"more says messages are left: call again with after set to the last id answered. Each message has its id, role, text, time, " +
+		"source (console, or the name of the chat token that wrote it) and its proposals' states. Without a conversation it reads this " +
+		"token's own. Reading marks nothing read."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in readInput) (*mcp.CallToolResult, any, error) {
 			return c.chatRead(ctx, call, in)
 		})
@@ -154,6 +155,12 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 		": each one's number, title, time of its last message, and whether it holds a reply you have not read."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			return c.chatThreads(ctx, call)
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: "chat_fund", Description: "Fund the chat of " + call.p.Name + " once its budget stopped it, " +
+		"as the console's Fund and go on does: this month's chat budget rises by eur whole euros, or without eur by the amount the stop suggests, " +
+		"and every thread the budget stopped goes on by itself; chat_read reads it. Only an approver of the project may fund the chat."},
+		func(_ context.Context, _ *mcp.CallToolRequest, in fundInput) (*mcp.CallToolResult, any, error) {
+			return c.tokenFund(r.Context(), call, in)
 		})
 	return srv
 }
@@ -188,7 +195,7 @@ type sendInput struct {
 // readInput is chat_read's arguments.
 type readInput struct {
 	Conversation int64 `json:"conversation,omitempty" jsonschema:"a conversation's number from chat_threads; without one, this token's own"`
-	After        int64 `json:"after,omitempty" jsonschema:"answer at most 40 messages after this message id, oldest first; for more, call again with the last id answered"`
+	After        int64 `json:"after,omitempty" jsonschema:"answer the messages after this message id, oldest first; while more is true, call again with the last id answered"`
 }
 
 // tokenThread is the thread a token's tool works in: n, which must be
@@ -272,10 +279,11 @@ type mcpApplied struct {
 // once the answer went out, every later event drops. joined: the message
 // joined another turn, whose end is not this one's.
 type collector struct {
-	mu     sync.Mutex
-	a      sendAnswer
-	gone   bool
-	joined bool
+	mu      sync.Mutex
+	project string // the token's project, which a budget stop names
+	a       sendAnswer
+	gone    bool
+	joined  bool
 }
 
 func (k *collector) send(event string, data any) {
@@ -306,6 +314,9 @@ func (k *collector) send(event string, data any) {
 	case "budget":
 		if b, ok := data.(budgetEvent); ok {
 			k.a.Budget = b.Message.Content
+			if f := b.Budget; f != nil {
+				k.a.Budget += "\n" + fundAction(k.project, f)
+			}
 		}
 	case "error":
 		m, _ := data.(map[string]string)
@@ -317,6 +328,17 @@ func (k *collector) send(event string, data any) {
 	case "joined":
 		k.joined = true
 	}
+}
+
+// fundAction is the action the chat's own budget stop names to a token:
+// chat_fund at the stop's suggestion for an approver, who funds it for a
+// writer. A fund resumes the stopped thread (doChatFund).
+func fundAction(project string, f *chatBudget) string {
+	const then = "this thread then goes on by itself, and chat_read reads it."
+	if f.CanFund {
+		return fmt.Sprintf("Fund the chat with chat_fund, €%.0f suggested: %s", f.SuggestEUR, then)
+	}
+	return "An approver of " + project + " funds the chat: " + then
 }
 
 // wait runs turn, which returns at the turn's end, and answers what the
@@ -369,7 +391,7 @@ func (c *Console) chatSend(ctx context.Context, call tokenCall, in sendInput) (*
 	}
 	// a titled thread keeps its title: the token's own, or one its human named
 	msg.Names = names(th) && th.Title == ""
-	k := &collector{a: sendAnswer{Conversation: th.Number, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
+	k := &collector{project: call.p.Name, a: sendAnswer{Conversation: th.Number, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
 	t.send, t.unread = k.send, true
 	a, err := k.wait(ctx, func() error { return t.say(msg, func() {}) })
 	if err != nil {
@@ -396,7 +418,7 @@ func (c *Console) chatConfirm(ctx context.Context, call tokenCall, in confirmInp
 	if err != nil {
 		return nil, nil, errors.New(t.sentence(err))
 	}
-	k := &collector{a: sendAnswer{Conversation: p.Conversation, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
+	k := &collector{project: call.p.Name, a: sendAnswer{Conversation: p.Conversation, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
 	t.send, t.unread = k.send, true
 	a, err := k.wait(ctx, func() error { return t.press(in.Proposal, nil, func() {}) })
 	if err != nil {
@@ -409,6 +431,58 @@ func (c *Console) chatConfirm(ctx context.Context, call tokenCall, in confirmInp
 		}
 	}
 	return jsonAnswer(a)
+}
+
+// fundInput is chat_fund's arguments.
+type fundInput struct {
+	EUR *int64 `json:"eur,omitempty" jsonschema:"whole euros to add to this month's chat budget; without it, the amount the budget stop suggests"`
+}
+
+// fundAnswer is chat_fund's answer.
+type fundAnswer struct {
+	FromEUR float64 `json:"from_eur"`
+	ToEUR   float64 `json:"to_eur"`
+	Result  string  `json:"result"`
+}
+
+// tokenFund presses Fund and go on for the token's human, past that
+// control's approver rule, through doChatFund, which resumes every thread
+// the chat's budget stopped. Without eur it funds what the stop suggests;
+// a chat not stopped suggests nothing, and eur raises its budget anyway.
+func (c *Console) tokenFund(ctx context.Context, call tokenCall, in fundInput) (*mcp.CallToolResult, any, error) {
+	if c.cfg.Operator == nil {
+		return nil, nil, errors.New("the console has no chat")
+	}
+	t := c.sessionTurn(ctx, call.p, call.s, 0)
+	t.a.decider = "member"
+	if err := c.admit(ctx, accessTable["POST /projects/{name}/chat/budget"], t.a, call.p.Repository, ""); err != nil {
+		return nil, nil, errors.New(t.sentence(err))
+	}
+	stop, err := c.chatStopNow(ctx, call.p)
+	if err != nil {
+		log.Printf("console: the chat stop of %s: %v", call.p.Repository, err)
+		return nil, nil, errors.New("cannot read the chat's budget")
+	}
+	var eur float64
+	switch {
+	case in.EUR != nil:
+		eur = float64(*in.EUR)
+	case stop.stopped:
+		eur, _ = stop.event.Detail["suggest_eur"].(float64)
+	default:
+		return nil, nil, errors.New("The chat is not stopped, so no fund is suggested: give eur to raise its budget anyway.")
+	}
+	from, to, err := c.doChatFund(ctx, t.a, call.p.Name, eur, chatFundNote, "")
+	if err != nil {
+		return nil, nil, errors.New(t.sentence(err))
+	}
+	result := fmt.Sprintf("Raised the chat's budget from €%.2f to €%.2f.", from, to)
+	if stop.stopped {
+		result += " Every thread the budget stopped goes on by itself; chat_read reads it."
+	} else {
+		result += " The chat was not stopped."
+	}
+	return jsonAnswer(fundAnswer{FromEUR: from, ToEUR: to, Result: result})
 }
 
 // mcpMessage is a thread's row as chat_read answers it.
@@ -426,29 +500,52 @@ type mcpProposalState struct {
 	State string `json:"state"`
 }
 
-// chatReadMax bounds chat_read's rows.
-const chatReadMax = 40
+// chatReadMax bounds chat_read's rows, chatReadBytes their text: Claude
+// Code cuts a tool's answer at 25,000 tokens by default.
+const (
+	chatReadMax   = 40
+	chatReadBytes = 60 << 10
+)
+
+// readAnswer is chat_read's answer: the messages, oldest first, and more
+// while messages after the last one are left.
+type readAnswer struct {
+	Messages []mcpMessage `json:"messages"`
+	More     bool         `json:"more"`
+}
 
 // chatRead answers a thread's last chatReadMax rows, or as many after
 // in.After, from the store: it never marks the thread seen nor opens it.
+// It stops at a whole row before the text passes chatReadBytes, the first
+// row always answered, so a read after the last one always moves on.
 func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*mcp.CallToolResult, any, error) {
 	th, err := c.tokenThread(ctx, call, in.Conversation)
 	if err != nil {
 		return nil, nil, err
 	}
-	out := []mcpMessage{}
+	out := readAnswer{Messages: []mcpMessage{}}
 	if th.Number == 0 {
 		return jsonAnswer(out)
 	}
 	var rows []factoryd.ChatMessage
 	if in.After > 0 {
-		rows, err = c.cfg.Chat.ChatMessagesAfter(ctx, call.row.Repository, call.row.Login, th.Number, in.After, chatReadMax)
+		rows, err = c.cfg.Chat.ChatMessagesAfter(ctx, call.row.Repository, call.row.Login, th.Number, in.After, chatReadMax+1)
 	} else {
 		rows, err = c.cfg.Chat.ChatMessages(ctx, call.row.Repository, call.row.Login, th.Number, chatReadMax)
 	}
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", call.row.Login, call.row.Repository, err)
 		return nil, nil, errors.New("cannot read the conversation")
+	}
+	if len(rows) > chatReadMax {
+		rows, out.More = rows[:chatReadMax], true
+	}
+	size := 0
+	for i, m := range rows {
+		if size += len(m.Content); i > 0 && size > chatReadBytes {
+			rows, out.More = rows[:i], true
+			break
+		}
 	}
 	var tokens []string
 	for _, m := range rows {
@@ -459,7 +556,7 @@ func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*
 				tokens = append(tokens, tc.Proposal)
 			}
 		}
-		out = append(out, row)
+		out.Messages = append(out.Messages, row)
 	}
 	if len(tokens) == 0 {
 		return jsonAnswer(out)
@@ -472,9 +569,10 @@ func (c *Console) chatRead(ctx context.Context, call tokenCall, in readInput) (*
 	for _, st := range states {
 		state[st.Token] = st.State
 	}
-	for i := range out {
-		for j := range out[i].Proposals {
-			out[i].Proposals[j].State = state[out[i].Proposals[j].ID]
+	for i := range out.Messages {
+		ps := out.Messages[i].Proposals
+		for j := range ps {
+			ps[j].State = state[ps[j].ID]
 		}
 	}
 	return jsonAnswer(out)

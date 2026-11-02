@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"strings"
 	"time"
@@ -1152,14 +1153,16 @@ func askKind(e Event) string {
 }
 
 // AttachAnalysis records what the chat agent found about the card's open
-// ask (the main agent concept): an analysis_attached row on the spine and
-// the ask's escalation rows rewritten to carry the findings after the
-// ask, so every member reads them with the ask. The ask is the card's
-// newest open one of either family, a question asked or an approval
-// requested; none open, the newest ask there is refuses as
+// ask (the main agent concept): e, the analysis_attached row on the spine
+// with its repository, actor, via and detail, the store adding the card
+// and the findings, and the ask's escalation rows rewritten to carry the
+// findings after the ask, so every member reads them with the ask. The
+// ask is the card's newest open one of either family, a question asked or
+// an approval requested; none open, the newest ask there is refuses as
 // AskSettledError with its kind and state, a card without an ask row as
 // ErrNoAsk.
-func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found, recommendation, by string) error {
+func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
+	repository := e.Repository
 	t, ok, err := s.Task(ctx, taskID)
 	if err != nil {
 		return err
@@ -1223,14 +1226,15 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 	if recommendation != "" {
 		analysis += "\nRecommendation: " + recommendation
 	}
-	detail := map[string]any{"found": found, "source": "agent"}
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["found"], e.Detail["source"] = found, "agent"
 	if recommendation != "" {
-		detail["recommendation"] = recommendation
+		e.Detail["recommendation"] = recommendation
 	}
-	b, err := json.Marshal(detail)
-	if err != nil {
-		return err
-	}
+	e.TaskID, e.IssueNumber, e.Kind = taskID, t.IssueNumber, EventAnalysisAttached
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -1269,12 +1273,14 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, repository, taskID, found,
 			return err
 		}
 	}
-	if _, err := tx.ExecContext(ctx, `INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail)
-		VALUES (now(), $1, $2, $3, $4, $5, $6, $7::jsonb)`,
-		repository, taskID, t.IssueNumber, EventAnalysisAttached, by, ViaChat, b); err != nil {
+	if e, _, err = insertEvent(ctx, tx, e); err != nil {
 		return err
 	}
-	return tx.Commit()
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.publish(e)
+	return nil
 }
 
 // ProposalState is a proposal's state as GET /chat answers it: pending

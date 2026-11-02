@@ -102,19 +102,40 @@ func (s *PGStore) ClaimChatTokenConversation(ctx context.Context, id, n int64) (
 // SideConversation opens a thread titled title one past login's highest
 // on repository (never below 2: conversation 1 is chat_messages' legacy
 // default) and answers its number. The current thread stays the current
-// one, and an empty current thread is never reused. Two callers racing for
-// one number retry on the unique violation.
+// one, and an empty current thread is never reused: a current thread with
+// no row yet gets its row first, as EnsureInbox does, so the side thread
+// never takes its number. Two callers racing for one number retry on the
+// unique violation.
 func (s *PGStore) SideConversation(ctx context.Context, repository, login, title string) (int64, error) {
 	var n int64
 	var err error
 	for range 3 {
-		err = s.db.QueryRowContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, current)
-			SELECT $1, $2, coalesce(max(conversation), 1) + 1, $3, false FROM chat_conversations WHERE repository = $1 AND login = $2
-			RETURNING conversation`, repository, login, title).Scan(&n)
+		n, err = s.sideConversation(ctx, repository, login, title)
 		var pe *pgconn.PgError
 		if !errors.As(err, &pe) || pe.Code != "23505" {
 			break
 		}
 	}
 	return n, err
+}
+
+func (s *PGStore) sideConversation(ctx context.Context, repository, login, title string) (int64, error) {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if _, err := tx.ExecContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, current)
+		SELECT $1, $2, `+currentConversation+`, true
+		WHERE NOT EXISTS (SELECT 1 FROM chat_conversations WHERE repository = $1 AND login = $2 AND current)
+		ON CONFLICT DO NOTHING`, repository, login); err != nil {
+		return 0, err
+	}
+	var n int64
+	if err := tx.QueryRowContext(ctx, `INSERT INTO chat_conversations (repository, login, conversation, title, current)
+		SELECT $1, $2, coalesce(max(conversation), 1) + 1, $3, false FROM chat_conversations WHERE repository = $1 AND login = $2
+		RETURNING conversation`, repository, login, title).Scan(&n); err != nil {
+		return 0, err
+	}
+	return n, tx.Commit()
 }

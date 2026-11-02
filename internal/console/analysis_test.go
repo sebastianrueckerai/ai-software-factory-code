@@ -26,10 +26,13 @@ func TestAttachAnalysisTool(t *testing.T) {
 	}
 	_, _, err := tool.run(trn, toolInput{TaskID: "13", Found: "The replica adds 12 ms of lag."})
 	equal(t, "without the factory's seam", err.Error(), "this factory records no analysis in its asks")
-	type filed struct{ repository, task, found, recommendation, by string }
+	type filed struct {
+		task, found, recommendation string
+		e                           factoryd.Event
+	}
 	var calls []filed
-	r.c.cfg.AttachAnalysis = func(_ context.Context, repository, taskID, found, recommendation, by string) error {
-		calls = append(calls, filed{repository, taskID, found, recommendation, by})
+	r.c.cfg.AttachAnalysis = func(_ context.Context, taskID, found, recommendation string, e factoryd.Event) error {
+		calls = append(calls, filed{taskID, found, recommendation, e})
 		return nil
 	}
 	for _, in := range []toolInput{
@@ -50,7 +53,8 @@ func TestAttachAnalysisTool(t *testing.T) {
 	}()
 	equal(t, "the tool's answer", []any{note, err},
 		[]any{"Recorded the analysis inside the ask of #13; the humans read it with the ask.", error(nil)})
-	equal(t, "what it filed", calls, []filed{{"sf/code", "t-e", "The replica adds 12 ms of lag.", "Keep one replica", "sebastian"}})
+	equal(t, "what it filed", calls, []filed{{"t-e", "The replica adds 12 ms of lag.", "Keep one replica",
+		factoryd.Event{Repository: "sf/code", Actor: "sebastian", Via: factoryd.ViaChat}}})
 	for _, tc := range []struct {
 		err    error
 		status int
@@ -66,7 +70,7 @@ func TestAttachAnalysisTool(t *testing.T) {
 			"The analysis could not be recorded; see the factoryd log."},
 	} {
 		err := tc.err
-		r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, string, string) error { return err }
+		r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return err }
 		in := toolInput{TaskID: "t-e", Found: "found"}
 		_, _, got := tool.run(trn, in)
 		var no *refusal

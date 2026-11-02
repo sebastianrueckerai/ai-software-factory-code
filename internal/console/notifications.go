@@ -90,7 +90,8 @@ func (c *Console) notificationsData(r *http.Request) (data map[string]any, statu
 	return map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": c.factoryWriter(r), "Links": links,
 		"Projects": rows, "Levels": notifyLevels, "Code": r.URL.Query().Get("code"),
 		"TelegramName": m.TelegramName, "Discord": m.Discord != nil,
-		"ChatTokens": c.chatTokensOn(), "Tokens": tokens, "Lives": []string{"7", "30", "90"}, "Now": time.Now()}, 0, ""
+		"ChatTokens": c.chatTokensOn(), "Tokens": tokens, "Lives": []string{"7", "30", "90"}, "Now": time.Now(),
+		"Writes": slices.ContainsFunc(rows, func(p projectLevel) bool { return p.Writes })}, 0, ""
 }
 
 // chatTokensOn: the chat tokens live on the notifications page, which
