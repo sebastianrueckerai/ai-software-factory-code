@@ -2609,8 +2609,10 @@ func (t *taskRun) climbed(stronger bool) bool {
 // fund the session on model, else the refusal the card carries
 // (SessionFunded; a run from before versionSessionLadder asks
 // AttemptFunded). A failed read is no refusal: the per-call hold still
-// guards the money.
+// guards the money. It reads the caps in force, so the policy loads
+// signalled before it are dropped (drainLoads).
 func (t *taskRun) unfunded(model string) string {
+	t.drainLoads()
 	activity := ActivityAttemptFunded
 	if t.sessionLadder >= versionSessionLadder {
 		activity = ActivitySessionFunded
@@ -4026,10 +4028,11 @@ func (t *taskRun) capReason(c CapRefusal) string {
 // capAsk is the question about cap refusal c of a session on model and
 // the wait that ends on its own (nil: only a human ends it). "" asks
 // nothing: the cap's period turned, or, at versionCapWait, the check
-// before the ask (CapResume with RefusedAt) finds the cap lifted by a
-// version the refusal came before; a check that fails asks. That check
-// also says when the version in force binds at the gateway, the wait's
-// first check at the latest (settles).
+// before the ask (CapResume with RefusedAt), which drops the policy loads
+// signalled before it (drainLoads), finds the cap lifted by a version the
+// refusal came before; a check that fails asks. That check also says when
+// the version in force binds at the gateway, which brings the wait's
+// first check soon (settles).
 func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait) {
 	until := t.capUntil(c)
 	if until.IsZero() {
@@ -4040,6 +4043,7 @@ func (t *taskRun) capAsk(c CapRefusal, model string) (reason string, w *capWait)
 	}
 	w = &capWait{until: until, model: model, decision: c.Decision}
 	if t.capWaits >= versionCapWait {
+		t.drainLoads()
 		var res CapResumed
 		in := CapCheck{TaskID: t.taskID, Model: model, Decision: c.Decision, RefusedAt: c.At}
 		if err := workflow.ExecuteActivity(t.short, ActivityCapResume, in).Get(t.ctx, &res); err != nil {
@@ -4075,6 +4079,17 @@ func (t *taskRun) awaitCapWait(reason string, w *capWait) (final, why string, an
 	return t.awaitHumanUntil(reason, nil, w)
 }
 
+// drainLoads drops the policy loads signalled so far, right before a read
+// of the cap in force (versionCapWait): the wait that follows the read
+// wakes on later ones alone.
+func (t *taskRun) drainLoads() {
+	if t.capWaits < versionCapWait {
+		return
+	}
+	for workflow.GetSignalChannel(t.ctx, SignalPolicyLoaded).ReceiveAsync(nil) {
+	}
+}
+
 // dayCheck is how often a wait on the day cap reads the day's free
 // headroom: before the UTC day turns it frees only as outstanding holds
 // settle or a human raises budget.day_eur, both seen within it, and a
@@ -4086,6 +4101,11 @@ const dayCheck = 5 * time.Minute
 // 8,900 checks into one run's history against Temporal's limit of 51,200
 // events; hourly writes at most 744.
 const monthCheck = time.Hour
+
+// settleRetry is the least time before the next check after one that
+// found the version in force not yet binding: the runner's clock may lag
+// the workflow's.
+const settleRetry = 10 * time.Second
 
 // capWait is a wait on a cap (versionDayCap): it ends on its own at until,
 // the turn of the cap's period, or at a check, every dayCheck at the day
@@ -4099,35 +4119,33 @@ type capWait struct {
 	until    time.Time
 	model    string
 	decision string    // the cap that refused (versionCapWait)
-	settles  time.Time // when the version in force binds at the gateway: no later check while it lies ahead (versionCapWait)
+	settles  time.Time // when the version in force binds at the gateway, by the last check: the next check comes soon (versionCapWait)
 	restored bool      // a healed run's wait, whose first check runs at once (versionCapWait)
 	t        *taskRun
 	ctx      workflow.Context
 	cancel   workflow.CancelFunc
-	// next is the next check's timer, which disarm cancels, or the check
-	// that runs (checking); turned: that check is the period's turn's;
-	// woken: a policy load came while it ran
+	// next is the next check's timer, which disarm cancels
+	// (versionCapWait), or the check that runs (checking); turned: that
+	// check is the period's turn's; woken: a policy load came while it ran
 	next                    workflow.Future
 	disarm                  workflow.CancelFunc
 	checking, turned, woken bool
 	ended                   bool
 }
 
-// start arms the wait's first check. At versionCapWait it drops the
-// policy loads signalled before it, and a restored wait checks at once.
+// start arms the wait's first check; a restored wait (versionCapWait)
+// checks at once, which reads the cap in force, so the policy loads
+// signalled before it are dropped.
 func (d *capWait) start(t *taskRun) {
 	if d == nil {
 		return
 	}
 	d.t = t
 	d.ctx, d.cancel = workflow.WithCancel(t.ctx)
-	if t.capWaits >= versionCapWait {
-		for workflow.GetSignalChannel(d.ctx, SignalPolicyLoaded).ReceiveAsync(nil) {
-		}
-		if d.restored {
-			d.check()
-			return
-		}
+	if t.capWaits >= versionCapWait && d.restored {
+		t.drainLoads()
+		d.check()
+		return
 	}
 	d.arm(d.every())
 }
@@ -4140,16 +4158,21 @@ func (d *capWait) every() time.Duration {
 	return monthCheck
 }
 
-// arm sets the timer of the next check in place of the last, after, at
-// the period's turn at the latest, and at settles while it lies ahead.
-// Cancelling a timer that fired issues no command.
+// arm sets the timer of the next check, after, at the period's turn at
+// the latest. At versionCapWait a settles bounds it too, settleRetry at
+// the least, and the timer replaces the last under its own context, which
+// a wake cancels (cancelling a timer that fired issues no command).
 func (d *capWait) arm(after time.Duration) {
 	d.checking = false
 	now := workflow.Now(d.ctx)
-	after = min(after, d.until.Sub(now))
-	if d.settles.After(now) {
-		after = min(after, d.settles.Sub(now))
+	if d.t.capWaits < versionCapWait {
+		d.next = workflow.NewTimer(d.ctx, min(after, d.until.Sub(now)))
+		return
 	}
+	if !d.settles.IsZero() {
+		after = min(after, max(d.settles.Sub(now), settleRetry))
+	}
+	after = min(after, d.until.Sub(now))
 	if d.disarm != nil {
 		d.disarm()
 	}
@@ -4170,8 +4193,8 @@ func (d *capWait) check() {
 }
 
 // resumed reads check f: whether it ends the wait. One that failed waits
-// on; one that finds the version in force not yet binding at the gateway
-// sets settles.
+// on; settles becomes the check's, set when it found the version in force
+// not yet binding at the gateway.
 func (d *capWait) resumed(f workflow.Future) bool {
 	if d.t.capWaits < versionCapWait {
 		var funded bool
@@ -4183,7 +4206,6 @@ func (d *capWait) resumed(f workflow.Future) bool {
 	var res CapResumed
 	if err := f.Get(d.ctx, &res); err != nil {
 		workflow.GetLogger(d.ctx).Warn("cap check", "task", d.t.taskID, "cap", d.decision, "error", err)
-		return false
 	}
 	d.settles = res.Settles
 	return res.Resume
@@ -4192,8 +4214,8 @@ func (d *capWait) resumed(f workflow.Future) bool {
 // add makes sel wake on the wait's next step: a timer starts a check; a
 // check that finds the cap no longer binding, or the turn's, ends the
 // wait, and any other arms the next. At versionCapWait a policy load wakes
-// it too: the next check comes gateway.PolicyTTL after the load, or after
-// the check that runs.
+// it too: the next check comes gateway.PolicyTTL after the wake, or after
+// the check that runs; a burst of loads is one wake.
 func (d *capWait) add(sel workflow.Selector) {
 	if d == nil || d.ended {
 		return
@@ -4216,7 +4238,8 @@ func (d *capWait) add(sel workflow.Selector) {
 		return
 	}
 	sel.AddReceive(workflow.GetSignalChannel(d.ctx, SignalPolicyLoaded), func(c workflow.ReceiveChannel, _ bool) {
-		c.Receive(d.ctx, nil)
+		for c.ReceiveAsync(nil) {
+		}
 		if d.checking {
 			d.woken = true
 			return

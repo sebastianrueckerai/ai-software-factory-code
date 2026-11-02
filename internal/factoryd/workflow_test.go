@@ -31,6 +31,7 @@ import (
 	"go.temporal.io/sdk/workflow"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -92,6 +93,8 @@ type workflowHarness struct {
 	configPins []int64
 	// reconcileAfter is how long Reconcile takes on the workflow's clock
 	reconcileAfter time.Duration
+	// escalateAfter is how long Escalate takes on the workflow's clock
+	escalateAfter time.Duration
 	// branchHead answers BranchHead; branchReads counts its calls
 	branchHead  string
 	branchReads int
@@ -306,7 +309,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 				return h.escalationIDs[n-1], h.escalateErr
 			}
 			return int64(600 + len(h.escalated)), h.escalateErr
-		})
+		}).AfterFn(func() time.Duration { return h.escalateAfter })
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string) (int64, error) {
 			h.infoAsked = append(h.infoAsked, reason)
@@ -3222,10 +3225,14 @@ func TestWorkflowMonthCapWaitEndsAtTheMonthsTurn(t *testing.T) {
 // day cap's does, with no check before the ask, the floor having just
 // read the cap: the card asks the month's wait with the floor's state,
 // checks every hour from 21:10, and the 23:10 check, the first after the
-// 22:30 raise, starts attempt 1 with no answer.
+// 22:30 raise, starts attempt 1 with no answer. The policy load at 21:09,
+// during the two minutes Reconcile takes from 21:08, came before the
+// floor's read and wakes nothing (a wake would check at 21:10:30).
 func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 	h, run := capHarness(t, 0, pushed("s1", "c1"))
-	h.env.SetStartTime(oct31(21, 10, 0))
+	h.env.SetStartTime(oct31(21, 8, 0))
+	h.reconcileAfter = 2 * time.Minute
+	h.signalAfter(time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
 	run.funded = oct31(22, 30, 0)
 	const state = "0.000001 EUR of the month's 544.00 EUR (budget.month_eur) is free, and the cheapest call on factory/small needs 0.015360 EUR " +
 		"(1024 output tokens at the hold machinery's minimum); an answer would start an attempt whose first call cannot run."
@@ -3260,10 +3267,15 @@ func TestWorkflowMonthCapAtTheGateWaitsOnItsOwn(t *testing.T) {
 // A healed run of a card waiting on the month cap asks the month's wait
 // again and checks at once, so a raise during the restart is seen then,
 // and hourly after: from 21:10 the checks at 21:10 and 22:10, the latter
-// past the 22:00 raise, which starts the session.
+// past the 22:00 raise, which starts the session. The check at once reads
+// the cap in force, so the policy load at 21:09, during the two minutes
+// Reconcile takes from 21:08, wakes nothing (a wake would check again at
+// 21:10:30).
 func TestWorkflowMonthCapWaitSurvivesAHeal(t *testing.T) {
 	h, run := capHarness(t, 0, pushed("s1", "c1"))
-	h.env.SetStartTime(oct31(21, 10, 0))
+	h.env.SetStartTime(oct31(21, 8, 0))
+	h.reconcileAfter = 2 * time.Minute
+	h.signalAfter(time.Minute, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
 	run.funded = oct31(22, 0, 0)
 	h.state = RunState{Status: "waiting-human", Question: monthQuestion, Cap: monthReason, CapUntil: novFirst}
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -3344,12 +3356,16 @@ func TestWorkflowMonthCapRefusedInTheCacheWindow(t *testing.T) {
 	}
 }
 
-// A policy load signalled before the wait starts brings no early check:
-// the load at 21:05 came during the session that ended at 21:10 (each
-// session's time is its end's), and the wait drops it, so its first check
-// is the hourly one at 22:10, which finds the 22:00 raise; a wake would
-// have checked at 21:10:30.
-func TestWorkflowCapWaitDropsAnEarlierPolicyLoad(t *testing.T) {
+// A policy load drains where the cap was last read, the check before the
+// ask. One signalled before that read brings no early check: the load at
+// 21:05 came during the session that ended at 21:10 (each session's time
+// is its end's), so the wait's first check is the hourly one at 22:10,
+// which finds the 22:00 raise; a wake would have checked at 21:10:30.
+// Loads after the read, during the minute Escalate takes from 21:10, wake
+// the wait that starts at 21:11: its check comes 30 seconds later, at
+// 21:11:30, and finds the 21:11 raise. Three of them in one burst arm one
+// 30-second timer.
+func TestWorkflowCapWaitWakesOnLoadsAfterTheRead(t *testing.T) {
 	h, run := capHarness(t, 10*time.Minute, monthCappedAt(oct31(21, 0, 0), false), pushed("s2", "c1"))
 	h.env.SetStartTime(oct31(21, 0, 0))
 	run.funded = oct31(22, 0, 0)
@@ -3365,6 +3381,92 @@ func TestWorkflowCapWaitDropsAnEarlierPolicyLoad(t *testing.T) {
 	}
 	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(22, 20, 0)}) {
 		t.Fatalf("sessions ended at %v, want the second to start at 22:10 and end at 22:20", run.began)
+	}
+
+	h, run = capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	h.escalateAfter = time.Minute
+	run.funded = oct31(21, 11, 0)
+	var wakes []time.Time
+	h.env.SetOnTimerScheduledListener(func(_ string, d time.Duration) {
+		if d == gateway.PolicyTTL {
+			wakes = append(wakes, h.env.Now())
+		}
+	})
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	for range 3 {
+		h.signalAfter(30*time.Second, SignalPolicyLoaded, TaskSignal{Author: "factoryd"})
+	}
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(21, 11, 30)}) || !sameTimes(wakes, []time.Time{oct31(21, 11, 0)}) {
+		t.Fatalf("checks before the ask %v, checks %v, 30-second timers at %v; want 21:10, then 21:11:30, one timer at 21:11", run.asks, run.checks, wakes)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(21, 11, 30)}) {
+		t.Fatalf("sessions began at %v, want the second at 21:11:30", run.began)
+	}
+}
+
+// A check whose Settles the workflow's clock already passed (the runner's
+// clock lags it) brings the next check settleRetry later, not an hour
+// later: the check before the ask at 21:10 and the check at 21:10:10 both
+// answer Settles 21:09:50, and the check at 21:10:20 resumes the card.
+func TestWorkflowCapWaitChecksSoonOnAPassedSettles(t *testing.T) {
+	h, run := capHarness(t, 0, monthCappedAt(oct31(21, 10, 0), false), pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run.verdict = func(now time.Time) CapResumed {
+		if now.Before(oct31(21, 10, 20)) {
+			return CapResumed{Settles: oct31(21, 9, 50)}
+		}
+		return CapResumed{Resume: true}
+	}
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
+		t.Fatalf("final %q, escalations %q; want the month cap asked", final, h.escalated)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !sameTimes(run.checks, []time.Time{oct31(21, 10, 10), oct31(21, 10, 20)}) {
+		t.Fatalf("checks before the ask %v, checks %v; want 21:10, then 21:10:10 and 21:10:20", run.asks, run.checks)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(21, 10, 20)}) {
+		t.Fatalf("sessions began at %v, want the second at 21:10:20", run.began)
+	}
+}
+
+// The project's month cap waits as the month's does: refused at its first
+// call at 21:10, the check before the ask finds it binding, the card asks
+// with the project's file named, checks every hour, and the 23:10 check,
+// the first after the 22:30 raise, starts attempt 1 with no answer.
+func TestWorkflowProjectCapWaitsOnItsOwn(t *testing.T) {
+	const refusal = "free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 40.000000, project 0.000001); " +
+		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
+	refused := CapRefusal{Refusal: policy.Refusal{Decision: policy.RefusedProjectCap, Reason: refusal}, At: oct31(21, 10, 0)}
+	capped := SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: capRefused(refused.Refusal), Capped: &refused}
+	h, run := capHarness(t, 0, capped, pushed("s2", "c1"))
+	h.env.SetStartTime(oct31(21, 10, 0))
+	run.funded = oct31(22, 30, 0)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	want := "the project's month cap is reached: the card resumes on its own once the project's free month headroom funds a session, " +
+		"at the latest when the UTC month turns at 2026-11-01T00:00:00Z. Raise budget.month_eur in projects/linkshort.yaml to resume it sooner, or close the card.\n" +
+		"the gateway refused this task's spend (refused_project_cap): " + refusal
+	if !slices.Equal(h.escalated, []string{want}) || escalationSource(h.escalated[0]) != "project_cap" {
+		t.Fatalf("escalations = %q, want the project cap's wait once: %q", h.escalated, want)
+	}
+	if !sameTimes(run.asks, []time.Time{oct31(21, 10, 0)}) || !isCheck(run.inputs[0], "factory/small", policy.RefusedProjectCap, oct31(21, 10, 0)) ||
+		!sameTimes(run.checks, []time.Time{oct31(22, 10, 0), oct31(23, 10, 0)}) || !isCheck(run.inputs[1], "factory/small", policy.RefusedProjectCap, time.Time{}) {
+		t.Fatalf("checks before the ask %v, checks %v, inputs %+v; want 21:10, then project checks at 22:10 and 23:10", run.asks, run.checks, run.inputs)
+	}
+	if !sameTimes(run.began, []time.Time{oct31(21, 10, 0), oct31(23, 10, 0)}) || h.sessions[1].Attempt != 1 || len(h.sessions[1].Answers) != 0 {
+		t.Fatalf("sessions began at %v (%+v), want attempt 1 again at 23:10 with no answer", run.began, h.sessions)
 	}
 }
 

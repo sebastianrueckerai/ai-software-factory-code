@@ -3997,9 +3997,11 @@ func TestPlanLoopWaitsOnAMonthCap(t *testing.T) {
 	if final := h.run(t); final != "done" || !slices.Equal(h.escalated, []string{monthReason}) {
 		t.Fatalf("final %q, escalations %q; want the month cap's wait asked", final, h.escalated)
 	}
-	if !sameTimes(run.asks, []time.Time{oct31(21, 15, 0)}) || !sameTimes(run.checks, []time.Time{oct31(22, 15, 0)}) || len(run.turns) != 0 ||
-		!isCheck(run.inputs[1], "factory/big", policy.RefusedMonthCap, time.Time{}) {
-		t.Fatalf("checks before the ask %v, checks %v, turns %v, inputs %+v; want 21:15, then the month's check at 22:15", run.asks, run.checks, run.turns, run.inputs)
+	// the check before the ask runs at the session's 21:15 end about the
+	// 21:10 refusal; the wait's check an hour after the ask
+	if !sameTimes(run.asks, []time.Time{oct31(21, 15, 0)}) || !isCheck(run.inputs[0], "factory/big", policy.RefusedMonthCap, oct31(21, 10, 0)) ||
+		!sameTimes(run.checks, []time.Time{oct31(22, 15, 0)}) || len(run.turns) != 0 || !isCheck(run.inputs[1], "factory/big", policy.RefusedMonthCap, time.Time{}) {
+		t.Fatalf("checks before the ask %v, checks %v, turns %v, inputs %+v; want 21:15 about the 21:10 refusal, then the month's check at 22:15", run.asks, run.checks, run.turns, run.inputs)
 	}
 	if len(h.plans) != 2 || h.plans[0] != nil || h.plans[1] != nil {
 		t.Fatalf("plans %q, want two sessions with no findings", h.plans)
