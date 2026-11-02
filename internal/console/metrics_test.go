@@ -428,6 +428,40 @@ func TestDivideConquerMetricPanels(t *testing.T) {
 	if !strings.Contains(body, ">0 · target 0<") || strings.Contains(body, ">— · target 0<") {
 		t.Error("a measured zero reads 0, apart from the dash and the hole")
 	}
+	// unavailable counts: a Figure the window does not hold reads its
+	// dash wherever a count would render — the cuts pair, the first/later
+	// totals, a named comparison and its detail row — never a measured
+	// zero, and a detail row moves against nothing without its own value
+	r.figures.report.DivideConquer.Cuts = factoryd.Figure{Value: 5, Prev: 2, PrevHas: true}
+	r.figures.report.DivideConquer.CutGroupsClosed = factoryd.Figure{Value: 4, Prev: 1, PrevHas: true}
+	r.figures.report.DivideConquer.CardsFirstRound = factoryd.Figure{Value: 9, Prev: 3, PrevHas: true}
+	r.figures.report.DivideConquer.CardsLaterRounds = factoryd.Figure{Value: 8, Prev: 2, PrevHas: true}
+	for i, nf := range r.figures.report.DivideConquer.ReplansByOriginSpans {
+		if nf.Name == "cut" {
+			nf.Figure = factoryd.Figure{Value: 7, Prev: 2, PrevHas: true, Weeks: nf.Figure.Weeks}
+			r.figures.report.DivideConquer.ReplansByOriginSpans[i] = nf
+		}
+	}
+	body = page()
+	for _, want := range []string{
+		">— / —<", // the cuts panel's pair, both unheld
+		"first — · later —",
+		"person:1 / cut:— / round:1 / unknown:2", // the named comparison, its unheld name apart
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	for _, masked := range []string{
+		">5 / 4<", ">5 / —<", ">— / 4<", // an unheld count never reads its value
+		"first 9", "later 8",
+		"cut:7",
+		`class="mmove">+5<`, // no move without the window's own value
+	} {
+		if strings.Contains(body, masked) {
+			t.Errorf("page renders an unheld figure as measured: %q", masked)
+		}
+	}
 	// the JSON stays additive: the deck's keys stand and the block keeps
 	// its legacy hour semantics beside the precise milliseconds the page
 	// reads

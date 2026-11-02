@@ -266,20 +266,27 @@ func mOriginSpans(figs []factoryd.NamedFigure) string {
 
 // mNamedSpans lists a named comparison's window counts, name by name —
 // the explicit names with slashes, the unknown bucket apart at the end —
-// never collapsing one name into another.
+// never collapsing one name into another; a count the window does not
+// hold reads its dash, never a measured zero.
 func mNamedSpans(figs []factoryd.NamedFigure, name func(string) string) string {
 	if len(figs) == 0 {
+		return "—"
+	}
+	count := func(f factoryd.Figure) string {
+		if f.Has {
+			return mCount(f.Value)
+		}
 		return "—"
 	}
 	var parts []string
 	for _, nf := range figs {
 		if nf.Name != "unknown" {
-			parts = append(parts, name(nf.Name)+":"+mCount(nf.Figure.Value))
+			parts = append(parts, name(nf.Name)+":"+count(nf.Figure))
 		}
 	}
 	for _, nf := range figs {
 		if nf.Name == "unknown" {
-			parts = append(parts, name(nf.Name)+":"+mCount(nf.Figure.Value))
+			parts = append(parts, name(nf.Name)+":"+count(nf.Figure))
 		}
 	}
 	return strings.Join(parts, " / ")
