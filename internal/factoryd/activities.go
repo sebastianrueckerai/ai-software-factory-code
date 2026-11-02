@@ -2454,9 +2454,10 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 }
 
 // Finish is the terminal step. A failed or closed task's open pull request
-// is closed first, with the reason, and a closed task's issue still open
-// too, as is a done one's whose pull request merged (a factory-PR card's
-// carries no "Closes #N"); a done or closed task's branch on the fork is
+// is closed first, with the reason, and a closed or done task's issue
+// still open too (a factory-PR card's pull request carries no "Closes
+// #N", an acceptance end has none), but a plan card's, done each time a
+// revision files its cards; a done or closed task's branch on the fork is
 // deleted. Both return a transient error, so a Forgejo blip retries them before the task
 // turns final, while one Forgejo refuses is logged and passed: no retry
 // fixes it, and failing here would have the heal pass restart the
@@ -2531,10 +2532,13 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if (final == "closed" || final == "done" && merged) && t.IssueNumber != 0 {
+		if (final == "closed" || final == "done" && t.Track != policy.TrackPlan) && t.IssueNumber != 0 {
 			closing := msg
-			if final == "done" {
+			switch {
+			case final == "done" && merged:
 				closing = fmt.Sprintf("factoryd: pull request #%d merged; this card ends with it.", t.PRNumber)
+			case final == "done":
+				closing = "factoryd: " + why + "; this card ends with it."
 			}
 			if err := cleanup(taskID, "close its issue", r.closeTaskIssue(ctx, repo, t, closing)); err != nil {
 				return err
@@ -2641,7 +2645,7 @@ func cleanup(taskID, step string, err error) error {
 // factoryd's recorded close with msg as the reason, as
 // closeTaskPullRequest does on the pull request: the card a change request
 // closed (versionFactoryPRActions) reads closed on its issue as on the
-// board, and so does a merged card whose merge closed no issue. An issue a
+// board, and so does a done card whose end closed no issue. An issue a
 // human or the merge's "Closes #N" closed is left.
 func (r *Runner) closeTaskIssue(ctx context.Context, repo Repo, t Task, msg string) error {
 	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)

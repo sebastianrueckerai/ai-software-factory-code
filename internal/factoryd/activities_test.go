@@ -60,6 +60,7 @@ type prForgejo struct {
 	pulls         map[int64]string    // GET /pulls/{n} bodies
 	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it, or opens it with state open
 	openReads     int                 // GET /issues/{n} reports open this many times first, whatever issueOff
+	issueStates   map[int64]string    // set, each issue's own state in place of issueOff, open when unlisted
 	issuesClosed  []int64             // PATCH /issues/{n} closes
 	reopened      []int64             // PATCH /issues/{n} with state open
 	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
@@ -188,6 +189,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				state = "closed"
 			}
 			f.openReads = max(f.openReads-1, 0)
+			if f.issueStates != nil {
+				var n int64
+				fmt.Sscanf(p, "/issues/%d", &n)
+				state = cmp.Or(f.issueStates[n], "open")
+			}
 			fmt.Fprintf(w, `{"state":%q}`, state)
 		case r.Method == "PATCH" && strings.HasPrefix(p, "/issues/"):
 			var n int64
@@ -198,6 +204,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				f.reopened, f.issueOff = append(f.reopened, n), false
 			} else {
 				f.issuesClosed, f.issueOff = append(f.issuesClosed, n), true
+			}
+			if f.issueStates != nil {
+				f.issueStates[n] = body.State
 			}
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
@@ -1280,7 +1289,7 @@ func TestFinishFailedCompletesCommentsAndIsIdempotent(t *testing.T) {
 }
 
 func TestFinishDoneFromInReview(t *testing.T) {
-	fj := &prForgejo{labels: map[int64][]string{4: {"agent", "state/in-review"}}}
+	fj := &prForgejo{issueOff: true, labels: map[int64][]string{4: {"agent", "state/in-review"}}}
 	task := prTask
 	task.Status = "in-review"
 	r, store, _ := newActivityRunner(t, task, fj)
@@ -1296,30 +1305,33 @@ func TestFinishDoneFromInReview(t *testing.T) {
 	}
 }
 
-// A card that ends done on its merged pull request closes its issue
-// where the merge left it open: a factory-PR card's pull request carries
-// no "Closes #N" (card #1333). An issue the merge's "Closes #N" closed
-// takes no write, and a done card without a pull request, a plan among
-// them, keeps its issue open.
-func TestFinishDoneClosesTheIssueOfAMergedCard(t *testing.T) {
+// A card that ends done closes its issue where its end left it open: a
+// factory-PR card's pull request carries no "Closes #N" (card #1333), and
+// a card its plan's acceptance command ended has no pull request. An
+// issue the merge's "Closes #N" closed takes no write, and a plan card,
+// done each time a revision files its cards, keeps its issue open.
+func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m12"}`
+	acceptance := `acceptance "make check" exited 0 in session s2`
 	for _, tc := range []struct {
-		name     string
-		pr       int64
-		source   string
-		issueOff bool
-		comments []string
-		closed   []int64
+		name, reason, source, track string
+		pr                          int64
+		issueOff                    bool
+		comments                    []string
+		closed                      []int64
 	}{
-		{"a revert, its issue open", 12, SourceRevert, false, []string{"factoryd: pull request #12 merged; this card ends with it."}, []int64{4}},
-		{"an agent card whose merge closed its issue", 12, "api", true, nil, nil},
-		{"a plan without a pull request", 0, SourcePlan, false, nil, nil},
+		{"a revert, its issue open", "pull request merged by factory-merge", SourceRevert, "direct", 12, false,
+			[]string{"factoryd: pull request #12 merged; this card ends with it."}, []int64{4}},
+		{"an agent card whose merge closed its issue", "pull request merged by factory-merge", "api", "direct", 12, true, nil, nil},
+		{"an acceptance end without a pull request", acceptance, SourcePlan, "direct", 0, false,
+			[]string{"factoryd: " + acceptance + "; this card ends with it."}, []int64{4}},
+		{"a plan card", "the plan's revision 2 filed its cards", "webhook", policy.TrackPlan, 0, false, nil, nil},
 	} {
 		fj := &prForgejo{issueOff: tc.issueOff, pulls: map[int64]string{12: merged}, labels: map[int64][]string{4: {"state/in-review"}}}
 		task := withStatus(prTask, "in-review")
-		task.Kind, task.Source, task.PRNumber = "agent", tc.source, tc.pr
+		task.Kind, task.Source, task.Track, task.PRNumber = "agent", tc.source, tc.track, tc.pr
 		r, store, _ := newActivityRunner(t, task, fj)
-		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", "pull request merged by factory-merge"); err != nil {
+		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", tc.reason); err != nil {
 			t.Fatalf("%s: %v", tc.name, err)
 		}
 		if !slices.Equal(fj.comments, tc.comments) || !slices.Equal(fj.issuesClosed, tc.closed) {
@@ -1735,7 +1747,7 @@ func TestFinishDeletesTheForkBranch(t *testing.T) {
 	}{
 		"merged":       {&prForgejo{pulls: map[int64]string{12: merged}, issueOff: true}, []string{"factory-agent/repo factory/t1"}},
 		"already gone": {&prForgejo{pulls: map[int64]string{12: merged}, branchGone: true, issueOff: true}, nil},
-		"unmerged":     {&prForgejo{pulls: map[int64]string{12: open}}, nil},
+		"unmerged":     {&prForgejo{pulls: map[int64]string{12: open}, issueOff: true}, nil},
 	} {
 		fj := tc.fj
 		r, store, _ := newActivityRunner(t, withPR(withStatus(prTask, "in-review"), 12), fj)
