@@ -250,6 +250,40 @@ func (s *fakeStore) ExtendCard(ctx context.Context, id string, sessions, lines i
 	return from, t.BudgetEUR, err
 }
 
+func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return ErrNotFound
+	}
+	t.PlanName = name
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
+	var out []string
+	for _, t := range s.tasks {
+		if t.Repository == projectID && t.Track == policy.TrackPlan && t.ID != excludeID && t.PlanName != "" {
+			if _, closed := s.closed[t.ID]; !closed {
+				out = append(out, t.PlanName)
+			}
+		}
+	}
+	slices.Sort(out)
+	return out, nil
+}
+
+func (s *fakeStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if _, closed := s.closed[t.ID]; t.Track == policy.TrackPlan && t.PlanName == "" && !closed {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return strings.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},

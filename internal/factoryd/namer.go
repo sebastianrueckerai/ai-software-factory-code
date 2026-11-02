@@ -51,6 +51,10 @@ type NameStore interface {
 	OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error)
 	// SetPlanName records the plan's short name.
 	SetPlanName(ctx context.Context, id, name string) error
+	// UnnamedOpenPlans are the open plans that hold no name yet.
+	UnnamedOpenPlans(ctx context.Context) ([]Task, error)
+	// PlanRevision reads revision n of plan id, the newest for 0.
+	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 }
 
 // Namer names a project's plans.
@@ -89,6 +93,40 @@ func (n *Namer) Name(ctx context.Context, t Task, title, outcome, summary string
 	slug := planSlug(title, taken)
 	n.record(ctx, t, slug)
 	return slug
+}
+
+// NameOpenPlans names the open plans this build inherits, once at
+// startup, from each plan's newest revision. A plan with no revision yet
+// is skipped: it is named when its first revision files. A revision that
+// does not read still names the plan, by its issue title alone. A store
+// error stops the sweep and the next start retries. The return is the
+// count named.
+func (n *Namer) NameOpenPlans(ctx context.Context) int {
+	plans, err := n.Store.UnnamedOpenPlans(ctx)
+	if err != nil {
+		log.Printf("names: open plans without a name: %v", err)
+		return 0
+	}
+	named := 0
+	defer func() { log.Printf("names: %d open plans named", named) }()
+	for _, t := range plans {
+		rev, filed, err := n.Store.PlanRevision(ctx, t.ID, 0)
+		if err != nil {
+			log.Printf("names: revision of %s: %v", t.ID, err)
+			return named
+		}
+		if !filed {
+			continue
+		}
+		var p Plan
+		var outcome string
+		if json.Unmarshal(rev.Plan, &p) == nil && p.Spec != nil {
+			outcome = p.Spec.Outcome
+		}
+		n.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
+		named++
+	}
+	return named
 }
 
 // record stores the plan's name; a store that refuses it leaves the

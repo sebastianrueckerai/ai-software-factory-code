@@ -2617,6 +2617,13 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
 	}
+	if r.Namer != nil && t.PlanName == "" {
+		var outcome string
+		if p.Spec != nil {
+			outcome = p.Spec.Outcome
+		}
+		r.Namer.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
+	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
 	gate, err := r.confirms(ctx, t, p)
 	if err != nil {

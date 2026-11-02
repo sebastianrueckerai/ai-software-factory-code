@@ -2885,6 +2885,9 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	bounded := fixtureVersion(t)
 	runner.cfg.Policy = func() policy.Version { return bounded }
 	ctx := context.Background()
+	ll := &fakeLiteLLM{contents: []string{`{"name":"shorten links"}`}}
+	runner.Namer = &Namer{Store: store, Model: testSupervisorModel(ll.srv(t).URL),
+		Current: func() policy.Version { return nameVersion() }}
 
 	over := testPlan()
 	over.Cards[1].Size = "huge" // links-api: a size the ladder does not name
@@ -2921,6 +2924,22 @@ func TestFilePlanChecksAndStores(t *testing.T) {
 	}
 	if held, ok := runner.takeFiled("t-plan"); !ok || held.Revision != 1 {
 		t.Fatalf("held for the session = %+v, %v", held, ok)
+	}
+	if got := store.tasks["t-plan"].PlanName; got != "shorten links" {
+		t.Fatalf("plan name %q, want the model's %q", got, "shorten links")
+	}
+	if ask := nameAsk(t, ll, 1); !strings.Contains(ask, "Issue title: Link shortener") {
+		t.Fatalf("the naming ask carries the issue title: %q", ask)
+	}
+
+	amend := testPlan()
+	amend.Cards[0].Brief = "Foundation: layout, contract, schema, migrations."
+	if res, err := runner.FilePlan(ctx, "t-plan", planJSON(t, amend)); err != nil || res.Revision != 2 {
+		t.Fatalf("revision 2: %+v, %v", res, err)
+	}
+	runner.takeFiled("t-plan")
+	if got := store.tasks["t-plan"].PlanName; got != "shorten links" || len(ll.chats) != 1 {
+		t.Fatalf("after revision 2 the name is %q with %d naming calls, want the first name and 1 call", got, len(ll.chats))
 	}
 
 	if err := store.TransitionTask(ctx, "t-plan", []string{"running"}, "in-review"); err != nil {

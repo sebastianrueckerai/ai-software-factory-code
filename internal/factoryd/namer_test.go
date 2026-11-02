@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"net/http"
 	"strings"
 	"testing"
@@ -15,6 +16,33 @@ import (
 type fakeNameStore struct {
 	open  []string
 	names map[string]string
+	// plans are the project's plan tasks; closed holds the ids of the
+	// ended ones
+	plans  []Task
+	closed map[string]bool
+	err    error
+	// revs are the plans' newest revisions by task id
+	revs map[string]PlanRevision
+	// revErr are the ids whose revision read fails
+	revErr map[string]error
+}
+
+func (f *fakeNameStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	if err := f.revErr[id]; err != nil {
+		return PlanRevision{}, false, err
+	}
+	rev, ok := f.revs[id]
+	return rev, ok, nil
+}
+
+func (f *fakeNameStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
+	var out []Task
+	for _, t := range f.plans {
+		if t.PlanName == "" && f.names[t.ID] == "" && !f.closed[t.ID] {
+			out = append(out, t)
+		}
+	}
+	return out, f.err
 }
 
 func (f *fakeNameStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
@@ -212,5 +240,69 @@ func TestNormalizePlanName(t *testing.T) {
 		if ok != tt.ok || got != tt.want {
 			t.Fatalf("normalizePlanName(%q) = %q, %v; want %q, %v", tt.in, got, ok, tt.want, tt.ok)
 		}
+	}
+}
+
+func TestNameOpenPlansNamesSkipsAndIsIdempotent(t *testing.T) {
+	ll := &fakeLiteLLM{contents: []string{`{"name":"fix prod latency"}`}}
+	n, store := newNamer(t, ll, nil)
+	store.plans = []Task{
+		{ID: "open", Repository: "o/r", Objective: "Fix the check!\n\nIt fails.", RequiredCapabilities: []string{policy.ClassCoder}},
+		{ID: "drafting", Repository: "o/r", Objective: "Not filed yet"},
+		{ID: "named", Repository: "o/r", PlanName: "already here"},
+		{ID: "ended", Repository: "o/r", Objective: "Old plan"},
+	}
+	store.closed = map[string]bool{"ended": true}
+	store.revs = map[string]PlanRevision{
+		"open":  {Plan: []byte(`{"spec":{"outcome":"the check passes"},"summary":"it fails on rerun"}`)},
+		"ended": {Plan: []byte(`{"summary":"old"}`)},
+	}
+	if got := n.NameOpenPlans(context.Background()); got != 1 {
+		t.Fatalf("named %d, want 1: the filed open plan only", got)
+	}
+	if len(store.names) != 1 || store.names["open"] != "fix prod latency" {
+		t.Fatalf("names %v, want only open: %q", store.names, "fix prod latency")
+	}
+	ask := nameAsk(t, ll, 1)
+	for _, want := range []string{"Issue title: Fix the check!", "Spec outcome: the check passes", "Summary: it fails on rerun"} {
+		if !strings.Contains(ask, want) {
+			t.Fatalf("the ask lacks %q: %q", want, ask)
+		}
+	}
+	if got := n.NameOpenPlans(context.Background()); got != 0 || len(ll.chats) != 1 {
+		t.Fatalf("second pass named %d with %d calls in all, want 0 and 1", got, len(ll.chats))
+	}
+}
+
+func TestNameOpenPlansNamesAPlanWhoseRevisionDoesNotRead(t *testing.T) {
+	ll := &fakeLiteLLM{contents: []string{`{"name":"fix prod latency"}`}}
+	n, store := newNamer(t, ll, nil)
+	store.plans = []Task{{ID: "open", Repository: "o/r", Objective: "Fix the check!"}}
+	store.revs = map[string]PlanRevision{"open": {Plan: []byte(`not json`)}}
+	if got := n.NameOpenPlans(context.Background()); got != 1 || store.names["open"] != "fix prod latency" {
+		t.Fatalf("named %d as %v, want 1 as %q", got, store.names, "fix prod latency")
+	}
+}
+
+func TestNameOpenPlansStopsOnAStoreError(t *testing.T) {
+	ll := &fakeLiteLLM{}
+	n, store := newNamer(t, ll, nil)
+	store.err = errors.New("db down")
+	if got := n.NameOpenPlans(context.Background()); got != 0 || len(ll.chats) != 0 {
+		t.Fatalf("named %d with %d calls, want none", got, len(ll.chats))
+	}
+}
+
+func TestNameOpenPlansStopsOnARevisionReadError(t *testing.T) {
+	ll := &fakeLiteLLM{contents: []string{`{"name":"fix prod latency"}`}}
+	n, store := newNamer(t, ll, nil)
+	store.plans = []Task{{ID: "first", Repository: "o/r", Objective: "Fix the check!"}, {ID: "second", Repository: "o/r", Objective: "Quota the pager"}}
+	store.revs = map[string]PlanRevision{"first": {Plan: []byte(`{"summary":"a"}`)}, "second": {Plan: []byte(`{"summary":"b"}`)}}
+	store.revErr = map[string]error{"second": errors.New("db down")}
+	if got := n.NameOpenPlans(context.Background()); got != 1 {
+		t.Fatalf("named %d, want 1: the first plan, then the read of the second fails", got)
+	}
+	if len(store.names) != 1 || store.names["first"] != "fix prod latency" || len(ll.chats) != 1 {
+		t.Fatalf("names %v with %d calls, want only first named with 1 call", store.names, len(ll.chats))
 	}
 }
