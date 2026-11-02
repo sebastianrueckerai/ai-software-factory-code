@@ -693,4 +693,13 @@ func TestQuestionFactsOfTheMonthCapStops(t *testing.T) {
 	if f.ProjectFile != "projects/shop.yaml" || f.MonthCapEUR != 0 || f.Month != "" || f.CapCard != 0 || !f.MonthTurn.Equal(monthTurn(time.Now())) {
 		t.Errorf("project facts = %+v, want projects/shop.yaml, the turn, no factory month", f)
 	}
+
+	bare := &Runner{store: store}
+	f = bare.questionFacts(ctx, task, projectCapResumes+"\nx")
+	if f.ProjectFile != "" || !f.MonthTurn.Equal(monthTurn(time.Now())) {
+		t.Errorf("project facts without a policy = %+v, want the turn and no file", f)
+	}
+	if q := ShapedQuestion(projectCapResumes+"\nx", f, nil); !strings.HasPrefix(q.Ask, "The project's month cap is reached. ") || strings.Contains(q.Ask, "0001") {
+		t.Errorf("ask without a policy = %q", q.Ask)
+	}
 }

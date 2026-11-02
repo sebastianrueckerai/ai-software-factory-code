@@ -862,12 +862,13 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		f.SpentEUR = t.SpentEUR
 		f.LeftEUR = t.BudgetEUR - t.SpentEUR
 	}
-	if strings.HasPrefix(reason, projectCapReached) && r.cfg.Policy != nil {
-		name, _ := r.cfg.Policy().ProjectCap(t.Repository)
-		if name != "" {
-			f.ProjectFile = "projects/" + name + ".yaml"
-		}
+	if strings.HasPrefix(reason, projectCapReached) {
 		f.MonthTurn = monthTurn(time.Now())
+		if r.cfg.Policy != nil {
+			if name, _ := r.cfg.Policy().ProjectCap(t.Repository); name != "" {
+				f.ProjectFile = "projects/" + name + ".yaml"
+			}
+		}
 	}
 	if strings.HasPrefix(reason, monthCapReached) {
 		f.MonthTurn = monthTurn(time.Now())
