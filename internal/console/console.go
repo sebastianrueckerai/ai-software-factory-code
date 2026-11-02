@@ -438,6 +438,10 @@ type session struct {
 	// seen is when last_seen was moved last; it moves at most once a
 	// minute.
 	seen time.Time
+	// chatToken is the chat token that opened this session, tokenName its
+	// name; 0 for a cookie or a wake.
+	chatToken int64
+	tokenName string
 }
 
 // getRoute is a GET route of the console with its handler, and the chat
@@ -505,8 +509,10 @@ func (c *Console) postRoutes() []postRoute {
 	routines := func() bool { return c.cfg.Routines != nil }
 	messengers := func() bool { return c.cfg.Messengers != nil }
 	tokens := c.chatTokensOn
+	door := func() bool { return c.cfg.ChatTokens != nil && c.cfg.Chat != nil }
 	return []postRoute{
 		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
+		{"POST /mcp", c.bearer(c.mcpHandler()), door},
 		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
 		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
 		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},

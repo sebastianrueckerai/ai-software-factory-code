@@ -686,14 +686,7 @@ func (t *turn) grepText(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	tok, err := t.c.accessToken(t.r.Context(), t.a.s)
-	if err != nil {
-		if errors.Is(err, errLoggedOut) {
-			t.c.end(t.a.s)
-		}
-		return "", err
-	}
-	raw, err := t.c.call(t.r.Context(), tok, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/archive/%s.tar.gz",
+	raw, err := t.c.callAs(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/archive/%s.tar.gz",
 		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(in.Ref)), nil, http.StatusOK, archiveLimit+1)
 	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no archive at %s.", in.Ref))

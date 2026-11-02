@@ -2230,7 +2230,7 @@ func TestExpiredTokenIsRefreshedAndARefusedRefreshLogsOut(t *testing.T) {
 }
 
 // setTokenExpiry writes the session row's token expiry, as a token about
-// to run out would have it.
+// to run out would have it; the row keeps its refresh token.
 func (r *rig) setTokenExpiry(t *testing.T, ck *http.Cookie, at time.Time) {
 	t.Helper()
 	hash := sessionIDHash(ck.Value)
@@ -2238,7 +2238,11 @@ func (r *rig) setTokenExpiry(t *testing.T, ck *http.Cookie, at time.Time) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := r.c.cfg.Sessions.UpdateConsoleSessionTokens(context.Background(), hash, sealed, "", at); err != nil {
+	row, ok := r.sessions.row(hash)
+	if !ok {
+		t.Fatal("no session row")
+	}
+	if err := r.c.cfg.Sessions.UpdateConsoleSessionTokens(context.Background(), hash, sealed, row.Refresh, at); err != nil {
 		t.Fatal(err)
 	}
 }

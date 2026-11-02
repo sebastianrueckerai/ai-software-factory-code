@@ -102,6 +102,7 @@ var accessTable = map[string]accessRule{
 
 	// POST routes
 	"POST /messengers/telegram":                 {}, // the header secret is the route's own check
+	"POST /mcp":                                 {}, // the bearer is the route's own check
 	"POST /notifications/telegram/code":         rMember,
 	"POST /notifications/disconnect":            rMember,
 	"POST /notifications/tokens":                rMember, // the human's own writes judge the project

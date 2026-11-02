@@ -65,7 +65,18 @@ func (f *fakeChatTokens) RevokeChatToken(_ context.Context, id int64, login stri
 	return false, nil
 }
 
-func (f *fakeChatTokens) TouchChatToken(context.Context, int64, time.Time) error { return nil }
+// TouchChatToken moves id's last use to now, at most once a minute, as
+// the store does.
+func (f *fakeChatTokens) TouchChatToken(_ context.Context, id int64, now time.Time) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for i, t := range f.rows {
+		if t.ID == id && (t.LastUsed.IsZero() || t.LastUsed.Before(now.Add(-time.Minute))) {
+			f.rows[i].LastUsed = now
+		}
+	}
+	return nil
+}
 
 func (f *fakeChatTokens) ClaimChatTokenConversation(context.Context, int64, int64) (int64, error) {
 	return 0, nil

@@ -203,6 +203,8 @@ type forgejoRefusal struct {
 
 func (e *forgejoRefusal) Error() string { return "Forgejo refused to " + e.what + ": " + e.err.Error() }
 
+func (e *forgejoRefusal) Unwrap() error { return e.err }
+
 // fail answers a button whose action failed with err.
 func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 	var no *refusal
