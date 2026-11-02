@@ -1671,11 +1671,13 @@ func exitedHow(plain string, d PodDiagnosis) string {
 }
 
 // The start steps a pod can fail at for good; stepImagePin a gate's
-// sandbox whose card's image has no pin in force.
+// sandbox whose card's image has no pin in force, stepBudget a session
+// the card's own money cannot open.
 const (
 	stepImagePull       = "image pull"
 	stepContainerConfig = "container config"
 	stepImagePin        = "image pin"
+	stepBudget          = "budget"
 )
 
 // StepEgressProbe is the worker's start step that holds the sandbox to its
@@ -1740,8 +1742,12 @@ const (
 
 // escalation is the failure's escalation reason, then the way on: its
 // first line is the card's question row (escalationQuestion), with the
-// action.
+// action. The budget's keeps the floor's refusal, which opens the money
+// ask, with the Fund action below it.
 func (f *startFailure) escalation(then string) string {
+	if f.step == stepBudget {
+		return f.text + "\nFund the card (Fund on the board) and " + strings.TrimPrefix(then, "then ") + "."
+	}
 	act := "fix the cause below"
 	switch f.step {
 	case stepImagePull:

@@ -2154,6 +2154,48 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 	}
 }
 
+// A fresh session the card's own money cannot open is refused before
+// anything opens: no token, no session row, no pod. The card gets the
+// floor's refusal as a money ask, with the Fund action below it, and no
+// session burns the rest of its budget on calls the gateway must refuse.
+// 0.100 EUR of 2 is left, and the cheap rung's floor asks 0.30.
+func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
+	task := Task{ID: "t4k", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 1.9}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR " +
+		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would end before it could push."
+	reason := why + "\nFund the card (Fund on the board) and answer to start a session again, or close the card."
+	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != reason || res.Model != "factory/small" {
+		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, reason)
+	}
+	if got := escalationSource(res.Reason); got != "budget" {
+		t.Fatalf("escalation source = %q, want budget", got)
+	}
+	if len(store.sessions) != 0 || len(kube.podOrder) != 0 || slices.ContainsFunc(hub.calls, func(c string) bool { return strings.HasPrefix(c, "mint ") }) {
+		t.Fatalf("sessions %v, pods %d, forgejo calls %v; want nothing opened", store.sessions, len(kube.podOrder), hub.calls)
+	}
+}
+
+// A factory with no price source opens every session as before, a card
+// whose budget is spent included: no floor can be read.
+func TestRunSessionOpensWhenNoPricesAreConfigured(t *testing.T) {
+	task := Task{ID: "t4l", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.cfg.Prices = nil
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4l", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.StartFailed || len(kube.podOrder) != 1 || len(store.sessions) != 1 {
+		t.Fatalf("result = (%+v, %v), pods %d, sessions %d; want the session opened and pushed", res, err, len(kube.podOrder), len(store.sessions))
+	}
+}
+
 // workerStartFailed is the worker's result line for a start that failed
 // at step with summary.
 func workerStartFailed(step, summary string) string {
@@ -2717,6 +2759,45 @@ func TestRunSessionReattachesToAFinishedPod(t *testing.T) {
 	}
 	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_reattached"`) || strings.Count(timeline, `"step":"session_start"`) != 1 {
 		t.Fatalf("timeline = %s, want one start and a reattach", timeline)
+	}
+}
+
+// A reattached session is already open and paid into: the floor is not
+// read for it, though the card's spent budget could not open a new one.
+func TestRunSessionDoesNotFloorAReattachedSession(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(true, "pushed") + "\n"
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	spent := store.tasks["t2"]
+	spent.SpentEUR = spent.BudgetEUR
+	store.tasks["t2"] = spent
+	v := testPolicyVersion()
+	v.Tree.Document.Prices.MaxOutputTokens["m"] = 32768
+	runner.cfg.Policy = func() policy.Version { return v }
+	asked := &askedPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
+	runner.cfg.Prices = asked
+	if why, err := runner.SessionFunded(context.Background(), "t2", "m"); err != nil || !BudgetRefusal(why) {
+		t.Fatalf("a new opening's floor = (%q, %v), want the budget's refusal", why, err)
+	}
+	asked.aliases = nil
+
+	res, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil || res.Outcome != OutcomePushed || res.SessionID != first.SessionID || res.StartFailed {
+		t.Fatalf("result = (%+v, %v), want the live session's push as its own", res, err)
+	}
+	if len(asked.aliases) != 0 || len(kube.podOrder) != 1 {
+		t.Fatalf("prices read %q, pods %d; want no floor read and only the first pod", asked.aliases, len(kube.podOrder))
 	}
 }
 

@@ -587,6 +587,18 @@ func (r *Runner) SessionFunded(ctx context.Context, taskID, model string) (strin
 	return r.funded(ctx, taskID, model, true)
 }
 
+// openingRefused is the start failure of a fresh session the task's own
+// money cannot open (SessionFunded), nil when it can or another refusal
+// binds: at a cap the gateway refuses the session's first call, and the
+// loop waits on the cap.
+func (r *Runner) openingRefused(ctx context.Context, taskID, model string) (*startFailure, error) {
+	why, err := r.SessionFunded(ctx, taskID, model)
+	if err != nil || !BudgetRefusal(why) {
+		return nil, err
+	}
+	return &startFailure{step: stepBudget, text: why}, nil
+}
+
 // SessionAnswered reports whether the session of a task that began at in.Since
 // got a model answer, and records the named start of one that did: a pod that
 // started and made no answered call is no session. The ledger, not
@@ -965,6 +977,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}()
 	var deadline, startedAt time.Time
 	if live == nil {
+		if f, err := r.openingRefused(ctx, t.ID, s.model); err != nil {
+			return SessionResult{}, named("budget floor", err)
+		} else if f != nil {
+			res := sessionResult(s, sessionOutcome{start: f})
+			res.Model = s.model
+			return res, nil
+		}
 		// least privilege: read on the task's repository, the
 		// bot's fork (a resumed branch's head is on the fork) and the
 		// project's document repository for the clone init container,
