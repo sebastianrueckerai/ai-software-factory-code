@@ -934,10 +934,10 @@ func chatDocuments(r *http.Request) ([]chatDocument, string) {
 	return out, ""
 }
 
-// scrubTokens is text with every GitHub token replaced by tokenMask, and
-// whether it held one.
+// scrubTokens is text with every GitHub token and chat token replaced by
+// tokenMask, and whether it held one.
 func scrubTokens(text string) (string, bool) {
-	out := redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask)
+	out := redact.ChatToken.ReplaceAllLiteralString(redact.GitHubToken.ReplaceAllLiteralString(text, tokenMask), tokenMask)
 	return out, out != text
 }
 

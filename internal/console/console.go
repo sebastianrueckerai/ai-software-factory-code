@@ -376,6 +376,9 @@ type Config struct {
 	// Messengers carries the Telegram webhook (roadmap 145); nil and the
 	// console answers no /messengers route.
 	Messengers *Messengers
+	// ChatTokens keeps the chat tokens of the humans' local agents
+	// (factoryd.PGStore); nil and the page offers none.
+	ChatTokens ChatTokens
 }
 
 // Console is the console's http.Handler.
@@ -454,7 +457,7 @@ func (c *Console) getRoutes() ([]getRoute, error) {
 		return nil, err
 	}
 	return []getRoute{
-		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level"},
+		{"GET /notifications", c.notifications, "", "the notifications panel: the chat changes no messenger level and makes no chat token"},
 		{"GET /messengers/discord/start", c.discordStart, "", "Discord's OAuth2 start: the messengers carry no chat"},
 		{"GET /messengers/discord/callback", c.discordCallback, "", "Discord's OAuth2 callback: the messengers carry no chat"},
 		{"GET /static/", func(w http.ResponseWriter, r *http.Request) {
@@ -501,11 +504,14 @@ func (c *Console) postRoutes() []postRoute {
 	mirrors, sync := func() bool { return c.cfg.Mirrors != nil }, func() bool { return c.cfg.GitHubSync != nil }
 	routines := func() bool { return c.cfg.Routines != nil }
 	messengers := func() bool { return c.cfg.Messengers != nil }
+	tokens := func() bool { return c.cfg.ChatTokens != nil }
 	return []postRoute{
 		{"POST /messengers/telegram", http.HandlerFunc(c.telegramWebhook), messengers},
 		{"POST /notifications/telegram/code", http.HandlerFunc(c.telegramCode), messengers},
 		{"POST /notifications/disconnect", http.HandlerFunc(c.disconnect), messengers},
 		{"POST /notifications/level", http.HandlerFunc(c.notifyLevel), messengers},
+		{"POST /notifications/tokens", http.HandlerFunc(c.makeChatToken), tokens},
+		{"POST /notifications/tokens/revoke", http.HandlerFunc(c.revokeChatToken), tokens},
 		{"POST /logout", http.HandlerFunc(c.logout), nil},
 		{"POST /tasks", http.HandlerFunc(c.createTask), nil},
 		{"POST /tasks/{id}/answer", http.HandlerFunc(c.answer), nil},

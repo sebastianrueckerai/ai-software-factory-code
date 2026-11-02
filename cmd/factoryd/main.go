@@ -671,6 +671,7 @@ func main() {
 		Steer:          runner.MessageSession,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
+		ChatTokens:     store,
 		Notes:          store,
 		Escalate: func(ctx context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
 			repo, err := factoryd.SplitRepo(repository)

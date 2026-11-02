@@ -9,7 +9,7 @@ import (
 )
 
 // Scrubber replaces PEM blocks, the configured secrets, URL userinfo,
-// bearer and basic credentials, JWTs, sk- keys and any run of 32 or more
+// bearer and basic credentials, JWTs, sk- keys, chat tokens and any run of 32 or more
 // key characters that holds a digit, a + or an = and is not a commit id, a
 // sha256 digest or a lowercase path with a marker.
 type Scrubber struct {
@@ -23,7 +23,7 @@ var (
 	// shortWord is a credential position holding a word ("missing bearer
 	// token"), not a credential
 	shortWord = regexp.MustCompile(`^[A-Za-z]{1,7}$`)
-	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}`)
+	keyLike   = regexp.MustCompile(`\beyJ[\w-]+\.[\w-]+\.[\w-]*|\bsk-[\w-]{6,}|\bsfc_[\w-]{43}`)
 	longRun   = regexp.MustCompile(`(?:sha256:)?[\w+/=-]{32,}`)
 	// gitSHA and digest are what the 32-character rule keeps: a commit id,
 	// an image or blob digest

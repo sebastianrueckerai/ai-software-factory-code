@@ -104,6 +104,8 @@ var accessTable = map[string]accessRule{
 	"POST /messengers/telegram":                 {}, // the header secret is the route's own check
 	"POST /notifications/telegram/code":         rMember,
 	"POST /notifications/disconnect":            rMember,
+	"POST /notifications/tokens":                rMember, // the human's own writes judge the project
+	"POST /notifications/tokens/revoke":         rMember, // the store revokes only the human's own
 	"POST /notifications/level":                 rMember, // follows() judges the project's sight, as the stream does
 	"POST /logout":                              rMember,
 	"POST /tasks":                               rFactory,

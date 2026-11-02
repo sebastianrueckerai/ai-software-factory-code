@@ -2,6 +2,13 @@
 <div class="page">
 <h2>Notifications</h2>
 
+{{with .Shown}}<section class="notify" aria-labelledby="shown">
+<h3 id="shown">Chat token {{.Name}}</h3>
+<p>The bearer and the line below appear once. Copy them now; the console keeps neither.</p>
+<p><code>{{.Bearer}}</code></p>
+<p><code>{{.Line}}</code></p>
+</section>{{end}}
+
 {{$csrf := .CSRF}}{{$code := .Code}}{{$tg := ""}}{{range .Links}}{{if eq .Venue "telegram"}}{{$tg = .Address}}{{end}}{{end}}{{$dc := ""}}{{range .Links}}{{if eq .Venue "discord"}}{{$dc = .Address}}{{end}}{{end}}
 <section class="notify" aria-labelledby="connections">
 <h3 id="connections">Connections</h3>
@@ -42,5 +49,28 @@
 </tbody>
 </table>
 </section>
+{{if .ChatTokens}}{{$now := .Now}}
+<section class="notify" aria-labelledby="tokens">
+<h3 id="tokens">Chat tokens</h3>
+<table>
+<caption>A chat token lets your own Claude Code talk to one project's chat as you. Make a Forgejo token with only read:user, write:repository and write:issue, and paste it here; the console seals it.</caption>
+<thead><tr><th scope="col">Name</th><th scope="col">Project</th><th scope="col">Expires</th><th scope="col">Last used</th><th scope="col">Act</th></tr></thead>
+<tbody>
+{{range .Tokens}}<tr><th scope="row">{{.Name}}</th><td>{{.Repository}}</td>
+<td>{{if .Expires.Before $now}}<span class="dim">expired</span>{{else}}{{.Expires.Format "2006-01-02"}}{{end}}</td>
+<td>{{if .LastUsed.IsZero}}<span class="dim">never</span>{{else}}{{.LastUsed.Format "2006-01-02 15:04"}}{{end}}</td>
+<td class="act"><form method="post" action="/notifications/tokens/revoke" class="inline"><input type="hidden" name="csrf" value="{{$csrf}}"><input type="hidden" name="id" value="{{.ID}}"><button type="submit">Revoke</button></form></td></tr>
+{{else}}<tr><td colspan="5">No chat token.</td></tr>{{end}}
+</tbody>
+</table>
+<form method="post" action="/notifications/tokens">
+<input type="hidden" name="csrf" value="{{$csrf}}">
+<p><label for="token-project">Project</label> <select id="token-project" name="project">{{range .Projects}}<option value="{{.Repository}}">{{.Name}}</option>{{end}}</select></p>
+<p><label for="token-name">Name</label> <input id="token-name" name="name" maxlength="64" required></p>
+<p><label for="token-life">Lifetime</label> <select id="token-life" name="life">{{range .Lives}}<option value="{{.}}"{{if eq . "30"}} selected{{end}}>{{.}} days</option>{{end}}</select></p>
+<p><label for="token-forgejo">Forgejo token</label> <input id="token-forgejo" name="forgejo" type="password" autocomplete="off" required></p>
+<button type="submit">Make chat token</button>
+</form>
+</section>{{end}}
 </div>
 {{template "foot"}}

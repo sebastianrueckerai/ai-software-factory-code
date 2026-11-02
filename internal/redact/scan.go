@@ -23,6 +23,7 @@ const (
 	KindAPIKey     = "API key (sk-)" // #nosec G101 -- a shape's name
 	KindGitHub     = "GitHub token"
 	KindGitLab     = "GitLab token"
+	KindChatToken  = "chat token" // #nosec G101 -- a shape's name
 	KindAWS        = "AWS access key"
 	KindAssignment = "password, secret or token assigned a literal"
 )
@@ -32,6 +33,9 @@ const (
 // letters and digits, a fine-grained one's and at least 22 of
 // [A-Za-z0-9_].
 var GitHubToken = regexp.MustCompile(`gh[pousr]_[A-Za-z0-9]{36,}|github_pat_[A-Za-z0-9_]{22,}`)
+
+// ChatToken is a human's chat token: sfc_ and 43 base64url characters.
+var ChatToken = regexp.MustCompile(`sfc_[A-Za-z0-9_-]{43}`)
 
 // shapes are the secret shapes; a named group v is the secret's value,
 // else the whole match is; skip, when set, refuses a match by its key k
@@ -46,6 +50,7 @@ var shapes = []struct {
 	{KindJWT, regexp.MustCompile(`\beyJ[\w-]{10,}\.[\w-]{10,}\.[\w-]*`), nil},
 	{KindAPIKey, regexp.MustCompile(`\bsk-[\w-]{20,}`), nil},
 	{KindGitHub, GitHubToken, nil},
+	{KindChatToken, ChatToken, nil},
 	{KindGitLab, regexp.MustCompile(`\bglpat-[\w-]{20,}`), nil},
 	{KindAWS, regexp.MustCompile(`\b(AKIA|ASIA)[0-9A-Z]{16}\b`), nil},
 	{KindAssignment, regexp.MustCompile(`(?i)(?P<k>[\w-]*?(password|passwd|secret|token|api[_-]?key|access[_-]?key)[\w-]*)["']?\s*(:=|=|:)\s*["'](?P<v>[^"'\s]{8,})["']`),

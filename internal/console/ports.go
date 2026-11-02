@@ -121,6 +121,16 @@ type Events interface {
 	FiledPR(ctx context.Context, name string) (int64, bool, error)
 }
 
+// ChatTokens is the store of chat tokens (factoryd.PGStore).
+type ChatTokens interface {
+	AddChatToken(ctx context.Context, t factoryd.ChatToken) (int64, error)
+	ChatTokenByHash(ctx context.Context, hash string) (factoryd.ChatToken, bool, error)
+	ChatTokensOf(ctx context.Context, login string) ([]factoryd.ChatToken, error)
+	RevokeChatToken(ctx context.Context, id int64, login string, now time.Time) (bool, error)
+	TouchChatToken(ctx context.Context, id int64, now time.Time) error
+	ClaimChatTokenConversation(ctx context.Context, id, n int64) (int64, error)
+}
+
 // Chat is the project agent's store (factoryd.PGStore): each project's
 // chat task, each member's conversations, their proposals and undos, and a
 // project's month spend.

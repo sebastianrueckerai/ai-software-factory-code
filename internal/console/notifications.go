@@ -5,6 +5,7 @@ import (
 	"net/http"
 	"net/url"
 	"slices"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
@@ -23,6 +24,12 @@ type projectLevel struct {
 // and their level per project they read, with the derived default
 // where they set none. Without the messengers there is no panel.
 func (c *Console) notifications(w http.ResponseWriter, r *http.Request) {
+	c.notificationsPage(w, r, nil)
+}
+
+// notificationsPage renders the panel; shown, the bearer of the token the
+// request just made, appears in that answer alone.
+func (c *Console) notificationsPage(w http.ResponseWriter, r *http.Request, shown *shownOnce) {
 	m := c.cfg.Messengers
 	if m == nil || m.Store == nil {
 		http.NotFound(w, r)
@@ -72,9 +79,18 @@ func (c *Console) notifications(w http.ResponseWriter, r *http.Request) {
 		}
 		rows = append(rows, projectLevel{Name: p.Name, Repository: p.Repository, Level: levels[p.Repository], Default: def})
 	}
+	var tokens []factoryd.ChatToken
+	if c.cfg.ChatTokens != nil {
+		if tokens, err = c.cfg.ChatTokens.ChatTokensOf(r.Context(), s.user); err != nil {
+			log.Printf("console: the chat tokens of %s: %v", s.user, err)
+			http.Error(w, "cannot read the chat tokens", http.StatusInternalServerError)
+			return
+		}
+	}
 	c.render(w, "notifications.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Links": links,
 		"Projects": rows, "Levels": notifyLevels, "Code": r.URL.Query().Get("code"),
-		"TelegramName": m.TelegramName, "Discord": m.Discord != nil})
+		"TelegramName": m.TelegramName, "Discord": m.Discord != nil,
+		"ChatTokens": c.cfg.ChatTokens != nil, "Tokens": tokens, "Shown": shown, "Lives": []string{"7", "30", "90"}, "Now": time.Now()})
 }
 
 // telegramCode answers POST /notifications/telegram/code: it hands the

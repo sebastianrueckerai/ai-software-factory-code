@@ -64,6 +64,12 @@ type fakeForgejo struct {
 	spent     map[string]bool // refresh tokens used once: Forgejo invalidates them on use
 	tokenN    int
 	failAPI   bool
+	// tokens maps a Forgejo token to its login for /user; the token
+	// probes answer 200 where adminReach or notificationReach is set, else
+	// 403, as a token of read:user, write:repository and write:issue gets
+	tokens            map[string]string
+	adminReach        bool
+	notificationReach bool
 
 	reviews    []map[string]string
 	failReview bool
@@ -150,7 +156,18 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 	}
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
-		json.NewEncoder(w).Encode(map[string]any{"login": f.user})
+		login, known := f.tokens[strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")]
+		if f.tokens != nil && !known {
+			http.Error(w, `{"message":"token is required"}`, http.StatusUnauthorized)
+			return
+		}
+		json.NewEncoder(w).Encode(map[string]any{"login": cmp.Or(login, f.user)})
+	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/admin/users", r.Method == http.MethodGet && r.URL.Path == "/api/v1/notifications":
+		if r.URL.Path == "/api/v1/admin/users" && f.adminReach || r.URL.Path == "/api/v1/notifications" && f.notificationReach {
+			w.Write([]byte(`[]`))
+			return
+		}
+		http.Error(w, `{"message":"token does not have required scope"}`, http.StatusForbidden)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/sf/code/labels":
 		// two a page, as a Forgejo whose MAX_RESPONSE_ITEMS is below the
 		// limit asked for; an empty page ends the list
@@ -1069,19 +1086,20 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 }
 
 type rig struct {
-	c         *Console
-	fg        *fakeForgejo
-	tasks     *fakeTasks
-	writers   *fakeWriters
-	objects   fakeObjects
-	ledger    *fakeLedger
-	approvals *fakeApprovals
-	resources *fakeResources
-	alerts    *fakeAlerts
-	projects  *fakeProjects
-	sessions  *fakeSessions
-	events    *fakeEvents
-	chat      *fakeChat
+	c          *Console
+	fg         *fakeForgejo
+	tasks      *fakeTasks
+	writers    *fakeWriters
+	objects    fakeObjects
+	ledger     *fakeLedger
+	approvals  *fakeApprovals
+	resources  *fakeResources
+	alerts     *fakeAlerts
+	projects   *fakeProjects
+	sessions   *fakeSessions
+	events     *fakeEvents
+	chat       *fakeChat
+	chatTokens *fakeChatTokens
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1184,6 +1202,7 @@ func newRig(t *testing.T) *rig {
 		chatToken:   "chat-token"}
 	r.tasks.events = r.events
 	r.chat = &fakeChat{tasks: r.tasks}
+	r.chatTokens = &fakeChatTokens{}
 	r.sessions = newFakeSessions()
 	c, err := New(Config{
 		Metrics:   metrics,
@@ -1196,7 +1215,7 @@ func newRig(t *testing.T) *rig {
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
 		},
-		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, Mirrors: r.mirrors, Routines: r.routines,
+		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, ChatTokens: r.chatTokens, Mirrors: r.mirrors, Routines: r.routines,
 		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
