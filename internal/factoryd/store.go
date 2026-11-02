@@ -422,6 +422,11 @@ type Store interface {
 	// card: the call costs of the task's purpose checkin rows (spend_eur
 	// holds the task's running total at each row, not a per-row cost).
 	CheckinSpent(ctx context.Context, taskID string) (float64, error)
+	// SpendBetween and CallsBetween are the call costs and the count of
+	// the task's audit rows in [from, to), whatever their kind: a
+	// session's cost and calls in the card digest.
+	SpendBetween(ctx context.Context, taskID string, from, to time.Time) (float64, error)
+	CallsBetween(ctx context.Context, taskID string, from, to time.Time) (int, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -640,6 +645,9 @@ type Store interface {
 	// Dependents are the cards that depend on task id, each with its
 	// status, by issue number.
 	Dependents(ctx context.Context, id string) ([]Dependency, error)
+	// Dependencies are the cards task id depends on, each with its
+	// status, those not done first.
+	Dependencies(ctx context.Context, id string) ([]Dependency, error)
 	// ReplaceFailedCard puts plan card t in failed card id's place in one
 	// transaction: id lets go of its key, which t holds; t is inserted with
 	// every dependency of id, and every task waiting on id waits on t.
@@ -751,6 +759,8 @@ type Store interface {
 	// Record writes an event row: the runner's Timeline records factoryd's
 	// own events beside their timeline lines through it.
 	Record(ctx context.Context, e Event) (int64, error)
+	// TaskEvents lists task id's events newest first, at most limit.
+	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
 	// AlertByFingerprint is the newest alert row of kind and fingerprint:
 	// an alert card's pre-check reads whether its alert still fires.
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
@@ -1579,6 +1589,25 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND kind = $2`,
 		taskID, policy.PurposeCheckin).Scan(&eur)
 	return eur, err
+}
+
+// SpendBetween is the call costs of the task's audit rows in [from, to),
+// whatever their kind; a row without a cost adds nothing.
+func (s *PGStore) SpendBetween(ctx context.Context, taskID string, from, to time.Time) (float64, error) {
+	var eur float64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
+		taskID, from, to).Scan(&eur)
+	return eur, err
+}
+
+// CallsBetween counts the task's audit rows in [from, to), whatever their
+// kind.
+func (s *PGStore) CallsBetween(ctx context.Context, taskID string, from, to time.Time) (int, error) {
+	var n int
+	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
+		taskID, from, to).Scan(&n)
+	return n, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing

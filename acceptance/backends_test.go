@@ -504,6 +504,19 @@ func (s *acceptanceStore) CheckinSpent(context.Context, string) (float64, error)
 	return 0, nil
 }
 
+func (s *acceptanceStore) SpendBetween(context.Context, string, time.Time, time.Time) (float64, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) CallsBetween(context.Context, string, time.Time, time.Time) (int, error) {
+	return 0, nil
+}
+
+// TaskEvents: the acceptance store keeps no event rows.
+func (s *acceptanceStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -975,6 +988,17 @@ func (s *acceptanceStore) OpenDependencies(_ context.Context, id string) ([]fact
 		if t := s.tasks[d]; t.Status != "done" {
 			out = append(out, factoryd.Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
 		}
+	}
+	return out, nil
+}
+
+func (s *acceptanceStore) Dependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Dependency
+	for _, d := range s.deps[id] {
+		t := s.tasks[d]
+		out = append(out, factoryd.Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
 	}
 	return out, nil
 }

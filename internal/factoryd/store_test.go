@@ -84,6 +84,11 @@ type fakeStore struct {
 	answered         map[string]bool // ModelAnswered's answer by task
 	// checkinSpent is CheckinSpent's answer by task
 	checkinSpent map[string]float64
+	// spends are the gateway's audit rows SpendBetween and CallsBetween
+	// read
+	spends []fakeSpend
+	// cases are CasesOf's rows, oldest first
+	cases []Case
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
 	// capsFree is Free's free day, month and project headroom, all
 	// unbounded when nil; openings are Opening's answers by ref
@@ -150,6 +155,18 @@ func (s *fakeStore) OpenDependencies(ctx context.Context, id string) ([]Dependen
 		}
 	}
 	slices.SortFunc(out, func(a, b Dependency) int { return int(a.Issue - b.Issue) })
+	return out, nil
+}
+
+func (s *fakeStore) Dependencies(ctx context.Context, id string) ([]Dependency, error) {
+	var out []Dependency
+	for _, d := range s.deps[id] {
+		t := s.tasks[d]
+		out = append(out, Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+	}
+	slices.SortFunc(out, func(a, b Dependency) int {
+		return cmp.Or(cmp.Compare(b2i(a.Status == "done"), b2i(b.Status == "done")), cmp.Compare(a.Issue, b.Issue))
+	})
 	return out, nil
 }
 
@@ -1029,6 +1046,17 @@ func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Tas
 	return tasks, nil
 }
 
+// TaskEvents is task id's events newest first, at most limit.
+func (s *fakeStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {
+	var out []Event
+	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.events[i].TaskID == id {
+			out = append(out, s.events[i])
+		}
+	}
+	return out, nil
+}
+
 // NewestTaskEvents is the newest event of each of tasks, newest row last.
 func (s *fakeStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error) {
 	set := map[string]bool{}
@@ -1163,7 +1191,13 @@ func (s *fakeStore) OpenCasesOf(ctx context.Context, taskID string) ([]Case, err
 }
 
 func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) {
-	return nil, nil
+	var out []Case
+	for _, c := range s.cases {
+		if c.TaskID == taskID {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
@@ -1414,6 +1448,34 @@ func (s *fakeStore) ModelAnswered(ctx context.Context, taskID string, since time
 
 func (s *fakeStore) CheckinSpent(ctx context.Context, taskID string) (float64, error) {
 	return s.checkinSpent[taskID], nil
+}
+
+// fakeSpend is one gateway audit row of a task: its time and its call's
+// cost.
+type fakeSpend struct {
+	task string
+	at   time.Time
+	eur  float64
+}
+
+func (s *fakeStore) SpendBetween(ctx context.Context, taskID string, from, to time.Time) (float64, error) {
+	var eur float64
+	for _, sp := range s.spends {
+		if sp.task == taskID && !sp.at.Before(from) && sp.at.Before(to) {
+			eur += sp.eur
+		}
+	}
+	return eur, nil
+}
+
+func (s *fakeStore) CallsBetween(ctx context.Context, taskID string, from, to time.Time) (int, error) {
+	n := 0
+	for _, sp := range s.spends {
+		if sp.task == taskID && !sp.at.Before(from) && sp.at.Before(to) {
+			n++
+		}
+	}
+	return n, nil
 }
 
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
@@ -3631,6 +3693,39 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 	}
 	if got := spent("same"); math.Abs(got-0.25) > 1e-9 {
 		t.Fatalf("same spent = %v, want 0.25", got)
+	}
+}
+
+// SpendBetween sums the call costs of a task's audit rows in [from, to),
+// whatever their kind, and CallsBetween counts the rows, one without a
+// cost too: 0.25 + 0.10 over three rows of t1. The rows at 00:40:59 and
+// at the window's end, 00:55, and t2's lie outside.
+func TestPGStoreSpendBetweenReadsTheWindow(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "spend_between"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, tool, call_cost_eur, ts) VALUES
+		('t1', 'allowed', '', 'agent', '', 0.40, '2026-11-01 00:40:59Z'),
+		('t1', 'allowed', '', 'agent', '', 0.25, '2026-11-01 00:41:00Z'),
+		('t1', 'allowed', '', 'checkin', '', 0.10, '2026-11-01 00:50:00Z'),
+		('t1', 'allowed', '', 'agent', 'web_fetch', NULL, '2026-11-01 00:54:59Z'),
+		('t1', 'allowed', '', 'agent', '', 0.07, '2026-11-01 00:55:00Z'),
+		('t2', 'allowed', '', 'agent', '', 1.00, '2026-11-01 00:45:00Z')`); err != nil {
+		t.Fatalf("seed the audit rows: %v", err)
+	}
+	from, to := time.Date(2026, 11, 1, 0, 41, 0, 0, time.UTC), time.Date(2026, 11, 1, 0, 55, 0, 0, time.UTC)
+	if eur, err := s.SpendBetween(ctx, "t1", from, to); err != nil || math.Abs(eur-0.35) > 1e-9 {
+		t.Fatalf("SpendBetween t1 = %v, %v; want 0.35", eur, err)
+	}
+	if n, err := s.CallsBetween(ctx, "t1", from, to); err != nil || n != 3 {
+		t.Fatalf("CallsBetween t1 = %d, %v; want 3", n, err)
+	}
+	if eur, err := s.SpendBetween(ctx, "t3", from, to); err != nil || eur != 0 {
+		t.Fatalf("SpendBetween of a task with no row = %v, %v; want 0", eur, err)
 	}
 }
 

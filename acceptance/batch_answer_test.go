@@ -603,6 +603,18 @@ func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since 
 func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
 	panic("unused")
 }
+func (s *accBatchStore) SpendBetween(context.Context, string, time.Time, time.Time) (float64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CallsBetween(context.Context, string, time.Time, time.Time) (int, error) {
+	panic("unused")
+}
+func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
+	panic("unused")
+}
+func (s *accBatchStore) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }
