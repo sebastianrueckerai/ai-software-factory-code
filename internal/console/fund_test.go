@@ -296,6 +296,22 @@ func TestFundWhoseNoteForgejoRefusesKeepsTheRaise(t *testing.T) {
 	}
 }
 
+// The money an unwritten brief names nets the gateway's holds: 4.50
+// settled and 0.40 held of 5.00 leaves 0.10.
+func TestBriefShortNetsHolds(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 8, PRNumber: 10,
+		BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4})
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-m", Project: "sf/code",
+		PRNumber: 10, Status: "pending", BriefError: "refused_budget: free headroom 0.100000 EUR fits 30 output tokens",
+		Spec: json.RawMessage(`{"risk_class":"normal"}`)})
+	want := "The card has 0.10 EUR of its 5.00 EUR budget left, too little for the call that writes its brief."
+	if body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String(); !strings.Contains(body, want) {
+		t.Errorf("the merge card lacks %s", want)
+	}
+}
+
 // A merge card whose own budget refused its brief says so in the brief's
 // place, and an approver's Fund there raises the budget and queues the
 // brief again: it neither answers nor moves the card.

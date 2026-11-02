@@ -641,7 +641,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 	} else {
 		s.messageToken = rand.Text()
-		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, TimeLeft: time.Until(deadline),
+		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
 			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, ExtraLines: t.Usage.ExtraLines}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
@@ -1159,7 +1159,7 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
 	}
-	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.SpentEUR, BudgetEUR: t.BudgetEUR,
+	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.EnforcedSpent(), BudgetEUR: t.BudgetEUR,
 		SpentMinutes: int((t.Usage.AgentTime + time.Since(started)).Minutes()), LeftMinutes: int(time.Until(deadline).Minutes()),
 		Attempt: s.attempt, Sessions: s.sessions}
 }
@@ -1294,7 +1294,7 @@ func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}
 // checkinFacts is the small JSON of the card's facts the runner already
 // holds; the check-in's card_facts answers it verbatim.
 func checkinFacts(t Task, s sessionSpec) string {
-	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.SpentEUR,
+	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
 		"attempt": s.attempt, "sessions": s.sessions})
 	return string(b)
 }
@@ -2718,7 +2718,7 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 	if !ok {
 		return nil
 	}
-	for _, wn := range w.due(cur.SpentEUR, cur.BudgetEUR, time.Now()) {
+	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
 		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)
 		if err == nil || !w.failed[wn.kind] {
 			detail := map[string]any{"session": s.id}
@@ -2734,5 +2734,5 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 		}
 		w.sent(wn.kind)
 	}
-	return sup.Spent(cur.SpentEUR, cur.BudgetEUR)
+	return sup.Spent(cur.EnforcedSpent(), cur.BudgetEUR)
 }

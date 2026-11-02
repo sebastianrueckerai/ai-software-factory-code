@@ -911,8 +911,8 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		f.SessionGrants = t.Usage.SessionsAdded()
 		f.Attempts = t.Usage.Attempts
 		f.BudgetEUR = t.BudgetEUR
-		f.SpentEUR = t.SpentEUR
-		f.LeftEUR = t.BudgetEUR - t.SpentEUR
+		f.SpentEUR = t.EnforcedSpent()
+		f.LeftEUR = t.Left()
 	}
 	if strings.HasPrefix(reason, projectCapReached) {
 		f.MonthTurn = monthTurn(time.Now())

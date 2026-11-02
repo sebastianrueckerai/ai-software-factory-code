@@ -251,6 +251,17 @@ func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	}
 }
 
+// The money a stop's question states nets the gateway's holds: 4.50
+// settled and 0.40 held of 5.00 is 4.90 spent and 0.10 left.
+func TestQuestionFactsNetHolds(t *testing.T) {
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{Sessions: 3}}}}
+	r := &Runner{store: newFakeStore(), cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", Size: "small", BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4}
+	if f := r.questionFacts(context.Background(), task, capReached+"\nlast: x"); f.SpentEUR != 4.9 || Cents(f.LeftEUR) != 10 {
+		t.Errorf("spent %v, left %v; want 4.90 spent and 0.10 left", f.SpentEUR, f.LeftEUR)
+	}
+}
+
 // A reason no template covers still gets the five parts: the plain
 // question, whose summary is the reason's first line and whose choices
 // are the answers a stopped card takes; an agent's ask keeps its own

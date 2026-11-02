@@ -3661,6 +3661,25 @@ func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
 	}
 }
 
+// The session's facts and the check-in's card facts state the spend the
+// gateway counts: 4.50 settled and 0.40 held of 5.00 is 4.90 spent and
+// 0.10 left.
+func TestSessionFactsSpendIncludesHolds(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, Track: "direct"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/small"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	if got := podEnv(kube.podAt(0))["FACTS"]; !strings.HasPrefix(got, "factoryd's facts for this session: budget 0.10 of 5.00 EUR left; ") {
+		t.Fatalf("FACTS = %q, want 0.10 of 5.00 EUR left", got)
+	}
+	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}), `{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.9}`; got != want {
+		t.Fatalf("card facts = %s, want %s", got, want)
+	}
+}
+
 func TestRunSessionStatesTheCardsSizeInTheFacts(t *testing.T) {
 	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, Track: "direct", Size: "medium"}
 	kube := newFakeKube()

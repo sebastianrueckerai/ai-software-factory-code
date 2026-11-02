@@ -146,7 +146,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		k.IssueURL, k.Issue = fmt.Sprintf("%s/issues/%d", base, t.IssueNumber), t.IssueNumber
 	}
 	if ok && factoryd.BriefUnfunded(a) {
-		k.BriefShort = fmt.Sprintf("The card has %.2f EUR of its %.2f EUR budget left, too little for the call that writes its brief.", max(t.BudgetEUR-t.SpentEUR, 0), t.BudgetEUR)
+		k.BriefShort = fmt.Sprintf("The card has %.2f EUR of its %.2f EUR budget left, too little for the call that writes its brief.", max(t.Left(), 0), t.BudgetEUR)
 		if approver && t.IssueNumber > 0 {
 			k.BriefFund = &fundForm{CSRF: csrf}
 		}

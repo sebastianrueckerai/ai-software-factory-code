@@ -91,7 +91,7 @@ func (c *Console) fundState(ctx context.Context, s chatStop, login, repository s
 		return nil
 	}
 	suggest, _ := s.event.Detail["suggest_eur"].(float64)
-	return &chatBudget{BudgetEUR: s.task.BudgetEUR, SpentEUR: s.task.SpentEUR, SuggestEUR: suggest,
+	return &chatBudget{BudgetEUR: s.task.BudgetEUR, SpentEUR: s.task.EnforcedSpent(), SuggestEUR: suggest,
 		CanFund: c.isApprover(ctx, login, repository)}
 }
 
@@ -126,7 +126,7 @@ func (c *Console) askFund(ctx context.Context, p factoryd.Project, task factoryd
 	}
 	e := factoryd.Event{Repository: p.Repository, TaskID: task.ID, Kind: factoryd.EventChatBudgetSpent,
 		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"budget_eur": task.BudgetEUR,
-			"spent_eur": task.SpentEUR, "suggest_eur": suggestFund(spent7, now)}}
+			"spent_eur": task.EnforcedSpent(), "suggest_eur": suggestFund(spent7, now)}}
 	if e.ID, err = c.cfg.Events.Record(ctx, e); err != nil {
 		log.Printf("console: the chat ask of %s: %v", p.Repository, err)
 	}
@@ -172,7 +172,7 @@ func (t *turn) stop(refusal *policy.Refusal) bool {
 			return true
 		}
 		row.Content = fmt.Sprintf("The chat's budget for %s is used up: €%.2f of €%.2f spent, and the next call does not fit what is left.",
-			time.Now().UTC().Format("January"), task.SpentEUR, task.BudgetEUR)
+			time.Now().UTC().Format("January"), task.EnforcedSpent(), task.BudgetEUR)
 		fund = t.c.fundState(ctx, t.c.askFund(ctx, t.p, task), t.a.s.user, t.p.Repository)
 	}
 	row.Content += "\n" + refusal.Reason

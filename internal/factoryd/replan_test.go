@@ -290,6 +290,25 @@ func fundings(store *fakeStore, id string) []Event {
 	return out
 }
 
+// The planner's top-up counts the holds the floor counts: a plan of 5.00
+// with 4.50 spent and 0.40 held has 0.10 left, so the default 5.00 takes
+// 4.90, and the budget reaches 9.90.
+func TestFundPlannerNetsHolds(t *testing.T) {
+	r, store, _ := replanRig(t, "done", 1)
+	v := r.cfg.Policy()
+	v.Document.Budget.TaskDefaultEUR = 5
+	r.cfg.Policy = func() policy.Version { return v }
+	p := store.tasks["p"]
+	p.BudgetEUR, p.SpentEUR, p.HeldEUR = 5, 4.5, 0.4
+	store.tasks["p"] = p
+	if err := r.fundPlanner(context.Background(), "p"); err != nil {
+		t.Fatal(err)
+	}
+	if got := fundings(store, "p"); len(got) != 1 || got[0].Detail["amount_eur"] != 4.9 || Cents(store.tasks["p"].BudgetEUR) != 990 {
+		t.Fatalf("fundings %+v, budget %v; want one of 4.90 EUR, the budget 9.90", got, store.tasks["p"].BudgetEUR)
+	}
+}
+
 // The planner's session gets the default card budget: a plan left with
 // less is funded up to it, once.
 func TestFundPlannerLeavesTheDefaultBudget(t *testing.T) {
