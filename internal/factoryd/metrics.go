@@ -2034,6 +2034,18 @@ func metricDivideReviews(ctx context.Context, db *sql.DB, repo string, w metricW
 	return f, ev, err
 }
 
+// dcRevisionIdentity holds a plan_replanned row of the identity
+// contract's era to the revision's own identity: the contract stamps the
+// plan and the revision alone on a revision-level row, and one more
+// field after the revision — a card's own row its key — makes the row a
+// filing's, never the revision's. A key-level row, a card's own whose
+// issue never landed, carries its key in the identity and no card in
+// the detail: only the identity tells it from the revision's, and it is
+// neither the revision's applied replan nor its evidence.
+func dcRevisionIdentity(a string) string {
+	return a + `.identity_key = ('` + EventPlanReplanned + ` ' || ` + a + `.task_id || ' ' || (` + a + `.detail->>'revision'))`
+}
+
 // dcLegacyFiling keeps a plan_replanned row of the identity contract's
 // era apart from one producers wrote before it: an identity-less row
 // survives only where no canonical revision-level row of its own
@@ -2299,7 +2311,9 @@ func metricDivideCardFilings(ctx context.Context, db *sql.DB, repo string, w met
 // replan, and the transition belongs, wherever the panels read it, to
 // the window its original instant falls in. A card's own canonical
 // filing row is a separate identity, never a stand-in for the
-// transition; a row another repository recorded on the same plan — the
+// transition, and so is its key-level double, a card whose issue never
+// landed, its key the identity's last field and no card in the detail;
+// a row another repository recorded on the same plan — the
 // task's reach holds it — neither wins the revision's origin nor
 // replaces the local evidence. The origin a span names is the canonical
 // revision-level row of the same revision the span's own end saw — a
@@ -2320,7 +2334,7 @@ func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricW
 						THEN k.detail->>'origin' ELSE 'unknown' END
 					FROM events k
 					WHERE k.task_id = e.task_id AND k.repository = e.repository AND k.kind = 'plan_replanned'
-						AND k.identity_key IS NOT NULL AND k.detail->>'card' IS NULL
+						AND k.detail->>'card' IS NULL AND ` + dcRevisionIdentity("k") + `
 						AND k.detail->>'revision' = e.detail->>'revision' AND k.at < ` + cutoff + `
 					ORDER BY k.at, k.id LIMIT 1
 				),
@@ -2328,6 +2342,7 @@ func metricDivideReplans(ctx context.Context, db *sql.DB, repo string, w metricW
 					THEN e.detail->>'origin' ELSE 'unknown' END) AS name
 			FROM events e JOIN tasks t ON t.id = e.task_id
 			WHERE ` + dcCardReach + ` AND e.repository = $1 AND e.kind = 'plan_replanned' AND e.detail->>'card' IS NULL
+				AND (e.identity_key IS NULL OR ` + dcRevisionIdentity("e") + `)
 				AND e.at < $3
 			ORDER BY e.task_id, e.detail->>'revision', e.at, e.id`
 	}

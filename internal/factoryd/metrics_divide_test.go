@@ -1492,6 +1492,27 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 		dcPlan(t, s, "op-early-round", "sf/dc-origin", 443)
 		dcFiling(t, s, "op-early-round", "sf/dc-origin", 2, ReplanRound, 0, "", 443,
 			map[string]any{"round": 2, "cards": []int64{}}, from.AddDate(0, 0, -11))
+		// the key-only filings: a card's own canonical row whose issue
+		// never landed carries its key as one more identity field past
+		// the revision and no card in its detail — a filing identity,
+		// never the revision's applied replan nor its evidence. op-key's
+		// revision 2 nothing else holds files no phantom person; the
+		// earlier key-only row of op-cut's revision (Sep 26) moves the
+		// cut's transition nowhere, out of neither window; op-unknown's
+		// naming a person overrides no origin the record lost — each its
+		// own identity beside the revision's row, so each persists
+		if id := dcFiling(t, s, "op-key", "sf/dc-origin", 2, ReplanPerson, 0, "ok1", 444,
+			map[string]any{"round": 2}, from.AddDate(0, 0, 4)); id == 0 {
+			t.Fatal("the key-only phantom's row recorded nothing")
+		}
+		if id := dcFiling(t, s, "op-cut", "sf/dc-origin", 2, ReplanPerson, 0, "okz", 434,
+			nil, from.AddDate(0, 0, -2)); id == 0 {
+			t.Fatal("the cut's key-only row recorded nothing")
+		}
+		if id := dcFiling(t, s, "op-unknown", "sf/dc-origin", 2, ReplanPerson, 0, "oku", 438,
+			nil, from.AddDate(0, 0, 5)); id == 0 {
+			t.Fatal("the unknown's key-only row recorded nothing")
+		}
 	}
 	r, err := s.ProjectMetrics(context.Background(), "sf/dc9", from, to)
 	if err != nil {
