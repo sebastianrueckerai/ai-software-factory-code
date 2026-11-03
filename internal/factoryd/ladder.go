@@ -181,13 +181,17 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
 }
 
-// rungZero runs rung 0 on fresh case c of card t: no row when rung 0
-// resolved a case of c's kind and key before, for the stop came back,
-// else the first row of rung0 that fires, which Act carries out on rung
-// 0. It answers the resolution taken, or nil and what rung 0 found: a row
-// Act refused or failed hands the case up with why, so rung 0 never keeps
-// the human from being asked.
+// rungZero runs rung 0 on fresh case c of card t: no row on facts read
+// partly, which could hide what a row needs (a head a rerun made), none
+// when rung 0 resolved a case of c's kind and key before, for the stop
+// came back, else the first row of rung0 that fires, which Act carries
+// out on rung 0. It answers the resolution taken, or nil and what rung 0
+// found: a row Act refused or failed hands the case up with why, so rung
+// 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
+	if len(f.Partial) > 0 {
+		return nil, "facts read partly: " + andList(f.Partial) + ", so rung 0 took nothing", nil
+	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
 		return e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0
 	}); i >= 0 {

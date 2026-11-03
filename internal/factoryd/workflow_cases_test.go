@@ -379,11 +379,13 @@ func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
 }
 
 // A gate's wait takes the case's resolution: rerun_checks runs the head's
-// checks again and the gates run on the head the rerun made, and handover
-// to the stronger model makes the next session's model that one.
+// checks again and the gates run once on the head the rerun made, the
+// review and the audit beside its checks; handover to the stronger model
+// makes the next session's model that one; successor closes the card into
+// one.
 func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
 	gate := func(t *testing.T, res Resolution, reviews ...Review) (*gateHarness, *[]string, *[]string) {
-		g := newGateHarness(t, func(g *gateHarness) { g.reviews = reviews })
+		g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) { g.reviews = reviews })
 		g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 		g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 		waits, reran := &[]string{}, &[]string{}
@@ -415,6 +417,11 @@ func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
 		}
 		if !slices.Equal(*reran, []string{"c1"}) || !slices.Equal(*waits, []string{"c1", "c1r"}) || !slices.Contains(g.steps, "approval c1r") {
 			t.Fatalf("reran %q, checks waited on %q, steps %q; want c1 run again and c1r through the gates to its approval", *reran, *waits, g.steps)
+		}
+		for _, gate := range []string{"review c1r", "audit c1r"} {
+			if n := len(slices.DeleteFunc(slices.Clone(g.steps), func(s string) bool { return s != gate })); n != 1 {
+				t.Errorf("steps %q: %s %d times, want once", g.steps, gate, n)
+			}
 		}
 	})
 	t.Run("successor", func(t *testing.T) {
@@ -489,7 +496,9 @@ func TestWorkflowRerunsTheChecksAtTheLoopsTop(t *testing.T) {
 
 // Rung 0's resolution of the question the review beside the checks asked
 // is the review stage's answer, and no one is asked: reverify reviews the
-// head again after the green checks, successor closes the card into one.
+// head again after the green checks; rerun_checks runs c1's checks again,
+// and the review and the audit run once on c1r, beside its checks;
+// successor closes the card into one.
 func TestStagesRungZeroAnswersTheReviewBesideTheChecks(t *testing.T) {
 	beside := func(t *testing.T, res Resolution) *gateHarness {
 		g := besideTheChecks(t, 3*time.Hour)
@@ -512,6 +521,34 @@ func TestStagesRungZeroAnswersTheReviewBesideTheChecks(t *testing.T) {
 		}
 		if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 3*time.Hour+20*time.Minute {
 			t.Fatalf("approval requested %v, want once, at 3h20m: the checks' 20 min and the sequential review's 3h", g.requested)
+		}
+	})
+	t.Run("rerun_checks", func(t *testing.T) {
+		g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+		g.onSessions(pushed("s1", "c1"))
+		g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+		var reran []string
+		g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(
+			func(ctx context.Context, taskID, sha string) (string, error) {
+				reran = append(reran, sha)
+				return sha + "r", nil
+			})
+		g.rungZero = func(int, TripInput) *Resolution { return &Resolution{Action: ActRerunChecks} }
+		g.tripAfter(15*time.Minute, ActivityModelReview, 2)
+		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the review model hangs", Recommendation: "look at the gateway"})
+		g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := g.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, g.finals)
+		}
+		if !slices.Equal(reran, []string{"c1"}) || len(g.escalated) != 0 {
+			t.Fatalf("reran %q, asked %q; want c1 run again and no one asked", reran, g.escalated)
+		}
+		for _, gate := range []string{"review c1r", "audit c1r"} {
+			if n := len(slices.DeleteFunc(slices.Clone(g.steps), func(s string) bool { return s != gate })); n != 1 {
+				t.Errorf("steps %q: %s %d times, want once", g.steps, gate, n)
+			}
 		}
 	})
 	t.Run("successor", func(t *testing.T) {

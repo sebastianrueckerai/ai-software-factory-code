@@ -3778,6 +3778,9 @@ func (t *taskRun) gateAnswered(final, why string, changes []string) (verdict, bo
 			return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}, true
 		}
 		t.rerunHead = head
+		// the gates beside the old head's checks stop: the new head's
+		// checks wait runs its own
+		t.cancelBeside(checksFailed)
 		return t.verify(head), true
 	case res != nil && res.Action == ActHandover:
 		t.nextModel = t.handoverModel("", res.Args)

@@ -2,11 +2,31 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+// outsidePlanRig is newRetryRig with t-a and t-b outside any plan, its
+// fixture policy the current one, so every fact of a card reads.
+func outsidePlanRig(t *testing.T) (*Runner, *fakeStore, *planForgejo) {
+	t.Helper()
+	r, store, _, fj, _ := newRetryRig(t)
+	for _, id := range []string{"t-a", "t-b"} {
+		c := store.tasks[id]
+		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
+		store.tasks[id] = c
+	}
+	v := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return v }
+	return r, store, fj
+}
 
 // Outside a plan rung 0 files a failed dependency again, once: card B's
 // trip on A runs RetryCard and its case resolves with retry. When A's
@@ -14,12 +34,7 @@ import (
 // no retry, and the human is asked.
 func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, fj, _ := newRetryRig(t)
-	for _, id := range []string{"t-a", "t-b"} {
-		c := store.tasks[id]
-		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
-		store.tasks[id] = c
-	}
+	r, store, fj := outsidePlanRig(t)
 	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
@@ -135,12 +150,7 @@ func TestTripKeyByKind(t *testing.T) {
 // human is asked.
 func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, fj, _ := newRetryRig(t)
-	for _, id := range []string{"t-a", "t-b"} {
-		c := store.tasks[id]
-		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
-		store.tasks[id] = c
-	}
+	r, store, fj := outsidePlanRig(t)
 	fj.failCall = "PATCH issues/5"
 	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
@@ -158,12 +168,7 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 // heard, takes that resolution: the same case, no second retry, no ask.
 func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
 	ctx := context.Background()
-	r, store, _, _, _ := newRetryRig(t)
-	for _, id := range []string{"t-a", "t-b"} {
-		c := store.tasks[id]
-		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
-		store.tasks[id] = c
-	}
+	r, store, _ := outsidePlanRig(t)
 	in := TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}
 	first, err := r.OpenTrip(ctx, in, tripAttempt{ID: "run/7", N: 1})
 	if err != nil {
@@ -180,4 +185,54 @@ func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
 	if _, ok := store.tasks[RetryID(RetryID("t-a"))]; ok {
 		t.Fatal("the replacement was retried in turn")
 	}
+}
+
+// A session cap on pull request #9 at h2, green and approved: with every
+// fact read rung 0 routes it to the approval. When the timeline cannot be
+// read, rung 0 takes nothing, its step names the read that failed, and
+// the human is asked.
+func TestRungZeroTakesNothingOnFactsReadPartly(t *testing.T) {
+	trip := func(t *testing.T, unread bool) (factsRig, TripOutcome) {
+		g := newFactsRig(t)
+		forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			switch {
+			case r.Method == http.MethodGet && r.URL.Path == "/api/v1/repos/demo-app/demo-app/commits/h2/status":
+				fmt.Fprint(w, `{"state":"success","statuses":[{"status":"success","context":"ci / test"}]}`)
+			case r.Method == http.MethodPost && r.URL.Path == "/api/v1/repos/demo-app/demo-app/issues/12/comments":
+				w.WriteHeader(http.StatusCreated)
+				fmt.Fprint(w, `{"id": 501}`)
+			default:
+				fmt.Fprint(w, `[]`)
+			}
+		}))
+		t.Cleanup(forge.Close)
+		g.r.forgejo = &Forgejo{BaseURL: forge.URL, BotUser: "factory-agent", BotPassword: "pw"}
+		g.event("t1", factsAt(9, 40), EventGateHead, map[string]any{"head": "h2"})
+		g.event("t1", factsAt(9, 45), EventModelReview, map[string]any{"commit": "h2", "round": 1, "reviewed": true, "verdict": "approve"})
+		if unread {
+			g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
+		}
+		out, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: capReached + "\nlast: no session produced a result", Head: "h2"}, tripAttempt{N: 1})
+		if err != nil {
+			t.Fatal(err)
+		}
+		return g, out
+	}
+	t.Run("every fact read", func(t *testing.T) {
+		_, out := trip(t, false)
+		if out.Resolution == nil || out.Resolution.Action != ActRouteApproval || out.Comment != 0 {
+			t.Fatalf("outcome = %+v, want rung 0's route to the approval", out)
+		}
+	})
+	t.Run("the timeline unread", func(t *testing.T) {
+		g, out := trip(t, true)
+		if out.Resolution != nil || out.Comment != 501 || out.Rung != 3 {
+			t.Fatalf("outcome = %+v, want the human asked on comment 501", out)
+		}
+		c, _ := g.store.CaseByID(context.Background(), out.CaseID)
+		steps, _ := g.store.CaseSteps(context.Background(), out.CaseID)
+		if c.Status != CaseAtHuman || len(steps) != 1 || steps[0].Found != "facts read partly: timeline, so rung 0 took nothing" || steps[0].Outcome != StepHandedUp {
+			t.Fatalf("case %+v, steps %+v; want it at the human, rung 0 handing up on the unread timeline", c, steps)
+		}
+	})
 }
