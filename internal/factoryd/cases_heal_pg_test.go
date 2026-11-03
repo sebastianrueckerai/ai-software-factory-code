@@ -149,9 +149,9 @@ func TestReconcileCasesOpensAMonthCapCardsAskAsAMonthCap(t *testing.T) {
 	if err != nil || len(open) != 1 || open[0].Kind != CaseMonthCap || open[0].StateKey != "46282f0a8570b00b" || open[0].Problem != q.Ask {
 		t.Fatalf("OpenCasesOf = %+v, %v; want the ask as a month cap", open, err)
 	}
-	// recordAsk's event names who asked: its row's author
-	if open[0].Facts["by"] != "factoryd" {
-		t.Fatalf("facts = %v; want by factoryd", open[0].Facts)
+	// no row keeps who asked, so the heal claims no asker
+	if by, ok := open[0].Facts["by"]; ok {
+		t.Fatalf("facts by = %v; want none", by)
 	}
 	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t1412", IssueNumber: 1412, Kind: EventQuestionAsked, Actor: FactoryDecider,
 		Via: ViaFactoryd, Detail: map[string]any{"question": q.Ask, "ask": q.Ask, "why": q.Why, "info": q.Info, "source": SourceMonthCap,

@@ -212,11 +212,10 @@ decimals: a task's model calls cost fractions of a cent.
   board in a few lines: the live cards with their flags, a card whose
   life cannot be read with why, the queue with what holds each card, the
   work slots, the open plans and the caps), `costs`, `diff`, `plan` (a
-  plan's newest revision: its rows with their issues and the filed
-  cards' states, and for a revision without questions the earlier
-  revision's answers it was built from), `pr` (the newest checks' jobs,
-  the model reviews, the audit, the files' diff stat, the diff on
-  request),
+  plan's newest revision: its rows with their issues and the filed cards'
+  states, and for a revision without questions the earlier revision's
+  answers it was built from), `pr` (the newest checks' jobs, the model
+  reviews, the audit, the files' diff stat, the diff on request),
   `file` (a file at a ref, read raw through the human's token, cut at 64
   KiB, a binary one refused), `session`, `session_steps`, `session_step`,
   `session_search` (a session's summary with why it started, its steps one

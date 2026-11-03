@@ -125,10 +125,10 @@ console.log(JSON.stringify([refused.line.textContent, unsent.line.textContent, o
 // A link to #card=<id>:life opens the fold once the drawer has settled:
 // htmx wires the swapped nodes there, after the swap's promise, and a fold
 // opened before it fires its toggle to no listener and stays on its
-// loading line. Only the settle of the link's own request opens it, once:
-// a settle of another path or from another element is passed over, and
-// the listener leaves after its settle. console.js under node, which the
-// test needs.
+// loading line. Only the settle of the link's own request on the drawer
+// opens it, once: a settle of another path, from another element or on
+// another target is passed over, and the listener leaves after its
+// settle. console.js under node, which the test needs.
 func TestCardLifeLinkOpensTheFoldOnceTheDrawerSettles(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
@@ -157,15 +157,17 @@ var sandbox = {URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: functio
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
 require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 (listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });
-function settle(path, elt) {
+function settle(path, elt, target) {
+  target = target || drawer;
   (listeners["htmx:afterSettle"] || []).slice().forEach(function (fn) {
-    fn({type: "htmx:afterSettle", target: drawer, detail: {target: drawer, requestConfig: {path: path, elt: elt}}});
+    fn({type: "htmx:afterSettle", target: target, detail: {target: target, requestConfig: {path: path, elt: elt}}});
   });
 }
 setTimeout(function () {
   life.wired = true;
   settle("/cards/t-8/drawer?tab=overview", sandbox.document.body);
   settle(asked[0], el());
+  settle(asked[0], sandbox.document.body, el());
   var passed = [opens, focused.slice()];
   settle(asked[0], sandbox.document.body);
   settle(asked[0], sandbox.document.body);
