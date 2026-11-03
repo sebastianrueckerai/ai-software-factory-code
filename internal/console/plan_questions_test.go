@@ -284,7 +284,8 @@ func TestAnswerToolRefusalNamesTheError(t *testing.T) {
 	tool, _ := r.c.chatTool("answer")
 	args := `{"task_id":"t-p","revision":1,"answers":[{"question":1,"text":"60 seconds"},{"question":2,"text":"30 days"}]}`
 	in := toolInput{TaskID: "t-p", Revision: 1, Answers: []PlanAnswerInput{{Question: 1, Text: "60 seconds"}, {Question: 2, Text: "30 days"}}}
-	equal(t, "the tool result", trn.runTool(tool, args, in),
+	got, _ := trn.runTool(tool, args, in)
+	equal(t, "the tool result", got,
 		"Refused: The answers could not be recorded: plan t-x revision 1: idx 2 out of range. "+
 			"Read the plan again and answer the open questions of its newest revision.")
 }
