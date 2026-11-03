@@ -1027,9 +1027,10 @@ const MaxDigestBytes = 128 << 10
 var Purposes = []string{PurposeReview, PurposeSupervisor, PurposeGateSupervisor, PurposeAudit, PurposeOperator, PurposeCompact, PurposeDigest, PurposeCheckin, PurposeVision, PurposeTitle, PurposeResearch, PurposeBrief}
 
 // The model classes every text call names (Sebastian, 2026-10-20). Big
-// and Small are LiteLLM aliases routed to their z.ai model, Premium the
-// pay-per-token model with its own month cap (Budget.PremiumMonthEUR).
-// A call's purpose sits on its audit row and in its
+// and Small are LiteLLM aliases routed to their z.ai model, the Alibaba
+// model behind it as fallback. Premium is a pay-per-token
+// model with its own month cap (Budget.PremiumMonthEUR) that falls back to
+// Big. A call's purpose sits on its audit row and in its
 // ledger ref, not in its alias.
 const (
 	Big     = "big"
@@ -1039,6 +1040,17 @@ const (
 
 // TextClasses are the model classes, as the metrics page sorts spend.
 var TextClasses = []string{Big, Small, Premium}
+
+// withFallback is aliases with Big beside Premium: the alias the gateway
+// serves a premium call on at the premium cap, and LiteLLM's on a provider
+// failure.
+func withFallback(aliases []string) []string {
+	if slices.Contains(aliases, Premium) {
+		aliases = append(aliases, Big)
+	}
+	slices.Sort(aliases)
+	return slices.Compact(aliases)
+}
 
 // ToolCap caps a paid tool per task; a free tool carries none.
 type ToolCap struct {
@@ -1530,24 +1542,23 @@ func (d Document) PurposeModels(classes []string, purpose string) []string {
 }
 
 // FactoryModels are the aliases factoryd may call on a task of classes,
-// sorted, once each.
+// Big beside Premium, sorted, once each.
 func (d Document) FactoryModels(classes []string) []string {
 	var out []string
 	for _, p := range Purposes {
 		out = append(out, d.PurposeModels(classes, p)...)
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return withFallback(out)
 }
 
-// Models are the aliases any of classes may call, sorted, once each.
+// Models are the aliases any of classes may call, Big beside Premium,
+// sorted, once each.
 func (d Document) Models(classes []string) []string {
 	var out []string
 	for _, c := range classes {
 		out = append(out, d.Classes[c].Models...)
 	}
-	slices.Sort(out)
-	return slices.Compact(out)
+	return withFallback(out)
 }
 
 // SessionModel is the alias a plan or report session of a task of classes

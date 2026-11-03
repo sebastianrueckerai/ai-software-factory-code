@@ -112,9 +112,9 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 // whose calls the gateway refuses itself. The need is what the calls are
 // expected to spend, priced by Fit alone: each call's request at the
 // ref's settled calls (fanOutPrice), at the ref's mean output but for the
-// last call, at the whole limit. A premium call whose worst case the
-// premium month's headroom cannot hold ends in the note, since the gateway
-// refuses it. A merge gate's note adds unfundedRemedy.
+// last call, at the whole limit. A premium call the premium month's
+// headroom cannot hold is priced on big, where the gateway serves it. A
+// merge gate's note adds unfundedRemedy.
 func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, calls []reviewCall) (string, error) {
 	if r.cfg.Prices == nil || model == "" || len(calls) == 0 {
 		return "", nil
@@ -136,21 +136,29 @@ func (r *Runner) unfunded(ctx context.Context, taskID, model, purpose string, ca
 	if err != nil {
 		return "", err
 	}
-	capLeft := math.Inf(1)
-	if free.Premium != nil {
-		capLeft = *free.Premium
-	}
+	var big *callPrice
 	need := 0.0
 	for i, c := range calls {
 		body, err := chatBody(model, c.Prompt, c.Input(), limit)
 		if err != nil {
 			return "", err
 		}
-		if worst := at.cost(len(body), limit, true); worst > capLeft {
-			return fmt.Sprintf("a call's worst case is %.2f EUR, and the premium month cap has %.2f EUR free.", worst, max(capLeft, 0)), nil
+		p, last := at, i == len(calls)-1
+		onBig := free.Premium != nil && at.cost(len(body), limit, true) > *free.Premium
+		if onBig {
+			if big == nil {
+				fallback, ok, err := r.fanOutPrice(ctx, taskID, purpose, policy.Big)
+				if !ok || err != nil {
+					return "", err
+				}
+				big = &fallback
+			}
+			p = *big
 		}
-		cost := at.cost(len(body), limit, i == len(calls)-1)
-		capLeft -= cost
+		cost := p.cost(len(body), limit, last)
+		if free.Premium != nil && !onBig {
+			*free.Premium -= cost
+		}
 		need += cost
 	}
 	if free := own.Free(); need > free {
