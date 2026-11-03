@@ -626,7 +626,7 @@ func newHarness(t *testing.T, reg *registry) *harness {
 		ChecksPoll:           time.Millisecond,
 		EgressCanary:         "example.com:443",
 		EgressDirectIP:       "192.0.2.7:443",
-		Supervisor:           factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
+		Supervisor:           factoryd.SupervisorConfig{RepetitionEvents: 24},
 		Policy:               func() policy.Version { return v },
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
 			return v, id == v.ID, nil

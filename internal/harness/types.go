@@ -131,18 +131,24 @@ type EventKind string
 //   - note (an adapter): bytes, a dropped too-long opencode event line's
 //     size, and event and part, its event type and part id where the
 //     line's first bytes showed them
+//   - tool_running (an adapter): call_id, tool and started (the harness's
+//     start time, Unix milliseconds), once when a tool call starts; the
+//     finished kinds (command, tool_call, file_change) carry the same
+//     call_id, so the supervisor knows which call is still open. An
+//     adapter that cannot see a call start sends none.
 const (
-	EventModelCall  EventKind = "model_call"
-	EventToolCall   EventKind = "tool_call"
-	EventFileChange EventKind = "file_change"
-	EventCommand    EventKind = "command"
-	EventCheckpoint EventKind = "checkpoint"
-	EventFinished   EventKind = "finished"
-	EventPushed     EventKind = "pushed"      // the worker pushed the task branch; detail carries branch and commit
-	EventPushFailed EventKind = "push_failed" // the worker's push failed or was refused; detail carries branch and error
-	EventSupervisor EventKind = "supervisor"  // factoryd's supervisor decided after a trip; never from a worker
-	EventNote       EventKind = "note"        // an adapter's note on its own stream: a dropped too-long opencode event line
-	EventCompacted  EventKind = "compacted"   // the harness compacted the session's conversation; no detail rides the bus
+	EventModelCall   EventKind = "model_call"
+	EventToolCall    EventKind = "tool_call"
+	EventFileChange  EventKind = "file_change"
+	EventCommand     EventKind = "command"
+	EventCheckpoint  EventKind = "checkpoint"
+	EventFinished    EventKind = "finished"
+	EventPushed      EventKind = "pushed"       // the worker pushed the task branch; detail carries branch and commit
+	EventPushFailed  EventKind = "push_failed"  // the worker's push failed or was refused; detail carries branch and error
+	EventSupervisor  EventKind = "supervisor"   // factoryd's supervisor decided after a trip; never from a worker
+	EventNote        EventKind = "note"         // an adapter's note on its own stream: a dropped too-long opencode event line
+	EventCompacted   EventKind = "compacted"    // the harness compacted the session's conversation; no detail rides the bus
+	EventToolRunning EventKind = "tool_running" // a tool call started and has not ended
 )
 
 // Event is one normalized stream item from a running harness. The git

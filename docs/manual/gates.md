@@ -305,7 +305,11 @@ finish side by side. A direct card is not held back, nor is a revert.
 
 `internal/factoryd/supervise.go` watches every session's event stream.
 Detectors, thresholds with their env overrides: stall (no events for
-`SUPERVISE_NO_PROGRESS_AFTER`, 5m), reading without writing
+`no_progress` seconds, 300 by default, in the policy's `supervisor`
+section; a tool call the harness reported running holds it until the call
+is `open_call` seconds old, 900 by default, so a test run that works in
+silence does not stall and a hung tool still does; the trip names the open
+call; a continue buys another `no_progress` of silence), reading without writing
 (`SUPERVISE_READING_WITHOUT_WRITING` tool calls and commands without a
 file change, 24), same failure (the same command failing with the same
 output signature `SUPERVISE_SAME_FAILURE` times, 3, each repeat after a

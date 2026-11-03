@@ -61,6 +61,121 @@ func TestSupervisorNoProgressBoundary(t *testing.T) {
 	}
 }
 
+// callStart is a tool call starting, callEnd its end, both with the call's id.
+func callStart(id, tool string) harness.Event {
+	return harness.Event{Kind: harness.EventToolRunning, Detail: map[string]any{"call_id": id, "tool": tool}}
+}
+
+func callEnd(id, command string) harness.Event {
+	return harness.Event{Kind: harness.EventCommand, Detail: map[string]any{"call_id": id, "command": command, "exit": 0}}
+}
+
+// openSupervisor stalls after 5 minutes of silence and holds an open call
+// for 15.
+func openSupervisor(t *testing.T, repetition int) *Supervisor {
+	t.Helper()
+	s, err := NewSupervisor(SupervisorConfig{NoProgressAfter: 5 * time.Minute, OpenCallBound: 15 * time.Minute,
+		WallClockCap: 10 * time.Hour, RepetitionEvents: repetition, NoWriteAfter: 100 * time.Hour}, time.Unix(0, 0), time.Unix(0, 0))
+	if err != nil {
+		t.Fatal(err)
+	}
+	return s
+}
+
+// A test run is silent while it works: an open tool call holds the stall
+// until it is open_call old, and the trip names the silence and the call.
+func TestSupervisorAnOpenCallHoldsTheStall(t *testing.T) {
+	s := openSupervisor(t, 10)
+	t0 := time.Unix(0, 0)
+	if trip := s.Event(callStart("c1", "bash"), t0); trip != nil {
+		t.Fatalf("the call's start tripped: %+v", trip)
+	}
+	if trip := s.Tick(t0.Add(15*time.Minute - 1)); trip != nil {
+		t.Fatalf("an open call younger than the bound tripped: %+v", trip)
+	}
+	trip := s.Tick(t0.Add(15 * time.Minute))
+	if trip == nil || trip.Kind != TripNoProgress || trip.Detail != "no harness events for 15m0s, a bash call open for 15m0s" {
+		t.Fatalf("trip = %+v, want no_progress naming the silence and the open call", trip)
+	}
+}
+
+// The call's end closes it: silence counts from the end, as before.
+func TestSupervisorTheCallsEndClosesIt(t *testing.T) {
+	s := openSupervisor(t, 10)
+	t0 := time.Unix(0, 0)
+	s.Event(callStart("c1", "bash"), t0)
+	if trip := s.Event(callEnd("c1", "bash check"), t0.Add(8*time.Minute)); trip != nil {
+		t.Fatalf("the call's end tripped: %+v", trip)
+	}
+	if trip := s.Tick(t0.Add(13*time.Minute - 1)); trip != nil {
+		t.Fatalf("tripped before 5 minutes of silence after the end: %+v", trip)
+	}
+	if trip := s.Tick(t0.Add(13 * time.Minute)); trip == nil || trip.Detail != "no harness events for 5m0s" {
+		t.Fatalf("trip = %+v, want a plain no_progress 5 minutes after the end", trip)
+	}
+}
+
+// Two open calls: the older one's age decides, and it is the one named.
+func TestSupervisorTheOlderOpenCallDecides(t *testing.T) {
+	s := openSupervisor(t, 10)
+	t0 := time.Unix(0, 0)
+	s.Event(callStart("c1", "bash"), t0)
+	s.Event(callStart("c2", "task"), t0.Add(10*time.Minute))
+	if trip := s.Tick(t0.Add(15*time.Minute - 1)); trip != nil {
+		t.Fatalf("tripped early: %+v", trip)
+	}
+	if trip := s.Tick(t0.Add(15 * time.Minute)); trip == nil || trip.Detail != "no harness events for 5m0s, a bash call open for 15m0s" {
+		t.Fatalf("trip = %+v, want the older bash call named", trip)
+	}
+}
+
+// Events that keep coming keep the session live, however old an open call
+// is: a parent waits on a subagent's task call while the subagent works.
+func TestSupervisorEventsBesideAnOldCallKeepItLive(t *testing.T) {
+	s := openSupervisor(t, 1000)
+	t0 := time.Unix(0, 0)
+	s.Event(callStart("c1", "task"), t0)
+	for m := 4; m <= 40; m += 4 {
+		s.Event(harness.Event{Kind: harness.EventModelCall}, t0.Add(time.Duration(m)*time.Minute))
+	}
+	if trip := s.Tick(t0.Add(44*time.Minute - 1)); trip != nil {
+		t.Fatalf("a live session beside an old call tripped: %+v", trip)
+	}
+}
+
+// A call's start is no agent event: it counts for no repetition, no
+// same-call streak and no finding.
+func TestSupervisorACallsStartMovesNoOtherDetector(t *testing.T) {
+	s := openSupervisor(t, 2)
+	t0 := time.Unix(0, 0)
+	for i := range 6 {
+		if trip := s.Event(callStart("same", "bash"), t0.Add(time.Duration(i)*time.Second)); trip != nil {
+			t.Fatalf("start %d tripped: %+v", i, trip)
+		}
+	}
+	if len(s.findings) != 0 {
+		t.Fatalf("findings = %q, want none from call starts", s.findings)
+	}
+}
+
+// After a continue, a still-open old call needs a whole no_progress of
+// silence again before it trips.
+func TestSupervisorAContinueBuysAStallsLengthBesideAnOldCall(t *testing.T) {
+	s := openSupervisor(t, 10)
+	t0 := time.Unix(0, 0)
+	s.Event(callStart("c1", "bash"), t0)
+	if trip := s.Tick(t0.Add(15 * time.Minute)); trip == nil {
+		t.Fatal("no trip at the bound")
+	}
+	s.Resume(t0.Add(15 * time.Minute))
+	if trip := s.Tick(t0.Add(20*time.Minute - 1)); trip != nil {
+		t.Fatalf("tripped again before a stall's length: %+v", trip)
+	}
+	if trip := s.Tick(t0.Add(20 * time.Minute)); trip == nil || trip.Detail != "no harness events for 5m0s, a bash call open for 20m0s" {
+		t.Fatalf("trip = %+v, want the second trip a stall's length after the continue", trip)
+	}
+}
+
 func TestSupervisorWallClockCapWinsOverProgress(t *testing.T) {
 	s := mustSupervisor(t, 5*time.Minute, 30*time.Minute, 1000)
 	t0 := time.Unix(0, 0)
@@ -731,12 +846,27 @@ func TestNoWriteRejectsANegativeWait(t *testing.T) {
 
 // A session's progress detectors, agent time and calls are its policy's.
 func TestSessionSupervisorTakesThePolicysProgressDetectors(t *testing.T) {
-	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24}}}
-	d := policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60},
+	r := &Runner{cfg: RunnerConfig{Supervisor: SupervisorConfig{RepetitionEvents: 24}}}
+	d := policy.Document{Supervisor: map[string]int{policy.DetectorNoWrite: 60, policy.DetectorNoProgress: 120, policy.DetectorOpenCall: 600},
 		Limits: policy.Limits{AgentTime: 45 * time.Minute, SupervisorCalls: 2}}
 	c := r.supervisorConfig(d, d.Limits.AgentTime, d.Limits.CheckIn)
-	if c.NoWriteAfter != time.Minute || c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute {
-		t.Fatalf("config = %+v, want no_write 1m, agent time 45m and 2 calls from the policy, the rest as configured", c)
+	if c.NoWriteAfter != time.Minute || c.NoProgressAfter != 2*time.Minute || c.OpenCallBound != 10*time.Minute ||
+		c.RepetitionEvents != 24 || c.WallClockCap != 45*time.Minute {
+		t.Fatalf("config = %+v, want no_write 1m, no_progress 2m, open_call 10m and agent time 45m from the policy, the rest as configured", c)
+	}
+	if c := r.supervisorConfig(policy.Document{}, time.Hour, 0); c.NoProgressAfter != 5*time.Minute || c.OpenCallBound != 15*time.Minute {
+		t.Fatalf("defaults: no_progress %s, open_call %s, want 5m and 15m", c.NoProgressAfter, c.OpenCallBound)
+	}
+}
+
+// The session loop ticks at a third of the session's stall time, between
+// a second and 15.
+func TestSupervisionTickFollowsTheSessionsStall(t *testing.T) {
+	r := &Runner{}
+	for stall, want := range map[time.Duration]time.Duration{2 * time.Second: time.Second, 30 * time.Second: 10 * time.Second, 5 * time.Minute: 15 * time.Second} {
+		if got := r.supervisionTick(SupervisorConfig{NoProgressAfter: stall}); got != want {
+			t.Errorf("tick for a %s stall = %s, want %s", stall, got, want)
+		}
 	}
 }
 

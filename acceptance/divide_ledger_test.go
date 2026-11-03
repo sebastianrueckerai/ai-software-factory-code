@@ -418,7 +418,7 @@ func newLedgerRunner(t *testing.T, ledger *accLedger, forgejoURL, gatewayURL str
 		Models:       factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
-		Supervisor:    factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
+		Supervisor:    factoryd.SupervisorConfig{RepetitionEvents: 24},
 		Policy:        func() policy.Version { return version },
 		PolicyVersion: func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil },
 		Leases:        accLeases{}, Gates: &factoryd.GateWatch{}, Workflows: accWorkflows{},

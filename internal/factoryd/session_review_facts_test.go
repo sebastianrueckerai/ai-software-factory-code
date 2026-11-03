@@ -53,7 +53,7 @@ func TestDivideConquerSessionFacts(t *testing.T) {
 	}
 
 	// a third attempt the wall clock takes
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3})
 	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 	third, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 3, Model: "m"}, nil, hangLogs)
 	if err != nil || third.Outcome != OutcomeWallClock {

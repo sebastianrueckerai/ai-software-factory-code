@@ -191,6 +191,17 @@ func TestChatSessionSteps(t *testing.T) {
 	equal(t, "30 steps in full", got[2][strings.LastIndex(got[2], "\n")+1:], "steps 1 to 20 of 150")
 }
 
+// A call's start is the supervisor's, not a step: the steps a session
+// lists, numbers and searches are what it did, its calls' ends.
+func TestChatSessionStepsLeaveOutCallStarts(t *testing.T) {
+	r, g := newSessionsRig(t)
+	r.objects["sessions/t-r/s1.jsonl"] = []byte(`{"time":"2026-10-11T10:00:00Z","kind":"checkpoint"}` + "\n" +
+		`{"time":"2026-10-11T10:00:01Z","kind":"tool_running","detail":{"call_id":"p1","tool":"bash","started":1}}` + "\n" +
+		`{"time":"2026-10-11T10:06:01Z","kind":"command","detail":{"call_id":"p1","command":"bash check","exit":0,"duration_ms":360000}}` + "\n")
+	equal(t, "the steps", reads(t, r, g, "session_steps", `{"task_id":"t-r","n":1}`), []string{
+		"1 0:00 checkpoint\n2 6:01 command 360.0 s: bash check, exit 0\nsteps 1 to 2 of 2"})
+}
+
 // The step read is steps of a session in full: a tool call's arguments
 // and error, a model call's text, a command's output, a checkpoint's
 // stat without its patch; from defaults to 1, to to from, clamps to the

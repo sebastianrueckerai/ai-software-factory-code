@@ -21,11 +21,14 @@ import (
 )
 
 // recordedStream is the adapter's event stream of a session as
-// testdata/opencode-run-*.jsonl yield it: a command, an edit, a failed
-// write, an MCP call, two model steps and the worker's checkpoint.
+// testdata/opencode-run-*.jsonl yield it: a command, its start before it,
+// an edit, a failed write, an MCP call, two model steps and the worker's
+// checkpoint. The start is no span: the command's end makes the one span.
 func recordedStream(t0 time.Time) []harness.Event {
 	return []harness.Event{
 		{Time: t0.Add(1 * time.Second), Kind: harness.EventCheckpoint},
+		{Time: t0.Add(1 * time.Second), Kind: harness.EventToolRunning, Detail: map[string]any{
+			"call_id": "p1", "tool": "bash", "started": t0.Add(1963 * time.Millisecond).UnixMilli()}},
 		{Time: t0.Add(2 * time.Second), Kind: harness.EventCommand, Detail: map[string]any{
 			"command": "echo recorded-fixture > hello.txt", "status": "completed", "output": "(no output)",
 			"exit": 0, "duration_ms": int64(37), "bytes": 11}},

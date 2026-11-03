@@ -12,6 +12,8 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // The recorded-answer ledger: each fixture compresses the facts the design's
@@ -566,7 +568,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
 		l.store.tasks["t1"] = tk
 		l.runner.tick = 50 * time.Millisecond
-		l.runner.cfg.Supervisor.NoProgressAfter = time.Hour
+		setDetectors(l.runner, map[string]int{policy.DetectorNoProgress: 3600})
 		l.onChecks(ChecksResult{State: ChecksSuccess})
 		l.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 
@@ -657,7 +659,7 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		}
 		l.runner.cheapCap = 150 * time.Millisecond
 		l.runner.tick = 50 * time.Millisecond
-		l.runner.cfg.Supervisor.NoProgressAfter = time.Hour
+		setDetectors(l.runner, map[string]int{policy.DetectorNoProgress: 3600})
 		l.worker.status = http.StatusNotImplemented // the climb its cap decided cannot be delivered
 		l.beforeSession = func(n int) {
 			if n == 1 {

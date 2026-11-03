@@ -73,7 +73,8 @@ block, and the session mode of the track's class, or of a report task's
 own class, which chooses the program: `code` the lifecycle, `report` the
 screening and the sizing, `plan` the plan loop); and in every session, report session,
 gate-supervisor call and model review the agent time, `steps`, the check-in limits,
-`supervisor_timeout` and the `no_write` detector, the risk rules
+`supervisor_timeout` and the `supervisor` detectors (`no_write`,
+`no_progress`, `open_call`), the risk rules
 (`GatePolicy`), the factoryd model aliases (`review_model`,
 `supervisor_model`), and the activity bounds of a session, a
 gate-supervisor call and a model review (`SessionInput`,

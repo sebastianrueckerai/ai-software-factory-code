@@ -779,8 +779,19 @@ func (d Document) TimeOf(class string, proc Process, p ProjectConfig) (agentTime
 // events keep coming but no file write or edit tool call.
 const DetectorNoWrite = "no_write"
 
-// DefaultDetectors are the seconds a policy without them gets.
-var DefaultDetectors = map[string]int{DetectorNoWrite: 300}
+// DetectorNoProgress is the stall detector: no harness event at all for
+// this long. DetectorOpenCall bounds an open tool call: a call the harness
+// reported running holds the stall until it is this old, since a test run
+// is silent while it works and a hung tool is not.
+const (
+	DetectorNoProgress = "no_progress"
+	DetectorOpenCall   = "open_call"
+)
+
+// DefaultDetectors are the seconds a policy without them gets. open_call
+// sits past opencode's 600-second bash cap, whose kill was seen to take
+// minutes more.
+var DefaultDetectors = map[string]int{DetectorNoWrite: 300, DetectorNoProgress: 300, DetectorOpenCall: 900}
 
 // Detector is how long the named progress detector waits before it trips.
 func (d Document) Detector(name string) time.Duration {
@@ -1304,7 +1315,7 @@ func (d Document) Validate() error {
 	}
 	for name, s := range d.Supervisor {
 		if _, ok := DefaultDetectors[name]; !ok {
-			return fmt.Errorf("policy: supervisor: unknown detector %q (known: %s)", name, DetectorNoWrite)
+			return fmt.Errorf("policy: supervisor: unknown detector %q (known: %s)", name, strings.Join(slices.Sorted(maps.Keys(DefaultDetectors)), " "))
 		}
 		if s <= 0 {
 			return fmt.Errorf("policy: supervisor.%s must be a positive number of seconds, is %d", name, s)

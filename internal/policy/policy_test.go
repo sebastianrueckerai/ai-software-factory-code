@@ -1086,6 +1086,29 @@ func TestDetectors(t *testing.T) {
 	}
 }
 
+// The stall detector and the open-call bound are policy detectors beside
+// no_write: silence for no_progress trips, unless a tool call is open and
+// younger than open_call.
+func TestStallDetectors(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Detector(DetectorNoProgress); got != 5*time.Minute {
+		t.Errorf("default no_progress = %s, want 5m", got)
+	}
+	if got := d.Detector(DetectorOpenCall); got != 15*time.Minute {
+		t.Errorf("default open_call = %s, want 15m", got)
+	}
+	d, err = Parse([]byte(valid + "supervisor: {no_progress: 120, open_call: 600}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Detector(DetectorNoProgress) != 2*time.Minute || d.Detector(DetectorOpenCall) != 10*time.Minute {
+		t.Errorf("no_progress = %s, open_call = %s, want 2m and 10m", d.Detector(DetectorNoProgress), d.Detector(DetectorOpenCall))
+	}
+}
+
 // A policy without limits.steps, and a version pinned before the key
 // existed, cap a session at DefaultSteps.
 func TestStepCap(t *testing.T) {
@@ -1150,7 +1173,7 @@ func TestNudge(t *testing.T) {
 
 func TestDetectorsRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ section, want string }{
-		"dropped detector": {"{no_commit: 60}", `supervisor: unknown detector "no_commit"`},
+		"dropped detector": {"{no_commit: 60}", `supervisor: unknown detector "no_commit" (known: no_progress no_write open_call)`},
 		"zero seconds":     {"{no_write: 0}", "supervisor.no_write must be a positive number of seconds"},
 		"negative":         {"{no_write: -1}", "supervisor.no_write must be a positive number of seconds"},
 		"not seconds":      {"{no_write: 15m}", "policy:"},
