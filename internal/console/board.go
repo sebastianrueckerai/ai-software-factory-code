@@ -3121,14 +3121,22 @@ func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
 	c.pressed(w, r, err)
 }
 
-// fundCard raises a waiting card's budget (doFund).
+// fundCard raises a waiting card's budget (doFund), its ceiling first by
+// the optional ceiling field.
 func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 	eur, err := strconv.ParseFloat(strings.TrimSpace(r.PostFormValue("eur")), 64)
 	if err != nil {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"))
+	var raise float64
+	if v := strings.TrimSpace(r.PostFormValue("ceiling")); v != "" {
+		if raise, err = strconv.ParseFloat(v, 64); err != nil {
+			c.fail(w, r, refuse(http.StatusBadRequest, "the ceiling's raise is an amount in EUR, 0 for none"))
+			return
+		}
+	}
+	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), raise)
 	c.pressed(w, r, err)
 }
 

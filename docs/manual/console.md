@@ -141,10 +141,17 @@ decimals: a task's model calls cost fractions of a cent.
   file a successor, retry or replan a failed dependency, close it, or note
   a step and keep waiting. The Grant button gives one more session. A
   fund can also go beside another action and draws its money with it.
-  Once the answer passes, its words are posted on the issue as the human.
-  A card that waits with no open case refuses the answer until the heal
-  pass opens one, within a minute. The project agent's `answer` takes the
-  same `action` and a `fund_eur` beside it.
+  The Fund form's ceiling field raises the card's ceiling first, for a
+  fund that would pass it. Words on a card at its session cap grant one
+  session. Once the answer passes, its words are posted on the issue as
+  the human. A human card's choice does its own work first, and its case
+  takes the comment that work posted. A card that waits with no open case
+  refuses the answer until the heal pass opens one, within a minute. The
+  project agent's `answer` takes the same `action`, its `args` (a
+  handover's model, an extend's sessions, agent time and lines, the EUR
+  of a fund or a ceiling raise) and a `fund_eur` beside it. Every answer
+  meets the same gates first: a running card's words steer its session,
+  and an action on a card no answer fits is refused.
 - Approval cards in the human lane, from `approval_requests`. Each opens
   with its brief, one factoryd call (purpose `brief`) a moment after the
   request files. A brief the card's own budget refuses (`refused_budget`)
@@ -326,9 +333,10 @@ decimals: a task's model calls cost fractions of a cent.
   `track_reason`, both required. `close` closes the card's issue as the human (the face's Close
   button too; a failed card's close ends it `closed`, with an issue or without, and
   Close shows on every failed card; a done plan whose later rounds are still to plan
-  shows Close too, and its close ends it `closed`: no later round starts), `edit` its title or body and the task's objective, which the
+  shows Close too, and its close ends it `closed`: no later round starts, and a
+  card's open case ends with the close as the human's answer), `edit` its title or body and the task's objective, which the
   next session's brief reads, `grant_session` answers a card at its session
-  cap, and `set_dependency` adds or removes a dependency of a card that has
+  or agent time cap and is refused on any other, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and a refusal names the fitting action. `set_pool` sets the money

@@ -311,12 +311,6 @@ func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error    { 
 func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *accBatchTasks) FundCard(_ context.Context, _ string, _, _ float64, _ factoryd.Event) (float64, float64, error) {
-	return 0, 0, nil
-}
-func (s *accBatchTasks) ExtendCard(_ context.Context, _ string, _ policy.Draw, _ int, _ factoryd.Event) (float64, float64, error) {
-	return 0, 0, nil
-}
 func (s *accBatchTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }
@@ -891,9 +885,6 @@ func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]
 	panic("unused")
 }
 func (s *accBatchStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e factoryd.Event) (float64, float64, error) {
-	panic("unused")
-}
-func (s *accBatchStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (float64, float64, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {

@@ -1413,7 +1413,7 @@ Promise.resolve().then(function () {
 // literal activation-pending words with the pull request's identity, an
 // audit row that could not be written its literal repair words, and
 // neither completed HTTP answer turns the proposal into an applied one —
-// the card keeps its Do it, nothing claims the new ceiling counts, and
+// the card keeps its Do it, nothing claims the new pool counts, and
 // only the stream's applied line, which names the pull request and the
 // policy holding it, ever says the change loaded. Run under node, which
 // the test needs.
@@ -1424,7 +1424,7 @@ func TestPoolPanelPending(t *testing.T) {
 	}
 	const (
 		pending = "The pool change is merged as sf/infra#1482, but the policy in force still holds the pool of demo-app at EUR 10.00: " +
-			"the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it."
+			"the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 14.00."
 		repair = "The pool change is merged as sf/infra#1482, but its pool_changed row could not be written: the events store is down. " +
 			"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 4.00, to_eur 14.00, " +
 			"reason \"the month's two verified findings\") and do not repeat the change."

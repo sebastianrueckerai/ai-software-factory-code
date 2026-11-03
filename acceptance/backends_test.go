@@ -1071,20 +1071,20 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling fl
 	return from, t.BudgetEUR, nil
 }
 
-func (s *acceptanceStore) ExtendCard(_ context.Context, id string, d policy.Draw, lines int, _ factoryd.Event) (float64, float64, error) {
+// extendCard raises card id's caps by d and lines, as PGStore's drawCase does.
+func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok {
-		return 0, 0, factoryd.ErrNotFound
+		return factoryd.ErrNotFound
 	}
-	from := t.BudgetEUR
 	t.BudgetEUR += d.EUR
 	t.Usage.RaisedSessions += d.Sessions
 	t.Usage.RaisedTime += d.AgentTime
 	t.Usage.ExtraLines += lines
 	s.tasks[id] = t
-	return from, t.BudgetEUR, nil
+	return nil
 }
 
 // PoolDrawn and CardDrawn: this store keeps no event rows, so nothing is
@@ -1113,7 +1113,7 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 		}
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 {
-		if _, _, err := s.ExtendCard(ctx, id, d.Extend, d.Lines, d.Event); err != nil {
+		if err := s.extendCard(id, d.Extend, d.Lines); err != nil {
 			return err
 		}
 	}

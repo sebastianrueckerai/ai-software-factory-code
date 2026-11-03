@@ -399,7 +399,7 @@ func (h *heartbeat) snapshot() sessionProgress {
 }
 
 // ReadUsage reads the caps the task's row holds: the answer wake reloads
-// them, so a raise the console made while the card waited (ExtendCard)
+// them, so a raise an answer made while the card waited (an extend)
 // is not overwritten by the usage snapshot the last session recorded.
 func (r *Runner) ReadUsage(ctx context.Context, taskID string) (TaskUsage, error) {
 	t, _, err := r.store.Task(ctx, taskID)

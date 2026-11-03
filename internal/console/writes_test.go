@@ -214,6 +214,7 @@ func TestEditBody(t *testing.T) {
 // the comment.
 func TestChatGrantSession(t *testing.T) {
 	r, g := newWritesRig(t)
+	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	before := r.events.count()
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
@@ -760,7 +761,7 @@ func TestPoolProposal(t *testing.T) {
 		{"pending 503", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error { return nil }
 		}, http.StatusServiceUnavailable,
-			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it.",
+			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 8.00 until the policy holds EUR 12.00.",
 			1},
 		{"repair 500", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error {
@@ -1217,6 +1218,7 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
 	}
 	before := r.events.count()
+	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
 	equal(t, "the grant", rec.Code, http.StatusSeeOther)
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")

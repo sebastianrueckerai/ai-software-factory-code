@@ -2,7 +2,6 @@ package console
 
 import (
 	"context"
-	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -149,21 +148,6 @@ func TestOneClickFundChoiceFundsWithoutANote(t *testing.T) {
 	}
 	if len(r.acted) != 0 {
 		t.Errorf("a refused one-click fund reached Act: %+v", r.acted)
-	}
-}
-
-// A fund another raise left past the card's ceiling reaches the human as
-// the capSpent line: the ceiling, the policy's 5 EUR while the card sets
-// none, and the raise that makes the room.
-func TestFundPastTheCeilingNamesTheRaise(t *testing.T) {
-	r := needRig(t)
-	_, s := r.loggedIn(t)
-	r.actErr = &factoryd.CardCapError{Budget: 4.5}
-	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go")
-	var no *refusal
-	want := "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling first (raise_ceiling), then fund."
-	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
-		t.Fatalf("doFund = %v, want the capSpent refusal %q", err, want)
 	}
 }
 

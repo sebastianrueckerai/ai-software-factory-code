@@ -400,9 +400,6 @@ type fakeTasks struct {
 	roadmap map[string]string
 	chain   map[string]factoryd.ChainFacts
 	read    func(s *fakeTasks, id string)
-	// events is the ledger FundCard's card_funded row goes to and the
-	// pool its guard reads (fakeEvents)
-	events *fakeEvents
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -418,55 +415,6 @@ func (s *fakeTasks) ProjectImageParks(_ context.Context, project string) ([]fact
 		}
 	}
 	return out, nil
-}
-
-// FundCard raises task id's budget and records e, both or neither, as the
-// store's one transaction does; the card's ceiling, else ceiling, refuses
-// a raise past it.
-func (s *fakeTasks) FundCard(ctx context.Context, id string, eur, ceiling float64, e factoryd.Event) (float64, float64, error) {
-	s.mu.Lock()
-	for _, k := range s.tasks {
-		if bound := cmp.Or(k.CeilingEUR, ceiling); k.ID == id && bound > 0 && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bound) {
-			s.mu.Unlock()
-			return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
-		}
-	}
-	s.mu.Unlock()
-	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
-	if err != nil {
-		return 0, 0, err
-	}
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	if _, err := s.events.Record(ctx, e); err != nil {
-		s.RaiseTaskBudget(ctx, id, -eur)
-		return 0, 0, err
-	}
-	return from, to, nil
-}
-
-// ExtendCard raises task id's caps and records e, both or neither, as the
-// store's one transaction does.
-func (s *fakeTasks) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (float64, float64, error) {
-	from, to, err := s.RaiseTaskBudget(ctx, id, d.EUR)
-	if err != nil {
-		return 0, 0, err
-	}
-	s.mu.Lock()
-	for i := range s.tasks {
-		if s.tasks[i].ID == id {
-			s.tasks[i].Usage.RaisedSessions += d.Sessions
-			s.tasks[i].Usage.RaisedTime += d.AgentTime
-			s.tasks[i].Usage.ExtraLines += lines
-		}
-	}
-	s.mu.Unlock()
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, d.EUR
-	e.Detail["sessions"], e.Detail["agent_time_s"], e.Detail["lines"] = d.Sessions, int64(d.AgentTime/time.Second), lines
-	if _, err := s.events.Record(ctx, e); err != nil {
-		s.RaiseTaskBudget(ctx, id, -d.EUR)
-		return 0, 0, err
-	}
-	return from, to, nil
 }
 
 // Dependencies are the tasks task id depends on, those not done first.
@@ -1255,7 +1203,6 @@ func newRig(t *testing.T) *rig {
 		deps:        &fakeDeps{},
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
-	r.tasks.events = r.events
 	r.chatTokens = &fakeChatTokens{}
 	r.chat = &fakeChat{tasks: r.tasks, chatTokens: r.chatTokens}
 	r.sessions = newFakeSessions()

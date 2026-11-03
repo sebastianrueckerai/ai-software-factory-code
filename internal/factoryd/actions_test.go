@@ -240,7 +240,8 @@ func TestOfferedFollowsTheTable(t *testing.T) {
 }
 
 // A retry takes a failed dependency nobody retried whose end a retry can
-// fix; a named one is refused with its state.
+// fix, and a named one a retry replaced already, whose answer names the
+// replacement; any other named one is refused with its state.
 func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	retried := DepFact{TaskID: "d1", Issue: 20, Status: "failed", Why: "session error: the pod is gone", Replaced: RetryID("d1")}
 	forbidden := DepFact{TaskID: "d2", Issue: 21, Status: "failed", Why: "policy version 7: risk class forbidden is forbidden to agents: .forgejo/ci.yaml"}
@@ -250,8 +251,10 @@ func TestRetryTakesARetryableFailedDependency(t *testing.T) {
 	if got, want := applies(t, ActRetry, f, Resolution{}), "no failed dependency is open to a retry"; got != want {
 		t.Errorf("no retryable dependency = %q, want %q", got, want)
 	}
+	if got := applies(t, ActRetry, f, Resolution{Args: map[string]any{"task_id": "d1"}}); got != "" {
+		t.Errorf("retry d1, retried already = %q, want it to apply", got)
+	}
 	for id, want := range map[string]string{
-		"d1": "dependency #20 was retried as " + RetryID("d1") + " already",
 		"d2": "dependency #21 ended for good: policy version 7: risk class forbidden is forbidden to agents: .forgejo/ci.yaml",
 		"d3": "dependency #22 is running, not failed",
 		"d9": "the card does not depend on d9",
@@ -393,5 +396,25 @@ func TestRaiseCeilingNeedsAWholeCent(t *testing.T) {
 func TestExtendRefusesLinesBelowZero(t *testing.T) {
 	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{Args: map[string]any{"sessions": 1, "lines": -5}}), "an extend takes no part below 0"; got != want {
 		t.Errorf("an extend of -5 lines = %q, want %q", got, want)
+	}
+}
+
+// An extend of lines alone applies: it raises the card's line bound and
+// draws nothing, so the bought-nothing rule, which weighs a draw, lets it
+// through after a draw that bought nothing. An extend of nothing names
+// every part it may take.
+func TestExtendOfLinesAloneApplies(t *testing.T) {
+	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
+	stuck := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red"}
+	lines := Resolution{Action: ActExtend, Args: map[string]any{"lines": 200}}
+	if got := applies(t, ActExtend, stuck, lines); got != "" {
+		t.Errorf("an extend of 200 lines after a draw that bought nothing = %q, want it to apply", got)
+	}
+	extend, _ := ActionByName(ActExtend)
+	if got := extend.refusal(stuck, 3, lines); got != "" {
+		t.Errorf("the human's extend of 200 lines = %q, want it to apply", got)
+	}
+	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{}), "an extend needs sessions, agent time or lines above 0"; got != want {
+		t.Errorf("an extend of nothing = %q, want %q", got, want)
 	}
 }

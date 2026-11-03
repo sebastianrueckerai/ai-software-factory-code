@@ -204,8 +204,8 @@ func (c *Console) doSetPool(ctx context.Context, name string, ch poolChange, a a
 	}
 	if !res.loaded {
 		return res, refuse(http.StatusServiceUnavailable, fmt.Sprintf(
-			"The pool change is merged as %s#%d, but the policy in force still holds the pool of %s at EUR %.2f: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it.",
-			c.cfg.InfraRepo, pr, name, held))
+			"The pool change is merged as %s#%d, but the policy in force still holds the pool of %s at EUR %.2f: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR %.2f until the policy holds EUR %.2f.",
+			c.cfg.InfraRepo, pr, name, held, held, res.to))
 	}
 	log.Printf("console: %s %s the pool of %s to EUR %.2f via %s (%s#%d) in %.1fs", a.s.user, ch.action, name, res.to, a.via, c.cfg.InfraRepo, pr, time.Since(start).Seconds())
 	return res, nil

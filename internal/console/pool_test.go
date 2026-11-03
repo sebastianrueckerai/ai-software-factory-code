@@ -542,7 +542,7 @@ func TestPoolChangeAudit(t *testing.T) {
 // missing row to write by hand, and the change is never repeated.
 func TestPoolPolicyFailure(t *testing.T) {
 	const unloaded = "The pool change is merged as sf/infra#12, but the policy in force still holds the pool of demo-app at EUR 10.00: " +
-		"the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it."
+		"the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 12.00."
 	for _, row := range []struct {
 		name    string
 		seat    func(*testing.T) (*rig, *infraFake, *session)

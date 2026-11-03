@@ -18,16 +18,16 @@ import (
 // The acceptance proof of the escalation pool's write integrity (the
 // pool-policy rig card of plan #1399): the set_pool change a confirmed
 // proposal carries, end-to-end through the console's HTTP surface on the
-// configuration repository's fake — one guarded branch commit off main,
+// configuration repository's fake: one guarded branch commit off main,
 // one pull request, one merge, one reload request and one pool_changed
 // row, the file's escalation.pool.eur the only key that moves. A refused press is
 // its typed outcome's real HTTP status, answered before any stream: a
 // stale captured source 409 whose spent token replays 404, a candidate
 // the change check refuses 422, a malformed correction 400 that leaves
-// the proposal usable for its owner. A refusal the offer itself answers
-// — a malformed amount, a file whose pool the write cannot take — is
-// the streamed refusal sentence with the typed status its tool row
-// keeps, before any token exists. None of them writes.
+// the proposal usable for its owner. A refusal the offer itself answers,
+// a malformed amount or a file whose pool the write cannot take, is the
+// streamed refusal sentence with the typed status its tool row keeps,
+// before any token exists. None of them writes.
 
 // accInfraFile is the code project's file on the configuration
 // repository's main.
@@ -225,8 +225,8 @@ func poolWrites(r *AcceptanceRig) int {
 // records one pool_changed row; a stale captured source answers the real
 // 409 before any stream and its spent token replays 404, a candidate the
 // change check refuses answers 422, a malformed amount or a file whose
-// pool the write cannot take refuses at the offer — the streamed sentence
-// with the typed status its row keeps — and a malformed correction of a
+// pool the write cannot take refuses at the offer (the streamed sentence
+// with the typed status its row keeps), and a malformed correction of a
 // valid proposal answers 400 that leaves the proposal usable. None of
 // the refusals writes.
 func TestPoolPolicyPR(t *testing.T) {
@@ -304,7 +304,7 @@ func TestPoolPolicyPR(t *testing.T) {
 	equal(t, "the reload requests", r.Reloads(), 1)
 
 	// one pool_changed row naming the member, and the policy in force
-	// holds the new ceiling: the reload's activation, alone, did it
+	// holds the new pool: the reload's activation, alone, did it
 	rows := r.Events()
 	if len(rows) != 1 {
 		t.Fatalf("%d event rows, want the one pool_changed: %+v", len(rows), rows)

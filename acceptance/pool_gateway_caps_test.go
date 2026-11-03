@@ -32,9 +32,9 @@ import (
 // policy PR wrote (the pool at EUR 10), then again under the file a
 // human-confirmed Top up landed (the pool at EUR 11): three ceilings,
 // each bound on its own, before and after. The top-up is the real chat
-// flow — the agent's set_pool proposal, the human's Do it, the guarded
+// flow (the agent's set_pool proposal, the human's Do it, the guarded
 // commit, pull request and merge on the configuration repository's
-// fake, the reload's activation — and only escalation.pool.eur moves; the
+// fake, the reload's activation), and only escalation.pool.eur moves: the
 // fixed day and month caps of policy.yaml and the project's own lower
 // cap stand, and the gateway under the landed version refuses every
 // ceiling with the same decisions, the same literal wording and the

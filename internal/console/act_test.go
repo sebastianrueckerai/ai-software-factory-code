@@ -3,10 +3,13 @@ package console
 import (
 	"context"
 	"encoding/base64"
+	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -15,14 +18,14 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// caseCard files agent card t-e on sf/code, waiting on a human at its
-// session cap on #13, with its live cases: 5, at the human, and the merge
+// caseCard files agent card t-e on sf/code, waiting on a human for the
+// agent's ask on #13, with its live cases: 5, at the human, and the merge
 // case 9, which its own door answers.
 func caseCard(r *rig) {
-	r.tasks.set("Card #13 used its sessions", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
+	r.tasks.set(factoryd.AgentAsks+"Use a replica?", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code",
 		IssueNumber: 13, BudgetEUR: 2})
 	r.openCases = map[string][]factoryd.Case{"t-e": {
-		{ID: 5, TaskID: "t-e", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman},
+		{ID: 5, TaskID: "t-e", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman},
 		{ID: 9, TaskID: "t-e", Kind: factoryd.CaseMergeApproval, Status: factoryd.CaseOpen},
 	}}
 }
@@ -40,8 +43,8 @@ func actedOnce(t *testing.T, r *rig) (factoryd.ActInput, bool) {
 	return in, posts
 }
 
-// runTool runs the chat tool name as a turn of sebastian's chat on sf/code
-// runs it, decided by decider: the agent unconfirmed, or the member.
+// runTool runs the chat tool name as a turn of sebastian's chat on sf/code,
+// decided by decider: the agent unconfirmed, or the human.
 func runTool(t *testing.T, r *rig, name, decider string, in toolInput) (string, error) {
 	t.Helper()
 	_, s := r.loggedIn(t)
@@ -215,4 +218,378 @@ func committed(t *testing.T, infra *infraFake, i int) string {
 		t.Fatal(err)
 	}
 	return string(b)
+}
+
+// Words on a card whose newest case is its session cap grant it one
+// session, as the cap's own answer does: continue would find no room.
+// Words on a card whose newest case is an ask go on, whatever its
+// session count says.
+func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
+	for kind, want := range map[factoryd.CaseKind]factoryd.Resolution{
+		factoryd.CaseSessionCap:    {Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "use the replica"},
+		factoryd.CaseAgentEscalate: {Action: factoryd.ActContinue, Note: "use the replica"},
+	} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		caseCard(r)
+		r.openCases["t-e"][0].Kind = kind
+		r.tasks.tasks[0].Usage.Attempts = 3 // the card used its three sessions either way
+		if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck); rec.Code != http.StatusSeeOther {
+			t.Fatalf("%s: answer = %d: %s", kind, rec.Code, rec.Body)
+		}
+		if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, want) {
+			t.Errorf("%s: Act took %+v, want %+v", kind, got.Res, want)
+		}
+	}
+}
+
+// An answer with an action meets every answer's gates before Act, on
+// every entry: the chat's close on a human card runs the close's work, its
+// label posted and the issue closed, and resolves the card's case with the
+// choice, handing Act the comment the close posted. An action on a running
+// agent card meets the wall the button meets, and nothing reaches Act.
+func TestAnActionMeetsTheAnswersGates(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
+		factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Action: factoryd.ActClose}); err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), []string{"Done"}) ||
+		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("comments %q, patched %v; want the label posted and the issue closed", r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"), r.fg.patched)
+	}
+	got, posts := actedOnce(t, r)
+	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Done"}}, true})
+
+	r = newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}}}
+	var steered []string
+	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
+		steered = append(steered, taskID+": "+text)
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	const wall = "Card #11 runs an agent session, not a question or a session cap to answer: steer sends its session a message; its pull request comes when the session ends."
+	rec := r.do(post("/tasks/t-run/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerGrant}}), ck)
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", Action: factoryd.ActExtend, Text: "one more"})
+	var no *refusal
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != wall || !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != wall {
+		t.Fatalf("the button = %d %q, the chat's action = %v; want both %q", rec.Code, rec.Body, err, wall)
+	}
+	if len(r.acted) != 0 || len(steered) != 0 {
+		t.Fatalf("Act took %+v, steered %v; want neither", r.acted, steered)
+	}
+}
+
+// A human card's choice posts its comment by its own work, and Act learns
+// that comment, so the webhook's copy of it finds the case answered: Act's
+// Post answers the comment the close posted and posts nothing more. When
+// the webhook's copy came first and ended the case, the choice's work
+// stands as the answer.
+func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
+	const comments = "/api/v1/repos/sf/code/issues/51/comments"
+	press := func(r *rig) *httptest.ResponseRecorder {
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+		ck, s := r.loggedIn(t)
+		return r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}}), ck)
+	}
+
+	r := newRig(t)
+	if rec := press(r); rec.Code != http.StatusSeeOther {
+		t.Fatalf("the close = %d: %s", rec.Code, rec.Body)
+	}
+	in := r.acted[0]
+	if in.Post == nil {
+		t.Fatalf("Act took no Post for the close's comment")
+	}
+	id, err := in.Post(t.Context())
+	if err != nil || id != r.fg.commentN || len(r.fg.commentBodies(comments)) != 1 {
+		t.Fatalf("Post = %d, %v, comments %q; want the close's comment %d and no second", id, err, r.fg.commentBodies(comments), r.fg.commentN)
+	}
+
+	r = newRig(t)
+	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
+	r.actErr = factoryd.ErrCaseEnded{Case: factoryd.Case{ID: 1, Status: factoryd.CaseResolved, ResolvedAt: &at,
+		Resolution: &factoryd.CaseResolution{By: "sebastian", Action: "answer"}}}
+	if rec := press(r); rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("the close the webhook answered first = %d %q, patched %v; want it done", rec.Code, rec.Body, r.fg.patched)
+	}
+}
+
+// Act's failure reaches the human as what it means: a retry factoryd
+// refuses is a 409 with its sentence, and any other failure a 500 that
+// names the factoryd log and nothing of the store.
+func TestActFailuresAnswerWithoutTheStore(t *testing.T) {
+	for _, tc := range []struct {
+		err    error
+		status int
+		body   string
+	}{
+		{factoryd.ErrNoRetry("Card #7 was already retried."), http.StatusConflict, "Card #7 was already retried."},
+		{errors.New(`pq: relation "cases" does not exist`), http.StatusInternalServerError, "The answer failed: see the factoryd log."},
+	} {
+		r := newRig(t)
+		ck, s := r.loggedIn(t)
+		caseCard(r)
+		r.actErr = tc.err
+		rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
+		if rec.Code != tc.status || strings.TrimSpace(rec.Body.String()) != tc.body {
+			t.Errorf("%v = %d %q, want %d %q", tc.err, rec.Code, rec.Body, tc.status, tc.body)
+		}
+	}
+}
+
+// retryRig is the plan board rig with failed card t-c7 (#7) and two cards
+// that wait on it, t-d1 (#21) and t-d2 (#22), each at the human on its
+// dependency case about t-c7: 5 and 6.
+func retryRig(t *testing.T) *rig {
+	r := newRig(t)
+	withLinkshort(r)
+	r.tasks.tasks = append(planTasks(), failedCard())
+	r.tasks.deps = map[string][]string{}
+	for _, d := range []struct {
+		id    string
+		issue int64
+	}{{"t-d1", 21}, {"t-d2", 22}} {
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: d.id, Kind: "agent", Status: "waiting-human",
+			Repository: "linkshort/linkshort", IssueNumber: d.issue}})
+		r.tasks.deps[d.id] = []string{"t-c7"}
+	}
+	r.openCases = map[string][]factoryd.Case{
+		"t-d1": {{ID: 5, TaskID: "t-d1", Kind: factoryd.CaseDependencyFailed, StateKey: "t-c7", Status: factoryd.CaseAtHuman}},
+		"t-d2": {{ID: 6, TaskID: "t-d2", Kind: factoryd.CaseDependencyFailed, StateKey: "t-c7", Status: factoryd.CaseAtHuman}},
+	}
+	return r
+}
+
+// One Retry of a failed card answers every dependency case on it through
+// Act, the first filing the replacement and the next naming it, and files
+// nothing itself; the card_retried row names the replacement, #9. When
+// the replacement cannot be read the answer says the retry ran and that
+// its row could not be written, and no row names a replacement of 0.
+func TestRetryAnswersEveryDependentsCase(t *testing.T) {
+	retry := factoryd.Resolution{Action: factoryd.ActRetry, Args: map[string]any{"task_id": "t-c7"}}
+	r, ev := retryRig(t), (*fakeEvents)(nil)
+	ev = r.events
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.RetryID("t-c7"), Kind: "agent", Status: "queued",
+		Repository: "linkshort/linkshort", IssueNumber: 9}})
+	_, s := r.loggedIn(t)
+	a := actor{s: s, repository: "linkshort/linkshort", via: factoryd.ViaButton}
+	before := ev.count()
+	said, err := r.c.doRetry(t.Context(), a, "t-c7")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []factoryd.ActInput{
+		{TaskID: "t-d1", CaseID: 5, By: "sebastian", Via: factoryd.ViaButton, Rung: 3, Res: retry},
+		{TaskID: "t-d2", CaseID: 6, By: "sebastian", Via: factoryd.ViaButton, Rung: 3, Res: retry},
+	}
+	var got []factoryd.ActInput
+	for _, in := range r.acted {
+		in.Post, in.Detail = nil, nil
+		got = append(got, in)
+	}
+	if !reflect.DeepEqual(got, want) || len(r.retried) != 0 || said != "Case 5 took retry. Case 6 took retry." {
+		t.Fatalf("Act took %+v, RetryCard %v, said %q; want both cases answered and no direct retry", got, r.retried, said)
+	}
+	answered := func(id string, caseID int64) wantRow {
+		return wantRow{kind: factoryd.EventQuestionAnswered, repo: "linkshort/linkshort", taskID: id,
+			detail: map[string]any{"action": factoryd.ActRetry, "case_id": caseID, "answer": factoryd.ActRetry}}
+	}
+	checkRows(t, ev, before, answered("t-d1", 5), answered("t-d2", 6), wantRow{kind: factoryd.EventCardRetried, repo: "linkshort/linkshort", taskID: "t-c7",
+		detail: map[string]any{"replacement": int64(9)}})
+
+	r = retryRig(t)
+	_, s = r.loggedIn(t)
+	before = r.events.count()
+	said, err = r.c.doRetry(t.Context(), actor{s: s, repository: "linkshort/linkshort", via: factoryd.ViaButton}, "t-c7")
+	if err != nil || said != "Case 5 took retry. Case 6 took retry. The retry ran, but its replacement could not be read, so no card_retried row was written." {
+		t.Fatalf("doRetry = %q, %v", said, err)
+	}
+	checkRows(t, r.events, before, answered("t-d1", 5), answered("t-d2", 6))
+}
+
+// A human card's own Close ends its case through Act as the human's close
+// once its work went through: the note posted, the issue closed, and the
+// note's comment handed to Act.
+func TestCloseOfAHumanCardResolvesItsCase(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerPark, Label: "Wait for it"})}
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/tasks/t-hq/close", url.Values{"csrf": {s.csrf}, "note": {"done by hand"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
+	}
+	if !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("patched %v; want the issue closed", r.fg.patched)
+	}
+	got, posts := actedOnce(t, r)
+	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "done by hand"}}, true})
+	if id, err := r.acted[0].Post(t.Context()); err != nil || id != r.fg.commentN || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 1 {
+		t.Fatalf("Post = %d, %v; want the note's comment %d, posted once", id, err, r.fg.commentN)
+	}
+}
+
+// A ceiling refusal names the control the human holds where they are: the
+// Fund form's ceiling field on the board, the answer's raise_ceiling in
+// the chat.
+func TestCeilingRefusalNamesTheActorsControl(t *testing.T) {
+	for via, want := range map[string]string{
+		factoryd.ViaButton: "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling in the Fund form's ceiling field as you fund.",
+		factoryd.ViaChat:   "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling first (answer with action raise_ceiling), then fund.",
+	} {
+		r := needRig(t)
+		_, s := r.loggedIn(t)
+		r.actErr = &factoryd.CardCapError{Budget: 4.5}
+		_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: via}, "t-e", 0.9, "go", 0)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
+			t.Errorf("%s: doFund = %v, want %q", via, err, want)
+		}
+	}
+}
+
+// The board's Fund form raises the ceiling as it funds: its ceiling field
+// is a raise_ceiling with the fund drawn beside it.
+func TestFundFormRaisesTheCeiling(t *testing.T) {
+	r := needRig(t)
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/tasks/t-e/fund", url.Values{"csrf": {s.csrf}, "eur": {"0.9"}, "ceiling": {"1"}, "reason": {"worth it"}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("fund = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	if want := (factoryd.Resolution{Action: factoryd.ActRaiseCeiling, Args: map[string]any{"eur": 1.0}, Fund: &policy.Draw{EUR: 0.9}, Note: "worth it"}); !reflect.DeepEqual(got.Res, want) {
+		t.Fatalf("Act took %+v, want %+v", got.Res, want)
+	}
+}
+
+// The chat's answer passes its args to Act whole: a handover to a
+// stronger model names its model.
+func TestChatAnswerPassesItsArgs(t *testing.T) {
+	r := newRig(t)
+	caseCard(r)
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Text: "try the bigger one", Action: factoryd.ActHandover,
+		Args: json.RawMessage(`{"model":"stronger"}`)}); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := actedOnce(t, r)
+	if want := (factoryd.Resolution{Action: factoryd.ActHandover, Args: map[string]any{"model": "stronger"}, Note: "try the bigger one"}); !reflect.DeepEqual(got.Res, want) {
+		t.Fatalf("Act took %+v, want %+v", got.Res, want)
+	}
+}
+
+// The console's answer to every choice the five-part questions offer fits
+// the action table on the facts of its case. For each case kind with a
+// question, each choice value that question offers reaches Act on rung 3
+// as an action the real table gives the human on hand-built facts of the
+// kind: factoryd.Offered holds it, and its own rule takes the answer's
+// arguments. A note and a continue carry the note their rule reads, which
+// Offered's probes do not, so their rule alone judges them. A human card's
+// choice is its question's to take, and its note (park) is a note on rung
+// 3 that the table takes. The pairs the table refuses stay away from Act:
+// words at a session cap would be a continue with no room, which the
+// console turns into a grant, and a grant on an ask is an extend the
+// table would take, which the console's grant_session refuses.
+func TestEveryChoiceFitsTheActionTable(t *testing.T) {
+	room := factoryd.CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.5, CeilingEUR: 5}
+	with := func(edit func(*factoryd.CaseFacts)) factoryd.CaseFacts {
+		f := room
+		edit(&f)
+		return f
+	}
+	capped := with(func(f *factoryd.CaseFacts) { f.Attempts = 3 })
+	pr := with(func(f *factoryd.CaseFacts) { f.PR, f.PROpen, f.Head, f.Checks = 9, true, "h1", "red" })
+	fits := func(f factoryd.CaseFacts, res factoryd.Resolution) string {
+		a, ok := factoryd.ActionByName(res.Action)
+		switch {
+		case !ok:
+			return "no action " + res.Action
+		case !a.Rungs[3]:
+			return "not the human's"
+		case res.Action != factoryd.ActNote && res.Action != factoryd.ActContinue &&
+			!slices.ContainsFunc(factoryd.Offered(f, 3), func(o factoryd.Action) bool { return o.Name == res.Action }):
+			return "not offered"
+		}
+		return a.Applies(f, res)
+	}
+	for _, tc := range []struct {
+		kind    factoryd.CaseKind
+		reason  string
+		choices []string
+		facts   factoryd.CaseFacts
+	}{
+		{factoryd.CaseSessionCap, "the session cap is reached: every finding sent to the agent so far goes to a human", nil, capped},
+		{factoryd.CaseAgentTimeCap, "the agent time is used up: every finding sent to the agent so far goes to a human", nil,
+			with(func(f *factoryd.CaseFacts) { f.AgentTimeS = 7200 })},
+		{factoryd.CaseBudgetFloor, needRefusal, nil, with(func(f *factoryd.CaseFacts) { f.LeftEUR, f.FloorEUR = 0.17, 0.9 })},
+		{factoryd.CaseMonthCap, "the month cap is reached", nil, room},
+		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the check-in's share of the budget is spent", nil, room},
+		{factoryd.CaseGateStop, "The gate supervisor stopped WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.", nil, pr},
+		{factoryd.CaseGateStop, "The gate supervisor stopped review: review: concerns on the head", nil, pr},
+		{factoryd.CaseFindingsRepeated, "No reply can change this: the head and the card's limits are unchanged since the last stop.", nil, pr},
+		{factoryd.CaseAgentEscalate, factoryd.AgentAsks + "Use a replica?", []string{"Yes", "No"}, room},
+		{factoryd.CaseOther, "the pod never started", nil, room},
+		{factoryd.CaseWaitExpired, "The card was quiet for 3 days.", nil, room},
+	} {
+		q := factoryd.ShapedQuestion(tc.reason, factoryd.QuestionFacts{}, tc.choices)
+		for _, c := range q.Choices {
+			r := newRig(t)
+			_, s := r.loggedIn(t)
+			r.tasks.set(tc.reason, factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, BudgetEUR: 2})
+			r.tasks.tasks[0].Question = q
+			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman}}}
+			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
+			var err error
+			if c.Value == factoryd.AnswerExtend {
+				_, err = r.c.doExtend(t.Context(), a, "t-k", 1, 0, 0, c.Label) // the Extend form gives its amounts
+			} else {
+				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "")
+			}
+			if err != nil || len(r.acted) != 1 {
+				t.Errorf("%s, %s: %v, Act took %+v", tc.kind, c.Value, err, r.acted)
+				continue
+			}
+			in := r.acted[0]
+			if why := fits(tc.facts, in.Res); in.Rung != 3 || why != "" {
+				t.Errorf("%s, %s: Act took %+v on rung %d, which the table refuses: %s", tc.kind, c.Value, in.Res, in.Rung, why)
+			}
+		}
+	}
+
+	for _, card := range []factoryd.BoardTask{stallCard(), humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerGo, Label: "Have the factory do it"},
+		factoryd.QuestionChoice{Value: factoryd.AnswerPark, Label: "Wait for it"}, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})} {
+		for _, c := range card.Question.Choices {
+			r := newRig(t)
+			_, s := r.loggedIn(t)
+			r.tasks.tasks = []factoryd.BoardTask{card}
+			if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, card.ID, "", c.Value, ""); err != nil || len(r.acted) != 1 {
+				t.Errorf("%s, %s: %v, Act took %+v", card.ID, c.Value, err, r.acted)
+				continue
+			}
+			res := r.acted[0].Res
+			switch {
+			case res.Action == factoryd.ActNote && fits(room, res) != "":
+				t.Errorf("%s, %s: the note %+v is no note the table takes: %s", card.ID, c.Value, res, fits(room, res))
+			case res.Action != factoryd.ActNote && !card.Question.Offers(res.Action):
+				t.Errorf("%s, %s: the choice %+v is not its question's", card.ID, c.Value, res)
+			}
+		}
+	}
+
+	if got, want := fits(capped, factoryd.Resolution{Action: factoryd.ActContinue, Note: "go on"}), "the session cap of 3 is reached: extend or close"; got != want {
+		t.Errorf("a continue at the cap = %q, want the table's refusal %q", got, want)
+	}
+	if got := fits(room, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}}); got != "" {
+		t.Errorf("an extend on an ask = %q, want the table to take it, so the console's grant_session refuses it", got)
+	}
+	r := newRig(t)
+	r.tasks.set(factoryd.AgentAsks+"Use a replica?", factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
+	r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}}}
+	_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-k", Text: "yes"})
+	var no *refusal
+	if want := "Card #13 waits on a human: an answer, an approval or a decision, not a card at its session cap: answer it (answer)."; !errors.As(err, &no) || no.msg != want || len(r.acted) != 0 {
+		t.Errorf("a grant on an ask = %v, Act took %+v; want %q and nothing acted", err, r.acted, want)
+	}
 }

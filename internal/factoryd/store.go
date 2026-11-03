@@ -689,9 +689,6 @@ type Store interface {
 	// FundCard raises task id's budget by eur, up to its ceiling, else up
 	// to ceiling, and writes e, its card_funded row (PGStore.FundCard).
 	FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error)
-	// ExtendCard raises task id's caps by d and lines and writes e, its
-	// card_extended row (PGStore.ExtendCard).
-	ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error)
 	// PoolDrawn is what repository's cards drew from the escalation pool
 	// in the UTC month of month, every rung's draws.
 	PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error)
@@ -1824,23 +1821,10 @@ func (s *PGStore) fundCard(ctx context.Context, tx *sql.Tx, id string, eur, ceil
 	return from, to, stored, nil
 }
 
-// ExtendCard raises task id's caps by d — its sessions, its agent time
-// and its budget — and its line bound by lines, and writes e, its
-// card_extended row, in one transaction. No task: ErrNotFound.
-func (s *PGStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
-	err = s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
-		var stored Event
-		from, to, stored, err = s.extendCard(ctx, tx, id, d, lines, e)
-		return []Event{stored}, err
-	})
-	if err != nil {
-		return 0, 0, err
-	}
-	return from, to, nil
-}
-
-// extendCard is ExtendCard inside tx, which the caller commits before it
-// publishes stored.
+// extendCard raises task id's caps by d (its sessions, its agent time
+// and its budget) and its line bound by lines, and writes e, its
+// card_extended row, inside tx, which the caller commits before it
+// publishes stored. No task: ErrNotFound.
 func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines int, e Event) (from, to float64, stored Event, err error) {
 	seconds := int64(d.AgentTime / time.Second)
 	err = tx.QueryRowContext(ctx,

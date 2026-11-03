@@ -741,8 +741,8 @@ func (t *turn) answer(in toolInput) (string, error) {
 		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
-	case in.Action != "" || in.FundEUR != 0:
-		return t.c.doAnswerAs(ctx, t.a, k, in.Text, in.Action, in.FundEUR)
+	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
+		return t.c.doAnswerAs(ctx, t.a, in.TaskID, in.Text, in.Action, in.Args, in.FundEUR)
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
@@ -1487,6 +1487,13 @@ var tools = []chatTool{
 			"description": "the typed action on the card's case, continue when none"},
 		"fund_eur": map[string]any{"type": "number", "exclusiveMinimum": 0,
 			"description": "the EUR it draws: the fund's own, else beside the action"},
+		"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
+			"properties": map[string]any{
+				"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+				"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
+				"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
+				"lines":        map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
+				"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -2093,6 +2100,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
+  answer's action takes its args: handover a model, extend sessions, agent_time_s or lines, fund and raise_ceiling eur, and retry and replan none.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human, answered by a press or their next message, and ends the turn.
@@ -2164,12 +2172,14 @@ func (t *turn) systemText() (string, error) {
 // decision on rung 2, which the pool and the card's ceiling bound, a
 // human's confirmed one on rung 3.
 func (t *turn) fund(in toolInput) (string, error) {
-	return t.c.doFund(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text)
+	return t.c.doFund(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text, 0)
 }
 
-// capSpent is the refusal of res's money past card issue's ceiling, which
-// the budget of held meets: a raise of the ceiling makes the room.
-func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64) string {
+// capSpent is the refusal of money res draws past card issue's ceiling,
+// held the budget it met: it names the raise that makes room by the
+// control the human has where they are, the answer's raise_ceiling in the
+// chat, the Fund form's ceiling field elsewhere.
+func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64, via string) string {
 	eur, _ := res.Args["eur"].(float64)
 	if res.Action != factoryd.ActFund {
 		eur = 0
@@ -2177,8 +2187,11 @@ func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float6
 	if res.Fund != nil {
 		eur += res.Fund.EUR
 	}
-	return fmt.Sprintf("Card #%d holds €%.2f now, and €%.2f more passes its ceiling of €%.2f: raise the ceiling first (raise_ceiling), then fund.",
-		issue, held, eur, ceiling)
+	raise := "raise the ceiling in the Fund form's ceiling field as you fund"
+	if via == factoryd.ViaChat {
+		raise = "raise the ceiling first (answer with action raise_ceiling), then fund"
+	}
+	return fmt.Sprintf("Card #%d holds €%.2f now, and €%.2f more passes its ceiling of €%.2f: %s.", issue, held, eur, ceiling, raise)
 }
 
 // limitLines are the policy's task budget and limits, one indented line

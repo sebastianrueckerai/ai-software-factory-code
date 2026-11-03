@@ -116,9 +116,9 @@ var Actions = []Action{
 		switch {
 		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0:
 			return "an extend takes no part below 0"
-		case d.Sessions == 0 && d.AgentTime == 0:
-			return "an extend needs sessions or agent time above 0"
-		case boughtNothing(f):
+		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0:
+			return "an extend needs sessions, agent time or lines above 0"
+		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
 		return ""
@@ -149,6 +149,9 @@ var Actions = []Action{
 				return ""
 			}
 			return "no failed dependency is open to a retry"
+		}
+		if _, ok := retriedAs(f, id); ok {
+			return ""
 		}
 		i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id })
 		if i < 0 {
@@ -335,6 +338,27 @@ func sessionRoom(f CaseFacts) string {
 		return fmt.Sprintf("%.2f EUR is left and an opening needs %.2f EUR: fund", f.LeftEUR, f.FloorEUR)
 	}
 	return ""
+}
+
+// retriedAs names the card that replaced failed dependency id of f's card
+// when a retry filed one: the dependency the retry moved the card onto, or
+// the replacement the failed dependency names.
+func retriedAs(f CaseFacts, id string) (string, bool) {
+	if id == "" {
+		return "", false
+	}
+	for _, d := range f.Dependencies {
+		switch {
+		case d.TaskID == RetryID(id) || d.RetryOf == id:
+			if d.Issue != 0 {
+				return fmt.Sprintf("#%d", d.Issue), true
+			}
+			return d.TaskID, true
+		case d.TaskID == id && d.Replaced != "":
+			return d.Replaced, true
+		}
+	}
+	return "", false
 }
 
 // retryRefusal is why a retry does not take dependency d, "" when it does.

@@ -108,21 +108,21 @@ func TestCardDrawnCountsRungsZeroAndOne(t *testing.T) {
 	}
 }
 
-// An extend raises the sessions, the agent time, the line bound and the
-// budget in one write, and its card_extended row carries each part: 20
-// minutes is 1200 s. The row is a pool draw, so the month's pool reads it.
-func TestExtendCardRaisesTimeAndWritesTheDraw(t *testing.T) {
+// An extend draw raises the sessions, the agent time and the line bound
+// in one write, and its card_extended row carries each part: 20 minutes
+// is 1200 s, and no money moves. The row is a pool draw, so the month's
+// pool reads it. A card that does not exist is ErrNotFound.
+func TestExtendDrawRaisesTimeAndWritesTheRow(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-x", 2)
-	e := Event{Repository: "sf/r", TaskID: "t-x", IssueNumber: 9, Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole,
-		Detail: map[string]any{"pool": true, "rung": 3}}
-	from, to, err := s.ExtendCard(ctx, "t-x", policy.Draw{Sessions: 1, AgentTime: 20 * time.Minute, EUR: 0.5}, 100, e)
-	if err != nil || from != 2 || to != 2.5 {
-		t.Fatalf("ExtendCard = (%v, %v, %v), want (2, 2.5, nil)", from, to, err)
+	d := CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1, AgentTime: 20 * time.Minute}, Lines: 100,
+		Event: Event{Repository: "sf/r", TaskID: "t-x", IssueNumber: 9, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}
+	if err := s.DrawCard(ctx, "t-x", d); err != nil {
+		t.Fatal(err)
 	}
 	card, _, err := s.Task(ctx, "t-x")
-	if err != nil || card.Usage.RaisedSessions != 1 || card.Usage.RaisedTime != 20*time.Minute || card.Usage.ExtraLines != 100 || card.BudgetEUR != 2.5 {
-		t.Fatalf("the card = %+v, %v; want 1 session, 20m, 100 lines raised and 2.5 EUR", card.Usage, err)
+	if err != nil || card.Usage.RaisedSessions != 1 || card.Usage.RaisedTime != 20*time.Minute || card.Usage.ExtraLines != 100 || card.BudgetEUR != 2 {
+		t.Fatalf("the card = %+v, %v; want 1 session, 20m and 100 lines raised, the budget at 2 EUR", card.Usage, err)
 	}
 	if card.Usage.TimeAdded() != 20*time.Minute {
 		t.Fatalf("TimeAdded = %v, want 20m", card.Usage.TimeAdded())
@@ -131,16 +131,17 @@ func TestExtendCardRaisesTimeAndWritesTheDraw(t *testing.T) {
 	if err != nil || len(rows) != 1 {
 		t.Fatalf("the rows = %+v, %v; want the one card_extended row", rows, err)
 	}
-	d := rows[0].Detail
-	if rows[0].Kind != EventCardExtended || d["sessions"] != 1.0 || d["agent_time_s"] != 1200.0 || d["lines"] != 100.0 ||
-		d["amount_eur"] != 0.5 || d["from_eur"] != 2.0 || d["to_eur"] != 2.5 || d["pool"] != true || d["rung"] != 3.0 {
-		t.Fatalf("the row = %+v, want sessions 1, agent_time_s 1200, lines 100, amount_eur 0.5 from 2 to 2.5, pool true, rung 3", rows[0])
+	e := rows[0].Detail
+	if rows[0].Kind != EventCardExtended || e["sessions"] != 1.0 || e["agent_time_s"] != 1200.0 || e["lines"] != 100.0 ||
+		e["amount_eur"] != 0.0 || e["from_eur"] != 2.0 || e["to_eur"] != 2.0 || e["pool"] != true || e["rung"] != 3.0 {
+		t.Fatalf("the row = %+v, want sessions 1, agent_time_s 1200, lines 100, amount_eur 0 from 2 to 2, pool true, rung 3", rows[0])
 	}
-	if got, err := s.PoolDrawn(ctx, "sf/r", time.Now()); err != nil || got != (policy.Draw{Sessions: 1, AgentTime: 20 * time.Minute, EUR: 0.5}) {
+	if got, err := s.PoolDrawn(ctx, "sf/r", time.Now()); err != nil || got != (policy.Draw{Sessions: 1, AgentTime: 20 * time.Minute}) {
 		t.Fatalf("PoolDrawn = %+v, %v; want the extend's draw", got, err)
 	}
-	if _, _, err := s.ExtendCard(ctx, "nope", policy.Draw{Sessions: 1}, 0, e); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("ExtendCard of no task = %v, want ErrNotFound", err)
+	d.Event.TaskID = "nope"
+	if err := s.DrawCard(ctx, "nope", d); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an extend of no task = %v, want ErrNotFound", err)
 	}
 }
 

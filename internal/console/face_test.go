@@ -1494,7 +1494,9 @@ func TestAskLessAndQuestionLessCardsKeepTheirForms(t *testing.T) {
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"]; got != "Not this week." {
 		t.Errorf("the note = %q, want it on the issue", got)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-wait", detail: map[string]any{"note": "Not this week."}},
+		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-wait",
+			detail: map[string]any{"action": factoryd.ActClose, "case_id": int64(1), "answer": "Not this week.", "value": factoryd.ActClose, "comment": int64(1)}})
 }
 
 // A plan that filed its cards ends done as a compact row; a named plan's

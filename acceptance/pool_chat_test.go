@@ -14,10 +14,10 @@ import (
 )
 
 // The escalation pool's chat acceptance (the pool-chat-http card of plan
-// #1399): the set_pool proposal through the real console surface — the
+// #1399): the set_pool proposal through the real console surface (the
 // offer the stream carries with the change it captured, the human's
 // unchanged or corrected confirmation, and the access the confirmation
-// itself re-judges — beside the top-up and the lowered pool the readout
+// itself re-judges) beside the top-up and the lowered pool the readout
 // reads whole, and the partial failures a merged change can still leave:
 // a merge Forgejo refused, a pool the loader has not activated and an
 // audit row the spine refused, each answered with its typed HTTP status
@@ -104,9 +104,9 @@ func poolLineOf(t *testing.T, r *AcceptanceRig, now time.Time) []any {
 
 // TestPoolChatProposal is the offer and its two confirmations through
 // the chat's HTTP surface: the model's Set EUR 10 of a file that leaves
-// the pool's money to the policy proposes with the change it captured — the operation, the
-// suggestion, the reason and the ceiling it would stand at — and writes
-// nothing; the unchanged confirmation lands 10 with the answer naming
+// the pool's money to the policy proposes with the change it captured
+// (the operation, the suggestion, the reason and the pool it would stand
+// at) and writes nothing; the unchanged confirmation lands 10 with the answer naming
 // the pull request, and the corrected confirmation lands 12 in the
 // merged file while the policy still holds 10: the answer names the
 // pull request, distinguishes the merged change from the loaded one and
@@ -150,7 +150,7 @@ func TestPoolChatProposal(t *testing.T) {
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, `{"correction":{"eur":12}}`)
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) !=
 		"The pool change is merged as sf/infra#102, but the policy in force still holds the pool of "+accProjectName+
-			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it." {
+			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 12.00." {
 		t.Fatalf("the corrected Do it = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the corrected confirmation", r.InfraFiles()[accInfraFile], accPoolLanded)
@@ -428,7 +428,7 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) !=
 		"The pool change is merged as sf/infra#102, but the policy in force still holds the pool of "+accProjectName+
-			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it." {
+			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 14.00." {
 		t.Fatalf("the unloaded merge's press = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the unloaded merge", r.InfraFiles()[accInfraFile], accPoolTopped4)

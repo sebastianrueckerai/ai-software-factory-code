@@ -703,3 +703,69 @@ func TestActCarriesTheCallersDetailOnEveryRow(t *testing.T) {
 		t.Fatalf("question_answered rows = %+v; want one with the token", answered)
 	}
 }
+
+// An extend of 200 lines alone resolves the case and raises the card's
+// line bound by 200: one card_extended row of 200 lines and no session,
+// agent time or money, nothing drawn from the pool, and the step says
+// what it raised.
+func TestActExtendsTheLinesAlone(t *testing.T) {
+	g := newActRig(t)
+	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"lines": 200}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"lines": 200}, Result: "Raised the line bound by 200 lines."}}
+	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved {
+		t.Fatalf("result = %+v, want case resolved, nothing drawn and the step %+v", got, want)
+	}
+	if card := g.card(t); card.Usage.ExtraLines != 200 || card.Usage.RaisedSessions != 0 {
+		t.Fatalf("extra lines %d, raised sessions %d; want 200 and 0", card.Usage.ExtraLines, card.Usage.RaisedSessions)
+	}
+	rows := g.rows(t, EventCardExtended)
+	if len(rows) != 1 || rows[0].Detail["lines"] != 200.0 || rows[0].Detail["sessions"] != 0.0 || rows[0].Detail["agent_time_s"] != 0.0 ||
+		rows[0].Detail["amount_eur"] != 0.0 {
+		t.Fatalf("card_extended rows = %+v, want one of 200 lines and nothing else", rows)
+	}
+}
+
+// Closing a human card is open to the human whatever its question offers,
+// as its Close button is: Act resolves its case with close on a question
+// whose choices hold no close, and on a card that asks no question.
+func TestActTakesAHumanCardsCloseItsQuestionDoesNotOffer(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	for _, tc := range []struct {
+		id    string
+		issue int64
+		q     *HumanQuestion
+	}{
+		{"h1", 13, &HumanQuestion{Ask: "Roll the release?", Choices: []QuestionChoice{{Value: AnswerDismiss, Label: "Dismiss"}}}},
+		{"h2", 14, nil},
+	} {
+		if err := g.s.CreateTask(ctx, Task{ID: tc.id, Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app",
+			IssueNumber: tc.issue}); err != nil {
+			t.Fatal(err)
+		}
+		if tc.q != nil {
+			if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: tc.id, Kind: IntakeEscalation, Author: "factoryd", Body: tc.q.Ask,
+				Question: tc.q, Choices: tc.q.Labels()}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		c, _, err := g.s.OpenCase(ctx, Case{TaskID: tc.id, Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: tc.id,
+			Status: CaseAtHuman, Problem: "a person's work"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.r.Act(ctx, ActInput{TaskID: tc.id, CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "done by hand"}}); err != nil {
+			t.Fatalf("%s: %v", tc.id, err)
+		}
+		if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != ActClose {
+			t.Fatalf("%s: case = %s, %+v; want resolved with close", tc.id, got.Status, got.Resolution)
+		}
+	}
+	if g.forge.closed || len(g.forge.comments) != 0 {
+		t.Fatalf("closed %v, comments %q; want no Forgejo call", g.forge.closed, g.forge.comments)
+	}
+}

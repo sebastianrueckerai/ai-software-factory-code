@@ -335,6 +335,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 		return fmt.Sprintf("%s may not answer a human card: rung 2 and the human may", who(in.Rung)), nil
 	case in.Res.Fund != nil:
 		return fmt.Sprintf("card %s is a human card, so its answer draws nothing: answer it without the fund", cardName(t)), nil
+	case in.Res.Action == ActClose:
+		return "", nil // a human card closes whatever it asks, as its Close button does
 	}
 	events, err := r.store.IntakeEvents(ctx, t.ID)
 	if err != nil {
@@ -367,6 +369,13 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 	switch in.Res.Action {
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
+		if as, ok := retriedAs(f, id); ok {
+			old, _, err := r.task(ctx, id)
+			if err != nil {
+				return nil, err
+			}
+			return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id}, Result: fmt.Sprintf("%s was retried as %s already.", cardName(old), as)}}, nil
+		}
 		i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id || id == "" && retryRefusal(d) == "" })
 		if i < 0 {
 			return nil, ErrActRefused("no failed dependency is open to a retry")
@@ -442,7 +451,11 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 // the timeline was read, the findings they were weighed on (boughtNothing).
 func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) *CaseDraw {
 	d, budget := in.Res.draw()
-	if d.IsZero() {
+	lines, _ := toInt(in.Res.Args["lines"])
+	if in.Res.Action != ActExtend {
+		lines = 0
+	}
+	if d.IsZero() && lines <= 0 {
 		return nil
 	}
 	v := r.cfg.Policy()
@@ -460,7 +473,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	case ActRaiseCeiling:
 		draw.Raise, _ = in.Res.Args["eur"].(float64)
 	case ActExtend:
-		draw.Lines, _ = toInt(in.Res.Args["lines"])
+		draw.Lines = lines
 	}
 	return draw
 }
@@ -484,6 +497,8 @@ func drawActions(res Resolution, d CaseDraw) []CaseAction {
 		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the ceiling by %.2f EUR.", d.Raise)})
 	case !own.IsZero():
 		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Drew " + drawWords(own) + " from the pool."})
+	case d.Lines > 0:
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the line bound by %s.", textutil.Plural(d.Lines, "line", "lines"))})
 	}
 	if res.Fund != nil && !res.Fund.IsZero() {
 		out = append(out, CaseAction{Action: ActFund, Result: "Drew " + drawWords(*res.Fund) + " from the pool."})

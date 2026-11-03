@@ -130,7 +130,7 @@ func TestStallCardAnswers(t *testing.T) {
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Check again"}},
 		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
-			detail: map[string]any{"action": factoryd.AnswerCheckAgain, "case_id": int64(1), "answer": "Check again", "value": factoryd.AnswerCheckAgain}})
+			detail: map[string]any{"action": factoryd.AnswerCheckAgain, "case_id": int64(1), "answer": "Check again", "value": factoryd.AnswerCheckAgain, "comment": int64(1)}})
 
 	r, ev, before, code, body = click(t, factoryd.AnswerDismiss)
 	if code != http.StatusSeeOther {
@@ -141,7 +141,7 @@ func TestStallCardAnswers(t *testing.T) {
 	}
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Dismiss"}},
 		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
-			detail: map[string]any{"action": factoryd.AnswerDismiss, "case_id": int64(1), "answer": "Dismiss", "value": factoryd.AnswerDismiss}})
+			detail: map[string]any{"action": factoryd.AnswerDismiss, "case_id": int64(1), "answer": "Dismiss", "value": factoryd.AnswerDismiss, "comment": int64(1)}})
 
 	for _, tc := range []struct {
 		value string
@@ -304,10 +304,10 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		t.Fatalf("close: patched %v, comment %q; want the card closed", r.fg.patched, r.fg.comments[comments])
 	}
 	got, posts = actedOnce(t, r)
-	equal(t, "the close", []any{got, posts}, []any{act(factoryd.AnswerClose, "Close"), false})
+	equal(t, "the close", []any{got, posts}, []any{act(factoryd.AnswerClose, "Close"), true})
 	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-roll", detail: map[string]any{"note": "Close"}},
 		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll",
-			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose}})
+			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose, "comment": int64(1)}})
 
 	r, ev, before, code, body = click(t, "", "retry it next week")
 	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close.\n" || ev.count() != before || len(r.fg.patched) != 0 {
@@ -428,7 +428,7 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 		}
 		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"},
 			wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq",
-				detail: map[string]any{"action": "say:" + word, "case_id": int64(1), "answer": word, "value": "say:" + word}})
+				detail: map[string]any{"action": "say:" + word, "case_id": int64(1), "answer": word, "value": "say:" + word, "comment": int64(1)}})
 	}
 }
 

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"maps"
 	"reflect"
 	"slices"
 	"strings"
@@ -237,5 +238,39 @@ func TestActKeysRungZeroOnFactoryd(t *testing.T) {
 	}
 	if len(g.store.events) != events || len(g.store.resolved) != 0 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman {
 		t.Fatalf("a refused act wrote %d events, resolved %v; want none", len(g.store.events)-events, g.store.resolved)
+	}
+}
+
+// Card t-b (#6) and card t-c (#7) wait on failed t-a (#5), each on its
+// own dependency case. alice's retry on t-b's case files #9 in place of
+// #5, which both cards then wait on. Her retry on t-c's case, the same
+// failed dependency, files nothing more: it resolves the case naming #9,
+// and #9 is the one replacement.
+func TestActRetryOfARetriedDependencyNamesTheReplacement(t *testing.T) {
+	r, store, _, fj, _ := newRetryRig(t)
+	ctx := context.Background()
+	if err := store.CreateTask(ctx, Task{ID: "t-c", Kind: "agent", Status: "waiting-human", Track: policy.TrackDirect, Process: "spec",
+		Repository: "linkshort/linkshort", IssueNumber: 7, Source: SourcePlan, Parent: "t-plan", PlanKey: "stats", BudgetEUR: 2,
+		Author: "sebastian", AuthorWriter: true, SHA: "b0", Objective: "Stats"}); err != nil {
+		t.Fatal(err)
+	}
+	store.AddTaskDeps(ctx, "t-c", []string{"t-a"})
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseAtHuman},
+		{ID: 4, TaskID: "t-c", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseAtHuman}}
+	retry := Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}
+	if _, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "alice", Rung: 3, Res: retry}); err != nil {
+		t.Fatal(err)
+	}
+	issues := len(fj.issues)
+	got, err := r.Act(ctx, ActInput{TaskID: "t-c", CaseID: 4, By: "alice", Rung: 3, Res: retry})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Result: "#5 was retried as #9 already."}}
+	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved || got.Case.Resolution.Action != ActRetry {
+		t.Fatalf("result = %+v, want case 4 resolved with the retry naming #9", got)
+	}
+	if cards := cardsByKey(t, store); len(fj.issues) != issues || len(cards) != 4 || cards["links-api"].IssueNumber != 9 {
+		t.Fatalf("issues %d, plan cards %v; want no new issue and #9 the one replacement of the four", len(fj.issues), slices.Sorted(maps.Keys(cards)))
 	}
 }

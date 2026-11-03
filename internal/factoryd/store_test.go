@@ -253,9 +253,9 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float6
 	return from, t.BudgetEUR, err
 }
 
-// ExtendCard raises task id's caps by d and lines and records e with the
-// raise in its detail.
-func (s *fakeStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
+// extendCard raises task id's caps by d and lines and records e with the
+// raise in its detail, as PGStore's drawCase does.
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
@@ -348,7 +348,7 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 		}
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 {
-		if _, _, err := s.ExtendCard(ctx, taskID, d.Extend, d.Lines, extend); err != nil {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, extend); err != nil {
 			return err
 		}
 	}
@@ -2286,7 +2286,8 @@ func TestPGStore(t *testing.T) {
 	}
 	// the console's Extend raises columns the workflow's snapshot leaves:
 	// a snapshot written after the raise, holding none of it, keeps it
-	if _, _, err := s.ExtendCard(ctx, "t1", policy.Draw{Sessions: 1}, 150, Event{Repository: "sf/code", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole}); err != nil {
+	if err := s.DrawCard(ctx, "t1", CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1}, Lines: 150,
+		Event: Event{Repository: "sf/code", TaskID: "t1", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
