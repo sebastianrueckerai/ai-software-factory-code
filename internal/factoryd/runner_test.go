@@ -11,6 +11,7 @@ import (
 	"log"
 	"log/slog"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -2153,6 +2154,50 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 	}
 }
 
+// A fresh session the card's own money cannot open is refused before
+// anything opens: no token, no session row, no pod. The card gets the
+// floor's refusal as its money ask, and no session burns the rest of its
+// budget on calls the gateway must refuse.
+// 0.100 EUR of 2 is left, and the cheap rung's floor asks 0.30.
+func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
+	task := Task{ID: "t4k", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 1.9}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR " +
+		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
+	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
+		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
+	}
+	if !strings.Contains(res.Reason, "(Fund on the board) and answer") {
+		t.Fatalf("reason = %q, want the Fund action", res.Reason)
+	}
+	if got := escalationSource(res.Reason); got != "budget" {
+		t.Fatalf("escalation source = %q, want budget", got)
+	}
+	if len(store.sessions) != 0 || len(kube.podOrder) != 0 || slices.ContainsFunc(hub.calls, func(c string) bool { return strings.HasPrefix(c, "mint ") }) {
+		t.Fatalf("sessions %v, pods %d, forgejo calls %v; want nothing opened", store.sessions, len(kube.podOrder), hub.calls)
+	}
+}
+
+// A factory with no price source opens every session, a card whose
+// budget is spent included: no floor can be read.
+func TestRunSessionOpensWhenNoPricesAreConfigured(t *testing.T) {
+	task := Task{ID: "t4l", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 2}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.cfg.Prices = nil
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4l", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || res.StartFailed || len(kube.podOrder) != 1 || len(store.sessions) != 1 {
+		t.Fatalf("result = (%+v, %v), pods %d, sessions %d; want the session opened and pushed", res, err, len(kube.podOrder), len(store.sessions))
+	}
+}
+
 // workerStartFailed is the worker's result line for a start that failed
 // at step with summary.
 func workerStartFailed(step, summary string) string {
@@ -2716,6 +2761,45 @@ func TestRunSessionReattachesToAFinishedPod(t *testing.T) {
 	}
 	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_reattached"`) || strings.Count(timeline, `"step":"session_start"`) != 1 {
 		t.Fatalf("timeline = %s, want one start and a reattach", timeline)
+	}
+}
+
+// A reattached session is already open and paid into: the floor is not
+// read for it, though the card's spent budget could not open a new one.
+func TestRunSessionDoesNotFloorAReattachedSession(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	logs := loopFailure(1) + cutLogs + pushedLine("c-wip") + "\n" + resultLine(true, "pushed") + "\n"
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, []string{logs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	spent := store.tasks["t2"]
+	spent.SpentEUR = spent.BudgetEUR
+	store.tasks["t2"] = spent
+	v := testPolicyVersion()
+	v.Tree.Document.Prices.MaxOutputTokens["m"] = 32768
+	runner.cfg.Policy = func() policy.Version { return v }
+	asked := &askedPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
+	runner.cfg.Prices = asked
+	if why, err := runner.SessionFunded(context.Background(), "t2", "m"); err != nil || !BudgetRefusal(why) {
+		t.Fatalf("a new opening's floor = (%q, %v), want the budget's refusal", why, err)
+	}
+	asked.aliases = nil
+
+	res, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if err != nil || res.Outcome != OutcomePushed || res.SessionID != first.SessionID || res.StartFailed {
+		t.Fatalf("result = (%+v, %v), want the live session's push as its own", res, err)
+	}
+	if len(asked.aliases) != 0 || len(kube.podOrder) != 1 {
+		t.Fatalf("prices read %q, pods %d; want no floor read and only the first pod", asked.aliases, len(kube.podOrder))
 	}
 }
 
@@ -3574,6 +3658,53 @@ func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
 	got := podEnv(kube.podAt(0))["FACTS"]
 	if !regexp.MustCompile(`^factoryd's facts for this session: budget 3\.20 of 5\.00 EUR left; \d+ minutes of agent time left; this is session 1 of the 4 `).MatchString(got) {
 		t.Fatalf("FACTS = %q", got)
+	}
+}
+
+// The session's facts and the check-in's card facts state the spend the
+// gateway counts: 4.50 settled and 0.40 held of 5.00 is 4.90 spent and
+// 0.10 left.
+func TestSessionFactsSpendIncludesHolds(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, Track: "direct"}
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/small"}, nil,
+		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
+		t.Fatal(err)
+	}
+	if got := podEnv(kube.podAt(0))["FACTS"]; !strings.HasPrefix(got, "factoryd's facts for this session: budget 0.10 of 5.00 EUR left; ") {
+		t.Fatalf("FACTS = %q, want 0.10 of 5.00 EUR left", got)
+	}
+	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}), `{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.9}`; got != want {
+		t.Fatalf("card facts = %s, want %s", got, want)
+	}
+}
+
+// A running session's pace and spend watch read the spend the gateway
+// counts from the card's row: 4.50 settled and 0.40 held of 5.00 is 4.90
+// spent, so the pace reads 4.90, the budget warning says 98 percent with
+// 0.10 left, and the no-push trip names 4.90 of 5.00.
+func TestPaceAndSpendWatchNetHolds(t *testing.T) {
+	kube := newFakeKube()
+	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base",
+		BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, Track: "direct"}, kube, &fakeObjectStore{})
+	ctx := context.Background()
+	s := sessionSpec{id: "s1", attempt: 1, sessions: 3, messageToken: "tok"}
+	if p := runner.pace(ctx, Task{ID: "t1"}, s, 0, 0, time.Now(), time.Now().Add(time.Hour)); p == nil || p.SpentEUR != 4.9 {
+		t.Fatalf("pace = %+v, want 4.90 spent", p)
+	}
+	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod"}
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	trip := runner.watchLimits(ctx, Task{ID: "t1"}, s, "ns", "pod", newLimitWatch(policy.Limits{}, false, time.Now(), time.Hour), spendSupervisor(t, nil))
+	worker.mu.Lock()
+	texts := slices.Clone(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.10 of 5.00 EUR are left. ") {
+		t.Fatalf("worker got %q, want the budget warning at 4.90 of 5.00", texts)
+	}
+	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "4.90 of the card's 5.00 EUR are spent (98 percent, the line is 60) and no work is pushed" {
+		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
 	}
 }
 
@@ -4590,6 +4721,9 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	if !slices.Equal(res.CheckIn.Findings, []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}) || res.CheckIn.Review == nil || res.CheckIn.Review.Verdict != "concerns" {
 		t.Fatalf("the stop's work state = %+v, want the ask's findings and review", res.CheckIn)
 	}
+	if math.Abs(res.CheckIn.Share-0.03) > 1e-9 {
+		t.Fatalf("the stop's share = %v, want the card's €0.03", res.CheckIn.Share)
+	}
 	if chat.calls != 0 || res.Commit != "" || len(kube.deletedPods) != 1 {
 		t.Fatalf("chat calls %d, commit %q, deleted pods %q: nothing of the session ran", chat.calls, res.Commit, kube.deletedPods)
 	}
@@ -4597,6 +4731,47 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 	defer worker.mu.Unlock()
 	if len(worker.texts) != 0 {
 		t.Fatalf("worker got %q, want nothing pushed", worker.texts)
+	}
+}
+
+// A start check-in never outlives its session: with 2 seconds of agent
+// time and the default 30-minute cap, the slow conversation ends at the
+// session's deadline as the time cap's human ask, not as a refused call's
+// handover past the RunSession activity's own deadline.
+func TestRunSessionStartCheckinStopsAtTheSessionsDeadline(t *testing.T) {
+	runner, _, _, _, chat, _, _ := checkinRig(t,
+		`{"findings":[{"text":"TasksByPR is undefined","verdict":"confirmed"}],"decision":"handover","handover":"fix the caller first"}`)
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 2 * time.Second })
+	chat.delay = 15 * time.Second
+
+	began := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m",
+		CheckInAsk: &CheckInAsk{Moment: CheckInGate, Findings: []CheckFinding{{Text: "TasksByPR is undefined", Source: "review"}}}}, nil)
+	if err != nil || res.Outcome != OutcomeCheckinHuman || res.CheckIn == nil || !strings.HasPrefix(res.CheckIn.Reason, checkinTimeCapStop+" after ") {
+		t.Fatalf("result = (%+v, %v), want the time cap's human ask, naming the time the check-in had", res, err)
+	}
+	if had, err := time.ParseDuration(strings.TrimPrefix(res.CheckIn.Reason, checkinTimeCapStop+" after ")); err != nil || had > 2*time.Second {
+		t.Fatalf("the stop names %q, want at most the session's 2 seconds", res.CheckIn.Reason)
+	}
+	if took := time.Since(began); took > 10*time.Second || chat.calls != 1 {
+		t.Fatalf("took %s with %d calls: want the one call cut at the session's deadline", took, chat.calls)
+	}
+}
+
+// A start check-in's time cap is the policy's, cut at the session's
+// deadline, and 0 once that deadline passed, never a negative time.
+func TestStartCheckinTimeIsCutAtTheDeadline(t *testing.T) {
+	for name, tc := range map[string]struct {
+		left time.Duration // the time to the session's deadline
+		want time.Duration
+	}{
+		"the deadline is far":   {2 * time.Hour, 30 * time.Minute},
+		"the deadline is close": {5 * time.Minute, 5 * time.Minute},
+		"the deadline passed":   {-12 * time.Second, 0},
+	} {
+		if got := startCheckinTime(policy.Limits{}, time.Now().Add(tc.left)); got != tc.want {
+			t.Errorf("%s: startCheckinTime = %s, want %s", name, got, tc.want)
+		}
 	}
 }
 
@@ -4644,6 +4819,9 @@ func TestRunSessionCheckinShareGrantedByAnAnswerRuns(t *testing.T) {
 	}
 	if chat.calls != 1 {
 		t.Fatalf("check-in calls = %d, want the one conversation the grant paid for", chat.calls)
+	}
+	if math.Abs(res.CheckIn.Share-0.06) > 1e-9 {
+		t.Fatalf("the check-in's share = %v, want the card's €0.03 widened by the grant to €0.06", res.CheckIn.Share)
 	}
 }
 

@@ -371,8 +371,8 @@ func TestWorkflowGateAllowancesFollowTheActivity(t *testing.T) {
 	}
 }
 
-// A gate that finishes while the supervisor deliberates wins (ruling
-// 171): the trip at 5 min starts a 10-min supervisor call, the checks end
+// A gate that finishes while the supervisor deliberates wins:
+// the trip at 5 min starts a 10-min supervisor call, the checks end
 // at 10 min, and the gates go on at once; the late cancel changes
 // nothing. Before the change the workflow waited for the answer (15 min)
 // and then dropped it; such a run is from before versionBesideLadder too.

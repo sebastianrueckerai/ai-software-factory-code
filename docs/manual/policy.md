@@ -88,9 +88,10 @@ intake, the approvers, the bounds of the other activities,
 card gets half of it when small and one and a half when large),
 `supervisor_calls` (6, decides nothing since plan E, kept so a pinned
 policy loads), `checkin_calls` (20, also when absent: the model calls of
-one check-in conversation, the last without tools), `checkin_time` (5m,
-also when absent: how long one check-in conversation may run before its
-ask goes to a human, 1m to 30m), `checkin_share` (10,
+one check-in conversation, the last without tools), `checkin_time` (90 s
+for each of the `checkin_calls` when absent, so 30m at 20 calls, at most
+30m: how long one check-in conversation may run before its ask goes to a
+human, and never past the session's own end, 1m to 30m when set), `checkin_share` (10,
 also when absent: the percent of the card's budget all its check-ins may
 spend), `supervisor_timeout` (6m per supervisor or review call, at most
 15m), `review_diff_kib` (48, also when absent, at most 1024: the size of

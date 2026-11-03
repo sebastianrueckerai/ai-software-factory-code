@@ -113,8 +113,6 @@ func (q *HumanQuestion) Labels() []string {
 // the caller has them at hand; zero fields leave the ask with the reason's
 // own numbers or without that number.
 type QuestionFacts struct {
-	CheckinCap    int           // the policy's calls of one check-in conversation
-	CheckinTime   time.Duration // the policy's time of one check-in conversation
 	GrantTime     time.Duration // the agent time a grant leaves the next session
 	CheckinSpent  float64       // EUR of the check-in share spent
 	CheckinShare  float64       // EUR, the policy's check-in share of the budget, its grants included
@@ -159,8 +157,8 @@ func ShapedQuestion(reason string, f QuestionFacts, choices []string) *HumanQues
 // their template, every other ask plainQuestion.
 func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQuestion {
 	switch {
-	case strings.HasPrefix(reason, checkinSpendAsk+checkinCallCapStop), reason == checkinCallCapStop,
-		strings.HasPrefix(reason, checkinSpendAsk+checkinTimeCapStop), reason == checkinTimeCapStop:
+	case strings.HasPrefix(reason, checkinSpendAsk+checkinCallCapStop), strings.HasPrefix(reason, checkinCallCapStop),
+		strings.HasPrefix(reason, checkinSpendAsk+checkinTimeCapStop), strings.HasPrefix(reason, checkinTimeCapStop):
 		return callCapQuestion(reason, f)
 	case strings.HasPrefix(reason, checkinSpendAsk+"the check-in's share of the budget is spent"),
 		reason == "the check-in's share of the budget is spent":
@@ -268,8 +266,14 @@ const continueInfo = "An answer starts the attempt again: with a pull request it
 // reasonBody is the work state a stop's reason carries under its first
 // line, if it carries any.
 // minutesWord says a duration in whole minutes, as a card's reader counts
-// agent time.
+// agent time, and one under a minute in seconds.
 func minutesWord(d time.Duration) string {
+	if d < time.Minute {
+		if n := int(d.Round(time.Second) / time.Second); n != 1 {
+			return fmt.Sprintf("%d seconds", n)
+		}
+		return "1 second"
+	}
 	if n := int(d.Round(time.Minute) / time.Minute); n != 1 {
 		return fmt.Sprintf("%d minutes", n)
 	}
@@ -284,15 +288,22 @@ func reasonBody(reason string) string {
 }
 
 func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
-	ask, spent := "The check-in gave no answer within its calls. May the card go on?", "calls"
+	ask := "The check-in gave no answer within its calls. May the card go on?"
+	why := "The check-in spent its calls on evidence and gave no decision: the session stopped, and its checks from here go to a person."
 	switch {
 	case strings.Contains(reason, checkinTimeCapStop):
-		ask, spent = "The check-in gave no answer within its time. May the card go on?", "time"
-		if f.CheckinTime > 0 {
-			ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", minutesWord(f.CheckinTime))
+		ask = "The check-in gave no answer within its time. May the card go on?"
+		why = "The check-in spent its time on evidence and gave no decision: the session stopped, and its checks from here go to a person."
+		d, err := time.ParseDuration(checkinCapOf(reason, checkinTimeCapStop))
+		switch {
+		case err == nil && d <= 0:
+			ask = "The session's time ran out before its check-in could answer. May the card go on?"
+			why = "The session's time ran out before its check-in made a call: the session stopped, and its checks from here go to a person."
+		case err == nil:
+			ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", minutesWord(d))
 		}
-	case f.CheckinCap > 0:
-		ask = fmt.Sprintf("The check-in gave no answer within its %d calls. May the card go on?", f.CheckinCap)
+	case checkinCapOf(reason, checkinCallCapStop) != "":
+		ask = fmt.Sprintf("The check-in gave no answer within its %s. May the card go on?", checkinCapOf(reason, checkinCallCapStop))
 	}
 	info := "An answer starts the session again where the check-in stopped it, with your comment as guidance. The spent budget stays spent."
 	if f.FloorEUR > 0 {
@@ -300,7 +311,7 @@ func callCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 	q := &HumanQuestion{
 		Ask:     ask,
-		Why:     spendWhy(reason, f, "The check-in spent its "+spent+" on evidence and gave no decision: the session stopped, and its checks from here go to a person."),
+		Why:     spendWhy(reason, f, why),
 		Info:    info,
 		Choices: continueChoices(),
 	}
@@ -314,10 +325,8 @@ func checkinShareQuestion(reason string, f QuestionFacts) *HumanQuestion {
 		ask = fmt.Sprintf("The card has spent €%.2f of its €%.2f check-in share. May it go on?", f.CheckinSpent, f.CheckinShare)
 	}
 	info := continueInfo
-	// with the pull request open the answer verifies its head again and
-	// grants nothing (versionCheckinSpend)
-	if f.CheckinGrant > 0 && f.PR == 0 {
-		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f) and starts the session again with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
+	if f.CheckinGrant > 0 {
+		info = fmt.Sprintf("Go on grants the card one more check-in share (€%.2f), and the card goes on with your comment as guidance. The spent budget stays spent.", f.CheckinGrant)
 	}
 	q := &HumanQuestion{
 		Ask:     ask,
@@ -469,8 +478,8 @@ func BudgetRemains(reason string) float64 {
 
 // FundRaise is the EUR raise that funds one more session off a budget
 // refusal's numbers: the shortfall to the session's need, rounded up to
-// a cent; the need itself when the reason states no free headroom; 0
-// when the reason carries no amount at all.
+// a cent; the need itself, rounded up to a cent, when the reason states
+// no free headroom; 0 when the reason carries no amount at all.
 func FundRaise(reason string) float64 {
 	need := BudgetNeed(reason)
 	if need <= 0 {
@@ -483,7 +492,11 @@ func FundRaise(reason string) float64 {
 		}
 		return float64(cents) / 100
 	}
-	return need
+	cents := Cents(need)
+	if float64(cents)/100 < need {
+		cents++ // a need between two cents rounds up, or the raise would not cover it
+	}
+	return float64(cents) / 100
 }
 
 // FundChoiceValue is a premade fund answer's value: the fund marker and
@@ -880,15 +893,15 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 }
 
 // questionFacts reads the numbers the templates fill from: the check-in
-// spend the task has made, the policy's call cap and the card's shares,
+// spend the task has made, the card's shares,
 // the caps and money of the card and of the month wherever a template or
-// the plain tail shows them, and the card's pull request, which a budget
-// stop's raise funds and a check-in share stop's answer verifies. It reads
-// nothing for a reason the templates do not cover.
+// the plain tail shows them, and the pull request a budget stop's raise
+// funds. It reads nothing for a reason the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
-	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan, PR: t.PRNumber}
+	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
 	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
 		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+		track.PR = t.PRNumber
 		return track
 	}
 	f := track
@@ -902,8 +915,8 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		f.SessionGrants = t.Usage.SessionsAdded()
 		f.Attempts = t.Usage.Attempts
 		f.BudgetEUR = t.BudgetEUR
-		f.SpentEUR = t.SpentEUR
-		f.LeftEUR = t.BudgetEUR - t.SpentEUR
+		f.SpentEUR = t.EnforcedSpent()
+		f.LeftEUR = t.Left()
 	}
 	if strings.HasPrefix(reason, projectCapReached) {
 		f.MonthTurn = monthTurn(time.Now())
@@ -936,8 +949,6 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 	}
 	if r.cfg.Policy != nil {
 		limits := r.cfg.Policy().Document.Limits
-		f.CheckinCap = limits.CheckinCallCap()
-		f.CheckinTime = limits.CheckinTimeCap()
 		f.CheckinShare = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
 		f.CheckinGrant = limits.CheckinShareOf(t.BudgetEUR)
 		if t.ModelAlias != "" {

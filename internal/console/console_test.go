@@ -2174,7 +2174,7 @@ func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
 	r.tasks.set("cannot reach the database", []factoryd.Task{
 		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
 	}...)
-	refusal := "the remaining budget cannot fund a call: 0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and the cheapest call needs more. " +
+	refusal := "the remaining budget cannot fund a call: 0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and the cheapest call needs more. " +
 		"Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
 	var asked string
 	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {

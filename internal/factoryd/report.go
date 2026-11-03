@@ -160,6 +160,13 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 			log.Printf("task %s: revoke report session %s credentials: %v", t.ID, s.id, err)
 		}
 	}()
+	if end.start, err = r.openingRefused(ctx, t.ID, model); err != nil {
+		return reportEnd{}, err
+	}
+	if end.start != nil {
+		end.why = end.start.Error()
+		return end, nil
+	}
 	readable := s.readable()
 	if len(s.branches) > 0 {
 		readable = s.readable(r.forgejo.Fork(repo))

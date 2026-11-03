@@ -121,8 +121,8 @@ type Stage struct {
 	// Enabled false skips the stage (the timeline records it skipped).
 	Enabled bool `yaml:"enabled" json:"enabled"`
 	// When: outsider runs the stage only on issues by an outside account
-	// (the screening reads an outsider's issue before the coder, ruling
-	// 182). Absent: every task. The review takes no when (enabled: false
+	// (the screening reads an outsider's issue before the coder).
+	// Absent: every task. The review takes no when (enabled: false
 	// is its only off switch, backlog 68): a review that gives no verdict
 	// is a finding on the card.
 	When string `yaml:"when,omitempty" json:"when,omitempty"`

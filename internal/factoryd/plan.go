@@ -74,11 +74,13 @@ const (
 )
 
 // The plan's caps: a card's directories and acceptance items, the
-// questions, the outline's parts, and an outline part's length in runes.
+// questions, the outline's parts, and a question's and an outline part's
+// length in runes.
 const (
 	maxCardDirs       = 10
 	MaxCardAcceptance = 10
 	maxQuestions      = 5
+	MaxQuestion       = 300
 	maxOutline        = 10
 	maxOutlinePart    = 100
 )
@@ -501,7 +503,7 @@ func questionFindings(qs []PlanQuestion) []string {
 		if q.Origin != "" && q.Origin != CatchSelfAttack {
 			add("origin %q, want self_attack or none", q.Origin)
 		}
-		if utf8.RuneCountInString(q.Text) == 0 {
+		if q.Text == "" {
 			add("text empty")
 		}
 		if n := len(q.Choices); n < 2 || n > MaxChoices {
@@ -518,6 +520,20 @@ func questionFindings(qs []PlanQuestion) []string {
 			case seen[c] == 2:
 				add("choice %q is offered twice", c)
 			}
+		}
+	}
+	return out
+}
+
+// questionBounds are the findings on the length of a plan's questions,
+// at most MaxQuestion runes each. file_plan alone judges them, where the
+// planner writes, so a revision stored before the bound still files its
+// round and its delta cards.
+func questionBounds(qs []PlanQuestion) []string {
+	var out []string
+	for i, q := range qs {
+		if utf8.RuneCountInString(q.Text) > MaxQuestion {
+			out = append(out, fmt.Sprintf("plan: question %d: text is over %d characters", i+1, MaxQuestion))
 		}
 	}
 	return out
@@ -2580,7 +2596,8 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		p.Cards = append(settled, p.Cards...)
 	}
-	if p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository)); len(found) > 0 {
+	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
+	if found = append(found, questionBounds(p.Questions)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
 	// a re-file of the newest revision by value: already stored. By

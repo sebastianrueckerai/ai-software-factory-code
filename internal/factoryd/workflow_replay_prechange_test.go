@@ -26,11 +26,32 @@ import (
 	"google.golang.org/protobuf/types/known/timestamppb"
 )
 
-// A history recorded before the checkin-spend change answered a spent
-// check-in's escalation by buying a session that carried the answer. It
-// carries no checkin-spend marker, so against the gated code GetVersion
-// answers DefaultVersion and the replay must keep buying the session.
-func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
+// Histories recorded before a change to a spent check-in's answer replay
+// against the gated code: a history carries no marker of the change, so
+// GetVersion answers DefaultVersion and the replay keeps the answer's old
+// commands. Each splices a stop into the recorded audit-beside history at
+// its third session, which had pushed, with its pull request open.
+//
+// Before the checkin-spend change the answer to the call cap's stop bought
+// a session that carried the answer. Before the checkin-answer change the
+// answer to a share stop verified the head the session started from and
+// granted nothing: that history holds checkin-spend, in place of
+// poster-cap, which this card never reads, and the answer's next command is
+// the verification's OpenPullRequest, where the change records the grant
+// first.
+func TestWorkflowReplaysPreChangeCheckinAnswers(t *testing.T) {
+	for _, tc := range []struct {
+		name, reason string
+		spend        bool // the history holds checkin-spend
+	}{
+		{"checkin-spend: the answer buys a session", checkinCallCapStop, false},
+		{"checkin-answer: the answer verifies the start head", CheckinShareSpent, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) { replayCheckinAnswer(t, tc.reason, tc.spend) })
+	}
+}
+
+func replayCheckinAnswer(t *testing.T, reason string, spend bool) {
 	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
 	if err != nil {
 		t.Fatal(err)
@@ -127,7 +148,7 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 		t.Fatal(err)
 	}
 	res["Outcome"] = string(OutcomeCheckinHuman)
-	res["CheckIn"] = map[string]any{"ReasonKind": string(CheckSpend), "Reason": "check-in call cap reached"}
+	res["CheckIn"] = map[string]any{"ReasonKind": string(CheckSpend), "Reason": reason}
 	rb, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)
@@ -139,10 +160,11 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// the answer buys a session: the stopped session's usage, its checkin
-	// record, the escalation, the answer's signal with its recorded step,
-	// the burst's quiet timer, the grant's usage, then the bought
-	// attempt's funding read
+	// the stopped session's usage, its checkin record, the escalation, the
+	// answer's signal with its recorded step and the burst's quiet timer;
+	// then the call cap's answer buys a session, the grant's usage and the
+	// bought attempt's funding read first, and the share stop's verifies
+	// the head
 	checkin := act(stepTpl, 266, nil, nil)
 	for _, p := range checkin[0].GetActivityTaskScheduledEventAttributes().GetInput().GetPayloads() {
 		var v any
@@ -152,7 +174,7 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 			}
 		}
 	}
-	esc := act(stepTpl, 272, encode(taskID, "check-in: spend_above_policy: check-in call cap reached", nil), encode(int64(601)))
+	esc := act(stepTpl, 272, encode(taskID, checkinSpendAsk+reason, nil), encode(int64(601)))
 	esc[0].GetActivityTaskScheduledEventAttributes().ActivityType.Name = "Escalate"
 	sig := copyEvent(ev[331])
 	sig.EventId, sig.EventTime = 278, stamp()
@@ -161,11 +183,19 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	sa.Input = encode(TaskSignal{Author: "sebastian", Body: "the cap is spent; review the head", Comment: 602})
 	sa.Identity = "sebastian"
 
-	// the history ends with the answer's bought RunSession in flight: a
-	// partial replay — set running, then the fourth RunSession scheduled
-	// and started but never completed, where the workflow blocks on its
-	// result and the replay ends with no command left over
+	// the history ends with an activity in flight, the bought RunSession or
+	// the verification's OpenPullRequest: a partial replay, scheduled and
+	// started but never completed, where the workflow blocks on its result
+	// and the replay ends with no command left over
+	opened, openedRun := copyEvent(ev[265]), copyEvent(ev[266])
 	events := append([]*historypb.HistoryEvent{}, ev[:256]...)
+	if spend {
+		for _, e := range events {
+			if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"poster-cap"` {
+				id[0].Data = []byte(`"checkin-spend"`)
+			}
+		}
+	}
 	events = append(events, wft(257)...)
 	events = append(events, act(ruTpl, 260, nil, nil)...)
 	events = append(events, wft(263)...)
@@ -179,6 +209,15 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	events = append(events, wft(285)...)
 	events = append(events, timer(288)...)
 	events = append(events, wft(290)...)
+	if spend {
+		opened.EventId, opened.EventTime = 293, stamp()
+		opened.GetActivityTaskScheduledEventAttributes().ActivityId = "293"
+		openedRun.EventId, openedRun.EventTime = 294, stamp()
+		openedRun.GetActivityTaskStartedEventAttributes().ScheduledEventId = 293
+		events = append(events, opened, openedRun)
+		replaySplice(t, events)
+		return
+	}
 	events = append(events, act(ruTpl, 293, nil, nil)...)
 	events = append(events, wft(296)...)
 	events = append(events, act(fundTpl, 299, nil, nil)...)
@@ -191,13 +230,18 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	began.EventId, began.EventTime = 312, stamp()
 	began.GetActivityTaskStartedEventAttributes().ScheduledEventId = 311
 	events = append(events, bought, began)
+	replaySplice(t, events)
+}
+
+// replaySplice replays the spliced history events against TaskWorkflow.
+func replaySplice(t *testing.T, events []*historypb.HistoryEvent) {
+	t.Helper()
 	for i, e := range events {
 		if e.EventId != int64(i+1) {
 			t.Fatalf("event %d has id %d", i+1, e.EventId)
 		}
 	}
-
-	path := filepath.Join(t.TempDir(), "prechange-checkin-spend-answer-buys-session.json")
+	path := filepath.Join(t.TempDir(), "prechange-checkin-answer.json")
 	out, err := protojson.Marshal(&historypb.History{Events: events})
 	if err != nil {
 		t.Fatal(err)
@@ -208,13 +252,13 @@ func TestWorkflowReplaysPreChangeCheckinSpendAnswerBuysSession(t *testing.T) {
 	replayer := worker.NewWorkflowReplayer()
 	replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), path); err != nil {
-		t.Fatalf("pre-change answer-buys-session history must replay: %v", err)
+		t.Fatalf("the pre-change history must replay: %v", err)
 	}
 }
 
 // Before the checkin-spend change a restarted run took a spent check-in's
 // answer as the buy of a session that carried it — the behavior the
-// pre-change history above replays; only from versionCheckinSpend on does
+// pre-change history of the call cap's stop replays; only from versionCheckinSpend on does
 // the answer verify the open head (TestCheckinSpendResumeReVerifiesOpenPR).
 func TestCheckinSpendResumeBeforeTheChangeBuysSession(t *testing.T) {
 	h := newWorkflowHarness(t)

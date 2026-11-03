@@ -118,6 +118,10 @@ type ChatToolCall struct {
 	Trail string `json:"trail,omitempty"`
 	// Proposal is the token of a call proposed to the member.
 	Proposal string `json:"proposal,omitempty"`
+	// Status is the HTTP status a refused call answered, 0 for one that
+	// ran: the machine fact behind the refusal's sentence, kept with the
+	// row the history reads.
+	Status int `json:"status,omitempty"`
 }
 
 // StampReadAt gives each of calls without one the time now, so every tool

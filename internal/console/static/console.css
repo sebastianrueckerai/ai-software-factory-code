@@ -210,9 +210,19 @@ footer#live:empty { display: none; }
 [data-theme=light] .lane.five #needs-you.lit::after { border-color: var(--need-text); }
 .lane.five #needs-you.lit > h3 { color: var(--need-text); border-bottom-color: color-mix(in srgb, var(--need) 35%, transparent); }
 .lane.five #needs-you.lit > h3 .count { min-width: 20px; padding: 0 6px; border-radius: 2px; background: var(--need); color: var(--need-ink); font-weight: 600; font-size: 11.5px; line-height: 19px; text-align: center; }
-.lane.five #needs-you > .card { background: color-mix(in srgb, var(--need) 4%, var(--bg-card)); border-color: color-mix(in srgb, var(--need) 38%, var(--line)); box-shadow: inset 3px 0 0 var(--need); padding-left: 14px; }
-[data-theme=light] .lane.five #needs-you > .card { background: var(--bg-card); border-color: color-mix(in srgb, var(--need) 55%, var(--line)); }
-.lane.five #needs-you > .card h4 { font-size: 16px; line-height: 1.3; }
+/* a Needs-you card opens on an amber band behind its head row and stands
+   12 px from the next (C44) */
+.lane.five #needs-you .cards > .card { background: color-mix(in srgb, var(--need) 4%, var(--bg-card)); border-color: color-mix(in srgb, var(--need) 38%, var(--line)); box-shadow: inset 3px 0 0 var(--need); padding-top: 0; padding-left: 14px; margin-bottom: 12px; }
+[data-theme=light] .lane.five #needs-you .cards > .card { background: var(--bg-card); border-color: color-mix(in srgb, var(--need) 55%, var(--line)); }
+.lane.five #needs-you .cards > .card h4 { font-size: 16px; line-height: 1.3; }
+.lane.five #needs-you .cards > .card > :is(.need-top, h4:first-child),
+.lane.five #needs-you .cards > .card.escalation > .face > .line1,
+.lane.five #needs-you .cards > .card.face > .line1 { min-height: 32px; margin: 0 -8px 6px -11px; padding: 6px 8px 6px 11px; background: color-mix(in srgb, var(--need) 14%, var(--bg-card)); border-bottom: 1px solid color-mix(in srgb, var(--need) 40%, transparent); }
+[data-theme=light] .lane.five #needs-you .cards > .card > :is(.need-top, h4:first-child),
+[data-theme=light] .lane.five #needs-you .cards > .card.escalation > .face > .line1,
+[data-theme=light] .lane.five #needs-you .cards > .card.face > .line1 { background: color-mix(in srgb, var(--need) 22%, var(--bg-card)); border-bottom-color: color-mix(in srgb, var(--need) 60%, transparent); }
+.lane.five #needs-you .cards > .card :is(.need-top, h4:first-child, .line1) .ref { color: var(--need-text); font-weight: 600; }
+.lane.five #needs-you .cards > .card .need-top .since { color: var(--text-muted); }
 
 /* a card: a hairline box, the state's hue as a 2 px left rule */
 .card { position: relative; background: var(--bg-card); border: 1px solid var(--line); border-radius: 2px; padding: 7px 8px 8px; margin-bottom: 6px; transition: background-color .12s, border-color .12s; }

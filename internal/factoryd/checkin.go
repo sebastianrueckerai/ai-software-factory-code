@@ -148,6 +148,9 @@ type CheckInOutcome struct {
 	// fabricated stop names the work, not the spend alone
 	Findings []CheckFinding `json:",omitempty"`
 	Review   *Review        `json:",omitempty"`
+	// Share is the card's check-in share in euros when the check-in ran:
+	// the policy's share of the budget, widened by every granted share
+	Share float64 `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under
@@ -629,8 +632,9 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)
 	rec.StatementBytes = len(conv)
 	timeStop := func() CheckInOutcome {
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinTimeCapStop
-		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinTimeCapStop, Record: rec}
+		reason := checkinCapStop(checkinTimeCapStop, timeCap.String())
+		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
+		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
 	}
 
 	calls, repairs := 0, 0
@@ -660,8 +664,9 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		}
 		if resp.ToolName != "" {
 			if last {
-				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
-				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
+				reason := checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft))
+				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
+				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
 			}
 			args, _ := json.Marshal(resp.ToolArgs)
 			at := time.Now()

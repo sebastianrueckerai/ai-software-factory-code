@@ -152,7 +152,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 			Place: agentdoc.PlaceTools, Text: string(raw)})
 	}
 	(&Runner{}).runCheckin(ctx, agentDocTask, alias, ask, parent,
-		&checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocPodTools{}, callsLeft, eurLeft, 1, handoverCap, policy.DefaultCheckinTime)
+		&checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocPodTools{}, callsLeft, eurLeft, 1, handoverCap, callsLeft*policy.CheckinCallTime)
 	return spans, nil
 }
 

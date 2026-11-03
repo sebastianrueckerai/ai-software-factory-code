@@ -628,7 +628,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, "The answer could not be recorded; see the factoryd log.")
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
 	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
@@ -719,7 +719,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
-		return "", refuse(http.StatusConflict, "The answers could not be recorded; see the factoryd log.")
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
 	}
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
@@ -764,7 +764,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		return "", refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, "The decision could not be recorded; see the factoryd log.")
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %v. Reload the board and press Okay or Drop again.", err))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
@@ -1243,11 +1243,9 @@ func (c *Console) answerWhole(ctx context.Context, a actor, t factoryd.Task, pos
 
 // unfundedAnswer is the answer path's floor: the refusal a card's remaining
 // budget owes an answer, the session it would start being unfunded
-// (SessionFunded), "" when one can run. A card with no session yet (no model
-// to price) answers as before: the workflow's floor refuses the session
-// anyway; a failed read refuses the answer with a verdict of its own, so the
-// answer never dies mid-request. An answer at a cap is taken: its session
-// waits for the cap's period on its own.
+// (SessionFunded), "" when one can run. A failed read refuses the answer
+// with a verdict of its own, so the answer never dies mid-request. An answer
+// at a cap is taken: its session waits for the cap's period on its own.
 func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) (string, error) {
 	why, err := c.unfundedSession(ctx, t)
 	if err != nil {
@@ -1261,9 +1259,10 @@ func (c *Console) unfundedAnswer(ctx context.Context, t factoryd.Task) (string, 
 
 // unfundedSession is the refusal a card's remaining budget owes a session's
 // opening calls (SessionFunded), "" when they can run or the card cannot be
-// judged; the error is the failed read the caller answers with a verdict.
+// judged; the error is the failed read the caller answers with a verdict. A
+// card with no alias yet is priced on its class's session model.
 func (c *Console) unfundedSession(ctx context.Context, t factoryd.Task) (string, error) {
-	if c.cfg.SessionFunded == nil || t.ModelAlias == "" {
+	if c.cfg.SessionFunded == nil {
 		return "", nil
 	}
 	return c.cfg.SessionFunded(ctx, t.ID, t.ModelAlias)
@@ -2049,7 +2048,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 		case err != nil:
 			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
-			return "", refuse(http.StatusInternalServerError, "the grant could not be recorded; see the factoryd log")
+			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %v. Grant again, or Fund the card when the refusal names money.", err))
 		case n == 0:
 			return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
 		}

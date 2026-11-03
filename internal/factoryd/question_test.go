@@ -15,9 +15,7 @@ import (
 // check-in, the caps, the gates and the sweep compose, with their
 // numbers; a reason no template covers shapes nothing.
 func TestShapedQuestionFamilies(t *testing.T) {
-	facts := QuestionFacts{CheckinCap: 20, CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
-	timeFacts := facts
-	timeFacts.CheckinTime = 5 * time.Minute
+	facts := QuestionFacts{CheckinSpent: 0.84, CheckinShare: 0.90, CheckinGrant: 0.30, FloorEUR: 0.20, BudgetEUR: 5, SpentEUR: 4.10, LeftEUR: 0.90}
 	prFacts := facts
 	prFacts.PR = 1482
 	for name, tt := range map[string]struct {
@@ -31,7 +29,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		rec    []string
 	}{
 		"call cap": {
-			reason: checkinSpendAsk + "check-in call cap reached",
+			reason: checkinSpendAsk + "check-in call cap reached after 20 calls",
 			facts:  facts,
 			askHas: []string{"no answer within its 20 calls"},
 			whyHas: []string{"spent its calls on evidence and gave no decision", "€4.10 of its €5.00 budget", "€0.84 of it the check-in's €0.90 share"},
@@ -43,19 +41,25 @@ func TestShapedQuestionFamilies(t *testing.T) {
 			facts:  facts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
 			whyHas: []string{"€4.10 of its €5.00 budget"},
-			info:   "Go on grants the card one more check-in share (€0.30) and starts the session again with your comment as guidance. The spent budget stays spent.",
+			info:   "Go on grants the card one more check-in share (€0.30), and the card goes on with your comment as guidance. The spent budget stays spent.",
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in share spent, pull request open": {
 			reason: checkinSpendAsk + CheckinShareSpent,
 			facts:  prFacts,
 			askHas: []string{"€0.84 of its €0.90 check-in share. May it go on?"},
-			info:   "An answer starts the attempt again: with a pull request it re-verifies it through the gates, without one your comment rides along as guidance. The spent budget stays spent.",
+			info:   "Go on grants the card one more check-in share (€0.30), and the card goes on with your comment as guidance. The spent budget stays spent.",
+			values: []string{AnswerGrant, AnswerPark, AnswerClose},
+		},
+		"call cap of a stop that named no calls": {
+			reason: checkinSpendAsk + "check-in call cap reached",
+			facts:  facts,
+			askHas: []string{"no answer within its calls. May the card go on?"},
 			values: []string{AnswerGrant, AnswerPark, AnswerClose},
 		},
 		"check-in time cap": {
-			reason: checkinSpendAsk + checkinTimeCapStop,
-			facts:  timeFacts,
+			reason: checkinSpendAsk + "check-in time cap reached after 5m0s",
+			facts:  facts,
 			askHas: []string{"no answer within its 5 minutes"},
 			whyHas: []string{"spent its time on evidence and gave no decision", "€4.10 of its €5.00 budget"},
 			info:   "An answer starts the session again where the check-in stopped it, with your comment as guidance, and the card's budget must cover its rung's session floor of €0.20. The spent budget stays spent.",
@@ -213,8 +217,8 @@ func TestPlainCheckinStopCarriesThePace(t *testing.T) {
 
 // The stop templates' numbers, read per prefix: the month's spend and
 // cap at a month-cap stop, the card's caps, grants and money at the
-// caps and the plain check-in tail, the pull request at a budget stop and
-// at a check-in share stop, the grant's share at the check-in spend stops.
+// caps and the plain check-in tail, the pull request at a budget stop,
+// the grant's share at the check-in spend stops.
 func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	store := newFakeStore()
 	store.checkinSpent = map[string]float64{"t1": 1.2}
@@ -242,8 +246,19 @@ func TestQuestionFactsFillTheStopNumbers(t *testing.T) {
 	if f := r.questionFacts(context.Background(), task, budgetRefused+": detail"); f.PR != 4711 {
 		t.Errorf("the budget stop reads no pull request: %d", f.PR)
 	}
-	if f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent); f.CheckinGrant != 1 || f.PR != 4711 {
-		t.Errorf("CheckinGrant = %v, PR = %d, want the base share 1 and the pull request 4711", f.CheckinGrant, f.PR)
+	if f := r.questionFacts(context.Background(), task, checkinSpendAsk+CheckinShareSpent); f.CheckinGrant != 1 {
+		t.Errorf("CheckinGrant = %v, want the base share 1", f.CheckinGrant)
+	}
+}
+
+// The money a stop's question states nets the gateway's holds: 4.50
+// settled and 0.40 held of 5.00 is 4.90 spent and 0.10 left.
+func TestQuestionFactsNetHolds(t *testing.T) {
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{Sessions: 3}}}}
+	r := &Runner{store: newFakeStore(), cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", Size: "small", BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4}
+	if f := r.questionFacts(context.Background(), task, capReached+"\nlast: x"); f.SpentEUR != 4.9 || Cents(f.LeftEUR) != 10 {
+		t.Errorf("spent %v, left %v; want 4.90 spent and 0.10 left", f.SpentEUR, f.LeftEUR)
 	}
 }
 
@@ -305,19 +320,44 @@ func TestBudgetNeed(t *testing.T) {
 }
 
 // The budget refusal's numbers parse wherever its state puts its own
-// numbers between the headroom and the need (holds among them), and the
-// raise covers the shortfall to the need in whole cents.
+// numbers between the free figure and the need (holds among them), and
+// the raise covers the shortfall to the need in whole cents: 0.30 less
+// 0.07 is 0.23.
 func TestBudgetNumbersSurviveTheHoldsDetail(t *testing.T) {
 	reason := "the remaining budget cannot fund a call: raise it.\n" +
-		"0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.100000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), so 0.000000 EUR is free, and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would end before it could push."
+		"0.070 EUR of the 5.000 EUR budget remains after outstanding holds of 0.100 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
 	if got := BudgetNeed(reason); got != 0.3 {
 		t.Errorf("BudgetNeed = %v, want 0.3", got)
 	}
-	if got := BudgetRemains(reason); got != 0.17 {
-		t.Errorf("BudgetRemains = %v, want 0.17", got)
+	if got := BudgetRemains(reason); got != 0.07 {
+		t.Errorf("BudgetRemains = %v, want 0.07", got)
 	}
+	if got := FundRaise(reason); got != 0.23 {
+		t.Errorf("FundRaise = %v, want 0.23, the shortfall in whole cents", got)
+	}
+}
+
+// With no free headroom the first raise is the need rounded up to the
+// cent: an opening of 0.123456 EUR asks 0.13, since 0.12 does not cover it
+// and the floor would refuse again. A need on a whole cent stays on it: 1.10.
+func TestFundRaiseRoundsAnUncoveredNeedUpToTheCent(t *testing.T) {
+	reason := budgetRefused + ": 0.000 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.123456 EUR (the largest of the newest 5 sessions' openings on factory/small, as the holds take them); it cannot start."
 	if got := FundRaise(reason); got != 0.13 {
-		t.Errorf("FundRaise = %v, want 0.13, the shortfall in whole cents", got)
+		t.Errorf("FundRaise = %v, want 0.13", got)
+	}
+	q := ShapedQuestion(reason, QuestionFacts{FloorEUR: 0.3}, nil)
+	want := []QuestionChoice{
+		{FundChoiceValue(0.13), "Fund 0.13 EUR and go on"},
+		{FundChoiceValue(0.3), "Fund 0.30 EUR and go on"},
+		{FundChoiceValue(2), "Fund 2.00 EUR and go on"},
+		{AnswerPark, "Park it"},
+	}
+	if !slices.Equal(q.Choices, want) {
+		t.Errorf("choices = %v, want %v", q.Choices, want)
+	}
+	whole := strings.Replace(reason, "0.123456 EUR", "1.100000 EUR", 1)
+	if got := FundRaise(whole); got != 1.1 {
+		t.Errorf("FundRaise = %v, want 1.1", got)
 	}
 }
 
@@ -351,21 +391,49 @@ func TestBudgetQuestionButtons(t *testing.T) {
 	}
 }
 
-// The question's numbers: the call cap is the policy's, one check-in
-// conversation's calls, and the share is the card's own as the human's
-// answers widened it.
-func TestQuestionFactsReportTheCapAndTheGrantedShare(t *testing.T) {
+// The question's share is the card's own as the human's answers widened
+// it.
+func TestQuestionFactsReportTheGrantedShare(t *testing.T) {
 	store := newFakeStore()
 	store.checkinSpent = map[string]float64{"t1": 1.2}
 	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinShare: 20}}}}
 	r := &Runner{store: store, cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
 	task := Task{ID: "t1", BudgetEUR: 5, Usage: TaskUsage{ExtraCheckinShare: 2}}
-	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached")
-	if f.CheckinCap != 20 { // the policy's default calls
-		t.Errorf("CheckinCap = %d, want the policy's 20", f.CheckinCap)
-	}
+	f := r.questionFacts(context.Background(), task, checkinSpendAsk+"check-in call cap reached after 20 calls")
 	if f.CheckinShare != 3 { // 20% of 5 EUR, raised twice
 		t.Errorf("CheckinShare = %v, want the raised 3", f.CheckinShare)
+	}
+}
+
+// A cap stop's question names the cap the check-in ran with, which its
+// reason carries, not the cap of the policy in force when it is asked:
+// card #1491's check-in ran 5 minutes under its pinned version, and the
+// question said 30.
+func TestCapStopQuestionNamesTheCapTheCheckinRanWith(t *testing.T) {
+	v := policy.Version{Tree: policy.Tree{Document: policy.Document{Limits: policy.Limits{CheckinTime: 30 * time.Minute, CheckinCalls: 24}}}}
+	r := &Runner{store: newFakeStore(), cfg: RunnerConfig{Policy: func() policy.Version { return v }}}
+	task := Task{ID: "t1", BudgetEUR: 5}
+	for reason, want := range map[string]string{
+		checkinSpendAsk + "check-in time cap reached after 5m0s":     "The check-in gave no answer within its 5 minutes. May the card go on?",
+		checkinSpendAsk + "check-in time cap reached after 20s":      "The check-in gave no answer within its 20 seconds. May the card go on?",
+		checkinSpendAsk + "check-in call cap reached after 20 calls": "The check-in gave no answer within its 20 calls. May the card go on?",
+	} {
+		if q := ShapedQuestion(reason, r.questionFacts(context.Background(), task, reason), nil); q.Ask != want {
+			t.Errorf("%s: ask %q, want %q", reason, q.Ask, want)
+		}
+	}
+}
+
+// A start check-in whose session's deadline had passed got no time and
+// made no call: its question says the session's time ran out, not that
+// the check-in spent its time on evidence.
+func TestCapStopWithNoTimeSaysTheSessionsTimeRanOut(t *testing.T) {
+	q := ShapedQuestion(checkinSpendAsk+"check-in time cap reached after 0s", QuestionFacts{}, nil)
+	if want := "The session's time ran out before its check-in could answer. May the card go on?"; q.Ask != want {
+		t.Errorf("ask %q, want %q", q.Ask, want)
+	}
+	if want := "The session's time ran out before its check-in made a call: the session stopped, and its checks from here go to a person."; q.Why != want {
+		t.Errorf("why %q, want %q", q.Why, want)
 	}
 }
 
@@ -493,7 +561,7 @@ func TestSpendStopQuestionCarriesTheWorkState(t *testing.T) {
 	if share.Why != strings.TrimPrefix(body, "\n") {
 		t.Errorf("the share why = %q, want the reason's body %q", share.Why, strings.TrimPrefix(body, "\n"))
 	}
-	callCap := ShapedQuestion(checkinSpendAsk+"check-in call cap reached"+body, QuestionFacts{CheckinCap: 20}, nil)
+	callCap := ShapedQuestion(checkinSpendAsk+"check-in call cap reached after 20 calls"+body, QuestionFacts{}, nil)
 	if callCap.Why != strings.TrimPrefix(body, "\n") {
 		t.Errorf("the call-cap why = %q, want the reason's body %q", callCap.Why, strings.TrimPrefix(body, "\n"))
 	}

@@ -746,7 +746,7 @@ func cardLine(t factoryd.Task) string {
 		s += fmt.Sprintf(", gate %s (%s)", t.Gate, factoryd.GateMeaning(t.Gate))
 	}
 	if t.BudgetEUR > 0 {
-		s += fmt.Sprintf(", €%.2f of €%.2f", t.SpentEUR, t.BudgetEUR)
+		s += fmt.Sprintf(", €%.2f of €%.2f", t.EnforcedSpent(), t.BudgetEUR)
 	}
 	return s
 }

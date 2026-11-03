@@ -269,6 +269,22 @@ func TestPlanCardOffersNoAcceptOrReject(t *testing.T) {
 	}
 }
 
+// A plan card's escalation is cut at the bound a task card's reason has,
+// so a long one does not fill the column.
+func TestPlanCardEscalationIsBounded(t *testing.T) {
+	r := newRig(t)
+	planRig(r)
+	ck, _ := r.loggedIn(t)
+	requested := time.Now().Add(-time.Hour)
+	r.approvals.rows[len(r.approvals.rows)-1].CreatedAt = requested
+	r.tasks.tasks[0].Escalation, r.tasks.tasks[0].EscalatedAt = strings.Repeat("a", 3000), requested.Add(time.Minute)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	want := `<p class="reason">` + strings.Repeat("a", maxCardReason) + "…\n- the rest is on the issue</p>"
+	if !strings.Contains(card, want) || strings.Contains(card, strings.Repeat("a", maxCardReason+1)) {
+		t.Errorf("the plan card's escalation is not cut at %d bytes with the rest pointer:\n%s", maxCardReason, card)
+	}
+}
+
 // Roadmap 225: a done plan stays in Done with its children's rollup, its
 // queued children counted, and lists them by issue and state in its
 // drawer; it offers no Start plan.

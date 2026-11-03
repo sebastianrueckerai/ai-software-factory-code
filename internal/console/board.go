@@ -1584,7 +1584,7 @@ func (c *Console) card(t factoryd.Task) card {
 	k.Title = cmp.Or(t.HumanSummary, factoryd.TitleClause(t.Objective))
 	k.PlanKey = t.PlanKey
 	if t.BudgetEUR > 0 {
-		k.NearBudget = nearBudget(t.SpentEUR, t.BudgetEUR)
+		k.NearBudget = nearBudget(t.EnforcedSpent(), t.BudgetEUR)
 	}
 	return k
 }
@@ -2017,7 +2017,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Extend = &extendForm{CSRF: v.csrf,
 			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
-			Budget: t.BudgetEUR, Left: t.BudgetEUR - t.SpentEUR}
+			Budget: t.BudgetEUR, Left: t.Left()}
 	}
 	if v.escalated(t) {
 		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
@@ -2430,7 +2430,7 @@ func (c *Console) boardOf(r *http.Request, f boardFilter, act actor) (boardData,
 		// an escalation from before this revision's request (a cap a
 		// writer granted) no longer holds
 		if e := escalations[a.TaskID]; a.Kind == factoryd.ApprovalPlan && e.EscalatedAt.After(a.CreatedAt) {
-			k.Escalation = e.Escalation
+			k.Escalation = cardReason(e.Escalation)
 		}
 		d.Status.NeedYou++
 		if wide {

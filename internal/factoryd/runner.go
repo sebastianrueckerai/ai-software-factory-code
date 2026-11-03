@@ -641,7 +641,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 	} else {
 		s.messageToken = rand.Text()
-		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, TimeLeft: time.Until(deadline),
+		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
 			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, ExtraLines: t.Usage.ExtraLines}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
@@ -1098,12 +1098,12 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	brief := func(note string) {
 		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord))
 	}
-	eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		rec := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.parent, Moment: ask.Moment, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
 		return &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
-			Findings: ask.Findings, Review: ask.Review, Record: rec}, true
+			Findings: ask.Findings, Review: ask.Review, Record: rec, Share: share}, true
 	}
 	if alias := r.callModel(t, policy.PurposeCheckin); alias != "" {
 		lines := -1
@@ -1125,7 +1125,8 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
+		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id
 		}
@@ -1141,6 +1142,13 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	return nil, false
 }
 
+// startCheckinTime is a start check-in's time cap: the policy's, cut at
+// the session's deadline, which sits sessionGrace before the activity's,
+// the room the time cap's stop takes to land; 0 once the deadline passed.
+func startCheckinTime(limits policy.Limits, deadline time.Time) time.Duration {
+	return max(0, min(limits.CheckinTimeCap(), time.Until(deadline).Round(time.Second)))
+}
+
 // pace states where the card stands for a check-in: the spend from a fresh
 // read of the task, the agent time of the earlier sessions plus this one's.
 // A report session has no card bound and no session count: nil.
@@ -1151,7 +1159,7 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
 	}
-	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.SpentEUR, BudgetEUR: t.BudgetEUR,
+	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.EnforcedSpent(), BudgetEUR: t.BudgetEUR,
 		SpentMinutes: int((t.Usage.AgentTime + time.Since(started)).Minutes()), LeftMinutes: int(time.Until(deadline).Minutes()),
 		Attempt: s.attempt, Sessions: s.sessions}
 }
@@ -1184,12 +1192,12 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
 		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
-	eurLeft, _ := r.checkinBudget(ctx, t, limits)
+	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
 			ParentSession: s.id, Moment: CheckInSession, Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent}
 		return Decision{Action: ActionEscalate, Reason: CheckinShareSpent}, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
-			Findings: ask.Findings, Review: ask.Review, Record: record}, true
+			Findings: ask.Findings, Review: ask.Review, Record: record, Share: share}, true
 	}
 	alias := r.callModel(t, policy.PurposeCheckin)
 	if alias == "" {
@@ -1202,6 +1210,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
+	out.Share = share
 	switch out.Decision {
 	case "continue":
 		return Decision{Action: ActionContinue, Reason: out.Reason}, &out, false
@@ -1227,17 +1236,18 @@ func unjudged(trip *Trip, reason string) Decision {
 	return Decision{Action: ActionContinue, Reason: reason}
 }
 
-// checkinBudget is what is left of the card's check-in share of its
-// budget: the policy's share widened by every share a human's answer to
-// its spend stop granted (TaskUsage.ExtraCheckinShare;
+// checkinBudget is the card's check-in share of its budget and what is
+// left of it: the policy's share widened by every share a human's answer
+// to its spend stop granted (TaskUsage.ExtraCheckinShare;
 // versionCheckinGrant). A read error is logged and reads as zero spent,
 // as the check-in proceeds on it.
-func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (eurLeft float64, err error) {
+func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits) (share, eurLeft float64, err error) {
 	spent, err := r.store.CheckinSpent(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the check-in spend: %v", t.ID, err)
 	}
-	return limits.CheckinShareOf(t.BudgetEUR)*float64(1+t.Usage.ExtraCheckinShare) - spent, err
+	share = limits.CheckinShareOf(t.BudgetEUR) * float64(1+t.Usage.ExtraCheckinShare)
+	return share, share - spent, err
 }
 
 // pushBrief delivers the session's brief: its handover note, "" for none,
@@ -1284,7 +1294,7 @@ func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}
 // checkinFacts is the small JSON of the card's facts the runner already
 // holds; the check-in's card_facts answers it verbatim.
 func checkinFacts(t Task, s sessionSpec) string {
-	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.SpentEUR,
+	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
 		"attempt": s.attempt, "sessions": s.sessions})
 	return string(b)
 }
@@ -1661,11 +1671,13 @@ func exitedHow(plain string, d PodDiagnosis) string {
 }
 
 // The start steps a pod can fail at for good; stepImagePin a gate's
-// sandbox whose card's image has no pin in force.
+// sandbox whose card's image has no pin in force, stepBudget a session
+// the card's own money cannot open.
 const (
 	stepImagePull       = "image pull"
 	stepContainerConfig = "container config"
 	stepImagePin        = "image pin"
+	stepBudget          = "budget"
 )
 
 // StepEgressProbe is the worker's start step that holds the sandbox to its
@@ -1730,8 +1742,11 @@ const (
 
 // escalation is the failure's escalation reason, then the way on: its
 // first line is the card's question row (escalationQuestion), with the
-// action.
+// action. The budget's is the floor's refusal, which names its own way on.
 func (f *startFailure) escalation(then string) string {
+	if f.step == stepBudget {
+		return f.text
+	}
 	act := "fix the cause below"
 	switch f.step {
 	case stepImagePull:
@@ -2703,7 +2718,7 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 	if !ok {
 		return nil
 	}
-	for _, wn := range w.due(cur.SpentEUR, cur.BudgetEUR, time.Now()) {
+	for _, wn := range w.due(cur.EnforcedSpent(), cur.BudgetEUR, time.Now()) {
 		err := r.messageWorker(ctx, ns, pod, s.messageToken, wn.text)
 		if err == nil || !w.failed[wn.kind] {
 			detail := map[string]any{"session": s.id}
@@ -2719,5 +2734,5 @@ func (r *Runner) watchLimits(ctx context.Context, t Task, s sessionSpec, ns, pod
 		}
 		w.sent(wn.kind)
 	}
-	return sup.Spent(cur.SpentEUR, cur.BudgetEUR)
+	return sup.Spent(cur.EnforcedSpent(), cur.BudgetEUR)
 }

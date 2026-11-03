@@ -2671,8 +2671,8 @@ func providerHarness(t *testing.T, results ...SessionResult) (h *workflowHarness
 var refusedSession = SessionResult{Outcome: OutcomeProviderRefused, SessionID: "s0", Status: 429, Reason: "DashscopeException: budget exhausted (status 429)",
 	Findings: []string{"previous session ended without a pushed commit: DashscopeException: budget exhausted (status 429)"}}
 
-// A provider's refusal at a session's first call is no attempt (ruling
-// 267): the task waits on the provider 2 minutes, then 4, in gate provider
+// A provider's refusal at a session's first call is no attempt:
+// the task waits on the provider 2 minutes, then 4, in gate provider
 // (ProviderWait), and runs the session again with the same input; the log
 // says so once at the first refusal and once at the recovery.
 func TestWorkflowProviderRefusalIsNoAttempt(t *testing.T) {
@@ -4778,9 +4778,13 @@ func TestCheckinSpendStopCarriesTheWorkState(t *testing.T) {
 
 // A spend stop repeated on the same head and the same limits is not asked
 // again: the second ask states plainly that no reply can change it and
-// names the exits.
+// names the exits. Here a run from before the checkin-answer change, whose
+// answer to the share stop with the pull request open granted nothing; at
+// the change the grant widens the share, and the repeat is asked as a stop
+// of its own (TestCheckinRepeatGuardSeesARaise).
 func TestCheckinSpendStopRepeatedWithNoChangeNamesTheExits(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCheckinAnswer()
 	h.taskConfig = askTaskConfig()
 	var steps []string
 	h.onVerify(&steps, []SessionResult{

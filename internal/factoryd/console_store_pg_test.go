@@ -596,3 +596,24 @@ func TestFailedCardsStayInFinished(t *testing.T) {
 		t.Fatalf("FinishedTasks = %+v, %v; want the failed t-c among them", got, err)
 	}
 }
+
+// The board's reads carry the task row's holds: a card of 5.00 with 4.50
+// spent and one hold of 0.40 shows 0.40 held on its board row, the point
+// read and the board list alike. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestBoardTaskReadNetsHolds(t *testing.T) {
+	ctx := context.Background()
+	s := heldStore(t)
+	putHold(t, s, "t-held", 0.4, "1 hour")
+	b, ok, err := s.BoardTask(ctx, "t-held")
+	if err != nil || !ok {
+		t.Fatalf("BoardTask = %v, %v", ok, err)
+	}
+	if b.HeldEUR != 0.4 || b.EnforcedSpent() != 4.9 || Cents(b.Left()) != 10 {
+		t.Fatalf("held %v, enforced %v, left %v; want 0.40, 4.90 and 0.10", b.HeldEUR, b.EnforcedSpent(), b.Left())
+	}
+	board, err := s.BoardTasks(ctx, "sf/r")
+	if err != nil || len(board) != 1 || board[0].HeldEUR != 0.4 {
+		t.Fatalf("BoardTasks = %+v, %v; want t-held with 0.40 held", board, err)
+	}
+}

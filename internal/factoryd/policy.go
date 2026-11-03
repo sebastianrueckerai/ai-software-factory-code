@@ -824,8 +824,8 @@ type ConfigBook interface {
 	taskReader
 }
 
-// ConfigAlarm raises a refused commit of the configuration tree (ruling
-// 183): a human-lane issue on the tree's repository and an alerts row of
+// ConfigAlarm raises a refused commit of the configuration tree:
+// a human-lane issue on the tree's repository and an alerts row of
 // kind config_rejected, once per commit.
 type ConfigAlarm struct {
 	// Store keeps the alarm's tasks and alerts.

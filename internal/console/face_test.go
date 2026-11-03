@@ -144,6 +144,42 @@ func TestCardFaceSpend(t *testing.T) {
 	}
 }
 
+// The near-budget flag counts the holds: 3.80 settled of 5.00 is 76
+// percent, under the 80 percent line, and 3.80 with a 0.40 hold is 84
+// percent, over it.
+func TestNearBudgetNetsHolds(t *testing.T) {
+	r := newRig(t)
+	held := factoryd.Task{ID: "t-held", Kind: "agent", Status: "running", Repository: "sf/code", BudgetEUR: 5, SpentEUR: 3.8, HeldEUR: 0.4}
+	settled := held
+	settled.ID, settled.HeldEUR = "t-settled", 0
+	if !r.c.card(held).NearBudget {
+		t.Error("4.20 of 5.00 with the hold is not near its budget")
+	}
+	if r.c.card(settled).NearBudget {
+		t.Error("3.80 of 5.00 with no hold is near its budget")
+	}
+}
+
+// The card's money nets the gateway's holds, the figure its caps and
+// floor count: 4.50 settled and 0.40 held of 5.00 shows 4.90 spent on
+// the face and in the drawer, and the Extend form starts from 0.10 left.
+func TestBoardLeftNetsHolds(t *testing.T) {
+	r := fundRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-e", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?",
+		BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, ModelAlias: "factory/small"})
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	if face, want := faceOf(t, body, "t-e"), `<span class="spend near">€4.90 / €5.00 ⚠ near its budget</span>`; !strings.Contains(face, want) {
+		t.Errorf("the face lacks %s:\n%s", want, face)
+	}
+	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
+	for _, want := range []string{"€4.90 / €5.00 ⚠ near its budget", "€4.90 of €5.00, 98 percent", `€0.10 of €5.00">Extend the card`} {
+		if !strings.Contains(drawer, want) {
+			t.Errorf("the drawer lacks %s:\n%s", want, drawer)
+		}
+	}
+}
+
 // The calls line beside the spend: the task's call rows summed — its
 // tokens to date, prompt, cached and output, and the modeled
 // pay-as-you-go cost of them (never money billed, roadmap 206); a card

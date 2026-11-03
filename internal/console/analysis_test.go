@@ -67,7 +67,7 @@ func TestAttachAnalysisTool(t *testing.T) {
 		{factoryd.ErrNoAsk, http.StatusNotFound,
 			"Card #13 asks nothing in the chat; escalate files an ask when you need a person."},
 		{errors.New("the store is down"), http.StatusBadGateway,
-			"The analysis could not be recorded; see the factoryd log."},
+			"The analysis could not be recorded: the store is down. Attach the analysis again."},
 	} {
 		err := tc.err
 		r.c.cfg.AttachAnalysis = func(context.Context, string, string, string, factoryd.Event) error { return err }

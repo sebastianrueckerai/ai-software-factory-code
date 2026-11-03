@@ -76,9 +76,9 @@ func (s *PGStore) MergedCardCommits(ctx context.Context, repository string, shas
 // request and no carry row, the merge commit recorded or not: the cards
 // the late mapping gives a row, and those a silent chain alerts for.
 func (s *PGStore) UncarriedMerged(ctx context.Context, repository string) ([]Task, error) {
-	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks t
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
 		WHERE repository = $1 AND status = 'merged' AND pr_number > 0
-		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = t.repository AND c.pr_number = t.pr_number)
+		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = tasks.repository AND c.pr_number = tasks.pr_number)
 		ORDER BY id`, repository)
 }
 

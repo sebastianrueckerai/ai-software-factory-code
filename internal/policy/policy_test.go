@@ -1278,6 +1278,26 @@ func TestCheckinLimits(t *testing.T) {
 	}
 }
 
+// The check-in's time cap fits the calls it allows: without
+// limits.checkin_time each of limits.checkin_calls gets 90 seconds, so the
+// default 20 calls get 30 minutes, and no cap passes the 30 minutes
+// limits.checkin_time may set; limits.checkin_time overrides it.
+func TestCheckinTimeCapFitsTheCallCap(t *testing.T) {
+	for name, tc := range map[string]struct {
+		limits Limits
+		want   time.Duration
+	}{
+		"the default calls":   {Limits{}, 30 * time.Minute},
+		"6 calls":             {Limits{CheckinCalls: 6}, 9 * time.Minute},
+		"48 calls":            {Limits{CheckinCalls: 48}, 30 * time.Minute},
+		"checkin_time is set": {Limits{CheckinCalls: 6, CheckinTime: 5 * time.Minute}, 5 * time.Minute},
+	} {
+		if got := tc.limits.CheckinTimeCap(); got != tc.want {
+			t.Errorf("%s: CheckinTimeCap = %s, want %s", name, got, tc.want)
+		}
+	}
+}
+
 func TestLimitsStopValues(t *testing.T) {
 	d, err := Parse([]byte(valid))
 	if err != nil {

@@ -3352,8 +3352,8 @@ func (p *askedPrices) Price(_ context.Context, alias string) (policy.Price, erro
 
 // The floor reads the free headroom the gateway grants against, the
 // task's outstanding holds netted (roadmap 243, card #756). Budget 5.00,
-// spent 4.83 and a hold of 0.17: 0.17 remains, the hold takes all of it,
-// and the cheapest call on big, 1024 output tokens at 1.5e-5,
+// spent 4.83 and a hold of 0.17: the hold takes the 0.17 left, so 0.000
+// remains after it, and the cheapest call on big, 1024 output tokens at 1.5e-5,
 // needs 0.01536. The refusal names the hold, its expiry and both actions.
 // Settled at its call's cost of 0.05, spent is 4.88 and 0.12 is free: a
 // call fits. Swept instead, the hold is booked in full: spent is 5.00,
@@ -3370,8 +3370,8 @@ func TestAttemptFundedNetsTheHolds(t *testing.T) {
 	why, err := r.AttemptFunded(context.Background(), "t-756", "factory/big")
 	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
 		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
-		"0.170 EUR of the 5.000 EUR budget remains, outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2026-10-14T19:35:03Z), " +
-		"so 0.000000 EUR is free, and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
+		"0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), " +
+		"and the cheapest call on factory/big needs 0.015360 EUR (1024 output tokens at the hold machinery's minimum); " +
 		"an answer would start an attempt whose first call cannot run."; err != nil || why != want {
 		t.Fatalf("held: (%q, %v), want %q", why, err, want)
 	}
@@ -3446,7 +3446,7 @@ func TestAttemptFundedAgreesWithTheGateway(t *testing.T) {
 			}
 		}
 	}
-	agree("held", "outstanding holds take 0.170000 EUR of it (1, the earliest expiring 2030-01-01T00:00:00Z), so 0.000000 EUR is free", false)
+	agree("held", "0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2030-01-01T00:00:00Z)", false)
 
 	cost := 0.05
 	if _, err := policy.ReleaseHold(ctx, s.db, policy.Hold{ID: id, TaskID: "t-756", Kind: policy.KindModel, Ref: "big", EUR: 0.17}, &cost, policy.Usage{}); err != nil {
@@ -3568,7 +3568,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 
 	why, err := r.SessionFunded(ctx, "t-1", "factory/big")
 	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/big needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would end before it could push.") {
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done.") {
 		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "big"); err != nil || !BudgetRefusal(why) ||
@@ -3617,6 +3617,114 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 	}
 	if got := sessionModel(v.Document, Task{RequiredCapabilities: []string{"coder"}}, "factory/small"); got != "factory/small" {
 		t.Errorf("a coder session's model = %q, want the ladder's factory/small", got)
+	}
+}
+
+// The money ask states the figure the floor counts, and its first raise
+// funds the session. The planner's premium session asks the frontier
+// floor 0.60. Budget 5.00, spent 4.50 and a hold of 0.40 leave 0.10 free,
+// as the face's 4.90 of 5.00 does: the ask reads €0.100 left, the first
+// raise is the shortfall 0.50, and at 5.50 the floor funds the session.
+// With no hold and 4.5004 spent, 0.4996 is free: the ask reads it down to
+// €0.499, never up to €0.500, so the first raise is 0.11, not 0.10, and
+// at 5.11 (0.6096 free) the floor funds the session.
+func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
+		RequiredCapabilities: []string{"planner"}}); err != nil {
+		t.Fatal(err)
+	}
+	store.held = map[string]policy.TaskFree{"t-2": {Held: 0.4, Holds: 1, Expires: time.Date(2026, 10, 14, 19, 35, 3, 0, time.UTC)}}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
+		SessionModel: policy.Premium}
+	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	r := &Runner{store: store, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+	ask := func(budget, spent float64, want string, choices ...float64) {
+		t.Helper()
+		k := store.tasks["t-2"]
+		k.BudgetEUR, k.SpentEUR = budget, spent
+		store.tasks["t-2"] = k
+		why, err := r.SessionFunded(ctx, "t-2", "factory/big")
+		if err != nil || !BudgetRefusal(why) {
+			t.Fatalf("%.4f of %.2f spent: (%q, %v), want the money ask", spent, budget, why, err)
+		}
+		q := budgetQuestion(why, QuestionFacts{})
+		if q.Ask != want {
+			t.Errorf("%.4f of %.2f spent: ask = %q, want %q", spent, budget, q.Ask, want)
+		}
+		var wantChoices []QuestionChoice
+		for _, eur := range choices {
+			wantChoices = append(wantChoices, QuestionChoice{FundChoiceValue(eur), fmt.Sprintf("Fund %.2f EUR and go on", eur)})
+		}
+		if wantChoices = append(wantChoices, QuestionChoice{AnswerPark, "Park it"}); !slices.Equal(q.Choices, wantChoices) {
+			t.Errorf("%.4f of %.2f spent: choices = %v, want %v", spent, budget, q.Choices, wantChoices)
+		}
+		first, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
+		if err != nil {
+			t.Fatal(err)
+		}
+		k.BudgetEUR += first
+		store.tasks["t-2"] = k
+		if why, err := r.SessionFunded(ctx, "t-2", "factory/big"); err != nil || why != "" {
+			t.Errorf("%.4f of %.2f spent after the first raise: (%q, %v), want the session funded", spent, k.BudgetEUR, why, err)
+		}
+	}
+
+	ask(5, 4.5, "The card has €0.100 of its €5.000 budget left, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.5, 0.6, 2)
+	k := store.tasks["t-2"]
+	k.BudgetEUR = 5
+	store.tasks["t-2"] = k
+	why, err := r.SessionFunded(ctx, "t-2", "factory/big")
+	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
+		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
+		"0.100 EUR of the 5.000 EUR budget remains after outstanding holds of 0.400 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), " +
+		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); " +
+		"a session started now would run out of money before its work is done."; err != nil || why != want {
+		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
+	}
+
+	store.held = nil
+	ask(5, 4.5004, "The card has €0.499 of its €5.000 budget left, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.11, 0.6, 2)
+}
+
+// A card with no model yet (the console passes its row's empty alias)
+// is priced on its class's session_model; a class without one leaves
+// nothing to price, so the card is not judged and no price is read.
+func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
+	store := newFakeStore()
+	for _, tsk := range []Task{
+		{ID: "t-coder", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "direct", RequiredCapabilities: []string{"coder"}},
+		{ID: "t-plan", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan", RequiredCapabilities: []string{"planner"}},
+	} {
+		if err := store.CreateTask(context.Background(), tsk); err != nil {
+			t.Fatal(err)
+		}
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
+	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
+	v.Tree.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{policy.Small, policy.Big, policy.Premium},
+		SessionModel: policy.Premium}
+	v.Tree.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	asked := &askedPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}}
+	r := &Runner{store: store, cfg: RunnerConfig{Prices: asked, Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+
+	if why, err := r.SessionFunded(ctx, "t-coder", ""); err != nil || why != "" || len(asked.aliases) != 0 {
+		t.Fatalf("coder card with no model = (%q, %v), prices read %q; want not judged, nothing read", why, err, asked.aliases)
+	}
+	why, err := r.SessionFunded(ctx, "t-plan", "")
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on premium needs 0.600000 EUR "+
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
+		t.Fatalf("plan card with no model at 0.50 free = (%q, %v), want the frontier floor on premium", why, err)
 	}
 }
 
@@ -3756,8 +3864,8 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 	agree("the day spent", 5.51, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
 }
 
-// The attempt grant's floor is the hold machinery's own minimum (ruling
-// 322): policy.Fit at the task's remaining budget refuses an attempt whose
+// The attempt grant's floor is the hold machinery's own minimum:
+// policy.Fit at the task's remaining budget refuses an attempt whose
 // cheapest call cannot fit policy.MinCallTokens output tokens, and the
 // refusal names the state and the way out. A model that cannot be priced,
 // or has no output limit, refuses the attempt: no hold of it is bounded.
