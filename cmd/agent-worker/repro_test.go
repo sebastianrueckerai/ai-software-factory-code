@@ -14,6 +14,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"strings"
+	"syscall"
 	"testing"
 	"time"
 
@@ -385,10 +386,12 @@ func TestReproFetchOnTheWayToForgejoIsTransient(t *testing.T) {
 }
 
 // proofsCheck is the check script of the proofs tests: it prints its
-// arguments and the paths it got, then writes a report naming the test
-// (the suite's when none) and an artifact; suite ./none exits 2 first.
+// arguments, the paths it got and whether it sees PROOFS, then writes a
+// report naming the test (the suite's when none) and an artifact; suite
+// ./none exits 2 first.
 const proofsCheck = `printf 'argc=%s %s\n' "$#" "$*"
 printf 'report=%s\nartifacts=%s\n' "$CHECK_REPORT" "$CHECK_ARTIFACTS"
+printf 'proofs=%s\n' "${PROOFS-unset}"
 [ -d "$CHECK_ARTIFACTS" ] || exit 9
 [ "$2" = ./none ] && exit 2
 printf '<testsuites><testcase name="%s"></testcase></testsuites>' "${3:-suite}" >"$CHECK_REPORT"
@@ -466,6 +469,7 @@ func proofsEnvs(t *testing.T, proofs ...harness.Proof) {
 // The proofs mode runs bash check test with the entry's suite, and its
 // name only when given, each with a report path and an artifacts
 // directory of its own outside the tree, and returns what the check left.
+// The check does not see PROOFS: every entry's file is in it.
 func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	ws, repo := proofsWorkspace(t, proofsCheck)
 	proofsEnvs(t, harness.Proof{ID: "a", Suite: "./a", Name: "TestA"}, harness.Proof{ID: "all", Suite: "./..."}, harness.Proof{ID: "none", Suite: "./none"})
@@ -488,8 +492,8 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 		{"none", "argc=2 test ./none", "", 2, nil},
 	} {
 		r := runs[i]
-		if r.ID != want.id || r.Exit != want.exit || strings.SplitN(r.Output, "\n", 2)[0] != want.first {
-			t.Errorf("run %d = %+v, want id %s, exit %d, first line %q", i, r, want.id, want.exit, want.first)
+		if r.ID != want.id || r.Exit != want.exit || strings.SplitN(r.Output, "\n", 2)[0] != want.first || !strings.Contains(r.Output, "\nproofs=unset\n") {
+			t.Errorf("run %d = %+v, want id %s, exit %d, first line %q, no PROOFS", i, r, want.id, want.exit, want.first)
 		}
 		if want.report == "" && r.Report != nil {
 			t.Errorf("%s: report %q, want none", r.ID, gunzip(t, r.Report))
@@ -562,21 +566,135 @@ func TestProofsRefuseAFileOutsideTheTree(t *testing.T) {
 }
 
 // The artifacts are the regular files of the directory, each cut at
-// 256 KiB: no link, no directory. A report that is no regular file is
-// none.
+// 256 KiB: no link, no directory.
 func TestProofsCapAnArtifactAndReadOnlyRegularFiles(t *testing.T) {
 	ws, _ := proofsWorkspace(t, `head -c 300000 /dev/zero >"$CHECK_ARTIFACTS/big.bin"
 ln -s /etc/hostname "$CHECK_ARTIFACTS/host"
 mkdir "$CHECK_ARTIFACTS/sub"
 echo x >"$CHECK_ARTIFACTS/sub/x"
-mkfifo "$CHECK_REPORT"
 `)
 	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a"})[0]
 	if len(r.Artifacts) != 1 || len(r.Artifacts["big.bin"]) != 262144 {
 		t.Fatalf("artifacts: %d keys, big.bin %d bytes", len(r.Artifacts), len(r.Artifacts["big.bin"]))
 	}
-	if r.Exit != 0 || r.Report != nil || !strings.Contains(r.Output, "proofs mode: report.xml is not a regular file") {
+}
+
+// Three artifacts at their cap would pass the 1 MiB that factoryd reads
+// of one log line, which would lose the report with them: those past the
+// line's room are left out and named.
+func TestProofsLeaveOutArtifactsPastTheLine(t *testing.T) {
+	ws, _ := proofsWorkspace(t, `for f in a b c; do head -c 300000 /dev/zero >"$CHECK_ARTIFACTS/$f.bin"; done
+printf '<testsuites></testsuites>' >"$CHECK_REPORT"
+`)
+	var got emitted
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "./a"}}, timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+	r := got.runs(t)[0]
+	if len(r.Artifacts) != 2 || len(r.Artifacts["a.bin"]) != 262144 || len(r.Artifacts["b.bin"]) != 262144 {
+		t.Fatalf("artifacts: %d keys, a.bin %d bytes, b.bin %d bytes", len(r.Artifacts), len(r.Artifacts["a.bin"]), len(r.Artifacts["b.bin"]))
+	}
+	if r.Exit != 0 || r.Report == nil || !strings.HasSuffix(r.Output, "\nproofs mode: one log line has no room for these artifacts: c.bin") {
 		t.Fatalf("exit %d, a report: %v, output %q", r.Exit, r.Report != nil, r.Output)
+	}
+	if line, err := json.Marshal(got[0]); err != nil || len(line) >= 1<<20 {
+		t.Fatalf("line of %d bytes, %v", len(line), err)
+	}
+}
+
+// A report past 64 MiB is not read; one that does not fit one log line
+// gzipped is left out. Either entry's line still holds its exit and why.
+func TestProofsLeaveOutAReportPastItsBounds(t *testing.T) {
+	ws, _ := proofsWorkspace(t, `case $2 in
+./huge) head -c $(((64 << 20) + 1)) /dev/zero >"$CHECK_REPORT" ;;
+./dense) head -c 1100000 /dev/urandom >"$CHECK_REPORT" ;;
+esac
+`)
+	var got emitted
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "huge", Suite: "./huge"}, {ID: "dense", Suite: "./dense"}},
+		timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+	runs := got.runs(t)
+	for i, why := range []string{"\nproofs mode: the report passed 64 MiB", " bytes gzipped, does not fit one log line"} {
+		r := runs[i]
+		if r.Exit != 0 || r.Report != nil || !strings.Contains(r.Output, why) {
+			t.Errorf("%s: exit %d, a report: %v, output %q", r.ID, r.Exit, r.Report != nil, r.Output)
+		}
+		if line, err := json.Marshal(got[i]); err != nil || len(line) >= 1<<20 {
+			t.Errorf("%s: line of %d bytes, %v", r.ID, len(line), err)
+		}
+	}
+}
+
+// A FIFO at an entry's file or at its report blocks no write and no read:
+// the entry ends at once.
+func TestProofsNeverBlockOnAFIFO(t *testing.T) {
+	ws, repo := proofsWorkspace(t, "[ \"$2\" = ./pipe ] && mkfifo \"$CHECK_REPORT\"\nexit 0\n")
+	if err := os.Mkdir(filepath.Join(repo, ".holdout1"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := syscall.Mkfifo(filepath.Join(repo, ".holdout1", "holdout_test.go"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan []harness.ProofRun)
+	go func() {
+		var got emitted
+		runProofList(proofsEnv{proofs: []harness.Proof{
+			{ID: "held", Suite: "./.holdout1", Name: "TestDoor", File: &harness.ProofFile{Path: ".holdout1/holdout_test.go", Content: "package holdout\n"}},
+			{ID: "pipe", Suite: "./pipe"}}, timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+		var runs []harness.ProofRun
+		for _, env := range got {
+			runs = append(runs, *env.Proof)
+		}
+		done <- runs
+	}()
+	var runs []harness.ProofRun
+	select {
+	case runs = <-done:
+	case <-time.After(10 * time.Second):
+		t.Fatal("a FIFO blocked the run")
+	}
+	if held := runs[0]; held.Exit != -1 || !strings.HasPrefix(held.Output, "proofs mode: write .holdout1/holdout_test.go: ") {
+		t.Errorf("held = %+v", held)
+	}
+	if pipe := runs[1]; pipe.Exit != 0 || pipe.Report != nil || !strings.Contains(pipe.Output, "proofs mode: report.xml is not a regular file") {
+		t.Errorf("pipe = %+v", pipe)
+	}
+}
+
+// An entry's own directory is new: one a process left there, with a
+// report planted in it, fails the entry before the check runs.
+func TestProofsRefuseAnEntryDirectoryThatExists(t *testing.T) {
+	ws, repo := proofsWorkspace(t, "touch ran\n")
+	planted := filepath.Join(ws, "proofs", "0")
+	if err := os.MkdirAll(planted, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(planted, "report.xml"), []byte(`<testsuites><testcase name="TestA"></testcase></testsuites>`), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a", Name: "TestA"})[0]
+	if r.Exit != -1 || r.Report != nil || !strings.HasPrefix(r.Output, "proofs mode: mkdir ") {
+		t.Fatalf("run = %+v", r)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the check ran: %v", err)
+	}
+}
+
+// Each entry's envelope goes out before the next entry starts: the
+// proofs mode stops the processes an entry left there.
+func TestProofsEmitEachEntryBeforeTheNextStarts(t *testing.T) {
+	ws, repo := proofsWorkspace(t, "touch \"ran-$2\"\n")
+	var ids []string
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "a"}, {ID: "b", Suite: "b"}}, timeout: time.Minute, budget: time.Minute}, ws,
+		func(env harness.WorkerEnvelope) {
+			ids = append(ids, env.Proof.ID)
+			_, errA := os.Stat(filepath.Join(repo, "ran-a"))
+			_, errB := os.Stat(filepath.Join(repo, "ran-b"))
+			if env.Proof.ID == "a" && (errA != nil || !errors.Is(errB, os.ErrNotExist)) {
+				t.Errorf("at a's envelope: ran-a %v, ran-b %v", errA, errB)
+			}
+		})
+	if !reflect.DeepEqual(ids, []string{"a", "b"}) {
+		t.Fatalf("envelopes %v", ids)
 	}
 }
 
@@ -602,23 +720,24 @@ printf '</testsuites>\n'
 }
 
 // Each entry has its timeout, and all share the run's budget: an entry
-// the budget does not reach does not start.
+// the budget cuts short says so, and one it does not reach does not
+// start.
 func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
-	ws, _ := proofsWorkspace(t, "if [ \"$2\" = ./slow ]; then sleep 30; fi\n")
 	list := []harness.Proof{{ID: "slow", Suite: "./slow"}, {ID: "fast", Suite: "./a", Name: "TestA"}}
 	for _, tc := range []struct {
 		timeout, budget time.Duration
 		slow            string
 		fast            harness.ProofRun
 	}{
-		{300 * time.Millisecond, time.Minute, "(timed out after 300ms)", harness.ProofRun{ID: "fast", Exit: 0}},
-		{time.Minute, 300 * time.Millisecond, "(timed out after", harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
+		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", harness.ProofRun{ID: "fast", Exit: 0}},
+		{time.Minute, 300 * time.Millisecond, "\n(the run's 300ms ran out)", harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
 	} {
+		ws, _ := proofsWorkspace(t, "if [ \"$2\" = ./slow ]; then sleep 30; fi\n")
 		began := time.Now()
 		var got emitted
 		runProofList(proofsEnv{proofs: list, timeout: tc.timeout, budget: tc.budget}, ws, got.emit)
 		runs := got.runs(t)
-		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !strings.Contains(runs[0].Output, tc.slow) {
+		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !strings.HasSuffix(runs[0].Output, tc.slow) {
 			t.Fatalf("timeout %s, budget %s: runs = %+v", tc.timeout, tc.budget, runs)
 		}
 		if !reflect.DeepEqual(runs[1], tc.fast) {
@@ -646,10 +765,35 @@ func TestProofsRunTheImagesBash(t *testing.T) {
 	}
 }
 
+// The check is the tree's own: with none in the tree, a check on the PATH
+// does not run in its place.
+func TestProofsRunTheTreesCheck(t *testing.T) {
+	planted := t.TempDir()
+	marker := filepath.Join(t.TempDir(), "planted-ran")
+	if err := os.WriteFile(filepath.Join(planted, "check"), []byte("#!/bin/sh\ntouch "+marker+"\nexit 0\n"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("PATH", planted+":"+os.Getenv("PATH"))
+	ws := t.TempDir()
+	if err := os.Mkdir(filepath.Join(ws, "repo"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a"})[0]
+	if _, err := os.Stat(marker); err == nil || r.Exit != 127 {
+		t.Fatalf("run = %+v, planted check ran: %v", r, err == nil)
+	}
+}
+
 // A fetch that failed or an environment the mode cannot read ends the
 // run before any entry, as does a sandbox more open than its policy.
 func TestProofsReportAFetchFailureOrABadEnvironment(t *testing.T) {
 	moved := "refs/pull/9/head is at c2, not the gated head c1: the pull request moved"
+	notRan := func(repo string) {
+		t.Helper()
+		if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
+			t.Fatalf("the check ran: %v", err)
+		}
+	}
 	ws, repo := proofsWorkspace(t, "touch ran")
 	proofsEnvs(t, harness.Proof{ID: "a", Suite: "./a"})
 	if err := os.WriteFile(fetchFailed(ws), []byte(moved), 0o600); err != nil {
@@ -659,12 +803,14 @@ func TestProofsReportAFetchFailureOrABadEnvironment(t *testing.T) {
 	if closing := proofs(ws, got.emit); len(got) != 0 || closing.Type != "proofs" || closing.Proofs == nil || closing.Proofs.Error != "proofs mode: "+moved {
 		t.Fatalf("emitted %d, closing envelope = %+v", len(got), closing)
 	}
+	notRan(repo)
 
 	ws, repo = proofsWorkspace(t, "touch ran")
 	t.Setenv("PROOFS", "not json")
 	if closing := proofs(ws, got.emit); len(got) != 0 || closing.Proofs == nil || !strings.HasPrefix(closing.Proofs.Error, "proofs mode: PROOFS: ") {
 		t.Fatalf("emitted %d, closing envelope = %+v", len(got), closing)
 	}
+	notRan(repo)
 
 	proofsEnvs(t, harness.Proof{ID: "a", Suite: "./a"})
 	for k, v := range map[string]string{"GATEWAY_URL": "http://gw", "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443"} {
@@ -680,9 +826,7 @@ func TestProofsReportAFetchFailureOrABadEnvironment(t *testing.T) {
 		w, _ := json.Marshal(want)
 		t.Fatalf("emitted %d, closing envelope = %s\nwant %s", len(got), g, w)
 	}
-	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
-		t.Fatalf("the check ran: %v", err)
-	}
+	notRan(repo)
 }
 
 func TestLoadProofsEnv(t *testing.T) {

@@ -6,22 +6,25 @@ import (
 	"bytes"
 	"compress/gzip"
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"io/fs"
-	"math"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The repro pod is factoryd's GateReproduction: an init container in
@@ -183,19 +186,19 @@ func runRepro(log func(string, ...any), initErr error, probe func(workerEnv) egr
 }
 
 // runProofs is the worker's proofs mode: runRepro's, with a line for each
-// entry as it ends before the closing envelope.
+// entry as it ends before the closing envelope. Each line goes out once
+// the processes its check left are dead, so none reaches the next entry.
 func runProofs(log func(string, ...any), initErr error, probe func(workerEnv) egressProbe) int {
 	emit := func(env harness.WorkerEnvelope) {
+		if initErr == nil {
+			if err := killOthers(); err != nil {
+				log("stop the checks' processes: %v", err)
+			}
+		}
 		line, _ := json.Marshal(env)
 		fmt.Println(string(line))
 	}
-	env := proofsReport(context.Background(), workspace, initErr, probe, emit)
-	if initErr == nil {
-		if err := killOthers(); err != nil {
-			log("stop the checks' processes: %v", err)
-		}
-	}
-	emit(env)
+	emit(proofsReport(context.Background(), workspace, initErr, probe, emit))
 	return 0
 }
 
@@ -294,7 +297,15 @@ func fetchHead(e fetchEnv, dir string) error {
 // reproduction command or of one proof's check test.
 const maxReproOutput = 8 << 10
 
-const maxArtifact = 256 << 10
+const (
+	maxArtifact = 256 << 10
+	// maxReport bounds the report read into memory
+	maxReport = 64 << 20
+	// maxProofLine bounds one proof's line, the report first and then the
+	// artifacts that fit, under the 1 MiB that factoryd reads of one: the
+	// rest holds the note on what was left out
+	maxProofLine = 960 << 10
+)
 
 // repro is the repro mode's report on ws: the fetch's failure, a bad
 // environment (exit -1), or the command's run at the fetched head.
@@ -311,13 +322,14 @@ func repro(ws string) harness.Repro {
 
 // reproduce runs the command under the image's /bin/sh in dir.
 func reproduce(e reproEnv, dir string) harness.Repro {
-	return runBounded(dir, nil, e.timeout, "/bin/sh", "-c", e.command)
+	return runBounded(dir, nil, e.timeout, fmt.Sprintf("timed out after %s", e.timeout), "/bin/sh", "-c", e.command)
 }
 
 // runBounded runs name with args in dir, under env (nil: the worker's
 // own), its output (stdout and stderr) tail kept, killed with its process
-// group at timeout. Exit -1: it could not run or ran out of time.
-func runBounded(dir string, env []string, timeout time.Duration, name string, args ...string) harness.Repro {
+// group at timeout, when late ends the output. Exit -1: it could not run
+// or ran out of time.
+func runBounded(dir string, env []string, timeout time.Duration, late, name string, args ...string) harness.Repro {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 	out := &tailBuffer{max: maxReproOutput}
@@ -331,7 +343,7 @@ func runBounded(dir string, env []string, timeout time.Duration, name string, ar
 	var exit *exec.ExitError
 	switch {
 	case ctx.Err() != nil:
-		return harness.Repro{Exit: -1, Output: out.String() + fmt.Sprintf("\n(timed out after %s)", timeout)}
+		return harness.Repro{Exit: -1, Output: out.String() + "\n(" + late + ")"}
 	case errors.As(err, &exit):
 		return harness.Repro{Exit: exit.ExitCode(), Output: out.String()}
 	case err != nil:
@@ -364,80 +376,151 @@ func runProofList(e proofsEnv, ws string, emit func(harness.WorkerEnvelope)) {
 	for i, p := range e.proofs {
 		run := harness.ProofRun{ID: p.ID, Exit: -1, Output: fmt.Sprintf("proofs mode: the run's %s ran out before this entry", e.budget)}
 		if left := time.Until(deadline); left > 0 {
-			run = runProof(p, filepath.Join(ws, "repo"), filepath.Join(ws, "proofs", strconv.Itoa(i)), min(e.timeout, left))
+			timeout, late := e.timeout, fmt.Sprintf("timed out after %s", e.timeout)
+			if left < timeout {
+				timeout, late = left, fmt.Sprintf("the run's %s ran out", e.budget)
+			}
+			run = runProof(p, filepath.Join(ws, "repo"), filepath.Join(ws, "proofs", strconv.Itoa(i)), timeout, late)
 		}
 		emit(harness.WorkerEnvelope{Type: "proof", Proof: &run})
 	}
 }
 
-// runProof runs one entry in repo: its file first, then bash check test;
-// own is the entry's own directory, outside the tree, for the report and
-// the artifacts.
-func runProof(p harness.Proof, repo, own string, timeout time.Duration) harness.ProofRun {
+// runProof runs one entry in repo: its file first, then the tree's bash
+// check test, which runBounded ends at timeout with late; own is the
+// entry's own directory, outside the tree, for the report and the
+// artifacts.
+func runProof(p harness.Proof, repo, own string, timeout time.Duration, late string) harness.ProofRun {
 	failed := func(err error) harness.ProofRun {
 		return harness.ProofRun{ID: p.ID, Exit: -1, Output: "proofs mode: " + err.Error()}
 	}
-	if err := os.MkdirAll(filepath.Join(own, "artifacts"), 0o750); err != nil {
+	err := os.MkdirAll(filepath.Dir(own), 0o750)
+	if err == nil {
+		// new, so nothing a process left there reads as this entry's
+		err = os.Mkdir(own, 0o750)
+	}
+	if err == nil {
+		err = os.Mkdir(filepath.Join(own, "artifacts"), 0o750)
+	}
+	if err != nil {
 		return failed(err)
 	}
 	if f := p.File; f != nil {
-		tree, err := os.OpenRoot(repo)
-		if err == nil {
-			defer tree.Close()
-			if err = tree.MkdirAll(filepath.Dir(f.Path), 0o750); err == nil {
-				err = tree.WriteFile(f.Path, []byte(f.Content), 0o600)
-			}
-		}
-		if err != nil {
+		if err := writeRegular(repo, f.Path, f.Content); err != nil {
 			return failed(fmt.Errorf("write %s: %w", f.Path, err))
 		}
 	}
-	args := []string{"check", "test", p.Suite}
+	args := []string{"./check", "test", p.Suite}
 	if p.Name != "" {
 		args = append(args, p.Name)
 	}
-	env := append(os.Environ(), "CHECK_REPORT="+filepath.Join(own, "report.xml"), "CHECK_ARTIFACTS="+filepath.Join(own, "artifacts"))
-	r := runBounded(repo, env, timeout, "/bin/bash", args...)
+	// PROOFS holds every entry's file
+	env := append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "PROOFS=") }),
+		"CHECK_REPORT="+filepath.Join(own, "report.xml"), "CHECK_ARTIFACTS="+filepath.Join(own, "artifacts"))
+	r := runBounded(repo, env, timeout, late, "/bin/bash", args...)
 	run := harness.ProofRun{ID: p.ID, Exit: r.Exit, Output: r.Output}
+	collect(&run, own)
+	return run
+}
+
+// collect reads into run the report and the artifacts the check left in
+// own, regular files only, within maxProofLine: the report first, then
+// the artifacts that fit. The output names what was left out.
+func collect(run *harness.ProofRun, own string) {
 	root, err := os.OpenRoot(own)
 	if err != nil {
 		run.Output += "\nproofs mode: " + err.Error()
-		return run
+		return
 	}
 	defer root.Close()
-	switch report, err := readRegular(root, "report.xml", math.MaxInt64); {
-	case err == nil:
-		run.Report = gzipped(report)
-	case !errors.Is(err, fs.ErrNotExist):
+	switch report, err := readRegular(root, "report.xml", maxReport+1); {
+	case errors.Is(err, fs.ErrNotExist):
+	case err != nil:
 		run.Output += "\nproofs mode: " + err.Error()
+	case len(report) > maxReport:
+		run.Output += fmt.Sprintf("\nproofs mode: the report passed %d MiB", maxReport>>20)
+	default:
+		run.Report = gzipped(report)
 	}
+	line, _ := json.Marshal(harness.WorkerEnvelope{Type: "proof", Proof: run})
+	if len(line) > maxProofLine {
+		run.Output += fmt.Sprintf("\nproofs mode: the report, %d bytes gzipped, does not fit one log line", len(run.Report))
+		run.Report = nil
+		line, _ = json.Marshal(harness.WorkerEnvelope{Type: "proof", Proof: run})
+	}
+	room := maxProofLine - len(line)
 	entries, _ := fs.ReadDir(root.FS(), "artifacts")
+	var left []string
 	for _, d := range entries {
 		if !d.Type().IsRegular() {
 			continue
 		}
-		if b, err := readRegular(root, filepath.Join("artifacts", d.Name()), maxArtifact); err == nil {
-			if run.Artifacts == nil {
-				run.Artifacts = map[string][]byte{}
-			}
-			run.Artifacts[d.Name()] = b
+		b, err := readRegular(root, filepath.Join("artifacts", d.Name()), maxArtifact)
+		if err != nil {
+			continue
 		}
+		// the name escaped, at most six bytes a byte, the content in
+		// base64, two pairs of quotes, a colon and a comma
+		size := 6*len(d.Name()) + base64.StdEncoding.EncodedLen(len(b)) + 6
+		if size > room {
+			left = append(left, d.Name())
+			continue
+		}
+		room -= size
+		if run.Artifacts == nil {
+			run.Artifacts = map[string][]byte{}
+		}
+		run.Artifacts[d.Name()] = b
 	}
-	return run
+	if len(left) > 0 {
+		run.Output += textutil.Truncate("\nproofs mode: one log line has no room for these artifacts: "+strings.Join(left, ", "), 4<<10)
+	}
 }
 
-// readRegular reads at most max bytes of name in root, a regular file: a
-// FIFO the check left there does not block the worker.
+// openRegular opens name in root with flag, a regular file: a FIFO there
+// blocks neither a read nor a write.
+func openRegular(root *os.Root, name string, flag int) (*os.File, error) {
+	f, err := root.OpenFile(name, flag|syscall.O_NONBLOCK, 0o600)
+	if err != nil {
+		return nil, err
+	}
+	fi, err := f.Stat()
+	if err == nil && !fi.Mode().IsRegular() {
+		err = fmt.Errorf("%s is not a regular file", name)
+	}
+	if err != nil {
+		return nil, errors.Join(err, f.Close())
+	}
+	return f, nil
+}
+
+// readRegular reads at most max bytes of name in root, a regular file.
 func readRegular(root *os.Root, name string, max int64) ([]byte, error) {
-	f, err := root.OpenFile(name, os.O_RDONLY|syscall.O_NONBLOCK, 0)
+	f, err := openRegular(root, name, os.O_RDONLY)
 	if err != nil {
 		return nil, err
 	}
 	defer f.Close()
-	if fi, err := f.Stat(); err != nil || !fi.Mode().IsRegular() {
-		return nil, fmt.Errorf("%s is not a regular file", name)
-	}
 	return io.ReadAll(io.LimitReader(f, max))
+}
+
+// writeRegular writes content to name in dir's tree, a regular file, and
+// makes its directory; a path out of the tree is refused.
+func writeRegular(dir, name, content string) error {
+	tree, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer tree.Close()
+	if err := tree.MkdirAll(filepath.Dir(name), 0o750); err != nil {
+		return err
+	}
+	f, err := openRegular(tree, name, os.O_WRONLY|os.O_CREATE|os.O_TRUNC)
+	if err != nil {
+		return err
+	}
+	_, err = f.WriteString(content)
+	return errors.Join(err, f.Close())
 }
 
 func gzipped(b []byte) []byte {
