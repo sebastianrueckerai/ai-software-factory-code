@@ -306,6 +306,37 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	}
 }
 
+// The rig's pool sum reads the UTC month of an instant in any zone, as
+// PGStore's date_trunc does, and its pool check meets what the pool has
+// left, so a raise past it is refused even where the funded and the raise
+// in cents sum past int64.
+func TestPoolFundingRigBounds(t *testing.T) {
+	r, _, _, _ := fundRig(t)
+	seedFundRow(t, r, 1.5, time.Date(2025, 11, 30, 23, 0, 0, 0, time.UTC))
+	cet := time.FixedZone("CET", 3600)
+	for _, tc := range []struct {
+		at   time.Time
+		want float64
+	}{
+		{time.Date(2025, 12, 1, 0, 30, 0, 0, cet), 1.5}, // 2025-11-30 23:30 UTC
+		{time.Date(2025, 12, 1, 1, 30, 0, 0, cet), 0},   // 2025-12-01 00:30 UTC
+	} {
+		if used, err := r.AgentFundedEUR(t.Context(), "sf/code", tc.at); err != nil || used != tc.want {
+			t.Errorf("the use at %s = %v, %v; want %v", tc.at, used, err, tc.want)
+		}
+	}
+	seedFundRow(t, r, 5e16, time.Now())
+	raise := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat,
+		Actor: "anna", TaskID: "t-e", Detail: map[string]any{}}
+	var p *factoryd.PoolSpentError
+	if _, _, err := r.FundCard(t.Context(), "t-e", 5e16, &factoryd.FundBounds{PoolEUR: 6e16, CardCapEUR: 9e16}, raise); !errors.As(err, &p) || p.Funded != 5e16 {
+		t.Fatalf("a raise of 5e16 on 5e16 funded of a 6e16 pool = %v, want PoolSpentError of 5e16 funded", err)
+	}
+	if card, _, _ := r.Task(t.Context(), "t-e"); card.BudgetEUR != 2 {
+		t.Fatalf("the refused raise moved the budget to %v", card.BudgetEUR)
+	}
+}
+
 // TestPoolEscalationFallback is every refusal that hands the raise back
 // to the human: a project without a pool, a pool the month has spent and
 // a per-raise bound the raise passes each answer their own literal, move

@@ -942,7 +942,7 @@ func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, boun
 	if bounds != nil {
 		detail["decider"] = "agent"
 		funded := a.agentFundedLocked(e.Repository, time.Now())
-		if factoryd.Cents(funded)+raiseCents > factoryd.Cents(bounds.PoolEUR) {
+		if raiseCents > factoryd.Cents(bounds.PoolEUR)-factoryd.Cents(funded) {
 			short := &factoryd.PoolSpentError{Funded: funded}
 			a.mu.Unlock()
 			return 0, 0, short
@@ -1132,6 +1132,7 @@ func (a *AcceptanceRig) AgentFundedEUR(_ context.Context, repository string, mon
 // agentFundedLocked is the agent-funded sum with a.mu held, the figure
 // FundCard's own pool check reads under the same lock.
 func (a *AcceptanceRig) agentFundedLocked(repository string, month time.Time) float64 {
+	month = month.UTC()
 	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
 	until := from.AddDate(0, 1, 0)
 	var eur float64

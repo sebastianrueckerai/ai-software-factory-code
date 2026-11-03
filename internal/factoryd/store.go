@@ -1749,7 +1749,7 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 		if err != nil {
 			return 0, 0, err
 		}
-		if Cents(funded)+Cents(eur) > Cents(bounds.PoolEUR) {
+		if Cents(eur) > Cents(bounds.PoolEUR)-Cents(funded) {
 			return 0, 0, &PoolSpentError{Funded: funded}
 		}
 	}
