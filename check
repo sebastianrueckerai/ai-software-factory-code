@@ -30,7 +30,7 @@ echo $$ >"$lock"
 if [ "${1:-}" = test ]; then
   : "${2:?usage: bash check test <suite> [<name>]}" "${CHECK_REPORT:?bash check test writes its JUnit report to the file CHECK_REPORT names}"
   run=(go run gotest.tools/gotestsum@v1.13.0 --junitfile "$CHECK_REPORT" -- -count=1)
-  [ -n "${3:-}" ] && run+=(-run "^$3\$")
+  [ -n "${3:-}" ] && run+=(-run "^${3//\//\$/^}\$")
   exec scripts/pg-test.sh "${run[@]}" "$2"
 fi
 go vet ./...
