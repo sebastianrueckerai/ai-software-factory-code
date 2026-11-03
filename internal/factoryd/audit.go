@@ -304,5 +304,5 @@ func (r *Runner) auditFact(ctx context.Context, t Task, pr PullRequest, commit s
 		detail["ran"], detail["verdict"], detail["reason"] = false, "", textutil.Truncate(res.Findings[i].Why, maxFactReason)
 	}
 	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventGateAudit,
-		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail, IdentityKey: identityKey(EventGateAudit, commit, strconv.Itoa(round))})
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail, IdentityKey: identityKey(EventGateAudit, t.ID, commit, strconv.Itoa(round))})
 }

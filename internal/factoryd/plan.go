@@ -1912,7 +1912,22 @@ func (t *taskRun) planLoop() (string, error) {
 	// newer than it ask for changes
 	floor := t.escalation
 	stopsAwaited := t.replan < versionReplan
+	// named are the findings the last ask named; waited: the pass before
+	// was a wait, whose answer the next pass weighs (versionCases)
+	var named []string
+	waited := false
 	for {
+		if t.cases >= versionCases {
+			// the draw is the row's, read before every cap check, an
+			// extend made while a session ran included
+			t.readRaise(&u)
+			if waited && t.planAsksAgain(u) {
+				// the answer bought nothing: its words wait for the session
+				// a draw starts, and the ask again names what the planner left
+				carried, findings = findings, named
+			}
+			waited = false
+		}
 		if !wait && ask == "" && u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() {
 			ask = t.sessionCapCard(capReached, reason, findings)
 			if healed {
@@ -1927,11 +1942,32 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		healed = false
 		if wait {
-			final, why, next, answered := t.awaitPlan(&ref, floor, onCap)
+			named = findings
+			var final, why string
+			var next []string
+			answered := false
+			// rung 0 took the stop: no one was asked (versionCases)
+			if t.resolution == nil {
+				final, why, next, answered = t.awaitPlan(&ref, floor, onCap)
+			}
 			if final != "" {
 				return t.finish(final, why)
 			}
 			findings, wait, carried = append(carried, next...), false, nil
+			if t.cases >= versionCases {
+				if len(findings) == 0 {
+					// an answer with no words keeps what the planner left
+					findings = named
+				}
+				switch res := t.takeResolution(); {
+				case res == nil:
+				case res.Action == ActSuccessor:
+					return t.finish(t.closeIntoSuccessor(strings.Join(findings, "\n")))
+				case res.Action == ActClose:
+					// the close of the plan's issue ends the run
+					wait = true
+				}
+			}
 			// an answer that confirmed the revision files its cards with
 			// no planner session; one with a writer's change request or
 			// words a planner must weave in starts the session below. A
@@ -1958,7 +1994,7 @@ func (t *taskRun) planLoop() (string, error) {
 			// (versionPlannerRetry); an answer on a cap's wait that ended
 			// on its own buys nothing
 			if t.cases >= versionCases {
-				t.readRaise(&u)
+				waited = !wait
 			} else if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() && !onCap.over() {
 				t.grant(&u)
 			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !onCap.over() {
@@ -2152,6 +2188,14 @@ func (t *taskRun) plannerTime(u TaskUsage) (short, retry bool) {
 	return t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least, u.RetryTime == 0 && t.cfg.WallClockCap/2 >= least
 }
 
+// planAsksAgain tells whether the plan loop's next pass asks again for
+// want of a draw (versionCases): at the session cap, or out of agent time
+// with no automatic session to come.
+func (t *taskRun) planAsksAgain(u TaskUsage) bool {
+	short, retry := t.plannerTime(u)
+	return u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.plannerRetry >= versionPlannerRetry && short && !retry
+}
+
 // plannerOutOfTime opens the question of a plan card whose planner is out
 // of time with no automatic session to come.
 const plannerOutOfTime = "the planner used its agent time"
@@ -2232,9 +2276,14 @@ func (t *taskRun) planComments(floor int64) (out []string, heard []int64) {
 			detail["ignored"] = "older than the plan or question the planner answered"
 		case t.replan >= versionReplan && t.replanBy != "" && sig.Author == t.replanBy && strings.TrimSpace(sig.Body) == strings.TrimSpace(t.replanNote):
 			detail["ignored"] = "the replan's own note"
+		case t.cases >= versionCases && slices.Contains(t.planTaken, sig.Comment):
+			detail["ignored"] = "the comment of an answer the plan took"
 		default:
 			out = append(out, "writer "+sig.Author+" asked for changes to the plan: "+sig.Body)
 			heard = append(heard, sig.Comment)
+			if t.cases >= versionCases {
+				t.planTaken = append(t.planTaken, sig.Comment)
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "signal", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record signal", "error", err)
@@ -2263,6 +2312,29 @@ func (t *taskRun) planCommentsWhole(floor int64) (final, why string, out []strin
 	return final, why, out
 }
 
+// planResolution takes the resolutions of the case the plan waits on
+// signalled so far (versionCases), as awaitAnswer takes the card's:
+// another case's is dropped, as one rung 0 resolved in place. A
+// resolution's note is a finding unless the webhook's copy of its comment
+// came first; ok: one came.
+func (t *taskRun) planResolution() (notes []string, ok bool) {
+	var done TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
+		if c := done.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID {
+			res := c.Res
+			t.resolution, ok = &res, true
+			if note := strings.TrimSpace(res.Note); note != "" && (c.Comment == 0 || !slices.Contains(t.planTaken, c.Comment)) {
+				notes = append(notes, "writer "+c.By+" asked for changes to the plan: "+note)
+			}
+			if c.Comment != 0 {
+				t.planTaken = append(t.planTaken, c.Comment)
+			}
+		}
+		done = TaskSignal{}
+	}
+	return notes, ok
+}
+
 // planEnded takes a close of the issue signalled so far: the task's end
 // before the plan filed its cards.
 func (t *taskRun) planEnded() (final, why string, ok bool) {
@@ -2280,18 +2352,28 @@ func (t *taskRun) planEnded() (final, why string, ok bool) {
 // the rest of its burst (versionPlanBurst), or the answer that leaves no
 // question of the revision open (versionPlanAnswers), goes back to the
 // planner, as does the end of onCap, a wait on a cap, on its own
-// (versionDayCap).
+// (versionDayCap). The resolution of the case the plan waits on ends the
+// wait at once (versionCases), taken as t.resolution, its note a finding.
 func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, why string, findings []string, answered bool) {
 	onCap.start(t)
 	defer onCap.stop()
+	cases := t.cases >= versionCases
 	wake := []string{SignalIssueClosed, SignalHumanComment}
 	if t.planAnswers >= versionPlanAnswers {
 		wake = append(wake, SignalPlanAnswered)
 	}
+	if cases {
+		wake = append(wake, SignalCaseResolved)
+	}
 	answered = false
+	resolved := false
 	pass := func() (heard []int64, stop bool) {
 		if final, why, stop = t.planEnded(); stop {
 			return nil, true
+		}
+		if cases {
+			notes, ok := t.planResolution()
+			findings, resolved = append(findings, notes...), resolved || ok
 		}
 		ok, err := t.planAnswered(ref)
 		if err != nil {
@@ -2311,13 +2393,13 @@ func (t *taskRun) awaitPlan(ref *PlanRef, floor int64, onCap *capWait) (final, w
 		onCap.add(sel)
 		sel.Select(t.ctx)
 		heard, stop := pass()
-		if stop || len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
+		if stop || !resolved && len(heard) > 0 && t.planBurst >= versionPlanBurst && t.awaitBurst(wake, pass, heard) {
 			if final != "" {
 				return final, why, nil, false
 			}
 			return "", "", findings, answered
 		}
-		if answered || len(findings) > 0 || onCap.over() {
+		if answered || len(findings) > 0 || resolved || onCap.over() {
 			return "", "", findings, answered
 		}
 	}
@@ -3055,8 +3137,15 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // which pokes no one, and its answer resolves the ask's case.
 func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
 	ask, same, err := r.confirms(ctx, t, p)
-	if err != nil || !ask && (same == 0 || same == revision) {
+	switch {
+	case err != nil:
 		return err
+	case same == revision:
+		// confirmed already: by this filing's own answer, whose row an
+		// earlier try may not have written, or by a human
+		return r.confirmedRow(ctx, t, revision)
+	case !ask && same == 0:
+		return nil
 	}
 	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
@@ -3082,15 +3171,29 @@ func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Pl
 	}
 	var stale ErrStalePlan
 	switch err := storePlanAnswers(ctx, r.store, t.ID, revision, []PlanAnswer{{Idx: idx, Text: answer, Decision: DecisionConfirm}}, FactoryDecider); {
-	case errors.Is(err, ErrAnswered), errors.As(err, &stale):
-		// answered by an earlier try, or a newer revision asks its own
-		return nil
-	case err != nil:
+	case errors.As(err, &stale):
+		return nil // a newer revision asks its own
+	case err != nil && !errors.Is(err, ErrAnswered):
 		return err
 	}
-	r.timeline.RecordRow(ctx, t.ID, EventPlanQuestionAnswered, FactoryDecider, ViaFactoryd,
-		map[string]any{"revision": revision, "index": idx, "answer": answer, "decision": DecisionConfirm})
-	return nil
+	return r.confirmedRow(ctx, t, revision)
+}
+
+// confirmedRow writes the plan_question_answered row of revision's
+// confirmation when factoryd answered it, keyed so that every try writes
+// it once; a human's answer has the console's row.
+func (r *Runner) confirmedRow(ctx context.Context, t Task, revision int) error {
+	idx, ok, err := r.store.ConfirmationIndex(ctx, t.ID, revision)
+	if err != nil || !ok {
+		return err
+	}
+	qs, err := r.store.PlanQuestions(ctx, t.ID, revision)
+	if err != nil || idx > len(qs) || qs[idx-1].AnsweredBy != FactoryDecider {
+		return err
+	}
+	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventPlanQuestionAnswered,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"revision": revision, "index": idx, "answer": qs[idx-1].Answer, "decision": DecisionConfirm},
+		IdentityKey: identityKey(EventPlanQuestionAnswered, t.ID, strconv.Itoa(revision), strconv.Itoa(idx))})
 }
 
 // confirms reports whether plan p of task t asks the confirmation: it

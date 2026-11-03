@@ -222,9 +222,12 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 	t.Run("#851_planner_still_asks_the_human", func(t *testing.T) {
 		h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+		start := h.env.Now()
 		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
 			row := h.rowUsage
-			row.RaisedTime = 5 * time.Minute
+			if h.env.Now().Sub(start) >= time.Hour {
+				row.RaisedTime = 5 * time.Minute // the extend, made with the comment
+			}
 			return row, nil
 		})
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "file what you have", Comment: 801})

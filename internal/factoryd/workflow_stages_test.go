@@ -1254,6 +1254,29 @@ func TestStagesAuditClearPassesToTheAutoMerge(t *testing.T) {
 	}
 }
 
+// The audit's sequential call, a run from before audit-beside, is given
+// the stages' pass as its round: the review's concerns send c1 back to
+// the agent before the audit stage, and the audit of c2 runs in the
+// second pass.
+func TestStagesSequentialAuditTakesTheStagesRound(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, withAudit), func(g *gateHarness) {
+		g.reviews = []Review{{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, {Verdict: "approve", Summary: "fine"}}
+	})
+	g.env.OnGetVersion("audit-beside", workflow.DefaultVersion, versionAuditBeside).Return(workflow.DefaultVersion)
+	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if slices.Contains(g.steps, "audit c1") || !slices.Contains(g.steps, "audit c2") || len(g.auditGates) != 1 || g.auditGates[0].Beside {
+		t.Fatalf("steps %q, audit gates %+v; want c2's audit alone, after the checks", g.steps, g.auditGates)
+	}
+	if !slices.Equal(g.auditRounds, []int{2}) {
+		t.Fatalf("audit rounds %v, want the second pass's", g.auditRounds)
+	}
+}
+
 // Audit findings go to the card beside the review, never to the agent:
 // one session, the card with the audit's section and why a human.
 func TestStagesAuditFindingsGoToTheCardWithTheReview(t *testing.T) {

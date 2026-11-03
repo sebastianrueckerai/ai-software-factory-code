@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"net/http"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -140,7 +141,7 @@ func TestDivideConquerReviewFacts(t *testing.T) {
 		if row.TaskID != "t1" || row.Repository != "sf/repo" || row.IssueNumber != 4 {
 			t.Fatalf("row %d = %+v, want task t1's card", i, row)
 		}
-		if key := fmt.Sprintf("%s c1 %d", EventModelReview, i+1); row.IdentityKey != key {
+		if key := fmt.Sprintf("%s t1 c1 %d", EventModelReview, i+1); row.IdentityKey != key {
 			t.Fatalf("row %d identity = %q, want %q", i, row.IdentityKey, key)
 		}
 		if row.Detail["pr"] != int64(9) || row.Detail["commit"] != "c1" || row.Detail["round"] != i+1 || row.Detail["model"] != "big" {
@@ -209,7 +210,7 @@ func TestDivideConquerSessionReviewRetries(t *testing.T) {
 		t.Fatalf("model_review rows = %d (%v), want the replayed round once and its successor once", len(rows), rows)
 	}
 	for i, round := range []string{"1", "2"} {
-		if rows[i].IdentityKey != EventModelReview+" c1 "+round {
+		if rows[i].IdentityKey != EventModelReview+" t1 c1 "+round {
 			t.Fatalf("row %d identity = %q, want round %s of c1", i, rows[i].IdentityKey, round)
 		}
 	}
@@ -300,9 +301,9 @@ func TestDivideConquerReviewAttemptEvidence(t *testing.T) {
 		reviewed bool
 		verdict  string
 	}{
-		{EventModelReview + " c1 1", true, "concerns"},
-		{EventModelReview + " c1 2", true, "concerns"},
-		{EventModelReview + " c2 1", false, ""},
+		{EventModelReview + " t1 c1 1", true, "concerns"},
+		{EventModelReview + " t1 c1 2", true, "concerns"},
+		{EventModelReview + " t1 c2 1", false, ""},
 	}
 	for i, w := range want {
 		row := rows[i]
@@ -435,4 +436,41 @@ func eventsOfKind(store *fakeStore, kind string) []Event {
 		}
 	}
 	return out
+}
+
+// Two cards on one head, a successor carrying its card's pull request,
+// each keep their own review and audit rows of one round: the facts' keys
+// name the card.
+func TestReviewAndAuditFactsAreEachCards(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}, true)
+	store := r.store.(*fakeStore)
+	succ := gateTask
+	succ.ID, succ.IssueNumber = "t2", 5
+	if err := store.CreateTask(context.Background(), succ); err != nil {
+		t.Fatal(err)
+	}
+	for _, id := range []string{"t1", "t2"} {
+		if _, err := execActivity(t, r, ActivityGateAudit, id, PullRequest{Number: 9}, "c1", GateResults{}, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"approve","summary":"fine","findings":[]}`}).srv(t).URL)
+	for _, id := range []string{"t1", "t2"} {
+		if _, err := execActivity(t, r, ActivityModelReview, id, PullRequest{Number: 9}, "c1", GateResults{}, nil, 1); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for kind, want := range map[string][]string{
+		EventGateAudit:   {"gate_audit t1 c1 1", "gate_audit t2 c1 1"},
+		EventModelReview: {"model_review t1 c1 1", "model_review t2 c1 1"},
+	} {
+		var keys []string
+		for _, row := range eventsOfKind(store, kind) {
+			keys = append(keys, row.IdentityKey)
+		}
+		if !slices.Equal(keys, want) {
+			t.Fatalf("%s keys %q, want %q", kind, keys, want)
+		}
+	}
 }

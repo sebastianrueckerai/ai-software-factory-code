@@ -307,7 +307,7 @@ func accDriveReviews(t *testing.T, s *factoryd.PGStore, db *sql.DB) {
 		verdict  string
 	}{{true, "concerns"}, {false, ""}, {false, ""}} {
 		row := three[i]
-		if row.Identity != "model_review c1 "+string('1'+rune(i)) || row.Detail["round"] != float64(i+1) || row.Detail["pr"] != float64(9) ||
+		if row.Identity != "model_review t-rev-1 c1 "+string('1'+rune(i)) || row.Detail["round"] != float64(i+1) || row.Detail["pr"] != float64(9) ||
 			row.Detail["reviewed"] != want.reviewed || row.Detail["verdict"] != want.verdict || (row.Detail["reason"] != nil) == want.reviewed {
 			t.Errorf("round %d row %+v, want reviewed %v with verdict %q", i+1, row, want.reviewed, want.verdict)
 		}
@@ -329,7 +329,7 @@ func accDriveReviews(t *testing.T, s *factoryd.PGStore, db *sql.DB) {
 	}
 	// a keyed row with no classification: unknown evidence
 	accRecord(t, s, factoryd.Event{Repository: "sf/code", TaskID: "t-rev-1", IssueNumber: 81, Kind: factoryd.EventModelReview,
-		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, IdentityKey: "model_review c3 1"}, time.Now().UTC())
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, IdentityKey: "model_review t-rev-1 c3 1"}, time.Now().UTC())
 
 }
 

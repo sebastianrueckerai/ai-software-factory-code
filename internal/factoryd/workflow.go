@@ -1530,6 +1530,10 @@ type taskRun struct {
 	// the escalations and information requests this run asked (answerOf)
 	answerKeys []answerKey
 	anchors    []anchor
+	// planTaken are the answer comments the plan loop took (versionCases):
+	// the other copy of one, the webhook's or its case's, is no second
+	// answer
+	planTaken []int64
 	// cases: every stop is a case, and the wait takes its resolution
 	// (versionCases). caseID is the case the run waits on, 0 for none.
 	// resolution is the one the last wait took, which the waits' callers

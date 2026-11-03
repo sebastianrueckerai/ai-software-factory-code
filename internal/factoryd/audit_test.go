@@ -485,9 +485,10 @@ func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 }
 
 // Every audit attempt is a gate_audit row beside its timeline line, keyed
-// by the head and the stages' round: a clear audit ran, a second attempt
-// of one round on one head writes no second row, a second round adds its
-// own, and an audit the card cannot pay for did not run and says why.
+// by the card, the head and the stages' round: a clear audit ran, a
+// second attempt of one round on one head writes no second row, a second
+// round adds its own, and an audit the card cannot pay for did not run
+// and says why.
 func TestAuditRecordsItsAttemptAsAnEvent(t *testing.T) {
 	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
 	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}, true)
@@ -503,7 +504,7 @@ func TestAuditRecordsItsAttemptAsAnEvent(t *testing.T) {
 		t.Fatalf("gate_audit rows = %d (%+v), want one per round", len(rows), rows)
 	}
 	for i, row := range rows {
-		if key := fmt.Sprintf("gate_audit c1 %d", i+1); row.IdentityKey != key || row.TaskID != "t1" || row.Repository != "sf/repo" || row.IssueNumber != 4 ||
+		if key := fmt.Sprintf("gate_audit t1 c1 %d", i+1); row.IdentityKey != key || row.TaskID != "t1" || row.Repository != "sf/repo" || row.IssueNumber != 4 ||
 			row.Actor != FactoryDecider || row.Via != ViaFactoryd {
 			t.Fatalf("row %d = %+v, want t1's card keyed %q", i, row, key)
 		}
@@ -527,7 +528,23 @@ func TestAuditRecordsItsAttemptAsAnEvent(t *testing.T) {
 	want := map[string]any{"pr": int64(9), "commit": "c1", "model": "big", "ran": false, "verdict": "",
 		"reason": "the audit did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. " +
 			"Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."}
-	if len(rows) != 1 || rows[0].IdentityKey != "gate_audit c1 1" || !reflect.DeepEqual(rows[0].Detail, want) {
+	if len(rows) != 1 || rows[0].IdentityKey != "gate_audit t1 c1 1" || !reflect.DeepEqual(rows[0].Detail, want) {
 		t.Fatalf("gate_audit rows = %+v, want one not run: %v", rows, want)
+	}
+}
+
+// A not-run audit's reason is cut at maxFactReason: a head named past 500
+// bytes makes its why longer, and the row keeps its first 500 bytes and
+// the ellipsis.
+func TestAuditFactCutsItsReason(t *testing.T) {
+	r, _ := newAuditRunner(t, &gateForgejo{diff: "d"}, &fakeLiteLLM{content: `{"verdict":"clear"}`}, true)
+	head := "c2, " + strings.Repeat("a head named in words, ", 30) // words, which the scrubber leaves
+	if _, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, head, GateResults{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	why := "the audit did not run: pull request #9's head moved to c1 after its checks passed on " + head
+	rows := eventsOfKind(r.store.(*fakeStore), EventGateAudit)
+	if len(rows) != 1 || rows[0].Detail["ran"] != false || rows[0].Detail["reason"] != why[:maxFactReason]+"…" {
+		t.Fatalf("gate_audit rows %+v, want one not run with the reason cut to %d bytes", rows, maxFactReason)
 	}
 }
