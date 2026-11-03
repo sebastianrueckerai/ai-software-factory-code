@@ -846,6 +846,36 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}
 }
 
+// A grant on a revision that already holds a refused grant's dues files
+// its own dues: the delta round answers the second grant, as "grant it
+// again" on the refused round's comment says.
+func TestGrantAgainOnTheSameRevision(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{store: s}
+	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 40); err != nil || n != 1 {
+		t.Fatalf("the first grant = %d, %v", n, err)
+	}
+	first, err := r.undraftedDues(ctx, "t-plan")
+	if err != nil || len(first) != 1 {
+		t.Fatalf("dues after the first grant = %+v, %v", first, err)
+	}
+	r.markCatches(ctx, "t-plan", first[0].Revision, CatchDeltaRefused, first)
+	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 42); err != nil || n != 1 {
+		t.Fatalf("the second grant = %d, %v", n, err)
+	}
+	if due, err := r.undraftedDues(ctx, "t-plan"); err != nil || len(due) != 1 || due[0].Detail != "c3 grant 42" {
+		t.Fatalf("dues after the second grant = %+v, %v, want c3 grant 42", due, err)
+	}
+}
+
 // The close tells a judgement that never happened from one that failed:
 // with the cards final, criteria without a row file one criteria_rerun
 // ask naming the integration card's review and its note, the unmet ones
