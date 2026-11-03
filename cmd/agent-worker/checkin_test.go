@@ -65,10 +65,14 @@ func decodeTool(t *testing.T, body string) toolAnswer {
 // /message does.
 func TestToolEndpointAuth(t *testing.T) {
 	ws := t.TempDir()
-	if err := os.WriteFile(filepath.Join(ws, "notes.md"), []byte("the note\n"), 0o600); err != nil {
+	if err := os.MkdirAll(filepath.Join(ws, "repo"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(ws, "repo", "notes.md"), []byte("the note\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	h := checkinHandler(t, newCheckinServe(ws))
+	// the path as grep prints it, relative to the repo
 	body := toolBody("read_file", `"path":"notes.md"`)
 	for name, auth := range map[string]string{"no bearer": "", "wrong bearer": "Bearer session-secreT", "the hash itself": "Bearer " + testMessageHash} {
 		if code, out := postTool(t, h, auth, body); code != http.StatusUnauthorized || out != "unauthorized\n" {
@@ -156,6 +160,16 @@ func TestToolExecutes(t *testing.T) {
 	}
 	if got := decodeTool(t, out); !strings.Contains(got.Output, "main.go:3:") || !strings.Contains(got.Output, "SessionInput") || got.Cut {
 		t.Fatalf("grep output = %q cut %v, want main.go's line 3", got.Output, got.Cut)
+	}
+	// a regex finds nothing in a fixed-string grep, and the miss is said
+	code, out = postTool(t, h, "Bearer session-secret", toolBody("grep", `"pattern":"Session.*"`))
+	if got := decodeTool(t, out); code != http.StatusOK || got.Output != `no line matches the fixed string "Session.*" as a whole word at HEAD` {
+		t.Fatalf("grep miss: status %d, output %q, want the miss said", code, got.Output)
+	}
+	// read_file takes the path grep printed
+	code, out = postTool(t, h, "Bearer session-secret", toolBody("read_file", `"path":"main.go"`))
+	if got := decodeTool(t, out); code != http.StatusOK || !strings.Contains(got.Output, "var SessionInput struct{}") {
+		t.Fatalf("read_file main.go: status %d, output %q, want the file grep named", code, got.Output)
 	}
 	code, out = postTool(t, h, "Bearer session-secret", toolBody("git_log", `"args":"-n 1"`))
 	if code != http.StatusOK {

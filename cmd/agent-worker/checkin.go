@@ -216,19 +216,6 @@ func (c *checkinServe) tool(ctx context.Context, name string, arg func(string) s
 // repo is the workspace's clone, where the git tools and run work.
 func (c *checkinServe) repo() string { return filepath.Join(c.ws, "repo") }
 
-// under resolves path under the workspace root, refusing one that is
-// absolute or climbs out of it.
-func (c *checkinServe) under(path string) (string, error) {
-	if filepath.IsAbs(path) {
-		return "", errOutside
-	}
-	p := filepath.Clean(filepath.Join(c.ws, path))
-	if !strings.HasPrefix(p, c.ws+string(filepath.Separator)) {
-		return "", errOutside
-	}
-	return p, nil
-}
-
 // serveRead answers {"path"} with that workspace file's bytes as read
 // returns them, typed as they sniff; a refusal is read's sentence and
 // status. The body holds a path the gateway admits, 4096 bytes, even with
@@ -338,17 +325,10 @@ func (c *checkinServe) read(path string, max int, dir string) ([]byte, int, erro
 	return b, http.StatusOK, nil
 }
 
+// readFile reads the file at path as grep prints it, relative to the
+// repo, or absolute inside the workspace (read).
 func (c *checkinServe) readFile(path string) (string, bool, error) {
-	p, err := c.under(path)
-	if err != nil {
-		return "", false, err
-	}
-	f, err := os.Open(p) // #nosec G304 -- under() keeps p inside the workspace
-	if err != nil {
-		return "", false, err
-	}
-	defer f.Close() // #nosec G307 -- a read-only file's close failure is not worth an answer
-	b, err := io.ReadAll(io.LimitReader(f, checkinOutputCap+1))
+	b, _, err := c.read(path, checkinOutputCap, path+" is a directory: grep it or name a file in it")
 	if err != nil {
 		return "", false, err
 	}
@@ -376,7 +356,8 @@ func (c *checkinServe) grep(pattern, ref, path string) (string, bool, error) {
 	out, cut, err := c.git(args...)
 	var ee *exec.ExitError
 	if errors.As(err, &ee) && ee.ExitCode() == 1 {
-		return "", false, nil // git grep's no-match exit is an answer
+		// git grep's no-match exit is an answer, said as one
+		return fmt.Sprintf("no line matches the fixed string %q as a whole word at %s", pattern, ref), false, nil
 	}
 	return out, cut, err
 }

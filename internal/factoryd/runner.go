@@ -1327,6 +1327,9 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 				found = append(found, line)
 			}
 		}
+		if len(found) == 0 {
+			return fmt.Sprintf("no line of the record holds %q (the match is exact and case-sensitive)", query), false, nil
+		}
 		out, cut := cutToolOutput(strings.Join(found, "\n"))
 		return out, cut, nil
 	case "transcript_read":
