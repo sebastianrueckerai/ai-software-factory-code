@@ -1162,7 +1162,7 @@ type rig struct {
 	// writer lists' map (writers.by)
 	repoWriters map[string][]string
 	signalErr   error
-	retried     []string // "task by user" per RetryPlanCard
+	retried     []string // "task by user" per RetryCard
 	retryErr    error
 	handed      []string // "task by user" per GoCard
 	goErr       error
@@ -1363,7 +1363,7 @@ func newRig(t *testing.T) *rig {
 			r.dismissed = append(r.dismissed, repository+"@"+sha+" by "+by)
 			return r.dismissErr
 		},
-		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {
+		RetryCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
 		},

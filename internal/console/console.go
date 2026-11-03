@@ -231,10 +231,10 @@ type Config struct {
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.
 	ConfirmDeliveredCriteria func(ctx context.Context, id, by, line string) (int, error)
-	// RetryPlanCard files failed plan card taskID again for by and returns
-	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
-	// is factoryd.ErrNoRetry.
-	RetryPlanCard func(ctx context.Context, taskID, by string) (int64, error)
+	// RetryCard files failed card taskID again for by and returns the
+	// replacement's issue (factoryd's Runner.RetryCard): a refusal is
+	// factoryd.ErrNoRetry.
+	RetryCard func(ctx context.Context, taskID, by string) (int64, error)
 	// GoCard files human card taskID's work as an agent card for by and
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.

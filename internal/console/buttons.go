@@ -6,7 +6,7 @@ import (
 	"strconv"
 )
 
-// retryCard files a failed card of a plan again (doRetry).
+// retryCard files a failed card again (doRetry).
 func (c *Console) retryCard(w http.ResponseWriter, r *http.Request) {
 	c.press(w, r, c.doRetry)
 }

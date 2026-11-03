@@ -676,11 +676,11 @@ type Store interface {
 	// Dependencies are the cards task id depends on, each with its
 	// status, those not done first.
 	Dependencies(ctx context.Context, id string) ([]Dependency, error)
-	// ReplaceFailedCard puts plan card t in failed card id's place in one
-	// transaction: id lets go of its key, which t holds; t is inserted with
-	// every dependency of id, and every task waiting on id waits on t.
-	// False, and nothing changed, when id is no failed card holding the
-	// key.
+	// ReplaceFailedCard puts card t in failed card id's place in one
+	// transaction: id lets go of its plan key, which t holds, if any; t is
+	// inserted with every dependency of id, and every task waiting on id
+	// waits on t. False, and nothing changed, when id is no failed card
+	// holding t's key (none outside a plan) or t exists already.
 	ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error)
 	// MoveDependents points every card of plan to that waits on from at to
 	// instead, and answers those cards; a card that waits on to already

@@ -197,7 +197,7 @@ func (s *fakeStore) Dependents(ctx context.Context, id string) ([]Dependency, er
 
 func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
 	old := s.tasks[id]
-	if old.Status != "failed" || old.PlanKey == "" || old.PlanKey != t.PlanKey {
+	if _, exists := s.tasks[t.ID]; exists || old.Status != "failed" || old.PlanKey != t.PlanKey {
 		return false, nil
 	}
 	old.PlanKey = ""

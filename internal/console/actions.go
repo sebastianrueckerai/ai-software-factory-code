@@ -522,7 +522,7 @@ func pinnedImage(p factoryd.Project, image string) (string, error) {
 		p.Name, image, strings.Join(slices.Sorted(maps.Keys(p.Images)), ", ")))
 }
 
-// doRetry files failed plan card id again (factoryd's RetryPlanCard):
+// doRetry files failed card id again (factoryd's RetryCard):
 // the replacement is queued on the direct track and starts once a work
 // slot is free.
 func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, error) {
@@ -530,7 +530,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	if err != nil {
 		return "", err
 	}
-	issue, err := c.cfg.RetryPlanCard(ctx, t.ID, a.s.user)
+	issue, err := c.cfg.RetryCard(ctx, t.ID, a.s.user)
 	var no factoryd.ErrNoRetry
 	switch {
 	case errors.As(err, &no):
