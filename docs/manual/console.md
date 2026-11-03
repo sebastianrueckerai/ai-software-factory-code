@@ -203,9 +203,14 @@ decimals: a task's model calls cost fractions of a cent.
   factory's manual, rendered from the code at call time; its states,
   gates and section on sandbox images come from `internal/manual`, which
   the workers' `manual` tool reads too), `board`,
-  `card` (the card in full, with a pointer to the read holding its
-  reviews, audit, checks, plan and sessions), `history`, `card_history`,
-  `costs`, `diff`, `plan` (a plan's newest revision: its rows with their
+  `card` (the card in full, led by its life: where it stands, one line
+  per step with its number, like steps in a row folded into one, and the
+  flags the steps show; with a pointer to the read holding its reviews,
+  audit, checks, plan and sessions), `history`, `card_history`,
+  `card_step` (one step of the card's life in full, by its number),
+  `board_digest` (the board in a few lines: the live cards with their
+  flags, the queue with what holds each card, the work slots, the open
+  plans and the caps), `costs`, `diff`, `plan` (a plan's newest revision: its rows with their
   issues and the filed cards' states, and for a revision without questions
   the earlier revision's answers it was built from), `pr` (the newest checks' jobs, the
   model reviews, the audit, the files' diff stat, the diff on request),
