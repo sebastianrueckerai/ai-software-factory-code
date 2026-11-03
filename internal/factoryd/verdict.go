@@ -352,6 +352,16 @@ func integrationCard(ctx context.Context, store Store, parent string, p Plan) (T
 	return cards[i], nil
 }
 
+// judgedByPerson: every criterion of p stands on an approver's row, a
+// waiver or a confirmation, so a plan whose integration card ended off
+// main closes on the person's word: no review of that card judged it.
+func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
+	return !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool {
+		v, ok := standingRow(rows, c.ID)
+		return !ok || v.Source != "approver"
+	})
+}
+
 // standingRow is a criterion's standing verdict row: the approver's over
 // the review's; false when no row holds one.
 func standingRow(rows []CriterionVerdict, criterion string) (CriterionVerdict, bool) {
@@ -936,7 +946,8 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		if r.planClosed(ctx, parent) || (integration.Status != "merged" && integration.Status != "done") || !r.planAtRest(ctx, t) {
+		reached := integration.Status == "merged" || integration.Status == "done"
+		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
 		for _, kind := range criteriaKinds {

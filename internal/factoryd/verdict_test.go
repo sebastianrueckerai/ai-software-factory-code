@@ -1395,6 +1395,23 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 			t.Errorf("integration card %s: plan_closed recorded %d times, want %d", status, got, want)
 		}
 	}
+
+	// a person's verdict on every criterion closes the plan of an
+	// integration card that ended off main; one still running holds it
+	for status, want := range map[string]int{"closed": 1, "failed": 1, "running": 0} {
+		s, objs, r := rig(status)
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{
+			{Criterion: "c1", Verdict: "waived", Kind: CriterionTest},
+			{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+			{Criterion: "c3", Verdict: "waived", Kind: CriterionInvariant},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		r.CriteriaPass(ctx)
+		if got := closed(objs); got != want {
+			t.Errorf("integration card %s, every criterion a person's: plan_closed recorded %d times, want %d", status, got, want)
+		}
+	}
 }
 
 // newRevision stores p as plan id's newest revision.
