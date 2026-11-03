@@ -148,6 +148,8 @@ type AcceptanceRig struct {
 	writers      map[string][]string
 	sessionFloor map[string]float64
 	autonomy     string
+	mergeRule    string
+	approvers    []string
 	fundedErr    error
 	spend        *factoryd.ProjectSpend
 }
@@ -179,7 +181,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
 		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
-		sessionFloor: map[string]float64{}}
+		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -1083,6 +1085,53 @@ func (a *AcceptanceRig) RetryApprovalBrief(_ context.Context, id int64) error {
 	return nil
 }
 
+// SetLoadedMergeRule installs the merge rule the policy in force holds
+// for the code project's own pull requests — auto completes the
+// full-autonomy pair with an autonomous chat level. A reload's
+// activation is its only honest caller.
+func (a *AcceptanceRig) SetLoadedMergeRule(rule string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.mergeRule = rule
+}
+
+// SetLoadedApprovers installs the approvers the policy in force names,
+// nil the shipped pair again. A reload's activation is its only honest
+// caller.
+func (a *AcceptanceRig) SetLoadedApprovers(logins []string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.approvers = logins
+}
+
+// SetLoadedChat installs the chat block the policy in force names, a
+// custom confirm list for one.
+func (a *AcceptanceRig) SetLoadedChat(chat *policy.ChatConfig) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.chat = chat
+}
+
+// AddProjectWriter seats login as a writer of the code project, a
+// member of its repository without the approvers' authority.
+func (a *AcceptanceRig) AddProjectWriter(login string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.writers["sf/code"] = append(a.writers["sf/code"], login)
+}
+
+// ExpireProposal moves the proposal named by token into the past, the
+// store's own expiry: the press that would answer it finds nothing.
+func (a *AcceptanceRig) ExpireProposal(token string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for _, p := range a.proposals {
+		if p.Token == token {
+			p.ExpiresAt = time.Now().Add(-time.Second)
+		}
+	}
+}
+
 // Events: the event spine in memory.
 
 // appendEventLocked stores e on the event spine with a.mu held: the
@@ -1492,8 +1541,11 @@ func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error
 
 func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	a.mu.Lock()
-	chat, pool, autonomy := a.chat, a.pool, a.autonomy
+	chat, pool, autonomy, mergeRule, approvers := a.chat, a.pool, a.autonomy, a.mergeRule, a.approvers
 	a.mu.Unlock()
+	if approvers == nil {
+		approvers = []string{"sebastian", "anna"}
+	}
 	stages := []policy.Stage{
 		{Name: "screening", OnFindings: "human", When: "outsider"},
 		{Name: "checks", OnFindings: "agent", Enabled: true},
@@ -1503,7 +1555,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 		"maintenance": {Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}},
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
 	}
-	projects := map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}}
+	projects := map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: mergeRule, Objects: "seed", Agents: "coder", Process: "maintenance"}}
 	// the loaded policy's own hold of the code project: its autonomy (an
 	// empty one is manual) and, when a reload activated it, its pool
 	code := projects[accProjectName]
@@ -1518,7 +1570,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 					Budget:          policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
 					Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/small"}}},
 					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
-					Approvers:       []string{"sebastian", "anna"},
+					Approvers:       approvers,
 					EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
 				Projects:  projects,
 				Processes: processes}},
