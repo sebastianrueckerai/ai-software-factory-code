@@ -250,6 +250,38 @@ func TestOneAnswerCommentEndsOneCase(t *testing.T) {
 	}
 }
 
+// An answer row that names its case resolves that case, not the newest
+// ask, and nothing when that case ended. A row with no case whose comment
+// already answered a case of the card (Act resolved it first) ends no
+// second one.
+func TestAnAnswerNamingItsCaseResolvesThatCase(t *testing.T) {
+	s := caseEventStore(t)
+	askAgent(t, s, "Which file should change?", 27001)
+	older := onlyOpenCase(t, s)
+	askCap(t, s, 27002)
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaConsole, map[string]any{"action": ActReplan, "case_id": older.ID, "comment": int64(27003)})
+	got := caseByID(t, s, older.ID)
+	want := &CaseResolution{By: "sebastian", Rung: 3, Action: ActReplan, Args: map[string]any{"answer": "", "comment": float64(27003)}}
+	if got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, want) {
+		t.Fatalf("the named case = %s, %+v; want resolved by %+v", got.Status, got.Resolution, want)
+	}
+	newer := onlyOpenCase(t, s)
+	recordCaseEvent(t, s, EventSessionGranted, "sebastian", ViaConsole, map[string]any{"action": ActExtend, "case_id": older.ID, "comment": int64(27004)})
+	if open := onlyOpenCase(t, s); open.ID != newer.ID {
+		t.Fatalf("open case = %d, want the newer ask %d left live", open.ID, newer.ID)
+	}
+	if err := s.ResolveCase(context.Background(), newer.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
+		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	askAgent(t, s, "Which test is flaky?", 27006)
+	third := onlyOpenCase(t, s)
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaWebhook, map[string]any{"comment": int64(27005)})
+	if open := onlyOpenCase(t, s); open.ID != third.ID {
+		t.Fatalf("open case = %d, want %d left live by the webhook's copy of an answered comment", open.ID, third.ID)
+	}
+}
+
 func TestASecondAskAfterAnAnswerOpensASecondCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)

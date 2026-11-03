@@ -1323,7 +1323,7 @@ func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
 
-func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution) error {
+func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep) error {
 	return nil
 }
 

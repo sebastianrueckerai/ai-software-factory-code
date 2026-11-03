@@ -214,10 +214,11 @@ func Offered(f CaseFacts, rung int) []Action {
 
 // refusal is why rung may not answer f with r by a, "" when it may: a's
 // rungs, its Applies, and the draw r makes. Money is drawn only on the
-// rungs that may fund. A draw is refused while the reads it is weighed
-// on failed, and after a draw that bought nothing, and drawWithin bounds
-// it by rung: every part against the pool and the card's bound, the money
-// for the budget against the ceiling.
+// rungs that may fund. A draw that buys sessions, agent time or budget is
+// refused while the reads it is weighed on failed, and after a draw that
+// bought nothing. drawWithin bounds it by rung: every part against the
+// pool and the card's bound, the money for the budget against the
+// ceiling, which a raise beside it lifts first.
 func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no rung %d", rung)
@@ -234,18 +235,23 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	}
 	fund, _ := ActionByName(ActFund)
 	unread := slices.IndexFunc(f.Partial, func(p string) bool { return p == "events" || p == "checks" })
+	buys := d.Sessions > 0 || d.AgentTime > 0 || budget > 0
 	switch {
 	case badDraw(d) || r.Fund != nil && badDraw(*r.Fund):
 		return "the draw has a part below 0 or an endless one"
 	case d.EUR > 0 && !fund.Rungs[rung]:
 		return fmt.Sprintf("%s may not draw money: %s may", who(rung), rungsText(fund.Rungs))
-	case unread >= 0:
+	case buys && unread >= 0:
 		return fmt.Sprintf("the card's %s could not be read, so a draw cannot be weighed against the last one: hand up", f.Partial[unread])
-	case boughtNothing(f):
+	case buys && boughtNothing(f):
 		return boughtNothingText(f)
 	}
 	if why := drawWithin(f, rung, d, false); why != "" || budget == 0 {
 		return why
+	}
+	if r.Action == ActRaiseCeiling {
+		raise, _ := r.Args["eur"].(float64)
+		f.CeilingEUR += raise
 	}
 	return drawWithin(f, rung, policy.Draw{EUR: budget}, true)
 }
@@ -325,10 +331,11 @@ func retryRefusal(d DepFact) string {
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
 // since, the head, the checks and the findings unchanged since it. A draw
-// whose row recorded no findings is weighed on the head and the checks.
+// whose row recorded no findings, or one on facts whose timeline could
+// not be read, is weighed on the head and the checks.
 func boughtNothing(f CaseFacts) bool {
 	return f.LastDrawAt != nil && !f.PushedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks &&
-		(f.DrawFindings == nil || slices.Equal(f.DrawFindings, f.Findings))
+		(f.DrawFindings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(f.DrawFindings, f.Findings))
 }
 
 // boughtNothingText is boughtNothing's refusal: the rung hands up, or

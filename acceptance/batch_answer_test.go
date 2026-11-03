@@ -696,7 +696,7 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, foun
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
 	panic("unused")
 }
-func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution) error {
+func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep) error {
 	panic("unused")
 }
 func (s *accBatchStore) WithdrawCase(ctx context.Context, id int64, reason string) error {

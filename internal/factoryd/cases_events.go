@@ -17,9 +17,9 @@ import (
 
 // casesFromEvent writes, inside the transaction tx that inserted event e,
 // what e does to its card's cases: an ask opens a case or appends a step
-// to it, an answer resolves the card's newest live ask, a withdrawal
-// withdraws it, a plan answer resolves its question's case, and a merge
-// request opens its merge case.
+// to it, an answer resolves the case it names or else the card's newest
+// live ask, a withdrawal withdraws it, a plan answer resolves its
+// question's case, and a merge request opens its merge case.
 func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 	if e.TaskID == "" {
 		return nil
@@ -30,14 +30,20 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return err
 	case EventQuestionAnswered, EventSessionGranted:
 		// a grant is the console's answer at a session cap, as
-		// question_answered is the webhook's: one row per answer comment
-		id, err := newestAskCase(ctx, tx, e.TaskID)
-		if id == 0 {
-			return err
+		// question_answered is the webhook's: one row per answer comment.
+		// Act's row names the case it resolved itself.
+		comment, _ := toInt(e.Detail["comment"])
+		id, named := toInt(e.Detail["case_id"])
+		if !named {
+			ask, err := answeredAsk(ctx, tx, e.TaskID, int64(comment))
+			if ask == 0 {
+				return err
+			}
+			id = int(ask)
 		}
 		answer, _ := e.Detail["answer"].(string)
-		comment, _ := toInt(e.Detail["comment"])
-		return caseEnded(resolveCase(ctx, tx, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer",
+		action, _ := e.Detail["action"].(string)
+		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, caseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
 		id, err := newestAskCase(ctx, tx, e.TaskID)
@@ -334,6 +340,21 @@ func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (int64, err
 		return 0, nil
 	}
 	return id, err
+}
+
+// answeredAsk is the case the answer comment comment (0 for none) of task
+// taskID ends when its row names none: the newest live ask, or none when
+// the comment answered a case already, as when Act resolved its case
+// before the webhook's copy of the comment came.
+func answeredAsk(ctx context.Context, q rowQuerier, taskID string, comment int64) (int64, error) {
+	if comment != 0 {
+		var answered bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM cases WHERE task_id = $1 AND NOT (`+caseLive+`)
+			AND resolution->'args'->>'comment' = $2::bigint::text)`, taskID, comment).Scan(&answered); err != nil || answered {
+			return 0, err
+		}
+	}
+	return newestAskCase(ctx, q, taskID)
 }
 
 // newestEndedCase is the id of task taskID's newest resolved or withdrawn

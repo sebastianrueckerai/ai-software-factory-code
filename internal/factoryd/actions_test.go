@@ -294,11 +294,12 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 		{"rung 2 raises within it", 2, raiseBy(8, nil), ""},
 		{"rung 2 raises within it and funds past it", 2, raiseBy(8, &policy.Draw{EUR: 5}), pool},
 		{"rung 2 raises past it", 2, raiseBy(12, nil), pool},
-		// budget 5 at a ceiling of 6: 2 more to the budget passes the
-		// ceiling, a raise of 3 goes to no budget
-		{"the human funds past the ceiling beside a raise", 3, raiseBy(3, &policy.Draw{EUR: 2}),
-			"2.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 6.00 EUR: raise the ceiling first"},
-		{"the human funds within the ceiling beside a raise", 3, raiseBy(3, &policy.Draw{EUR: 1}), ""},
+		// budget 5 at a ceiling of 6: the raise of 3 is written first, so a
+		// fund beside it meets a ceiling of 9, which 4 more fits and 5 more
+		// passes
+		{"the human funds past the raised ceiling", 3, raiseBy(3, &policy.Draw{EUR: 5}),
+			"5.00 EUR more takes the budget of 5.00 EUR past the card's ceiling of 9.00 EUR: raise the ceiling first"},
+		{"the human funds within the raised ceiling", 3, raiseBy(3, &policy.Draw{EUR: 4}), ""},
 		{"a negative part beside", 3, raiseBy(3, &policy.Draw{Sessions: -1, EUR: 1}), "the draw has a part below 0 or an endless one"},
 	} {
 		if got := raise.refusal(f, c.rung, c.r); got != c.want {

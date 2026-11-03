@@ -1265,7 +1265,7 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	return nil
 }
 
-func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution) error {
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
 	return nil
 }
 

@@ -74,6 +74,9 @@ const (
 	// SignalPolicyLoaded is the policy loader's wake of a card waiting on
 	// a cap (versionCapWait): a new policy version is in force.
 	SignalPolicyLoaded = "policy_loaded"
+	// SignalCaseResolved is Act's notice that the run's case is answered:
+	// TaskSignal's Case. A run with no receiver for it drops it.
+	SignalCaseResolved = "case_resolved"
 )
 
 // TaskSignal is a signal's payload: who acted, what they wrote, and on
@@ -92,6 +95,20 @@ type TaskSignal struct {
 	// and why it does not run on it ("" when it does).
 	Image   string `json:",omitempty"`
 	Refusal string `json:",omitempty"`
+	// Case is case_resolved's.
+	Case *CaseSignal `json:",omitempty"`
+}
+
+// CaseSignal is case_resolved's payload: the case, its resolution, who
+// resolved it on which rung, and the issue comment that carries the
+// answer (0 when none), so the webhook's copy of that comment is not a
+// second answer.
+type CaseSignal struct {
+	CaseID  int64
+	Rung    int
+	By      string
+	Res     Resolution
+	Comment int64
 }
 
 // Activity names, registered by Runner.RegisterActivities.

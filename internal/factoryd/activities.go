@@ -145,6 +145,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
+		ActivityEndCase:                     r.EndCase,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,

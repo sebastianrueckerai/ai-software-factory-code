@@ -806,7 +806,7 @@ type Store interface {
 	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
 	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
 	SetCaseStatus(ctx context.Context, id int64, status string) error
-	ResolveCase(ctx context.Context, id int64, r CaseResolution) error
+	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
 	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
@@ -1753,22 +1753,24 @@ func (e *CardCapError) Error() string {
 	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
 }
 
-// commitRow runs write in one transaction and publishes the row it wrote
-// once the transaction commits.
-func (s *PGStore) commitRow(ctx context.Context, write func(tx *sql.Tx) (Event, error)) error {
+// commitRows runs write in one transaction and publishes the rows it
+// wrote once the transaction commits.
+func (s *PGStore) commitRows(ctx context.Context, write func(tx *sql.Tx) ([]Event, error)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	e, err := write(tx)
+	rows, err := write(tx)
 	if err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
 		return err
 	}
-	s.publish(e)
+	for _, e := range rows {
+		s.publish(e)
+	}
 	return nil
 }
 
@@ -1778,9 +1780,10 @@ func (s *PGStore) commitRow(ctx context.Context, write func(tx *sql.Tx) (Event, 
 // else ceiling, the caller's policy cap, 0 for none. No task:
 // ErrNotFound.
 func (s *PGStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error) {
-	err = s.commitRow(ctx, func(tx *sql.Tx) (stored Event, err error) {
+	err = s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		var stored Event
 		from, to, stored, err = s.fundCard(ctx, tx, id, eur, ceiling, e)
-		return stored, err
+		return []Event{stored}, err
 	})
 	if err != nil {
 		return 0, 0, err
@@ -1825,9 +1828,10 @@ func (s *PGStore) fundCard(ctx context.Context, tx *sql.Tx, id string, eur, ceil
 // and its budget — and its line bound by lines, and writes e, its
 // card_extended row, in one transaction. No task: ErrNotFound.
 func (s *PGStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
-	err = s.commitRow(ctx, func(tx *sql.Tx) (stored Event, err error) {
+	err = s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		var stored Event
 		from, to, stored, err = s.extendCard(ctx, tx, id, d, lines, e)
-		return stored, err
+		return []Event{stored}, err
 	})
 	if err != nil {
 		return 0, 0, err
@@ -1867,26 +1871,33 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 // ceiling of no whole cent above zero is refused (ceilingRefusal). No
 // task: ErrNotFound.
 func (s *PGStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
-	if err := ceilingRefusal(eur); err != nil {
-		return err
-	}
-	return s.commitRow(ctx, func(tx *sql.Tx) (Event, error) {
-		var budget float64
-		err := tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = $2 WHERE id = $1 RETURNING budget_eur::float8, repository, issue_number`,
-			taskID, eur).Scan(&budget, &e.Repository, &e.IssueNumber)
-		if errors.Is(err, sql.ErrNoRows) {
-			return Event{}, ErrNotFound
-		}
-		if err != nil {
-			return Event{}, err
-		}
-		detail := map[string]any{}
-		maps.Copy(detail, e.Detail)
-		detail["ceiling_eur"], detail["amount_eur"], detail["from_eur"], detail["to_eur"] = eur, 0.0, budget, budget
-		e.TaskID, e.Kind, e.Detail = taskID, EventCardFunded, detail
-		stored, _, err := s.insertEvent(ctx, tx, e)
-		return stored, err
+	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		stored, err := s.setCeiling(ctx, tx, taskID, eur, e)
+		return []Event{stored}, err
 	})
+}
+
+// setCeiling is SetCeiling inside tx, which the caller commits before it
+// publishes stored.
+func (s *PGStore) setCeiling(ctx context.Context, tx *sql.Tx, taskID string, eur float64, e Event) (stored Event, err error) {
+	if err := ceilingRefusal(eur); err != nil {
+		return Event{}, err
+	}
+	var budget float64
+	err = tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = $2 WHERE id = $1 RETURNING budget_eur::float8, repository, issue_number`,
+		taskID, eur).Scan(&budget, &e.Repository, &e.IssueNumber)
+	if errors.Is(err, sql.ErrNoRows) {
+		return Event{}, ErrNotFound
+	}
+	if err != nil {
+		return Event{}, err
+	}
+	detail := map[string]any{}
+	maps.Copy(detail, e.Detail)
+	detail["ceiling_eur"], detail["amount_eur"], detail["from_eur"], detail["to_eur"] = eur, 0.0, budget, budget
+	e.TaskID, e.Kind, e.Detail = taskID, EventCardFunded, detail
+	stored, _, err = s.insertEvent(ctx, tx, e)
+	return stored, err
 }
 
 // ceilingRefusal refuses a ceiling that is no amount of whole cents above
