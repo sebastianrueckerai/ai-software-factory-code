@@ -4735,8 +4735,9 @@ func TestRunSessionCheckinLimitsExhausted(t *testing.T) {
 }
 
 // A start check-in never outlives its session: with 2 seconds of agent
-// time and the default 30-minute cap, the slow conversation ends at the
-// session's deadline as the time cap's human ask, not as a refused call's
+// time and the default 30-minute cap, the slow conversation's evidence
+// call is cut where the answer's reserve begins and its answer call at the
+// session's deadline, the time cap's human ask, not a refused call's
 // handover past the RunSession activity's own deadline.
 func TestRunSessionStartCheckinStopsAtTheSessionsDeadline(t *testing.T) {
 	runner, _, _, _, chat, _, _ := checkinRig(t,
@@ -4753,8 +4754,8 @@ func TestRunSessionStartCheckinStopsAtTheSessionsDeadline(t *testing.T) {
 	if had, err := time.ParseDuration(strings.TrimPrefix(res.CheckIn.Reason, checkinTimeCapStop+" after ")); err != nil || had > 2*time.Second {
 		t.Fatalf("the stop names %q, want at most the session's 2 seconds", res.CheckIn.Reason)
 	}
-	if took := time.Since(began); took > 10*time.Second || chat.calls != 1 {
-		t.Fatalf("took %s with %d calls: want the one call cut at the session's deadline", took, chat.calls)
+	if took := time.Since(began); took > 10*time.Second || chat.calls != 2 {
+		t.Fatalf("took %s with %d calls: want the evidence call and the answer call, both cut by the session's deadline", took, chat.calls)
 	}
 }
 
