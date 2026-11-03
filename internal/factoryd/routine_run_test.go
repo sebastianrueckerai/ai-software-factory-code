@@ -199,7 +199,7 @@ func TestRoutineRunFilesAHumanCard(t *testing.T) {
 		t.Errorf("labels = %v", got)
 	}
 	if created := recordedEvents(r, EventCardCreated); len(created) != 1 || created[0].TaskID != card.ID ||
-		!reflect.DeepEqual(created[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(71)}) {
+		!reflect.DeepEqual(created[0].Detail, map[string]any{"by": "factory-agent", "issue": int64(71), "budget_eur": 0.0}) {
 		t.Errorf("card_created %+v, want the card's one", created)
 	}
 	if ran := recordedEvents(r, EventRoutineRan); len(ran) != 1 || ran[0].Repository != "sf/ai-software-factory-code" || ran[0].TaskID != card.ID ||

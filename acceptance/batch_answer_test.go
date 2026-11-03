@@ -603,10 +603,7 @@ func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since 
 func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
 	panic("unused")
 }
-func (s *accBatchStore) SpendBetween(context.Context, string, time.Time, time.Time) (float64, error) {
-	panic("unused")
-}
-func (s *accBatchStore) CallsBetween(context.Context, string, time.Time, time.Time) (int, error) {
+func (s *accBatchStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
 	panic("unused")
 }
 func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
@@ -766,7 +763,9 @@ func (s *accBatchStore) OpenApproval(ctx context.Context, a factoryd.ApprovalReq
 func (s *accBatchStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
 	panic("unused")
 }
-func (s *accBatchStore) UndecideApproval(ctx context.Context, id int64) error { panic("unused") }
+func (s *accBatchStore) UndecideApproval(ctx context.Context, id int64, reason string) error {
+	panic("unused")
+}
 func (s *accBatchStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
 	panic("unused")
 }

@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"reflect"
+	"strconv"
 	"strings"
 	"testing"
 )
@@ -148,6 +149,10 @@ func TestReconcileCasesOpensAMonthCapCardsAskAsAMonthCap(t *testing.T) {
 	if err != nil || len(open) != 1 || open[0].Kind != CaseMonthCap || open[0].StateKey != "46282f0a8570b00b" || open[0].Problem != q.Ask {
 		t.Fatalf("OpenCasesOf = %+v, %v; want the ask as a month cap", open, err)
 	}
+	// recordAsk's event names who asked: its row's author
+	if open[0].Facts["by"] != "factoryd" {
+		t.Fatalf("facts = %v; want by factoryd", open[0].Facts)
+	}
 	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t1412", IssueNumber: 1412, Kind: EventQuestionAsked, Actor: FactoryDecider,
 		Via: ViaFactoryd, Detail: map[string]any{"question": q.Ask, "ask": q.Ask, "why": q.Why, "info": q.Info, "source": SourceMonthCap,
 			"by": "factoryd", "choices": q.Labels()}}); err != nil {
@@ -177,23 +182,27 @@ func TestReconcileCasesOpensAStaleAskAsAWaitExpired(t *testing.T) {
 	}
 }
 
-// An escalation row whose question has no ask opens nothing and logs
-// nothing: no ask, no case.
+// An escalation row whose question has no ask, or an ask of white space
+// alone, opens nothing and logs nothing: no ask, no case.
 func TestReconcileCasesPassesOverAQuestionWithNoAsk(t *testing.T) {
-	ctx := context.Background()
-	s := cardCaseStore(t, "cases_heal")
-	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: "Which file?",
-		Question: &HumanQuestion{Why: "two files match"}})
-	var logs bytes.Buffer
-	log.SetOutput(&logs)
-	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	for _, ask := range []string{"", " \t\n "} {
+		t.Run(strconv.Quote(ask), func(t *testing.T) {
+			ctx := context.Background()
+			s := cardCaseStore(t, "cases_heal")
+			escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: "Which file?",
+				Question: &HumanQuestion{Ask: ask, Why: "two files match"}})
+			var logs bytes.Buffer
+			log.SetOutput(&logs)
+			t.Cleanup(func() { log.SetOutput(os.Stderr) })
 
-	reconcile(t, s, CaseHealReport{})
-	if strings.Contains(logs.String(), "opens no case") {
-		t.Fatalf("logs = %q; want no line for a question with no ask", logs.String())
-	}
-	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
-		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+			reconcile(t, s, CaseHealReport{})
+			if strings.Contains(logs.String(), "opens no case") {
+				t.Fatalf("logs = %q; want no line for a question with no ask", logs.String())
+			}
+			if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 0 {
+				t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+			}
+		})
 	}
 }
 

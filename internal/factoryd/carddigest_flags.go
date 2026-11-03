@@ -15,16 +15,24 @@ import (
 const sessionNoPushBound = 2
 
 // expectedBudget is the budget card t holds when nothing moved it but its
-// events: its filing's budget by the policy (policy.CardBudget, as intake
-// and the planner file a card) plus every card_funded and card_extended
-// amount.
+// events: its filing's budget plus every card_funded and card_extended
+// amount. The filing's budget is the one its card_created row records,
+// else, for a card filed before the rows recorded it, the policy's
+// (policy.CardBudget, as intake and the planner file a card).
 func (r *Runner) expectedBudget(ctx context.Context, t Task, events []Event) (float64, error) {
-	p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
-	if err != nil {
-		return 0, err
+	var eur float64
+	filed := false
+	if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
+		eur, filed = events[i].Detail["budget_eur"].(float64)
 	}
-	_, asked := askedBudget(t.Objective)
-	eur := policy.CardBudget(r.cfg.Policy().Document.Budget, p.Budget, t.Size, t.Rung == RungFrontier, asked)
+	if !filed {
+		p, _, err := r.store.ProjectByRepository(ctx, t.Repository)
+		if err != nil {
+			return 0, err
+		}
+		_, asked := askedBudget(t.Objective)
+		eur = policy.CardBudget(r.cfg.Policy().Document.Budget, p.Budget, t.Size, t.Rung == RungFrontier, asked)
+	}
 	for _, e := range events {
 		if e.Kind == EventCardFunded || e.Kind == EventCardExtended {
 			amount, _ := e.Detail["amount_eur"].(float64)

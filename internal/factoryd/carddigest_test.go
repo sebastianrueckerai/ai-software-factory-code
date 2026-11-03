@@ -327,6 +327,12 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 		{"a retry's budget, copied from the card it replaces", func(c *Task) { c.Source, c.BudgetEUR = SourcePlan, 7 }, func(t *testing.T, g digestRig) {
 			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "plan": "t1344", "replaces": "t1300"})
 		}, nil},
+		{"a filing budget the policy no longer gives", func(c *Task) { c.BudgetEUR = 7 }, func(t *testing.T, g digestRig) {
+			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "budget_eur": 7.0})
+		}, nil},
+		{"a budget no event moved from its filing", func(c *Task) { c.BudgetEUR = 9 }, func(t *testing.T, g digestRig) {
+			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "budget_eur": 7.0})
+		}, []DigestFlag{{"budget_moved_no_event", "9.00 EUR not 7.00 EUR"}}},
 		{"a human card, which spends no budget", func(c *Task) { c.Kind, c.BudgetEUR = "human", 0 }, nil, nil},
 		{"a budget a fund and an extend moved", func(c *Task) { c.BudgetEUR = 7.5 }, func(t *testing.T, g digestRig) {
 			g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 2.0})

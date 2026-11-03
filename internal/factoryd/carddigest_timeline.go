@@ -134,11 +134,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 	default:
 		end, outcome = r.clock(), "running"
 	}
-	cost, err := r.store.SpendBetween(ctx, taskID, s.start, end)
-	if err != nil {
-		return DigestStep{}, err
-	}
-	calls, err := r.store.CallsBetween(ctx, taskID, s.start, end)
+	cost, calls, err := r.store.SpendAndCallsBetween(ctx, taskID, s.start, end)
 	if err != nil {
 		return DigestStep{}, err
 	}

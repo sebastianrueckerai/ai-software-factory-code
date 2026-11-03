@@ -439,7 +439,7 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
 			return 0, stopped("linking its issue #"+fmt.Sprint(t.IssueNumber), err)
 		}
-		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID, "track": t.Track})
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
 	}
 	// a retry that stopped at the labels labels it the next time
 	if t.Status == "queued" {

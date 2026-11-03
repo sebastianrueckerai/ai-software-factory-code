@@ -376,7 +376,7 @@ func fileHumanTask(ctx context.Context, store interface {
 			return Task{}, 0, err
 		}
 	}
-	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number})
+	tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": number, "budget_eur": t.BudgetEUR})
 	if err := recordAsk(ctx, store, tl, t, q, "factoryd", t.Source, ViaFactoryd, decider); err != nil {
 		return Task{}, 0, err
 	}

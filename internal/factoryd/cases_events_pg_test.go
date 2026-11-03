@@ -378,11 +378,46 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 	if got := caseByID(t, s, third.ID); got.Status != CaseResolved || got.Resolution.Action != "deny" {
 		t.Fatalf("denied case = %+v, resolution %+v", got, got.Resolution)
 	}
-	if err := s.UndecideApproval(ctx, b); err != nil {
+	if err := s.UndecideApproval(ctx, b, "the signal failed"); err != nil {
 		t.Fatalf("UndecideApproval: %v", err)
 	}
-	if fourth := onlyOpenCase(t, s); fourth.Follows != third.ID || fourth.StateKey != "pr:1479@h2" {
-		t.Fatalf("undecided merge case = %+v; want pr:1479@h2 following %d", fourth, third.ID)
+	if again := onlyOpenCase(t, s); again.ID != third.ID || again.Status != CaseAtHuman || again.Resolution != nil {
+		t.Fatalf("undecided merge case = %+v; want case %d at the human again", again, third.ID)
+	}
+}
+
+// A decision whose signal failed is undone: the merge case it resolved
+// waits at the human again with a step that says why, and no second case
+// opens, so the digest reads no answer that changed nothing.
+func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	id := openMerge(t, s, "abc1479")
+	c := onlyOpenCase(t, s)
+	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+		t.Fatalf("DecideApproval: %v", err)
+	}
+	if err := s.UndecideApproval(ctx, id, "no workflow for t1410"); err != nil {
+		t.Fatalf("UndecideApproval: %v", err)
+	}
+	got := onlyOpenCase(t, s)
+	if got.ID != c.ID || got.Status != CaseAtHuman || got.Resolution != nil || got.ResolvedAt != nil {
+		t.Fatalf("undone merge case = %+v, resolution %+v; want case %d at the human, unresolved", got, got.Resolution, c.ID)
+	}
+	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 {
+		t.Fatalf("CasesOf = %+v, %v; want the one merge case", cs, err)
+	}
+	steps := caseStepsOf(t, s, c.ID)
+	if len(steps) != 2 || steps[0].Outcome != StepResolved || steps[1].Rung != 3 || steps[1].Actor != FactoryDecider ||
+		steps[1].Found != "approval undone: no workflow for t1410" || steps[1].Outcome != StepInProgress {
+		t.Fatalf("steps = %+v; want the decided step and a running step naming the undo", steps)
+	}
+
+	if err := s.DecideApproval(ctx, id, ApprovalMerge, "denied", "sebastian", "changes requested: no"); err != nil {
+		t.Fatalf("DecideApproval: %v", err)
+	}
+	if got := caseByID(t, s, c.ID); got.Status != CaseResolved || got.Resolution.Action != "deny" {
+		t.Fatalf("decided again = %+v, resolution %+v; want it denied", got, got.Resolution)
 	}
 }
 

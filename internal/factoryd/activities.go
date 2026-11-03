@@ -507,7 +507,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
 			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
 		}
-		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track})
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
 	}
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)

@@ -84,7 +84,7 @@ type fakeStore struct {
 	answered         map[string]bool // ModelAnswered's answer by task
 	// checkinSpent is CheckinSpent's answer by task
 	checkinSpent map[string]float64
-	// spends are the gateway's audit rows SpendBetween and CallsBetween
+	// spends are the gateway's audit rows SpendAndCallsBetween
 	// read
 	spends []fakeSpend
 	// cases are CasesOf's rows, oldest first; caseSteps CaseSteps' by case
@@ -1407,7 +1407,7 @@ func (s *fakeStore) DecideApproval(ctx context.Context, id int64, kind, status, 
 	return ErrNotFound
 }
 
-func (s *fakeStore) UndecideApproval(ctx context.Context, id int64) error {
+func (s *fakeStore) UndecideApproval(ctx context.Context, id int64, reason string) error {
 	for i := range s.approvals {
 		if a := &s.approvals[i]; a.ID == id {
 			a.Status, a.DecidedBy, a.DecisionNote = "pending", "", ""
@@ -1519,24 +1519,16 @@ type fakeSpend struct {
 	eur  float64
 }
 
-func (s *fakeStore) SpendBetween(ctx context.Context, taskID string, from, to time.Time) (float64, error) {
+func (s *fakeStore) SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error) {
 	var eur float64
-	for _, sp := range s.spends {
-		if sp.task == taskID && !sp.at.Before(from) && sp.at.Before(to) {
-			eur += sp.eur
-		}
-	}
-	return eur, nil
-}
-
-func (s *fakeStore) CallsBetween(ctx context.Context, taskID string, from, to time.Time) (int, error) {
 	n := 0
 	for _, sp := range s.spends {
 		if sp.task == taskID && !sp.at.Before(from) && sp.at.Before(to) {
+			eur += sp.eur
 			n++
 		}
 	}
-	return n, nil
+	return eur, n, nil
 }
 
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
@@ -2890,7 +2882,7 @@ func TestPGStoreApprovals(t *testing.T) {
 		t.Fatal(err)
 	}
 	// a decision whose signal failed is undone, denied or not
-	if err := s.UndecideApproval(ctx, a3); err != nil {
+	if err := s.UndecideApproval(ctx, a3, "the signal failed"); err != nil {
 		t.Fatal(err)
 	}
 	if p, _ := s.ApprovalRequests(ctx, "pending"); len(p) != 1 || p[0].ID != a3 || p[0].DecidedBy != "" || p[0].DecisionNote != "" || p[0].DecidedAt != nil {
@@ -3757,11 +3749,11 @@ func TestPGStoreSettlesSpendFromTheLedger(t *testing.T) {
 	}
 }
 
-// SpendBetween sums the call costs of a task's audit rows in [from, to),
-// whatever their kind, and CallsBetween counts the rows, one without a
+// SpendAndCallsBetween sums the call costs of a task's audit rows in
+// [from, to), whatever their kind, and counts the rows, one without a
 // cost too: 0.25 + 0.10 over three rows of t1. The rows at 00:40:59 and
 // at the window's end, 00:55, and t2's lie outside.
-func TestPGStoreSpendBetweenReadsTheWindow(t *testing.T) {
+func TestPGStoreSpendAndCallsBetweenReadsTheWindow(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "spend_between"))
 	if err != nil {
@@ -3779,14 +3771,11 @@ func TestPGStoreSpendBetweenReadsTheWindow(t *testing.T) {
 		t.Fatalf("seed the audit rows: %v", err)
 	}
 	from, to := time.Date(2026, 11, 1, 0, 41, 0, 0, time.UTC), time.Date(2026, 11, 1, 0, 55, 0, 0, time.UTC)
-	if eur, err := s.SpendBetween(ctx, "t1", from, to); err != nil || math.Abs(eur-0.35) > 1e-9 {
-		t.Fatalf("SpendBetween t1 = %v, %v; want 0.35", eur, err)
+	if eur, n, err := s.SpendAndCallsBetween(ctx, "t1", from, to); err != nil || math.Abs(eur-0.35) > 1e-9 || n != 3 {
+		t.Fatalf("SpendAndCallsBetween t1 = %v, %d, %v; want 0.35 over 3 rows", eur, n, err)
 	}
-	if n, err := s.CallsBetween(ctx, "t1", from, to); err != nil || n != 3 {
-		t.Fatalf("CallsBetween t1 = %d, %v; want 3", n, err)
-	}
-	if eur, err := s.SpendBetween(ctx, "t3", from, to); err != nil || eur != 0 {
-		t.Fatalf("SpendBetween of a task with no row = %v, %v; want 0", eur, err)
+	if eur, n, err := s.SpendAndCallsBetween(ctx, "t3", from, to); err != nil || eur != 0 || n != 0 {
+		t.Fatalf("SpendAndCallsBetween of a task with no row = %v, %d, %v; want 0 over 0 rows", eur, n, err)
 	}
 }
 

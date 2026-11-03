@@ -23,18 +23,21 @@ type BoardDigest struct {
 
 // BoardDigestCard is a live card: its status and gate, the time since its
 // newest status event, whether it holds a work slot, and its digest's
-// flags.
+// flags. Unreadable is why its digest could not be read, "" when it
+// could.
 type BoardDigestCard struct {
 	Issue        int
 	Status, Gate string
 	Age          time.Duration
 	SlotHeld     bool
 	Flags        []DigestFlag
+	Unreadable   string
 }
 
 // BoardDigestQueued is a queued card, by issue and task id (the one name
 // a card without an issue has), and what holds it: "no issue", "waits on
-// #N", "project month cap", "work bound H of B", or "next".
+// #N", "project month cap", "work bound H of B" (H the slots held and
+// taken by the cards before it read "next"), or "next".
 type BoardDigestQueued struct {
 	Issue  int
 	TaskID string
@@ -76,11 +79,13 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 		return BoardDigest{}, err
 	}
 	b := BoardDigest{Slots: BoardDigestSlots{Held: held, Bound: v.WorkInProgressOf(repository)}}
+	// each card read "next" takes a free slot from the ones after it
+	taken := held
 	for _, t := range live {
 		if !waitsForSlot(t.Task) {
 			card, err := r.boardCard(ctx, t.ID, now)
 			if err != nil {
-				return BoardDigest{}, err
+				card = BoardDigestCard{Issue: int(t.IssueNumber), Status: t.Status, Gate: t.Gate, Unreadable: err.Error()}
 			}
 			b.Cards = append(b.Cards, card)
 			continue
@@ -90,9 +95,10 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 			return BoardDigest{}, err
 		}
 		if why == "" {
-			why = "next"
-			if held >= b.Slots.Bound {
-				why = fmt.Sprintf("work bound %d of %d", held, b.Slots.Bound)
+			why = fmt.Sprintf("work bound %d of %d", taken, b.Slots.Bound)
+			if taken < b.Slots.Bound {
+				why = "next"
+				taken++
 			}
 		}
 		b.Queue = append(b.Queue, BoardDigestQueued{Issue: int(t.IssueNumber), TaskID: t.ID, Reason: why})
@@ -172,6 +178,10 @@ func (b BoardDigest) Render() string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "cards %d live · slots %d of %d · queue %d\n", len(b.Cards)+len(b.Queue), b.Slots.Held, b.Slots.Bound, len(b.Queue))
 	for _, c := range b.Cards {
+		if c.Unreadable != "" {
+			fmt.Fprintf(&s, "%-6s %-21s digest unreadable: %s\n", fmt.Sprintf("#%d", c.Issue), statusText(c.Status, c.Gate), c.Unreadable)
+			continue
+		}
 		slot, flags := "", ""
 		if c.SlotHeld {
 			slot = "slot"

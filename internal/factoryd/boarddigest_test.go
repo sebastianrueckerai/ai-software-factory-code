@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"slices"
 	"strings"
 	"testing"
@@ -123,6 +124,49 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 		"month 544.00 of 600.00 EUR · day 12.40 of 150.00 EUR\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// unreadable is an object store whose Get of key fails.
+type unreadable struct {
+	ObjectStore
+	key string
+}
+
+func (u unreadable) Get(ctx context.Context, key string) ([]byte, error) {
+	if key == u.key {
+		return nil, errors.New("s3 down")
+	}
+	return u.ObjectStore.Get(ctx, key)
+}
+
+// A card whose digest cannot be read gets a line that says why, and the
+// board goes on to the next card.
+func TestBoardDigestNamesACardItCannotDigestAndGoesOn(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1410", 1410, "running", GateSession, 0, nil)
+	g.card("t1472", 1472, "running", GateSession, 1, nil)
+	g.r.objects = unreadable{g.r.objects, "sessions/t1410/timeline.jsonl"}
+	want := "cards 2 live · slots 2 of 3 · queue 0\n" +
+		"#1410  running, session      digest unreadable: read the timeline: s3 down\n" +
+		"#1472  running, session      23h59m   slot\n"
+	if got := g.digest(t).Render(); !strings.HasPrefix(got, want) {
+		t.Fatalf("Render =\n%s\nwant it to start\n%s", got, want)
+	}
+}
+
+// Each card the board reads "next" takes a free slot: with one of three
+// held, two queued cards are next and the third waits on the bound.
+func TestBoardDigestCountsEachNextAsASlot(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1472", 1472, "running", GateSession, 0, nil)
+	for i, id := range []string{"t1500", "t1501", "t1502"} {
+		g.card(id, int64(1500+i), "queued", GateIntake, 1+i, nil)
+	}
+	b := g.digest(t)
+	want := []BoardDigestQueued{{1500, "t1500", "next"}, {1501, "t1501", "next"}, {1502, "t1502", "work bound 3 of 3"}}
+	if !slices.Equal(b.Queue, want) || b.Slots != (BoardDigestSlots{Held: 1, Bound: 3}) {
+		t.Fatalf("Queue = %+v, Slots = %+v; want %+v with 1 of 3 held", b.Queue, b.Slots, want)
 	}
 }
 

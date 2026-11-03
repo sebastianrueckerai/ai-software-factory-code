@@ -271,6 +271,28 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 	return err == nil, err
 }
 
+// reopenMergeCase puts the merge case that request id's decision ended
+// back at the human, its end cleared, with a step naming reason, the why
+// of the undo; with no such case, or a live one of its key, it opens the
+// request's case as openMergeCase does.
+func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
+	var caseID int64
+	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL
+		WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
+		AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
+		    AND o.status IN `+caseLiveStatuses+`)
+		RETURNING c.id`, id, CaseMergeApproval, CaseAtHuman).Scan(&caseID)
+	if errors.Is(err, sql.ErrNoRows) {
+		_, err = openMergeCase(ctx, q, id)
+		return err
+	}
+	if err != nil {
+		return err
+	}
+	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: caseID, Rung: 3, Actor: FactoryDecider, Found: "approval undone: " + reason})
+	return err
+}
+
 // endMergeCase ends task taskID's live merge case by its request's
 // decision: status approved or denied, by whom, with note.
 func endMergeCase(ctx context.Context, q rowQuerier, taskID, status, by, note string) error {

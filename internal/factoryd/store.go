@@ -433,11 +433,10 @@ type Store interface {
 	// card: the call costs of the task's purpose checkin rows (spend_eur
 	// holds the task's running total at each row, not a per-row cost).
 	CheckinSpent(ctx context.Context, taskID string) (float64, error)
-	// SpendBetween and CallsBetween are the call costs and the count of
-	// the task's audit rows in [from, to), whatever their kind: a
-	// session's cost and calls in the card digest.
-	SpendBetween(ctx context.Context, taskID string, from, to time.Time) (float64, error)
-	CallsBetween(ctx context.Context, taskID string, from, to time.Time) (int, error)
+	// SpendAndCallsBetween is the call costs and the count of the task's
+	// audit rows in [from, to), whatever their kind: a session's cost and
+	// calls in the card digest.
+	SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -552,8 +551,9 @@ type Store interface {
 	// DecideApproval decides one pending request of kind; ErrNotFound when
 	// it is not pending.
 	DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error
-	// UndecideApproval puts request id back to pending, undecided.
-	UndecideApproval(ctx context.Context, id int64) error
+	// UndecideApproval puts request id back to pending, undecided, for
+	// reason: why its decision did not take effect.
+	UndecideApproval(ctx context.Context, id int64, reason string) error
 	// ReopenApproval puts the task's newest request of kind, pending or
 	// approved, back to pending with note: why the approval has not taken
 	// effect (a refused or failed merge); a denied one stays denied.
@@ -1613,23 +1613,16 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 	return eur, err
 }
 
-// SpendBetween is the call costs of the task's audit rows in [from, to),
-// whatever their kind; a row without a cost adds nothing.
-func (s *PGStore) SpendBetween(ctx context.Context, taskID string, from, to time.Time) (float64, error) {
+// SpendAndCallsBetween is the call costs and the count of the task's
+// audit rows in [from, to), whatever their kind, in one scan; a row
+// without a cost adds to the count alone.
+func (s *PGStore) SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error) {
 	var eur float64
-	err := s.db.QueryRowContext(ctx,
-		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8 FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
-		taskID, from, to).Scan(&eur)
-	return eur, err
-}
-
-// CallsBetween counts the task's audit rows in [from, to), whatever their
-// kind.
-func (s *PGStore) CallsBetween(ctx context.Context, taskID string, from, to time.Time) (int, error) {
 	var n int
-	err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
-		taskID, from, to).Scan(&n)
-	return n, err
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8, count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
+		taskID, from, to).Scan(&eur, &n)
+	return eur, n, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
@@ -2430,11 +2423,11 @@ func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by
 	return tx.Commit()
 }
 
-// UndecideApproval puts request id back to pending, undecided, and a
-// merge request's case with it. The gates' decide-and-signal path is its
-// sole caller, undoing its decision when the signal fails; it decides no
-// guard — any row goes back.
-func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
+// UndecideApproval puts request id back to pending, undecided, and puts
+// the merge case its decision ended back at the human with reason. The
+// gates' decide-and-signal path is its sole caller, undoing its decision
+// when the signal fails; it decides no guard — any row goes back.
+func (s *PGStore) UndecideApproval(ctx context.Context, id int64, reason string) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -2444,7 +2437,7 @@ func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
 		WHERE id = $1`, id); err != nil {
 		return err
 	}
-	if _, err := openMergeCase(ctx, tx, id); err != nil {
+	if err := reopenMergeCase(ctx, tx, id, reason); err != nil {
 		return err
 	}
 	return tx.Commit()

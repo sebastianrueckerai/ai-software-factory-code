@@ -504,12 +504,8 @@ func (s *acceptanceStore) CheckinSpent(context.Context, string) (float64, error)
 	return 0, nil
 }
 
-func (s *acceptanceStore) SpendBetween(context.Context, string, time.Time, time.Time) (float64, error) {
-	return 0, nil
-}
-
-func (s *acceptanceStore) CallsBetween(context.Context, string, time.Time, time.Time) (int, error) {
-	return 0, nil
+func (s *acceptanceStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
+	return 0, 0, nil
 }
 
 // BoardTasks, OpenPlans and Enforced: the acceptance store reads no board.
@@ -748,7 +744,7 @@ func (s *acceptanceStore) DecideApproval(context.Context, int64, string, string,
 	return nil
 }
 
-func (s *acceptanceStore) UndecideApproval(context.Context, int64) error { return nil }
+func (s *acceptanceStore) UndecideApproval(context.Context, int64, string) error { return nil }
 
 func (s *acceptanceStore) ReopenApproval(context.Context, string, string, string) error { return nil }
 

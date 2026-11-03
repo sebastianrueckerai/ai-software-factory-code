@@ -2064,6 +2064,20 @@ func TestChatCardLeadsWithTheDigest(t *testing.T) {
 	}
 }
 
+// A digest that cannot be read leads the card read with why; the card in
+// full follows as before.
+func TestChatCardKeepsTheCardWhenTheDigestFails(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.c.cfg.CardDigest = func(context.Context, string) (factoryd.CardDigest, error) {
+		return factoryd.CardDigest{}, errors.New("read the timeline: s3 down")
+	}
+	got := reads(t, r, g, "card", `{"task_id":"#5"}`)[0]
+	if want := "digest unreadable: read the timeline: s3 down\n\n" +
+		"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n"; !strings.HasPrefix(got, want) {
+		t.Fatalf("the card read =\n%s\nwant it to start\n%s", got, want)
+	}
+}
+
 // card_step is one step of a card's digest, the card named by its issue;
 // a step the digest lacks is refused with factoryd's words.
 func TestChatCardStepReturnsOneStep(t *testing.T) {

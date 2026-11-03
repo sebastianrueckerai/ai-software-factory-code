@@ -57,6 +57,15 @@ func (d CardDigest) Render() string {
 	return b.String()
 }
 
+// DigestText is d rendered, or, when err stopped its read, one line that
+// says why: a card read keeps the rest of what it read.
+func DigestText(d CardDigest, err error) string {
+	if err != nil {
+		return "digest unreadable: " + err.Error() + "\n"
+	}
+	return d.Render()
+}
+
 // digestLine is step s as one line of the digest: its number before the
 // fold, the one CardStep takes, its offset, its kind with its actor, and
 // its outcome, with the run's length and a session's cost and calls.

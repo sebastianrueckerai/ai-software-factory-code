@@ -659,6 +659,19 @@ func TestCheckinCardFactsLeadsWithTheDigest(t *testing.T) {
 	}
 }
 
+// A digest that cannot be read leads card_facts with why; the facts
+// follow as before.
+func TestCheckinCardFactsKeepsTheFactsWhenTheDigestFails(t *testing.T) {
+	g := skeletonRig(t)
+	g.r.objects = unreadable{g.r.objects, "sessions/t1410/timeline.jsonl"}
+	facts := `{"budget_eur":5}`
+	tools := &runnerTools{r: g.r, taskID: "t1410", facts: facts}
+	out, cut, err := tools.Tool(t.Context(), "card_facts", nil)
+	if want := "digest unreadable: read the timeline: s3 down\n\n" + facts; out != want || cut || err != nil {
+		t.Fatalf("card_facts = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)
+	}
+}
+
 // The check-in's card_step is one step of the card's digest in full, by
 // the number its line carries, read in factoryd; a number the digest
 // lacks is an error the model reads. A step of the check-in's parent

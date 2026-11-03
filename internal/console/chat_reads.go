@@ -30,10 +30,6 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	if err != nil {
 		return "", err
 	}
-	d, err := t.c.cfg.CardDigest(ctx, k.ID)
-	if err != nil {
-		return "", err
-	}
 	v, ok := t.c.inForce(ctx)
 	if !ok {
 		return "", refuse(http.StatusInternalServerError, "no policy in force")
@@ -59,7 +55,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString(d.Render() + "\n" + cardLine(k))
+	b.WriteString(factoryd.DigestText(t.c.cfg.CardDigest(ctx, k.ID)) + "\n" + cardLine(k))
 	if k.Track != "" {
 		fmt.Fprintf(&b, "\ntrack %s of process %s", k.Track, k.Process)
 	}

@@ -1348,11 +1348,7 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		out, cut := cutToolOutput(strings.Join(lines[from-1:to], "\n"))
 		return out, cut, nil
 	case "card_facts":
-		d, err := p.r.CardDigest(ctx, p.taskID)
-		if err != nil {
-			return "", false, err
-		}
-		out, cut := cutToolOutput(d.Render() + "\n" + p.facts)
+		out, cut := cutToolOutput(DigestText(p.r.CardDigest(ctx, p.taskID)) + "\n" + p.facts)
 		return out, cut, nil
 	case "card_step":
 		step, err := p.r.CardStep(ctx, p.taskID, argInt(args["step"]), "card_facts", func(session string, _ int) string {
