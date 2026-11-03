@@ -538,16 +538,26 @@ var now = time.Now
 // FreeHeadroom reads r's task's, the UTC day's, the UTC calendar month's
 // and the task's project's month headroom inside tx (under LockHeadroom),
 // as ReadFree does. A task that is neither running nor in review is
-// refused, but for a waiting-human task's brief: settlement relies on a
-// finished task taking no new hold.
+// refused, but for factoryd's brief on a waiting-human task, and its brief
+// or review on a done task (a finished plan's criteria card and delta
+// round): that hold reopens the task's final settlement in tx, which
+// books the call once the hold is gone, so a finished task still settles
+// its last figure after every call it took.
 func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) {
 	t, f, err := ReadFree(ctx, tx, r)
 	if err != nil {
 		return Free{}, err
 	}
-	brief := t.Status == "waiting-human" && r.Session == "" && strings.HasPrefix(r.Ref, PurposeBrief+"/")
-	if !slices.Contains(holdStatuses, t.Status) && !brief {
-		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold, and a task waiting on a person its brief's alone", r.TaskID, t.Status)}
+	own := r.Session == "" && (strings.HasPrefix(r.Ref, PurposeBrief+"/") || strings.HasPrefix(r.Ref, PurposeReview+"/"))
+	brief := t.Status == "waiting-human" && own && strings.HasPrefix(r.Ref, PurposeBrief+"/")
+	late := t.Status == "done" && own
+	if !slices.Contains(holdStatuses, t.Status) && !brief && !late {
+		return Free{}, &Refusal{Decision: "refused_task_status", Reason: fmt.Sprintf("task %s is %s; only a running or in-review task takes a hold, and a task waiting on a person takes its brief alone, and a done task its brief or review", r.TaskID, t.Status)}
+	}
+	if late {
+		if _, err := tx.ExecContext(ctx, `UPDATE tasks SET settled_at = NULL WHERE id = $1`, r.TaskID); err != nil {
+			return Free{}, err
+		}
 	}
 	return f, nil
 }
