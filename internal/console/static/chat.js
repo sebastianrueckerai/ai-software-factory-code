@@ -770,12 +770,12 @@ var chatView = (function () {
   function openRef() { return ref(open, openOwner); }
   function threadOwner(t) { return t && t.login && t.login !== login ? t.login : ""; }
   function busy(k) { return !!running[k]; }
-  // lock disables the composer while the open thread is read-only, its
-  // notes' links aside, and the log's buttons while a turn of the open
+  // lock disables the box, Send and the command chips while the open
+  // thread is read-only, and the log's buttons while a turn of the open
   // thread streams — the stop button alone stays live, it is what ends it
   function lock() {
     if (!form) return;
-    form.querySelectorAll("textarea, button:not(.linkbtn)").forEach(function (el) { el.disabled = readOnly; });
+    form.querySelectorAll(".prompt textarea, .prompt button, .cmd").forEach(function (el) { el.disabled = readOnly; });
     log.setAttribute("aria-busy", String(busy(openRef())));
     log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(openRef()) && !b.closest(".turn-tail"); });
   }
@@ -1429,7 +1429,7 @@ var chatView = (function () {
 
   // load shows thread n, the current one for "": its head and its log,
   // read marks it seen; an archived thread is read-only, an inbox takes
-  // presses and no words. keep holds the member's place: a refresh of the
+  // presses and no words. keep holds the human's place: a refresh of the
   // thread they stand in moves the log only when they sit at its end;
   // opening lands on the newest rows
   var intro = log.innerHTML;
@@ -1453,7 +1453,7 @@ var chatView = (function () {
       if (poolHost) poolHost.innerHTML = data.pool && !readOnly && !inboxOpen && !openOwner ? chatView.poolCtlHTML(data.pool) : "";
       if (form) {
         // an archived thread's composer is one line with restore (C14);
-        // another member's archived thread has no restore to offer; an
+        // another human's archived thread has no restore to offer; an
         // inbox's is its note with a way to a thread of the human's own
         form.classList.toggle("arch", readOnly);
         form.classList.toggle("inbox", inboxOpen);

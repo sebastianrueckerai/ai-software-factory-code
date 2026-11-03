@@ -465,7 +465,10 @@ async function text(page) {
     await p.page.waitForTimeout(600);
     if (inboxScenes.includes(sc)) {
       if ((await p.page.locator("#thread-head").innerText()).includes("the factory's thread")) fails.push(sc + ": the page lands on the inbox, not a thread of the human's own");
+      // a palette left open in the human's own thread stays behind
+      if (sc === "escalation") { await p.page.locator("#chat-input").click(); await p.page.keyboard.type("/"); }
       await openInbox(p.page);
+      if (sc === "escalation" && (await p.page.locator("#chat-palette").isVisible())) fails.push("inbox: the command palette follows into the inbox");
     }
     // the status in detail opens on its chevron: its words count too
     const xp = p.page.locator("#status-toggle");
@@ -1554,9 +1557,25 @@ async function text(page) {
       if (!(await note.isVisible())) fails.push("inbox: no note in the box's place");
       else if (!(await note.innerText()).includes("The factory's thread. Answer with its buttons, and write in a thread of your own.")) fails.push('inbox: the note reads "' + (await note.innerText()) + '"');
       if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: it speaks here uninvited, you answer with its buttons")) fails.push("inbox: the head does not say the human answers with its buttons");
+      if (await p.page.locator(".chat-start").isVisible()) fails.push('inbox: the intro line "Ask or tell the project agent" shows');
       await p.page.evaluate(() => document.activeElement && document.activeElement.blur());
       await p.page.keyboard.press("/");
       if (await p.page.evaluate(() => document.activeElement && document.activeElement.id === "chat-input")) fails.push('inbox: "/" puts the focus in the hidden box');
+      // a file pasted or dropped on the inbox's form rides nothing: ride
+      // pastes into the box or drops on the form a text file and answers
+      // how many chips ride the next message
+      const ride = (kind) => p.page.evaluate((kind) => {
+        const dt = new DataTransfer();
+        dt.items.add(new File(["a note"], "note.txt", { type: "text/plain" }));
+        const ev = kind === "paste" ? new ClipboardEvent("paste", { clipboardData: dt, bubbles: true, cancelable: true })
+          : new DragEvent("drop", { dataTransfer: dt, bubbles: true, cancelable: true });
+        document.getElementById(kind === "paste" ? "chat-input" : "chat-form").dispatchEvent(ev);
+        return document.querySelectorAll("#chat-images li, #chat-docs li").length;
+      }, kind);
+      for (const kind of ["paste", "drop"]) {
+        const n = await ride(kind);
+        if (n) fails.push("inbox: a " + kind + " on the inbox's form rides " + n + " chips");
+      }
       // a card's row: its body opens the card's drawer
       const failedRow = p.page.locator('#chat-log .msg.poke[data-card="' + labID(597) + '"]');
       const leave = failedRow.getByRole("button", { name: "Leave it", exact: true });
@@ -1606,6 +1625,11 @@ async function text(page) {
         if (!(await p.page.locator("#chat-input").isVisible())) fails.push("inbox: the new thread has no text box");
         if (await note.isVisible()) fails.push("inbox: the note stays in the new thread");
         if (await p.page.evaluate(() => document.activeElement && document.activeElement.id) !== "chat-input") fails.push("inbox: after New thread the focus is not in the box");
+        if (!(await p.page.locator(".chat-start").isVisible())) fails.push("inbox: the intro line stays hidden in the human's own thread");
+        // the same paste and drop ride a thread of the human's own, so
+        // the inbox's nothing is the guard's, not a dead event
+        const rode = [await ride("paste"), await ride("drop")];
+        if (rode.join() !== "1,2") fails.push("inbox: a paste and a drop in the new thread ride " + rode.join(" then ") + " chips, want 1 then 2");
       }
     }
     if (sc === "threads") {

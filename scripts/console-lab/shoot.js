@@ -70,13 +70,14 @@ async function go(p, url) {
 
 // inboxScenes are the scenes whose story is the inbox: the page lands on
 // the human's own thread, so every shot opens the inbox by its row, as a
-// human does. openInbox does that where the page has the switcher; the
-// phone folds the switcher to one row, so there it unfolds the table for
-// the press and folds it back.
+// human does. openInbox does that where the page has the switcher, and
+// fails where the switcher lists no inbox; the phone folds the switcher to
+// one row, so there it unfolds the table for the press and folds it back.
 const inboxScenes = ["escalation", "wake"];
 async function openInbox(p) {
+  if (!(await p.page.locator("#switcher").count())) return;
   const row = p.page.locator("#thread-rows .trow.inbox");
-  if (!(await row.count())) return;
+  if (!(await row.count())) throw new Error(p.page.url() + ": the switcher lists no inbox to open");
   const folded = !(await row.isVisible());
   if (folded) await p.page.locator(".sw-sum").click();
   await row.click();
