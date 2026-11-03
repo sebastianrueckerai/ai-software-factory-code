@@ -150,7 +150,10 @@ func newAccGatewayStore(tasks ...factorygateway.Task) *accGatewayStore {
 // seedDay books eur on taskID's ledger today, against the day and so
 // the month; seedMonth books it earlier this UTC month, against the
 // month alone; seedHold stands a live hold of eur on taskID, a call in
-// flight.
+// flight. A booked row moves the task's own spent figure with it, as the
+// production store's booking transaction does, so a seeded row binds the
+// task's budget too, not only the day's, the month's and the project's
+// figures.
 func (s *accGatewayStore) seedDay(taskID string, eur float64) {
 	s.seedRow(gwLedgerRow{taskID: taskID, ref: "small", kind: policy.KindModel, eur: eur, day: true, month: true}, policy.Usage{})
 }
@@ -164,6 +167,30 @@ func (s *accGatewayStore) seedRow(l gwLedgerRow, u policy.Usage) {
 	defer s.mu.Unlock()
 	s.rows = append(s.rows, l)
 	s.usages = append(s.usages, u)
+	if t, ok := s.tasks[l.taskID]; ok {
+		t.SpentEUR += l.eur
+		s.tasks[l.taskID] = t
+	}
+}
+
+// assertTaskLedger is the rig's bookkeeping invariant, checked in every
+// proof's setup: each task's spent figure is the sum of its ledger rows
+// — seeding and booking move them together, as the production store's
+// transaction does — so no seeded spend can leave a task's own budget
+// loose while its day, month and project figures bind.
+func (s *accGatewayStore) assertTaskLedger(t *testing.T) {
+	t.Helper()
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	sums := map[string]float64{}
+	for _, l := range s.rows {
+		sums[l.taskID] += l.eur
+	}
+	for id, task := range s.tasks {
+		if math.Abs(task.SpentEUR-sums[id]) > 1e-9 {
+			t.Errorf("task %s's spent figure %f, its ledger rows sum %f", id, task.SpentEUR, sums[id])
+		}
+	}
 }
 
 func (s *accGatewayStore) seedHold(taskID string, eur float64) {
@@ -420,6 +447,7 @@ func TestPoolGatewayRig(t *testing.T) {
 	t.Run("admits a nonbinding reservation", func(t *testing.T) {
 		store := newAccGatewayStore(gwCaller)
 		store.setPolicy(head)
+		store.assertTaskLedger(t)
 		minter, stub := &accGatewayMinter{}, newAccStubLiteLLM(t)
 		rec := gwPost(gwGateway(store, minter, accGatewayPrices{price: gwPrice(bodyBytes)}, stub.URL), body)
 		if rec.Code != http.StatusOK {
@@ -471,6 +499,7 @@ func TestPoolGatewayRig(t *testing.T) {
 		store.seedDay(gwOtherRepo.ID, 98.5)
 		store.seedHold(gwOtherRepo.ID, 1)
 		store.setPolicy(head)
+		store.assertTaskLedger(t)
 		minter, stub := &accGatewayMinter{}, newAccStubLiteLLM(t)
 		h := gwGateway(store, minter, accGatewayPrices{price: gwPrice(bodyBytes)}, stub.URL)
 		req := gwRefused(t, "the day cap", h, body, store, minter, stub, head.ID, policy.RefusedDayCap,
