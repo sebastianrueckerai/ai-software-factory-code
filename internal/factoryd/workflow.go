@@ -1475,6 +1475,7 @@ type taskRun struct {
 	// compares against (versionCheckinRepeat); zero keeps a run from before
 	// the change silent
 	lastCheckinStop   checkinStopMark
+	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
 	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
@@ -2403,6 +2404,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.cases >= versionCases {
 				t.stopFindings = workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
 				t.head = cmp.Or(res.Commit, startRef, t.head)
+				t.checkinStop = checkinStopOf(res)
 			}
 			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
@@ -2912,6 +2914,22 @@ func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, 
 		t.lastCheckinStop.Granted = true
 	}
 	return head, false
+}
+
+// checkinStopOf is the check-in spend stop res is (CheckinStop*), from its
+// check-in's own outcome, "" for a stop that is not a spend stop's.
+func checkinStopOf(res SessionResult) string {
+	switch {
+	case res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend:
+		return ""
+	case res.CheckIn.Reason == CheckinShareSpent:
+		return CheckinStopShare
+	case strings.HasPrefix(res.Reason, checkinTimeCapStop):
+		return CheckinStopTimeCap
+	case strings.HasPrefix(res.Reason, checkinCallCapStop):
+		return CheckinStopCallCap
+	}
+	return ""
 }
 
 // checkinAnswers: the run takes the checkin-answer change
@@ -4273,7 +4291,8 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	}
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
-	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head}
+	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop}
+	t.checkinStop = ""
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err
 	}

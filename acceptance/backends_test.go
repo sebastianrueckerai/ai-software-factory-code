@@ -597,12 +597,14 @@ func (s *acceptanceStore) ProjectByRepository(context.Context, string) (factoryd
 	return factoryd.Project{}, false, nil
 }
 
-// SetTaskUsage keeps the console's raises, as the store does.
+// SetTaskUsage keeps the console's raises and lowers no check-in share,
+// as the store does.
 func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.TaskUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
 	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1401,4 +1403,17 @@ func (s *acceptanceStore) MarkReverted(context.Context, string, time.Time) (bool
 
 func (s *acceptanceStore) ClearRevertPause(context.Context, string, string) error {
 	return nil
+}
+
+// The acceptance store's usage snapshot keeps the check-in's extra share
+// as PGStore's does: it writes every counter but lowers no share.
+func TestAcceptanceStoreKeepsTheCheckinShare(t *testing.T) {
+	s := newAcceptanceStore()
+	s.tasks["t1"] = factoryd.Task{ID: "t1", Usage: factoryd.TaskUsage{ExtraCheckinShare: 1}}
+	if err := s.SetTaskUsage(t.Context(), "t1", factoryd.TaskUsage{Attempts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
+		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
+	}
 }

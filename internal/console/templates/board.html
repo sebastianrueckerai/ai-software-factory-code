@@ -125,7 +125,7 @@
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" .Card.Filter}}
 <label for="answer-{{.Card.ID}}{{.Suffix}}">{{if .Card.Choices}}Or your own answer{{else}}Your answer{{end}}, posted on the issue as you</label>
 <textarea id="answer-{{.Card.ID}}{{.Suffix}}" name="answer" rows="3" maxlength="{{maxAnswer}}" required hx-preserve></textarea>
-<button type="submit">{{if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
+<button type="submit">{{if .Card.TimeCapped}}Grant more agent time with this answer{{else if .Card.Capped}}Grant one session with this answer{{else}}Answer{{end}}</button>
 </form>{{end}}{{with .Card.Fund}}<form method="post" action="/tasks/{{$.Card.ID}}/fund" hx-post="/tasks/{{$.Card.ID}}/fund" class="inline fund" data-to="running">
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
 <label for="fund-{{$.Card.ID}}{{$.Suffix}}">Fund this card, EUR</label>

@@ -818,3 +818,77 @@ func TestActDropsTheCallersComment(t *testing.T) {
 		t.Fatalf("resolution = %+v, want no comment of the caller's", c.Resolution)
 	}
 }
+
+// A grant on a card that ended, with no case, is refused by the table
+// naming the end: nothing is drawn, no row is written and the card's
+// sessions stay.
+func TestActRefusesAnExtendOnAnEndedCard(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "done", Objective: "x", Repository: "demo-app/demo-app", IssueNumber: 14, Track: policy.TrackDirect}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := g.r.Act(ctx, ActInput{TaskID: "t2", By: "sebastian", Rung: 3, Res: oneSession})
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "this card ended done: an extend buys nothing, file a new card") {
+		t.Fatalf("an extend on a done card = %v, want the refusal naming its end", err)
+	}
+	card, _, err := g.s.Task(ctx, "t2")
+	if err != nil || card.Usage.RaisedSessions != 0 {
+		t.Fatalf("t2 = %+v, %v; want no session raised", card.Usage, err)
+	}
+	if events, err := g.s.TaskEvents(ctx, "t2", 10); err != nil || len(events) != 0 {
+		t.Fatalf("t2's rows = %+v, %v; want none", events, err)
+	}
+}
+
+// A draw of nothing is not weighed: an extend of lines or of a check-in
+// share on rung 2 goes through on a pool the month has overdrawn, where a
+// session is refused.
+func TestActWeighsNoDrawOfNothing(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t0", Kind: EventCardFunded, Actor: "sebastian", Via: ViaConsole,
+		Detail: map[string]any{"pool": true, "rung": 3, "amount_eur": 61.0}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", By: ChatUser, Rung: 2, CaseID: g.c.ID, Res: oneSession}); err == nil {
+		t.Fatal("rung 2's session past the overdrawn pool went through")
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: Resolution{Action: ActExtend, Args: map[string]any{"lines": 100}}}); err != nil {
+		t.Fatalf("rung 2's lines on the overdrawn pool: %v", err)
+	}
+	if card := g.card(t); card.Usage.ExtraLines != 100 {
+		t.Fatalf("extra lines = %d, want 100", card.Usage.ExtraLines)
+	}
+}
+
+// An extend's step names every part it raised: a session from the pool
+// and the line bound beside it.
+func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
+	g := newActRig(t)
+	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "lines": 100}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1, "lines": 100}, Result: "Drew 1 session from the pool and raised the line bound by 100 lines."}}
+	if !reflect.DeepEqual(got.Did, want) {
+		t.Fatalf("did = %+v, want %+v", got.Did, want)
+	}
+}
+
+// A check-in's spend stop names its stop in the case's facts, from the
+// trip, not from its reason: the repeat of a share stop, whose ask names
+// no share, still opens as the share's.
+func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
+	g := newActRig(t)
+	repeat := checkinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
+	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopShare}, CaseOpen)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != CaseCheckinShare || c.Facts["checkin_stop"] != CheckinStopShare {
+		t.Fatalf("case = %s, facts %v; want checkin_share with checkin_stop %q", c.Kind, c.Facts, CheckinStopShare)
+	}
+}

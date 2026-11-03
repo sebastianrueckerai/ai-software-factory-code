@@ -76,6 +76,8 @@ func refuse(status int, msg string) error { return &refusal{status, msg} }
 type capFacts struct {
 	attempts, sessions, extra int
 	capped, merge, plan       bool
+	// timeCap: the cap it waits at is its agent time's
+	timeCap bool
 	// rerun: its merge request is a factory pull request's on red checks,
 	// which a re-run or a close decides (roadmap 264)
 	rerun bool
@@ -124,7 +126,9 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 			f.returns = !spec.Factory && spec.RedChecks
 		}
 	}
-	f.capped = t.Status == "waiting-human" && !f.merge && !f.plan && (factoryd.AtSessionCap(escalation) || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
+	waits := t.Status == "waiting-human" && !f.merge && !f.plan
+	f.timeCap = waits && factoryd.AtTimeCap(escalation)
+	f.capped = waits && (factoryd.AtSessionCap(escalation) || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
 
@@ -155,6 +159,8 @@ func fitting(t factoryd.Task, f capFacts) string {
 			return "close ends it (close)"
 		case t.Kind == "human":
 			return "one of its choices answers it (answer); close ends it"
+		case f.timeCap:
+			return "an answer with the findings grants more agent time (answer); close ends it"
 		case f.capped:
 			return "an answer with the findings grants one session (answer); close ends it"
 		case f.rerun:
@@ -542,6 +548,9 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		var said []string
 		for _, w := range waiting {
 			out, err := c.actOn(ctx, a, w.card, w.caseID, retry, nil)
+			if issue, ok := filedReplacement(out.Did); ok { // the filing stands even when the answer failed after it
+				c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
+			}
 			var no *refusal
 			switch {
 			case err != nil && len(said) > 0 && errors.As(err, &no):
@@ -550,9 +559,6 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 				return "", err
 			}
 			said = append(said, out.Text)
-			if issue, ok := filedReplacement(out.Did); ok {
-				c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
-			}
 		}
 		return strings.Join(said, " "), nil
 	}
@@ -1077,32 +1083,30 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 }
 
 // grantOf is what a grant on case k buys, the extend's args: one session
-// at a session cap, agentTime at an agent time cap (one session when the
-// policy gave none), and at a check-in's spend stop one more check-in
-// share when its reason is the share's, one session when it is the call
-// or time cap's. ok is false on a stop that asked a question, where a
-// grant goes on.
+// at a session cap, agentTime at an agent time cap, and at a check-in's
+// spend stop one more check-in share when the case's checkin_stop names
+// the share's, one session when it names the call or time cap's or none.
+// ok is false on a stop that asked a question, where a grant goes on.
 func grantOf(k factoryd.Case, agentTime time.Duration) (map[string]any, bool) {
-	reason, _ := k.Facts["reason"].(string)
 	switch {
-	case k.Kind == factoryd.CaseAgentTimeCap && agentTime > 0:
+	case k.Kind == factoryd.CaseAgentTimeCap:
 		return map[string]any{"agent_time_s": int(agentTime / time.Second)}, true
-	case k.Kind == factoryd.CaseCheckinShare && factoryd.AtCheckinShareStop(reason):
+	case k.Kind == factoryd.CaseCheckinShare && k.Facts["checkin_stop"] == factoryd.CheckinStopShare:
 		return map[string]any{"checkin_shares": 1}, true
-	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseAgentTimeCap, k.Kind == factoryd.CaseCheckinShare:
+	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseCheckinShare:
 		return map[string]any{"sessions": 1}, true
 	}
 	return nil, false
 }
 
-// cardTime is card t's draw of agent time by the policy in force: its
-// project's card draw for its size; 0 when the policy cannot be read.
+// cardTime is card t's draw of agent time: its project's card draw for its
+// size in the policy in force, the default card draw's when the policy
+// cannot be read.
 func (c *Console) cardTime(ctx context.Context, t factoryd.Task) time.Duration {
-	v, ok := c.inForce(ctx)
-	if !ok {
-		return 0
+	if v, ok := c.inForce(ctx); ok {
+		return v.EscalationOf(t.Repository).CardDrawOf(t.Size).AgentTime
 	}
-	return v.EscalationOf(t.Repository).CardDrawOf(t.Size).AgentTime
+	return policy.DefaultEscalation.CardDrawOf(t.Size).AgentTime
 }
 
 // grantText is a grant press's answer: the instruction its form named, or
@@ -1519,7 +1523,9 @@ func (c *Console) ceilingOf(ctx context.Context, t factoryd.Task) float64 {
 // doGrantSession grants card id what its cap asks for (grantOf), an
 // extend through Act on its live case, the human's answer to its findings
 // the note. On a case that asked a question it is an extend of one
-// session, which Act's table refuses there, naming the question.
+// session, which Act's table refuses there, naming the question. A card
+// with no case is at no cap, which a grant needs: the Extend form raises a
+// running card.
 func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if err := answerFits(text); err != nil {
@@ -1530,8 +1536,11 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 		return "", err
 	}
 	k, err := c.liveCase(ctx, t)
-	if err != nil {
+	switch {
+	case err != nil:
 		return "", err
+	case k.ID == 0:
+		return "", refuse(http.StatusConflict, "this card is not at a cap, so there is nothing to grant: the Extend form raises a running card")
 	}
 	args, ok := grantOf(k, c.cardTime(ctx, t))
 	if !ok {

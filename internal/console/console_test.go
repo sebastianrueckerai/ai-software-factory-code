@@ -1258,12 +1258,12 @@ func newRig(t *testing.T) *rig {
 		},
 		Act: func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 			r.acted = append(r.acted, in)
-			if err := cmp.Or(r.actErrs[len(r.acted)], r.actErr); err != nil {
-				return factoryd.ActResult{}, err
-			}
 			out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
 			if r.actDid != nil {
 				out.Did = r.actDid(in)
+			}
+			if err := cmp.Or(r.actErrs[len(r.acted)], r.actErr); err != nil {
+				return factoryd.ActResult{Did: out.Did}, err // what ran before the failure, as Act answers it
 			}
 			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
 				return out, nil

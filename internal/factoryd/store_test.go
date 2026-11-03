@@ -320,13 +320,14 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 			s.tasks[taskID], s.events = before, s.events[:rows]
 		}
 	}()
-	if d.Rung <= 1 {
+	weighed := !d.amount().IsZero() // a draw of nothing is weighed against no bound, as PGStore's drawFits
+	if weighed && d.Rung <= 1 {
 		drawn, _ := s.CardDrawn(ctx, taskID)
 		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
 			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
 		}
 	}
-	if d.Rung <= 2 {
+	if weighed && d.Rung <= 2 {
 		drawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
 		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
 			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
@@ -1079,13 +1080,15 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetTaskUsage keeps the console's raises, as the store does.
+// SetTaskUsage keeps the console's raises and lowers no check-in share,
+// as the store does.
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -5128,5 +5131,18 @@ func TestTaskReadCountsAnExpiredUnsweptHold(t *testing.T) {
 	}
 	if k.HeldEUR != 0.4 || Cents(k.Left()) != 10 {
 		t.Fatalf("held %v, left %v; want the expired hold's 0.40 held and 0.10 left", k.HeldEUR, k.Left())
+	}
+}
+
+// The fake's usage snapshot keeps the check-in's extra share as
+// PGStore's does: the snapshot writes every counter but lowers no share.
+func TestFakeStoreKeepsTheCheckinShare(t *testing.T) {
+	s := newFakeStore()
+	s.tasks["t1"] = Task{ID: "t1", Usage: TaskUsage{ExtraCheckinShare: 1}}
+	if err := s.SetTaskUsage(context.Background(), "t1", TaskUsage{Attempts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
+		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
 	}
 }

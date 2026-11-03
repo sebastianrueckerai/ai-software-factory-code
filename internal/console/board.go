@@ -491,7 +491,9 @@ type card struct {
 	RollID  string
 	Reason  string   // an escalation's reason
 	Choices []string // the answers its agent offered, a button each
-	Capped  bool     // an escalated card at its session cap, which an answer grants a session
+	Capped  bool     // an escalated card at its session or agent time cap, which an answer grants what the cap asks for
+	// TimeCapped: the cap is its agent time's, which an answer grants more of
+	TimeCapped bool
 	// Ask says the card waits on an answer: an intake row holds its ask.
 	// Without one a human card that waits offers the factory or a close
 	// (roadmap 1131).
@@ -2018,7 +2020,8 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if v.escalated(t) {
 		k.Reason, k.Choices = cardReason(bt.Escalation), bt.Choices
 		k.Question, k.AnswersPending = bt.Question, bt.AnswersPending
-		k.Capped = capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending).capped
+		f := capFactsFrom(t, v.policy.Document.Limits.Sessions, bt.Escalation, v.pending)
+		k.Capped, k.TimeCapped = f.capped, f.timeCap
 		// the Fund action is offered where the fund's floor refuses a
 		// session's opening calls for want of budget (roadmap 243): the same
 		// card, to its project's approvers; a refusal no raise answers

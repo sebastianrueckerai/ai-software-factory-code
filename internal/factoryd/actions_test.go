@@ -422,14 +422,16 @@ func TestExtendOfLinesAloneApplies(t *testing.T) {
 // An extend answers a cap: a session cap, an agent time cap, a check-in
 // share, and the owner exits of a gate stop and of findings that repeat,
 // whose questions offer "Extend the card"; with no case it raises a live
-// card's caps. Any other case asked a question, which an extend does not
-// answer, and the human is not offered one there.
+// card's caps. A stop on money names the fund, any other case asked a
+// question, which an extend does not answer, and the human is not offered
+// one there.
 func TestExtendAnswersACapAlone(t *testing.T) {
 	const asked = "this card asked a question, not for a session: answer it, or extend at its cap"
 	one := Resolution{Args: map[string]any{"sessions": 1}}
 	for kind, want := range map[CaseKind]string{
 		CaseSessionCap: "", CaseAgentTimeCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
-		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseBudgetFloor: asked, CaseCheckinHuman: asked, CaseMonthCap: asked,
+		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
+		CaseBudgetFloor: "this card waits on money, not a session: fund it", CaseMonthCap: "this card waits on money, not a session: fund it",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
 			t.Errorf("an extend on %q = %q, want %q", kind, got, want)
@@ -445,5 +447,48 @@ func TestFundRefusesAnEndedCard(t *testing.T) {
 	if got, want := applies(t, ActFund, CaseFacts{Final: "done"}, Resolution{Args: map[string]any{"eur": 1.0}}),
 		"this card ended done: a fund buys nothing, file a new card"; got != want {
 		t.Errorf("a fund on a done card = %q, want %q", got, want)
+	}
+}
+
+// A card that ended takes nothing that buys: an extend and a raise of its
+// ceiling are refused naming the end, as a fund is, and the human is
+// offered none of the three there.
+func TestEndedCardTakesNoExtendOrRaise(t *testing.T) {
+	ended := CaseFacts{Final: "done"}
+	for _, tc := range []struct {
+		action string
+		r      Resolution
+		want   string
+	}{
+		{ActExtend, Resolution{Args: map[string]any{"sessions": 1}}, "this card ended done: an extend buys nothing, file a new card"},
+		{ActRaiseCeiling, Resolution{Args: map[string]any{"eur": 1.0}}, "this card ended done: a raise of its ceiling buys nothing, file a new card"},
+	} {
+		if got := applies(t, tc.action, ended, tc.r); got != tc.want {
+			t.Errorf("%s on a done card = %q, want %q", tc.action, got, tc.want)
+		}
+	}
+	if got := offeredNames(ended, 3); slices.Contains(got, ActExtend) || slices.Contains(got, ActRaiseCeiling) || slices.Contains(got, ActFund) {
+		t.Errorf("the human on a done card is offered %v, want no extend, raise or fund", got)
+	}
+}
+
+// An extend grants one more check-in share at a time, as the old grant
+// did: two are refused.
+func TestExtendGrantsOneCheckinShareAtATime(t *testing.T) {
+	share := CaseFacts{Kind: CaseCheckinShare}
+	if got := applies(t, ActExtend, share, Resolution{Args: map[string]any{"checkin_shares": 1}}); got != "" {
+		t.Errorf("one share = %q, want it to apply", got)
+	}
+	if got, want := applies(t, ActExtend, share, Resolution{Args: map[string]any{"checkin_shares": 2}}), "an extend grants one more check-in share at a time"; got != want {
+		t.Errorf("two shares = %q, want %q", got, want)
+	}
+}
+
+// A card short of money is answered by a fund: an extend there names it.
+func TestExtendOnAMoneyStopNamesTheFund(t *testing.T) {
+	for _, kind := range []CaseKind{CaseBudgetFloor, CaseMonthCap} {
+		if got, want := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}), "this card waits on money, not a session: fund it"; got != want {
+			t.Errorf("an extend on %s = %q, want %q", kind, got, want)
+		}
 	}
 }

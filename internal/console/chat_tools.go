@@ -1493,7 +1493,7 @@ var tools = []chatTool{
 				"sessions":       map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
 				"agent_time_s":   map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
 				"lines":          map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
-				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "description": "extend's more shares of the check-in's budget"},
+				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "maximum": 1, "description": "extend's one more share of the check-in's budget"},
 				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
@@ -1694,7 +1694,7 @@ var tools = []chatTool{
 		}},
 	{name: "grant_session", title: "Grant a session", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Grant a card at its session cap one more session, with an answer to its findings.",
+		about:    "Grant a card at a cap what the cap asks for, with an answer to its findings.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err

@@ -498,15 +498,21 @@ func beside(detail, extra map[string]any) {
 func drawActions(res Resolution, d CaseDraw) []CaseAction {
 	var out []CaseAction
 	own, _ := Resolution{Action: res.Action, Args: res.Args}.draw()
+	var parts []string
 	switch {
 	case res.Action == ActRaiseCeiling:
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the ceiling by %.2f EUR.", d.Raise)})
+		parts = append(parts, fmt.Sprintf("raised the ceiling by %.2f EUR", d.Raise))
 	case !own.IsZero():
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Drew " + drawWords(own) + " from the pool."})
-	case d.Lines > 0:
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the line bound by %s.", textutil.Plural(d.Lines, "line", "lines"))})
-	case d.Shares > 0:
-		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Granted " + textutil.Plural(d.Shares, "more check-in share", "more check-in shares") + "."})
+		parts = append(parts, "drew "+drawWords(own)+" from the pool")
+	}
+	if d.Lines > 0 {
+		parts = append(parts, "raised the line bound by "+textutil.Plural(d.Lines, "line", "lines"))
+	}
+	if d.Shares > 0 {
+		parts = append(parts, "granted "+textutil.Plural(d.Shares, "more check-in share", "more check-in shares"))
+	}
+	if said := textutil.AndList(parts); said != "" {
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: strings.ToUpper(said[:1]) + said[1:] + "."})
 	}
 	if res.Fund != nil && !res.Fund.IsZero() {
 		out = append(out, CaseAction{Action: ActFund, Result: "Drew " + drawWords(*res.Fund) + " from the pool."})

@@ -369,8 +369,9 @@ func retryRig(t *testing.T) *rig {
 // One Retry of a failed card answers every dependency case on it through
 // Act and files nothing itself. card_retried is written once, by the
 // answer whose retry filed the replacement (its step names #9), even when
-// a later dependent's answer stops; a press whose answers only named the
-// replacement a retry filed before writes none.
+// a later dependent's answer stops or the filing answer itself fails after
+// the filing; a press whose answers only named the replacement a retry
+// filed before writes none.
 func TestRetryAnswersEveryDependentsCase(t *testing.T) {
 	retry := factoryd.Resolution{Action: factoryd.ActRetry, Args: map[string]any{"task_id": "t-c7"}}
 	filed := []factoryd.CaseAction{{Action: factoryd.ActRetry, Args: map[string]any{"task_id": "t-c7", "replacement": int64(9)}, Result: "Filed #9 in place of #7."}}
@@ -412,13 +413,27 @@ func TestRetryAnswersEveryDependentsCase(t *testing.T) {
 	checkRows(t, r.events, before, answered("t-d1", 5), retried, answered("t-d2", 6))
 
 	r = retryRig(t)
-	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction { return filed }
+	r.actDid = func(in factoryd.ActInput) []factoryd.CaseAction {
+		if in.TaskID == "t-d1" {
+			return filed
+		}
+		return nil
+	}
 	r.actErrs = map[int]error{2: factoryd.ErrActRefused("the card does not depend on t-c7")}
 	before = r.events.count()
 	if _, err := press(r); err == nil || err.Error() != "Case 5 took retry. The next answer stopped: the card does not depend on t-c7" {
 		t.Fatalf("the stopped press = %v", err)
 	}
 	checkRows(t, r.events, before, answered("t-d1", 5), retried)
+
+	r = retryRig(t)
+	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction { return filed }
+	r.actErrs = map[int]error{1: errors.New("the store is down")}
+	before = r.events.count()
+	if _, err := press(r); err == nil {
+		t.Fatal("the press whose filing answer failed went through")
+	}
+	checkRows(t, r.events, before, retried)
 
 	r = retryRig(t)
 	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction { return named }
@@ -559,8 +574,11 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			_, s := r.loggedIn(t)
 			r.tasks.set(tc.reason, factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, BudgetEUR: 2})
 			r.tasks.tasks[0].Question = q
-			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman,
-				Facts: map[string]any{"reason": tc.reason}}}}
+			facts := map[string]any{"reason": tc.reason}
+			if strings.Contains(tc.reason, factoryd.CheckinShareSpent) {
+				facts["checkin_stop"] = factoryd.CheckinStopShare // as the trip names the share stop
+			}
+			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
 			var err error
 			if c.Value == factoryd.AnswerExtend {
@@ -612,34 +630,40 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 // The Grant value buys what the case's stop asks for: one session at a
 // session cap, the card draw's agent time at an agent time cap (an hour,
 // one and a half for a large card), one more check-in share at the
-// check-in's share stop, which the case's reason names, one session at the
-// check-in's other spend stops, and on a stop that asked a question it
-// goes on with its label.
+// check-in's share stop, which the case's checkin_stop fact names even on
+// a repeat whose ask names no share, one session at the check-in's other
+// spend stops and where the case names none, and on a stop that asked a
+// question it goes on with its label.
 func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
-	const shareStop, callCap = "check-in: spend_above_policy: the check-in's share of the budget is spent", "check-in: spend_above_policy: check-in call cap reached (3 calls)"
+	const repeat = "check-in: spend_above_policy: The restart produced no new commit, the head is still c1. What should the agent do?"
 	for _, tc := range []struct {
-		kind   factoryd.CaseKind
-		reason string
-		size   string
-		want   factoryd.Resolution
+		kind factoryd.CaseKind
+		stop string
+		size string
+		want factoryd.Resolution
 	}{
 		{factoryd.CaseSessionCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
 		{factoryd.CaseAgentTimeCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 3600}, Note: "Go on"}},
 		{factoryd.CaseAgentTimeCap, "", "large", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 5400}, Note: "Go on"}},
-		{factoryd.CaseCheckinShare, shareStop, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"checkin_shares": 1}, Note: "Go on"}},
-		{factoryd.CaseCheckinShare, callCap, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
+		{factoryd.CaseCheckinShare, factoryd.CheckinStopShare, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"checkin_shares": 1}, Note: "Go on"}},
+		{factoryd.CaseCheckinShare, factoryd.CheckinStopCallCap, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
+		{factoryd.CaseCheckinShare, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
 		{factoryd.CaseOther, "", "", factoryd.Resolution{Action: factoryd.ActContinue, Note: "Go on"}},
 	} {
 		r := newRig(t)
 		_, s := r.loggedIn(t)
 		r.tasks.set("a stop", factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Size: tc.size})
 		r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "May it go on?", Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerGrant, Label: "Go on"}}}
-		r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: map[string]any{"reason": tc.reason}}}}
+		facts := map[string]any{"reason": repeat}
+		if tc.stop != "" {
+			facts["checkin_stop"] = tc.stop
+		}
+		r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: facts}}}
 		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-k", "", factoryd.AnswerGrant, ""); err != nil {
 			t.Fatalf("%s %s: %v", tc.kind, tc.size, err)
 		}
 		if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, tc.want) {
-			t.Errorf("%s %q %s: Act took %+v, want %+v", tc.kind, tc.reason, tc.size, got.Res, tc.want)
+			t.Errorf("%s %q %s: Act took %+v, want %+v", tc.kind, tc.stop, tc.size, got.Res, tc.want)
 		}
 	}
 }
@@ -711,5 +735,67 @@ func TestFundOnAnEndedCardMeetsTheTable(t *testing.T) {
 	}
 	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, res) || got.CaseID != 0 {
 		t.Fatalf("Act took %+v, want the fund on no case", got)
+	}
+}
+
+// A grant on a card that is at no cap is refused before Act: a done card
+// with no case has nothing to grant, and the Extend form raises a running
+// card.
+func TestGrantSessionNeedsACap(t *testing.T) {
+	r := newRig(t)
+	r.tasks.set("", factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 13})
+	_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-d", Text: "one more"})
+	var no *refusal
+	if want := "this card is not at a cap, so there is nothing to grant: the Extend form raises a running card"; !errors.As(err, &no) ||
+		no.status != http.StatusConflict || no.msg != want || len(r.acted) != 0 {
+		t.Fatalf("grant_session on a done card = %v, Act took %+v; want 409 %q", err, r.acted, want)
+	}
+}
+
+// The answer's args take one more check-in share at most, as the table
+// does.
+func TestAnswerArgsTakeOneCheckinShare(t *testing.T) {
+	r := newRig(t)
+	tool, _ := r.c.chatTool("answer")
+	shares := tool.params["args"].(map[string]any)["properties"].(map[string]any)["checkin_shares"].(map[string]any)
+	if shares["maximum"] != 1 || shares["minimum"] != 0 {
+		t.Fatalf("checkin_shares = %v, want minimum 0 and maximum 1", shares)
+	}
+}
+
+// At an agent time cap a policy the console cannot read still grants the
+// default card draw's agent time, one and a half hours for a large card,
+// never a session the time cap does not take.
+func TestCardTimeFallsBackToTheDefaultDraw(t *testing.T) {
+	r := newRig(t)
+	r.ledger.down = true
+	if got, want := r.c.cardTime(t.Context(), factoryd.Task{Size: "large"}), 90*time.Minute; got != want {
+		t.Fatalf("cardTime = %v, want %v", got, want)
+	}
+}
+
+// A card at its agent time cap says on its answer button what the words
+// grant, and a wrong press names it.
+func TestTimeCappedCardNamesItsGrant(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.set("the agent time is used up: every finding sent to the agent so far goes to a human", factoryd.Task{ID: "t-tc", Kind: "agent",
+		Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Trim the logs."})
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	if esc := escalationOf(t, body, "t-tc"); !strings.Contains(esc, `<button type="submit">Grant more agent time with this answer</button>`) {
+		t.Fatalf("the time-capped card's answer form =\n%s\nwant it to grant agent time", esc)
+	}
+	if got, want := fitting(factoryd.Task{Status: "waiting-human", IssueNumber: 13}, capFacts{capped: true, timeCap: true}),
+		"an answer with the findings grants more agent time (answer); close ends it"; got != want {
+		t.Fatalf("fitting = %q, want %q", got, want)
+	}
+}
+
+// grant_session says what it grants: what the cap asks for.
+func TestGrantSessionSaysWhatItGrants(t *testing.T) {
+	r := newRig(t)
+	tool, _ := r.c.chatTool("grant_session")
+	if want := "Grant a card at a cap what the cap asks for, with an answer to its findings."; tool.about != want {
+		t.Fatalf("grant_session's about = %q, want %q", tool.about, want)
 	}
 }

@@ -445,15 +445,17 @@ func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
 	})
 }
 
-// An extend with no note, carried by comment 7, and the webhook's copy of
-// comment 7 in the same pass: one answer, the extend's own words.
+// At the session cap, an extend with no note, carried by comment 7, and
+// the webhook's copy of comment 7 in the same pass: one answer, the
+// extend's own words.
 func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.escalationIDs = []int64{5}
-	h.onSessions(licenseQuestion, pushed("s2", "c2"))
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	h.onSessions(pushed("s4", "c4"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
 	h.env.RegisterDelayedCallback(func() {
+		h.rowUsage.RaisedSessions = 1
 		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 7))
 		h.env.SignalWorkflow(SignalHumanComment, TaskSignal{Author: "sebastian", Body: "factoryd: sebastian answered with extend: 1 session from the pool.", Comment: 7})
 	}, time.Hour)
@@ -462,9 +464,9 @@ func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	want := []string{`sebastian, to "Which license?": extend: 1 session from the pool`}
-	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, want) {
-		t.Fatalf("sessions = %+v, want the second with the one answer %q", h.sessions, want)
+	want := []string{`sebastian, to "` + capReached + `": extend: 1 session from the pool`}
+	if len(h.sessions) != 1 || !slices.Equal(h.sessions[0].Answers, want) {
+		t.Fatalf("sessions = %+v, want the fourth with the one answer %q", h.sessions, want)
 	}
 }
 
@@ -775,5 +777,38 @@ func TestWorkflowHandoverToTheCheaperModel(t *testing.T) {
 	}
 	if len(h.sessions) != 2 || h.sessions[0].Model != "factory/big" || h.sessions[1].Model != "factory/small" {
 		t.Fatalf("sessions = %+v, want factory/big then factory/small", h.sessions)
+	}
+}
+
+// A check-in's spend stop tells its trip which stop it is, whatever its
+// ask says: the share stop and its repeat on the same head, whose ask
+// names the exits instead, both trip as the share's.
+func TestCheckinSpendStopTellsItsTripTheStop(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		checkinStopped("s2", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s2", ParentSession: "s1"}}),
+		checkinStopped("s3", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend,
+			Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInGate, Session: "s3", ParentSession: "s2"}})})
+	h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+			return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+		})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("final = %q, escalations = %q", final, h.escalated)
+	}
+	if len(h.trips) != 2 || strings.Contains(h.trips[1].Reason, CheckinShareSpent) {
+		t.Fatalf("trips = %+v, want the share stop and a repeat whose ask names no share", h.trips)
+	}
+	for i, trip := range h.trips {
+		if trip.CheckinStop != CheckinStopShare {
+			t.Errorf("trip %d's stop = %q, want %q", i, trip.CheckinStop, CheckinStopShare)
+		}
 	}
 }

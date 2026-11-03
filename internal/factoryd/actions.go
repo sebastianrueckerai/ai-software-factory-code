@@ -121,6 +121,12 @@ var Actions = []Action{
 		switch {
 		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0 || shares < 0:
 			return "an extend takes no part below 0"
+		case shares > 1:
+			return "an extend grants one more check-in share at a time"
+		case f.Final != "":
+			return "this card ended " + f.Final + ": an extend buys nothing, file a new card"
+		case f.Kind == CaseBudgetFloor || f.Kind == CaseMonthCap:
+			return "this card waits on money, not a session: fund it"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
 		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
@@ -142,6 +148,9 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActRaiseCeiling, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if f.Final != "" {
+			return "this card ended " + f.Final + ": a raise of its ceiling buys nothing, file a new card"
+		}
 		eur, _ := r.Args["eur"].(float64)
 		return raiseRefusal(eur)
 	}},

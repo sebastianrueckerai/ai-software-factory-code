@@ -33,7 +33,18 @@ type TripInput struct {
 	Choices []string
 	Head    string
 	Stage   string
+	// CheckinStop is the check-in spend stop the trip is (CheckinStop*),
+	// "" for any other stop: its repeat's ask no longer names it.
+	CheckinStop string
 }
+
+// The check-in's spend stops, which a check-in share case keeps in its
+// facts as checkin_stop.
+const (
+	CheckinStopShare   = "share"
+	CheckinStopCallCap = "call_cap"
+	CheckinStopTimeCap = "time_cap"
+)
 
 // tripAttempt is one attempt of a trip's activity: its id, the run's and
 // the activity's, and its number, 1 for the first.
@@ -338,6 +349,9 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	maps.Copy(facts, named)
 	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
+	if in.CheckinStop != "" {
+		facts["checkin_stop"] = in.CheckinStop
+	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: tripKey(kind, problem, f.Head, f),
 		Status: status, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
