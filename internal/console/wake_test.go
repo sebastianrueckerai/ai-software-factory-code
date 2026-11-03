@@ -92,6 +92,45 @@ func TestAWakesFailureStaysInItsThread(t *testing.T) {
 	}
 }
 
+// A wake's ask lands in the inbox, which takes presses only: an ask
+// without choices is refused, naming choices and attach_analysis, and
+// stores no ask row; one with choices asks as a human's turn does.
+func TestWakeAskNeedsChoices(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	wake := func(replies ...[]string) []factoryd.ChatMessage {
+		t.Helper()
+		g.replies = replies
+		if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "#13 asks which store."); err != nil {
+			t.Fatalf("StartWake: %v", err)
+		}
+		rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	rows := wake([]string{call(1, "ask", `{"ask":"Which store keeps the snapshots?"}`)}, []string{say("I recorded it instead.")})
+	if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[2].Content != "I recorded it instead." {
+		t.Fatalf("the wake's rows = %+v", rows)
+	}
+	equal(t, "the ask without choices", rows[1].ToolCalls[0].Result,
+		"Refused: The inbox takes buttons only: give choices, or record what you found with attach_analysis.")
+	if slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Kind == factoryd.MessageAsk }) {
+		t.Fatalf("a refused ask stored a row: %+v", rows)
+	}
+
+	rows = wake([]string{call(1, "ask", `{"ask":"Which store keeps the snapshots?","choices":["Postgres","SQLite"]}`)})
+	ask := rows[len(rows)-1]
+	if ask.Kind != factoryd.MessageAsk || ask.Content != "Which store keeps the snapshots?" || !slices.Equal(ask.Choices, []string{"Postgres", "SQLite"}) ||
+		len(ask.ToolCalls) != 1 || ask.ToolCalls[0].Result != "Asked the human; this turn ends. A press or their next message answers it." {
+		t.Fatalf("the wake's ask row = %+v", ask)
+	}
+}
+
 // A wake on a thread whose turn runs waits for it: its user row lands
 // queued while the member's turn holds the thread, and its turn starts
 // only after theirs ends.

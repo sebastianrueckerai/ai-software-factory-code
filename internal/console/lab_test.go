@@ -435,7 +435,7 @@ func pokeScene(now time.Time) labScene {
 // inbox open: the agent's own start with its decider line, then the
 // question on #603 as the inbox's escalation, its choices once in the
 // answer row between the log and the box (roadmap 239, C14). A later
-// ask, already settled by the member's reply, sits over the escalation:
+// ask, already settled by the human's press, sits over the escalation:
 // the row must still offer the escalation, not fall silent on it.
 func escalationScene(now time.Time) labScene {
 	s := threadsScene(now)

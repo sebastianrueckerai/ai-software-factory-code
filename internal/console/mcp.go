@@ -131,7 +131,7 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_send", Description: "Send a message to the project agent of " + call.p.Name +
 		" as yourself, as the console's chat does, and wait up to 50 seconds for the turn's end: its reply, the tools it called, " +
 		"the proposals it raised, which run only once you confirm them, and what it applied. Without a conversation it writes in " +
-		"this token's own conversation. A turn longer than 50 seconds answers ended: false and goes on; chat_read with after set to the last id gets the rest."},
+		"this token's own conversation. The inbox refuses a message: answer it with its buttons in the console. A turn longer than 50 seconds answers ended: false and goes on; chat_read with after set to the last id gets the rest."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in sendInput) (*mcp.CallToolResult, any, error) {
 			// the request's own context: the SDK ends the handler's with it
 			// on its newest protocol only, and a client that gives up ends it
@@ -153,7 +153,7 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 			return c.chatConfirm(r.Context(), call, in)
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_threads", Description: "List your conversations with the project agent of " + call.p.Name +
-		": each one's number, title, time of its last message, and whether it holds a reply you have not read."},
+		": each one's number, title, time of its last message, whether it holds a reply you have not read, and whether it is your inbox."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			return c.chatThreads(ctx, call)
 		})
@@ -172,6 +172,7 @@ type mcpThread struct {
 	Title  string    `json:"title"`
 	Last   time.Time `json:"last,omitzero"`
 	Unread bool      `json:"unread"`
+	Inbox  bool      `json:"inbox"`
 }
 
 func (c *Console) chatThreads(ctx context.Context, call tokenCall) (*mcp.CallToolResult, any, error) {
@@ -182,7 +183,7 @@ func (c *Console) chatThreads(ctx context.Context, call tokenCall) (*mcp.CallToo
 	}
 	out := make([]mcpThread, 0, len(convs))
 	for _, cv := range convs {
-		out = append(out, mcpThread{Number: cv.Number, Title: cv.Title, Last: cv.LastAt, Unread: cv.Unread > 0})
+		out = append(out, mcpThread{Number: cv.Number, Title: cv.Title, Last: cv.LastAt, Unread: cv.Unread > 0, Inbox: cv.Inbox})
 	}
 	return jsonAnswer(out)
 }

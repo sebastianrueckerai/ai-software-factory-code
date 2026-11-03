@@ -153,7 +153,7 @@ func TestChatAnswersCriteriaOnlyOnTheHumansLine(t *testing.T) {
 	if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[1].Content != "" || rows[2].Content != "I asked them." {
 		t.Fatalf("the wake's rows = %+v", rows)
 	}
-	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word."
+	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."
 	if got := rows[1].ToolCalls[0].Result; got != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", got, want)
 	}
@@ -176,13 +176,16 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 		calls = append(calls, id+" "+cid+" "+verdict)
 		return nil
 	}
-	ck, s := r.loggedIn(t)
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
-	g.replies = [][]string{{say("Noted.")}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"waive c3: the timeout is the provider's SLA"}, "conversation": {fmt.Sprint(conv)}})
+	for _, m := range []factoryd.ChatMessage{{Role: "user", Content: "waive c3: the timeout is the provider's SLA"}, {Role: "assistant", Content: "Noted."}} {
+		m.Conversation = conv
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
 	g.replies = [][]string{{call(1, "answer_criteria", `{"task_id":"t-plan","action":"waive","criterion":"c3","reason":"not mine to decide"}`)}, {say("I asked them.")}}
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "The criteria gap of #3 waits."); err != nil {
 		t.Fatalf("StartWake: %v", err)
@@ -199,7 +202,7 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 			}
 		}
 	}
-	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word."
+	want := "Refused: This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word."
 	if refusal != want {
 		t.Errorf("the wake's tool result = %q\nwant %q", refusal, want)
 	}

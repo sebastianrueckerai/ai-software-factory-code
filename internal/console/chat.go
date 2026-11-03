@@ -725,14 +725,26 @@ func names(th factoryd.ChatConversation) bool {
 	return th.Messages == 0 && !th.Inbox && th.TaskID == ""
 }
 
+// inboxRefusal answers a typed message to the inbox, which only the
+// factory and its rows' buttons write in.
+const inboxRefusal = "The inbox is the factory's thread: answer with its buttons, and write in a thread of your own."
+
 // say runs the turn on in in the turn's thread: it files the month's chat
 // task, stores the message and its attachments, and answers it — joining
-// the thread's turn in flight, queued behind it, or on its own. A refusal
-// comes back before open opens the stream; after that the turn fails
-// through fail. It returns when the turn ends.
+// the thread's turn in flight, queued behind it, or on its own. The inbox
+// refuses it, 409. A refusal comes back before open opens the stream;
+// after that the turn fails through fail. It returns when the turn ends.
 func (t *turn) say(in turnInput, open func()) error {
 	c := t.c
 	ctx := t.r.Context()
+	th, _, err := c.cfg.Chat.Conversation(ctx, t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return refuse(http.StatusInternalServerError, "cannot read the conversation")
+	}
+	if th.Inbox {
+		return refuse(http.StatusConflict, inboxRefusal)
+	}
 	t.pageQuery = in.View
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {

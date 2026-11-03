@@ -3432,6 +3432,71 @@ func TestChatAskBindsForTheThreadsOwner(t *testing.T) {
 		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
 }
 
+// The inbox is the factory's thread: no typed message enters it, neither
+// its human's, a /compact among them, nor a writer's who talks in it by
+// its owner's name. Each answers 409 naming the buttons and a thread of
+// their own, and nothing is stored or sent to the model.
+func TestChatInboxRefusesATypedMessage(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "The inbox is the factory's thread: answer with its buttons, and write in a thread of your own."
+	conv := strconv.FormatInt(inbox, 10)
+	for _, message := range []string{"what is open?", "/compact"} {
+		code, body, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}, "conversation": {conv}})
+		equal(t, "sebastian's "+message+" in his inbox", []any{code, body}, []any{http.StatusConflict, []string{want}})
+	}
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	code, body, _ := chatPost(t, r, ak, as, chatPath, url.Values{"message": {"what is open?"}, "conversation": {conv}, "owner": {"sebastian"}})
+	equal(t, "anna's message in sebastian's inbox", []any{code, body}, []any{http.StatusConflict, []string{want}})
+	chat.mu.Lock()
+	rows := len(chat.msgs["sf/code sebastian"]) + len(chat.msgs["sf/code anna"])
+	chat.mu.Unlock()
+	if rows != 0 || len(g.calls()) != 0 {
+		t.Fatalf("the refused messages left %d rows and %d model calls, want none", rows, len(g.calls()))
+	}
+}
+
+// A card answer in words that match none of its choices goes to the
+// human's chat, never into the inbox: with the inbox current, the words
+// land in a new thread of their own, which is current afterwards.
+func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}}}
+	_, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := chat.OpenConversation(ctx, "sf/code", "sebastian", inbox); err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say("I read the card.")}}
+	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "")
+	if err != nil || note != "The words are in the project chat; the agent answers there." {
+		t.Fatalf("the answer in words = %q, %v", note, err)
+	}
+	// the inbox is thread 2, past the current 1; the own thread one past it
+	if !waitFor(t, 5*time.Second, func() bool { return len(rowsOf(t, chat, "sebastian", 3)) == 2 }) {
+		t.Fatalf("thread 3 = %v, want the words and the turn's answer", rowsOf(t, chat, "sebastian", 3))
+	}
+	equal(t, "the own thread", rowsOf(t, chat, "sebastian", 3),
+		[]string{"user: About card #13 (t-e): use your own judgement on the replica", "assistant: I read the card."})
+	equal(t, "the inbox", rowsOf(t, chat, "sebastian", inbox), []string{})
+	cur, err := chat.CurrentConversation(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the current thread", cur, int64(3))
+}
+
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
 
 // A pasted image rides the composer's send like a file rides it: the

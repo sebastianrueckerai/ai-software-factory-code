@@ -1586,7 +1586,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			if !ok {
-				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word.")
+				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
 			}
 			q, err := t.criteriaRequest(in)
 			if err != nil {
@@ -2076,7 +2076,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human, answered by a press or their next message, and ends the turn.
-  escalate asks the humans who are not in this conversation; a choice or a reply in their inbox answers it.
+  escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
   fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the human's raise, and a project without a pool takes it too.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.

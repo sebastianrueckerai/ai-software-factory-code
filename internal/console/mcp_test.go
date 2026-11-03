@@ -308,7 +308,7 @@ func TestMCPChatThreadsListsOnlyOwn(t *testing.T) {
 		}
 	}
 	got := threadsOf(t, opened(t, srv, &door{auth: "Bearer " + bearer}))
-	if want := `[{"number":2,"title":"Fix the cache","last":"2026-10-11T09:30:02Z","unread":true}]`; got != want {
+	if want := `[{"number":2,"title":"Fix the cache","last":"2026-10-11T09:30:02Z","unread":true,"inbox":false}]`; got != want {
 		t.Fatalf("chat_threads = %s\nwant %s", got, want)
 	}
 	r.chat.mu.Lock()
@@ -552,6 +552,29 @@ func TestMCPChatSendRefusesForeignConversation(t *testing.T) {
 	}
 	equal(t, "sebastian's rows", rowsOf(t, chat, "sebastian", 2), []string{})
 	equal(t, "alice's rows", rowsOf(t, chat, "alice", 2), []string{"user: Alice's thread"})
+	if n := len(g.calls()); n != 0 {
+		t.Fatalf("%d model calls, want none", n)
+	}
+}
+
+// The inbox is the factory's thread: chat_threads marks it, and
+// chat_send naming it is refused with the console's own sentence, nothing
+// stored and no model called.
+func TestMCPChatSendRefusesTheInbox(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	session := tokenSession(t, r)
+	if got, want := threadsOf(t, session), `[{"number":2,"title":"Inbox","last":"2026-10-11T09:30:00Z","unread":false,"inbox":true}]`; got != want {
+		t.Fatalf("chat_threads = %s\nwant %s", got, want)
+	}
+	text, refused, err := callTool(session, "chat_send", map[string]any{"message": "hi", "conversation": inbox})
+	if err != nil || !refused || text != "The inbox is the factory's thread: answer with its buttons, and write in a thread of your own." {
+		t.Fatalf("chat_send to the inbox = %q refused %v, %v", text, refused, err)
+	}
+	equal(t, "the inbox", rowsOf(t, chat, "sebastian", inbox), []string{})
 	if n := len(g.calls()); n != 0 {
 		t.Fatalf("%d model calls, want none", n)
 	}
