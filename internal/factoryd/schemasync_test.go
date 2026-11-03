@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -39,6 +40,17 @@ type schemaPR struct {
 const (
 	schemaUp   = "/api/v1/repos/sf/ai-software-factory-infra"
 	schemaFork = "/api/v1/repos/factory-agent/ai-software-factory-infra"
+	schemaCode = "/api/v1/repos/sf/ai-software-factory-code"
+)
+
+// The code repository's main line, oldest first, the copier's build in
+// the middle, and a commit off that line.
+var (
+	codeOlder = strings.Repeat("a", 40)
+	codeMine  = strings.Repeat("b", 40)
+	codeNewer = strings.Repeat("c", 40)
+	codeAside = strings.Repeat("d", 40)
+	codeLine  = []string{codeOlder, codeMine, codeNewer}
 )
 
 func (s *schemaForgejo) server(t *testing.T) *httptest.Server {
@@ -68,6 +80,18 @@ func (s *schemaForgejo) server(t *testing.T) *httptest.Server {
 			return s.prs[n-1]
 		}
 		switch {
+		case r.Method == http.MethodGet && strings.HasPrefix(p, schemaCode+"/compare/"):
+			// head...sha counts the commits sha has and head lacks
+			head, sha, _ := strings.Cut(strings.TrimPrefix(p, schemaCode+"/compare/"), "...")
+			h, at := slices.Index(codeLine, head), slices.Index(codeLine, sha)
+			switch {
+			case h < 0 || at < 0 && sha != codeAside:
+				http.NotFound(w, r)
+			case sha == codeAside:
+				fmt.Fprint(w, `{"commits":[],"files":[],"total_commits":2}`)
+			default:
+				fmt.Fprintf(w, `{"commits":[],"files":[],"total_commits":%d}`, max(0, at-h))
+			}
 		case r.Method == http.MethodGet && p == schemaUp+"/branches/main":
 			fmt.Fprint(w, `{"commit":{"id":"c1"}}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, schemaUp+"/raw/") && q.Get("ref") == "c1":
@@ -180,7 +204,7 @@ func schemaRig(t *testing.T, change func(main map[string]string)) (*schemaForgej
 	srv := fj.server(t)
 	f := &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", ProjectsToken: "projects-tok", HTTP: srv.Client()}
 	config := &ForgejoConfig{Forgejo: f, Token: "config-tok", Repo: Repo{Owner: "sf", Name: "ai-software-factory-infra"}, Branch: "main", Dir: "factory"}
-	return fj, &SchemaCopier{Forgejo: f, Config: config, Build: "0123456789ab"}
+	return fj, &SchemaCopier{Forgejo: f, Config: config, Build: "0123456789ab", Commit: codeMine, Code: Repo{Owner: "sf", Name: "ai-software-factory-code"}}
 }
 
 // branch is the fork's branch name, nil when it has none.
@@ -215,7 +239,7 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 	}
 	schemas, _ := policy.Schemas()
 	branch := fj.branch("factory/schema-0123456789ab")
-	if got, want := changed(fj.main, branch), []string{"factory/schema/policy.schema.json", "factory/schema/process.schema.json"}; !reflect.DeepEqual(got, want) {
+	if got, want := changed(fj.main, branch), []string{"factory/schema/commit", "factory/schema/policy.schema.json", "factory/schema/process.schema.json"}; !reflect.DeepEqual(got, want) {
 		t.Fatalf("the branch changes %v, want %v", got, want)
 	}
 	for _, name := range []string{"policy.schema.json", "process.schema.json"} {
@@ -223,9 +247,13 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 			t.Errorf("%s is not written whole", name)
 		}
 	}
+	if got := branch["factory/schema/commit"]; got != codeMine+"\n" {
+		t.Errorf("the commit file holds %q, want this build's commit", got)
+	}
 	body := "Main's copies of these schemas differ from what factoryd build 0123456789ab generates; this pull request writes them whole:\n\n" +
 		"- `factory/schema/policy.schema.json`: differs\n" +
 		"- `factory/schema/process.schema.json`: missing\n\n" +
+		"`factory/schema/commit` names the build's commit " + codeMine + ": a later build writes over these copies, an older one leaves them.\n\n" +
 		"factoryd opens it when it starts and never merges it, an approver does. `factoryd config check` only warns about a stale copy.\n"
 	want := []schemaPR{{number: 1, head: "factory/schema-0123456789ab", headRepo: "factory-agent/ai-software-factory-infra",
 		title: "Schema copies for 0123456789ab", body: body, poster: "bot", state: "open"}}
@@ -254,7 +282,7 @@ func TestSchemaCopierOpensOnePullRequest(t *testing.T) {
 	if prs, _, got := fj.state(); !reflect.DeepEqual(prs, want) || !reflect.DeepEqual(got, writes) {
 		t.Fatalf("after a close: pull requests %+v, writes %q;\nwant %+v, %q", prs, got, want, writes)
 	}
-	if got := changed(fj.main, fj.branch("factory/schema-0123456789ab")); !reflect.DeepEqual(got, []string{"factory/schema/policy.schema.json", "factory/schema/process.schema.json"}) {
+	if got := changed(fj.main, fj.branch("factory/schema-0123456789ab")); !reflect.DeepEqual(got, []string{"factory/schema/commit", "factory/schema/policy.schema.json", "factory/schema/process.schema.json"}) {
 		t.Fatalf("the cut afresh branch changes %v", got)
 	}
 }
@@ -318,34 +346,85 @@ func TestSchemaCopierWrongCredential(t *testing.T) {
 	}
 }
 
-// a copy holding a key path this binary's schema lacks, as an older
-// factoryd sees of a newer build's copies while the newer roll is still
-// out: the pass opens nothing, closes nothing, not even an older build's
-// pull request, and writes nothing at all
-func TestSchemaCopierRefusesTheNewerBuildsCopy(t *testing.T) {
+// reworded is the policy schema with a key this build lacks when extra,
+// else with its description reworded: what another build's copy holds.
+func reworded(t *testing.T, extra bool) string {
+	t.Helper()
+	schemas, err := policy.Schemas()
+	if err != nil {
+		t.Fatal(err)
+	}
+	var m map[string]any
+	if err := json.Unmarshal(schemas["policy.schema.json"], &m); err != nil {
+		t.Fatal(err)
+	}
+	if extra {
+		m["zzRemoved"] = true
+	} else {
+		m["description"] = "reworded by another build"
+	}
+	b, err := json.MarshalIndent(m, "", "  ")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return string(b) + "\n"
+}
+
+// copies an older build wrote, holding a key this build removed: the pass
+// writes them over with this build's schemas and commit
+func TestSchemaCopierWritesOverAnOlderBuildsCopy(t *testing.T) {
 	fj, c := schemaRig(t, func(main map[string]string) {
-		schemas, err := policy.Schemas()
-		if err != nil {
-			t.Fatal(err)
-		}
-		var m map[string]any
-		if err := json.Unmarshal(schemas["policy.schema.json"], &m); err != nil {
-			t.Fatal(err)
-		}
-		m["zzSkew"] = true
-		b, err := json.MarshalIndent(m, "", "  ")
-		if err != nil {
-			t.Fatal(err)
-		}
-		main["factory/schema/policy.schema.json"] = string(b) + "\n"
+		main["factory/schema/policy.schema.json"] = reworded(t, true)
+		main["factory/schema/commit"] = codeOlder + "\n"
 	})
-	fj.branches = map[string]map[string]string{"main": maps.Clone(fj.main), "factory/schema-aaaaaaaaaaaa": maps.Clone(fj.main)}
-	fj.prs = []*schemaPR{{number: 1, head: "factory/schema-aaaaaaaaaaaa", headRepo: "factory-agent/ai-software-factory-infra", title: "Schema copies for aaaaaaaaaaaa", poster: "bot", state: "open"}}
 	if err := c.SyncOnce(context.Background(), 1, 0); err != nil {
 		t.Fatal(err)
 	}
-	prs, comments, writes := fj.state()
-	if len(prs) != 1 || prs[0].state != "open" || len(comments) != 0 || len(writes) != 0 {
-		t.Fatalf("pull requests %+v, comments %q, writes %q; want the one open, none, none", prs, comments, writes)
+	schemas, _ := policy.Schemas()
+	branch := fj.branch("factory/schema-0123456789ab")
+	if got, want := changed(fj.main, branch), []string{"factory/schema/commit", "factory/schema/policy.schema.json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the branch changes %v, want %v", got, want)
+	}
+	if branch["factory/schema/policy.schema.json"] != string(schemas["policy.schema.json"]) || branch["factory/schema/commit"] != codeMine+"\n" {
+		t.Fatalf("the branch holds %q and the commit %q", branch["factory/schema/policy.schema.json"][:40], branch["factory/schema/commit"])
+	}
+	if prs, _, _ := fj.state(); len(prs) != 1 || prs[0].state != "open" {
+		t.Fatalf("pull requests %+v, want one open", prs)
+	}
+}
+
+// copies written before the copies named their commit: every build that
+// names one is newer, so the pass writes them over, a removed key and all
+func TestSchemaCopierWritesOverCopiesWithoutACommit(t *testing.T) {
+	fj, c := schemaRig(t, func(main map[string]string) { main["factory/schema/policy.schema.json"] = reworded(t, true) })
+	if err := c.SyncOnce(context.Background(), 1, 0); err != nil {
+		t.Fatal(err)
+	}
+	if got, want := changed(fj.main, fj.branch("factory/schema-0123456789ab")), []string{"factory/schema/commit", "factory/schema/policy.schema.json"}; !reflect.DeepEqual(got, want) {
+		t.Fatalf("the branch changes %v, want %v", got, want)
+	}
+}
+
+// copies a newer build wrote, as an older factoryd sees them while the
+// newer roll is still out, and copies from a commit off this build's line:
+// even a reworded description the pass leaves, it opens nothing, closes
+// nothing, not even an older build's pull request, and writes nothing
+func TestSchemaCopierLeavesCopiesItsCommitDoesNotHold(t *testing.T) {
+	for name, commit := range map[string]string{"a newer build": codeNewer, "off the line": codeAside} {
+		t.Run(name, func(t *testing.T) {
+			fj, c := schemaRig(t, func(main map[string]string) {
+				main["factory/schema/policy.schema.json"] = reworded(t, false)
+				main["factory/schema/commit"] = commit + "\n"
+			})
+			fj.branches = map[string]map[string]string{"main": maps.Clone(fj.main), "factory/schema-aaaaaaaaaaaa": maps.Clone(fj.main)}
+			fj.prs = []*schemaPR{{number: 1, head: "factory/schema-aaaaaaaaaaaa", headRepo: "factory-agent/ai-software-factory-infra", title: "Schema copies for aaaaaaaaaaaa", poster: "bot", state: "open"}}
+			if err := c.SyncOnce(context.Background(), 1, 0); err != nil {
+				t.Fatal(err)
+			}
+			prs, comments, writes := fj.state()
+			if len(prs) != 1 || prs[0].state != "open" || len(comments) != 0 || len(writes) != 0 {
+				t.Fatalf("pull requests %+v, comments %q, writes %q; want the one open, none, none", prs, comments, writes)
+			}
+		})
 	}
 }

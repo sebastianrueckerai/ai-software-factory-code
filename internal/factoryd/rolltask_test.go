@@ -1288,6 +1288,37 @@ func TestBumpDigestEditsOnlyThePinnedDigest(t *testing.T) {
 	}
 }
 
+// setCommit is the roll's edit of the commit factoryd's Deployment names:
+// the one value, nothing else.
+func TestSetCommitEditsOnlyTheCommit(t *testing.T) {
+	before := mainPins()
+	got, err := setCommit([]byte(before["k8s/factoryd.yaml"]), commitC1)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := withCommit(before, commitC1)["k8s/factoryd.yaml"]; string(got) != want {
+		t.Fatalf("set:\n%s\nwant:\n%s", got, want)
+	}
+	if _, err := setCommit([]byte(before["k8s/deployment.yaml"]), commitC1); err == nil {
+		t.Fatal("a manifest without factoryd's commit was edited")
+	}
+	if _, err := setCommit([]byte(before["k8s/factoryd.yaml"]), "c1c1c1c"); err == nil {
+		t.Fatal("a short commit was written")
+	}
+}
+
+// factoryd's own manifest names the commit its images come from, where
+// a roll's setCommit finds it.
+func TestTheManifestNamesFactorydsCommit(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := setCommit(b, commitC1); err != nil {
+		t.Fatalf("k8s/factoryd.yaml: %v", err)
+	}
+}
+
 func newRollRunner(t *testing.T, f *rollForgejo, rolls ...RollRequest) (*Runner, *fakeStore) {
 	t.Helper()
 	runner, _, store := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "running", Repository: codeRepo, Kind: "agent", Track: "direct"},
@@ -1321,7 +1352,8 @@ func TestRollCommitWritesTheBranch(t *testing.T) {
 	if err != nil || out.Get(&head) != nil || head != "roll-commit-1" {
 		t.Fatalf("first commit %q %v", head, err)
 	}
-	after := k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx))
+	// factoryd's image changed: its Deployment names the commit it comes from
+	after := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
 	wantFirst := map[string]any{"branch": "main", "new_branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{
 			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(after["k8s/factoryd.yaml"]))},
@@ -1349,7 +1381,8 @@ func TestRollCommitWritesTheBranch(t *testing.T) {
 	if out, err = execActivity(t, runner, ActivityRollCommit, "t-roll"); err != nil || out.Get(&head) != nil || head != "roll-commit-2" {
 		t.Fatalf("update commit %q %v", head, err)
 	}
-	folded := k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx))
+	// the worker's image alone changed in c2: factoryd's commit stays c1's
+	folded := withCommit(k8sManifests(newGw, newGw, sha256Of(workerNewIdx), sha256Of(runnerIdx)), commitC1)
 	if !slices.Equal(f.updates, []string{"#847 rebase factory/t-roll onto main-B"}) {
 		t.Fatalf("pull request updates %v, want one rebase onto main's head", f.updates)
 	}
@@ -1412,7 +1445,7 @@ func TestRollCommitCutsAnUpdateFromMainsHeadAgain(t *testing.T) {
 	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
 	// main moved to B; the branch still holds A's roll: one commit with
 	// the gateway's new digest, cut from A
-	branchPins := k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx))
+	branchPins := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
 	f := &rollForgejo{behind: 1, branches: map[string]string{"main": "main-B", "factory/t-roll": "roll-cut-1"},
 		files: map[string]map[string]string{forkRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branchPins},
 		blobs: map[string]string{forkRepo + "@main k8s/factoryd.yaml": "blob-f", forkRepo + "@main k8s/deployment.yaml": "blob-d",
@@ -1447,7 +1480,7 @@ func TestRollCommitCutsAnUpdateFromMainsHeadAgain(t *testing.T) {
 	}
 	// the branch's diff against B is only the pinned files, each holding
 	// exactly what the task's requests make of them
-	want := k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx))
+	want := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC1)
 	got := map[string]string{}
 	for path, content := range f.files[forkRepo+"@factory/t-roll"] {
 		if content != f.files[forkRepo+"@main"][path] {
@@ -2078,7 +2111,7 @@ func TestRollCommitWritesAFoldOnARecordedOwnHead(t *testing.T) {
 // roll card (roadmap 279).
 func TestRollCommitRefilesTheRollWhenTheRebaseConflicts(t *testing.T) {
 	newGw, newWorker := sha256Of(gwNewIdx), sha256Of(workerNewIdx)
-	branchPins := k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx))
+	branchPins := withCommit(k8sManifests(newGw, newGw, sha256Of(workerOldIdx), sha256Of(runnerIdx)), commitC1)
 	f := &rollForgejo{behind: 1, updateConflict: true,
 		branches:    map[string]string{"main": "main-B", "factory/t-roll": "roll-cut-1"},
 		files:       map[string]map[string]string{forkRepo + "@main": mainPins(), forkRepo + "@factory/t-roll": branchPins},
@@ -2112,7 +2145,7 @@ func TestRollCommitRefilesTheRollWhenTheRebaseConflicts(t *testing.T) {
 	}
 	// the branch cut from main's head again: its first commit written on
 	// main, every pin of the task in it
-	folded := k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx))
+	folded := withCommit(k8sManifests(newGw, newGw, newWorker, sha256Of(runnerIdx)), commitC1)
 	want := map[string]any{"branch": "main", "new_branch": "factory/t-roll", "message": "roll c1c1c1c: factoryd, gateway\n\nbody one\n\nroll c2c2c2c: worker\n\nbody two\n\nFactory-Role: roll\nFactory-Task: t-roll\n",
 		"files": []any{
 			map[string]any{"operation": "update", "path": "k8s/factoryd.yaml", "sha": "blob-f", "content": base64.StdEncoding.EncodeToString([]byte(folded["k8s/factoryd.yaml"]))},

@@ -596,27 +596,43 @@ func (f *Forgejo) defaultCommits(ctx context.Context, token string, r Repo) ([]s
 }
 
 // MainAtLeast reports whether r's default branch holds sha at or after
-// it, with the branch's head: the compare of the pin and the head answers
-// the verdict, however far main has moved past the pin. A token that
-// cannot read the repository, or a compare without a status, is an error
-// naming the companion, not a verdict.
+// it, with the branch's head, however far main has moved past the pin. A
+// token that cannot read the repository, or a compare without a commit
+// count, is an error naming the companion, not a verdict.
 func (f *Forgejo) MainAtLeast(ctx context.Context, token string, r Repo, sha string) (bool, string, error) {
 	head, err := f.DefaultHead(ctx, token, r)
 	if err != nil {
 		return false, "", err
 	}
-	body, err := f.tokenCall(token)(ctx, http.MethodGet,
-		fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", r.Owner, r.Name, sha, head), nil, http.StatusOK)
+	met, err := holds(ctx, f.tokenCall(token), r, head, sha)
 	if err != nil {
 		return false, "", fmt.Errorf("companion %s: %w", r, err)
 	}
+	return met, head, nil
+}
+
+// Holds reports whether head's history in r holds sha, head itself
+// included, as the bot reads r.
+func (f *Forgejo) Holds(ctx context.Context, r Repo, head, sha string) (bool, error) {
+	return holds(ctx, f.call, r, head, sha)
+}
+
+// holds asks Forgejo's compare head...sha, which counts the commits sha
+// has and head lacks: none, and head holds sha. Forgejo 17 answers no
+// ahead or behind status, only that count.
+func holds(ctx context.Context, call func(context.Context, string, string, []byte, int) ([]byte, error), r Repo, head, sha string) (bool, error) {
+	body, err := call(ctx, http.MethodGet,
+		fmt.Sprintf("/api/v1/repos/%s/%s/compare/%s...%s", r.Owner, r.Name, url.PathEscape(head), url.PathEscape(sha)), nil, http.StatusOK)
+	if err != nil {
+		return false, err
+	}
 	var res struct {
-		Status string `json:"status"`
+		TotalCommits *int `json:"total_commits"`
 	}
-	if err := json.Unmarshal(body, &res); err != nil || res.Status == "" {
-		return false, "", fmt.Errorf("companion %s: compare %s...%s without a status", r, sha[:7], head[:7])
+	if err := json.Unmarshal(body, &res); err != nil || res.TotalCommits == nil {
+		return false, fmt.Errorf("compare %s...%s without a commit count", head, sha)
 	}
-	return res.Status == "identical" || res.Status == "ahead", head, nil
+	return *res.TotalCommits == 0, nil
 }
 
 // DefaultHead is the head of r's default branch, the pin a plan filing

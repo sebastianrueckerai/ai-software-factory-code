@@ -529,7 +529,9 @@ port 8090 only.
 CI pushes images by digest. A deploy is a commit that rolls the digests
 in `k8s/factoryd.yaml` and `k8s/deployment.yaml` (factoryd, the gateway,
 `WORKER_IMAGE`, `SANDBOX_BASE_IMAGE` and `CI_RUNNER_IMAGE`), and factoryd opens it as a task of
-source `roll`. Every minute it reads the code repository's
+source `roll`. A roll of factoryd's image also sets `FACTORY_COMMIT` to
+the commit the image comes from: the images carry no commit, so a commit
+that changes no image still builds the same digest and rolls nothing. Every minute it reads the code repository's
 push runs; for the green runs of `main` it has not judged, newest first
 until one files or folds the roll (at its first judgement the newest
 only, and never one older than a run whose commit a roll carries, which

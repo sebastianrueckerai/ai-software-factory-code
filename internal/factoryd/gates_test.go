@@ -1690,12 +1690,12 @@ func TestGateCompanion(t *testing.T) {
 		switch r.URL.Path {
 		case "/api/v1/repos/sf/infra/commits":
 			io.WriteString(w, `[{"sha":"`+head+`"}]`)
-		case "/api/v1/repos/sf/infra/compare/" + pin + "..." + head:
-			io.WriteString(w, `{"status":"behind"}`)
+		case "/api/v1/repos/sf/infra/compare/" + head + "..." + pin:
+			io.WriteString(w, `{"commits":[],"files":[],"total_commits":3}`)
 		case "/api/v1/repos/sf/other/commits":
 			io.WriteString(w, `[{"sha":"`+pin+`"}]`)
 		case "/api/v1/repos/sf/other/compare/" + pin + "..." + pin:
-			io.WriteString(w, `{"status":"identical"}`)
+			io.WriteString(w, `{"commits":[],"files":[],"total_commits":0}`)
 		case "/api/v1/repos/sf/locked/commits":
 			w.WriteHeader(http.StatusForbidden)
 		default:

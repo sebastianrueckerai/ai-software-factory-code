@@ -520,6 +520,8 @@ func TestCheckSchemas(t *testing.T) {
 		}, ""},
 		"missing": {func(f map[string][]byte) { delete(f, "schema/process.schema.json") }, ""},
 		"extra":   {func(f map[string][]byte) { f["schema/old.schema.json"] = []byte("{}") }, "schema/old.schema.json is not a schema factoryd writes"},
+		// the commit of the code whose factoryd wrote the copies
+		"commit": {func(f map[string][]byte) { f["schema/commit"] = []byte(strings.Repeat("a", 40) + "\n") }, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
 			f := committed()

@@ -697,6 +697,10 @@ spec:
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: access-key-id}}
         - name: S3_SECRET_ACCESS_KEY
           valueFrom: {secretKeyRef: {name: factory-s3-creds, key: secret-access-key}}
+        # the commit factoryd's image comes from, which a roll writes with
+        # its digest: the schema copier orders main's copies by it
+        - name: FACTORY_COMMIT
+          value: "bb060f9b09f00de085adbb71b48c957fc9617fbe"
         - name: WORKER_IMAGE
           value: git.aisoftwarefactory.world/sf/opencode-worker@sha256:5c1434873bda856fddef6b10a770f81fea1451484d8412379673a2533facc0eb
         - name: SANDBOX_BASE_IMAGE

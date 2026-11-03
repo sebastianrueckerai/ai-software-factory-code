@@ -511,11 +511,11 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 				http.Error(w, "boom", http.StatusInternalServerError)
 				return
 			}
-			status := "behind"
+			lacking := 1
 			if base == head {
-				status = "identical"
+				lacking = 0
 			}
-			reply(map[string]any{"commits": f.carries[repo][base+"..."+head], "status": status})
+			reply(map[string]any{"commits": f.carries[repo][base+"..."+head], "total_commits": lacking})
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			f.status = append(f.status, sha)

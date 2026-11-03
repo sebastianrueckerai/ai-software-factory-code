@@ -318,6 +318,7 @@ func main() {
 		log.Fatalf("schemas: %v", err)
 	}
 	schemaCopier := &factoryd.SchemaCopier{Forgejo: forgejo, Config: configSource, Build: policy.SchemaContentHash(schemas),
+		Commit: mustEnv("FACTORY_COMMIT"), Code: own.Repo(),
 		Store: store, Workflows: workflows, Timeline: runner.Timeline(), Budget: policyLoader.Budget, Cards: webhookIntake}
 	go func() {
 		if err := schemaCopier.SyncOnce(ctx, 3, time.Minute); err != nil && !errors.Is(err, context.Canceled) {

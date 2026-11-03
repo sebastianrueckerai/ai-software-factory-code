@@ -29,6 +29,11 @@ type SchemaCopier struct {
 	Forgejo *Forgejo       // the bot
 	Config  *ForgejoConfig // reads main's tree
 	Build   string         // the build id, 12 hex
+	// Commit is the code commit this build's images come from, which the
+	// roll writes into factoryd's Deployment; Code is the repository whose
+	// history orders it against the commit main's copies name.
+	Commit string
+	Code   Repo
 	// Store holds the tasks the copier files cards in, their projects and
 	// the unfinished ones it looks a build's card up in.
 	Store interface {
@@ -98,13 +103,26 @@ func (c *SchemaCopier) sync(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	for _, d := range diffs {
-		if !d.Missing && !policy.Covers(copies[d.Path], d.Want) {
-			// a newer build's roll is still out and its copies are ahead: this
-			// pass must not undo them, and it closes nothing either, for the
-			// newer build's pass sorts every pull request once it runs
-			log.Printf("schema copies: %s on main holds what factoryd %s lacks, a newer build wrote it; this pass writes nothing", d.Path, c.Build)
-			return nil
+	if len(diffs) > 0 {
+		stamp, err := c.Config.File(ctx, head, policy.DirSchema+"/"+policy.SchemaCommit)
+		if err != nil && !errors.Is(err, ErrNotFound) {
+			return err
+		}
+		// copies without a commit predate the commit file: any build that
+		// names its commit is newer than they are
+		if commit := strings.TrimSpace(string(stamp)); err == nil {
+			held, err := c.Forgejo.Holds(ctx, c.Code, c.Commit, commit)
+			if err != nil {
+				return fmt.Errorf("order main's copies of commit %s against factoryd's %s: %w", commit, c.Commit, err)
+			}
+			if !held {
+				// a newer build's roll is still out and its copies are ahead,
+				// or another line wrote them: this pass must not undo them, and
+				// it closes nothing either, for the newer build's pass sorts
+				// every pull request once it runs
+				log.Printf("schema copies: main's copies come from commit %s, which factoryd's commit %s does not hold: a newer build or another line wrote them; this pass writes nothing", commit, c.Commit)
+				return nil
+			}
 		}
 	}
 	open, err := c.Forgejo.OpenPullRequests(ctx, repo.Owner, repo.Name)
@@ -296,6 +314,8 @@ func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs
 			why[path] = "missing"
 		}
 	}
+	stamp := c.Config.Dir + "/" + policy.DirSchema + "/" + policy.SchemaCommit
+	want[stamp] = []byte(c.Commit + "\n")
 	if err := c.Forgejo.DeleteBranch(ctx, fork.Owner, fork.Name, branch); err != nil {
 		return nil, err
 	}
@@ -307,6 +327,7 @@ func (c *SchemaCopier) open(ctx context.Context, fork Repo, branch string, diffs
 	for _, path := range slices.Sorted(maps.Keys(why)) {
 		fmt.Fprintf(&body, "- `%s`: %s\n", path, why[path])
 	}
+	fmt.Fprintf(&body, "\n`%s` names the build's commit %s: a later build writes over these copies, an older one leaves them.\n", stamp, c.Commit)
 	body.WriteString("\nfactoryd opens it when it starts and never merges it, an approver does. `factoryd config check` only warns about a stale copy.\n")
 	ref, err := c.Forgejo.CreatePullRequest(ctx, repo.Owner, repo.Name, fork.Owner+":"+branch, "main", title, body.String())
 	if err != nil {

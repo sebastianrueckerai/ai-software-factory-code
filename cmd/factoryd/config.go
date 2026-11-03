@@ -8,6 +8,7 @@ import (
 	"maps"
 	"os"
 	"path/filepath"
+	"regexp"
 	"slices"
 	"strings"
 
@@ -18,7 +19,9 @@ import (
 // run serves the offline subcommands and returns the exit code: 0 done, 1
 // refused, 2 usage.
 //
-//	factoryd schema --out <dir>    writes one JSON Schema per file kind
+//	factoryd schema --out <dir> --commit <sha>
+//	                               writes one JSON Schema per file kind and
+//	                               the commit of the code they come from
 //	factoryd config check <dir>    judges a tree as the loader does
 //	                               (CheckTree, the ladder from MODEL and
 //	                               STRONGER_MODEL) and warns about a
@@ -32,11 +35,12 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fs := flag.NewFlagSet("schema", flag.ContinueOnError)
 		fs.SetOutput(stderr)
 		out := fs.String("out", "", "directory the schema files are written to")
-		if err := fs.Parse(args[1:]); err != nil || *out == "" || fs.NArg() != 0 {
-			fmt.Fprintln(stderr, "usage: factoryd schema --out <dir>")
+		commit := fs.String("commit", "", "the full sha of the code commit the schemas come from")
+		if err := fs.Parse(args[1:]); err != nil || *out == "" || !fullSHA.MatchString(*commit) || fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "usage: factoryd schema --out <dir> --commit <sha>")
 			return 2
 		}
-		if err := writeSchemas(*out); err != nil {
+		if err := writeSchemas(*out, *commit); err != nil {
 			fmt.Fprintln(stderr, err)
 			return 1
 		}
@@ -70,7 +74,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, text)
 		return 0
 	}
-	fmt.Fprintln(stderr, "usage: factoryd config check <dir> | factoryd config explain [--tree <dir>] <process> <card kind> | factoryd schema --out <dir>")
+	fmt.Fprintln(stderr, "usage: factoryd config check <dir> | factoryd config explain [--tree <dir>] <process> <card kind> | factoryd schema --out <dir> --commit <sha>")
 	return 2
 }
 
@@ -103,11 +107,15 @@ func explain(dir, process, kind string) (string, error) {
 	return policy.BuildGraph(process, p, tree.Document).Explain(kind)
 }
 
-func writeSchemas(dir string) error {
+// fullSHA is a commit's full sha.
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+func writeSchemas(dir, commit string) error {
 	schemas, err := policy.Schemas()
 	if err != nil {
 		return err
 	}
+	schemas[policy.SchemaCommit] = []byte(commit + "\n")
 	if err := os.MkdirAll(dir, 0o750); err != nil {
 		return err
 	}
