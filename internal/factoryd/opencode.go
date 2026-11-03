@@ -872,11 +872,10 @@ const downARung = "Routine, well-specified work goes down a rung: in this sessio
 // the session's tools: the checks, the push, the sandbox, the last
 // message.
 func guideEnd(m *imagegen.Manifest, tools []string) string {
-	return "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
+	return "If the repository has a check file at its root, run bash check changed in the foreground with a timeout of 600000 ms: the repository's checks of what you changed, where CI runs all of them. When it passes, end the session at once with your last message: " +
 		"no further tests, re-runs or reading of library sources to confirm. " +
 		"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
 		installLine(m, tools) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
-		"To wait for a background job (start it with its output in a file and note $!), run agent-worker wait <pid> [seconds up to 590] with a timeout of 600000 ms: one call blocks until the process ends, where a sleep loop costs a model call per poll. " +
 		"End with a short last message: what you changed, and whether you recommend merging it and why."
 }
 

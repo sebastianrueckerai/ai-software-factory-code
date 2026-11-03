@@ -1258,9 +1258,14 @@ func TestGuideEndNoLongerForbidsRace(t *testing.T) {
 // finding, not this prose (roadmap 186). The harness reads AGENTS.md into
 // the session itself, so no guide asks for it.
 func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
-	want := "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm."
+	want := "If the repository has a check file at its root, run bash check changed in the foreground with a timeout of 600000 ms: the repository's checks of what you changed, where CI runs all of them. When it passes, end the session at once with your last message: no further tests, re-runs or reading of library sources to confirm."
 	if !strings.HasPrefix(guideEnd(nil, nil), want) {
 		t.Fatalf("guideEnd = %q, want it to open with %q", guideEnd(nil, nil), want)
+	}
+	// the call in the foreground counts as busy (open_call), so no guide
+	// sends a check to the background to wait on it
+	if strings.Contains(guideEnd(nil, nil), "agent-worker wait") {
+		t.Errorf("guideEnd = %q, want no background wait", guideEnd(nil, nil))
 	}
 	for name, g := range map[string]string{"work": workGuide([]string{policy.ToolDelegate}, nil), "feature": featureGuide(RoleFeature, nil, nil), "integration": featureGuide(RoleIntegration, nil, nil)} {
 		if !strings.HasSuffix(g, guideEnd(nil, nil)) || strings.Count(g, "bash check") != 1 || strings.Contains(g, "AGENTS.md") {
@@ -1389,13 +1394,6 @@ func TestOpencodeConfigWithoutAContextCapLeavesOpencodesDefault(t *testing.T) {
 	}
 	if strings.Contains(string(raw), `"compaction"`) || strings.Contains(string(raw), `"input"`) {
 		t.Fatalf("config = %s, want no compaction block and no limit.input", raw)
-	}
-}
-
-func TestWorkGuideNamesTheBlockingWait(t *testing.T) {
-	got := briefText(harness.TaskBrief{Objective: "o"}, "T")
-	if !strings.Contains(got, "agent-worker wait <pid> [seconds up to 590]") || !strings.Contains(got, "timeout of 600000 ms") {
-		t.Fatalf("brief lacks the wait: %s", got)
 	}
 }
 

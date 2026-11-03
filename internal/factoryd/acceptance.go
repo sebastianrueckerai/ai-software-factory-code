@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"log"
+	"slices"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
@@ -161,8 +162,9 @@ func acceptanceHit(events []harness.Event, acceptance []string) *AcceptanceHit {
 // its own included, with arguments added — "bash check -- ./..." runs what
 // "bash check" names — and && steps before or after it, whose exit 0 says
 // every step passed. What the run adds around the command holds no other
-// control operator (addsOperator). Whitespace aside, the words are
-// compared as said: a shell command's case is its meaning.
+// control operator (addsOperator), and its first added word is no mode of
+// the command (acceptanceModes). Whitespace aside, the words are compared
+// as said: a shell command's case is its meaning.
 func runsAcceptance(run, item string) bool {
 	run, item = shellWords(run), shellWords(item)
 	if item == "" {
@@ -176,11 +178,28 @@ func runsAcceptance(run, item string) bool {
 		i += from
 		before, after := run[:i], run[i+len(item):]
 		if (before == "" || strings.HasSuffix(strings.TrimRight(before, " "), "&&")) &&
-			(after == "" || after[0] == ' ' || strings.HasPrefix(after, "&&")) && !addsOperator(before) && !addsOperator(after) {
+			(after == "" || after[0] == ' ' || strings.HasPrefix(after, "&&")) && !addsOperator(before) && !addsOperator(after) &&
+			!slices.Contains(acceptanceModes[item], firstWord(after)) {
 			return true
 		}
 		from = i + 1
 	}
+}
+
+// acceptanceModes are the words that, right after an acceptance command,
+// make it another run, not the command with arguments added: bash check
+// static stops before the tests, bash check changed tests only what the
+// diff reaches.
+var acceptanceModes = map[string][]string{"bash check": {"static", "changed"}}
+
+// firstWord is the word s, the run after an acceptance command, starts
+// with, up to a space or a control operator.
+func firstWord(s string) string {
+	s = strings.TrimLeft(s, " ")
+	if i := strings.IndexAny(s, " &;|"); i >= 0 {
+		return s[:i]
+	}
+	return s
 }
 
 // shellWords is s with its whitespace one space, a line break a ; (a

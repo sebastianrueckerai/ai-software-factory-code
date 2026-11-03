@@ -51,6 +51,15 @@ func TestRunsAcceptance(t *testing.T) {
 		{"cd /workspace/repo && bash check & wait", "bash check", false},
 		{"cd /workspace/repo && bash check\necho $?", "bash check", false},
 		{"cd /workspace/repo && bash checks", "bash check", false},
+		// a mode is another run, not the command with arguments added:
+		// static stops before the tests, changed tests what the diff reaches
+		{"bash check static", "bash check", false},
+		{"bash check changed", "bash check", false},
+		{"cd /workspace/repo && bash check changed&& echo done", "bash check", false},
+		{"bash check changed", "bash check changed", true},
+		{"bash check changed -- -run TestX", "bash check changed", true},
+		{"bash check", "bash check changed", false},
+		{"bash check changes", "bash check", true},
 	} {
 		if got := runsAcceptance(tt.run, tt.item); got != tt.want {
 			t.Errorf("runsAcceptance(%q, %q) = %v, want %v", tt.run, tt.item, got, tt.want)

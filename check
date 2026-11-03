@@ -1,7 +1,9 @@
 #!/usr/bin/env bash
-# The repository's checks as pr.yml runs them; an agent runs `bash check`
-# before it ends. `bash check static` stops before the tests: the
-# pre-push hook's gate (.githooks/pre-push). gosec is the runner image's
+# The repository's checks as main's CI runs them. `bash check changed`
+# tests only the packages the change since main reaches, without the race
+# detector, as pr.yml does: an agent runs it before it ends.
+# `bash check static` stops before the tests: the pre-push hook's gate
+# (.githooks/pre-push). gosec is the runner image's
 # version. govulncheck stays CI's: it reads the runner image's copy of
 # its database, which no sandbox or clone holds, and a finding reaches
 # the agent as the failing job's log lines.
@@ -27,4 +29,14 @@ unformatted=$(gofmt -l .)
 if [ -n "$unformatted" ]; then echo "gofmt -w these files:"; echo "$unformatted"; exit 1; fi
 go run "github.com/securego/gosec/v2/cmd/gosec@v$(sed -n 's/^ARG GOSEC_VERSION=//p' Dockerfile.runner)" -quiet ./...
 [ "${1:-}" = static ] && exit 0
+if [ "${1:-}" = changed ]; then
+  base=$(git merge-base HEAD refs/remotes/origin/HEAD) || {
+    echo "bash check changed tests the change since origin/HEAD, which this clone lacks: run git remote set-head origin --auto, or bash check" >&2
+    exit 1
+  }
+  pkgs=$(scripts/affected-packages.sh "$base")
+  # two packages at once in a sandbox's 4Gi
+  scripts/pg-test.sh go test -p 2 $pkgs
+  exit
+fi
 make test

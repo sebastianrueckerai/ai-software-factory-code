@@ -183,7 +183,7 @@ RUN --mount=type=bind,source=go.mod,target=/tmp/warm/go.mod --mount=type=bind,so
       && GOPROXY=off GOFLAGS=-mod=mod go mod download
 RUN --mount=type=bind,source=go.mod,target=/tmp/src/go.mod --mount=type=bind,source=go.sum,target=/tmp/src/go.sum \
       --mount=type=bind,source=cmd,target=/tmp/src/cmd --mount=type=bind,source=internal,target=/tmp/src/internal \
-      --mount=type=bind,source=acceptance,target=/tmp/src/acceptance \
+      --mount=type=bind,source=acceptance,target=/tmp/src/acceptance --mount=type=bind,source=scripts,target=/tmp/src/scripts \
       export GOPROXY=off GOFLAGS=-mod=mod \
       && cp -r /tmp/src /tmp/warm && find /tmp/warm -type f -exec touch -d "@$SOURCE_DATE_EPOCH" {} + \
       && cd /tmp/warm && go build -trimpath -buildvcs=false ./... && go vet ./... && go test -count=1 -run '^$' ./... \
