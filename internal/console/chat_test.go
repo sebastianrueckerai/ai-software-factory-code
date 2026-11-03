@@ -47,8 +47,9 @@ type fakeChat struct {
 	mu         sync.Mutex
 	msgs       map[string][]factoryd.ChatMessage // by repository and login
 	// started is the conversation each member opened last, by repository
-	// and login
+	// and login: the store's current row; newErr fails NewConversation
 	started map[string]int64
+	newErr  error
 	// titles are the renamed threads' titles, seen the seen markers and
 	// cleared the clear markers,
 	// by repository, login and thread
@@ -220,9 +221,19 @@ func (f *fakeChat) CurrentConversation(_ context.Context, repository, login stri
 	return f.current(repository, login), nil
 }
 
+// NewConversation reuses an empty current thread other than the inbox,
+// as the store does, else starts one.
 func (f *fakeChat) NewConversation(_ context.Context, repository, login string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.newErr != nil {
+		return 0, f.newErr
+	}
+	k := repository + " " + login
+	if cur, ok := f.started[k]; ok && cur != f.inboxes[k].Number &&
+		!slices.ContainsFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == cur }) {
+		return cur, nil
+	}
 	return f.startNew(repository, login), nil
 }
 
@@ -278,6 +289,10 @@ func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int
 	if f.inboxes == nil {
 		f.inboxes = map[string]factoryd.ChatConversation{}
 	}
+	if f.started == nil {
+		f.started = map[string]int64{}
+	}
+	f.started[k] = f.current(repository, login)
 	made := f.stamp()
 	f.inboxes[k] = factoryd.ChatConversation{Number: max(f.highest(repository, login), f.current(repository, login)) + 1,
 		Title: factoryd.InboxTitle, State: factoryd.ThreadActive, Inbox: true, FirstAt: made, LastAt: made}
@@ -585,9 +600,14 @@ func (f *fakeChat) Conversation(_ context.Context, repository, login string, n i
 	return factoryd.ChatConversation{}, false, nil
 }
 
+// OpenConversation refuses the inbox as the store does, ErrNotFound and
+// the current thread unchanged.
 func (f *fakeChat) OpenConversation(_ context.Context, repository, login string, n int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if in, ok := f.inboxes[repository+" "+login]; ok && in.Number == n {
+		return factoryd.ErrNotFound
+	}
 	if f.started == nil {
 		f.started = map[string]int64{}
 	}
@@ -3467,7 +3487,8 @@ func TestChatInboxRefusesATypedMessage(t *testing.T) {
 
 // A card answer in words that match none of its choices goes to the
 // human's chat, never into the inbox: with the inbox current, the words
-// land in a new thread of their own, which is current afterwards.
+// land in a new thread of their own, which is current afterwards. A store
+// that cannot open that thread refuses the answer, nothing stored.
 func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
@@ -3478,11 +3499,19 @@ func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := chat.OpenConversation(ctx, "sf/code", "sebastian", inbox); err != nil {
-		t.Fatal(err)
-	}
+	chat.mu.Lock()
+	chat.started["sf/code sebastian"], chat.newErr = inbox, errors.New("the disk is full")
+	chat.mu.Unlock()
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaButton}
+	_, err = r.c.doAnswerValue(ctx, a, "t-e", "use your own judgement on the replica", "", "")
+	equal(t, "the answer with no thread to open", err, error(&refusal{http.StatusInternalServerError, "cannot open a thread of your own"}))
+	chat.mu.Lock()
+	rows := len(chat.msgs["sf/code sebastian"])
+	chat.newErr = nil
+	chat.mu.Unlock()
+	equal(t, "the rows after the refusal", rows, 0)
 	g.replies = [][]string{{say("I read the card.")}}
-	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "")
+	note, err := r.c.doAnswerValue(ctx, a, "t-e", "use your own judgement on the replica", "", "")
 	if err != nil || note != "The words are in the project chat; the agent answers there." {
 		t.Fatalf("the answer in words = %q, %v", note, err)
 	}

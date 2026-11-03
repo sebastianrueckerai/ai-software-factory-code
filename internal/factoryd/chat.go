@@ -346,7 +346,8 @@ func (s *PGStore) Conversation(ctx context.Context, repository, login string, n 
 }
 
 // OpenConversation makes thread n login's current one on repository;
-// ErrNotFound for none.
+// ErrNotFound for none and for the inbox, which is never current, the
+// current thread left as it was.
 func (s *PGStore) OpenConversation(ctx context.Context, repository, login string, n int64) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -356,7 +357,7 @@ func (s *PGStore) OpenConversation(ctx context.Context, repository, login string
 	if _, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET current = false WHERE repository = $1 AND login = $2 AND current`, repository, login); err != nil {
 		return err
 	}
-	res, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET current = true WHERE repository = $1 AND login = $2 AND conversation = $3`, repository, login, n)
+	res, err := tx.ExecContext(ctx, `UPDATE chat_conversations SET current = true WHERE repository = $1 AND login = $2 AND conversation = $3 AND NOT inbox`, repository, login, n)
 	if err != nil {
 		return err
 	}

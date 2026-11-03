@@ -340,17 +340,18 @@ func (t *turn) detach() {
 }
 
 // thread resolves the thread the request names in field conversation,
-// the member's current one when it names none, and in field owner the
-// member whose thread it is: another member's thread, which everyone who
-// writes the project may read and talk in, resolves by their name. 400
-// for no number, 404 for no thread of theirs. writable refuses an
-// archived thread.
+// the member's current one when it names none, a new thread of their own
+// when that is the inbox, and in field owner the member whose thread it
+// is: another member's thread, which everyone who writes the project may
+// read and talk in, resolves by their name. 400 for no number, 404 for
+// no thread of theirs. writable refuses an archived thread.
 func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation, error) {
 	ctx := r.Context()
 	var n int64
-	if s := cmp.Or(r.FormValue("conversation"), r.URL.Query().Get("conversation")); s != "" {
+	named := cmp.Or(r.FormValue("conversation"), r.URL.Query().Get("conversation"))
+	if named != "" {
 		var err error
-		if n, err = strconv.ParseInt(s, 10, 64); err != nil || n < 1 {
+		if n, err = strconv.ParseInt(named, 10, 64); err != nil || n < 1 {
 			return factoryd.ChatConversation{}, refuse(http.StatusBadRequest, "conversation must be a positive integer")
 		}
 	} else {
@@ -366,6 +367,13 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 		owner = s
 	}
 	th, ok, err := t.c.cfg.Chat.Conversation(ctx, t.p.Repository, owner, n)
+	if err == nil && th.Inbox && named == "" && owner == t.a.s.user {
+		if n, err = t.c.cfg.Chat.NewConversation(ctx, t.p.Repository, t.a.s.user); err != nil {
+			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Repository, err)
+			return factoryd.ChatConversation{}, refuse(http.StatusInternalServerError, "cannot open a thread of your own")
+		}
+		th, ok, err = t.c.cfg.Chat.Conversation(ctx, t.p.Repository, owner, n)
+	}
 	switch {
 	case err != nil:
 		log.Printf("console: the chat of %.100q on %s: %v", owner, t.p.Repository, err) // #nosec G706 -- the owner is a member's login name, named as given; %q escapes every control character
@@ -376,7 +384,7 @@ func (t *turn) thread(r *http.Request, writable bool) (factoryd.ChatConversation
 		}
 		// the current thread before its first message has no row yet
 		th = factoryd.ChatConversation{Number: n, Login: owner, State: factoryd.ThreadActive}
-		if r.FormValue("conversation") != "" || r.URL.Query().Get("conversation") != "" {
+		if named != "" {
 			if cur, _ := t.c.cfg.Chat.CurrentConversation(ctx, t.p.Repository, t.a.s.user); cur != n {
 				return th, refuse(http.StatusNotFound, fmt.Sprintf("There is no conversation %d.", n))
 			}

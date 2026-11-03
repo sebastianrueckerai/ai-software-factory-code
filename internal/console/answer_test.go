@@ -55,7 +55,7 @@ func TestChatAnswerRow(t *testing.T) {
 
 	e13 := escalation("t-e", "#13 needs you: Use a replica?", "Yes", "No")
 	code, body := answer(e13, "Maybe")
-	equal(t, "a choice it does not offer", []any{code, body}, []any{http.StatusBadRequest, "the choice is none of the escalation's"})
+	equal(t, "a choice it does not offer", []any{code, body}, []any{http.StatusBadRequest, "the choice is none of the escalation's: press one of its buttons."})
 	code, body = answer("999", "Yes")
 	equal(t, "no such row", []any{code, body}, []any{http.StatusNotFound, "404 page not found"})
 	if code, body := answer(e13, "Yes"); code != http.StatusNoContent {
@@ -312,11 +312,11 @@ func TestChatAnswerWaitsBehindTheTurn(t *testing.T) {
 	}
 }
 
-// inboxPress is a press in sebastian's inbox: the inbox's number, the
-// press's status and stream, the store's TakeProposal calls, the store
-// and the gateway.
-type inboxPress struct {
-	inbox  int64
+// answerPress is a press through /chat/answer in one of sebastian's
+// threads: the thread's number, the press's status and stream, the
+// store's TakeProposal calls, the store and the gateway.
+type answerPress struct {
+	conv   int64
 	code   int
 	events []string
 	takes  int
@@ -324,41 +324,48 @@ type inboxPress struct {
 	g      *chatGateway
 }
 
-// pressInInbox seeds m in sebastian's inbox and presses choice on it
-// through /chat/answer, the model answering reply.
-func pressInInbox(t *testing.T, m factoryd.ChatMessage, choice, reply string) inboxPress {
+// pressAnswer seeds m in sebastian's inbox, or with inbox false in his
+// own thread 1, and presses choice on it through /chat/answer, the model
+// answering reply.
+func pressAnswer(t *testing.T, inbox bool, m factoryd.ChatMessage, choice, reply string) answerPress {
 	t.Helper()
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
-	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
-	if err != nil {
-		t.Fatal(err)
+	m.Conversation = 1
+	if inbox {
+		var err error
+		if m.Conversation, err = chat.EnsureInbox(t.Context(), "sf/code", "sebastian"); err != nil {
+			t.Fatal(err)
+		}
 	}
-	m.Conversation = inbox
 	id, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m)
 	if err != nil {
 		t.Fatal(err)
 	}
 	g.replies = [][]string{{say(reply)}}
 	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer",
-		url.Values{"conversation": {strconv.FormatInt(inbox, 10)}, "message": {strconv.FormatInt(id, 10)}, "choice": {choice}})
+		url.Values{"conversation": {strconv.FormatInt(m.Conversation, 10)}, "message": {strconv.FormatInt(id, 10)}, "choice": {choice}})
 	chat.mu.Lock()
 	defer chat.mu.Unlock()
-	return inboxPress{inbox: inbox, code: code, events: events, takes: chat.takes, chat: chat, g: g}
+	return answerPress{conv: m.Conversation, code: code, events: events, takes: chat.takes, chat: chat, g: g}
 }
 
-// The inbox takes presses only, so an ask that binds nothing answers
-// through /chat/answer too: the press lands the human's row with the
-// choice, and the agent's turn reads it as their answer. A row with no
-// binding asks the proposals' store nothing.
-func TestChatAnswerPressesAnUnboundAskInTheInbox(t *testing.T) {
-	p := pressInInbox(t, factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk,
-		Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}}, "One a night", "One a night it is.")
-	equal(t, "the press", []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"One a night it is."}`, `done {}`}, 0})
-	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.inbox),
-		[]string{"assistant: One snapshot a night, or one an hour?", "user: One a night", "assistant: One a night it is."})
-	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "One a night" {
-		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
+// An ask that binds nothing answers through /chat/answer in the inbox,
+// which takes presses only, and in a thread of the human's own alike: the
+// press lands the human's row with the choice, and the agent's turn reads
+// it as their answer. A row with no binding asks the proposals' store
+// nothing.
+func TestChatAnswerPressesAnUnboundAsk(t *testing.T) {
+	for _, inbox := range []bool{true, false} {
+		p := pressAnswer(t, inbox, factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk,
+			Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}}, "One a night", "One a night it is.")
+		where := fmt.Sprint("thread ", p.conv)
+		equal(t, "the press in "+where, []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"One a night it is."}`, `done {}`}, 0})
+		equal(t, where, rowsOf(t, p.chat, "sebastian", p.conv),
+			[]string{"assistant: One snapshot a night, or one an hour?", "user: One a night", "assistant: One a night it is."})
+		if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "One a night" {
+			t.Fatalf("the model read %+v in %s, want the choice", got[len(got)-1], where)
+		}
 	}
 }
 
@@ -369,17 +376,17 @@ func TestChatAnswerPressesAnUnboundAskInTheInbox(t *testing.T) {
 func TestChatAnswerPressesAPokeChoiceInTheInbox(t *testing.T) {
 	poke := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-r",
 		Content: "#11 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}
-	p := pressInInbox(t, poke, "Retry", "I filed it again.")
+	p := pressAnswer(t, true, poke, "Retry", "I filed it again.")
 	equal(t, "the press", []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"I filed it again."}`, `done {}`}, 0})
-	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.inbox),
+	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv),
 		[]string{"assistant: #11 failed: checks: the checks failed on c1.", "user: Retry", "assistant: I filed it again."})
 	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "Retry" {
 		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
 	}
 
-	p = pressInInbox(t, poke, "Maybe", "")
-	equal(t, "a choice the poke does not offer", []any{p.code, p.events}, []any{http.StatusBadRequest, []string{"the choice is none of the poke's"}})
-	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.inbox), []string{"assistant: #11 failed: checks: the checks failed on c1."})
+	p = pressAnswer(t, true, poke, "Maybe", "")
+	equal(t, "a choice the poke does not offer", []any{p.code, p.events}, []any{http.StatusBadRequest, []string{"the choice is none of the poke's: press one of its buttons."}})
+	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv), []string{"assistant: #11 failed: checks: the checks failed on c1."})
 	if n := len(p.g.calls()); n != 0 {
 		t.Fatalf("%d model calls, want none", n)
 	}

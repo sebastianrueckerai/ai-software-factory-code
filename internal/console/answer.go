@@ -54,7 +54,7 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !slices.Contains(rows[i].Choices, choice) {
-		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of the "+rows[i].Kind+"'s"))
+		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of the "+rows[i].Kind+"'s: press one of its buttons."))
 		return
 	}
 	if rows[i].Kind != factoryd.MessageEscalation {

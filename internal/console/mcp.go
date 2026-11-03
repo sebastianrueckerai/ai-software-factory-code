@@ -397,7 +397,7 @@ func (c *Console) chatSend(ctx context.Context, call tokenCall, in sendInput) (*
 	msg.Names = names(th) && th.Title == ""
 	k := &collector{project: call.p.Name, a: sendAnswer{Conversation: th.Number, Tools: []mcpTool{}, Proposals: []mcpProposal{}, Applied: []mcpApplied{}}}
 	t.send, t.unread = k.send, true
-	a, err := k.wait(ctx, func() error { return t.say(msg, func() {}) })
+	a, err := k.wait(ctx, func() error { return t.say(th, msg, func() {}) })
 	if err != nil {
 		return nil, nil, errors.New(t.sentence(err))
 	}

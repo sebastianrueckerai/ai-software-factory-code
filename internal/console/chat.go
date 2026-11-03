@@ -320,10 +320,10 @@ type chatPool struct {
 
 // chatGet answers GET /projects/{name}/chat: the member's current
 // conversation on the project, or the one ?conversation names, which
-// becomes their current one while it is active; its last chatHistory
-// messages, oldest first, and each proposal's state among them, pending,
-// used or expired, and while the chat's budget stops it the fund state,
-// as JSON. Reading it marks it seen.
+// becomes their current one while it is active and not the inbox; its
+// last chatHistory messages, oldest first, and each proposal's state
+// among them, pending, used or expired, and while the chat's budget stops
+// it the fund state, as JSON. Reading it marks it seen.
 func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -335,7 +335,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, repo, owner := r.Context(), t.p.Repository, t.owner
-	if owner == t.a.s.user && r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 {
+	if owner == t.a.s.user && r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 && !th.Inbox {
 		if err := c.cfg.Chat.OpenConversation(ctx, repo, owner, t.conv); err != nil {
 			log.Printf("console: open the chat of %s on %s: %v", owner, repo, err)
 		} else {
@@ -679,7 +679,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Names = names(th)
-	if err := t.say(in, func() { t.open(w) }); err != nil {
+	if err := t.say(th, in, func() { t.open(w) }); err != nil {
 		c.fail(w, r, err)
 	}
 }
@@ -729,19 +729,15 @@ func names(th factoryd.ChatConversation) bool {
 // factory and its rows' buttons write in.
 const inboxRefusal = "The inbox is the factory's thread: answer with its buttons, and write in a thread of your own."
 
-// say runs the turn on in in the turn's thread: it files the month's chat
-// task, stores the message and its attachments, and answers it — joining
-// the thread's turn in flight, queued behind it, or on its own. The inbox
-// refuses it, 409. A refusal comes back before open opens the stream;
-// after that the turn fails through fail. It returns when the turn ends.
-func (t *turn) say(in turnInput, open func()) error {
+// say runs the turn on in in th, the turn's thread as its caller
+// resolved it: it files the month's chat task, stores the message and its
+// attachments, and answers it — joining the thread's turn in flight,
+// queued behind it, or on its own. The inbox refuses it, 409. A refusal
+// comes back before open opens the stream; after that the turn fails
+// through fail. It returns when the turn ends.
+func (t *turn) say(th factoryd.ChatConversation, in turnInput, open func()) error {
 	c := t.c
 	ctx := t.r.Context()
-	th, _, err := c.cfg.Chat.Conversation(ctx, t.p.Repository, t.owner, t.conv)
-	if err != nil {
-		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
-		return refuse(http.StatusInternalServerError, "cannot read the conversation")
-	}
 	if th.Inbox {
 		return refuse(http.StatusConflict, inboxRefusal)
 	}

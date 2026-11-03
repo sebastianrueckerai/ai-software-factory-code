@@ -273,6 +273,35 @@ func TestPGStoreChatThreads(t *testing.T) {
 	}
 }
 
+// Opening the inbox is refused as no thread to open: the inbox is the
+// factory's thread, never a human's current one, and the current flag
+// stays on their thread 1.
+func TestOpenConversationSkipsTheInbox(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_open_inbox"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	repo, login := "sf/code", "sebastian"
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := s.EnsureInbox(ctx, repo, login)
+	if err != nil || inbox != 2 {
+		t.Fatalf("EnsureInbox = %d, %v, want 2", inbox, err)
+	}
+	if err := s.OpenConversation(ctx, repo, login, inbox); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("OpenConversation of the inbox = %v, want ErrNotFound", err)
+	}
+	if n, err := s.CurrentConversation(ctx, repo, login); err != nil || n != 1 {
+		t.Fatalf("the current thread = %d, %v, want 1", n, err)
+	}
+}
+
 // A compaction is kept on its thread and counted; the thread's newest
 // operator call after a time is its token projection, and its calls of
 // every purpose sum to its totals (roadmap 239).

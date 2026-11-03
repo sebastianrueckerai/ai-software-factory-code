@@ -106,12 +106,15 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 	if err == nil {
 		th, _, err = c.cfg.Chat.Conversation(ctx, p.Repository, a.s.user, conv)
 	}
-	if err == nil && th.Inbox {
-		conv, err = c.cfg.Chat.NewConversation(ctx, p.Repository, a.s.user)
-	}
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
+	}
+	if th.Inbox {
+		if conv, err = c.cfg.Chat.NewConversation(ctx, p.Repository, a.s.user); err != nil {
+			log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
+			return "", refuse(http.StatusInternalServerError, "cannot open a thread of your own")
+		}
 	}
 	tu := c.sessionTurn(context.WithoutCancel(ctx), p, a.s, conv)
 	text, github, chat := scrubTokens(text)
