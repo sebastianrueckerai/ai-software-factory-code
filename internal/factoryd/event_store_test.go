@@ -583,6 +583,16 @@ func TestFundCardPoolHoldsUnderParallelTurns(t *testing.T) {
 	if _, _, err := s.FundCard(ctx, "t-c", 0.01, pool, fundEvent()); !errors.As(err, &p) || p.Funded != 0.3 {
 		t.Fatalf("a cent past the pool = %v, want PoolSpentError of 0.3 funded", err)
 	}
+	// the raise meets what the pool has left, so a raise past it is
+	// refused even where the funded and the raise in cents sum past int64
+	s = fundStore(t)
+	pool = &FundBounds{PoolEUR: 6e16, CardCapEUR: 9e16}
+	if _, _, err := s.FundCard(ctx, "t-c", 5e16, pool, fundEvent()); err != nil {
+		t.Fatalf("FundCard 5e16 within the pool of 6e16: %v", err)
+	}
+	if _, _, err := s.FundCard(ctx, "t-c", 5e16, pool, fundEvent()); !errors.As(err, &p) || p.Funded != 5e16 {
+		t.Fatalf("a raise of 5e16 on 5e16 funded of a 6e16 pool = %v, want PoolSpentError of 5e16 funded", err)
+	}
 }
 
 // The card's cap is the UPDATE's predicate: of five parallel raises of 1

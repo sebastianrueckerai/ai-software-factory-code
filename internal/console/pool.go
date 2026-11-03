@@ -37,14 +37,18 @@ type poolLine struct {
 	Words         string
 }
 
-// projectPool is p's pool line from v, the policy in force, at now: the
-// configured, used and remaining EUR — usage is kept whole when a pool is
-// lowered below it, only the remaining clamps to zero — with the words that
-// distinguish an absent or disabled pool, an exhausted or lowered one, a
-// missing per-raise guard, a fund the member confirms (their money, which
-// meets no pool bound) and an unreadable usage. A positive pool alone is
-// never unattended authority.
-func (c *Console) projectPool(ctx context.Context, v policy.Version, p factoryd.Project, now time.Time) poolLine {
+// ProjectPool is p's pool line from v, the policy in force, at now — the
+// explicit instant the read-helper's contract takes: the project face,
+// the settings, the policy page and the chat's pool line all read this
+// one projection at their own now, and a deterministic readout (a turn of
+// the month) hands the instant to it rather than a configurable clock.
+// The configured, used and remaining EUR — usage is kept whole when a
+// pool is lowered below it, only the remaining clamps to zero — with the
+// words that distinguish an absent or disabled pool, an exhausted or
+// lowered one, a missing per-raise guard, a fund the member confirms
+// (their money, which meets no pool bound) and an unreadable usage. A
+// positive pool alone is never unattended authority.
+func (c *Console) ProjectPool(ctx context.Context, v policy.Version, p factoryd.Project, now time.Time) poolLine {
 	out := poolLine{Month: now.UTC().Format("2006-01"),
 		Policy: fmt.Sprintf("policy version %d (commit %.7s)", v.ID, v.Commit)}
 	pc, loaded := v.Tree.Projects[p.Name]
@@ -89,7 +93,7 @@ func (c *Console) projectPool(ctx context.Context, v policy.Version, p factoryd.
 // identity and the month with the same words the settings, policy and
 // project pages read — one projection through them all.
 func (c *Console) poolChat(ctx context.Context, v policy.Version, p factoryd.Project) string {
-	pl := c.projectPool(ctx, v, p, time.Now())
+	pl := c.ProjectPool(ctx, v, p, time.Now())
 	return fmt.Sprintf("Pool (%s, %s UTC): %s", pl.Policy, pl.Month, pl.Words)
 }
 

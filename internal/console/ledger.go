@@ -103,7 +103,7 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 	type project struct {
 		Name string
 		policy.ProjectConfig
-		// Pool is the project's pool status (projectPool): the same line
+		// Pool is the project's pool status (ProjectPool): the same line
 		// the project's face and the settings page read.
 		Pool poolLine
 	}
@@ -112,7 +112,7 @@ func (c *Console) policy(w http.ResponseWriter, r *http.Request) {
 	for _, name := range slices.Sorted(maps.Keys(v.Projects)) {
 		pc := v.Projects[name]
 		projects = append(projects, project{name, pc,
-			c.projectPool(r.Context(), v, factoryd.Project{Name: name, Repository: pc.Repository}, now)})
+			c.ProjectPool(r.Context(), v, factoryd.Project{Name: name, Repository: pc.Repository}, now)})
 	}
 	s := current(r)
 	c.render(w, "policy.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Version": v, "Projects": projects,
