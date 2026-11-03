@@ -141,80 +141,10 @@ func TestDivideConquerLedgerIntegrity(t *testing.T) {
 		}
 	})
 
-	// ModelReview writes one model_review row per attempt at a head and
-	// round: a replay of an attempt is one row, a second genuine round of
-	// the head and a round of another head each their own; a refused row
-	// is the review's error and its retry lands. A refused or unreadable
-	// answer is a row that never judged the head, a concerns verdict one
-	// that did.
+	// ModelReview writes one model_review row per attempt: see accDriveReviews.
 	t.Run("model reviews", func(t *testing.T) {
 		s, db := divideStore(t)
-		accCard(t, s, "t-rev-1", "sf/code", "small", "c1", 81)
-		accCard(t, s, "t-rev-2", "sf/other", "small", "o1", 82)
-		fj, gw := &accForgejo{}, &accGateway{}
-		ledger := &accLedger{PGStore: s}
-		r := newLedgerRunner(t, ledger, serve(t, fj), serve(t, gw))
-		review := func(task, head string, round int, answer accReply) error {
-			fj.setHead(head)
-			gw.answer(answer)
-			_, err := r.ModelReview(ctx, task, factoryd.PullRequest{Number: 9}, head, factoryd.GateResults{}, nil, round)
-			return err
-		}
-		concerns := accReply{content: `{"verdict":"concerns","summary":"the target skips vet","findings":["Makefile: check does not run go vet"]}`}
-		approve := accReply{content: `{"verdict":"approve","summary":"fine"}`}
-		refused := accReply{status: http.StatusPaymentRequired, decision: "refused_budget"}
-		invalid := accReply{content: "LGTM"}
-		for round, answer := range []accReply{concerns, refused, invalid} {
-			if err := review("t-rev-1", "c1", round+1, answer); err != nil {
-				t.Fatal(err)
-			}
-		}
-		three := accRows(t, db, factoryd.EventModelReview)
-		time.Sleep(20 * time.Millisecond)
-		// the activity retried round 1: the model is asked again, the row stays
-		if err := review("t-rev-1", "c1", 1, approve); err != nil {
-			t.Fatal(err)
-		}
-		if again := accRows(t, db, factoryd.EventModelReview); len(again) != 3 || !again[0].At.Equal(three[0].At) || again[0].Detail["verdict"] != "concerns" {
-			t.Fatalf("rows %+v after the replay of round 1, want the three attempts as first written", again)
-		}
-		for i, want := range []struct {
-			reviewed bool
-			verdict  string
-		}{{true, "concerns"}, {false, ""}, {false, ""}} {
-			row := three[i]
-			if row.Identity != "model_review c1 "+string('1'+rune(i)) || row.Detail["round"] != float64(i+1) || row.Detail["pr"] != float64(9) ||
-				row.Detail["reviewed"] != want.reviewed || row.Detail["verdict"] != want.verdict || (row.Detail["reason"] != nil) == want.reviewed {
-				t.Errorf("round %d row %+v, want reviewed %v with verdict %q", i+1, row, want.reviewed, want.verdict)
-			}
-		}
-		// another head: its first round, refused by the store once
-		ledger.refuse(factoryd.EventModelReview, errors.New("the store is gone"))
-		if err := review("t-rev-1", "c2", 1, approve); err == nil || !strings.Contains(err.Error(), "the store is gone") {
-			t.Fatalf("review over a refused row = %v, want it as the review's error", err)
-		}
-		if n := len(accRows(t, db, factoryd.EventModelReview)); n != 3 {
-			t.Fatalf("%d rows after the refused write, want three", n)
-		}
-		if err := review("t-rev-1", "c2", 1, approve); err != nil {
-			t.Fatal(err)
-		}
-		// another repository's review answers its own panel
-		if err := review("t-rev-2", "o1", 1, invalid); err != nil {
-			t.Fatal(err)
-		}
-		// a keyed row with no classification: unknown evidence
-		accRecord(t, s, factoryd.Event{Repository: "sf/code", TaskID: "t-rev-1", IssueNumber: 81, Kind: factoryd.EventModelReview,
-			Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, IdentityKey: "model_review c3 1"}, time.Now().UTC())
-
-		rig := newDivideRig(t, s)
-		today := time.Now().UTC().Truncate(24 * time.Hour)
-		span := accSpan(today.AddDate(0, 0, -6), today)
-		dc := rig.reportAt(span).DivideConquer
-		same(t, "reviews_not_reviewed", dc.ReviewsNotReviewed, factoryd.Figure{Value: 2, Has: true, Weeks: [7]float64{6: 2}})
-		same(t, "review answers", dc.ReviewEvidence.Answers, factoryd.Figure{Value: 4, Has: true, Weeks: [7]float64{6: 4}})
-		same(t, "review unknown", dc.ReviewEvidence.Unknown, factoryd.Figure{Value: 1, Has: true, Weeks: [7]float64{6: 1}})
-		holds(t, panel(t, rig.pageQuery(span), "not reviewed answers"), []string{">2 of 4 · target 0<", "1 unknown"}, nil)
+		accDriveReviews(t, s, db)
 	})
 
 	// The ReleaseKeeper's public Pass and DeployNow write the hold facts
@@ -332,6 +262,75 @@ func TestDivideConquerLedgerIntegrity(t *testing.T) {
 		same(t, "hold_wait_milliseconds", dc.HoldWaitMillis.Value, float64((245 * time.Minute).Milliseconds()))
 		same(t, "hold_wait_coverage", dc.HoldWaitCoverage, factoryd.HoldWaitCoverage{Ended: 4})
 	})
+}
+
+// accDriveReviews drives the Runner's ModelReview over s and checks the rows it leaves. It writes one model_review row per attempt at a head and
+// round: a replay of an attempt is one row, a second genuine round of
+// the head and a round of another head each their own; a refused row
+// is the review's error and its retry lands. A refused or unreadable
+// answer is a row that never judged the head, a concerns verdict one
+// that did.
+func accDriveReviews(t *testing.T, s *factoryd.PGStore, db *sql.DB) {
+	t.Helper()
+	ctx := context.Background()
+	accCard(t, s, "t-rev-1", "sf/code", "small", "c1", 81)
+	accCard(t, s, "t-rev-2", "sf/other", "small", "o1", 82)
+	fj, gw := &accForgejo{}, &accGateway{}
+	ledger := &accLedger{PGStore: s}
+	r := newLedgerRunner(t, ledger, serve(t, fj), serve(t, gw))
+	review := func(task, head string, round int, answer accReply) error {
+		fj.setHead(head)
+		gw.answer(answer)
+		_, err := r.ModelReview(ctx, task, factoryd.PullRequest{Number: 9}, head, factoryd.GateResults{}, nil, round)
+		return err
+	}
+	concerns := accReply{content: `{"verdict":"concerns","summary":"the target skips vet","findings":["Makefile: check does not run go vet"]}`}
+	approve := accReply{content: `{"verdict":"approve","summary":"fine"}`}
+	refused := accReply{status: http.StatusPaymentRequired, decision: "refused_budget"}
+	invalid := accReply{content: "LGTM"}
+	for round, answer := range []accReply{concerns, refused, invalid} {
+		if err := review("t-rev-1", "c1", round+1, answer); err != nil {
+			t.Fatal(err)
+		}
+	}
+	three := accRows(t, db, factoryd.EventModelReview)
+	time.Sleep(20 * time.Millisecond)
+	// the activity retried round 1: the model is asked again, the row stays
+	if err := review("t-rev-1", "c1", 1, approve); err != nil {
+		t.Fatal(err)
+	}
+	if again := accRows(t, db, factoryd.EventModelReview); len(again) != 3 || !again[0].At.Equal(three[0].At) || again[0].Detail["verdict"] != "concerns" {
+		t.Fatalf("rows %+v after the replay of round 1, want the three attempts as first written", again)
+	}
+	for i, want := range []struct {
+		reviewed bool
+		verdict  string
+	}{{true, "concerns"}, {false, ""}, {false, ""}} {
+		row := three[i]
+		if row.Identity != "model_review c1 "+string('1'+rune(i)) || row.Detail["round"] != float64(i+1) || row.Detail["pr"] != float64(9) ||
+			row.Detail["reviewed"] != want.reviewed || row.Detail["verdict"] != want.verdict || (row.Detail["reason"] != nil) == want.reviewed {
+			t.Errorf("round %d row %+v, want reviewed %v with verdict %q", i+1, row, want.reviewed, want.verdict)
+		}
+	}
+	// another head: its first round, refused by the store once
+	ledger.refuse(factoryd.EventModelReview, errors.New("the store is gone"))
+	if err := review("t-rev-1", "c2", 1, approve); err == nil || !strings.Contains(err.Error(), "the store is gone") {
+		t.Fatalf("review over a refused row = %v, want it as the review's error", err)
+	}
+	if n := len(accRows(t, db, factoryd.EventModelReview)); n != 3 {
+		t.Fatalf("%d rows after the refused write, want three", n)
+	}
+	if err := review("t-rev-1", "c2", 1, approve); err != nil {
+		t.Fatal(err)
+	}
+	// another repository's review answers its own panel
+	if err := review("t-rev-2", "o1", 1, invalid); err != nil {
+		t.Fatal(err)
+	}
+	// a keyed row with no classification: unknown evidence
+	accRecord(t, s, factoryd.Event{Repository: "sf/code", TaskID: "t-rev-1", IssueNumber: 81, Kind: factoryd.EventModelReview,
+		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, IdentityKey: "model_review c3 1"}, time.Now().UTC())
+
 }
 
 // accObjects is the object store the timeline appends its steps to.
