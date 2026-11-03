@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"maps"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -22,6 +23,17 @@ var (
 )
 
 const registryHost = "git.aisoftwarefactory.world/sf/"
+
+// commitPinned is the commit factoryd's Deployment names before a roll.
+const commitPinned = "e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0e0"
+
+// withCommit is m with the commit factoryd's Deployment names set to sha,
+// as a roll of factoryd's image writes it.
+func withCommit(m map[string]string, sha string) map[string]string {
+	out := maps.Clone(m)
+	out["k8s/factoryd.yaml"] = strings.Replace(out["k8s/factoryd.yaml"], `"`+commitPinned+`"`, `"`+sha+`"`, 1)
+	return out
+}
 
 // k8sManifests renders the code repository's two manifests pinning the
 // given digests and the sandbox base at baseIdx, shaped like
@@ -45,6 +57,8 @@ spec:
         image: ` + registryHost + `factory-gateway@` + factoryd + `
         command: [factoryd]
         env:
+        - name: FACTORY_COMMIT
+          value: "` + commitPinned + `"
         - name: CI_RUNNER_IMAGE
           value: ` + registryHost + `ci-runner@` + runner + `
         - name: WORKER_IMAGE

@@ -1226,17 +1226,20 @@ func TestJobLogReadsTheTail(t *testing.T) {
 	}
 }
 
+// MainAtLeast asks Forgejo's compare head...pin, which counts the pin's
+// commits head lacks, as Forgejo 17 answers it: none, the pin is at or
+// behind head.
 func TestForgejoMainAtLeast(t *testing.T) {
 	pin := "82ab246" + strings.Repeat("0", 33)
 	head := "fee3ff16" + strings.Repeat("1", 32)
 	for name, tc := range map[string]struct {
-		pin    string
-		status string
-		met    bool
+		pin     string
+		lacking int
+		met     bool
 	}{
-		"far past the pin": {pin, "ahead", true},
-		"the pin at head":  {head, "identical", true},
-		"lost the pin":     {pin, "behind", false},
+		"far past the pin": {pin, 0, true},
+		"the pin at head":  {head, 0, true},
+		"lost the pin":     {pin, 2, false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -1248,8 +1251,8 @@ func TestForgejoMainAtLeast(t *testing.T) {
 					}
 					commits[0] = map[string]string{"sha": head}
 					json.NewEncoder(w).Encode(commits)
-				case r.URL.Path == "/api/v1/repos/sf/infra/compare/"+tc.pin+"..."+head:
-					io.WriteString(w, `{"status":`+strconv.Quote(tc.status)+`}`)
+				case r.URL.Path == "/api/v1/repos/sf/infra/compare/"+head+"..."+tc.pin:
+					fmt.Fprintf(w, `{"commits":[],"files":[],"total_commits":%d}`, tc.lacking)
 				default:
 					w.WriteHeader(http.StatusNotFound)
 				}
@@ -1262,7 +1265,7 @@ func TestForgejoMainAtLeast(t *testing.T) {
 			}
 		})
 	}
-	t.Run("compare without a status", func(t *testing.T) {
+	t.Run("compare without a commit count", func(t *testing.T) {
 		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 			switch {
 			case r.URL.Path == "/api/v1/repos/sf/infra/commits":
@@ -1276,7 +1279,7 @@ func TestForgejoMainAtLeast(t *testing.T) {
 		defer srv.Close()
 		f := &Forgejo{BaseURL: srv.URL}
 		if _, _, err := f.MainAtLeast(context.Background(), "tok", Repo{Owner: "sf", Name: "infra"}, pin); err == nil || !strings.Contains(err.Error(), "companion sf/infra") {
-			t.Fatalf("compare without a status = %v, want an error naming the companion", err)
+			t.Fatalf("compare without a commit count = %v, want an error naming the companion", err)
 		}
 	})
 }

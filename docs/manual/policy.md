@@ -10,9 +10,10 @@ file that still carries the removed `lanes` block is refused by name) and `proje
 project: repository, merge rule, `objects: factory|seed`,
 `agents: coder|none`, `process`, notify, namespaces, environments,
 quota, secrets, `budget: {month_eur}`, `model: stronger`). The Go types in `internal/policy` are the
-schema: `factoryd schema --out <dir>` writes one JSON Schema per file
+schema: `factoryd schema --out <dir> --commit <sha>` writes one JSON Schema per file
 kind (draft-07; every enumerated field lists its values, every key its
-doc comment, a key is required unless its yaml tag says `omitempty`),
+doc comment, a key is required unless its yaml tag says `omitempty`)
+and `commit`, the code commit they come from,
 committed as `factory/schema/`, and each file's first line references
 its schema (`# yaml-language-server: $schema=schema/policy.schema.json`,
 `../schema/project.schema.json` under `projects/`,

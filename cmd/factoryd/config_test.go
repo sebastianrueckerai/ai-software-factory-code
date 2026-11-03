@@ -25,7 +25,7 @@ func tree(t *testing.T) string {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if code := run([]string{"schema", "--out", filepath.Join(dir, "schema")}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+	if code := run([]string{"schema", "--out", filepath.Join(dir, "schema"), "--commit", commit}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 		t.Fatalf("schema exit %d", code)
 	}
 	for name, b := range files {
@@ -44,16 +44,19 @@ func write(t *testing.T, path, content string) {
 	}
 }
 
+// The schemas and, beside them, the commit of the code they come from,
+// by which the schema copier orders the copies against its build.
 func TestSchemaCommandWritesTheGeneratedSchemas(t *testing.T) {
 	out := filepath.Join(t.TempDir(), "schema")
 	var stdout, stderr bytes.Buffer
-	if code := run([]string{"schema", "--out", out}, &stdout, &stderr); code != 0 {
+	if code := run([]string{"schema", "--out", out, "--commit", commit}, &stdout, &stderr); code != 0 {
 		t.Fatalf("exit %d: %s", code, stderr.String())
 	}
 	want, err := policy.Schemas()
 	if err != nil {
 		t.Fatal(err)
 	}
+	want["commit"] = []byte(commit + "\n")
 	got, err := policy.ReadDir(out)
 	if err != nil {
 		t.Fatal(err)
@@ -61,10 +64,19 @@ func TestSchemaCommandWritesTheGeneratedSchemas(t *testing.T) {
 	if !maps.EqualFunc(got, want, bytes.Equal) {
 		t.Fatalf("wrote %v, want %v", slices.Sorted(maps.Keys(got)), slices.Sorted(maps.Keys(want)))
 	}
-	if code := run([]string{"schema"}, &stdout, &stderr); code != 2 {
-		t.Fatalf("schema without --out: exit %d, want 2", code)
+	for name, args := range map[string][]string{
+		"without --out":    {"schema", "--commit", commit},
+		"without --commit": {"schema", "--out", out},
+		"a short commit":   {"schema", "--out", out, "--commit", commit[:7]},
+	} {
+		if code := run(args, &stdout, &stderr); code != 2 {
+			t.Errorf("schema %s: exit %d, want 2", name, code)
+		}
 	}
 }
+
+// commit is the code commit the tests' schema copies name.
+const commit = "0123456789abcdef0123456789abcdef01234567"
 
 func TestConfigCheck(t *testing.T) {
 	var stdout, stderr bytes.Buffer
@@ -308,7 +320,7 @@ func TestConfigCheckAndLoaderAgree(t *testing.T) {
 			files := maps.Clone(fixture)
 			change(files)
 			dir := t.TempDir()
-			if code := run([]string{"schema", "--out", filepath.Join(dir, "schema")}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
+			if code := run([]string{"schema", "--out", filepath.Join(dir, "schema"), "--commit", commit}, &bytes.Buffer{}, &bytes.Buffer{}); code != 0 {
 				t.Fatalf("schema exit %d", code)
 			}
 			for f, b := range files {

@@ -8,6 +8,20 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# One check at a time per checkout: three beside each other passed a
+# sandbox's 4Gi and the OOM kill took the session's unpushed work.
+lock=${TMPDIR:-/tmp}/check-$(pwd -P | cksum | cut -d" " -f1).lock
+if [ "${CHECK_LOCK:-}" != "$lock" ]; then
+  code=0
+  CHECK_LOCK=$lock flock -n -o -E 75 "$lock" bash "./$(basename "$0")" "$@" || code=$?
+  if [ "$code" = 75 ]; then
+    echo "another bash check (pid $(cat "$lock")) runs in this checkout: wait for it to end, then run this one again" >&2
+    exit 1
+  fi
+  exit "$code"
+fi
+echo $$ >"$lock"
+
 go vet ./...
 unformatted=$(gofmt -l .)
 if [ -n "$unformatted" ]; then echo "gofmt -w these files:"; echo "$unformatted"; exit 1; fi

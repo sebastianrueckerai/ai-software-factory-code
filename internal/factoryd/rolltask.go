@@ -310,6 +310,25 @@ func bumpDigest(content []byte, image, digest string) ([]byte, error) {
 	return bytes.Replace(content, []byte(ref), []byte(strings.TrimSuffix(ref, old)+digest), 1), nil
 }
 
+// commitValue is factoryd's FACTORY_COMMIT in its manifest, the commit
+// its images come from, which the schema copier orders its build by.
+var commitValue = regexp.MustCompile(`(- name: FACTORY_COMMIT\n\s+value: )"[0-9a-f]{40}"`)
+
+// fullSHA is a commit's full sha.
+var fullSHA = regexp.MustCompile(`^[0-9a-f]{40}$`)
+
+// setCommit points factoryd's FACTORY_COMMIT in its manifest at sha, the
+// commit whose images the roll pins, and changes nothing else.
+func setCommit(content []byte, sha string) ([]byte, error) {
+	if !fullSHA.MatchString(sha) {
+		return nil, fmt.Errorf("commit %q is no full sha", sha)
+	}
+	if n := len(commitValue.FindAll(content, -1)); n != 1 {
+		return nil, fmt.Errorf("%d FACTORY_COMMIT values, want exactly 1", n)
+	}
+	return commitValue.ReplaceAll(content, []byte(`${1}"`+sha+`"`)), nil
+}
+
 // registryPath is a pinned reference's repository path in its registry:
 // git.example/sf/ci-runner@sha256:... is sf/ci-runner.
 func registryPath(ref string) string {
@@ -1542,6 +1561,11 @@ func (r *Runner) rollEdits(ctx context.Context, fork Repo, ref string, reqs []Ro
 			var err error
 			if f.content, err = bumpDigest(f.content, target.Image, req.Changes[name]); err != nil {
 				return nil, terminalError("%s: %v", target.File, err)
+			}
+			if name == "factoryd" {
+				if f.content, err = setCommit(f.content, req.SHA); err != nil {
+					return nil, terminalError("%s: %v", target.File, err)
+				}
 			}
 		}
 	}
