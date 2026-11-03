@@ -21,7 +21,7 @@ import (
 
 // poolLine is the project face's pool status: one projection of the loaded
 // policy's discretionary pool and the month's agent-funded usage against it
-// — the same figure FundCard guards the pool with (AgentFundedEUR), never a
+// — the same figure the agent's fund is checked against (AgentFundedEUR), never a
 // second aggregate and never the ProjectMonthSpend total. Present: a pool
 // stands (discretionary_eur above 0). Readable: the usage could be read; an
 // unreadable one is never zero. Ready: the loaded policy's actual rules —

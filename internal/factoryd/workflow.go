@@ -1275,7 +1275,7 @@ const (
 	// cap check and after every answer wake, so an Extend made while the
 	// card ran or waited at any stop — the session cap, the agent time, a
 	// gate — reaches the run. The raises live in columns the workflow
-	// never writes (TaskUsage.RaisedSessions, ExtraLines), so no usage
+	// never writes (TaskUsage.RaisedSessions, RaisedTime, ExtraLines), so no usage
 	// record writes them away. A run from before the change reloads the
 	// whole row at the check-in's stop alone (versionExtendRaise).
 	versionRaiseReload workflow.Version = 1
@@ -1597,7 +1597,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least) {
 			capAnswer()
 			return true
 		}
@@ -2014,12 +2014,12 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+		remaining := t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
 		if t.keepWork >= versionKeepWork && remaining < least {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}
-			remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+			remaining = t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
@@ -2795,7 +2795,7 @@ func (t *taskRun) grantTime(u *TaskUsage) {
 	if t.v5 < versionPersistUsage {
 		return
 	}
-	if left, slice := t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime, t.answerTime(); left < slice {
+	if left, slice := t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime, t.answerTime(); left < slice {
 		u.ExtraTime += slice - left
 	}
 	t.recordUsage(*u)
@@ -2866,15 +2866,15 @@ func (t *taskRun) readUsage(held TaskUsage) TaskUsage {
 }
 
 // readRaise takes the console's raises from the row into u
-// (versionRaiseReload): the sessions and lines an Extend added, which the
-// workflow never writes, so the row's numbers are the truth and the rest
-// of u stays the run's own.
+// (versionRaiseReload): the sessions, agent time and lines an Extend
+// added, which the workflow never writes, so the row's numbers are the
+// truth and the rest of u stays the run's own.
 func (t *taskRun) readRaise(u *TaskUsage) {
 	if t.raiseReload < versionRaiseReload {
 		return
 	}
 	row := t.readUsage(*u)
-	u.RaisedSessions, u.ExtraLines = row.RaisedSessions, row.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines = row.RaisedSessions, row.RaisedTime, row.ExtraLines
 }
 
 // verify takes a pushed commit through its pull request, the checks and

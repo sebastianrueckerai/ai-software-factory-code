@@ -602,7 +602,7 @@ func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
-	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1055,12 +1055,15 @@ func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) ([]
 	return moved, nil
 }
 
-func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
+func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ factoryd.Event) (float64, float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, factoryd.ErrNotFound
+	}
+	if t.CeilingEUR > 0 && factoryd.Cents(t.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(t.CeilingEUR) {
+		return 0, 0, &factoryd.CardCapError{Budget: t.BudgetEUR}
 	}
 	from := t.BudgetEUR
 	t.BudgetEUR += eur
@@ -1068,7 +1071,7 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ 
 	return from, t.BudgetEUR, nil
 }
 
-func (s *acceptanceStore) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+func (s *acceptanceStore) ExtendCard(_ context.Context, id string, d policy.Draw, lines int, _ factoryd.Event) (float64, float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -1076,11 +1079,34 @@ func (s *acceptanceStore) ExtendCard(_ context.Context, id string, sessions, lin
 		return 0, 0, factoryd.ErrNotFound
 	}
 	from := t.BudgetEUR
-	t.BudgetEUR += eur
-	t.Usage.ExtraAttempts += sessions
+	t.BudgetEUR += d.EUR
+	t.Usage.RaisedSessions += d.Sessions
+	t.Usage.RaisedTime += d.AgentTime
 	t.Usage.ExtraLines += lines
 	s.tasks[id] = t
 	return from, t.BudgetEUR, nil
+}
+
+// PoolDrawn and CardDrawn: this store keeps no event rows, so nothing is
+// drawn.
+func (s *acceptanceStore) PoolDrawn(context.Context, string, time.Time) (policy.Draw, error) {
+	return policy.Draw{}, nil
+}
+
+func (s *acceptanceStore) CardDrawn(context.Context, string) (policy.Draw, error) {
+	return policy.Draw{}, nil
+}
+
+func (s *acceptanceStore) SetCeiling(_ context.Context, id string, eur float64, _ factoryd.Event) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok {
+		return factoryd.ErrNotFound
+	}
+	t.CeilingEUR = eur
+	s.tasks[id] = t
+	return nil
 }
 
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {

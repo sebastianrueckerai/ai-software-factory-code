@@ -231,11 +231,14 @@ func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]stri
 }
 
 // FundCard raises task id's budget by eur and records e with the raise in
-// its detail; bounds are the console's, which no factoryd caller passes.
-func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
+// its detail; the card's ceiling refuses a raise past it.
+func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
+	}
+	if t.CeilingEUR > 0 && Cents(t.BudgetEUR)+Cents(eur) > Cents(t.CeilingEUR) {
+		return 0, 0, &CardCapError{Budget: t.BudgetEUR}
 	}
 	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
 	s.tasks[id] = t
@@ -248,25 +251,77 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds
 	return from, t.BudgetEUR, err
 }
 
-// ExtendCard raises task id's caps — its granted sessions, its line bound
-// and its budget — and records e with the raise in its detail.
-func (s *fakeStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
+// ExtendCard raises task id's caps by d and lines and records e with the
+// raise in its detail.
+func (s *fakeStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
 	}
-	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
-	t.Usage.ExtraAttempts += sessions
+	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+d.EUR
+	t.Usage.RaisedSessions += d.Sessions
+	t.Usage.RaisedTime += d.AgentTime
 	t.Usage.ExtraLines += lines
 	s.tasks[id] = t
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
 	}
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, eur
-	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, d.EUR
+	e.Detail["sessions"], e.Detail["agent_time_s"], e.Detail["lines"] = d.Sessions, int64(d.AgentTime/time.Second), lines
 	_, err = s.Record(ctx, e)
 	return from, t.BudgetEUR, err
+}
+
+// PoolDrawn sums repository's pool draws in the UTC month of month.
+func (s *fakeStore) PoolDrawn(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
+	from := time.Date(month.UTC().Year(), month.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+	return s.drawn(func(e Event) bool {
+		at := cmp.Or(e.At, time.Now())
+		return e.Repository == repository && !at.Before(from) && at.Before(from.AddDate(0, 1, 0))
+	}), nil
+}
+
+// CardDrawn sums task taskID's pool draws of rungs 0 and 1.
+func (s *fakeStore) CardDrawn(_ context.Context, taskID string) (policy.Draw, error) {
+	return s.drawn(func(e Event) bool {
+		rung, ok := e.Detail["rung"].(int)
+		return e.TaskID == taskID && ok && rung <= 1
+	}), nil
+}
+
+// drawn sums the recorded pool draws pick keeps.
+func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
+	var d policy.Draw
+	for _, e := range s.events {
+		if (e.Kind != EventCardFunded && e.Kind != EventCardExtended) || e.Detail["pool"] != true || !pick(e) {
+			continue
+		}
+		sessions, _ := e.Detail["sessions"].(int)
+		seconds, _ := e.Detail["agent_time_s"].(int64)
+		eur, _ := e.Detail["amount_eur"].(float64)
+		d = d.Plus(policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second, EUR: eur})
+	}
+	return d
+}
+
+// SetCeiling sets task taskID's ceiling and records e as its card_funded
+// row of 0 EUR.
+func (s *fakeStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
+	t, ok := s.tasks[taskID]
+	if !ok {
+		return ErrNotFound
+	}
+	t.CeilingEUR = eur
+	s.tasks[taskID] = t
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["ceiling_eur"], e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, 0.0, t.BudgetEUR, t.BudgetEUR
+	e.Repository, e.TaskID, e.IssueNumber, e.Kind = t.Repository, taskID, t.IssueNumber, EventCardFunded
+	_, err := s.Record(ctx, e)
+	return err
 }
 
 func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
@@ -993,7 +1048,7 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1012,11 +1067,17 @@ func (s *fakeStore) SetTaskSizeBudget(ctx context.Context, id, size string, held
 		return nil
 	}
 	t.Size = size
+	from := t.BudgetEUR
 	if Cents(t.BudgetEUR) == heldCents {
 		t.BudgetEUR = eur
 	}
 	s.tasks[id] = t
-	return nil
+	if Cents(t.BudgetEUR) == Cents(from) {
+		return nil
+	}
+	_, err := s.Record(ctx, Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"size": size, "from_eur": from, "to_eur": t.BudgetEUR, "amount_eur": float64(Cents(t.BudgetEUR)-Cents(from)) / 100, "by": "size gate"}})
+	return err
 }
 
 func (s *fakeStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
@@ -2130,7 +2191,7 @@ func TestPGStore(t *testing.T) {
 	}
 	// the console's Extend raises columns the workflow's snapshot leaves:
 	// a snapshot written after the raise, holding none of it, keeps it
-	if _, _, err := s.ExtendCard(ctx, "t1", 1, 150, 0, Event{Repository: "sf/code", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole}); err != nil {
+	if _, _, err := s.ExtendCard(ctx, "t1", policy.Draw{Sessions: 1}, 150, Event{Repository: "sf/code", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {

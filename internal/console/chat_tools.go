@@ -2142,10 +2142,8 @@ func (t *turn) systemText() (string, error) {
 
 // fund is the fund tool, fundWithinBounds' door: the agent's own raise
 // meets the bounds of the project's budget block and the policy, each
-// refusal naming its bound and the fitting action; the pool and the card's
-// cap are checked in doFund's transaction, so parallel turns overspend
-// neither. A raise the member confirmed meets none. Money compares in
-// cents.
+// refusal naming its bound and the fitting action. A raise the member
+// confirmed meets none. Money compares in cents.
 func (t *turn) fund(in toolInput) (string, error) {
 	return t.c.fundWithinBounds(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text)
 }
@@ -2164,7 +2162,7 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+id); err != nil {
 			return "", err
 		}
-		return c.doFund(ctx, a, id, eur, text, nil)
+		return c.doFund(ctx, a, id, eur, text)
 	}
 	p, ok, err := c.projectAt(ctx, a.repository)
 	switch {
@@ -2200,11 +2198,22 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the human can make a sizing exception.",
 			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
 	}
-	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, &factoryd.FundBounds{PoolEUR: b.DiscretionaryEUR, CardCapEUR: ceiling})
+	unread := refuse(http.StatusServiceUnavailable, "The month's pool could not be read; nothing was raised. Try again.")
+	if c.cfg.Pools == nil {
+		return "", unread
+	}
+	funded, err := c.cfg.Pools.AgentFundedEUR(ctx, card.Repository, time.Now())
+	switch {
+	case err != nil:
+		log.Printf("console: the pool of %s: %v", card.Repository, err)
+		return "", unread
+	case factoryd.Cents(in.EUR) > factoryd.Cents(b.DiscretionaryEUR)-factoryd.Cents(funded):
+		return "", refuse(http.StatusConflict, poolSpent(b.DiscretionaryEUR, funded, in.EUR))
+	}
+	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text)
 }
 
-// capSpent is the refusal of a raise another turn's raise left past the
-// card's cap.
+// capSpent is the refusal of a raise past the card's ceiling.
 func capSpent(issue int64, held, eur, ceiling float64) string {
 	return fmt.Sprintf("Card #%d holds €%.2f now; €%.2f more passes its cap of €%.2f. Record your analysis with attach_analysis so the human can make a sizing exception.",
 		issue, held, eur, ceiling)

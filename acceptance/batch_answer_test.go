@@ -311,10 +311,10 @@ func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error    { 
 func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *accBatchTasks) FundCard(_ context.Context, _ string, _ float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
+func (s *accBatchTasks) FundCard(_ context.Context, _ string, _ float64, _ factoryd.Event) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *accBatchTasks) ExtendCard(_ context.Context, _ string, _, _ int, _ float64, _ factoryd.Event) (float64, float64, error) {
+func (s *accBatchTasks) ExtendCard(_ context.Context, _ string, _ policy.Draw, _ int, _ factoryd.Event) (float64, float64, error) {
 	return 0, 0, nil
 }
 func (s *accBatchTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
@@ -890,10 +890,19 @@ func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t fact
 func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	panic("unused")
 }
-func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
 	panic("unused")
 }
-func (s *accBatchStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
+func (s *accBatchStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (float64, float64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, error) {
+	panic("unused")
+}
+func (s *accBatchStore) SetCeiling(ctx context.Context, taskID string, eur float64, e factoryd.Event) error {
 	panic("unused")
 }
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {

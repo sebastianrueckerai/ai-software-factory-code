@@ -32,6 +32,7 @@ type Task struct {
 	BudgetEUR            float64
 	SpentEUR             float64 // the settled ledger sum
 	HeldEUR              float64 // the holds of the calls in flight
+	CeilingEUR           float64 // the most this card may be funded to, 0 for the policy's
 	Status               string
 	Objective            string
 	Repository           string
@@ -237,11 +238,18 @@ type TaskUsage struct {
 	// the ExtraAttempts the workflow's own grants count: the console alone
 	// writes them, the workflow reads them at each cap check (readRaise).
 	RaisedSessions int
+	// RaisedTime is the agent time an extend added, written and read as
+	// RaisedSessions is.
+	RaisedTime time.Duration
 }
 
 // SessionsAdded is every session added to the policy's cap: the grants
 // the workflow's answers bought and the raises the console's Extend made.
 func (u TaskUsage) SessionsAdded() int { return u.ExtraAttempts + u.RaisedSessions }
+
+// TimeAdded is every agent time added to the policy's cap: the answers'
+// grants, the planner's retry and the extends.
+func (u TaskUsage) TimeAdded() time.Duration { return u.ExtraTime + u.RetryTime + u.RaisedTime }
 
 // IntakeEvent is a Forgejo comment, review or decision (issue closed, pull
 // request merged or closed) recorded against a task's issue or pull
@@ -501,8 +509,9 @@ type Store interface {
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
 	ResetTaskUsage(ctx context.Context, id string) error
 	// SetTaskSizeBudget sets the task's size, and its budget to eur when it
-	// still holds heldCents, in one statement. A task that already has the
-	// size has had its write: nothing changes and the call succeeds.
+	// still holds heldCents, with the budget's move as a card_funded row,
+	// in one transaction. A task that already has the size has had its
+	// write: nothing changes and the call succeeds.
 	SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error
 	// DeliverySeen reports whether a webhook delivery was processed.
 	DeliverySeen(ctx context.Context, id string) (bool, error)
@@ -679,11 +688,19 @@ type Store interface {
 	MoveDependents(ctx context.Context, from, to string) ([]string, error)
 	// FundCard raises task id's budget by eur and writes e, its card_funded
 	// row (PGStore.FundCard).
-	FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error)
-	// ExtendCard raises task id's caps — its granted sessions, its line
-	// bound and its budget — and writes e, its card_extended row
-	// (PGStore.ExtendCard).
-	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error)
+	FundCard(ctx context.Context, id string, eur float64, e Event) (from, to float64, err error)
+	// ExtendCard raises task id's caps by d and lines and writes e, its
+	// card_extended row (PGStore.ExtendCard).
+	ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error)
+	// PoolDrawn is what repository's cards drew from the escalation pool
+	// in the UTC month of month, every rung's draws.
+	PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error)
+	// CardDrawn is what task taskID drew from the pool in its life on
+	// rungs 0 and 1, the draws the per-card bound counts.
+	CardDrawn(ctx context.Context, taskID string) (policy.Draw, error)
+	// SetCeiling sets task taskID's ceiling to eur and writes e as its
+	// card_funded row of 0 EUR (PGStore.SetCeiling).
+	SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
@@ -1178,7 +1195,7 @@ const heldEURSQL = "(SELECT COALESCE(sum(eur), 0)::float8 FROM holds WHERE holds
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, ` + heldEURSQL + `, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, raised_sessions, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -1193,7 +1210,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.RaisedSessions,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1473,9 +1490,9 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 }
 
 // SetTaskUsage overwrites task id's usage counters with the snapshot u,
-// the workflow's own: the console's raises (ExtraLines, RaisedSessions)
-// it leaves as they stand. RunSession's RecordUsage writes it. oneRow
-// answers ErrNotFound for an unknown task.
+// the workflow's own: the console's raises (ExtraLines, RaisedSessions,
+// RaisedTime) it leaves as they stand. RunSession's RecordUsage writes
+// it. oneRow answers ErrNotFound for an unknown task.
 func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = $2, attempts = $3, extra_time_ns = $4, extra_attempts = $5, poster_attempts = $6,
 		last_uncounted = $7, retry_time_ns = $8, extra_checkin_share = $9 WHERE id = $1`,
@@ -1487,31 +1504,54 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 // raises included: BecomePlan and a replan's reopen start the card over.
 func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
-		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, raised_sessions = 0 WHERE id = $1`, id)
+		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
 	return oneRow(res, err, "task "+id)
 }
 
 // SetTaskSizeBudget sets task id's size and, when the budget still lies
 // on the size's held cents, its budget: only the card's last size holds
-// its budget (roadmap 278). sized, at the size gate's exit, is its sole
+// its budget (roadmap 278). A budget that moved is recorded as a
+// card_funded row by factoryd in the same transaction, so every budget
+// move has its event. sized, at the size gate's exit, is its sole
 // caller; a known task already at size changes nothing and succeeds.
 func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET size = $2,
-		budget_eur = CASE WHEN round(budget_eur * 100) = $3::bigint THEN $4::numeric ELSE budget_eur END
-		WHERE id = $1 AND size IS DISTINCT FROM $2`, id, size, heldCents, eur)
+	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 1 {
-		return err
-	}
-	var known bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, id).Scan(&known); err != nil {
-		return err
-	}
-	if !known {
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var from float64
+	var repository string
+	var issue int64
+	var sized bool
+	err = tx.QueryRowContext(ctx, `SELECT budget_eur::float8, repository, issue_number, size = $2 FROM tasks WHERE id = $1 FOR UPDATE`,
+		id, size).Scan(&from, &repository, &issue, &sized)
+	switch {
+	case errors.Is(err, sql.ErrNoRows):
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	case err != nil:
+		return err
+	case sized:
+		return nil
 	}
+	var to float64
+	if err := tx.QueryRowContext(ctx, `UPDATE tasks SET size = $2,
+		budget_eur = CASE WHEN round(budget_eur * 100) = $3::bigint THEN $4::numeric ELSE budget_eur END
+		WHERE id = $1 RETURNING budget_eur::float8`, id, size, heldCents, eur).Scan(&to); err != nil {
+		return err
+	}
+	if Cents(to) == Cents(from) {
+		return tx.Commit()
+	}
+	e, _, err := s.insertEvent(ctx, tx, Event{Repository: repository, TaskID: id, IssueNumber: issue, Kind: EventCardFunded,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"size": size, "from_eur": from, "to_eur": to, "amount_eur": float64(Cents(to)-Cents(from)) / 100, "by": "size gate"}})
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.publish(e)
 	return nil
 }
 
@@ -1700,132 +1740,180 @@ func (s *PGStore) RaiseTaskBudget(ctx context.Context, id string, eur float64) (
 // carry, the question cost checks and the console's fund answers.
 func Cents(eur float64) int64 { return int64(math.Round(eur * 100)) }
 
-// FundBounds are the limits of a raise the agent decides: PoolEUR is the
-// month's pool and CardCapEUR the most the card's budget may reach.
-type FundBounds struct{ PoolEUR, CardCapEUR float64 }
-
-// PoolSpentError is FundCard's refusal of a raise the pool cannot cover:
-// Funded is what the month's pool has funded already.
-type PoolSpentError struct{ Funded float64 }
-
-// Error is PoolSpentError's message, the month pool refusal of a raise;
-// the console's fund answer prints it whole.
-func (e *PoolSpentError) Error() string {
-	return fmt.Sprintf("the month's pool has funded %.2f EUR already", e.Funded)
-}
-
-// CardCapError is FundCard's refusal of a raise past the card's cap: Budget
-// is what the card held when the raise met it.
+// CardCapError is a fund's refusal past the card's ceiling: Budget is what
+// the card held when the raise met it.
 type CardCapError struct{ Budget float64 }
 
-// Error is CardCapError's message, the card cap refusal of a raise; the
+// Error is CardCapError's message, the ceiling's refusal of a raise; the
 // console's fund answer prints it whole.
 func (e *CardCapError) Error() string {
 	return fmt.Sprintf("the card holds %.2f EUR and the raise passes its cap", e.Budget)
 }
 
-// FundCard raises task id's budget by eur and writes its card_funded row in one
-// transaction; console fund action and replan fundPlanner call it. With bounds the row
-// is stamped decider agent, e's repository locked: funding+eur fits the pool, budget+eur
-// the cap — parallel turns overspend neither (PoolSpentError, CardCapError); no task: ErrNotFound.
-func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
+// commitRow runs write in one transaction and publishes the row it wrote
+// once the transaction commits.
+func (s *PGStore) commitRow(ctx context.Context, write func(tx *sql.Tx) (Event, error)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	e, err := write(tx)
+	if err != nil {
+		return err
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	s.publish(e)
+	return nil
+}
+
+// FundCard raises task id's budget by eur and writes e, its card_funded
+// row, in one transaction. The card's own ceiling bounds it
+// (CardCapError); no task: ErrNotFound.
+func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, e Event) (from, to float64, err error) {
+	err = s.commitRow(ctx, func(tx *sql.Tx) (stored Event, err error) {
+		from, to, stored, err = s.fundCard(ctx, tx, id, eur, 0, e)
+		return stored, err
+	})
 	if err != nil {
 		return 0, 0, err
 	}
-	defer tx.Rollback()
-	e.Detail = maps.Clone(e.Detail)
-	if e.Detail == nil {
-		e.Detail = map[string]any{}
-	}
-	limit := sql.NullInt64{}
-	if bounds != nil {
-		e.Detail["decider"] = "agent"
-		limit = sql.NullInt64{Int64: Cents(bounds.CardCapEUR), Valid: true}
-		if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext($1))`, "agent-fund:"+e.Repository); err != nil {
-			return 0, 0, err
-		}
-		funded, err := agentFundedEUR(ctx, tx, e.Repository, time.Now())
-		if err != nil {
-			return 0, 0, err
-		}
-		if Cents(eur) > Cents(bounds.PoolEUR)-Cents(funded) {
-			return 0, 0, &PoolSpentError{Funded: funded}
-		}
-	}
+	return from, to, nil
+}
+
+// fundCard is FundCard inside tx, which the caller commits before it
+// publishes stored. ceiling is the policy's, 0 for none: the card's own
+// ceiling, once set, takes its place.
+func (s *PGStore) fundCard(ctx context.Context, tx *sql.Tx, id string, eur, ceiling float64, e Event) (from, to float64, stored Event, err error) {
+	// a NULL bound, no ceiling at all, holds no raise back
 	err = tx.QueryRowContext(ctx,
 		`UPDATE tasks SET budget_eur = budget_eur + $2 WHERE id = $1
-		   AND ($3::bigint IS NULL OR round(budget_eur * 100) + $4::bigint <= $3::bigint)
+		   AND (round(budget_eur * 100) + $4::bigint <= COALESCE(round(ceiling_eur * 100), NULLIF($3::bigint, 0))) IS NOT FALSE
 		 RETURNING (budget_eur - $2::numeric)::float8, budget_eur::float8`,
-		id, eur, limit, Cents(eur)).Scan(&from, &to)
+		id, eur, Cents(ceiling), Cents(eur)).Scan(&from, &to)
 	if errors.Is(err, sql.ErrNoRows) {
 		var held float64
 		if err := tx.QueryRowContext(ctx, `SELECT budget_eur::float8 FROM tasks WHERE id = $1`, id).Scan(&held); err != nil {
 			if errors.Is(err, sql.ErrNoRows) {
-				return 0, 0, ErrNotFound
+				return 0, 0, Event{}, ErrNotFound
 			}
-			return 0, 0, err
+			return 0, 0, Event{}, err
 		}
-		return 0, 0, &CardCapError{Budget: held}
+		return 0, 0, Event{}, &CardCapError{Budget: held}
 	}
+	if err != nil {
+		return 0, 0, Event{}, err
+	}
+	detail := map[string]any{}
+	maps.Copy(detail, e.Detail)
+	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = from, to, eur
+	e.Detail = detail
+	if stored, _, err = s.insertEvent(ctx, tx, e); err != nil {
+		return 0, 0, Event{}, err
+	}
+	return from, to, stored, nil
+}
+
+// ExtendCard raises task id's caps by d — its sessions, its agent time
+// and its budget — and its line bound by lines, and writes e, its
+// card_extended row, in one transaction. No task: ErrNotFound.
+func (s *PGStore) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
+	err = s.commitRow(ctx, func(tx *sql.Tx) (stored Event, err error) {
+		from, to, stored, err = s.extendCard(ctx, tx, id, d, lines, e)
+		return stored, err
+	})
 	if err != nil {
 		return 0, 0, err
 	}
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	e, _, err = s.insertEvent(ctx, tx, e)
-	if err != nil {
-		return 0, 0, err
-	}
-	if err := tx.Commit(); err != nil {
-		return 0, 0, err
-	}
-	s.publish(e)
 	return from, to, nil
 }
 
-// ExtendCard raises task id's caps — its granted sessions, its line bound
-// and its budget — and writes its card_extended row in one transaction; the
-// console extend action calls it. No task: ErrNotFound.
-func (s *PGStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return 0, 0, err
-	}
-	defer tx.Rollback()
-	e.Detail = maps.Clone(e.Detail)
-	if e.Detail == nil {
-		e.Detail = map[string]any{}
-	}
+// extendCard is ExtendCard inside tx, which the caller commits before it
+// publishes stored.
+func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines int, e Event) (from, to float64, stored Event, err error) {
+	seconds := int64(d.AgentTime / time.Second)
 	err = tx.QueryRowContext(ctx,
-		`UPDATE tasks SET raised_sessions = raised_sessions + $2, extra_lines = extra_lines + $3,
-			   budget_eur = budget_eur + $4
+		`UPDATE tasks SET raised_sessions = raised_sessions + $2, raised_time_s = raised_time_s + $3,
+			   extra_lines = extra_lines + $4, budget_eur = budget_eur + $5
 		 WHERE id = $1
-		 RETURNING (budget_eur - $4::numeric)::float8, budget_eur::float8`,
-		id, sessions, lines, eur).Scan(&from, &to)
+		 RETURNING (budget_eur - $5::numeric)::float8, budget_eur::float8`,
+		id, d.Sessions, seconds, lines, d.EUR).Scan(&from, &to)
 	if errors.Is(err, sql.ErrNoRows) {
-		return 0, 0, ErrNotFound
+		return 0, 0, Event{}, ErrNotFound
 	}
 	if err != nil {
-		return 0, 0, err
+		return 0, 0, Event{}, err
 	}
-	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
-	e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, from, to
-	e, _, err = s.insertEvent(ctx, tx, e)
-	if err != nil {
-		return 0, 0, err
+	detail := map[string]any{}
+	maps.Copy(detail, e.Detail)
+	detail["sessions"], detail["agent_time_s"], detail["lines"] = d.Sessions, seconds, lines
+	detail["amount_eur"], detail["from_eur"], detail["to_eur"] = d.EUR, from, to
+	e.Detail = detail
+	if stored, _, err = s.insertEvent(ctx, tx, e); err != nil {
+		return 0, 0, Event{}, err
 	}
-	if err := tx.Commit(); err != nil {
-		return 0, 0, err
-	}
-	s.publish(e)
-	return from, to, nil
+	return from, to, stored, nil
+}
+
+// SetCeiling sets task taskID's ceiling to eur and writes e as the card's
+// card_funded row of 0 EUR naming the ceiling, in one transaction. No
+// task: ErrNotFound.
+func (s *PGStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
+	return s.commitRow(ctx, func(tx *sql.Tx) (Event, error) {
+		var budget float64
+		err := tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = $2 WHERE id = $1 RETURNING budget_eur::float8, repository, issue_number`,
+			taskID, eur).Scan(&budget, &e.Repository, &e.IssueNumber)
+		if errors.Is(err, sql.ErrNoRows) {
+			return Event{}, ErrNotFound
+		}
+		if err != nil {
+			return Event{}, err
+		}
+		detail := map[string]any{}
+		maps.Copy(detail, e.Detail)
+		detail["ceiling_eur"], detail["amount_eur"], detail["from_eur"], detail["to_eur"] = eur, 0.0, budget, budget
+		e.TaskID, e.Kind, e.Detail = taskID, EventCardFunded, detail
+		stored, _, err := s.insertEvent(ctx, tx, e)
+		return stored, err
+	})
+}
+
+// poolDraws picks the event rows that are draws from the escalation pool.
+const poolDraws = `kind IN ('card_funded', 'card_extended') AND detail->>'pool' = 'true'`
+
+// drawn sums the pool draws of the rows where picks out of them.
+func (s *PGStore) drawn(ctx context.Context, where string, args ...any) (policy.Draw, error) {
+	var d policy.Draw
+	var seconds int64
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(sum((detail->>'sessions')::int), 0), COALESCE(sum((detail->>'agent_time_s')::bigint), 0),
+		        COALESCE(sum((detail->>'amount_eur')::numeric), 0)::float8
+		 FROM events WHERE `+poolDraws+` AND `+where, args...).Scan(&d.Sessions, &seconds, &d.EUR)
+	d.AgentTime = time.Duration(seconds) * time.Second
+	return d, err
+}
+
+// PoolDrawn is what repository's cards drew from the escalation pool in
+// the UTC calendar month of month, on every rung.
+func (s *PGStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {
+	return s.drawn(ctx, `repository = $1
+		AND at >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
+		AND at < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`, repository, month)
+}
+
+// CardDrawn is what task taskID drew from the pool in its life on rungs 0
+// and 1, the draws its per-card bound counts. The rung is compared as
+// text: a card_created row's rung is a model rung's name.
+func (s *PGStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, error) {
+	return s.drawn(ctx, `task_id = $1 AND detail->>'rung' IN ('0', '1')`, taskID)
 }
 
 // agentFundedEUR is the EUR the agent funded cards with in repository: the
 // card_funded events via chat decided by the agent, in the UTC calendar
-// month of month. FundCard, under its repository lock, and AgentFundedEUR,
-// the console's pool read, are its callers; a member's raise, confirmed or
-// clicked, is not the pool's.
+// month of month. AgentFundedEUR, the console's pool read, is its caller;
+// a member's raise, confirmed or clicked, is not the pool's.
 func agentFundedEUR(ctx context.Context, q rowQuerier, repository string, month time.Time) (float64, error) {
 	var eur float64
 	err := q.QueryRowContext(ctx,

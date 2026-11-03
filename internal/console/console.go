@@ -124,14 +124,12 @@ type Tasks interface {
 	// ErrNotFound when there is no such task.
 	RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error)
 	// FundCard raises task id's budget by eur and writes e, the raise's
-	// card_funded row, with its budgets added, in one transaction; non-nil
-	// bounds mark the agent's own raise, checked under a lock on e's
-	// repository (*factoryd.PoolSpentError, *factoryd.CardCapError).
-	FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (from, to float64, err error)
-	// ExtendCard raises task id's caps — its granted sessions, its line
-	// bound and its budget — and writes e, the raise's card_extended row,
-	// in one transaction.
-	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (from, to float64, err error)
+	// card_funded row, with its budgets added, in one transaction; the
+	// card's ceiling refuses a raise past it (*factoryd.CardCapError).
+	FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (from, to float64, err error)
+	// ExtendCard raises task id's caps by d and its line bound by lines,
+	// and writes e, the raise's card_extended row, in one transaction.
+	ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error

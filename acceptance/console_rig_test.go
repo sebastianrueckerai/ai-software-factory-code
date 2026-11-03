@@ -917,18 +917,15 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 	}
 }
 
-// FundCard mirrors PGStore.FundCard, the Actions fake this rig is: with
-// bounds the raise is the agent's own — its row stamped decider agent, the
-// repository's agent-funded sum read under the same lock and the raise
-// held against the month's pool and the card's cap — and without them the
-// member decided it and no bound applies. The money is judged before
-// anything moves — the raise finite, above zero and whole cents, the
-// budget it lands on whole cents, the two summed in integer cents as
-// PGStore's numeric sums them — and the budget's change
-// and the card_funded row commit as one under a.mu, the row appended by
-// the spine's own fallible append so a spine that refuses it leaves the
+// FundCard mirrors PGStore.FundCard, the Actions fake this rig is: the
+// card's ceiling, when set, holds the raise back (CardCapError). The money
+// is judged before anything moves — the raise finite, above zero and whole
+// cents, the budget it lands on whole cents, the two summed in integer
+// cents as PGStore's numeric sums them — and the budget's change and the
+// card_funded row commit as one under a.mu, the row appended by the
+// spine's own fallible append so a spine that refuses it leaves the
 // budget untouched too. No task: ErrNotFound.
-func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
 	a.mu.Lock()
 	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
 	if i < 0 {
@@ -958,18 +955,9 @@ func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, boun
 	if detail == nil {
 		detail = map[string]any{}
 	}
-	if bounds != nil {
-		detail["decider"] = "agent"
-		funded := a.agentFundedLocked(e.Repository, time.Now())
-		if raiseCents > factoryd.Cents(bounds.PoolEUR)-factoryd.Cents(funded) {
-			short := &factoryd.PoolSpentError{Funded: funded}
-			a.mu.Unlock()
-			return 0, 0, short
-		}
-		if fromCents+raiseCents > factoryd.Cents(bounds.CardCapEUR) {
-			a.mu.Unlock()
-			return 0, 0, &factoryd.CardCapError{Budget: from}
-		}
+	if ceiling := a.tasks[i].CeilingEUR; ceiling > 0 && fromCents+raiseCents > factoryd.Cents(ceiling) {
+		a.mu.Unlock()
+		return 0, 0, &factoryd.CardCapError{Budget: from}
 	}
 	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = fromEur, toEur, float64(raiseCents)/100
 	e.Detail = detail
@@ -1044,14 +1032,15 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 	return nil
 }
 
-func (a *AcceptanceRig) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+func (a *AcceptanceRig) ExtendCard(_ context.Context, id string, d policy.Draw, lines int, _ factoryd.Event) (float64, float64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	for i := range a.tasks {
 		if a.tasks[i].ID == id {
 			from := a.tasks[i].BudgetEUR
-			a.tasks[i].BudgetEUR += eur
-			a.tasks[i].Usage.ExtraAttempts += sessions
+			a.tasks[i].BudgetEUR += d.EUR
+			a.tasks[i].Usage.RaisedSessions += d.Sessions
+			a.tasks[i].Usage.RaisedTime += d.AgentTime
 			a.tasks[i].Usage.ExtraLines += lines
 			return from, a.tasks[i].BudgetEUR, nil
 		}
@@ -1195,8 +1184,7 @@ func (a *AcceptanceRig) AgentFundedEUR(_ context.Context, repository string, mon
 	return a.agentFundedLocked(repository, month), nil
 }
 
-// agentFundedLocked is the agent-funded sum with a.mu held, the figure
-// FundCard's own pool check reads under the same lock.
+// agentFundedLocked is the agent-funded sum with a.mu held.
 func (a *AcceptanceRig) agentFundedLocked(repository string, month time.Time) float64 {
 	month = month.UTC()
 	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)

@@ -1951,13 +1951,13 @@ func (t *taskRun) planLoop() (string, error) {
 			onCap = nil
 			continue
 		}
-		remaining := t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+		remaining := t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
 		if t.plannerRetry >= versionPlannerRetry {
 			switch short, retry := t.plannerTime(u); {
 			case short && retry:
 				u.RetryTime = t.cfg.WallClockCap/2 - remaining
 				t.recordUsage(u)
-				remaining = t.cfg.WallClockCap + u.ExtraTime + u.RetryTime - u.AgentTime
+				remaining = t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
 			case short:
 				ask = t.plannerTimeCard(u)
 				continue
@@ -2133,7 +2133,7 @@ func (t *taskRun) awaitFilingStops() error {
 // session.
 func (t *taskRun) plannerTime(u TaskUsage) (short, retry bool) {
 	least := min(minSession, t.cfg.WallClockCap)
-	return t.cfg.WallClockCap+u.ExtraTime+u.RetryTime-u.AgentTime < least, u.RetryTime == 0 && t.cfg.WallClockCap/2 >= least
+	return t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least, u.RetryTime == 0 && t.cfg.WallClockCap/2 >= least
 }
 
 // plannerOutOfTime opens the question of a plan card whose planner is out

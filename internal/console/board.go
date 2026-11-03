@@ -3179,7 +3179,7 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), nil)
+	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"))
 	c.pressed(w, r, err)
 }
 

@@ -25,6 +25,7 @@ const (
 	CaseGateStop         CaseKind = "gate_stop"
 	CaseFindingsRepeated CaseKind = "findings_repeated"
 	CaseDependencyClosed CaseKind = "dependency_closed"
+	CaseDependencyFailed CaseKind = "dependency_failed"
 	CaseWaitExpired      CaseKind = "wait_expired"
 	CasePodNeverStarted  CaseKind = "pod_never_started"
 	CaseProviderRefused  CaseKind = "provider_refused"

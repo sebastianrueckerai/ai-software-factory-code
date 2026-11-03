@@ -255,7 +255,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	held, _, _ := r.Task(t.Context(), "t-e")
 	auditRows, spine := len(agentFundRows(r)), len(r.Events())
 	raise := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat,
-		Actor: "anna", TaskID: "t-e", Detail: map[string]any{}}
+		Actor: "anna", TaskID: "t-e", Detail: map[string]any{"decider": "agent"}}
 	unchanged := func(what string) {
 		t.Helper()
 		card, _, _ := r.Task(t.Context(), "t-e")
@@ -272,19 +272,19 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 		{"no amount in EUR above zero", -1, "no amount in EUR above zero"},
 		{"a fraction below a cent", 0.001, "no amount in whole cents"},
 	} {
-		if _, _, err := r.FundCard(t.Context(), "t-e", tc.eur, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 5}, raise); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, _, err := r.FundCard(t.Context(), "t-e", tc.eur, raise); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("the %s refusal = %v, want it to name %q", tc.name, err, tc.want)
 		}
 		unchanged("the " + tc.name + " refusal")
 	}
 	r.SetCardBudget("t-e", 2.005) // a budget itself no whole cents
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 5}, raise); err == nil || !strings.Contains(err.Error(), "no amount in whole cents") {
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, raise); err == nil || !strings.Contains(err.Error(), "no amount in whole cents") {
 		t.Fatalf("the raise on a budget no whole cents = %v", err)
 	}
 	r.SetCardBudget("t-e", held.BudgetEUR)
 	unchanged("the refused raise on a budget no whole cents")
 	r.FailRecords(errors.New("the spine is down"))
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 12}, raise); err == nil || err.Error() != "the spine is down" {
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, raise); err == nil || err.Error() != "the spine is down" {
 		t.Fatalf("the refused audit row = %v, want the spine's own refusal", err)
 	}
 	unchanged("the refused audit row")
@@ -294,7 +294,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	// lands at 2.30, the row's own figures from the integer cents of the
 	// sum
 	r.SetCardBudget("t-e", 2.20)
-	from, to, err := r.FundCard(t.Context(), "t-e", 0.10, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 12}, raise)
+	from, to, err := r.FundCard(t.Context(), "t-e", 0.10, raise)
 	if err != nil || from != 2.2 || to != 2.3 {
 		t.Fatalf("the 2.20 + 0.10 raise = %v, %v, %v; want 2.20, 2.30", from, to, err)
 	}
@@ -307,9 +307,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 }
 
 // The rig's pool sum reads the UTC month of an instant in any zone, as
-// PGStore's date_trunc does, and its pool check meets what the pool has
-// left, so a raise past it is refused even where the funded and the raise
-// in cents sum past int64.
+// PGStore's date_trunc does.
 func TestPoolFundingRigBounds(t *testing.T) {
 	r, _, _, _ := fundRig(t)
 	seedFundRow(t, r, 1.5, time.Date(2025, 11, 30, 23, 0, 0, 0, time.UTC))
@@ -324,16 +322,6 @@ func TestPoolFundingRigBounds(t *testing.T) {
 		if used, err := r.AgentFundedEUR(t.Context(), "sf/code", tc.at); err != nil || used != tc.want {
 			t.Errorf("the use at %s = %v, %v; want %v", tc.at, used, err, tc.want)
 		}
-	}
-	seedFundRow(t, r, 5e16, time.Now())
-	raise := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat,
-		Actor: "anna", TaskID: "t-e", Detail: map[string]any{}}
-	var p *factoryd.PoolSpentError
-	if _, _, err := r.FundCard(t.Context(), "t-e", 5e16, &factoryd.FundBounds{PoolEUR: 6e16, CardCapEUR: 9e16}, raise); !errors.As(err, &p) || p.Funded != 5e16 {
-		t.Fatalf("a raise of 5e16 on 5e16 funded of a 6e16 pool = %v, want PoolSpentError of 5e16 funded", err)
-	}
-	if card, _, _ := r.Task(t.Context(), "t-e"); card.BudgetEUR != 2 {
-		t.Fatalf("the refused raise moved the budget to %v", card.BudgetEUR)
 	}
 }
 

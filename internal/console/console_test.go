@@ -421,23 +421,16 @@ func (s *fakeTasks) ProjectImageParks(_ context.Context, project string) ([]fact
 }
 
 // FundCard raises task id's budget and records e, both or neither, as the
-// store's one transaction does.
-func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
-	if bounds != nil {
-		funded, err := s.events.AgentFundedEUR(ctx, e.Repository, time.Now())
-		if err != nil {
-			return 0, 0, err
+// store's one transaction does; the card's ceiling refuses a raise past it.
+func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
+	s.mu.Lock()
+	for _, k := range s.tasks {
+		if k.ID == id && k.CeilingEUR > 0 && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(k.CeilingEUR) {
+			s.mu.Unlock()
+			return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
 		}
-		if factoryd.Cents(funded)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
-			return 0, 0, &factoryd.PoolSpentError{Funded: funded}
-		}
-		for _, k := range s.tasks {
-			if k.ID == id && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
-				return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
-			}
-		}
-		e.Detail["decider"] = "agent"
 	}
+	s.mu.Unlock()
 	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
 	if err != nil {
 		return 0, 0, err
@@ -452,23 +445,24 @@ func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds
 
 // ExtendCard raises task id's caps and records e, both or neither, as the
 // store's one transaction does.
-func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
-	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
+func (s *fakeTasks) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (float64, float64, error) {
+	from, to, err := s.RaiseTaskBudget(ctx, id, d.EUR)
 	if err != nil {
 		return 0, 0, err
 	}
 	s.mu.Lock()
 	for i := range s.tasks {
 		if s.tasks[i].ID == id {
-			s.tasks[i].Usage.RaisedSessions += sessions
+			s.tasks[i].Usage.RaisedSessions += d.Sessions
+			s.tasks[i].Usage.RaisedTime += d.AgentTime
 			s.tasks[i].Usage.ExtraLines += lines
 		}
 	}
 	s.mu.Unlock()
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, d.EUR
+	e.Detail["sessions"], e.Detail["agent_time_s"], e.Detail["lines"] = d.Sessions, int64(d.AgentTime/time.Second), lines
 	if _, err := s.events.Record(ctx, e); err != nil {
-		s.RaiseTaskBudget(ctx, id, -eur)
+		s.RaiseTaskBudget(ctx, id, -d.EUR)
 		return 0, 0, err
 	}
 	return from, to, nil

@@ -5,6 +5,7 @@ import (
 	"maps"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // tokenOf is the chat token the context's session came in by, nil for a
@@ -47,12 +48,12 @@ func (e stampedEvents) Record(ctx context.Context, ev factoryd.Event) (int64, er
 // transaction.
 type stampedTasks struct{ Tasks }
 
-func (t stampedTasks) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
-	return t.Tasks.FundCard(ctx, id, eur, bounds, stamped(ctx, e))
+func (t stampedTasks) FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
+	return t.Tasks.FundCard(ctx, id, eur, stamped(ctx, e))
 }
 
-func (t stampedTasks) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
-	return t.Tasks.ExtendCard(ctx, id, sessions, lines, eur, stamped(ctx, e))
+func (t stampedTasks) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (float64, float64, error) {
+	return t.Tasks.ExtendCard(ctx, id, d, lines, stamped(ctx, e))
 }
 
 // stampedChat names the chat token behind every row a token's turn writes.

@@ -972,7 +972,7 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 	if !extendable(t) {
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
 	}
-	from, to, err := c.cfg.Tasks.ExtendCard(ctx, t.ID, sessions, lines, eur,
+	from, to, err := c.cfg.Tasks.ExtendCard(ctx, t.ID, policy.Draw{Sessions: sessions, EUR: eur}, lines,
 		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardExtended, map[string]any{"reason": note}))
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound):
@@ -1312,9 +1312,8 @@ func fundAmountOf(value string) float64 {
 // floor still refuses a session after the raise, the raise and the note
 // stand and the response is a refusal naming the floor's reason, so the
 // member learns the amount now, not on the card's next question. The raise
-// and its card_funded row commit together; non-nil bounds mark the agent's
-// own raise, which the store checks under a lock before it raises.
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, bounds *factoryd.FundBounds) (string, error) {
+// and its card_funded row commit together, within the card's ceiling.
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
@@ -1352,15 +1351,15 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	if brief != nil {
 		detail["brief"] = brief.ID
 	}
-	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur, bounds,
+	if a.decider == "agent" {
+		detail["decider"] = a.decider // the agent's raise is the pool's
+	}
+	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur,
 		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded, detail))
-	var spent *factoryd.PoolSpentError
 	var capped *factoryd.CardCapError
 	switch {
-	case errors.As(err, &spent):
-		return "", refuse(http.StatusConflict, poolSpent(bounds.PoolEUR, spent.Funded, eur))
 	case errors.As(err, &capped):
-		return "", refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, eur, bounds.CardCapEUR))
+		return "", refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, eur, t.CeilingEUR))
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
 	case err != nil:
