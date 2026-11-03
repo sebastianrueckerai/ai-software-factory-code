@@ -323,7 +323,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 
-		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's facts), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
+		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
 	}
 	if ask.Pace != nil {
 		b.WriteString(ask.Pace.Line() + "\n\n")
@@ -456,7 +456,9 @@ var checkinTools = []CheckinTool{
 		Parameters: toolSchema(map[string]any{"query": toolArg("the text to find")}, "query")},
 	{Name: "transcript_read", Description: "read a span of the parent session's record by event number",
 		Parameters: toolSchema(map[string]any{"from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}}, "from", "to")},
-	{Name: "card_facts", Description: "the card's facts: budget, spend, rounds and reviews", Parameters: toolSchema(nil)},
+	{Name: "card_facts", Description: "the card's digest, its steps and flags, then its budget, spend, attempt and sessions", Parameters: toolSchema(nil)},
+	{Name: "card_step", Description: "one step of the card's digest in full, by the number its line starts with",
+		Parameters: toolSchema(map[string]any{"step": map[string]any{"type": "integer", "minimum": 1, "description": "the step's number"}}, "step")},
 	{Name: "gates", Description: "the gates' full results for the round", Parameters: toolSchema(nil)},
 	{Name: "read_file", Description: "read a file of the repository by its path, as grep prints it",
 		Parameters: toolSchema(map[string]any{"path": toolArg("the file's path in the repository, or absolute under /workspace")}, "path")},
@@ -633,9 +635,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
 	var longest time.Duration
-	due := func() time.Time { return start.Add(timeCap - min(timeCap/2, max(policy.CheckinCallTime, longest))) }
-	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap) +
-		fmt.Sprintf(", your answer due within %s", time.Until(due()).Round(time.Second))
+	due := func() time.Time { return start.Add(checkinAnswerDue(timeCap, longest)) }
+	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap) + checkinDueLine(time.Until(due()))
 	rec.StatementBytes = len(conv)
 	timeStop := func() CheckInOutcome {
 		reason := checkinCapStop(checkinTimeCapStop, timeCap.String())
@@ -708,6 +709,17 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		repairs++
 		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again as one JSON object."
 	}
+}
+
+// checkinAnswerDue is how long after the check-in starts its answer call
+// is due: the time cap less the answer's reserve.
+func checkinAnswerDue(timeCap, longest time.Duration) time.Duration {
+	return timeCap - min(timeCap/2, max(policy.CheckinCallTime, longest))
+}
+
+// checkinDueLine closes the statement with the time left for the answer.
+func checkinDueLine(left time.Duration) string {
+	return fmt.Sprintf(", your answer due within %s", left.Round(time.Second))
 }
 
 // checkinOutcome turns a readable final answer into the outcome: the

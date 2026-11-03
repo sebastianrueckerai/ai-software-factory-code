@@ -478,7 +478,8 @@ replays histories recorded on the cluster (`internal/factoryd/testdata`).
 
 The events (`internal/factoryd/events.go`) are timeline lines of step
 `event` on the task they concern: `card_created` (intake's new row,
-`FileAgentTask`'s card, a plan's cards) with `track` and `by`,
+`FileAgentTask`'s card, a plan's cards) with `track`, `by` and
+`budget_eur`, the budget the card was filed with,
 `task_ended` with `state` (`Finish`, the heal pass's failure of a
 malformed task, a closed human-lane issue),
 `pull_request_merged` with `pr` and `by` (`Merge` for factory-merge's

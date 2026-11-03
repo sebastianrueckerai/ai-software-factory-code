@@ -504,6 +504,28 @@ func (s *acceptanceStore) CheckinSpent(context.Context, string) (float64, error)
 	return 0, nil
 }
 
+func (s *acceptanceStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
+	return 0, 0, nil
+}
+
+// BoardTasks, OpenPlans and Enforced: the acceptance store reads no board.
+func (s *acceptanceStore) BoardTasks(context.Context, string) ([]factoryd.BoardTask, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) OpenPlans(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) Enforced(context.Context, time.Time) (policy.Enforced, error) {
+	return policy.Enforced{}, nil
+}
+
+// TaskEvents: the acceptance store keeps no event rows.
+func (s *acceptanceStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -722,7 +744,7 @@ func (s *acceptanceStore) DecideApproval(context.Context, int64, string, string,
 	return nil
 }
 
-func (s *acceptanceStore) UndecideApproval(context.Context, int64) error { return nil }
+func (s *acceptanceStore) UndecideApproval(context.Context, int64, string) error { return nil }
 
 func (s *acceptanceStore) ReopenApproval(context.Context, string, string, string) error { return nil }
 
@@ -976,6 +998,26 @@ func (s *acceptanceStore) OpenDependencies(_ context.Context, id string) ([]fact
 			out = append(out, factoryd.Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
 		}
 	}
+	return out, nil
+}
+
+func (s *acceptanceStore) Dependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var out []factoryd.Dependency
+	for _, d := range s.deps[id] {
+		t := s.tasks[d]
+		out = append(out, factoryd.Dependency{TaskID: d, Issue: t.IssueNumber, Key: t.PlanKey, Status: t.Status})
+	}
+	done := func(d factoryd.Dependency) int {
+		if d.Status == "done" {
+			return 1
+		}
+		return 0
+	}
+	slices.SortFunc(out, func(a, b factoryd.Dependency) int {
+		return cmp.Or(cmp.Compare(done(a), done(b)), cmp.Compare(a.Issue, b.Issue), strings.Compare(a.TaskID, b.TaskID))
+	})
 	return out, nil
 }
 
@@ -1239,6 +1281,51 @@ func (s *acceptanceStore) ProjectMonthSpend(context.Context, string, time.Time) 
 func (s *acceptanceStore) CountQueue(context.Context, string) (int, error) { return 0, nil }
 
 var _ factoryd.Store = (*acceptanceStore)(nil)
+
+// The cases: nothing here opens one.
+func (s *acceptanceStore) OpenCase(context.Context, factoryd.Case) (factoryd.Case, bool, error) {
+	return factoryd.Case{}, false, nil
+}
+
+func (s *acceptanceStore) AppendCaseStep(context.Context, factoryd.CaseStep) (int64, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []factoryd.CaseAction, string, string, float64) error {
+	return nil
+}
+
+func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution) error {
+	return nil
+}
+
+func (s *acceptanceStore) WithdrawCase(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) CaseByID(context.Context, int64) (factoryd.Case, error) {
+	return factoryd.Case{}, nil
+}
+
+func (s *acceptanceStore) OpenCasesOf(context.Context, string) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) CasesOf(context.Context, string) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) CaseSteps(context.Context, int64) ([]factoryd.CaseStep, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) OpenCasesIn(context.Context, string) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) ReconcileCases(context.Context, string) (factoryd.CaseHealReport, error) {
+	return factoryd.CaseHealReport{}, nil
+}
 
 // RoutineRunOfTask: no routine files a card here.
 func (s *acceptanceStore) RoutineRunOfTask(context.Context, string) (factoryd.RoutineRun, bool, error) {

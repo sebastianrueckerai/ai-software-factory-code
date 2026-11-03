@@ -607,3 +607,13 @@ func TestHealPassFinishesAFactoryClose(t *testing.T) {
 		t.Fatalf("#5 is %q, confirmed %v; want closed and confirmed", fj.issues[5].state, store.confirmedCloses)
 	}
 }
+
+// HealPass reconciles the cases of every project that names a repository.
+func TestHealPassReconcilesEveryProjectsCases(t *testing.T) {
+	store := newFakeStore()
+	store.projects = []Project{{Name: "a", Repository: "sf/a"}, {Name: "b", Repository: "sf/b"}, {Name: "no-file"}}
+	HealPass(context.Background(), store, &fakeWorkflows{}, &Intake{Store: store, Projects: store}, nil, noneCompleted)
+	if want := []string{"sf/a", "sf/b"}; !slices.Equal(store.reconciled, want) {
+		t.Fatalf("reconciled %v, want %v", store.reconciled, want)
+	}
+}

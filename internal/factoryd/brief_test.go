@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -127,6 +128,11 @@ func briefGateway(t *testing.T, status int, body string) *httptest.Server {
 // briefTestBudget is the writer's model client's token budget.
 var briefTestBudget = TokenBudget{AnswerTokens: 512, HeadroomTokens: 512}
 
+// briefLife is the card's life the writer reads: card #12's head alone.
+func briefLife(context.Context, string) (CardDigest, error) {
+	return CardDigest{Head: DigestHead{Issue: 12, BudgetEUR: 3, SpentEUR: 0.4, Status: "in-review", Gate: GateApproval}}, nil
+}
+
 func briefTask() Task {
 	return Task{ID: "t1", Repository: "o/r", RequiredCapabilities: []string{policy.ClassCoder}}
 }
@@ -154,7 +160,7 @@ func TestBriefWriterPass(t *testing.T) {
 	defer gw.Close()
 	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
 		rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
-	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+	w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
 	if err := w.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}
@@ -167,6 +173,53 @@ func TestBriefWriterPass(t *testing.T) {
 	}
 	if len(store.failed) != 0 || len(store.events) != 0 {
 		t.Fatalf("a good call marked or recorded a failure: %v %v", store.failed, store.events)
+	}
+}
+
+// The writer reads the card's life once per approval it briefs, and the
+// model reads it under its heading beside the facts. A life that cannot
+// be read marks the row as a failed call does, and no model runs.
+func TestBriefWriterReadsTheCardsLife(t *testing.T) {
+	var body []byte
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ = io.ReadAll(r.Body)
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"brief\": \"PR #12 waits on you.\", \"detail\": \"- small risk\"}"}}]}`))
+	}))
+	defer gw.Close()
+	row := ApprovalRequest{ID: 7, Kind: ApprovalMerge, TaskID: "t1", Project: "o/r", PRNumber: 12, Spec: mergeSpec(t)}
+	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()}, rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
+	var read []string
+	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) },
+		CardDigest: func(ctx context.Context, taskID string) (CardDigest, error) {
+			read = append(read, taskID)
+			return briefLife(ctx, taskID)
+		}}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(read) != 1 || read[0] != "t1" {
+		t.Fatalf("the writer read the lives of %v, want t1's once", read)
+	}
+	for _, want := range []string{"The card's life", "#12 · budget 3.00 spent 0.40 holds 0.00 EUR · in-review, approval"} {
+		if !strings.Contains(string(body), want) {
+			t.Errorf("the model's call lacks %q: %s", want, body)
+		}
+	}
+	if _, ok := store.brief[7]; !ok {
+		t.Fatal("the brief was not filed")
+	}
+
+	body = nil
+	store = &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()}, rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
+	w.Store = store
+	w.CardDigest = func(context.Context, string) (CardDigest, error) {
+		return CardDigest{}, errors.New("the timeline does not read")
+	}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if body != nil || store.failed[7] != "the card's life: the timeline does not read" || len(store.events) != 1 {
+		t.Fatalf("an unread life: call %s, mark %q, events %v; want no call, the row marked and the failure recorded", body, store.failed[7], store.events)
 	}
 }
 
@@ -189,7 +242,7 @@ func TestBriefWriterTakesThePolicysTimeout(t *testing.T) {
 			brief: map[int64][2]string{}, failed: map[int64]string{}}
 		v := briefVersion(gw.URL)
 		v.Document.Limits.SupervisorTimeout = tt.bound
-		w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return v }}
+		w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return v }}
 		if err := w.Pass(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -215,7 +268,7 @@ func TestBriefWriterFallback(t *testing.T) {
 			store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
 				rows:  []ApprovalRequest{{ID: 9, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Spec: json.RawMessage(`{"revision":2}`)}},
 				brief: map[int64][2]string{}, failed: map[int64]string{}}
-			w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+			w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
 			if err := w.Pass(context.Background()); err != nil {
 				t.Fatal(err)
 			}
@@ -243,7 +296,7 @@ func TestBriefWriterMarksTerminalFailures(t *testing.T) {
 	defer gw.Close()
 	store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
 		rows: []ApprovalRequest{row}, brief: map[int64][2]string{}, failed: map[int64]string{}}
-	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+	w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
 	for range 2 {
 		if err := w.Pass(context.Background()); err != nil {
 			t.Fatal(err)
@@ -293,7 +346,7 @@ func TestBriefFactsNameTheCardShape(t *testing.T) {
 		{"a plan names its answers, never Accept", ApprovalRequest{Kind: ApprovalPlan, Spec: json.RawMessage(`{"revision":2}`)}, "answers to the plan's open questions", "Accept"},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			facts, acts, err := briefFacts(tt.a, briefTask(), nil)
+			facts, acts, err := briefFacts(tt.a, briefTask(), nil, "")
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -332,7 +385,7 @@ func TestBriefWriterMarksABudgetRefusal(t *testing.T) {
 		store := &fakeBriefStore{tasks: map[string]Task{"t1": briefTask()},
 			rows:  []ApprovalRequest{{ID: 9, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Status: "pending", Spec: json.RawMessage(`{"revision":2}`)}},
 			brief: map[int64][2]string{}, failed: map[int64]string{}}
-		w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+		w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
 		if err := w.Pass(context.Background()); err != nil {
 			t.Fatal(err)
 		}
@@ -369,7 +422,7 @@ func TestBriefFactsCarryTheCriteriaGap(t *testing.T) {
 		{ID: "c2", Kind: "human", Text: "the feature reads well", Verdict: "open"},
 		{ID: "c3", Kind: "invariant", Text: "no endpoint times out", Verdict: "waived", Evidence: "the timeout is the provider's SLA"},
 	}
-	facts, acts, err := briefFacts(a, briefTask(), criteria)
+	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -395,7 +448,7 @@ func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
 		Reason: "criteria never judged: the review of card #1380 did not run (the review never ran): c1"}
 	criteria := []criterionFact{{ID: "c1", Kind: "test", Text: "go test ./... is green", Verdict: "open"}}
-	facts, acts, err := briefFacts(a, briefTask(), criteria)
+	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -461,7 +514,7 @@ func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
 			{Criterion: "c1", Verdict: "met", Evidence: "the review read the diff", Kind: "test", Source: "review"},
 		}},
 	}
-	w := &BriefWriter{Store: store, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+	w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
 	if err := w.Pass(context.Background()); err != nil {
 		t.Fatal(err)
 	}

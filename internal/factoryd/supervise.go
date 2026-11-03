@@ -1061,14 +1061,16 @@ func detailInt(ev harness.Event, key string) (int, bool) {
 	return toInt(ev.Detail[key])
 }
 
-// toInt reads a number from an event detail: float64 after the JSON trip
-// through the pod log, int when built in process.
+// toInt reads a number from an event detail: float64 after a JSON trip,
+// int or int64 when built in process.
 func toInt(v any) (int, bool) {
 	switch n := v.(type) {
 	case float64:
 		return int(n), true
 	case int:
 		return n, true
+	case int64:
+		return int(n), true
 	}
 	return 0, false
 }

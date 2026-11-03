@@ -507,7 +507,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
 			return "", fmt.Errorf("the successor of %s: link its issue #%d: %w", old.ID, t.IssueNumber, err)
 		}
-		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track})
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": r.forgejo.BotUser, "issue": t.IssueNumber, "successor_of": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
 	}
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the successor %s: %v", old.ID, t.ID, err)
@@ -1448,7 +1448,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	// values, and park and keep waiting record an answer without posting
 	// one, so the console renders them from the question itself
 	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason)}
+	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
+		"reason": textutil.Truncate(reason, 300)}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
 		if shaped.Recommendation != "" {

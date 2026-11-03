@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
 	"log"
 	"math"
 	"sync"
@@ -76,34 +77,15 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 	if err != nil || !ok {
 		return true, err
 	}
-	if t.Kind != "agent" || t.Unbound() || t.Status != "queued" || t.AdmittedAt != nil {
+	if !waitsForSlot(t) {
 		return true, nil
-	}
-	// a plan files its card row first and its issue last; the half-made
-	// card holds no slot until its issue is filed, and the next sweep
-	// starts it. A report card never reaches here: it is unbound.
-	if t.IssueNumber == 0 {
-		return false, nil
-	}
-	deps, err := w.Store.OpenDependencies(ctx, taskID)
-	if err != nil {
-		return false, err
-	}
-	if len(deps) > 0 && ended(deps) == nil {
-		return false, nil
 	}
 	now := time.Now
 	if w.Now != nil {
 		now = w.Now
 	}
-	if _, cap := w.Policy().ProjectCap(t.Repository); !math.IsInf(cap, 1) {
-		spent, err := w.Store.ProjectMonthSpend(ctx, t.Repository, now())
-		if err != nil {
-			return false, err
-		}
-		if spent.EUR >= cap {
-			return false, nil
-		}
+	if why, err := admissionWait(ctx, w.Store, w.Policy(), now(), t); err != nil || why != "" {
+		return false, err
 	}
 	admitMu.Lock()
 	defer admitMu.Unlock()
@@ -118,6 +100,44 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 		return false, err
 	}
 	return true, nil
+}
+
+// waitsForSlot reports whether card t is one admit judges: a queued agent
+// card in the bound's reach, not admitted yet.
+func waitsForSlot(t Task) bool {
+	return t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil
+}
+
+// admissionWait is what keeps card t, one waitsForSlot names, from a
+// work slot before any count of slots, at now: "no issue", "waits on #N"
+// (the first of its open dependencies, unless one ended closed, which its
+// workflow takes to a person) or "project month cap"; "" when none does.
+// admit and the board digest both run it, so both read the same checks in
+// the same order.
+func admissionWait(ctx context.Context, store Store, tree policy.Tree, now time.Time, t Task) (string, error) {
+	// a plan files its card row first and its issue last; the half-made
+	// card holds no slot until its issue is filed, and the next sweep
+	// starts it. A report card never reaches here: it is unbound.
+	if t.IssueNumber == 0 {
+		return "no issue", nil
+	}
+	deps, err := store.OpenDependencies(ctx, t.ID)
+	if err != nil {
+		return "", err
+	}
+	if len(deps) > 0 && ended(deps) == nil {
+		return fmt.Sprintf("waits on #%d", deps[0].Issue), nil
+	}
+	if _, cap := tree.ProjectCap(t.Repository); !math.IsInf(cap, 1) {
+		spent, err := store.ProjectMonthSpend(ctx, t.Repository, now)
+		if err != nil {
+			return "", err
+		}
+		if spent.EUR >= cap {
+			return "project month cap", nil
+		}
+	}
+	return "", nil
 }
 
 // pullQueued starts repository's queued cards in filing order, the oldest

@@ -171,7 +171,7 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 		return monthCapQuestion(reason, f)
 	case strings.HasPrefix(reason, gateStopped) && strings.Contains(reason, "WaitChecks ("):
 		return waitChecksQuestion(reason)
-	case strings.HasPrefix(reason, "The card was quiet for "):
+	case strings.HasPrefix(reason, staleQuiet):
 		return quietQuestion(reason)
 	}
 	return plainQuestion(reason, f, choices)
@@ -640,9 +640,9 @@ func waitChecksQuestion(reason string) *HumanQuestion {
 	return q
 }
 
-// quietShape parses the sweep's escalation: "The card was quiet for %s
-// while %s: is its run gone?".
-var quietShape = regexp.MustCompile(`The card was quiet for (.+?) while (.+?): is its run gone\?`)
+// quietShape parses the sweep's escalation: staleQuiet, then "%s while
+// %s: is its run gone?".
+var quietShape = regexp.MustCompile(regexp.QuoteMeta(staleQuiet) + `(.+?) while (.+?): is its run gone\?`)
 
 func quietQuestion(reason string) *HumanQuestion {
 	q := &HumanQuestion{

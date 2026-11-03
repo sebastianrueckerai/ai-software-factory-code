@@ -1122,7 +1122,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 				}
 			}
 		}
-		tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, parent: parent,
+		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
@@ -1206,7 +1206,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
@@ -1292,7 +1292,7 @@ func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}
 }
 
 // checkinFacts is the small JSON of the card's facts the runner already
-// holds; the check-in's card_facts answers it verbatim.
+// holds; the check-in's card_facts answers it after the card's digest.
 func checkinFacts(t Task, s sessionSpec) string {
 	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
 		"attempt": s.attempt, "sessions": s.sessions})
@@ -1300,11 +1300,12 @@ func checkinFacts(t Task, s sessionSpec) string {
 }
 
 // runnerTools is the check-in's tool set. The factoryd-side tools are
-// answered locally — the parent record's lines, the card's facts, the
-// ask's gates — and the workspace tools are posted to the worker's /tool,
-// every answer cut at the worker's own cap.
+// answered locally — the parent record's lines, card taskID's digest, its
+// steps and facts, the ask's gates — and the workspace tools are posted to
+// the worker's /tool, every answer cut at the worker's own cap.
 type runnerTools struct {
 	r              *Runner
+	taskID         string
 	ns, pod, token string
 	parent         []byte
 	facts          string
@@ -1347,7 +1348,19 @@ func (p *runnerTools) Tool(ctx context.Context, name string, args map[string]any
 		out, cut := cutToolOutput(strings.Join(lines[from-1:to], "\n"))
 		return out, cut, nil
 	case "card_facts":
-		out, cut := cutToolOutput(p.facts)
+		out, cut := cutToolOutput(DigestText(p.r.CardDigest(ctx, p.taskID)) + "\n" + p.facts)
+		return out, cut, nil
+	case "card_step":
+		step, err := p.r.CardStep(ctx, p.taskID, argInt(args["step"]), "card_facts", func(session string, _ int) string {
+			if session != p.ask.ParentSession {
+				return ""
+			}
+			return "transcript_read (the parent session's record)"
+		})
+		if err != nil {
+			return "", false, err
+		}
+		out, cut := cutToolOutput(step)
 		return out, cut, nil
 	case "gates":
 		if p.ask.Gates == nil {

@@ -688,9 +688,11 @@ document.addEventListener("click", function (e) {
 // Its tabs and related cards load into it by hx-get, and the URL follows
 // the card or the routine it shows.
 function drawer() { return document.getElementById("drawer"); }
+var drawerSettled;
 function showDrawer() {
   var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash),
     rt = /^#routine=([a-z0-9-]+\/[a-z0-9-]+)(?::([a-z]+))?$/.exec(location.hash);
+  document.removeEventListener("htmx:afterSettle", drawerSettled);
   if (!d) return;
   d.setAttribute("aria-label", rt ? "The routine" : "The card");
   document.body.classList.toggle("drawer-open", !!(m || rt));
@@ -709,12 +711,21 @@ function showDrawer() {
   }
   var id;
   try { id = decodeURIComponent(m[1]); } catch (err) { closeDrawer(); return; }
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+  var url = "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : "");
+  // htmx wires the swapped nodes at the settle, after the swap's promise:
+  // a fold opened before it fires its toggle to no listener. Only this
+  // request's settle counts, not a tab's or an earlier card's.
+  drawerSettled = function (e) {
+    var rc = e.detail && e.detail.requestConfig;
+    if (e.target !== d || !rc || rc.path !== url || rc.elt !== document.body) return;
+    document.removeEventListener("htmx:afterSettle", drawerSettled);
     var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
     if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
     var h = d.querySelector("h2");
     if (h) h.focus();
-  });
+  };
+  document.addEventListener("htmx:afterSettle", drawerSettled);
+  htmx.ajax("GET", url, {target: "#drawer", swap: "innerHTML"});
 }
 function closeDrawer() {
   if (location.hash.indexOf("#card=") !== 0 && location.hash.indexOf("#routine=") !== 0) return;
@@ -730,6 +741,14 @@ function drawerFailed(e) {
 }
 document.addEventListener("htmx:responseError", drawerFailed);
 document.addEventListener("htmx:sendError", drawerFailed);
+// a fold of the card's life whose read failed says so in place of its
+// loading line, which htmx keeps on an error
+function lifeFailed(e) {
+  var line = e.detail.elt.dataset.sec === "life" && e.detail.target.querySelector("p");
+  if (line) line.textContent = "The card's life could not be read; " + (e.type === "htmx:sendError" ? "the factory did not answer." : "see the factoryd log.");
+}
+document.addEventListener("htmx:responseError", lifeFailed);
+document.addEventListener("htmx:sendError", lifeFailed);
 // after a tab the focus is on the tab shown, after a steer in its input
 document.addEventListener("htmx:afterSwap", function (e) {
   var t = e.detail.target, shown = t && t.id === "drawer" && t.querySelector("[data-drawer], [data-routine-drawer]");

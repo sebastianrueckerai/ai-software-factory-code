@@ -44,7 +44,8 @@ type Intake struct {
 	// Policy is the configuration in force: a new task's budget.
 	Policy func() policy.Tree
 	// Projects are where the heal pass looks for open issues no webhook
-	// turned into a task: every active project's repository.
+	// turned into a task, on every active project's repository, and for
+	// the cases to reconcile, on every project's.
 	Projects interface {
 		Projects(ctx context.Context) ([]Project, error)
 	}
@@ -1070,7 +1071,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		}
 	}
 	log.Printf("%s: issue #%d on %s by %s: %s task %s", via, issue.Index, repo, poster, track, task.ID)
-	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index, "track": track})
+	in.Timeline.recordEvent(ctx, task.ID, EventCardCreated, map[string]any{"by": poster, "issue": issue.Index, "track": track, "budget_eur": task.BudgetEUR})
 	mirrorTaskState(ctx, in.Forgejo, task, task.Status)
 	if task.Status == "queued" {
 		return in.Workflows.Start(ctx, task.ID)
@@ -1197,7 +1198,7 @@ func FileAgentTask(ctx context.Context, store interface {
 		return Task{}, IssueRef{}, err
 	}
 	if !t.Unbound() {
-		tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": ref.Number, "track": t.Track})
+		tl.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": cmp.Or(t.Author, forgejo.BotUser), "issue": ref.Number, "track": t.Track, "budget_eur": t.BudgetEUR})
 	}
 	if err := workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start workflow: %v", t.ID, err)

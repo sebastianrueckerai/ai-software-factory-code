@@ -341,6 +341,9 @@ type Store interface {
 	// created_at ties (Forgejo stamps whole seconds) break by issue
 	// number, the filing sequence, so a same-second burst keeps its order.
 	ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error)
+	// BoardTasks lists repository's live cards, as the console's board
+	// reads them (console_store.go).
+	BoardTasks(ctx context.Context, repository string) ([]BoardTask, error)
 	// RecentlyFinishedTasks lists tasks that finished (done or failed)
 	// within the last `within`, on the store's clock, and have no open model
 	// hold: a call still streaming books its own cost, and settling it too
@@ -430,6 +433,10 @@ type Store interface {
 	// card: the call costs of the task's purpose checkin rows (spend_eur
 	// holds the task's running total at each row, not a per-row cost).
 	CheckinSpent(ctx context.Context, taskID string) (float64, error)
+	// SpendAndCallsBetween is the call costs and the count of the task's
+	// audit rows in [from, to), whatever their kind: a session's cost and
+	// calls in the card digest.
+	SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -544,8 +551,9 @@ type Store interface {
 	// DecideApproval decides one pending request of kind; ErrNotFound when
 	// it is not pending.
 	DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error
-	// UndecideApproval puts request id back to pending, undecided.
-	UndecideApproval(ctx context.Context, id int64) error
+	// UndecideApproval puts request id back to pending, undecided, for
+	// reason: why its decision did not take effect.
+	UndecideApproval(ctx context.Context, id int64, reason string) error
 	// ReopenApproval puts the task's newest request of kind, pending or
 	// approved, back to pending with note: why the approval has not taken
 	// effect (a refused or failed merge); a denied one stays denied.
@@ -582,6 +590,9 @@ type Store interface {
 	// PlanCards are the cards plan filed (source plan) that hold their
 	// key: a retried card's replacement in its place.
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// OpenPlans are repository's open plans: its plan-track cards without
+	// a plan_closed event, whatever their status, in filing order.
+	OpenPlans(ctx context.Context, repository string) ([]Task, error)
 	// OpenGroups are the groups open on main, by repository, the earliest
 	// FirstMerge first, then by plan: the plans with a merged card (a merge
 	// commit or a pull_request_merged event) and no plan_closed event.
@@ -642,6 +653,9 @@ type Store interface {
 	// MonthSpend is the whole factory's ledger spend in the UTC month of
 	// at, as the month cap counts it.
 	MonthSpend(ctx context.Context, at time.Time) (MonthSpend, error)
+	// Enforced is the spend the day and month caps count at at, the
+	// ledger's with the open holds (policy.LedgerEnforced).
+	Enforced(ctx context.Context, at time.Time) (policy.Enforced, error)
 	// OpenDependencies are the cards task id waits on that are not done,
 	// each with its status, by issue number.
 	OpenDependencies(ctx context.Context, id string) ([]Dependency, error)
@@ -650,6 +664,9 @@ type Store interface {
 	// Dependents are the cards that depend on task id, each with its
 	// status, by issue number.
 	Dependents(ctx context.Context, id string) ([]Dependency, error)
+	// Dependencies are the cards task id depends on, each with its
+	// status, those not done first.
+	Dependencies(ctx context.Context, id string) ([]Dependency, error)
 	// ReplaceFailedCard puts plan card t in failed card id's place in one
 	// transaction: id lets go of its key, which t holds; t is inserted with
 	// every dependency of id, and every task waiting on id waits on t.
@@ -761,9 +778,25 @@ type Store interface {
 	// Record writes an event row: the runner's Timeline records factoryd's
 	// own events beside their timeline lines through it.
 	Record(ctx context.Context, e Event) (int64, error)
+	// TaskEvents lists task id's events newest first, at most limit.
+	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
 	// AlertByFingerprint is the newest alert row of kind and fingerprint:
 	// an alert card's pre-check reads whether its alert still fires.
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)
+	// The cases of a card (cases.go): one record per problem, with the
+	// steps of the rungs that worked on it.
+	OpenCase(ctx context.Context, c Case) (Case, bool, error)
+	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
+	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
+	SetCaseStatus(ctx context.Context, id int64, status string) error
+	ResolveCase(ctx context.Context, id int64, r CaseResolution) error
+	WithdrawCase(ctx context.Context, id int64, reason string) error
+	CaseByID(ctx context.Context, id int64) (Case, error)
+	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
+	CasesOf(ctx context.Context, taskID string) ([]Case, error)
+	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
+	OpenCasesIn(ctx context.Context, repository string) ([]Case, error)
+	ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error)
 }
 
 // Approval kinds: a task's pull request through its gates, a commissioning
@@ -1052,31 +1085,28 @@ func (s *PGStore) SetPlanName(ctx context.Context, id, name string) error {
 	return oneRow(res, err, "task "+id)
 }
 
-// OpenPlanNames are the names project's open plans hold — its plan-track
-// tasks without a plan_closed event — every one but excludeID's, the plan
-// the naming pass is naming: what a new name must not repeat.
+func (s *PGStore) OpenPlans(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
+		WHERE repository = $1 AND track = 'plan'
+			AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = tasks.id AND kind = 'plan_closed')
+		ORDER BY created_at, issue_number, id`, repository)
+}
+
+// OpenPlanNames are the names project's open plans hold (OpenPlans),
+// every one but excludeID's, the plan the naming pass is naming: what a
+// new name must not repeat.
 func (s *PGStore) OpenPlanNames(ctx context.Context, projectID, excludeID string) ([]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, COALESCE(plan_name, '') FROM tasks
-		WHERE repository = $1 AND track = 'plan' AND id <> $2 AND COALESCE(plan_name, '') <> ''
-		ORDER BY created_at, issue_number, id`, projectID, excludeID)
+	plans, err := s.OpenPlans(ctx, projectID)
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
 	var out []string
-	for rows.Next() {
-		var id, name string
-		if err := rows.Scan(&id, &name); err != nil {
-			return nil, err
+	for _, p := range plans {
+		if p.ID != excludeID && p.PlanName != "" {
+			out = append(out, p.PlanName)
 		}
-		if _, closed, err := s.PlanClosed(ctx, id); err != nil {
-			return nil, err
-		} else if closed {
-			continue
-		}
-		out = append(out, name)
 	}
-	return out, rows.Err()
+	return out, nil
 }
 
 // UnnamedOpenPlans are the open plans — plan-track tasks without a
@@ -1583,6 +1613,18 @@ func (s *PGStore) CheckinSpent(ctx context.Context, taskID string) (float64, err
 	return eur, err
 }
 
+// SpendAndCallsBetween is the call costs and the count of the task's
+// audit rows in [from, to), whatever their kind, in one scan; a row
+// without a cost adds to the count alone.
+func (s *PGStore) SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error) {
+	var eur float64
+	var n int
+	err := s.db.QueryRowContext(ctx,
+		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8, count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
+		taskID, from, to).Scan(&eur, &n)
+	return eur, n, err
+}
+
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
 // lines left out, as the gateway's month headroom counts it. The reason and time are the month's
 // newest refused_month_cap of a model call; MonthAlarm.Check and the question facts of a card
@@ -1730,7 +1772,7 @@ func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, bounds *
 		return 0, 0, err
 	}
 	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	e, _, err = insertEvent(ctx, tx, e)
+	e, _, err = s.insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -1768,7 +1810,7 @@ func (s *PGStore) ExtendCard(ctx context.Context, id string, sessions, lines int
 	}
 	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
 	e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, from, to
-	e, _, err = insertEvent(ctx, tx, e)
+	e, _, err = s.insertEvent(ctx, tx, e)
 	if err != nil {
 		return 0, 0, err
 	}
@@ -2312,9 +2354,14 @@ func (s *PGStore) SetTaskMergeCommit(ctx context.Context, id, commit string) err
 	return nil
 }
 
+// supersededNote is the decision note of a request a newer one of its
+// kind replaced.
+const supersededNote = "superseded by a newer request"
+
 // OpenApproval records approval request a and answers its id, in one
 // transaction that first denies the task's pending request of a merge or
-// plan kind as superseded (a retry, a new head, a new revision).
+// plan kind as superseded (a retry, a new head, a new revision), and
+// resolves a superseded merge request's case.
 // RequestApproval, RequestPlan and the verdict's gap question call it.
 func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
 	tx, err := s.db.BeginTx(ctx, nil)
@@ -2324,8 +2371,13 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	if a.Kind == ApprovalMerge || a.Kind == ApprovalPlan {
 		if _, err := tx.ExecContext(ctx,
-			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = 'superseded by a newer request'
-			 WHERE task_id = $1 AND kind = $3 AND status = 'pending'`, a.TaskID, FactoryDecider, a.Kind); err != nil {
+			`UPDATE approval_requests SET status = 'denied', decided_by = $2, decided_at = now(), decision_note = $4
+			 WHERE task_id = $1 AND kind = $3 AND status = 'pending'`, a.TaskID, FactoryDecider, a.Kind, supersededNote); err != nil {
+			return 0, err
+		}
+	}
+	if a.Kind == ApprovalMerge {
+		if err := endMergeCase(ctx, tx, a.TaskID, "denied", FactoryDecider, supersededNote); err != nil {
 			return 0, err
 		}
 	}
@@ -2344,43 +2396,106 @@ func (s *PGStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, e
 }
 
 // ResolveApprovals decides the task's pending requests of kind ("" =
-// every kind) — status, by whom, why. The gates' merges and refusals,
-// the plan's denials, a switch to plan and the verdict's criteria
-// grants call it; nothing pending is a no-op, no error.
+// every kind) — status, by whom, why — and resolves a decided merge
+// request's case with them. The gates' merges and refusals, the plan's
+// denials, a switch to plan and the verdict's criteria grants call it;
+// nothing pending is a no-op, no error.
 func (s *PGStore) ResolveApprovals(ctx context.Context, taskID, kind, status, by, note string) error {
-	_, err := s.db.ExecContext(ctx,
-		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
-		 WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending'`, taskID, kind, status, by, note)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var merges int
+	if err := tx.QueryRowContext(ctx,
+		`WITH decided AS (
+		     UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
+		     WHERE task_id = $1 AND ($2 = '' OR kind = $2) AND status = 'pending' RETURNING kind
+		 )
+		 SELECT count(*) FROM decided WHERE kind = $6`, taskID, kind, status, by, note, ApprovalMerge).Scan(&merges); err != nil {
+		return err
+	}
+	if merges > 0 {
+		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
-// UndecideApproval puts request id back to pending, undecided. The
+// UndecideApproval puts request id back to pending, undecided, and puts
+// the merge case its decision ended back at the human with reason. The
 // gates' decide-and-signal path is its sole caller, undoing its decision
 // when the signal fails; it decides no guard — any row goes back.
-func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = ''
-		WHERE id = $1`, id)
-	return err
+func (s *PGStore) UndecideApproval(ctx context.Context, id int64, reason string) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = ''
+		WHERE id = $1`, id); err != nil {
+		return err
+	}
+	if err := reopenMergeCase(ctx, tx, id, reason); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // ReopenApproval puts the task's newest request of kind, pending or
 // approved, back to pending with note — why the approval has not taken
-// effect (a refused or failed merge); a denied one stays denied. The
-// gates' merge refusal note is its sole caller.
+// effect (a refused or failed merge) — and a merge request's case with
+// it; a denied one stays denied. The gates' merge refusal note is its
+// sole caller.
 func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = $3
-		WHERE id = (SELECT max(id) FROM approval_requests WHERE task_id = $1 AND kind = $2) AND status <> 'denied'`, taskID, kind, note)
-	return err
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var id int64
+	err = tx.QueryRowContext(ctx, `UPDATE approval_requests SET status = 'pending', decided_by = '', decided_at = NULL, decision_note = $3
+		WHERE id = (SELECT max(id) FROM approval_requests WHERE task_id = $1 AND kind = $2) AND status <> 'denied' RETURNING id`,
+		taskID, kind, note).Scan(&id)
+	if errors.Is(err, sql.ErrNoRows) {
+		return nil
+	}
+	if err != nil {
+		return err
+	}
+	if _, err := openMergeCase(ctx, tx, id); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
-// DecideApproval decides one pending approval request of kind: a human's
-// approve or deny in the console, or the gates' decide-and-signal pass.
-// ErrNotFound when no such request is pending.
+// DecideApproval decides one pending approval request of kind, and a
+// merge request's case with it: a human's approve or deny in the
+// console, or the gates' decide-and-signal pass. ErrNotFound when no
+// such request is pending.
 func (s *PGStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
-	res, err := s.db.ExecContext(ctx,
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	var taskID string
+	err = tx.QueryRowContext(ctx,
 		`UPDATE approval_requests SET status = $3, decided_by = $4, decided_at = now(), decision_note = $5
-		 WHERE id = $1 AND kind = $2 AND status = 'pending'`, id, kind, status, by, note)
-	return oneRow(res, err, fmt.Sprintf("pending %s approval request %d", kind, id))
+		 WHERE id = $1 AND kind = $2 AND status = 'pending' RETURNING task_id`, id, kind, status, by, note).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
+		return fmt.Errorf("pending %s approval request %d: %w", kind, id, ErrNotFound)
+	}
+	if err != nil {
+		return err
+	}
+	if kind == ApprovalMerge {
+		if err := endMergeCase(ctx, tx, taskID, status, by, note); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
 }
 
 // ApprovalRequests lists the requests in status, oldest first (by id):

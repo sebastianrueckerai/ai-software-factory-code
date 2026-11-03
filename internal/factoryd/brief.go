@@ -62,11 +62,13 @@ type BriefStore interface {
 	Record(ctx context.Context, e Event) (int64, error)
 }
 
-// BriefWriter writes the briefs of the needs-you cards.
+// BriefWriter writes the briefs of the needs-you cards. CardDigest is the
+// card's life (Runner.CardDigest), which each brief is written from.
 type BriefWriter struct {
-	Store   BriefStore
-	Model   *SupervisorModel
-	Current func() policy.Version
+	Store      BriefStore
+	Model      *SupervisorModel
+	Current    func() policy.Version
+	CardDigest func(ctx context.Context, taskID string) (CardDigest, error)
 }
 
 // Loop writes briefs every interval until ctx ends.
@@ -138,8 +140,8 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 	}
 }
 
-// ask is the one model call: the facts the human will see as the user
-// message, a JSON answer of a brief and a detail.
+// ask is the one model call: the facts the human will see, with the
+// card's life, as the user message, a JSON answer of a brief and a detail.
 func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t Task, alias string) (brief, detail string, err error) {
 	var criteria []criterionFact
 	if a.Kind == ApprovalCriteria || a.Kind == ApprovalCriteriaRerun {
@@ -147,7 +149,11 @@ func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t Task, alias 
 			return "", "", err
 		}
 	}
-	facts, acts, err := briefFacts(a, t, criteria)
+	life, err := b.CardDigest(ctx, t.ID)
+	if err != nil {
+		return "", "", fmt.Errorf("the card's life: %w", err)
+	}
+	facts, acts, err := briefFacts(a, t, criteria, life.Render())
 	if err != nil {
 		return "", "", err
 	}
@@ -216,22 +222,24 @@ func criterionText(c PlanCriterion) string {
 }
 
 // briefFacts are what the human will see of a: the facts of its kind and
-// the card it belongs to, as the model reads them, and acts, what the
-// card's real buttons do by its shape — the template renders its actions
-// by the same facts, so brief and buttons cannot disagree. A missing fact
-// says so: the writer never invents one.
-func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact) (any, string, error) {
+// the card it belongs to, as the model reads them, with life, the card's
+// digest, under its heading, and acts, what the card's real buttons do by
+// its shape — the template renders its actions by the same facts, so
+// brief and buttons cannot disagree. A missing fact says so: the writer
+// never invents one.
+func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact, life string) (any, string, error) {
 	m := map[string]any{
-		"kind":        a.Kind,
-		"task":        t.ID,
-		"issue":       t.IssueNumber,
-		"title":       CardTitle(t),
-		"objective":   textutil.Truncate(t.Objective, 4000),
-		"reason":      a.Reason,
-		"filed_at":    a.CreatedAt.UTC().Format(time.RFC3339),
-		"project":     a.Project,
-		"pr_number":   a.PRNumber,
-		"monthly_eur": a.MonthlyEUR,
+		"The card's life": life,
+		"kind":            a.Kind,
+		"task":            t.ID,
+		"issue":           t.IssueNumber,
+		"title":           CardTitle(t),
+		"objective":       textutil.Truncate(t.Objective, 4000),
+		"reason":          a.Reason,
+		"filed_at":        a.CreatedAt.UTC().Format(time.RFC3339),
+		"project":         a.Project,
+		"pr_number":       a.PRNumber,
+		"monthly_eur":     a.MonthlyEUR,
 	}
 	acts := ""
 	switch a.Kind {

@@ -492,27 +492,11 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 // same comment keeping its key. An ask that files no comment (the
 // planner's) falls back to its sentence's hash.
 func askKey(e Event) string {
-	if id := askCommentID(e); id != "" {
-		return "ask:" + e.TaskID + ":" + id
+	if id, _ := toInt(e.Detail["comment"]); id > 0 {
+		return "ask:" + e.TaskID + ":" + strconv.Itoa(id)
 	}
 	sum := sha256.Sum256([]byte(askSentence(e)))
 	return "ask:" + e.TaskID + ":" + hex.EncodeToString(sum[:])
-}
-
-// askCommentID is the issue comment the ask filed, decimal, empty when the
-// ask carried none.
-func askCommentID(e Event) string {
-	switch id := e.Detail["comment"].(type) {
-	case float64:
-		if id > 0 {
-			return strconv.FormatInt(int64(id), 10)
-		}
-	case int64:
-		if id > 0 {
-			return strconv.FormatInt(id, 10)
-		}
-	}
-	return ""
 }
 
 // askSentence is the ask event's own words: a shaped ask carries its full

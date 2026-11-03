@@ -139,7 +139,7 @@ func fileDelegation(ctx context.Context, d DelegationDeps, p Project, parent Tas
 			log.Printf("task %s: issue dependency on #%d: %v", t.ID, parent.IssueNumber, err)
 		}
 	}
-	d.Timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": d.Forgejo.BotUser, "issue": ref.Number, "parent": parent.ID, "track": t.Track})
+	d.Timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": d.Forgejo.BotUser, "issue": ref.Number, "parent": parent.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
 	if err := d.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start workflow: %v", t.ID, err)
 	}

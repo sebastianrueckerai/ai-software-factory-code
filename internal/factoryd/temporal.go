@@ -237,7 +237,8 @@ func startOptions(taskID string) client.StartWorkflowOptions {
 // gets a new run through Reopen, which Start would refuse: a reopen that
 // moved the row but did not start the run.
 //
-// It also forgets webhook deliveries older than DeliveryRetention.
+// It also forgets webhook deliveries older than DeliveryRetention, and
+// reconciles every project's cases (ReconcileCases).
 func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, completion *Completion, completed func(ctx context.Context, taskID string) (bool, error)) {
 	if err := store.PruneDeliveries(ctx, DeliveryRetention); err != nil {
 		log.Printf("heal pass: prune deliveries: %v", err)
@@ -316,6 +317,7 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 		pullQueued(ctx, store, wf, repository)
 	}
 	signalQueueHeads(ctx, store, wf)
+	reconcileCases(ctx, store, in.Projects)
 }
 
 // reopenCompleted starts a new run of open card t when its last run
@@ -470,6 +472,9 @@ type staleEscalation struct {
 	Action string    `json:"action"`
 }
 
+// staleQuiet starts the stale sweep's reason.
+const staleQuiet = "The card was quiet for "
+
 // escalateStale moves a still-quiet card to waiting-human the way the
 // runner's Escalate does: the state mirrored on the issue, the reason as
 // a comment whose first line is the question the card shows, the intake
@@ -478,7 +483,7 @@ type staleEscalation struct {
 // the rest is logged, never a reason to stop half-way.
 func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, quiet time.Duration) error {
 	state, action := staleNames(t.Status)
-	reason := fmt.Sprintf("The card was quiet for %s while %s: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: %s.",
+	reason := fmt.Sprintf(staleQuiet+"%s while %s: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: %s.",
 		staleDuration(quiet), state, action)
 	var forgejo *Forgejo
 	var timeline *Timeline
@@ -517,7 +522,8 @@ func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, qu
 	if in != nil {
 		pullQueued(ctx, in.Store, in.Workflows, t.Repository)
 	}
-	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment}
+	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "source": "stale",
+		"reason": textutil.Truncate(reason, 300)}
 	if shaped != nil {
 		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info
 		asked["choices"] = shaped.Labels()

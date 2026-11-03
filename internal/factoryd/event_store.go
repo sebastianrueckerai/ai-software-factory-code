@@ -99,8 +99,9 @@ const EventTaskStatus = "task_status"
 const EventSessionSaid = "session_said"
 
 // EventQuestionAsked is factoryd's record of an escalation, the question
-// question_answered answers: detail {"question", "comment", and "choices"
-// when the agent offered any}.
+// question_answered answers: detail {"question", "comment", "source",
+// "reason", and "choices" when the agent offered any}; source and
+// reason name the case the ask opens (caseKindOf).
 const EventQuestionAsked = "question_asked"
 
 // EventAnalysisAttached is the chat agent's record of what it found about
@@ -193,8 +194,16 @@ type Events interface {
 }
 
 func (s *PGStore) Record(ctx context.Context, e Event) (int64, error) {
-	e, inserted, err := insertEvent(ctx, s.db, e)
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return 0, err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	e, inserted, err := s.insertEvent(ctx, tx, e)
 	if err != nil || !inserted {
+		return 0, err
+	}
+	if err := tx.Commit(); err != nil {
 		return 0, err
 	}
 	s.publish(e)
@@ -212,9 +221,10 @@ type rowQuerier interface {
 	QueryRowContext(ctx context.Context, query string, args ...any) *sql.Row
 }
 
-// insertEvent writes e as a row of q; inserted is false for the row a
-// conflict dropped.
-func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted bool, _ error) {
+// insertEvent writes e as a row of tx, and the cases it opens, appends
+// to or ends (casesFromEvent); inserted is false for the row a conflict
+// dropped, which touches no case.
+func (s *PGStore) insertEvent(ctx context.Context, tx *sql.Tx, e Event) (_ Event, inserted bool, _ error) {
 	if e.Repository == "" || e.Kind == "" {
 		return e, false, errors.New("event: repository and kind are required")
 	}
@@ -230,7 +240,7 @@ func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted 
 	// answer comment of 20261011170500_events_grant_once.sql, the
 	// IdentityKey of the metrics-identity migration — conflicts and
 	// drops; every unique index on events is such an identity
-	err := q.QueryRowContext(ctx,
+	err := tx.QueryRowContext(ctx,
 		`INSERT INTO events (at, repository, task_id, issue_number, kind, actor, via, detail, identity_key)
 		 VALUES (COALESCE($1, now()), $2, NULLIF($3, ''), NULLIF($4, 0), $5, $6, $7, $8::jsonb, NULLIF($9, ''))
 		 ON CONFLICT DO NOTHING
@@ -240,6 +250,9 @@ func insertEvent(ctx context.Context, q rowQuerier, e Event) (_ Event, inserted 
 	case errors.Is(err, sql.ErrNoRows):
 		return e, false, nil
 	case err != nil:
+		return e, false, err
+	}
+	if err := s.casesFromEvent(ctx, tx, e); err != nil {
 		return e, false, err
 	}
 	return e, true, nil

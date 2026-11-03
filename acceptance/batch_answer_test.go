@@ -603,6 +603,24 @@ func (s *accBatchStore) ModelAnswered(ctx context.Context, taskID string, since 
 func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
 	panic("unused")
 }
+func (s *accBatchStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
+	panic("unused")
+}
+func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
+	panic("unused")
+}
+func (s *accBatchStore) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
+	panic("unused")
+}
+func (s *accBatchStore) BoardTasks(context.Context, string) ([]factoryd.BoardTask, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenPlans(context.Context, string) ([]factoryd.Task, error) {
+	panic("unused")
+}
+func (s *accBatchStore) Enforced(context.Context, time.Time) (policy.Enforced, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Free(ctx context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	panic("unused")
 }
@@ -666,6 +684,42 @@ func (s *accBatchStore) Record(ctx context.Context, e factoryd.Event) (int64, er
 func (s *accBatchStore) AlertByFingerprint(ctx context.Context, kind, fingerprint string) (factoryd.Alert, bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) OpenCase(ctx context.Context, c factoryd.Case) (factoryd.Case, bool, error) {
+	panic("unused")
+}
+func (s *accBatchStore) AppendCaseStep(ctx context.Context, st factoryd.CaseStep) (int64, error) {
+	panic("unused")
+}
+func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []factoryd.CaseAction, decision, grounds string, costEUR float64) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	panic("unused")
+}
+func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution) error {
+	panic("unused")
+}
+func (s *accBatchStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
+	panic("unused")
+}
+func (s *accBatchStore) CaseByID(ctx context.Context, id int64) (factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CaseSteps(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error) {
+	panic("unused")
+}
+func (s *accBatchStore) OpenCasesIn(ctx context.Context, repository string) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) ReconcileCases(ctx context.Context, repository string) (factoryd.CaseHealReport, error) {
+	panic("unused")
+}
 func (s *accBatchStore) InsertSession(ctx context.Context, sess factoryd.Session) error {
 	panic("unused")
 }
@@ -709,7 +763,9 @@ func (s *accBatchStore) OpenApproval(ctx context.Context, a factoryd.ApprovalReq
 func (s *accBatchStore) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
 	panic("unused")
 }
-func (s *accBatchStore) UndecideApproval(ctx context.Context, id int64) error { panic("unused") }
+func (s *accBatchStore) UndecideApproval(ctx context.Context, id int64, reason string) error {
+	panic("unused")
+}
 func (s *accBatchStore) ReopenApproval(ctx context.Context, taskID, kind, note string) error {
 	panic("unused")
 }
@@ -1425,7 +1481,7 @@ func newBatchRig(t *testing.T) *batchRig {
 	t.Cleanup(gwsrv.Close)
 	r := &batchRig{tasks: tasks, apprs: apprs, evs: evs, gw: gw, fg: fg}
 	wf := batchWorkflows{rig: r}
-	c, err := console.New(console.Config{
+	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fgsrv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: newAcceptSessions(), Tasks: tasks, Timelines: acceptObjects{},
@@ -1448,7 +1504,9 @@ func newBatchRig(t *testing.T) *batchRig {
 		AnswerPlanQuestions: func(ctx context.Context, taskID string, revision int, answers []factoryd.PlanAnswer, by string) error {
 			return factoryd.AnswerPlanQuestions(ctx, store, wf, taskID, revision, answers, by)
 		},
-	})
+	}
+	cardReads(&cfg, tasks)
+	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}

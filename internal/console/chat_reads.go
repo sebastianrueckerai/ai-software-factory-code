@@ -21,8 +21,9 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// cardText is the card tool's answer: the card in full, with a pointer to
-// the read that holds what it only names.
+// cardText is the card tool's answer: the card's digest, a blank line,
+// then the card in full, with a pointer to the read that holds what it
+// only names.
 func (t *turn) cardText(in toolInput) (string, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
@@ -54,7 +55,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		return "", err
 	}
 	var b strings.Builder
-	b.WriteString(cardLine(k))
+	b.WriteString(factoryd.DigestText(t.c.cfg.CardDigest(ctx, k.ID)) + "\n" + cardLine(k))
 	if k.Track != "" {
 		fmt.Fprintf(&b, "\ntrack %s of process %s", k.Track, k.Process)
 	}

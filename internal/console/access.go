@@ -93,6 +93,7 @@ var accessTable = map[string]accessRule{
 	"GET /projects/{name}/events/stream":         rMember, // follows() judges the project's sight
 	"GET /cards/{id}":                            {need: writer, scope: scCard, hide: true},
 	"GET /cards/{id}/drawer":                     rCard,
+	"GET /tasks/{id}/digest":                     rCard,
 	"GET /routines/{project}/{name}/drawer":      rProject,
 	"GET /projects/{name}/chat":                  rProject,
 	"GET /projects/{name}/chat/conversations":    rProject,
@@ -157,7 +158,7 @@ var accessTable = map[string]accessRule{
 	"POST /routines/{project}/{name}/needs-me":  rProject,
 
 	// chat tools: reads
-	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember,
+	"system": rMember, "board": rMember, "card": rMember, "history": rMember, "card_history": rMember, "card_step": rMember, "board_digest": rMember,
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "tree": rMember, "grep": rMember, "web_search": rMember,
 	"web_scrape": rMember, "research": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,

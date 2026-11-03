@@ -149,6 +149,9 @@ func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
 			"t-run":  "answer on the issue to start a new attempt with your comment as guidance, or close the issue to end the card",
 			"t-wait": "the issue's author answers on the issue, or close it to end the wait",
 		}[id]
+		if why, _ := asked["reason"].(string); asked["source"] != "stale" || !strings.HasPrefix(why, reason) {
+			t.Fatalf("%s: the question_asked row = %v, want source stale and the reason %q", id, asked, reason)
+		}
 		if !reflect.DeepEqual(asked["choices"], []string{"Keep waiting", "End the card"}) || asked["recommendation"] != wantRec {
 			t.Fatalf("%s: the question_asked row = %v, want the quiet template's choices and the action as recommendation %q", id, asked, wantRec)
 		}

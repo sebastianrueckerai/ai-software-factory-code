@@ -2276,7 +2276,7 @@ func decideAndSignal(ctx context.Context, store Store, wf Workflows, q ApprovalR
 	}
 	err := wf.Signal(ctx, q.TaskID, signal, sig)
 	if err != nil {
-		if rerr := store.UndecideApproval(ctx, q.ID); rerr != nil {
+		if rerr := store.UndecideApproval(ctx, q.ID, err.Error()); rerr != nil {
 			log.Printf("task %s: undo the decision on %s request %d after the failed signal: %v", q.TaskID, q.Kind, q.ID, rerr)
 		}
 	}

@@ -1146,6 +1146,13 @@ type rig struct {
 	events     *fakeEvents
 	chat       *fakeChat
 	chatTokens *fakeChatTokens
+	// cardSteps are card_step's answers by task id, step 1 first, and
+	// boardDigests the board digests by repository; openCases are the
+	// open cases by task id, and caseSteps their steps by case id
+	cardSteps    map[string][]string
+	boardDigests map[string]factoryd.BoardDigest
+	openCases    map[string][]factoryd.Case
+	caseSteps    map[int64][]factoryd.CaseStep
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
 	web     *fakeWeb
@@ -1262,7 +1269,28 @@ func newRig(t *testing.T) *rig {
 			return factoryd.DeploymentHealthText(ctx, healthStub{}, p, deployment, namespace, time.Date(2026, 10, 22, 22, 0, 0, 0, time.UTC))
 		},
 		Projects: r.projects, Events: r.events, Figures: r.figures, Bus: r.events.bus, Chat: r.chat, ChatTokens: r.chatTokens, Mirrors: r.mirrors, Routines: r.routines,
-		ChatToken: func(factoryd.Project) string { return r.chatToken },
+		CardDigest: func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
+			k, _, err := r.tasks.Task(ctx, taskID)
+			return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
+				Status: k.Status, Gate: k.Gate}}, err
+		},
+		CardStep: func(ctx context.Context, taskID string, n int, cardRead string, _ factoryd.TranscriptPointer) (string, error) {
+			k, _, err := r.tasks.Task(ctx, taskID)
+			if err != nil {
+				return "", err
+			}
+			steps := r.cardSteps[taskID]
+			if n >= 1 && n <= len(steps) {
+				return steps[n-1], nil
+			}
+			return "", factoryd.ErrNoStep(fmt.Sprintf("#%d has steps 1 to %d; %s numbers them", k.IssueNumber, len(steps), cardRead))
+		},
+		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
+			return r.boardDigests[repository], nil
+		},
+		OpenCasesOf: func(_ context.Context, taskID string) ([]factoryd.Case, error) { return r.openCases[taskID], nil },
+		CaseSteps:   func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
+		ChatToken:   func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate
@@ -1589,6 +1617,25 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 	}
 	if _, err := New(Config{SessionKey: []byte("short")}); err == nil {
 		t.Fatal("a session key under 32 bytes was accepted")
+	}
+}
+
+// The card reads have no meaning when nil: New refuses a Config without
+// one and names it.
+func TestNewRefusesAMissingCardRead(t *testing.T) {
+	r := newRig(t)
+	for name, drop := range map[string]func(*Config){
+		"CardDigest":  func(c *Config) { c.CardDigest = nil },
+		"CardStep":    func(c *Config) { c.CardStep = nil },
+		"BoardDigest": func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf": func(c *Config) { c.OpenCasesOf = nil },
+		"CaseSteps":   func(c *Config) { c.CaseSteps = nil },
+	} {
+		cfg := r.c.cfg
+		drop(&cfg)
+		if _, err := New(cfg); err == nil || err.Error() != "console: no "+name {
+			t.Errorf("New without %s = %v, want it named", name, err)
+		}
 	}
 }
 

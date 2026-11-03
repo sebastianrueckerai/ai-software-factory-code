@@ -49,6 +49,13 @@ var funcs = template.FuncMap{
 	"mEur": mEur, "mEurMove": mEurMove, "mCount": mCount, "mCountMove": mCountMove,
 	"mK": mK, "mDec": mDec, "mDecMove": mDecMove, "mShare": mShare, "mDiff": mDiff,
 	"mChat": mChat, "msub": msub, "sparkSVG": sparkSVG,
+	// the divide-and-conquer panels (roadmap 336): the deck's own
+	// formatters above and the section's lists and coverage notes
+	"mEur4": mEur4, "mEur4Move": mEur4Move, "mHours": mHours, "mHoursMove": mHoursMove,
+	"mSizes": mSizes, "mNamed": mNamed, "mIntercepts": mIntercepts,
+	"mRoundName": mRoundName, "mRoundSpans": mRoundSpans, "mOriginSpans": mOriginSpans,
+	"mGateCov": mGateCov, "mSessCov": mSessCov, "mEconCov": mEconCov,
+	"mGroupCov": mGroupCov, "mHoldCov": mHoldCov, "mReviewCov": mReviewCov,
 	// accents are the colour labels a writer may put on a card
 	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
@@ -83,6 +90,8 @@ var funcs = template.FuncMap{
 	"pct100": func(spent, cap float64) int { return min(pct(spent, cap), 100) },
 	// initial is a member's avatar letter
 	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
+	// words is a stored word of the factory's, its underscores spaces
+	"words": func(s string) string { return strings.ReplaceAll(s, "_", " ") },
 	// switch is whether the top bar shows the project select: the board
 	// page's data has the projects, the other pages' has none
 	"switch": func(d any) bool { b, ok := d.(boardData); return ok && len(b.Projects) > 0 },

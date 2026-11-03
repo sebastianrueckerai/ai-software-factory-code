@@ -1600,11 +1600,13 @@ func TestRunSessionCheckinHandoverStopsGracefully(t *testing.T) {
 
 // The in-session check-in's transcript tools read the live session's own
 // record: a search over the trip's events answers the line it found in
-// the next round of the conversation.
+// the next round of the conversation. Its card_facts reads the session's
+// own card.
 func TestRunSessionCheckinToolsReadTheLiveRecord(t *testing.T) {
 	runner, _, _, _, chat, _, _ := liveRig(t, CheckinResponse{})
 	chat.answers = []CheckinResponse{
 		{ToolName: "transcript_search", ToolArgs: map[string]any{"query": "loopcheck: FAIL at 10:00:01"}},
+		{ToolName: "card_facts"},
 		{Text: `{"decision":"continue","reason":"one failing command, the session carries on"}`},
 	}
 	logs := loopFailure(1) + loopFailure(2) + loopFailure(3) + pushedLine("c1") + "\n" + resultLine(true, "done")
@@ -1615,8 +1617,8 @@ func TestRunSessionCheckinToolsReadTheLiveRecord(t *testing.T) {
 	if res.Outcome != OutcomePushed || res.Commit != "c1" || res.CheckIn != nil {
 		t.Fatalf("result = (%+v, %v), want the session run on to its push after a continue", res, err)
 	}
-	if chat.calls != 2 {
-		t.Fatalf("chat calls = %d, want the tool round and the decision", chat.calls)
+	if chat.calls != 3 {
+		t.Fatalf("chat calls = %d, want the two tool rounds and the decision", chat.calls)
 	}
 	// the tool's answer is the conversation's last appended piece: on an
 	// empty parent the search returns nothing and the round ends at the
@@ -1624,6 +1626,9 @@ func TestRunSessionCheckinToolsReadTheLiveRecord(t *testing.T) {
 	_, toolOut, _ := strings.Cut(chat.gots[1].Input, "answered:\n")
 	if !strings.Contains(toolOut, "loopcheck: FAIL at 10:00:01") {
 		t.Fatalf("tool round ends with %q, want the live record's line the search found", toolOut)
+	}
+	if _, facts, _ := strings.Cut(chat.gots[2].Input, "tool card_facts null answered:\n"); !strings.HasPrefix(facts, "#7 · ") {
+		t.Errorf("card_facts answered %q, want card #7's digest first", facts)
 	}
 }
 
@@ -4668,12 +4673,13 @@ func TestRunSessionCheckinDropped(t *testing.T) {
 
 // The parent session's record is delivered whole to the pod for its copy,
 // while the check-in's statement sees only the tail: the policy's cut,
-// advanced past the partial line the cut lands in.
+// advanced past the partial line the cut lands in. The check-in's
+// card_facts reads the session's own card.
 func TestRunSessionCheckinParentRecord(t *testing.T) {
 	record := "HEAD-OF-THE-FIRST-LINE " + strings.Repeat("a", 30_000) + "\nTHE-SECOND-LINE\nTHE-THIRD-LINE\n"
 	finding := "the objective contradicts the review"
-	runner, _, _, worker, chat, _, _ := checkinRig(t,
-		`{"findings":[{"text":"`+finding+`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`)
+	runner, _, _, worker, chat, _, _ := liveRig(t, CheckinResponse{ToolName: "card_facts"}, CheckinResponse{Text: `{"findings":[{"text":"` + finding +
+		`","verdict":"confirmed"}],"decision":"human","reason_kind":"goal_conflict","reason":"the objective contradicts the review"}`})
 	if err := runner.objects.Put(t.Context(), "sessions/t2/s-parent-1.jsonl", []byte(record)); err != nil {
 		t.Fatal(err)
 	}
@@ -4687,7 +4693,10 @@ func TestRunSessionCheckinParentRecord(t *testing.T) {
 	if !slices.Equal(worker.texts, []string{"POST /records s-parent-1" + record}) {
 		t.Fatalf("worker got %d texts, want the whole record delivered for the pod's copy", len(worker.texts))
 	}
-	statement := chat.got.Input
+	if _, facts, _ := strings.Cut(chat.got.Input, "tool card_facts null answered:\n"); !strings.HasPrefix(facts, "#7 · ") {
+		t.Errorf("card_facts answered %q, want card #7's digest first", facts)
+	}
+	statement := chat.gots[0].Input
 	for _, want := range []string{"/workspace/.factory/sessions/s-parent-1.jsonl", "<<<SESSION-TAIL>>>", "THE-SECOND-LINE", "THE-THIRD-LINE"} {
 		if !strings.Contains(statement, want) {
 			t.Errorf("the statement lacks %s", want)

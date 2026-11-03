@@ -1712,8 +1712,8 @@ out.opened = [byID.drawer.hidden, requests.slice()];
 // swap reaches no htmx event, so nothing is clicked yet
 fire("htmx:afterSwap", {target: byID.drawer});
 out.tabBeforeSettle = tabBtn.clicks;
-fire("htmx:afterSettle", {target: byID.drawer});
-fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer, requestConfig: {path: "/cards/t-9/drawer", elt: sandbox.document.body}});
+fire("htmx:afterSettle", {target: byID.drawer, requestConfig: {path: "/cards/t-9/drawer", elt: sandbox.document.body}});
 out.tab = tabBtn.clicks;
 fire("view", {card: ""});
 out.closed = [byID.drawer.hidden, sandbox.location.hash, replaced.slice()];
@@ -1731,7 +1731,7 @@ winListeners.hashchange.forEach(function (fn) { fn({}); });
 out.flatCard = [pushed.length - entries, byID.drawer.hidden];
 await settle();
 await settle();
-fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer, requestConfig: {path: "/cards/t-9/drawer", elt: sandbox.document.body}});
 out.flatTab = tabBtn.clicks - tabsBefore;
 // a page without a board: nothing pushed, nothing read, no throw
 requests = [];
@@ -1783,8 +1783,8 @@ drawer.querySelector = function (sel) {
 };
 fire("view", {query: "?project=code", card: "t-9", tab: "chat"});
 fire("view", {query: "?project=code", card: "t-9", tab: "activity"});
-fire("htmx:afterSettle", {target: byID.drawer});
-fire("htmx:afterSettle", {target: byID.drawer});
+fire("htmx:afterSettle", {target: byID.drawer, requestConfig: {path: "/cards/t-9/drawer", elt: sandbox.document.body}});
+fire("htmx:afterSettle", {target: byID.drawer, requestConfig: {path: "/cards/t-9/drawer", elt: sandbox.document.body}});
 out.twoShots = [chatTab.clicks, actTab.clicks];
 out.streams = sources.length;
 await settle();

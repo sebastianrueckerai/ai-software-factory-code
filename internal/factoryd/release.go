@@ -177,7 +177,7 @@ func (s *PGStore) releaseWrite(ctx context.Context, ended Event, query string, a
 	}
 	inserted := false
 	if ended.Kind != "" {
-		if ended, inserted, err = insertEvent(ctx, tx, ended); err != nil {
+		if ended, inserted, err = s.insertEvent(ctx, tx, ended); err != nil {
 			return err
 		}
 	}

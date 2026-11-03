@@ -240,12 +240,30 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 		cfg.ForgejoURL, cfg.DocsToken = srv.URL, "docs-token"
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
+	cardReads(&cfg, a)
 	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
 	}
 	a.c = c
 	return a, d, "/projects/" + accProjectName + "/chat"
+}
+
+// cardReads wires cfg's card reads over tasks: a card's digest is its
+// head from the task row, the rig holds no card step and no case, and
+// the board digest is empty.
+func cardReads(cfg *console.Config, tasks console.Tasks) {
+	cfg.CardDigest = func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
+		k, _, err := tasks.Task(ctx, taskID)
+		return factoryd.CardDigest{Head: factoryd.DigestHead{Issue: int(k.IssueNumber), BudgetEUR: k.BudgetEUR, SpentEUR: k.SpentEUR,
+			Status: k.Status, Gate: k.Gate}}, err
+	}
+	cfg.CardStep = func(context.Context, string, int, string, factoryd.TranscriptPointer) (string, error) {
+		return "", factoryd.ErrNoStep("the acceptance rig holds no card step")
+	}
+	cfg.BoardDigest = func(context.Context, string) (factoryd.BoardDigest, error) { return factoryd.BoardDigest{}, nil }
+	cfg.OpenCasesOf = func(context.Context, string) ([]factoryd.Case, error) { return nil, nil }
+	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers

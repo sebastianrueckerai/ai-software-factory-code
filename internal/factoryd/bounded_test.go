@@ -60,7 +60,7 @@ func TestBoundedStartStaysQueuedOverTheBound(t *testing.T) {
 	ctx := context.Background()
 	store, rec, bounded := boundedFixture(t, 1,
 		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 2})
 	if err := bounded.Start(ctx, "t-q"); err != nil {
 		t.Fatal(err)
 	}
@@ -152,7 +152,7 @@ func TestBoundedSignalKeepsAQueuedCardOverTheBound(t *testing.T) {
 	ctx := context.Background()
 	store, rec, bounded := boundedFixture(t, 1,
 		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
-		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued"})
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 2})
 	if err := bounded.Signal(ctx, "t-q", "answer", TaskSignal{}); err != nil {
 		t.Fatal(err)
 	}

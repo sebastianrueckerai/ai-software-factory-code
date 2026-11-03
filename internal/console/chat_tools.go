@@ -47,6 +47,7 @@ type toolInput struct {
 	Accent      string   `json:"accent,omitempty"`
 	Login       string   `json:"login,omitempty"`
 	N           int      `json:"n,omitempty"`
+	Step        int      `json:"step,omitempty"`
 	Thread      int64    `json:"thread,omitempty"`
 	Ref         string   `json:"ref,omitempty"`
 	Path        string   `json:"path,omitempty"`
@@ -1227,7 +1228,7 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "card", title: "Read a card", params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "One card in full, its model calls included, with pointers to its plan, pull request and sessions.",
+		about: "One card in full: its numbered steps and flags, then its model calls and pointers to other reads.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.cardText(in); return s, nil, err }},
 	{name: "history", title: "Read the history", params: map[string]any{"n": nParam},
 		about: "The project's events, newest first: what was done to which card, by whom and how.",
@@ -1244,6 +1245,35 @@ var tools = []chatTool{
 			}
 			events, err := t.c.cfg.Events.TaskEvents(t.r.Context(), k.ID, in.limit())
 			return eventLines(events), nil, err
+		}},
+	{name: "card_step", title: "Read a card's step",
+		params:   map[string]any{"task_id": taskParam, "step": stepParam("the step's number in the card read")},
+		required: []string{"task_id", "step"},
+		about:    "One step of a card in full, by the number the card read gives it.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			k, err := t.card(in)
+			if err != nil {
+				return "", nil, err
+			}
+			s, err := t.c.cfg.CardStep(t.r.Context(), k.ID, in.Step, "card", func(_ string, n int) string {
+				if n == 0 {
+					return ""
+				}
+				return fmt.Sprintf("session_steps task %s n %d", k.ID, n)
+			})
+			if no := factoryd.ErrNoStep(""); errors.As(err, &no) {
+				return "", nil, refuse(http.StatusNotFound, string(no))
+			}
+			return s, nil, err
+		}},
+	{name: "board_digest", title: "Read the board digest",
+		about: "The project's board in a few lines: live cards with their flags, the queue, slots, plans and caps.",
+		run: func(t *turn, _ toolInput) (string, *inverse, error) {
+			b, err := t.c.cfg.BoardDigest(t.r.Context(), t.p.Repository)
+			if err != nil {
+				return "", nil, err
+			}
+			return b.Render(), nil, nil
 		}},
 	{name: "costs", title: "Read the costs",
 		params: map[string]any{"by": enum("the whole ledger by day, card or tier", "day", "card", "tier"),

@@ -1277,7 +1277,7 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 			return err
 		}
 	}
-	if e, _, err = insertEvent(ctx, tx, e); err != nil {
+	if e, _, err = s.insertEvent(ctx, tx, e); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
