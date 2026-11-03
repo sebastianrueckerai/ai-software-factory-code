@@ -26,9 +26,10 @@ func agentDocPolicy() policy.Version {
 	}
 }
 
-// Every direct agent drives the real client against the fake gateway, and
-// every span it registers appears in the request that crossed the wire:
-// the capture is proven, not assumed.
+// Every direct agent drives the real client against the fake gateway,
+// every span it registers appears in the request that crossed the wire,
+// and its messages tile with no unlabelled byte: the capture is proven,
+// not assumed.
 func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 	toolsByID := map[string]bool{"checkin": true}
 	for _, id := range AgentDocDirectIDs() {
@@ -63,6 +64,27 @@ func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 			for _, sp := range spans {
 				if !strings.Contains(decoded.String(), sp.Text) && !strings.Contains(string(recs[0].Raw), sp.Text) {
 					t.Errorf("span %s (%s) is not in the captured request", sp.Name, sp.Symbol)
+				}
+			}
+			for _, m := range b.Messages {
+				place := agentdoc.PlaceUser
+				if m.Role == "system" {
+					place = agentdoc.PlaceSystem
+				}
+				var placeSpans []agentdoc.Span
+				for _, sp := range spans {
+					if sp.Place == place {
+						placeSpans = append(placeSpans, sp)
+					}
+				}
+				claims, err := agentdoc.Locate(m.Content, placeSpans)
+				if err != nil {
+					t.Fatalf("%s message: %v", m.Role, err)
+				}
+				for _, c := range claims {
+					if c.Unlabelled {
+						t.Errorf("%s message: %d unlabelled bytes %q", m.Role, c.End-c.Start, c.Text)
+					}
 				}
 			}
 		})

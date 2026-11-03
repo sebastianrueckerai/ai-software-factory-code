@@ -635,9 +635,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
 	var longest time.Duration
-	due := func() time.Time { return start.Add(timeCap - min(timeCap/2, max(policy.CheckinCallTime, longest))) }
-	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap) +
-		fmt.Sprintf(", your answer due within %s", time.Until(due()).Round(time.Second))
+	due := func() time.Time { return start.Add(checkinAnswerDue(timeCap, longest)) }
+	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap) + checkinDueLine(time.Until(due()))
 	rec.StatementBytes = len(conv)
 	timeStop := func() CheckInOutcome {
 		reason := checkinCapStop(checkinTimeCapStop, timeCap.String())
@@ -710,6 +709,17 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		repairs++
 		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again as one JSON object."
 	}
+}
+
+// checkinAnswerDue is how long after the check-in starts its answer call
+// is due: the time cap less the answer's reserve.
+func checkinAnswerDue(timeCap, longest time.Duration) time.Duration {
+	return timeCap - min(timeCap/2, max(policy.CheckinCallTime, longest))
+}
+
+// checkinDueLine closes the statement with the time left for the answer.
+func checkinDueLine(left time.Duration) string {
+	return fmt.Sprintf(", your answer due within %s", left.Round(time.Second))
 }
 
 // checkinOutcome turns a readable final answer into the outcome: the

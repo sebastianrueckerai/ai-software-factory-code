@@ -93,6 +93,11 @@ func agentDocJSON(s string) string {
 	return string(b)
 }
 
+// agentDocInputLead is the heading every JSON-mode call's user message
+// opens with.
+var agentDocInputLead = agentdoc.Span{Name: "the input heading", Symbol: "factoryd.chatInputLead", Kind: agentdoc.KindBuilder,
+	Place: agentdoc.PlaceUser, Text: chatInputLead}
+
 // agentDocFiles is the fixture diff one file wide, the review and audit
 // captures both read.
 func agentDocFiles() []fileDiff {
@@ -133,11 +138,14 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	}
 	parent := []byte("2026-10-31T12:00:00Z agent message: the fix is half done\n")
 	const callsLeft, eurLeft, handoverCap = 3, 1.0, 800
+	timeCap := callsLeft * policy.CheckinCallTime
 	spans := []agentdoc.Span{
 		{Name: "session persona", Symbol: "factoryd.checkinSystemFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
 			Text: checkinSystemFor(ask.Moment, ask.Replan)},
 		{Name: "the statement", Symbol: "factoryd.checkinStatement", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)},
+		{Name: "the answer deadline", Symbol: "factoryd.checkinDueLine", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: checkinDueLine(checkinAnswerDue(timeCap, 0))},
 		{Name: "the writing guide", Symbol: "writingguide.Guide", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: writingguide.Guide},
 		{Name: "the parent session's tail", Symbol: "factoryd.agentDocCheckin", Kind: agentdoc.KindFixture, Place: agentdoc.PlaceUser,
@@ -152,7 +160,7 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 			Place: agentdoc.PlaceTools, Text: string(raw)})
 	}
 	(&Runner{}).runCheckin(ctx, agentDocTask, alias, ask, parent,
-		&checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocPodTools{}, callsLeft, eurLeft, 1, handoverCap, callsLeft*policy.CheckinCallTime)
+		&checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocPodTools{}, callsLeft, eurLeft, 1, handoverCap, timeCap)
 	return spans, nil
 }
 
@@ -189,6 +197,7 @@ func agentDocReview(ctx context.Context, gwURL string, v policy.Version, hc *htt
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the review prompt", Symbol: "factoryd.reviewPromptFor", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem,
 			Text: reviewPromptFor(gates)},
 		{Name: "the review's facts", Symbol: "factoryd.reviewInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -220,6 +229,7 @@ func agentDocAudit(ctx context.Context, gwURL string, v policy.Version, hc *http
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the audit prompt", Symbol: "factoryd.auditPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: auditPrompt},
 		{Name: "the audit's facts", Symbol: "factoryd.auditInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
@@ -251,6 +261,7 @@ func agentDocGateSupervisor(ctx context.Context, gwURL string, v policy.Version,
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the gate supervisor prompt", Symbol: "factoryd.gateSupervisorPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: gateSupervisorPrompt},
 		{Name: "the diagnosis bundle", Symbol: "factoryd.scrubbed", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
@@ -291,6 +302,7 @@ func agentDocCriterion(ctx context.Context, gwURL string, v policy.Version, hc *
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the criterion prompt", Symbol: "factoryd.reviewCriterionPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: reviewCriterionPrompt},
 		{Name: "the criterion call's facts", Symbol: "factoryd.criterionInput", Kind: agentdoc.KindBuilder,
@@ -321,6 +333,7 @@ func agentDocBehaviours(ctx context.Context, gwURL string, v policy.Version, hc 
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the behaviours prompt", Symbol: "factoryd.reviewBehavioursPrompt", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceSystem, Text: reviewBehavioursPrompt},
 		{Name: "the behaviours call's facts", Symbol: "factoryd.behavioursInput", Kind: agentdoc.KindBuilder,
@@ -351,6 +364,7 @@ func agentDocDelta(ctx context.Context, gwURL string, v policy.Version, hc *http
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the delta prompt", Symbol: "factoryd.deltaPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the delta call's facts", Symbol: "factoryd.deltaInput", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(in)},
@@ -406,7 +420,7 @@ func agentDocHoldout(ctx context.Context, gwURL string, v policy.Version, hc *ht
 	if !fix {
 		cover.Name, cover.Symbol = "the hold-out call's facts", "factoryd.(*Runner).proposeHoldouts"
 	}
-	return append(spans, cover, agentdoc.Span{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder,
+	return append(spans, cover, agentDocInputLead, agentdoc.Span{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder,
 		Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)}), nil
 }
 
@@ -429,6 +443,7 @@ func agentDocAnswer(ctx context.Context, gwURL string, v policy.Version, hc *htt
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the screening prompt", Symbol: "factoryd.answerPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the screening call's facts", Symbol: "factoryd.answerInput", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceUser, Text: marshalled(in)},
@@ -474,6 +489,7 @@ func agentDocBrief(ctx context.Context, gwURL string, v policy.Version, hc *http
 		return nil, err
 	}
 	return []agentdoc.Span{
+		agentDocInputLead,
 		{Name: "the brief prompt", Symbol: "factoryd.briefPrompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
 		{Name: "the card's facts", Symbol: "factoryd.briefFacts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(facts)},
 		{Name: "the card's life", Symbol: "factoryd.CardDigest.Render", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(life)},
