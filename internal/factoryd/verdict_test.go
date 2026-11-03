@@ -1601,3 +1601,63 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 		t.Errorf("the open criterion's waiver rows = %v", rows)
 	}
 }
+
+// A granted card answers a gap before the next ask: while a delta due
+// stands undrafted, no gap ask opens and a pending one is withdrawn as
+// approved by factoryd, so a later identical gap asks again; a card still
+// running withdraws it the same way.
+func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
+	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	if err := s.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutPlanCatches(ctx, "t-gap", 1, CatchDelta, FinderApprover, []string{"c3 grant 9"}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("a gap asked beside an undrafted due: %+v", pending)
+	}
+
+	// the due is drafted and its card runs: no ask, and the old ask is withdrawn
+	if _, err := s.PutPlanCatches(ctx, "t-gap", 1, CatchDeltaFiled, FinderApprover, []string{"c3 grant 9"}); err != nil {
+		t.Fatal(err)
+	}
+	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "in-review"}
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met with the plan's cards done: c3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("the ask stands beside a running card: %+v", pending)
+	}
+	approved, _ := s.ApprovalRequests(ctx, "approved")
+	if len(approved) != 1 || approved[0].ID != id || approved[0].DecidedBy != FactoryDecider ||
+		!strings.Contains(approved[0].DecisionNote, "granted card answers") {
+		t.Fatalf("approved = %+v, want ask %d withdrawn by factoryd", approved, id)
+	}
+
+	// the card ends with c3 still open: the gap asks again
+	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "done"}
+	r.planCloseCheck(ctx, "t-gap")
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+		t.Fatalf("pending = %+v, want the gap asked again", pending)
+	}
+
+	// an undrafted due withdraws a pending ask with every card final
+	if _, err := s.PutPlanCatches(ctx, "t-gap", 2, CatchDelta, FinderApprover, []string{"c3 grant 10"}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ = s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("the ask stands beside an undrafted due: %+v", pending)
+	}
+}

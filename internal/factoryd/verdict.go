@@ -955,7 +955,19 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return
 	}
-	if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+	due, err := r.undraftedDues(ctx, parent)
+	if err != nil {
+		log.Printf("plan %s: the close check: %v", parent, err)
+		return
+	}
+	if len(due) > 0 || slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+		// a granted card answers the gap first; the ask, if it stands,
+		// is withdrawn and a gap still open after the card asks again
+		for _, kind := range criteriaKinds {
+			if err := r.store.ResolveApprovals(ctx, parent, kind, "approved", FactoryDecider, "withdrawn: a granted card answers the gap first"); err != nil {
+				log.Printf("plan %s: withdraw the %s approval: %v", parent, kind, err)
+			}
+		}
 		return
 	}
 	open := openCriteria(p, rows)
@@ -1069,9 +1081,16 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 // openPlanAsk opens plan t's ask of kind, one of criteriaKinds, with
 // reason, comments it on the plan's issue and pokes: never beside a
 // pending ask of either kind, so the two never stack, nor again after a
-// denied one of the same kind and reason, only once the plan is at rest.
+// denied one of the same kind and reason, nor while a delta due stands
+// undrafted, only once the plan is at rest.
 // Its spec names the integration card, whose rows the decisions read.
 func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reason, comment string, ids []string, integration Task) {
+	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
+		if err != nil {
+			log.Printf("plan %s: the gap check: %v", t.ID, err)
+		}
+		return
+	}
 	for _, status := range []string{"pending", "denied"} {
 		all, err := r.store.ApprovalRequests(ctx, status)
 		if err != nil {
@@ -1151,13 +1170,12 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 	}
 }
 
-// draftDue drafts the plan's unanswered delta dues: the delta catches no
-// filed or refused catch marks.
-func (r *Runner) draftDue(ctx context.Context, parent string) {
+// undraftedDues are the plan's delta dues, in detail order: the delta
+// catches no filed or refused catch marks.
+func (r *Runner) undraftedDues(ctx context.Context, parent string) ([]PlanCatch, error) {
 	catches, err := r.store.PlanCatches(ctx, parent)
 	if err != nil {
-		log.Printf("plan %s: the delta dues: %v", parent, err)
-		return
+		return nil, err
 	}
 	marked := map[string]bool{}
 	dues := map[string]PlanCatch{}
@@ -1174,6 +1192,17 @@ func (r *Runner) draftDue(ctx context.Context, parent string) {
 		if !marked[d] {
 			due = append(due, dues[d])
 		}
+	}
+	return due, nil
+}
+
+// draftDue drafts the plan's unanswered delta dues: the delta catches no
+// filed or refused catch marks.
+func (r *Runner) draftDue(ctx context.Context, parent string) {
+	due, err := r.undraftedDues(ctx, parent)
+	if err != nil {
+		log.Printf("plan %s: the delta dues: %v", parent, err)
+		return
 	}
 	if len(due) == 0 {
 		return
