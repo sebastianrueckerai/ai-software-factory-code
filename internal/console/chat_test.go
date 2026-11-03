@@ -88,8 +88,10 @@ type fakeChat struct {
 	fundedErr error
 	// atts are the stored image rows, any member's, in arrival order
 	atts []storedAttachment
-	// proposals are the proposals and undos, in the order stored
+	// proposals are the proposals and undos, in the order stored; takes
+	// counts TakeProposal's calls
 	proposals []*fakeProposal
+	takes     int
 	// intake is the repositories' intake switch rows
 	intake map[string]factoryd.IntakeRow
 	// now stamps the rows stored; nil: the fixed clock at, a second a row
@@ -889,6 +891,7 @@ func (f *fakeChat) ReadProposal(_ context.Context, kind, token, repository, logi
 func (f *fakeChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.takes++
 	for _, p := range f.proposals {
 		if p.Kind != kind || p.Token != token || p.Repository != repository {
 			continue
@@ -2993,7 +2996,7 @@ func TestChatAskOffersChoices(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("Filed.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the card when I say so"}})
 	equal(t, "the ask turn", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press or their next message answers it."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message."}`,
 		`done {}`})
 	if n := len(g.calls()); n != 1 {
 		t.Fatalf("%d model calls, want the ask to end the turn", n)
@@ -3168,7 +3171,7 @@ func TestChatParkRefusesTheBoundTool(t *testing.T) {
 	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}, {say("Their press runs it.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
 	equal(t, "the parked call", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, a press answers it, and in a thread of their own so does their message."}`,
 		`text {"text":"Their press runs it."}`, `done {}`})
 	if p, ok := chat.proposal(token); !ok || !p.used.IsZero() {
 		t.Fatalf("the refused call settled the binding: %+v", p)
@@ -3379,7 +3382,7 @@ func TestChatParkCoversTheSameAnswer(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args, "close", `{"task_id":"t-m"}`)}}
 	before := r.events.count()
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
-	refused := `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`
+	refused := `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, a press answers it, and in a thread of their own so does their message."}`
 	if !slices.Contains(events, refused) {
 		t.Fatalf("the same answer's bound call ran: %v", events)
 	}

@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -92,41 +94,78 @@ func TestAWakesFailureStaysInItsThread(t *testing.T) {
 	}
 }
 
-// A wake's ask lands in the inbox, which takes presses only: an ask
-// without choices is refused, naming choices and attach_analysis, and
-// stores no ask row; one with choices asks as a human's turn does.
-func TestWakeAskNeedsChoices(t *testing.T) {
+// The inbox takes presses only, so an ask there without choices is
+// refused, naming choices and attach_analysis, and stores no ask row,
+// whatever started the turn: a wake or a press. A wake in a thread of the
+// human's own hears the ask's plain bounds instead, and an ask with
+// choices asks in the inbox as anywhere.
+func TestInboxAskNeedsChoices(t *testing.T) {
 	r, chat, g := newChatRig(t)
-	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
-	wake := func(replies ...[]string) []factoryd.ChatMessage {
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "user", Content: "what is open?", Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	const bare = `{"ask":"Which store keeps the snapshots?"}`
+	const refused = "Refused: The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+	rowsIn := func(conv int64) []factoryd.ChatMessage {
 		t.Helper()
-		g.replies = replies
-		if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "#13 asks which store."); err != nil {
-			t.Fatalf("StartWake: %v", err)
-		}
-		rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 10)
+		rows, err := chat.ChatMessages(ctx, "sf/code", "sebastian", conv, 50)
 		if err != nil {
 			t.Fatal(err)
 		}
 		return rows
 	}
-	rows := wake([]string{call(1, "ask", `{"ask":"Which store keeps the snapshots?"}`)}, []string{say("I recorded it instead.")})
-	if len(rows) != 3 || len(rows[1].ToolCalls) != 1 || rows[2].Content != "I recorded it instead." {
-		t.Fatalf("the wake's rows = %+v", rows)
+	lastAsk := func(conv int64) string {
+		t.Helper()
+		result := ""
+		for _, m := range rowsIn(conv) {
+			for _, c := range m.ToolCalls {
+				if c.Name == "ask" {
+					result = c.Result
+				}
+			}
+		}
+		return result
 	}
-	equal(t, "the ask without choices", rows[1].ToolCalls[0].Result,
-		"Refused: The inbox takes buttons only: give choices, or record what you found with attach_analysis.")
-	if slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Kind == factoryd.MessageAsk }) {
-		t.Fatalf("a refused ask stored a row: %+v", rows)
+	wake := func(conv int64, args string, replies ...[]string) {
+		t.Helper()
+		g.replies = append([][]string{{call(1, "ask", args)}}, replies...)
+		if err := r.c.StartWake(ctx, "ai-software-factory-code", "sebastian", conv, "wake_ask", "#13 asks which store."); err != nil {
+			t.Fatalf("StartWake: %v", err)
+		}
 	}
 
-	rows = wake([]string{call(1, "ask", `{"ask":"Which store keeps the snapshots?","choices":["Postgres","SQLite"]}`)})
+	wake(inbox, bare, []string{say("I recorded it instead.")})
+	equal(t, "a wake's bare ask in the inbox", lastAsk(inbox), refused)
+	wake(1, bare, []string{say("I will ask with two choices.")})
+	equal(t, "a wake's bare ask in an own thread", lastAsk(1), "Refused: choices: 2 to 5 answers of 1 to 60 characters")
+
+	id, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk,
+		Content: "Snapshots nightly?", Choices: []string{"Yes", "No"}, Conversation: inbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{call(1, "ask", bare)}, {say("I recorded it instead.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer",
+		url.Values{"conversation": {strconv.FormatInt(inbox, 10)}, "message": {strconv.FormatInt(id, 10)}, "choice": {"Yes"}})
+	want := `tool {"arguments":` + bare + `,"duration_ms":0,"name":"ask","result":"` + refused + `"}`
+	if code != http.StatusOK || !slices.Contains(events, want) {
+		t.Fatalf("a press's turn asking bare in the inbox = %d %v, want %s", code, events, want)
+	}
+	if slices.ContainsFunc(rowsIn(inbox), func(m factoryd.ChatMessage) bool { return m.Content == "Which store keeps the snapshots?" }) {
+		t.Fatalf("a refused ask stored a row: %+v", rowsIn(inbox))
+	}
+
+	wake(inbox, `{"ask":"Which store keeps the snapshots?","choices":["Postgres","SQLite"]}`)
+	rows := rowsIn(inbox)
 	ask := rows[len(rows)-1]
 	if ask.Kind != factoryd.MessageAsk || ask.Content != "Which store keeps the snapshots?" || !slices.Equal(ask.Choices, []string{"Postgres", "SQLite"}) ||
-		len(ask.ToolCalls) != 1 || ask.ToolCalls[0].Result != "Asked the human; this turn ends. A press or their next message answers it." {
+		len(ask.ToolCalls) != 1 || ask.ToolCalls[0].Result != "Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message." {
 		t.Fatalf("the wake's ask row = %+v", ask)
 	}
 }

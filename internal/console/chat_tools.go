@@ -1930,7 +1930,7 @@ func init() {
 			"args":   map[string]any{"type": "object", "description": "the bound tool's arguments as it reads them"},
 			"choice": str("the choice whose press runs the bound tool call")},
 		required: []string{"ask", "choices"},
-		about:    "Ask the thread's human a question their press or message answers, one choice bound to a tool call.",
+		about:    "Ask the thread's human a question their press answers, one choice bound to a tool call.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.askMember(in)
 			return s, nil, err
@@ -2075,7 +2075,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
-  ask questions this conversation's human, answered by a press or their next message, and ends the turn.
+  ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
   escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
   fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the human's raise, and a project without a pool takes it too.

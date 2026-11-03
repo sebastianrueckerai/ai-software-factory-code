@@ -102,7 +102,11 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // binding expired leaves the question an ordinary ask, every press of
 // it settling, as every press of an unbound ask or a poke does.
 func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
-	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
+	var p factoryd.ChatProposal
+	err := factoryd.ErrNoProposal
+	if m.Proposal != "" {
+		p, err = t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
+	}
 	gone := errors.Is(err, factoryd.ErrNoProposal)
 	var landed *poolPress
 	switch {
@@ -240,20 +244,28 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	return fmt.Sprintf("Answered #%d with “%s”; the card goes on.", t.IssueNumber, choice), nil
 }
 
-// wakeAskRefusal answers a wake's ask without choices: the wake writes in
-// the inbox, where no human types an answer.
-const wakeAskRefusal = "The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+// inboxAskRefusal answers an ask without choices in the inbox, where no
+// human types an answer.
+const inboxAskRefusal = "The inbox takes buttons only: give choices, or record what you found with attach_analysis."
 
 // askMember is the ask tool: the question kept in this thread as an ask
 // row, its choices offered as presses. The row rides the answer's own
-// row (run merges it in), and the turn ends on it: the member's press or
-// their next message is the answer the next turn reads. A question may
-// bind one choice to a tool call (tool, args, choice): that choice's
-// press runs the call in code as the member's own session, under the
-// checks the propose path runs in call, until the binding expires.
+// row (run merges it in), and the turn ends on it: the member's press, or
+// outside the inbox their next message, is the answer the next turn
+// reads. A question may bind one choice to a tool call (tool, args,
+// choice): that choice's press runs the call in code as the member's own
+// session, under the checks the propose path runs in call, until the
+// binding expires.
 func (t *turn) askMember(in toolInput) (string, error) {
-	if t.a.wake && len(in.Choices) == 0 {
-		return "", refuse(http.StatusBadRequest, wakeAskRefusal)
+	if len(in.Choices) == 0 {
+		th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.owner, t.conv)
+		if err != nil {
+			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
+		}
+		if th.Inbox {
+			return "", refuse(http.StatusBadRequest, inboxAskRefusal)
+		}
 	}
 	question := strings.TrimSpace(in.Ask)
 	choices := slices.Clone(in.Choices)
@@ -273,7 +285,7 @@ func (t *turn) askMember(in toolInput) (string, error) {
 	}
 	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices, Proposal: token}
 	if token == "" {
-		return "Asked the human; this turn ends. A press or their next message answers it.", nil
+		return "Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message.", nil
 	}
 	return fmt.Sprintf("Asked the human; this turn ends. Pressing “%s” runs %s; another press answers it.", in.Choice, strings.TrimSuffix(desc, ".")), nil
 }
