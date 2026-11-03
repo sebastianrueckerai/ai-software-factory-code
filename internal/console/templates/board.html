@@ -230,7 +230,7 @@
 {{if eq .Kind "criteria_rerun"}}<p class="meta">The plan's cards are done. No review judged these criteria, and no button here runs one: waive a criterion with your reason, or confirm the delivered cards. Every criterion met or waived ends the request on the next sweep.</p>
 {{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
-{{end}}{{range .Criteria}}<fieldset class="question"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}</legend>
+{{end}}{{range .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}</legend>
 <p class="meta">{{if .Test}}{{.Test}}{{else}}{{.Claim}}{{end}}</p>
 {{with .Evidence}}<p class="reason">{{.}}</p>
 {{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/waive" hx-post="/approvals/{{$.ID}}/waive">

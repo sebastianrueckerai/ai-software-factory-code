@@ -55,10 +55,10 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 	for _, want := range []string{
 		"Criteria gap",
 		"The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
-		`<legend>c1 (test): met</legend>`,
+		`<fieldset class="question settled"><legend>c1 (test): met</legend>`,
 		"go test ./...",
 		`<p class="reason">go test ./... exits 0, 214 tests</p>`,
-		`<legend>c2 (human): open</legend>`,
+		`<fieldset class="question"><legend>c2 (human): open</legend>`,
 		"the pages read well",
 		`<legend>c3 (invariant): open</legend>`,
 		`<input type="hidden" name="criterion" value="c2">`,
@@ -107,7 +107,7 @@ func TestCriteriaGapWaiveAndGrant(t *testing.T) {
 	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/?project=ai-software-factory-code" {
 		t.Fatalf("waive = %d %q", rec.Code, rec.Header().Get("Location"))
 	}
-	if card := board(); !strings.Contains(card, `<legend>c3 (invariant): waived</legend>`) ||
+	if card := board(); !strings.Contains(card, `<fieldset class="question settled"><legend>c3 (invariant): waived</legend>`) ||
 		!strings.Contains(card, "the timeout is the provider&#39;s SLA") || !strings.Contains(card, `<legend>c2 (human): open</legend>`) {
 		t.Errorf("after the waiver the card misses the standing verdict:\n%s", card)
 	}

@@ -25,10 +25,16 @@ function reads(d) {
   var f = (d.requestConfig || d).elt;
   return f.id === "find" || f.classList.contains("menu-pop");
 }
+// pressAnswer: the request of d is the board a press's answer asks for
+// (the board-refresh trigger), the press's answer itself.
+function pressAnswer(d) {
+  var t = d.requestConfig && d.requestConfig.triggeringEvent;
+  return !!t && t.type === "board-refresh";
+}
 // The board's own requests, the swaps the stream asks for, skip a busy
-// board.
+// board. A press's board does not: hx-preserve keeps the typed fields.
 document.addEventListener("htmx:beforeRequest", function (e) {
-  if (e.detail.elt.id === "board" && busy(e.detail.elt)) e.preventDefault();
+  if (e.detail.elt.id === "board" && !pressAnswer(e.detail) && busy(e.detail.elt)) e.preventDefault();
 });
 // A board that loaded more finished cards keeps them: what answers the
 // board, a swap or an action, reads as many of each column's as it shows.
@@ -634,12 +640,13 @@ document.addEventListener("click", function (e) {
   }
   // the answer is in: a refusal goes back, a board that answers it (a
   // stale plan) standing as the truth; an accepted press without a move
-  // is done, one with a move waits for the board that shows it
+  // is done once the board its answer asks for lands, or at once when it
+  // asks for none; one with a move waits for the board that shows it
   function answered(a, xhr, swaps) {
     a.xhr = null;
     if (xhr.status >= 200 && xhr.status < 400) {
       a.ok = true;
-      if (!a.from.length) landed(a);
+      if (!a.from.length && (xhr.getResponseHeader("HX-Trigger") || "").indexOf("board-refresh") < 0) landed(a);
     } else if (swaps) free(a);
     else back(a);
   }

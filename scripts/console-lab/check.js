@@ -373,6 +373,69 @@ async function cardPress(page, fails) {
   if (gone.card || gone.busy) fails.push("card press: a board that shows the card out of Needs you leaves " + JSON.stringify(gone) + ", want the card let go");
 }
 
+// criteriaWaive reads the criteria scene's gap card: its reviewer's
+// evidence, one unbroken file::test name in it, wraps inside the card at
+// 1440 and 390. With a reason typed under another criterion too, a Waive
+// dims the card and takes its buttons until the board that answers it
+// lands, that board's read held 1.2 s; the board shows the criterion
+// waived and settled, without its form, the other reason still typed,
+// and the card let go.
+async function criteriaWaive(browser, fails) {
+  await seed("criteria");
+  const card = "#board article.approval";
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    const p = await open(browser, viewport);
+    await p.page.goto(base + "/", { waitUntil: "load" });
+    await p.page.waitForTimeout(600);
+    const out = await p.page.evaluate((s) => {
+      const k = document.querySelector(s);
+      if (!k) return null;
+      const edge = k.getBoundingClientRect().right;
+      return Array.from(k.querySelectorAll("fieldset.question, fieldset.question *")).filter((e) => e.getBoundingClientRect().right > edge + 1)
+        .map((e) => e.tagName.toLowerCase() + (e.className ? "." + e.className : "")).slice(0, 4);
+    }, card);
+    if (!out) fails.push("criteria waive: no criteria gap card on the board at " + viewport.width);
+    else if (out.length) fails.push("criteria waive: at " + viewport.width + " the criteria reach past the card's edge: " + out.join(", "));
+    await p.ctx.close();
+  }
+  const p = await open(browser, { width: 1440, height: 900 });
+  await p.page.goto(base + "/", { waitUntil: "load" });
+  await p.page.waitForTimeout(600);
+  const field = (c) => card + ' input[name="reason"][id$="-' + c + '"]';
+  await p.page.locator(field("ledger_retry_integrity")).fill("Producer retries are proved per producer.");
+  await p.page.locator(field("window_and_existing_figures")).fill("The markers, the denial and the range are proved.");
+  let reads = 0;
+  await p.page.route((u) => u.pathname === "/board", async (r) => {
+    reads++;
+    await new Promise((ok) => setTimeout(ok, 1200));
+    await r.continue();
+  });
+  await p.page.locator(card + ' button[aria-label^="Waive criterion window_and_existing_figures "]').click();
+  await p.page.waitForTimeout(500);
+  const held = () => p.page.evaluate((s) => {
+    const k = document.querySelector(s);
+    return k && { busy: k.getAttribute("aria-busy"), live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length };
+  }, card);
+  const mid = await held();
+  if (!mid || mid.busy !== "true" || mid.live) fails.push("criteria waive: before its board lands the card stands " + JSON.stringify(mid) + ", want it dimmed with no live button");
+  await p.page.waitForTimeout(1600);
+  const after = await p.page.evaluate((s) => {
+    const k = document.querySelector(s);
+    if (!k) return null;
+    const q = (c) => Array.from(k.querySelectorAll("fieldset.question")).find((f) => f.querySelector("legend").textContent.startsWith(c + " "));
+    const w = q("window_and_existing_figures"), l = q("ledger_retry_integrity");
+    return { legend: w && w.querySelector("legend").textContent, settled: !!w && w.classList.contains("settled"), form: !!(w && w.querySelector("form")),
+      kept: l ? l.querySelector('input[name="reason"]').value : null, busy: k.getAttribute("aria-busy") };
+  }, card);
+  if (!reads) fails.push("criteria waive: the press read no board");
+  if (!after || after.legend !== "window_and_existing_figures (test): waived" || !after.settled || after.form || after.busy ||
+    after.kept !== "Producer retries are proved per producer.") {
+    fails.push("criteria waive: once its board landed the card reads " + JSON.stringify(after) +
+      ", want the criterion waived and settled without its form, the other reason kept and the card let go");
+  }
+  await p.ctx.close();
+}
+
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box, the status panel) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
@@ -1936,6 +1999,7 @@ async function text(page) {
   const cp = await open(browser, { width: 1440, height: 900 });
   await cardPress(cp.page, fails);
   await cp.ctx.close();
+  await criteriaWaive(browser, fails);
   await browser.close();
   if (fails.length) { console.log(fails.join("\n")); process.exit(1); }
   console.log("ok: every control present, the mechanics work");
