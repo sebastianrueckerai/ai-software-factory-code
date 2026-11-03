@@ -8,6 +8,7 @@ import (
 	"fmt"
 	"io"
 	"maps"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"net/http/httputil"
@@ -137,6 +138,18 @@ type AcceptanceRig struct {
 	reloadFail error
 	recordFail error
 	pool       *policy.ProjectBudget
+	// The pool-funding seams: the login the fake Forgejo answers
+	// (LoginAs), the repositories' writers — anna is a member of the code
+	// project too —, the session floors whose budget refusals a fund
+	// answers (SetSessionFloor), the autonomy the loaded policy holds
+	// (SetLoadedAutonomy), the aggregate read's failure (FailPoolReads)
+	// and the model-spend total the pool never reads (SetProjectSpend).
+	user         string
+	writers      map[string][]string
+	sessionFloor map[string]float64
+	autonomy     string
+	fundedErr    error
+	spend        *factoryd.ProjectSpend
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -164,7 +177,9 @@ type accProposal struct {
 func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*AcceptanceRig, *AccDocs, string) {
 	t.Helper()
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
-		timelines: acceptObjects{}, prNext: 100} // the counted pull numbers, 101 first
+		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
+		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
+		sessionFloor: map[string]float64{}}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -186,13 +201,21 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a, Pools: a,
 		Bus: a.bus,
 		Writers: func(context.Context) (string, map[string][]string, error) {
-			return "sf/code", map[string][]string{"sf/code": {"sebastian"}}, nil
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return "sf/code", maps.Clone(a.writers), nil
 		},
 		Writes: func(_ context.Context, repository, user string) (bool, error) {
-			return repository == "sf/code" && user == "sebastian", nil
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			return slices.Contains(a.writers[repository], user), nil
 		},
-		Operator:  &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
-		InfraRepo: factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
+		SessionFunded: func(_ context.Context, id, _ string) (string, error) {
+			return a.sessionFunded(id), nil
+		},
+		AttachAnalysis: a.AttachAnalysis,
+		Operator:       &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
+		InfraRepo:      factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		CheckChange: func(_ context.Context, changes map[string][]byte) ([]string, error) {
 			a.mu.Lock()
@@ -298,6 +321,17 @@ func (a *AcceptanceRig) Login(t *testing.T) (*http.Cookie, string) {
 		t.Fatalf("the board after the login = %d, a form token on it: %v", page.Code, m != nil)
 	}
 	return session, string(m[1])
+}
+
+// LoginAs logs the member named login in — the fake Forgejo answers the
+// OAuth flow with their name — and answers their session cookie and form
+// token. The rig's writers hold sebastian and anna.
+func (a *AcceptanceRig) LoginAs(t *testing.T, login string) (*http.Cookie, string) {
+	t.Helper()
+	a.mu.Lock()
+	a.user = login
+	a.mu.Unlock()
+	return a.Login(t)
 }
 
 // Handler is the console's HTTP handler, for tests that need a real server
@@ -614,7 +648,7 @@ func (a *AcceptanceRig) serveForgejo(w http.ResponseWriter, r *http.Request) {
 	a.fgCalls = append(a.fgCalls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
-		_ = json.NewEncoder(w).Encode(map[string]any{"login": "sebastian"}) // #nosec G104 -- test harness stub response
+		_ = json.NewEncoder(w).Encode(map[string]any{"login": a.user}) // #nosec G104 -- test harness stub response
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/reviews"):
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body) // #nosec G104 -- test harness stub request
@@ -818,8 +852,151 @@ func (a *AcceptanceRig) RaiseTaskBudget(_ context.Context, id string, eur float6
 	return 0, 0, factoryd.ErrNotFound
 }
 
-func (a *AcceptanceRig) FundCard(ctx context.Context, id string, eur float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
-	return a.RaiseTaskBudget(ctx, id, eur)
+// accNeedRefusal is the budget refusal a card at or under its floor owes
+// one of its sessions' opening calls, in the store's own opening so
+// factoryd.BudgetRefusal sees it.
+const accNeedRefusal = "the remaining budget cannot fund a call: 1.000 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 2.000 EUR. Raise the budget (Fund on the board) and answer, or close the card."
+
+// SetSessionFloor makes card id owe its session's opening calls while its
+// budget stands at or under eur: the why a fund answers, as the factory's
+// own SessionFunded does.
+func (a *AcceptanceRig) SetSessionFloor(id string, eur float64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.sessionFloor[id] = eur
+}
+
+// sessionFunded is the rig's SessionFunded: the floor's refusal while the
+// card's budget stands at or under it, "" once a raise carries the card
+// over and for a card without a floor.
+func (a *AcceptanceRig) sessionFunded(id string) string {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	floor, seeded := a.sessionFloor[id]
+	if !seeded {
+		return ""
+	}
+	for i := range a.tasks {
+		if a.tasks[i].ID == id {
+			if a.tasks[i].BudgetEUR <= floor {
+				return accNeedRefusal
+			}
+			return ""
+		}
+	}
+	return ""
+}
+
+// SetCardBudget holds card id's budget at eur.
+func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i := range a.tasks {
+		if a.tasks[i].ID == id {
+			a.tasks[i].BudgetEUR = eur
+		}
+	}
+}
+
+// FundCard mirrors PGStore.FundCard, the Actions fake this rig is: with
+// bounds the raise is the agent's own — its row stamped decider agent, the
+// repository's agent-funded sum read under the same lock and the raise
+// held against the month's pool and the card's cap, money whole cents —
+// and without them the member decided it and no bound applies. The
+// budget's change and the card_funded row commit as one — this section
+// under a.mu is the rig's transaction, the row appended inline because
+// Record would relock — so a refusal moves neither. No amount in EUR
+// above zero refuses; no task: ErrNotFound.
+func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+	a.mu.Lock()
+	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	switch {
+	case i < 0:
+		a.mu.Unlock()
+		return 0, 0, factoryd.ErrNotFound
+	case math.IsNaN(eur) || math.IsInf(eur, 0) || !(eur > 0):
+		a.mu.Unlock()
+		return 0, 0, fmt.Errorf("the raise of %s is no amount in EUR above zero", strconv.FormatFloat(eur, 'f', -1, 64))
+	}
+	detail := maps.Clone(e.Detail)
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	if bounds != nil {
+		detail["decider"] = "agent"
+		funded := a.agentFundedLocked(e.Repository, time.Now())
+		if factoryd.Cents(funded)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
+			short := &factoryd.PoolSpentError{Funded: funded}
+			a.mu.Unlock()
+			return 0, 0, short
+		}
+		if factoryd.Cents(a.tasks[i].BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
+			held := a.tasks[i].BudgetEUR
+			a.mu.Unlock()
+			return 0, 0, &factoryd.CardCapError{Budget: held}
+		}
+	}
+	from := a.tasks[i].BudgetEUR
+	a.tasks[i].BudgetEUR = from + eur
+	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = from, from+eur, eur
+	e.Detail, e.ID = detail, int64(len(a.events)+1)
+	if e.At.IsZero() {
+		e.At = time.Now()
+	}
+	a.events = append(a.events, e)
+	a.mu.Unlock()
+	a.bus.Publish(e)
+	return from, from + eur, nil
+}
+
+// AttachAnalysis mirrors PGStore.AttachAnalysis for the rig's asks: the
+// findings recorded as one analysis_attached row on the spine — the card's
+// issue, the found text and the agent as its source — and the card's open
+// ask, its newest escalation row, rewritten to carry them after its
+// question so the member reads them with the ask. A card that asks
+// nothing in the chat holds no row to enrich: ErrNoAsk.
+func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recommendation string, e factoryd.Event) error {
+	a.mu.Lock()
+	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.Task.ID == taskID })
+	if i < 0 {
+		a.mu.Unlock()
+		return factoryd.ErrNoAsk
+	}
+	ask := -1
+	for j := range a.msgs {
+		if m := &a.msgs[j]; m.Repository == e.Repository && m.TaskID == taskID && m.Kind == factoryd.MessageEscalation {
+			ask = j
+		}
+	}
+	if ask < 0 {
+		a.mu.Unlock()
+		return factoryd.ErrNoAsk
+	}
+	analysis := "\nAnalysis: " + found
+	if recommendation != "" {
+		analysis += "\nRecommendation: " + recommendation
+	}
+	if k := strings.Index(a.msgs[ask].Content, "\nAnalysis: "); k >= 0 { // a new attach replaces the earlier one's words
+		a.msgs[ask].Content = a.msgs[ask].Content[:k]
+	}
+	a.msgs[ask].Content += analysis
+	e.TaskID, e.IssueNumber, e.Kind = taskID, a.tasks[i].IssueNumber, factoryd.EventAnalysisAttached
+	e.Detail = maps.Clone(e.Detail)
+	if e.Detail == nil {
+		e.Detail = map[string]any{}
+	}
+	e.Detail["found"], e.Detail["source"] = found, "agent"
+	if recommendation != "" {
+		e.Detail["recommendation"] = recommendation
+	}
+	e.ID = int64(len(a.events) + 1)
+	if e.At.IsZero() {
+		e.At = time.Now()
+	}
+	a.events = append(a.events, e)
+	a.mu.Unlock()
+	a.bus.Publish(e)
+	return nil
 }
 
 func (a *AcceptanceRig) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
@@ -904,10 +1081,20 @@ func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, erro
 
 // AgentFundedEUR mirrors PGStore.AgentFundedEUR: the card_funded rows of
 // repository the agent decided via the chat in the UTC calendar month of
-// month, summed.
+// month, summed. FailPoolReads makes it answer its failure instead, the
+// unreadable aggregate no readout may show as a zero use.
 func (a *AcceptanceRig) AgentFundedEUR(_ context.Context, repository string, month time.Time) (float64, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.fundedErr != nil {
+		return 0, a.fundedErr
+	}
+	return a.agentFundedLocked(repository, month), nil
+}
+
+// agentFundedLocked is the agent-funded sum with a.mu held, the figure
+// FundCard's own pool check reads under the same lock.
+func (a *AcceptanceRig) agentFundedLocked(repository string, month time.Time) float64 {
 	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
 	until := from.AddDate(0, 1, 0)
 	var eur float64
@@ -920,7 +1107,15 @@ func (a *AcceptanceRig) AgentFundedEUR(_ context.Context, repository string, mon
 			eur += amount
 		}
 	}
-	return eur, nil
+	return eur
+}
+
+// FailPoolReads makes AgentFundedEUR answer err — nil clears it — the
+// aggregate read's failure a readout must show, never as a zero use.
+func (a *AcceptanceRig) FailPoolReads(err error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.fundedErr = err
 }
 
 func (a *AcceptanceRig) ProjectEvents(_ context.Context, repository string, after int64, limit int) ([]factoryd.Event, error) {
@@ -1137,7 +1332,20 @@ func (a *AcceptanceRig) ProposalStates(_ context.Context, _, _ string, tokens []
 	return out, nil
 }
 
+// SetProjectSpend holds the model-spend total the costs reads answer —
+// the ledger figure the pool's readouts never take their use from.
+func (a *AcceptanceRig) SetProjectSpend(s factoryd.ProjectSpend) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.spend = &s
+}
+
 func (a *AcceptanceRig) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.spend != nil {
+		return *a.spend, nil
+	}
 	return factoryd.ProjectSpend{}, nil
 }
 
@@ -1246,7 +1454,7 @@ func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error
 
 func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	a.mu.Lock()
-	chat, pool := a.chat, a.pool
+	chat, pool, autonomy := a.chat, a.pool, a.autonomy
 	a.mu.Unlock()
 	stages := []policy.Stage{
 		{Name: "screening", OnFindings: "human", When: "outsider"},
@@ -1258,20 +1466,21 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
 	}
 	projects := map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}}
+	// the loaded policy's own hold of the code project: its autonomy (an
+	// empty one is manual) and, when a reload activated it, its pool
+	code := projects[accProjectName]
+	code.Autonomy = autonomy
 	if pool != nil {
-		// the loaded policy's pool, installed by a reload's activation
-		// alone: the merged file's own pool is the fake's, separate.
-		code := projects[accProjectName]
 		code.Budget = pool
-		projects[accProjectName] = code
 	}
+	projects[accProjectName] = code
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Now(), ActivatedAt: time.Now(),
 			Tree: policy.Tree{
 				Document: policy.Document{Version: 1, Chat: chat,
 					Budget:          policy.Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50},
 					Classes:         map[string]policy.Class{"coder": {Models: []string{"factory/small"}}},
 					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
-					Approvers:       []string{"sebastian"},
+					Approvers:       []string{"sebastian", "anna"},
 					EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
 				Projects:  projects,
 				Processes: processes}},
