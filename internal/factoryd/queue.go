@@ -380,7 +380,7 @@ func (t *taskRun) turn(head string) (sync SyncResult, v verdict, stop bool) {
 			return sync, verdict{final: final, reason: why}, true
 		}
 		if changes := t.drainChanges(); len(changes) > 0 {
-			return sync, verdict{findings: changes, reason: "changes requested", requested: true}, true
+			return sync, verdict{findings: changes, reason: "changes requested", requested: true, by: t.changesBy}, true
 		}
 		if t.replans() {
 			if sw, step, ok := t.takeToPlan(); ok {

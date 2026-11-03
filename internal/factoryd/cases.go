@@ -369,33 +369,39 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 }
 
 // drawCase writes d for card taskID inside tx once its rung's bounds fit
-// it (drawFits), the raise first, and answers the rows it wrote.
+// it (drawFits), the raise first, and answers the rows it wrote: a row its
+// identity dropped (ID 0) is no row to publish.
 func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) ([]Event, error) {
 	if err := s.drawFits(ctx, tx, taskID, d); err != nil {
 		return nil, err
 	}
 	ceiling, extend, fund := d.rows()
 	var rows []Event
+	wrote := func(stored Event) {
+		if stored.ID != 0 {
+			rows = append(rows, stored)
+		}
+	}
 	if d.Raise != 0 {
 		stored, err := s.raiseCeiling(ctx, tx, taskID, d.Raise, d.PolicyCeiling, ceiling)
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, stored)
+		wrote(stored)
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
 		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend)
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, stored)
+		wrote(stored)
 	}
 	if d.FundEUR > 0 {
 		_, _, stored, err := s.fundCard(ctx, tx, taskID, d.FundEUR, d.PolicyCeiling, fund)
 		if err != nil {
 			return nil, err
 		}
-		rows = append(rows, stored)
+		wrote(stored)
 	}
 	return rows, nil
 }

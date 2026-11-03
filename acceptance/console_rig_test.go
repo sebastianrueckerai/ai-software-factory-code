@@ -318,12 +318,17 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
+	// the newest of OpenCasesOf's an answer on the card ends, as the store
+	// reads it
 	cfg.NewestAskCase = func(ctx context.Context, taskID string) (factoryd.Case, error) {
 		open, err := cfg.OpenCasesOf(ctx, taskID)
-		if len(open) == 0 {
-			return factoryd.Case{}, err
+		var newest factoryd.Case
+		for _, k := range open {
+			if factoryd.AnsweredOnCard(k.Kind) && k.ID > newest.ID {
+				newest = k
+			}
 		}
-		return open[0], err
+		return newest, err
 	}
 	cfg.Act = func(context.Context, factoryd.ActInput) (factoryd.ActResult, error) {
 		return factoryd.ActResult{}, factoryd.ErrActRefused("this rig answers no case")

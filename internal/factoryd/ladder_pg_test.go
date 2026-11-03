@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -213,8 +214,8 @@ func TestOpenTripRepeatsAppendAndAskNothingNew(t *testing.T) {
 }
 
 // A restart's trip waits on the card's live ask with a step and no new
-// face. With no live ask, the question is asked again and its words open
-// the case the run waits on.
+// face. With no live ask, the stop the card asked last, the agent's ask,
+// opens its own case again and the run waits on it.
 func TestOpenTripHealedFindsTheLiveAsk(t *testing.T) {
 	ctx := context.Background()
 	g := newTripRig(t, "success")
@@ -233,8 +234,8 @@ func TestOpenTripHealedFindsTheLiveAsk(t *testing.T) {
 	}
 	again := g.trip(t, healedReason)
 	c := caseByID(t, g.s, again.CaseID)
-	if again.Comment != 502 || c.Kind != CaseOther || c.Status != CaseAtHuman || c.Problem != "Which file?" || c.CommentID != 502 {
-		t.Fatalf("outcome %+v, case %+v; want the question asked again on comment 502 and its case", again, c)
+	if again.Comment != 502 || c.Kind != CaseAgentEscalate || c.Status != CaseAtHuman || c.Problem != "Which file?" || c.CommentID != 502 {
+		t.Fatalf("outcome %+v, case %+v; want the question asked again on comment 502 as the agent's ask", again, c)
 	}
 }
 
@@ -579,5 +580,48 @@ func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
 				t.Fatalf("faces = %q, want one ending %q", g.forge.comments, tc.want)
 			}
 		})
+	}
+}
+
+// A run under the gate that restarts while its card waits on a human, with
+// no live case left, asks its stop again as the stop's own case: the
+// newest escalation, the session cap's, opens the cap's case with a step of
+// rung 0 that says so, and the face names Extend, not a reply. The
+// human's extend there raises the card's row, which that run reads.
+func TestOpenTripRestartWithNoLiveCaseAsksItsStopAgain(t *testing.T) {
+	g := newTripRig(t, "success")
+	if _, err := g.s.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: tripCap,
+		CommentID: 400, Question: &HumanQuestion{Ask: "Grant one more session?", Why: "the cap", Info: plainInfo}}); err != nil {
+		t.Fatal(err)
+	}
+	out := g.trip(t, healedReason)
+	c := caseByID(t, g.s, out.CaseID)
+	if c.Kind != CaseSessionCap || c.Status != CaseAtHuman || out.Comment != 501 || c.CommentID != 501 {
+		t.Fatalf("outcome %+v, case %+v; want the session cap's case at the human on comment 501", out, c)
+	}
+	if !slices.ContainsFunc(caseStepsOf(t, g.s, c.ID), func(s CaseStep) bool { return s.Rung == 0 && s.Found == "asked again after a restart" }) {
+		t.Fatalf("steps = %+v, want the restart's step of rung 0", caseStepsOf(t, g.s, c.ID))
+	}
+	if extend := "Use Extend on the board, or ask the project chat to extend the card"; len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], extend) {
+		t.Fatalf("faces = %q, want one naming Extend", g.forge.comments)
+	}
+	if raised, _ := g.extendOne(t, c.ID); raised != 1 {
+		t.Fatalf("raised sessions = %d, want 1: the run under the gate reads the row", raised)
+	}
+}
+
+// A restart that finds the card's live ask with no face yet, as a trip
+// whose comment failed left it open, gives that case its face rather than
+// waiting on a case nobody was asked.
+func TestOpenTripRestartFacesALiveAskWithNone(t *testing.T) {
+	g := newTripRig(t, "success")
+	g.forge.failComment = true
+	if _, err := g.r.OpenTrip(context.Background(), TripInput{TaskID: "t1", Reason: tripCap}, tripAttempt{N: 1}); err == nil {
+		t.Fatal("OpenTrip = nil; want the comment's failure")
+	}
+	open := onlyLiveCase(t, g.s, "t1")
+	out := g.trip(t, healedReason)
+	if c := caseByID(t, g.s, open.ID); out.CaseID != open.ID || out.Comment != 501 || c.Status != CaseAtHuman || len(g.forge.comments) != 1 {
+		t.Fatalf("outcome %+v, case %+v, faces %d; want case %d at the human on comment 501", out, c, len(g.forge.comments), open.ID)
 	}
 }

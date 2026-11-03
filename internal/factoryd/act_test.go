@@ -310,7 +310,7 @@ func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
 	ctx := context.Background()
 	before := g.store.tasks["t1"].Usage
 	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
-	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}); err != nil {
+	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "3")); err != nil {
 		t.Fatal(err)
 	}
 	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())

@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -1658,7 +1659,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			before := u
 			capAnswer()
 			if t.cases >= versionCases && v.by != "" {
-				t.recordGrant(v.by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime})
+				t.recordGrant(v.by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}, u.Attempts)
 			}
 			return true
 		}
@@ -3024,11 +3025,13 @@ func (t *taskRun) grantPoster(u *TaskUsage) {
 	t.grant(u)
 }
 
-// recordGrant records grant d the run made on by's answer as by's draw
-// against the pool (versionCases). The grant stands when the row fails,
-// as the usage's does.
-func (t *taskRun) recordGrant(by string, d policy.Draw) {
-	if err := workflow.ExecuteActivity(t.short, ActivityRecordGrant, t.taskID, by, d).Get(t.ctx, nil); err != nil {
+// recordGrant records grant d the run made on by's answer after attempts
+// sessions as by's draw against the pool (versionCases), once: the run
+// and the attempts are its identity, which a retry of the activity meets.
+// The grant stands when the row fails, as the usage's does.
+func (t *taskRun) recordGrant(by string, d policy.Draw, attempts int) {
+	key := identityKey(EventCardExtended, workflow.GetInfo(t.ctx).WorkflowExecution.RunID, strconv.Itoa(attempts))
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordGrant, t.taskID, by, d, key).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record the grant's draw", "task", t.taskID, "error", err)
 	}
 }

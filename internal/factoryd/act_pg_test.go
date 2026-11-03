@@ -973,3 +973,54 @@ func TestActHoldsTheCaseFromItsReadToItsEnd(t *testing.T) {
 		t.Fatalf("closes of #12 %d, posts %q; want one close and alice's Post alone", closes, posts)
 	}
 }
+
+// RecordGrant retried after its commit (a timeout, a crash) writes nothing
+// twice: the second run of the same identity drops its row on the events'
+// identity, adds nothing to the card's row, and publishes nothing, so the
+// month's pool reads the one session.
+func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	bus := NewEventBus()
+	g.s.SetBus(bus)
+	ch := make(chan Event, 4)
+	defer bus.Subscribe("demo-app/demo-app", ch)()
+	key := identityKey(EventCardExtended, "run-1", "3")
+	for range 2 {
+		if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}, key); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows := g.rows(t, EventCardExtended); len(rows) != 1 || rows[0].Actor != "sebastian" || rows[0].Detail["sessions"] != 1.0 {
+		t.Fatalf("card_extended rows = %+v, want sebastian's one", rows)
+	}
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool drew %+v, %v; want 1 session", drawn, err)
+	}
+	if card := g.card(t); card.Usage.RaisedSessions != 0 {
+		t.Fatalf("raised sessions = %d, want 0: the run granted it", card.Usage.RaisedSessions)
+	}
+	if got := len(ch); got != 1 {
+		t.Fatalf("published %d rows, want the one", got)
+	}
+}
+
+// Rung 0 acts on a trip's fresh case before the trip writes its step: the
+// case's trip fact marks it a trip's under the gate all the same, so rung
+// 0's extend of one session there raises the card's row, which the run
+// reads.
+func TestRungZerosExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentTimeCap, StateKey: "h2",
+		Problem: "Card #12 used its agent time", Facts: map[string]any{"trip": "run-1/7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: FactoryDecider, Rung: 0, Res: oneSession}); err != nil {
+		t.Fatal(err)
+	}
+	if card := g.card(t); card.Usage.RaisedSessions != 1 {
+		t.Fatalf("raised sessions = %d, want 1", card.Usage.RaisedSessions)
+	}
+}

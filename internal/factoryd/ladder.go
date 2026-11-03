@@ -148,7 +148,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 		return TripOutcome{}, err
 	}
 	if in.Reason == healedReason {
-		return r.healedTrip(ctx, t, in)
+		return r.healedTrip(ctx, t, in, at.ID)
 	}
 	f, err := r.tripFacts(ctx, t, in.Head)
 	if err != nil {
@@ -231,26 +231,69 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 	return nil, "no resolver fits", nil
 }
 
-// healedTrip is the trip of a run that restarted while its card waited on
-// a human: the card's newest live ask (NewestAskCase) waits on with
-// a step and no new face. With none, the question is asked again as
-// Escalate asked it, and its words open its case.
-func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput) (TripOutcome, error) {
+// healedTrip is trip's of a run that restarted while its card waited on
+// a human: the card's newest live ask (NewestAskCase) at the human waits
+// on with a step and no new face. One with no face yet gets it. With none,
+// the stop the card asked last (restartedStop) opens its own case again,
+// as its trip opened it. Either way the case takes the restart's step of
+// rung 0, a trip under the gate's mark (runGrants), and the face names
+// what moves the card on by the case's kind.
+func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip string) (TripOutcome, error) {
+	const restarted = "asked again after a restart"
 	c, err := r.store.NewestAskCase(ctx, t.ID)
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if c.ID != 0 {
-		return r.waitsAtHuman(ctx, t, c, "asked again after a restart")
+	if c.Status == CaseAtHuman {
+		return r.waitsAtHuman(ctx, t, c, restarted)
 	}
-	comment, err := r.askHuman(ctx, t, Case{}, in.Reason, replyNext(in.Reason), in.Choices)
+	stop, err := r.restartedStop(ctx, t)
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if c, err = r.store.NewestAskCase(ctx, t.ID); err != nil {
+	if c.ID == 0 {
+		f, err := r.tripFacts(ctx, t, in.Head)
+		if err != nil {
+			return TripOutcome{}, err
+		}
+		if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: t.ID, Reason: stop, Choices: in.Choices, Head: in.Head}); err != nil {
+			return TripOutcome{}, err
+		}
+		if trip != "" {
+			c.Facts["trip"] = trip
+		}
+		if c, _, err = r.store.OpenCase(ctx, c); err != nil {
+			return TripOutcome{}, err
+		}
+	}
+	if err := r.tripStep(ctx, c.ID, restarted); err != nil {
+		return TripOutcome{}, err
+	}
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c.Kind, stop), in.Choices)
+	if err != nil {
+		return TripOutcome{}, err
+	}
+	if err := r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman); err != nil {
 		return TripOutcome{}, err
 	}
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
+}
+
+// restartedStop is the reason of the stop card t asked last, which a
+// restart asks again: its newest escalation that is no restart's own,
+// healedReason when it has none.
+func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
+	events, err := r.store.IntakeEvents(ctx, t.ID)
+	if err != nil {
+		return "", err
+	}
+	stop := healedReason
+	for _, e := range events {
+		if e.Kind == IntakeEscalation && e.Body != healedReason && strings.TrimSpace(e.Body) != "" {
+			stop = e.Body
+		}
+	}
+	return stop, nil
 }
 
 // retriedTrip is what the attempts before trip's left on a case of kind,

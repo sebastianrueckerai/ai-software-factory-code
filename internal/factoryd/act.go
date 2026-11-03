@@ -272,11 +272,13 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, did 
 
 // runGrants reports whether the run waiting on case c grants the sessions
 // and agent time res draws itself: a run from before the cases gate, which
-// wakes on the human's comment and grants its own. Every trip under the
-// gate writes a step of rung 0 on the case it waits on, the old run's case
-// a restarted run takes among them, and no older face does.
+// wakes on the human's comment and grants its own. A trip under the gate
+// marks the case it opens with its trip fact, which rung 0 acts on before
+// any step, and writes a step of rung 0 on every case it waits on, the
+// old run's case a restarted run takes among them. No older face does
+// either.
 func (r *Runner) runGrants(ctx context.Context, c Case, res Resolution) (bool, error) {
-	if d, _ := res.draw(); c.ID == 0 || d.Sessions == 0 && d.AgentTime == 0 {
+	if d, _ := res.draw(); c.ID == 0 || c.Facts["trip"] != nil || d.Sessions == 0 && d.AgentTime == 0 {
 		return false, nil
 	}
 	steps, err := r.store.CaseSteps(ctx, c.ID)
@@ -516,8 +518,9 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 // RecordGrant records grant d, which card taskID's run made itself on
 // by's answer (a writer's change request at the cap), as by's draw
 // against the pool: a row of rung 3, never refused, that raises nothing
-// on the card's row (RunGrants).
-func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Draw) error {
+// on the card's row (RunGrants). key is the grant's identity: a retry
+// after the commit drops its row on it and writes nothing.
+func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return err
@@ -527,7 +530,7 @@ func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Dr
 	esc := v.EscalationOf(t.Repository)
 	return r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
 		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
-			Detail: map[string]any{"pool": true, "rung": 3}}})
+			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}})
 }
 
 // beside adds the keys of extra that detail does not hold.
