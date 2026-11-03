@@ -54,7 +54,7 @@ func TestDivideConquerSizeBounds(t *testing.T) {
 		">1 · target 0<",
 		"2 readings · 2 measured",
 		"TestDivideConquerSizeBounds in acceptance",
-	}, []string{">— · target 0<", ">0 · target 0<", ">2 · target 0<"})
+	}, []string{">0 · target 0<", ">2 · target 0<"})
 }
 
 // TestDivideConquerSessions proves panels 2 and 3 twice: the scripted

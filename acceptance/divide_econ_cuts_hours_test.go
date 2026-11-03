@@ -9,26 +9,27 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// accEconCard inserts a card already merged: finished when created, so
-// its spend settles, its merge and reading recorded by the caller.
-func accEconCard(t *testing.T, s *factoryd.PGStore, id, size string, lines int, eur float64, at time.Time) {
+// accEconCard inserts a card already merged on its own issue: finished
+// when created, so its spend settles, its merge and reading recorded by
+// the caller.
+func accEconCard(t *testing.T, s *factoryd.PGStore, id, size string, lines int, eur float64, issue int64, at time.Time) {
 	t.Helper()
 	task := factoryd.Task{ID: id, Status: "merged", Objective: "the divide panels' fixture",
 		Repository: "sf/code", Kind: "agent", Source: "api", Track: "direct", BudgetEUR: 5,
-		IssueNumber: 41, SHA: "h" + id, Size: size, CreatedAt: at}
+		IssueNumber: issue, SHA: "h" + id, Size: size, CreatedAt: at}
 	if err := s.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.SettleSpendFinal(context.Background(), id, eur); err != nil {
 		t.Fatal(err)
 	}
-	accReading(t, s, id, "sf/code", "h"+id, size, 500, lines, 0, 41, at)
+	accReading(t, s, id, "sf/code", "h"+id, size, 500, lines, 0, issue, at)
 	accMerged(t, s, id, "sf/code", at.Add(time.Hour))
 }
 
 func TestDivideConquerEconomics(t *testing.T) {
 	t.Run("fake", func(t *testing.T) {
-		rig, _ := NewMetricsRig(t, &accFigures{report: accPanelsReport()})
+		rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 		body := rig.page()
 		holds(t, body, []string{
 			"€0.0200",
@@ -48,11 +49,11 @@ func TestDivideConquerEconomics(t *testing.T) {
 		// 200 lines 5 EUR, e4 medium 400 lines 7 EUR: 20 EUR over 1000
 		// merged changed lines answers €0.0200, the small fit 2.00 and
 		// the medium 3.00.
-		accEconCard(t, s, "t-econ-1", "small", 100, 3, at)
-		accEconCard(t, s, "t-econ-2", "small", 300, 5, at)
-		accEconCard(t, s, "t-econ-3", "medium", 200, 5, at)
-		accEconCard(t, s, "t-econ-4", "medium", 400, 7, at)
-		rig, _ := NewMetricsRig(t, s)
+		accEconCard(t, s, "t-econ-1", "small", 100, 3, 401, at)
+		accEconCard(t, s, "t-econ-2", "small", 300, 5, 402, at)
+		accEconCard(t, s, "t-econ-3", "medium", 200, 5, 403, at)
+		accEconCard(t, s, "t-econ-4", "medium", 400, 7, 404, at)
+		rig := newDivideRig(t, s)
 		holds(t, rig.page(), []string{
 			"€0.0200",
 			"medium 3.00 / small 2.00",
@@ -64,7 +65,7 @@ func TestDivideConquerEconomics(t *testing.T) {
 
 func TestDivideConquerCuts(t *testing.T) {
 	t.Run("fake", func(t *testing.T) {
-		rig, _ := NewMetricsRig(t, &accFigures{report: accPanelsReport()})
+		rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 		holds(t, rig.page(), []string{
 			">2 / 1<",
 			"TestDivideConquerCuts in acceptance",
@@ -94,7 +95,7 @@ func TestDivideConquerCuts(t *testing.T) {
 		// a cut before the window counts only the previous span.
 		cut("t-cut-prev", 63, from.Add(-time.Hour))
 		accClosed(t, s, "t-cut-a", "sf/code", from.Add(48*time.Hour))
-		rig, _ := NewMetricsRig(t, s)
+		rig := newDivideRig(t, s)
 		holds(t, rig.page(), []string{
 			">2 / 1<",
 			"TestDivideConquerCuts in acceptance",
@@ -104,7 +105,7 @@ func TestDivideConquerCuts(t *testing.T) {
 
 func TestDivideConquerGroupHours(t *testing.T) {
 	t.Run("fake", func(t *testing.T) {
-		rig, _ := NewMetricsRig(t, &accFigures{report: accPanelsReport()})
+		rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 		holds(t, rig.page(), []string{
 			">6.0 hours<",
 			"cohort 2",
@@ -130,7 +131,7 @@ func TestDivideConquerGroupHours(t *testing.T) {
 			accMerged(t, s, g.plan+"-c", "sf/code", merged)
 			accClosed(t, s, g.plan, "sf/code", merged.Add(g.open))
 		}
-		rig, _ := NewMetricsRig(t, s)
+		rig := newDivideRig(t, s)
 		holds(t, rig.page(), []string{
 			">6.0 hours<",
 			"cohort 2",
@@ -141,7 +142,7 @@ func TestDivideConquerGroupHours(t *testing.T) {
 
 func TestDivideConquerProductionHold(t *testing.T) {
 	t.Run("fake", func(t *testing.T) {
-		rig, _ := NewMetricsRig(t, &accFigures{report: accPanelsReport()})
+		rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 		holds(t, rig.page(), []string{
 			">3.75 hours<",
 			"ended 2",
@@ -150,20 +151,35 @@ func TestDivideConquerProductionHold(t *testing.T) {
 	})
 
 	t.Run("store", func(t *testing.T) {
-		s, _ := divideStore(t)
+		s, db := divideStore(t)
 		from, _ := divideWindow()
 		hold := func(since time.Time, hours float64) {
 			accRecord(t, s, factoryd.HoldIntervalFact{Repository: "sf/code",
 				HeldSince: since, How: "closed", Hours: hours}.Event(),
 				since.Add(time.Duration(hours*float64(time.Hour))))
 		}
+		// [from+1h, from+2.5h) and [from+3h, from+5.25h): apart, so the
+		// union answers their sum, 3.75 hours — 13500000 milliseconds.
 		hold(from.Add(time.Hour), 1.5)
-		hold(from.Add(2*time.Hour), 2.25)
-		rig, _ := NewMetricsRig(t, s)
+		hold(from.Add(3*time.Hour), 2.25)
+		rig := newDivideRig(t, s)
 		holds(t, rig.page(), []string{
 			">3.75 hours<",
 			"ended 2",
 			"TestDivideConquerProductionHold in acceptance",
+		}, nil)
+
+		// a hold the releases clock still holds ends at the span's own
+		// end, the sooner of the report's as-of and the window (to is
+		// inclusive): the one day of it answers its hours alone, not the
+		// weeks the running clock has run to today.
+		open := from.AddDate(0, 0, 10)
+		if _, err := db.Exec(`INSERT INTO releases (repository, held_since) VALUES ('sf/code', $1)`, open); err != nil {
+			t.Fatal(err)
+		}
+		holds(t, rig.pageQuery("?from="+open.Format("2006-01-02")+"&to="+open.Format("2006-01-02")), []string{
+			">24.0 hours<",
+			"ended 2 · open 1",
 		}, nil)
 	})
 }
