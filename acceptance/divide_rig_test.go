@@ -6,15 +6,14 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
-	"net/url"
-	"os"
+	"reflect"
 	"strings"
-	"sync"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/console"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 
 	_ "github.com/jackc/pgx/v5/stdlib" // the store's driver, for the seeds no writer exports
 )
@@ -36,9 +35,19 @@ func (f *accFigures) ProjectMetrics(_ context.Context, repository string, from, 
 	return f.report, nil
 }
 
-// divideWindow is [2026-09-28, 2026-10-11), the seeded fixtures' own.
-func divideWindow() (from, to time.Time) {
-	return time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 11, 0, 0, 0, 0, time.UTC)
+// divideWindow is [2026-09-28, 2026-10-12): the page's dates are inclusive,
+// so accQuery's to=2026-10-11 reads the day whole and the report ends at
+// the next midnight. The equal window before it is [09-14, 09-28); the
+// seven weekly buckets run from 08-24, the window being the last two.
+func divideWindow() (from, end time.Time) {
+	return time.Date(2026, 9, 28, 0, 0, 0, 0, time.UTC), time.Date(2026, 10, 12, 0, 0, 0, 0, time.UTC)
+}
+
+// accDay is the fixture window's n-th midnight: day 0 opens it, day 14 is
+// its exclusive end, day -14 opens the window before.
+func accDay(n int) time.Time {
+	from, _ := divideWindow()
+	return from.AddDate(0, 0, n)
 }
 
 // accQuery is the window's own query on the metrics path.
@@ -80,21 +89,70 @@ func (r *divideRig) pageQuery(query string) string {
 	return rec.Body.String()
 }
 
-// jsonBody answers the metrics JSON over the fixture window.
-func (r *divideRig) jsonBody() map[string]any {
+// get answers the metrics path with query as the rig's member, the
+// response unchecked.
+func (r *divideRig) get(query string) *httptest.ResponseRecorder {
 	r.t.Helper()
-	req := httptest.NewRequest(http.MethodGet, "/projects/"+accProjectName+"/metrics"+accQuery+"&format=json", nil)
+	req := httptest.NewRequest(http.MethodGet, "/projects/"+accProjectName+"/metrics"+query, nil)
 	req.AddCookie(r.ck)
 	rec := httptest.NewRecorder()
 	r.a.Handler().ServeHTTP(rec, req)
+	return rec
+}
+
+// reportAt answers the metrics JSON over query's window as the report
+// the seam serves.
+func (r *divideRig) reportAt(query string) factoryd.MetricsReport {
+	r.t.Helper()
+	sep := "?"
+	if query != "" {
+		sep = "&"
+	}
+	rec := r.get(query + sep + "format=json")
 	if rec.Code != http.StatusOK {
 		r.t.Fatalf("GET metrics json = %d: %s", rec.Code, rec.Body)
 	}
-	var body map[string]any
-	if err := json.Unmarshal(rec.Body.Bytes(), &body); err != nil {
+	var report factoryd.MetricsReport
+	if err := json.Unmarshal(rec.Body.Bytes(), &report); err != nil {
 		r.t.Fatalf("decode: %v", err)
 	}
-	return body
+	return report
+}
+
+// report answers the fixture window's divide figures.
+func (r *divideRig) report() factoryd.DivideConquer {
+	r.t.Helper()
+	return r.reportAt(accQuery).DivideConquer
+}
+
+// accSpan is the metrics query of the inclusive dates first to last.
+func accSpan(first, last time.Time) string {
+	return "?from=" + first.Format("2006-01-02") + "&to=" + last.Format("2006-01-02")
+}
+
+// accFig is a measured figure with its previous window and seven weeks.
+func accFig(value, prev float64, weeks [7]float64) factoryd.Figure {
+	return factoryd.Figure{Value: value, Prev: prev, Has: true, PrevHas: true, Weeks: weeks}
+}
+
+// same fails unless got equals want, field for field.
+func same(t *testing.T, what string, got, want any) {
+	t.Helper()
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("%s = %+v, want %+v", what, got, want)
+	}
+}
+
+// panel is the page's row of the named panel, its name through its
+// closing tag, so a literal two panels print stays the one panel's.
+func panel(t *testing.T, body, name string) string {
+	t.Helper()
+	i := strings.Index(body, `">`+name+`</span>`)
+	if i < 0 {
+		t.Fatalf("page lacks the panel %q", name)
+	}
+	row := body[i:]
+	return row[:strings.Index(row, "</li>")]
 }
 
 // holds fails unless body carries every literal and none of the masked.
@@ -112,53 +170,11 @@ func holds(t *testing.T, body string, want, masked []string) {
 	}
 }
 
-// accDSN is the proofs' throwaway database on FACTORYD_TEST_DATABASE_URL:
-// dropped and created empty once per test binary; without the variable
-// the proofs skip, as the schematest harness does.
-func accDSN(t *testing.T) string {
-	t.Helper()
-	accDSNOnce.Do(func() {
-		base := os.Getenv("FACTORYD_TEST_DATABASE_URL")
-		if base == "" {
-			return
-		}
-		u, err := url.Parse(base)
-		if err != nil {
-			t.Fatalf("FACTORYD_TEST_DATABASE_URL: %v", err)
-		}
-		db, err := sql.Open("pgx", base)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer db.Close()
-		const name = "factory_test_acceptance_divide"
-		for _, stmt := range []string{
-			`DROP DATABASE IF EXISTS "` + name + `" WITH (FORCE)`,
-			`CREATE DATABASE "` + name + `"`,
-		} {
-			if _, err := db.Exec(stmt); err != nil {
-				t.Fatalf("%s: %v", stmt, err)
-			}
-		}
-		u.Path = "/" + name
-		accDSNValue = u.String()
-	})
-	if accDSNValue == "" {
-		t.Skip("FACTORYD_TEST_DATABASE_URL not set")
-	}
-	return accDSNValue
-}
-
-var (
-	accDSNOnce  sync.Once
-	accDSNValue string
-)
-
 // divideStore answers a real PostgreSQL, its read tables emptied so
 // every test's fixtures stand alone.
 func divideStore(t *testing.T) (*factoryd.PGStore, *sql.DB) {
 	t.Helper()
-	dsn := accDSN(t)
+	dsn := schematest.DSN(t, "acceptance_divide")
 	s, err := factoryd.OpenStore(context.Background(), dsn)
 	if err != nil {
 		t.Fatal(err)
@@ -195,7 +211,8 @@ func accRecord(t *testing.T, s *factoryd.PGStore, e factoryd.Event, at time.Time
 func accCard(t *testing.T, s *factoryd.PGStore, id, repository, size, head string, issue int64) {
 	t.Helper()
 	task := factoryd.Task{ID: id, Status: "in-review", Objective: "the divide panels' fixture", Repository: repository,
-		Kind: "agent", Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: issue, SHA: head, Size: size}
+		Kind: "agent", Source: "api", Track: "direct", BudgetEUR: 5, IssueNumber: issue, SHA: head, Size: size,
+		RequiredCapabilities: []string{"coder"}}
 	if err := s.CreateTask(context.Background(), task); err != nil {
 		t.Fatal(err)
 	}
@@ -308,6 +325,7 @@ func accPanelsReport() factoryd.MetricsReport {
 			CardsByRound: []factoryd.NamedFigure{
 				{Name: "1", Figure: move(4, 3)},
 				{Name: "2", Figure: move(2, 1)},
+				{Name: "3", Figure: move(1, 0)},
 			},
 			ReplansByOriginSpans: []factoryd.NamedFigure{
 				{Name: "person", Figure: move(1, 0)},

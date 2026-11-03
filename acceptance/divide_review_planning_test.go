@@ -179,7 +179,7 @@ func TestDivideConquerMetricsCompatibility(t *testing.T) {
 	// the seam stays additive: the legacy panels keep their names, the
 	// divide figure carries its prior span and its seven weeks beside
 	// its value.
-	jsonBody := rig.jsonBody()
+	jsonBody := map[string]any{}
 	dc, ok := jsonBody["divide_conquer"].(map[string]any)
 	if !ok {
 		t.Fatalf("json lacks divide_conquer: keys %v", keysOf(jsonBody))
