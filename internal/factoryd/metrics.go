@@ -5,6 +5,7 @@ import (
 	"context"
 	"database/sql"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"maps"
 	"slices"
@@ -75,6 +76,31 @@ type DiffSize struct {
 	Has        bool       `json:"has"`
 	PrevHas    bool       `json:"prev_has"`
 	Weeks      [7]float64 `json:"weeks"`
+}
+
+// SessionTime is where the project's session time went over the window,
+// from the session_time rows: the check share (the check classes over the
+// wall) and the command share against the window before and by week, the
+// hours by class and by tool, the full check's median run and the longest
+// command.
+type SessionTime struct {
+	CheckShare   Figure             `json:"check_share"`
+	CommandShare Figure             `json:"command_share"`
+	Sessions     int                `json:"sessions"`
+	WallHours    float64            `json:"wall_hours"`
+	ClassHours   map[string]float64 `json:"class_hours,omitempty"`
+	ToolHours    map[string]float64 `json:"tool_hours,omitempty"`
+	CheckRuns    int                `json:"check_runs"`
+	CheckMedianS float64            `json:"check_median_s"`
+	Longest      LongestRun         `json:"longest"`
+}
+
+// LongestRun is the window's longest command: its class, its seconds and
+// its text's first 120 bytes.
+type LongestRun struct {
+	Class   string  `json:"class,omitempty"`
+	Seconds float64 `json:"seconds,omitempty"`
+	Command string  `json:"command,omitempty"`
 }
 
 // ChatWork is the project agent's tool work; Weeks counts calls.
@@ -682,6 +708,7 @@ type MetricsReport struct {
 	SelfDeploys        Figure             `json:"self_deploys"`
 	DiffSize           DiffSize           `json:"diff_size"`
 	ChatWork           ChatWork           `json:"chat_tool_work"`
+	SessionTime        SessionTime        `json:"session_time"`
 	CIDuration         Figure             `json:"ci_duration"`
 	DivideConquer      DivideConquer      `json:"divide_conquer"`
 }
@@ -1228,6 +1255,70 @@ func metricChatWork(ctx context.Context, db *sql.DB, repo string, w metricWindow
 	return c, err
 }
 
+// metricSessionTime: where the window's session time went, from the
+// session_time rows (EventSessionTime).
+func metricSessionTime(ctx context.Context, db *sql.DB, repo string, w metricWindow) (SessionTime, error) {
+	const rows = ` FROM events WHERE kind = '` + EventSessionTime + `' AND repository = $1 AND at >= $2 AND at < $3`
+	const wall = `(detail ->> 'wall_ms')::float8`
+	var checks []string
+	for _, c := range policy.CheckClasses {
+		checks = append(checks, fmt.Sprintf(`COALESCE((detail #>> '{classes,%s,ms}')::float8, 0)`, c))
+	}
+	share := func(num string) (Figure, error) {
+		return metricRatioFigure(ctx, db, repo, w,
+			`SELECT COALESCE(sum(`+num+`), 0), COALESCE(sum(`+wall+`), 0)`+rows,
+			`SELECT `+metricBucket("at")+`, COALESCE(sum(`+num+`), 0), COALESCE(sum(`+wall+`), 0)`+rows+` GROUP BY 1`)
+	}
+	var st SessionTime
+	var err error
+	if st.CheckShare, err = share(strings.Join(checks, " + ")); err != nil {
+		return st, err
+	}
+	if st.CommandShare, err = share(`(detail ->> 'commands_ms')::float8`); err != nil {
+		return st, err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*), COALESCE(sum(`+wall+`), 0) / 3600000`+rows, repo, w.From, w.To).Scan(&st.Sessions, &st.WallHours); err != nil {
+		return st, err
+	}
+	const each = ` WHERE e.kind = '` + EventSessionTime + `' AND e.repository = $1 AND e.at >= $2 AND e.at < $3`
+	hours := func(query string) (map[string]float64, error) {
+		rs, err := db.QueryContext(ctx, query+each+` GROUP BY 1`, repo, w.From, w.To)
+		if err != nil {
+			return nil, err
+		}
+		defer rs.Close()
+		var out map[string]float64
+		for rs.Next() {
+			var name string
+			var h float64
+			if err := rs.Scan(&name, &h); err != nil {
+				return nil, err
+			}
+			if out == nil {
+				out = map[string]float64{}
+			}
+			out[name] = h
+		}
+		return out, rs.Err()
+	}
+	if st.ClassHours, err = hours(`SELECT c.key, sum((c.value ->> 'ms')::float8) / 3600000 FROM events e CROSS JOIN LATERAL jsonb_each(e.detail -> 'classes') c`); err != nil {
+		return st, err
+	}
+	if st.ToolHours, err = hours(`SELECT c.key, sum(c.value::float8) / 3600000 FROM events e CROSS JOIN LATERAL jsonb_each_text(e.detail -> 'tools') c`); err != nil {
+		return st, err
+	}
+	if err := db.QueryRowContext(ctx, `SELECT count(*), COALESCE(percentile_cont(0.5) WITHIN GROUP (ORDER BY r.v::float8), 0) / 1000
+		FROM events e CROSS JOIN LATERAL jsonb_array_elements_text(e.detail #> '{classes,check,runs}') AS r(v)`+each, repo, w.From, w.To).Scan(&st.CheckRuns, &st.CheckMedianS); err != nil {
+		return st, err
+	}
+	err = db.QueryRowContext(ctx, `SELECT detail #>> '{longest,class}', (detail #>> '{longest,ms}')::float8 / 1000, detail #>> '{longest,command}'`+rows+
+		` AND detail ? 'longest' ORDER BY (detail #>> '{longest,ms}')::float8 DESC, at LIMIT 1`, repo, w.From, w.To).Scan(&st.Longest.Class, &st.Longest.Seconds, &st.Longest.Command)
+	if errors.Is(err, sql.ErrNoRows) {
+		err = nil
+	}
+	return st, err
+}
+
 // metricCIDuration: the median Actions run, push to finish.
 func metricCIDuration(ctx context.Context, db *sql.DB, repo string, w metricWindow) (Figure, error) {
 	const agg = `percentile_cont(0.5) WITHIN GROUP (ORDER BY duration_ms)`
@@ -1697,6 +1788,9 @@ func (s *PGStore) ProjectMetrics(ctx context.Context, repository string, from, t
 		return r, err
 	}
 	if r.ChatWork, err = metricChatWork(ctx, db, repository, w); err != nil {
+		return r, err
+	}
+	if r.SessionTime, err = metricSessionTime(ctx, db, repository, w); err != nil {
 		return r, err
 	}
 	if r.CIDuration, err = metricCIDuration(ctx, db, repository, w); err != nil {

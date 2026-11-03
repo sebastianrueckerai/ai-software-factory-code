@@ -48,7 +48,7 @@ var funcs = template.FuncMap{
 	"mDur": mDur, "mDurMove": mDurMove, "mPct": mPct, "mPctMove": mPctMove,
 	"mEur": mEur, "mEurMove": mEurMove, "mCount": mCount, "mCountMove": mCountMove,
 	"mK": mK, "mDec": mDec, "mDecMove": mDecMove, "mShare": mShare, "mDiff": mDiff,
-	"mChat": mChat, "msub": msub, "sparkSVG": sparkSVG,
+	"mChat": mChat, "mSessionTime": mSessionTime, "msub": msub, "sparkSVG": sparkSVG,
 	// the divide-and-conquer panels (roadmap 336): the deck's own
 	// formatters above and the section's lists and coverage notes
 	"mEur4": mEur4, "mEur4Move": mEur4Move, "mHours": mHours, "mHoursMove": mHoursMove,

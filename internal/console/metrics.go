@@ -1,12 +1,15 @@
 package console
 
 import (
+	"cmp"
 	"encoding/json"
 	"fmt"
 	"html/template"
 	"log"
+	"maps"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"time"
@@ -167,6 +170,45 @@ func mChat(c factoryd.ChatWork) string {
 		return fmt.Sprintf("%s calls · %s s", mCount(c.Calls), mCount(c.Minutes*60))
 	}
 	return fmt.Sprintf("%s calls · %s min", mCount(c.Calls), mCount(c.Minutes))
+}
+
+// mSessionTime reads where the window's session time went: the wall over
+// its sessions, the hours by class and the three biggest tools, most
+// first, the full check's median run and the longest command; a dash
+// without sessions.
+func mSessionTime(st factoryd.SessionTime) string {
+	if st.Sessions == 0 {
+		return "—"
+	}
+	sessions := "sessions"
+	if st.Sessions == 1 {
+		sessions = "session"
+	}
+	parts := []string{fmt.Sprintf("%s in %d %s", mDur(st.WallHours*3.6e6), st.Sessions, sessions)}
+	mostFirst := func(hours map[string]float64) []string {
+		names := slices.Collect(maps.Keys(hours))
+		slices.SortFunc(names, func(a, b string) int {
+			return cmp.Or(cmp.Compare(hours[b], hours[a]), cmp.Compare(a, b))
+		})
+		return names
+	}
+	for _, c := range mostFirst(st.ClassHours) {
+		parts = append(parts, c+" "+mDur(st.ClassHours[c]*3.6e6))
+	}
+	if tools := mostFirst(st.ToolHours); len(tools) > 0 {
+		var spent []string
+		for _, name := range tools[:min(3, len(tools))] {
+			spent = append(spent, name+" "+mDur(st.ToolHours[name]*3.6e6))
+		}
+		parts = append(parts, strings.Join(spent, ", "))
+	}
+	if st.CheckRuns > 0 {
+		parts = append(parts, fmt.Sprintf("full check median %s over %d runs", mDur(st.CheckMedianS*1000), st.CheckRuns))
+	}
+	if st.Longest.Command != "" {
+		parts = append(parts, fmt.Sprintf("longest %s %s: %s", st.Longest.Class, mDur(st.Longest.Seconds*1000), st.Longest.Command))
+	}
+	return strings.Join(parts, " · ")
 }
 
 func msub(a, b float64) float64 { return a - b }

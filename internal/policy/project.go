@@ -311,6 +311,68 @@ type ProjectConfig struct {
 	// the card and its gates hold the merge until the project's own merge
 	// chain has reached that pin. Absent: none.
 	Companions []Companion `yaml:"companions,omitempty" json:"companions,omitempty"`
+	// Commands sorts the commands a session runs into classes the
+	// session-time metric sums. Absent: the repository's check script is
+	// check, its changed mode check_changed.
+	Commands *CommandsConfig `yaml:"commands,omitempty" json:"commands,omitempty"`
+}
+
+// CommandsConfig is a project's command classes in match order: a command
+// takes the first class one of whose patterns it matches, else it is other.
+type CommandsConfig struct {
+	// Classes are the classes in match order.
+	Classes []CommandClass `yaml:"classes" json:"classes"`
+}
+
+// CommandClass is one class of commands.
+type CommandClass struct {
+	// Name is the class's name on the metrics page; check and
+	// check_changed are what the check share sums, other is the rest.
+	Name string `yaml:"name" json:"name"`
+	// Match are regular expressions (RE2) over the command's whole text:
+	// one that matches makes the command this class's.
+	Match []string `yaml:"match" json:"match"`
+}
+
+// CheckClasses are the classes the check share sums.
+var CheckClasses = []string{"check", "check_changed"}
+
+// DefaultCommandClasses are a project's classes without a commands block:
+// a run of the repository's check script at its root, the changed mode
+// first.
+var DefaultCommandClasses = []CommandClass{
+	{Name: "check_changed", Match: []string{`(^|[;&|(\s])(bash\s+(\./)?check|\./check)\s+changed(\s|$)`}},
+	{Name: "check", Match: []string{`(^|[;&|(\s])(bash\s+(\./)?check|\./check)(\s|$)`}},
+}
+
+// CommandClassOf is the class a command of the project's sessions falls
+// in, "" for other. The patterns passed Validate, so they compile.
+func (p ProjectConfig) CommandClassOf() func(command string) string {
+	classes := DefaultCommandClasses
+	if p.Commands != nil {
+		classes = p.Commands.Classes
+	}
+	type class struct {
+		name string
+		res  []*regexp.Regexp
+	}
+	compiled := make([]class, len(classes))
+	for i, c := range classes {
+		compiled[i].name = c.Name
+		for _, m := range c.Match {
+			compiled[i].res = append(compiled[i].res, regexp.MustCompile(m))
+		}
+	}
+	return func(command string) string {
+		for _, c := range compiled {
+			for _, re := range c.res {
+				if re.MatchString(command) {
+					return c.name
+				}
+			}
+		}
+		return ""
+	}
 }
 
 // Companion is one repository of this Forgejo the project reads beside its
@@ -538,6 +600,28 @@ func (p ProjectConfig) Validate(name string) error {
 		for _, other := range p.Companions[:i] {
 			if other.Repository[strings.LastIndex(other.Repository, "/")+1:] == name {
 				bad("companion %q: the same repository name as %q, and the sandbox clone goes by the name", c.Repository, other.Repository)
+			}
+		}
+	}
+	if p.Commands != nil {
+		var names []string
+		for _, c := range p.Commands.Classes {
+			switch {
+			case c.Name == "":
+				bad("commands: a class without a name")
+				continue
+			case c.Name == "other":
+				bad(`commands: class other: "other" is the rest of the commands`)
+			case slices.Contains(names, c.Name):
+				bad("commands: class %s: given twice", c.Name)
+			case len(c.Match) == 0:
+				bad("commands: class %s: no pattern", c.Name)
+			}
+			names = append(names, c.Name)
+			for _, m := range c.Match {
+				if _, err := regexp.Compile(m); err != nil {
+					bad("commands: class %s: pattern %q: %v", c.Name, m, err)
+				}
 			}
 		}
 	}

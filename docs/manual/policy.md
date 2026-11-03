@@ -9,7 +9,11 @@ its class, the plan track with the plan's bounds), `dependencies`,
 file that still carries the removed `lanes` block is refused by name) and `projects/<name>.yaml` (one per
 project: repository, merge rule, `objects: factory|seed`,
 `agents: coder|none`, `process`, notify, namespaces, environments,
-quota, secrets, `budget: {month_eur}`, `model: stronger`). The Go types in `internal/policy` are the
+quota, secrets, `budget: {month_eur}`, `model: stronger`, `commands`: the
+classes the session-time metric sorts a session's commands into, each a
+name and RE2 patterns over the command text, the first match wins,
+`check` and `check_changed` the check share's; absent, the repository's
+`check` script is `check` and its changed mode `check_changed`). The Go types in `internal/policy` are the
 schema: `factoryd schema --out <dir> --commit <sha>` writes one JSON Schema per file
 kind (draft-07; every enumerated field lists its values, every key its
 doc comment, a key is required unless its yaml tag says `omitempty`)

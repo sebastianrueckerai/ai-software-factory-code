@@ -87,11 +87,11 @@ func (r *Runner) planAcceptance(ctx context.Context, t Task) ([]string, error) {
 //
 // Only green runs are recorded: the trail is the card's evidence, and a
 // red run is a session's private history, not a card event.
-func (r *Runner) sessionAcceptance(ctx context.Context, t Task, session string, acceptance []string) *AcceptanceHit {
+func (r *Runner) sessionAcceptance(ctx context.Context, t Task, session string, events []harness.Event, acceptance []string) *AcceptanceHit {
 	if len(acceptance) == 0 {
 		return nil
 	}
-	hit := acceptanceHit(r.sessionTranscript(ctx, t.ID, session), acceptance)
+	hit := acceptanceHit(events, acceptance)
 	if hit == nil {
 		return nil
 	}
@@ -101,9 +101,9 @@ func (r *Runner) sessionAcceptance(ctx context.Context, t Task, session string, 
 	return hit
 }
 
-// sessionTranscript is the session's recorded events, its commands only;
-// nil when none was kept or the read failed, which is logged: an
-// unreadable transcript must not fail the session that wrote it.
+// sessionTranscript is the session's recorded events; nil when none was
+// kept or the read failed, which is logged: an unreadable transcript must
+// not fail the session that wrote it.
 func (r *Runner) sessionTranscript(ctx context.Context, taskID, session string) []harness.Event {
 	if r.timeline == nil || r.timeline.Objects == nil {
 		return nil
@@ -118,7 +118,7 @@ func (r *Runner) sessionTranscript(ctx context.Context, taskID, session string) 
 		var line []byte
 		line, b, _ = bytes.Cut(b, []byte("\n"))
 		var ev harness.Event
-		if err := json.Unmarshal(line, &ev); err == nil && ev.Kind == harness.EventCommand {
+		if err := json.Unmarshal(line, &ev); err == nil {
 			events = append(events, ev)
 		}
 	}
