@@ -304,14 +304,15 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 }
 
 // A model that would read until its calls run out still answers within
-// the time cap: once the answer's reserve begins — half the cap here, the
-// policy's per-call time being longer — the evidence call in flight is
-// cut and the tool-less last call asks for the answer, long before the
-// call cap.
+// the time cap, long before the call cap. The answer is due at 400ms, the
+// cap less half of it, the policy's per-call time being longer; calls
+// take 120ms. Evidence calls start at 0, 120ms and 240ms, when one more
+// still ends before 400ms; at 360ms none would, so the fourth call is the
+// tool-less answer, and no evidence call is started only to be cut.
 func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
-	chat := &toolsUntilLast{delay: 60 * time.Millisecond, answer: `{"findings":[],"decision":"handover","handover":"go on"}`}
-	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 400*time.Millisecond)
+	chat := &toolsUntilLast{delay: 120 * time.Millisecond, answer: `{"findings":[],"decision":"handover","handover":"go on"}`}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 800*time.Millisecond)
 	if out.Decision != CheckHandover || out.Handover != "go on" {
 		t.Fatalf("outcome = %+v, want the answer's handover", out)
 	}
@@ -319,11 +320,28 @@ func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	if last.Tools != nil || !strings.Contains(last.Input, "This is your last call") {
 		t.Fatalf("the last call carries tools %v or no ask for the answer", last.Tools)
 	}
-	if n := len(chat.reqs); n < 2 || n >= 20 {
-		t.Fatalf("%d calls, want the evidence calls the reserve allowed and the answer, far below the call cap", n)
+	if n := len(chat.reqs); n != 4 {
+		t.Fatalf("%d calls, want 3 evidence calls and the answer", n)
 	}
 	if !strings.Contains(chat.reqs[0].Input, ", your answer due within ") {
 		t.Fatalf("the statement does not name when the answer is due:\n%s", chat.reqs[0].Input)
+	}
+}
+
+// The answer's reserve is twice the longest call so far, at least the
+// policy's per-call time, at most half the cap.
+func TestCheckinAnswerDue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		cap, longest, want time.Duration
+	}{
+		"no call yet":         {10 * time.Minute, 0, 510 * time.Second},
+		"short calls":         {10 * time.Minute, 30 * time.Second, 510 * time.Second},
+		"slow calls":          {10 * time.Minute, 95 * time.Second, 410 * time.Second},
+		"calls past half cap": {10 * time.Minute, 200 * time.Second, 300 * time.Second},
+	} {
+		if got := checkinAnswerDue(tc.cap, tc.longest); got != tc.want {
+			t.Errorf("%s: checkinAnswerDue(%s, %s) = %s, want %s", name, tc.cap, tc.longest, got, tc.want)
+		}
 	}
 }
 
