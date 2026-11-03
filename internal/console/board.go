@@ -1308,14 +1308,8 @@ type statusLine struct {
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
 	// 0 shows no premium meter.
 	PremiumEUR, PremiumCapEUR float64
-	// MonthPool is the project's month pool, the budget block's
-	// discretionary_eur: what the agent's own raises have funded of it
-	// this UTC month and what remains (poolOf). Zero: no pool is in
-	// force or no read is wired; Unavailable: the read failed, so no
-	// figure of it shows but the strip says so.
-	MonthPool pool
-	GitHub    string
-	GitHubURL string // the export's remote on GitHub, "" when not exported
+	GitHub                    string
+	GitHubURL                 string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
 	// ("↻ bump held", RoutineHeld) else the soonest under an hour away
 	// ("↻ bump in 20 min"), "" for none.
@@ -1326,7 +1320,7 @@ type statusLine struct {
 	// chat's own) or the month's turn; ChatTask is its task id. Approver:
 	// the viewer may fund it.
 	ChatSpent bool
-	// Pool is the project face's pool status (ProjectPool): the same
+	// Pool is the project's escalation pool (ProjectPool): the same
 	// projection the chat's status line and the board read tool read, so
 	// the face and the chat agree on its figures.
 	Pool     poolLine
@@ -2567,19 +2561,13 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
-		s.Pool = c.ProjectPool(ctx, v.policy, p, time.Now())
+		if s.Pool = c.ProjectPool(ctx, v.policy, p, time.Now()); !s.Pool.Readable {
+			d.Problems = append(d.Problems, "the month's pool could not be read")
+		}
 	}
 	s.TodayEUR = e.Day
 	if s.PremiumCapEUR > 0 {
 		s.PremiumEUR = e.Premium
-	}
-	if c.cfg.Pools != nil {
-		pl, err := c.poolOf(ctx, v.policy, p, time.Now().UTC())
-		s.MonthPool = pl
-		if err != nil {
-			log.Printf("console: the month pool of %s: %v", p.Repository, err)
-			d.Problems = append(d.Problems, "the month's pool could not be read")
-		}
 	}
 	s.Approver = v.approves(p.Repository)
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
@@ -2777,45 +2765,6 @@ func spendWords(spend factoryd.ProjectSpend, capEUR float64, factory bool) strin
 		return fmt.Sprintf("spend this month €%.2f of €%.2f, the factory's whole ledger", spend.EUR, capEUR)
 	}
 	return fmt.Sprintf("spend this month €%.2f of €%.2f: the cards €%.2f, the chat €%.2f", spend.EUR, capEUR, spend.EUR-spend.ChatEUR, spend.ChatEUR)
-}
-
-// pool is a project's month pool as the status shows it: the budget
-// block's discretionary_eur configured, what the agent's own raises have
-// funded of it this month and what remains. Ready says a pool is in force
-// and was read; Unavailable says the read failed, so none of its figures
-// shows.
-type pool struct {
-	Configured, Used, Remaining float64
-	Month                       time.Time
-	Ready, Unavailable          bool
-}
-
-// poolOf reads project p's month pool at the instant at: the policy's
-// budget block configures it (discretionary_eur), Pools answers what the
-// month has funded of it already. A project without a pool answers one
-// that is not ready, no error; a read that fails answers one that is
-// unavailable — never half a pool.
-func (c *Console) poolOf(ctx context.Context, v policy.Version, p factoryd.Project, at time.Time) (pool, error) {
-	q := pool{Month: at}
-	if pb := v.Projects[p.Name].Budget; pb != nil {
-		q.Configured = pb.DiscretionaryEUR
-	}
-	if factoryd.Cents(q.Configured) <= 0 {
-		return q, nil
-	}
-	used, err := c.cfg.Pools.AgentFundedEUR(ctx, p.Repository, at)
-	if err != nil {
-		q.Unavailable = true
-		return q, err
-	}
-	q.Used, q.Remaining, q.Ready = used, max(q.Configured-used, 0), true
-	return q, nil
-}
-
-// poolWords is the month pool as the project agent reads it: what its own
-// raises have funded of the pool and what remains of it this month.
-func poolWords(pl pool) string {
-	return fmt.Sprintf("pool this month €%.2f of €%.2f, €%.2f left", pl.Used, pl.Configured, pl.Remaining)
 }
 
 type timelineEntry struct {
@@ -3179,7 +3128,7 @@ func (c *Console) fundCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR above zero is required"))
 		return
 	}
-	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"), 0)
+	_, err = c.doFund(r.Context(), button(r), r.PathValue("id"), eur, r.PostFormValue("reason"))
 	c.pressed(w, r, err)
 }
 

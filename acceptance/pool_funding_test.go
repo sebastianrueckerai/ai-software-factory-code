@@ -13,66 +13,58 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The pool's funding state, accepted end to end: the agent's own raise
-// spends the pool a confirmed Set loaded, one card_funded row the
-// aggregate reads; the member's confirmed raise is their money and meets
-// no pool bound while the card's own state still limits it; a raise the
-// bounds refuse changes nothing and falls back to attach_analysis, whose
-// findings the ask carries to the human; and every readout — the project
-// face, the settings, the policy and the chat — reads the one projection
-// of this repository's UTC-month rows, never a model-spend total, an
-// error never a zero.
+// The escalation pool's funding, accepted end to end: the agent's own
+// fund and the human's confirmed one both answer the card's live case
+// through Act, the agent's on rung 2 and the human's on rung 3, and both
+// are pool draws the month's line counts; a draw Act refuses changes
+// nothing and falls back to attach_analysis, whose findings the ask
+// carries to the human; and every readout (the project face, the
+// settings, the policy and the chat) reads the one projection of this
+// repository's UTC-month pool draws in three parts, never a model-spend
+// total, an error never a zero.
 
-// fundRig answers the rig with anna — writer and approver of the code
-// project — logged in, the pool's file on infra's main, no pool in force,
-// and card t-e waiting on a human over its budget of EUR 2 with its
-// session floor at 2.
+// fundRig answers the rig with anna, writer and approver of the code
+// project, logged in, the pool's file on infra's main, no pool in force,
+// and card t-e waiting on a human over its budget of EUR 2.
 func fundRig(t *testing.T) (*AcceptanceRig, string, *http.Cookie, string) {
 	t.Helper()
 	r, _, path := NewAcceptanceRig(t, false, nil)
 	ck, csrf := r.LoginAs(t, "anna")
 	r.PutInfraFile(accInfraFile, accPoolHead)
 	r.SetCardBudget("t-e", 2)
-	r.SetSessionFloor("t-e", 2)
 	return r, path, ck, csrf
 }
 
-// seedFundRow records one card_funded row this repository's pool counts:
-// the agent decided it via the chat in the UTC month of at.
+// seedFundRow records one pool draw of eur on this repository's card
+// t-e, as Act's draw lands it, in the UTC month of at.
 func seedFundRow(t *testing.T, r *AcceptanceRig, eur float64, at time.Time) {
 	t.Helper()
-	seedFundRowAs(t, r, "sf/code", "agent", factoryd.ViaChat, eur, at)
+	seedRow(t, r, "sf/code", factoryd.EventCardFunded, map[string]any{"pool": true, "rung": 2, "amount_eur": eur}, at)
 }
 
-// seedFundRowAs records one card_funded row exactly as a decoy needs it:
-// another repository, a human decider (none at all), another via.
-func seedFundRowAs(t *testing.T, r *AcceptanceRig, repository, decider, via string, eur float64, at time.Time) {
+// seedRow records one row of kind with detail on repository's card t-e
+// in the UTC month of at.
+func seedRow(t *testing.T, r *AcceptanceRig, repository, kind string, detail map[string]any, at time.Time) {
 	t.Helper()
-	e := factoryd.Event{Repository: repository, Kind: factoryd.EventCardFunded, Via: via, At: at,
-		Detail: map[string]any{"amount_eur": eur}}
-	if decider != "" {
-		e.Detail["decider"] = decider
-	}
-	if _, err := r.Record(t.Context(), e); err != nil {
-		t.Fatalf("seed the card_funded row of %s: %v", repository, err)
+	if _, err := r.Record(t.Context(), factoryd.Event{Repository: repository, TaskID: "t-e", Kind: kind,
+		Via: factoryd.ViaChat, At: at, Detail: detail}); err != nil {
+		t.Fatalf("seed the %s row of %s: %v", kind, repository, err)
 	}
 }
 
-// agentFundRows answers the code project's agent-decided chat card_funded
-// rows.
-func agentFundRows(r *AcceptanceRig) []factoryd.Event {
-	var out []factoryd.Event
-	for _, e := range r.Events() {
-		if e.Repository == "sf/code" && e.Kind == factoryd.EventCardFunded && e.Via == factoryd.ViaChat &&
-			e.Detail["decider"] == "agent" {
-			out = append(out, e)
-		}
+// lastAct is the last answer Act took, the fields a fund carries.
+func lastAct(t *testing.T, r *AcceptanceRig) []any {
+	t.Helper()
+	acted := r.Acted()
+	if len(acted) == 0 {
+		t.Fatalf("Act took no answer")
 	}
-	return out
+	in := acted[len(acted)-1]
+	return []any{in.TaskID, in.CaseID, in.By, in.Via, in.Rung, in.Res.Action, in.Res.Args["eur"], in.Res.Note}
 }
 
-// agentCall has the model call tool with args on the member's next
-// message — unconfirmed at this autonomy — and answers the streamed
+// agentCall has the model call tool with args on the human's next
+// message, unconfirmed at this autonomy, and answers the streamed
 // events; the model's closing reply follows the call.
 func agentCall(t *testing.T, r *AcceptanceRig, path string, ck *http.Cookie, csrf, tool, args, closing string) []string {
 	t.Helper()
@@ -147,26 +139,24 @@ func pageGET(t *testing.T, r *AcceptanceRig, ck *http.Cookie, path string) strin
 	return rec.Body.String()
 }
 
-// TestPoolAuthorisesFunding is the pool's own authorisation chain: anna,
-// member and approver, confirms the model's Set 10 → 12 with her reason —
-// exactly one complete store-timestamped pool_changed row names her, the
-// set and both pools, and the pull request — and the agent's next turn
-// raises the waiting card by EUR 1 from the pool without a click: the
-// card holds 3, the month's use 4 of 12, EUR 8 left, one agent-decided
-// card_funded row. A raise the member confirms is their money: the pool
-// does not count it, while the card's own state still refuses a raise it
-// needs no raise for. The raise's own money is judged first — a store
-// that refuses the amount, or the audit row it must carry, moves neither
-// the card nor the spine.
+// TestPoolAuthorisesFunding is the pool's chain from its change to its
+// draws: anna, writer and approver, confirms the model's set of 10 to 12
+// with her reason, and exactly one store-timestamped pool_changed row
+// names her, the set, both pools and the pull request. The agent's next
+// turn funds the waiting card 1 EUR without a click: one answer to the
+// card's live case through Act on rung 2, the card at 3 EUR and the
+// month's draws at 4 of 12. Anna's own confirmed fund of 2 EUR is the
+// same answer on rung 3, a pool draw too: every rung draws from the pool,
+// and only the human's draw may pass it.
 func TestPoolAuthorisesFunding(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedPool(10)
 	now := time.Now().UTC()
-	for _, eur := range []float64{1, 1, 1} { // the month's use stands at 3
+	for _, eur := range []float64{1, 1, 1} { // the month's draws stand at 3
 		seedFundRow(t, r, eur, now)
 	}
 
-	// anna confirms the model's Set 10 → 12 with the exact reason
+	// anna confirms the model's set of 10 to 12 with the exact reason
 	args := `{"action":"set","eur":12,"reason":"the review findings cost money"}`
 	token := proposePool(t, r, path, ck, csrf, args)
 	r.OnReload(func() { r.SetLoadedPool(12) })
@@ -179,12 +169,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	if c := r.InfraCommits(); len(c) != 1 || !strings.Contains(c[0].Message, "Requested-by: anna\n") {
 		t.Fatalf("the commit = %+v, want anna's own token in its message", r.InfraCommits())
 	}
-	var changed []factoryd.Event
-	for _, e := range r.Events() {
-		if e.Kind == factoryd.EventPoolChanged {
-			changed = append(changed, e)
-		}
-	}
+	changed := poolChangedRows(r)
 	if len(changed) != 1 {
 		t.Fatalf("%d pool_changed rows, want the one: %+v", len(changed), changed)
 	}
@@ -194,143 +179,63 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	equal(t, "the row's detail", e.Detail, map[string]any{"action": "set", "from_eur": 10.0,
 		"confirmed_eur": 12.0, "to_eur": 12.0, "reason": "the review findings cost money", "pr": "sf/infra#101"})
 
-	// the agent's turn.call fund of EUR 1: no human click
+	// the agent's fund of 1 EUR: no human click, the card's live case
+	// answered on rung 2
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
 	fund := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
-	equal(t, "the unattended fund", agentCall(t, r, path, ck, csrf, "fund", fund, "raised it"), []string{
-		`tool {"arguments":` + fund + `,"duration_ms":0,"name":"fund","result":"Raised #13's budget by 1.00 EUR to 3.00 and posted your note as the answer; the card resumes."}`,
-		`applied {"result":"Raised #13's budget by 1.00 EUR to 3.00 and posted your note as the answer; the card resumes.","tool":"fund"}`,
-		`text {"text":"raised it"}`, `done {}`})
+	equal(t, "the unattended fund", agentCall(t, r, path, ck, csrf, "fund", fund, "funded it"), []string{
+		`tool {"arguments":` + fund + `,"duration_ms":0,"name":"fund","result":"Case 1 took fund."}`,
+		`applied {"result":"Case 1 took fund.","tool":"fund"}`,
+		`text {"text":"funded it"}`, `done {}`})
+	equal(t, "the agent's answer", lastAct(t, r),
+		[]any{"t-e", int64(1), "anna", factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
 	card, _, _ := r.Task(t.Context(), "t-e")
 	equal(t, "the card's budget", card.BudgetEUR, 3.0)
-	rows := agentFundRows(r)
-	if len(rows) != 4 || rows[3].Actor != "anna" || rows[3].TaskID != "t-e" {
-		t.Fatalf("the agent rows = %+v, want the raise's own row by anna on t-e", rows)
-	}
-	equal(t, "the raise's row", []any{rows[3].Detail["decider"], rows[3].Detail["amount_eur"], rows[3].Detail["from_eur"], rows[3].Detail["to_eur"]},
-		[]any{"agent", 1.0, 2.0, 3.0})
-	used, err := r.AgentFundedEUR(t.Context(), "sf/code", now)
-	if err != nil || used != 4 {
-		t.Fatalf("the month's use = %v, %v; want 4 of the pool's 12, EUR 8 left", used, err)
-	}
+	equal(t, "the pool line after the agent's fund", poolLineOf(t, r, now), []any{12.0, 4.0, true, false,
+		"0 of 30 sessions, 0 h of 30 h agent time and €4.00 of €12.00 drawn this UTC month"})
 
-	// the member's confirmed raise is their money: the pool keeps 4 of 12
+	// anna's confirmed fund of 2 EUR: the same answer on rung 3, a pool
+	// draw as well
 	r.SetLoadedAutonomy(policy.AutonomyManual)
 	theirFund := `{"task_id":"t-e","eur":2,"text":"my call"}`
-	needsNone := proposeFund(t, r, path, ck, csrf, theirFund)
-	r.Reply([]string{Say("the card needs no raise")}) // the refused press's follow-up turn
-	_, body = pressPoolRaw(t, r, path, ck, csrf, needsNone, "")
-	if !strings.Contains(body, "Refused: Card #13's remaining budget can fund a session's opening calls: it needs no raise; answer it (answer).") {
-		t.Fatalf("the member's raise of a card that needs none = %s", body)
-	}
-	if card, _, _ = r.Task(t.Context(), "t-e"); card.BudgetEUR != 3 {
-		t.Fatalf("the refused raise moved the budget to %v", card.BudgetEUR)
-	}
-	r.SetSessionFloor("t-e", 4) // the card waits on a human again, at 3 of its floor 4
 	token = proposeFund(t, r, path, ck, csrf, theirFund)
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
-	if code != http.StatusOK || !strings.Contains(body, "Raised #13's budget by 2.00 EUR to 5.00") {
-		t.Fatalf("the member's Do it = %d:\n%s", code, body)
+	if code != http.StatusOK || !strings.Contains(body, "Case 1 took fund.") {
+		t.Fatalf("anna's Do it = %d:\n%s", code, body)
 	}
-	if card, _, _ = r.Task(t.Context(), "t-e"); card.BudgetEUR != 5 {
-		t.Fatalf("budget_eur = %v, want 5", card.BudgetEUR)
-	}
-	if used, err = r.AgentFundedEUR(t.Context(), "sf/code", now); err != nil || used != 4 {
-		t.Fatalf("the month's use = %v, %v; want 4 still: the member's raise spends no pool", used, err)
-	}
-	var theirs []factoryd.Event
-	for _, e := range r.Events() {
-		if e.Kind == factoryd.EventCardFunded && e.Detail["amount_eur"] == 2.0 {
-			theirs = append(theirs, e)
-		}
-	}
-	if len(theirs) != 1 || theirs[0].Detail["decider"] == "agent" {
-		t.Fatalf("the member's row = %+v, want one the pool does not count", theirs)
-	}
-
-	// the raise and its card_funded row commit as one: an amount the
-	// store refuses — no amount above zero, a fraction below a cent — and
-	// a spine that refuses the audit row each leave the card and the
-	// funding rows exactly as they stand
-	held, _, _ := r.Task(t.Context(), "t-e")
-	auditRows, spine := len(agentFundRows(r)), len(r.Events())
-	raise := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat,
-		Actor: "anna", TaskID: "t-e", Detail: map[string]any{"decider": "agent"}}
-	unchanged := func(what string) {
-		t.Helper()
-		card, _, _ := r.Task(t.Context(), "t-e")
-		if card.BudgetEUR != held.BudgetEUR || len(agentFundRows(r)) != auditRows || len(r.Events()) != spine {
-			t.Fatalf("%s moved the card to %v or wrote a row (agent rows %d of %d, spine %d of %d)",
-				what, card.BudgetEUR, len(agentFundRows(r)), auditRows, len(r.Events()), spine)
-		}
-	}
-	for _, tc := range []struct {
-		name string
-		eur  float64
-		want string
-	}{
-		{"no amount in EUR above zero", -1, "no amount in EUR above zero"},
-		{"a fraction below a cent", 0.001, "no amount in whole cents"},
-	} {
-		if _, _, err := r.FundCard(t.Context(), "t-e", tc.eur, 5, raise); err == nil || !strings.Contains(err.Error(), tc.want) {
-			t.Fatalf("the %s refusal = %v, want it to name %q", tc.name, err, tc.want)
-		}
-		unchanged("the " + tc.name + " refusal")
-	}
-	r.SetCardBudget("t-e", 2.005) // a budget itself no whole cents
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, 5, raise); err == nil || !strings.Contains(err.Error(), "no amount in whole cents") {
-		t.Fatalf("the raise on a budget no whole cents = %v", err)
-	}
-	r.SetCardBudget("t-e", held.BudgetEUR)
-	unchanged("the refused raise on a budget no whole cents")
-	r.FailRecords(errors.New("the spine is down"))
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, 12, raise); err == nil || err.Error() != "the spine is down" {
-		t.Fatalf("the refused audit row = %v, want the spine's own refusal", err)
-	}
-	unchanged("the refused audit row")
-	r.FailRecords(nil)
-
-	// the sum PGStore's numeric accepts: a budget of 2.20 raised by 0.10
-	// lands at 2.30, the row's own figures from the integer cents of the
-	// sum
-	r.SetCardBudget("t-e", 2.20)
-	from, to, err := r.FundCard(t.Context(), "t-e", 0.10, 12, raise)
-	if err != nil || from != 2.2 || to != 2.3 {
-		t.Fatalf("the 2.20 + 0.10 raise = %v, %v, %v; want 2.20, 2.30", from, to, err)
-	}
-	if card, _, _ = r.Task(t.Context(), "t-e"); card.BudgetEUR != 2.3 {
-		t.Fatalf("the stored budget = %v, want 2.3", card.BudgetEUR)
-	}
-	if rows := agentFundRows(r); rows[len(rows)-1].Detail["to_eur"] != 2.3 {
-		t.Fatalf("the success row's to_eur = %v, want 2.3", rows[len(rows)-1].Detail["to_eur"])
+	equal(t, "anna's answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 3, factoryd.ActFund, 2.0, "my call"})
+	card, _, _ = r.Task(t.Context(), "t-e")
+	equal(t, "the card's budget", card.BudgetEUR, 5.0)
+	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 6}) {
+		t.Fatalf("the month's draws = %+v, %v; want 6 EUR of the pool's 12", drawn, err)
 	}
 }
 
-// The rig's pool sum reads the UTC month of an instant in any zone, as
+// The rig's pool draws read the UTC month of an instant in any zone, as
 // PGStore's date_trunc does.
-func TestPoolFundingRigBounds(t *testing.T) {
+func TestPoolDrawnRigMonth(t *testing.T) {
 	r, _, _, _ := fundRig(t)
 	seedFundRow(t, r, 1.5, time.Date(2025, 11, 30, 23, 0, 0, 0, time.UTC))
 	cet := time.FixedZone("CET", 3600)
 	for _, tc := range []struct {
 		at   time.Time
-		want float64
+		want policy.Draw
 	}{
-		{time.Date(2025, 12, 1, 0, 30, 0, 0, cet), 1.5}, // 2025-11-30 23:30 UTC
-		{time.Date(2025, 12, 1, 1, 30, 0, 0, cet), 0},   // 2025-12-01 00:30 UTC
+		{time.Date(2025, 12, 1, 0, 30, 0, 0, cet), policy.Draw{EUR: 1.5}}, // 2025-11-30 23:30 UTC
+		{time.Date(2025, 12, 1, 1, 30, 0, 0, cet), policy.Draw{}},         // 2025-12-01 00:30 UTC
 	} {
-		if used, err := r.AgentFundedEUR(t.Context(), "sf/code", tc.at); err != nil || used != tc.want {
-			t.Errorf("the use at %s = %v, %v; want %v", tc.at, used, err, tc.want)
+		if drawn, err := r.PoolDrawn(t.Context(), "sf/code", tc.at); err != nil || drawn != tc.want {
+			t.Errorf("the draws at %s = %+v, %v; want %+v", tc.at, drawn, err, tc.want)
 		}
 	}
 }
 
-// TestPoolEscalationFallback is every refusal that hands the raise back
-// to the human: a project without a pool, a pool the month has spent and
-// a per-raise bound the raise passes each answer their own literal, move
-// no budget and write no card_funded row, and the agent's analysis of two
-// verified findings lands inside the card's open ask, where the human
-// reads it with the question.
+// TestPoolEscalationFallback is the refusal that hands the money back to
+// the human: the agent's fund past the month's pool, which the store
+// refuses through Act, reaches the agent whole as a 409, moves no budget
+// and writes no row, and the agent's analysis of two verified findings
+// lands inside the card's open ask, where the human reads it with the
+// question.
 func TestPoolEscalationFallback(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
@@ -338,52 +243,28 @@ func TestPoolEscalationFallback(t *testing.T) {
 		Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#13 needs you: fund?", TaskID: "t-e"}); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	raise := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
-	for _, tc := range []struct {
-		name    string
-		pool    func()
-		funded  int // the card_funded rows the scenarios seeded so far
-		refusal string
-	}{
-		{"no pool", func() {}, 0,
-			"This project sets no pool: discretionary_eur is absent or 0. Record your analysis with attach_analysis; the ask then reaches the human."},
-		{"the month's pool spent", func() {
-			seedFundRow(t, r, 2.5, now) // EUR 2.50 of a pool of EUR 3
-			r.SetLoadedPool(3)
-		}, 1,
-			"The month's pool is €3.00 (discretionary_eur) and €2.50 is funded: €0.50 left, short of €1.00. Record your analysis with attach_analysis; the ask then reaches the human."},
-		{"the per-raise bound", func() {
-			r.SetLoadedPool(10)
-			r.SetLoadedRaiseMax(0.5)
-		}, 1,
-			"A raise of €1.00 passes this project's raise_max_eur of €0.50: raise by at most that, or record your analysis with attach_analysis so the human can fund more."},
-	} {
-		tc.pool()
-		equal(t, "the "+tc.name+" refusal", agentCall(t, r, path, ck, csrf, "fund", raise, "the human decides"), []string{
-			`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: ` + tc.refusal + `"}`,
-			`text {"text":"the human decides"}`, `done {}`})
-		equal(t, "the refused call's status", lastToolRow(t, r, "anna", "fund").Status, http.StatusConflict)
-		card, _, _ := r.Task(t.Context(), "t-e")
-		if card.BudgetEUR != 2 || card.Status != "waiting-human" {
-			t.Fatalf("the %s refusal moved the card to %v %v", tc.name, card.BudgetEUR, card.Status)
-		}
-		var funded, other int
-		for _, e := range r.Events() {
-			if e.Kind == factoryd.EventCardFunded {
-				funded++
-			} else {
-				other++
-			}
-		}
-		if funded != tc.funded || other != 0 {
-			t.Fatalf("after the %s refusal: %d card_funded rows, %d other rows; want %d seeded and nothing written",
-				tc.name, funded, other, tc.funded)
-		}
+	const spent = "the escalation pool leaves 30 sessions, 1800 minutes of agent time and 0.50 EUR this month: only the human draws more"
+	if got := (&factoryd.DrawBoundError{Left: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 0.5}}).Error(); got != spent {
+		t.Fatalf("the store's refusal reads %q, want %q", got, spent)
 	}
+	r.RefuseActs(spent)
+	raise := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
+	equal(t, "the refused fund", agentCall(t, r, path, ck, csrf, "fund", raise, "the human decides"), []string{
+		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: ` + spent + `"}`,
+		`text {"text":"the human decides"}`, `done {}`})
+	equal(t, "the refused call's status", lastToolRow(t, r, "anna", "fund").Status, http.StatusConflict)
+	equal(t, "the refused answer", lastAct(t, r), []any{"t-e", int64(1), "anna", factoryd.ViaChat, 2, factoryd.ActFund, 1.0, "the replica is worth it"})
+	card, _, _ := r.Task(t.Context(), "t-e")
+	if card.BudgetEUR != 2 || card.Status != "waiting-human" {
+		t.Fatalf("the refusal moved the card to %v %v", card.BudgetEUR, card.Status)
+	}
+	if rows := r.Events(); len(rows) != 0 {
+		t.Fatalf("the refusal wrote %+v", rows)
+	}
+	r.RefuseActs("")
 
 	// the analysis of two verified findings, retained inside the ask
-	found := "Two verified findings: the replica doubles the p99 latency, and the month pool is spent."
+	found := "Two verified findings: the replica doubles the p99 latency, and the escalation pool is spent."
 	analysis := `{"task_id":"t-e","found":"` + found + `","recommendation":"Grant one sizing exception"}`
 	equal(t, "the attach_analysis turn", agentCall(t, r, path, ck, csrf, "attach_analysis", analysis, "analysis attached"), []string{
 		`tool {"arguments":` + analysis + `,"duration_ms":0,"name":"attach_analysis","result":"Recorded the analysis inside the ask of #13; the humans read it with the ask."}`,
@@ -412,36 +293,36 @@ func TestPoolEscalationFallback(t *testing.T) {
 }
 
 // TestPoolReadouts is the one projection every surface reads: the project
-// face, the settings, the policy and the chat agree on the unset pool,
-// the configured one's EUR 10, EUR 3 used and EUR 7 left — this
-// repository's own UTC-month agent rows alone, never the model-spend
-// total — and an aggregate error stays an error, never a zero use. The
-// explicit-instant November-to-December fixture turns the month with the
-// allowance preserved.
+// face, the settings, the policy and the chat agree on the policy's pool
+// while the file sets none, then on the file's EUR 10 with this month's
+// pool draws of this repository in three parts (2 sessions, 1 h 20 min
+// of agent time and EUR 3), never the model-spend total, and an
+// unreadable read stays unreadable, never a zero. The explicit-instant
+// November-to-December fixture turns the month with the pool kept.
 func TestPoolReadouts(t *testing.T) {
 	r, path, ck, csrf := poolRig(t)
-	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
 	pages := map[string]string{
 		"the project face": "/?project=" + accProjectName,
 		"the settings":     "/settings",
 		"the policy":       "/policy",
 	}
-	unset := "no pool: discretionary_eur is absent or 0, every agent raise waits for a member"
-	if face := pageGET(t, r, ck, pages["the project face"]); strings.Contains(face, "cell pool") {
-		t.Fatalf("the face reads a pool where the policy sets none:\n%s", face)
-	}
-	for name, p := range map[string]string{"the settings": "/settings", "the policy": "/policy"} {
-		if body := pageGET(t, r, ck, p); !strings.Contains(body, unset) {
-			t.Fatalf("%s reads the unset pool:\n%s", name, body)
+	readAll := func(what, want string) {
+		t.Helper()
+		for name, p := range pages {
+			if body := pageGET(t, r, ck, p); !strings.Contains(body, want) {
+				t.Fatalf("%s lacks %s %q:\n%s", name, what, want, body)
+			}
 		}
 	}
+	policys := "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+	readAll("the policy's pool", policys)
 	for _, tool := range []string{"settings", "policy"} {
-		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, unset) {
-			t.Fatalf("the chat's %s read of the unset pool:\n%s", tool, read)
+		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, policys) {
+			t.Fatalf("the chat's %s read of the policy's pool:\n%s", tool, read)
 		}
 	}
 
-	// configured 10, use 3, remaining 7: the rig's own rows alone
+	// the file's 10 and this month's pool draws of this repository alone
 	r.SetLoadedPool(10)
 	now := time.Now().UTC()
 	// the month before this one off its own UTC start: AddDate off the
@@ -451,63 +332,49 @@ func TestPoolReadouts(t *testing.T) {
 	for _, eur := range []float64{1.5, 1, 0.5} {
 		seedFundRow(t, r, eur, now)
 	}
-	seedFundRowAs(t, r, "sf/other", "agent", factoryd.ViaChat, 5, now)  // another repository
-	seedFundRowAs(t, r, "sf/code", "", factoryd.ViaChat, 4, now)        // the human's own raise
-	seedFundRowAs(t, r, "sf/code", "agent", factoryd.ViaButton, 2, now) // a raise off the chat
-	seedFundRow(t, r, 9, lastMonth)                                     // another month
-	r.SetProjectSpend(factoryd.ProjectSpend{EUR: 42, ChatEUR: 41})      // the model-spend total, never the use
-	ready := "€3.00 of €10.00 funded this UTC month, €7.00 left, each raise at most €1.00; the loaded policy permits an unattended raise from it"
-	for name, p := range pages {
-		if body := pageGET(t, r, ck, p); !strings.Contains(body, ready) {
-			t.Fatalf("%s reads the configured pool:\n%s", name, body)
-		}
-	}
-	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool €3.00") ||
-		!strings.Contains(face, "/ €10.00") || !strings.Contains(face, "€7.00 left") {
-		t.Fatalf("the face's month pool figures:\n%s", face)
+	seedRow(t, r, "sf/code", factoryd.EventCardExtended,
+		map[string]any{"pool": true, "rung": 3, "sessions": 2, "agent_time_s": 4800, "amount_eur": 0.0}, now)
+	seedRow(t, r, "sf/other", factoryd.EventCardFunded, map[string]any{"pool": true, "amount_eur": 5.0}, now) // another repository
+	seedRow(t, r, "sf/code", factoryd.EventCardFunded, map[string]any{"amount_eur": 4.0}, now)                // no pool draw
+	seedFundRow(t, r, 9, lastMonth)                                                                           // another month
+	r.SetProjectSpend(factoryd.ProjectSpend{EUR: 42, ChatEUR: 41})                                            // the model spend, never a draw
+	drawn := "2 of 30 sessions, 1 h 20 min of 30 h agent time and €3.00 of €10.00 drawn this UTC month"
+	readAll("the file's pool", drawn)
+	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool: "+drawn) {
+		t.Fatalf("the face's pool cell:\n%s", face)
 	}
 	for _, tool := range []string{"settings", "policy"} {
-		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, ready) {
-			t.Fatalf("the chat's %s read of the configured pool:\n%s", tool, read)
+		if read := chatRead(t, r, path, ck, csrf, "sebastian", tool); !strings.Contains(read, drawn) {
+			t.Fatalf("the chat's %s read of the file's pool:\n%s", tool, read)
 		}
 	}
-	if used, err := r.AgentFundedEUR(t.Context(), "sf/code", now); err != nil || used != 3 {
-		t.Fatalf("the aggregate = %v, %v; want 3, the decoys excluded", used, err)
+	want := policy.Draw{Sessions: 2, AgentTime: 80 * time.Minute, EUR: 3}
+	if got, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || got != want {
+		t.Fatalf("the draws = %+v, %v; want %+v, the decoys excluded", got, err, want)
 	}
 
-	// the aggregate's error never becomes a zero use
+	// the read's failure never becomes a zero
 	r.FailPoolReads(errors.New("the spine is down"))
-	unreadable := "the pool stands at €10.00 but its usage could not be read: how much is left is unknown, and a standing pool is not unattended authority"
+	unreadable := "the pool is 30 sessions, 30 h of agent time and €10.00 this UTC month, but what its cards drew could not be read"
+	readAll("the unreadable draws", unreadable)
 	for name, p := range pages {
-		body := pageGET(t, r, ck, p)
-		if !strings.Contains(body, unreadable) || strings.Contains(body, "€0.00 left") {
-			t.Fatalf("%s reads the failed aggregate:\n%s", name, body)
+		if body := pageGET(t, r, ck, p); strings.Contains(body, "€0.00 of €10.00") {
+			t.Fatalf("%s reads the failed read as zero:\n%s", name, body)
 		}
 	}
-	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, "pool unread") {
-		t.Fatalf("the face's unread month pool:\n%s", face)
+	if face := pageGET(t, r, ck, pages["the project face"]); !strings.Contains(face, `class="cell pool warn"`) {
+		t.Fatalf("the face's unread pool is no warning:\n%s", face)
 	}
 	if read := chatRead(t, r, path, ck, csrf, "sebastian", "settings"); !strings.Contains(read, unreadable) {
-		t.Fatalf("the chat's settings read of the failed aggregate:\n%s", read)
+		t.Fatalf("the chat's settings read of the failed read:\n%s", read)
 	}
 	r.FailPoolReads(nil)
 
-	// readiness explains the confirmation: at manual the raise is the
-	// member's money
-	r.SetLoadedAutonomy(policy.AutonomyManual)
-	confirmed := "€3.00 of €10.00 funded this UTC month, €7.00 left, each raise at most €1.00; fund is confirmed at this autonomy: a raise is the member's money and meets no pool bound"
-	for name, p := range pages {
-		if body := pageGET(t, r, ck, p); !strings.Contains(body, strings.ReplaceAll(confirmed, "'", "&#39;")) {
-			t.Fatalf("%s reads the confirmed fund:\n%s", name, body)
-		}
-	}
-
-	// the November-to-December rollover, the explicit instant alone: the
+	// the November-to-December turn, the explicit instant alone: the
 	// production read-helper (Console.ProjectPool) carries its instant in
-	// its contract, so the fixture reads it at both — allowance from the
-	// policy in force, usage the month's own rows, remaining their
-	// difference — and the turn of the month preserves the allowance
-	// while the use resets and the remaining returns to it
+	// its contract, so the fixture reads it at both, the pool from the
+	// policy in force and the draws the month's own rows, and the turn of
+	// the month keeps the pool while the draws reset
 	nov, dec := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC), time.Date(2026, 12, 3, 9, 0, 0, 0, time.UTC)
 	r2, _, _ := NewAcceptanceRig(t, false, nil)
 	r2.SetLoadedPool(10)
@@ -520,11 +387,10 @@ func TestPoolReadouts(t *testing.T) {
 	p2 := factoryd.Project{Name: accProjectName, Repository: "sf/code"}
 	readout := func(at time.Time) []any {
 		pl := r2.c.ProjectPool(t.Context(), v2, p2, at)
-		return []any{pl.ConfiguredEUR, pl.UsedEUR, pl.RemainingEUR, pl.Month}
+		return []any{pl.Pool.EUR, pl.Drawn.EUR, pl.Month, pl.Words}
 	}
-	equal(t, "November's readout", readout(nov), []any{10.0, 2.0, 8.0, "2026-11"})
-	equal(t, "December's readout", readout(dec), []any{10.0, 0.0, 10.0, "2026-12"})
-	if words := r2.c.ProjectPool(t.Context(), v2, p2, dec).Words; !strings.Contains(words, "€10.00 left") {
-		t.Fatalf("December's words lack the remaining 10:\n%s", words)
-	}
+	equal(t, "November's readout", readout(nov), []any{10.0, 2.0, "2026-11",
+		"0 of 30 sessions, 0 h of 30 h agent time and €2.00 of €10.00 drawn this UTC month"})
+	equal(t, "December's readout", readout(dec), []any{10.0, 0.0, "2026-12",
+		"0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €10.00 drawn this UTC month"})
 }

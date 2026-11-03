@@ -37,6 +37,9 @@ type ActInput struct {
 	// card's choice, whose work the console does, and for factoryd's own
 	// answer, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
+	// Detail are keys every row of the answer carries beside Act's own,
+	// which they never replace: the chat token behind a token's turn.
+	Detail map[string]any
 }
 
 // ActResult is what an answer did: the case as it stands after it, what
@@ -119,7 +122,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	ends := c.ID != 0 && res.Action != ActNote
 	answers := ends && res.Action != ActWithdraw
 	posts := answers && in.Post != nil
-	if res.Action == ActClose {
+	if res.Action == ActClose && !choice {
 		closed, err := r.closeCard(ctx, t, in, posts)
 		if err != nil {
 			return out, ranErr(out.Did, err)
@@ -169,6 +172,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if choice {
 		detail["value"] = res.Action
 	}
+	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
 	if t.Kind == "human" {
 		return out, nil // a human card runs no workflow: a signal would start one
@@ -319,7 +323,7 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if len(names) == 0 {
 		return why + ", and " + who(in.Rung) + " may take no action on a card with no open case"
 	}
-	return why + ", and " + who(in.Rung) + " may take " + andList(names)
+	return why + ", and " + who(in.Rung) + " may take " + textutil.AndList(names)
 }
 
 // humanChoice is why human card t's case does not take in, "" when it
@@ -447,6 +451,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	if !slices.Contains(f.Partial, "timeline") {
 		detail["findings"] = nonNil(f.Findings)
 	}
+	beside(detail, in.Detail)
 	esc := v.EscalationOf(t.Repository)
 	draw := &CaseDraw{Rung: in.Rung, Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget,
 		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool,
@@ -458,6 +463,15 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 		draw.Lines, _ = toInt(in.Res.Args["lines"])
 	}
 	return draw
+}
+
+// beside adds the keys of extra that detail does not hold.
+func beside(detail, extra map[string]any) {
+	for k, v := range extra {
+		if _, set := detail[k]; !set {
+			detail[k] = v
+		}
+	}
 }
 
 // drawActions are the steps of draw d that res makes: its action's own
@@ -490,7 +504,7 @@ func drawWords(d policy.Draw) string {
 	if d.EUR != 0 {
 		parts = append(parts, fmt.Sprintf("%.2f EUR", d.EUR))
 	}
-	return andList(parts)
+	return textutil.AndList(parts)
 }
 
 // sentence says r in a few words: its action and what it draws from the

@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // stallCard is sf/code's chain stall card, #41, as the poller files it.
@@ -34,8 +35,9 @@ func stallCard() factoryd.BoardTask {
 
 // The stall card's answers carry the card's commit: "re-run again"
 // re-runs the head's pending runs and keeps the card waiting, nothing
-// posted; "check again" closes the card and touches nothing else;
-// "dismiss" dismisses the stall as the member and closes the card. A
+// posted, a note on its case; "check again" closes the card and touches
+// nothing else; "dismiss" dismisses the stall as the human and closes
+// the card; both resolve its case with their value. A
 // Forgejo that re-runs nothing refuses the re-run with both causes and
 // what still fits;
 // a head that moved on or concluded refuses with its own line, the card
@@ -89,8 +91,10 @@ func TestStallCardAnswers(t *testing.T) {
 	if !slices.Equal(r.reran, []string{"sf/code@c2c2c2c"}) || len(r.fg.patched) != 0 || r.fg.comments[comments] != "" || len(r.dismissed) != 0 {
 		t.Fatalf("re-run again: reran %v, patched %v, comment %q, dismissed %v; want the re-run alone", r.reran, r.fg.patched, r.fg.comments[comments], r.dismissed)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
-		detail: map[string]any{"answer": "Re-run again", "value": factoryd.AnswerRerunAgain}})
+	checkRows(t, ev, before)
+	got, _ := actedOnce(t, r)
+	equal(t, "the re-run's note", got, factoryd.ActInput{TaskID: "t-stall", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "Re-run again"}})
 
 	// Forgejo re-runs nothing: a 404 (no rerun API before 17) or a 403 (a
 	// token without the right) both arrive as ErrNoRerun; the line names
@@ -124,7 +128,9 @@ func TestStallCardAnswers(t *testing.T) {
 	if !slices.Equal(r.fg.patched, closed) || r.fg.comments[comments] != "Check again" || len(r.reran) != 0 || len(r.dismissed) != 0 {
 		t.Fatalf("check again: patched %v, comment %q, reran %v, dismissed %v; want the card closed alone", r.fg.patched, r.fg.comments[comments], r.reran, r.dismissed)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Check again"}})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Check again"}},
+		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
+			detail: map[string]any{"action": factoryd.AnswerCheckAgain, "case_id": int64(1), "answer": "Check again", "value": factoryd.AnswerCheckAgain}})
 
 	r, ev, before, code, body = click(t, factoryd.AnswerDismiss)
 	if code != http.StatusSeeOther {
@@ -133,7 +139,9 @@ func TestStallCardAnswers(t *testing.T) {
 	if !slices.Equal(r.dismissed, []string{"sf/code@c2c2c2c by sebastian"}) || !slices.Equal(r.fg.patched, closed) || len(r.reran) != 0 {
 		t.Fatalf("dismiss: dismissed %v, patched %v, reran %v; want the stall dismissed and the card closed", r.dismissed, r.fg.patched, r.reran)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Dismiss"}})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-stall", detail: map[string]any{"note": "Dismiss"}},
+		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-stall",
+			detail: map[string]any{"action": factoryd.AnswerDismiss, "case_id": int64(1), "answer": "Dismiss", "value": factoryd.AnswerDismiss}})
 
 	for _, tc := range []struct {
 		value string
@@ -200,22 +208,17 @@ func rollFailedCard() factoryd.BoardTask {
 // The failed-roll card's three choices act from the board: the face, the
 // lanes view's escalations and the drawer offer them as buttons. "Retry the roll" posts its exact
 // label as the member's comment, the roller's retry, and keeps the card
-// in place: the roller closes it and files the new roll. "Park" records
-// the answer and posts nothing; "Close" closes the card off the board.
-// The human card runs no workflow, so no answer signals one. Words that
-// name no choice are refused with the choices.
+// in place: the roller closes it and files the new roll. "Park" leaves a
+// note on the card's case and posts nothing; "Close" closes the card off
+// the board. Each resolves the card's case through Act with its value,
+// park aside. Words that name no choice are refused with the choices.
 func TestRollFailedCardAnswers(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/42/comments"
 	closed := []string{`/api/v1/repos/sf/code/issues/42 {"state":"closed"}`}
-	var whole []string
 	click := func(t *testing.T, value, answer string) (*rig, *fakeEvents, int, int, string) {
 		t.Helper()
 		r, ev := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{rollFailedCard()}
-		r.c.cfg.AnswerWhole = func(_ context.Context, taskID string, comment int64, by string) error {
-			whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
-			return nil
-		}
 		ck, s := r.loggedIn(t)
 		before := ev.count()
 		rec := r.do(post("/tasks/t-roll/answer", url.Values{"csrf": {s.csrf}, "value": {value}, "answer": {answer}}), ck)
@@ -269,35 +272,42 @@ func TestRollFailedCardAnswers(t *testing.T) {
 		}
 	}
 
-	r, ev, before, code, body := click(t, factoryd.AnswerRetryRoll, "")
+	act := func(action, note string) factoryd.ActInput {
+		return factoryd.ActInput{TaskID: "t-roll", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+			Res: factoryd.Resolution{Action: action, Note: note}}
+	}
+	r, _, _, code, body := click(t, factoryd.AnswerRetryRoll, "")
 	if code != http.StatusSeeOther {
 		t.Fatalf("retry = %d %q, want 303", code, body)
 	}
-	if r.fg.comments[comments] != "Retry the roll" || len(r.fg.patched) != 0 || len(whole) != 0 {
-		t.Fatalf("retry: comment %q, patched %v, whole %v; want the exact label posted, the card kept, no signal", r.fg.comments[comments], r.fg.patched, whole)
+	if r.fg.comments[comments] != "Retry the roll" || len(r.fg.patched) != 0 {
+		t.Fatalf("retry: comment %q, patched %v; want the exact label posted, the card kept", r.fg.comments[comments], r.fg.patched)
 	}
-	retried := postedDetail(1)
-	retried["value"] = factoryd.AnswerRetryRoll
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll", detail: retried})
+	got, posts := actedOnce(t, r)
+	equal(t, "the retry", []any{got, posts}, []any{act(factoryd.AnswerRetryRoll, "Retry the roll"), true})
 
-	r, ev, before, code, body = click(t, factoryd.AnswerPark, "")
+	r, _, _, code, body = click(t, factoryd.AnswerPark, "")
 	if code != http.StatusSeeOther {
 		t.Fatalf("park = %d %q, want 303", code, body)
 	}
 	if r.fg.comments[comments] != "" || len(r.fg.patched) != 0 {
 		t.Fatalf("park: comment %q, patched %v; want nothing posted", r.fg.comments[comments], r.fg.patched)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll",
-		detail: map[string]any{"answer": "Park", "value": factoryd.AnswerPark}})
+	got, posts = actedOnce(t, r)
+	equal(t, "the park", []any{got, posts}, []any{act(factoryd.ActNote, "Park"), false})
 
-	r, ev, before, code, body = click(t, factoryd.AnswerClose, "")
+	r, ev, before, code, body := click(t, factoryd.AnswerClose, "")
 	if code != http.StatusSeeOther {
 		t.Fatalf("close = %d %q, want 303", code, body)
 	}
 	if !slices.Equal(r.fg.patched, closed) || r.fg.comments[comments] != "Close" {
 		t.Fatalf("close: patched %v, comment %q; want the card closed", r.fg.patched, r.fg.comments[comments])
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-roll", detail: map[string]any{"note": "Close"}})
+	got, posts = actedOnce(t, r)
+	equal(t, "the close", []any{got, posts}, []any{act(factoryd.AnswerClose, "Close"), false})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-roll", detail: map[string]any{"note": "Close"}},
+		wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-roll",
+			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose}})
 
 	r, ev, before, code, body = click(t, "", "retry it next week")
 	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close.\n" || ev.count() != before || len(r.fg.patched) != 0 {
@@ -328,14 +338,14 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 	equal(t, "the patches", r.fg.patched, []string(nil))
 }
 
-// A human card's answers act by its choices: park keeps the card and
-// posts nothing, close ends it on the label, free words are the member's
-// comment, signal no workflow, and the card keeps waiting; a value the
-// question does not offer is refused with the labels. The go choice is
+// A human card's answers act by its choices: park keeps the card, posts
+// nothing and leaves a note on its case, close ends it on the label and
+// resolves its case with the value, free words are the human's comment
+// and a note, and the card keeps waiting; a value the question does not
+// offer is refused with the labels. The go choice is
 // TestGoHandsTheWaitingCardOver's.
 func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
-	signals := 0
 	q := func() factoryd.BoardTask {
 		return humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
 			factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
@@ -344,33 +354,37 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 		t.Helper()
 		r, ev := newRigWithEvents(t)
 		r.tasks.tasks = []factoryd.BoardTask{q()}
-		r.c.cfg.AnswerWhole = func(context.Context, string, int64, string) error { signals++; return nil }
 		ck, s := r.loggedIn(t)
 		form.Set("csrf", s.csrf)
 		before := ev.count()
 		rec := r.do(post("/tasks/t-hq/answer", form), ck)
 		return r, ev, before, rec.Code, rec.Body.String()
 	}
+	act := func(action, note string) factoryd.ActInput {
+		return factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+			Res: factoryd.Resolution{Action: action, Note: note}}
+	}
 
-	r, ev, before, code, _ := click(t, url.Values{"value": {"park"}})
+	r, _, _, code, _ := click(t, url.Values{"value": {"park"}})
 	if code != http.StatusSeeOther || len(r.fg.patched) != 0 || r.fg.comments[comments] != "" {
 		t.Errorf("park = %d, patched %v, comment %q; want the card kept and nothing posted", code, r.fg.patched, r.fg.comments[comments])
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq", detail: map[string]any{"answer": "Wait for it", "value": "park"}})
+	got, _ := actedOnce(t, r)
+	equal(t, "the park", got, act(factoryd.ActNote, "Wait for it"))
 
 	r, _, _, code, _ = click(t, url.Values{"value": {"close"}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Done" || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
 		t.Errorf("close = %d, comment %q, patched %v; want the label as the note and the issue closed", code, r.fg.comments[comments], r.fg.patched)
 	}
+	got, _ = actedOnce(t, r)
+	equal(t, "the close", got, act(factoryd.AnswerClose, "Done"))
 
-	r, ev, before, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
+	r, _, _, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Use Postgres." || len(r.fg.patched) != 0 {
 		t.Errorf("free text = %d, comment %q, patched %v; want one comment and the card kept", code, r.fg.comments[comments], r.fg.patched)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq"})
-	if signals != 0 {
-		t.Errorf("the human card's words signalled %d workflows, want none", signals)
-	}
+	got, _ = actedOnce(t, r)
+	equal(t, "the words", got, act(factoryd.ActNote, "Use Postgres."))
 
 	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
 	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
@@ -379,8 +393,8 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 }
 
 // The board's answer route takes an agent card's close value as its
-// Close: the issue closes with nothing posted on it, and no answer is
-// recorded.
+// Close: Act closes the card on its case, the console posts nothing and
+// patches nothing, and Act's answer is the one row.
 func TestAgentCardCloseValueEndsTheCard(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	r.tasks.tasks = []factoryd.BoardTask{agentEndsAsk()}
@@ -388,10 +402,14 @@ func TestAgentCardCloseValueEndsTheCard(t *testing.T) {
 	before := ev.count()
 	rec := r.do(post("/tasks/t-a/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerClose}}), ck)
 	comments := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments")
-	if rec.Code != http.StatusSeeOther || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) || len(comments) != 0 {
-		t.Errorf("close = %d, patched %v, comments %q; want the issue closed and nothing posted", rec.Code, r.fg.patched, comments)
+	if rec.Code != http.StatusSeeOther || len(r.fg.patched) != 0 || len(comments) != 0 {
+		t.Errorf("close = %d, patched %v, comments %q; want Act's close alone", rec.Code, r.fg.patched, comments)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": ""}})
+	got, posts := actedOnce(t, r)
+	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-a", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActClose}}, false})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-a",
+		detail: map[string]any{"action": factoryd.ActClose, "case_id": int64(1), "answer": factoryd.ActClose}})
 }
 
 // A chat escalation's choices are their own labels as values: one that
@@ -408,41 +426,37 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 			!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
 			t.Errorf("%s = %d, dismissed %v, comment %q, patched %v; want a close on the label", word, rec.Code, r.dismissed, r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"], r.fg.patched)
 		}
-		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"})
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-hq"},
+			wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-hq",
+				detail: map[string]any{"action": "say:" + word, "case_id": int64(1), "answer": word, "value": "say:" + word}})
 	}
 }
 
-// The extend action: one store transaction raises the card's session cap,
-// line bound and budget, and the note answers the card so the run takes
-// the raise when the answer wakes it.
+// The extend action is an extend through Act on the card's live case:
+// its sessions and lines, the money drawn beside it, and the note Act has
+// posted as the answer. A raise of money alone is a fund.
 func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
-	note, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "the restructure is worth it")
-	if err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "the restructure is worth it"); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
-	if want := "Extended #13: +1 session, +500 lines, +2.00 EUR (budget 2.00 to 4.00), and posted your note as the answer; the card resumes."; note != want {
-		t.Errorf("note = %q, want %q", note, want)
-	}
-	task, _, _ := r.tasks.Task(t.Context(), "t-e")
-	if task.BudgetEUR != 4 || task.Usage.RaisedSessions != 1 || task.Usage.ExtraLines != 500 {
-		t.Errorf("the card after the extend = budget %v, usage %+v, want 4 EUR, one extra session, 500 extra lines", task.BudgetEUR, task.Usage)
-	}
-	var rows []factoryd.Event
-	for _, e := range r.events.all() {
-		if e.Kind == factoryd.EventCardExtended {
-			rows = append(rows, e)
-		}
-	}
-	if len(rows) != 1 || rows[0].Actor != "sebastian" || rows[0].Detail["sessions"] != 1 || rows[0].Detail["lines"] != 500 || rows[0].Detail["amount_eur"] != 2.0 {
-		t.Errorf("card_extended rows = %+v, want one of sebastian's raise", rows)
-	}
+	got, posts := actedOnce(t, r)
+	equal(t, "the extend", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 500}, Fund: &policy.Draw{EUR: 2},
+			Note: "the restructure is worth it"}}, true})
 	r.fg.mu.Lock()
-	defer r.fg.mu.Unlock()
-	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "the restructure is worth it" {
-		t.Errorf("posted = %q, want the note as the answer", posted)
+	posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
+	r.fg.mu.Unlock()
+	equal(t, "the answer posted", posted, "the restructure is worth it")
+
+	r = fundRig(t)
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 1.5, ""); err != nil {
+		t.Fatalf("extend by money alone: %v", err)
 	}
+	got, _ = actedOnce(t, r)
+	equal(t, "the money alone", got.Res, factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.5},
+		Note: "Extended the card: +0 sessions, +0 lines, +1.50 EUR."})
 }
 
 // Nothing extends when the raise names nothing or names a negative: the
@@ -513,39 +527,26 @@ func setStatus(r *rig, status string) {
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
 }
 
-// A live card that is not waiting takes the raise too: the caps move, the
-// event is recorded and nothing is posted, for the run reads the raise at
-// its next cap check.
+// A live card that is not waiting takes the raise too: an extend on no
+// case, nothing posted, for the run reads the raise at its next cap check.
 func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 	for _, status := range []string{"queued", "running"} {
 		r := fundRig(t)
 		setStatus(r, status)
 		_, s := r.loggedIn(t)
-		note, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "")
-		if err != nil {
+		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, ""); err != nil {
 			t.Fatalf("%s: extend: %v", status, err)
 		}
-		if want := "Extended #13: +1 session, +500 lines, +2.00 EUR (budget 2.00 to 4.00); the card reads the raise at its next cap check."; note != want {
-			t.Errorf("%s: note = %q, want %q", status, note, want)
-		}
-		task, _, _ := r.tasks.Task(t.Context(), "t-e")
-		if task.BudgetEUR != 4 || task.Usage.RaisedSessions != 1 || task.Usage.ExtraAttempts != 0 || task.Usage.ExtraLines != 500 {
-			t.Errorf("%s: the card after the extend = budget %v, usage %+v, want 4 EUR, one raised session, 500 extra lines", status, task.BudgetEUR, task.Usage)
-		}
-		rows := 0
-		for _, e := range r.events.all() {
-			if e.Kind == factoryd.EventCardExtended {
-				rows++
-			}
-		}
-		if rows != 1 {
-			t.Errorf("%s: card_extended rows = %d, want 1", status, rows)
+		got, _ := actedOnce(t, r)
+		if got.CaseID != 0 || got.Res.Action != factoryd.ActExtend {
+			t.Errorf("%s: Act took %+v, want an extend on no case", status, got)
 		}
 		r.fg.mu.Lock()
-		if len(r.fg.comments) != 0 {
-			t.Errorf("%s: the extend posted %q", status, r.fg.comments)
-		}
+		comments := len(r.fg.comments)
 		r.fg.mu.Unlock()
+		if comments != 0 {
+			t.Errorf("%s: the extend of a live card posted %d comments", status, comments)
+		}
 	}
 }
 
@@ -653,39 +654,5 @@ func TestBareGrantReoffersTheDenialsNote(t *testing.T) {
 	defer r.fg.mu.Unlock()
 	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: split the migration first" {
 		t.Errorf("posted = %q, want the denial's note re-offered", posted)
-	}
-}
-
-// A plan card that has run no session yet has no alias on its row: the
-// grant still asks the floor, which prices the class's session model, and
-// the floor's refusal turns the grant away with nothing posted.
-func TestUnfundedSessionAsksTheFloorForACardWithNoAlias(t *testing.T) {
-	r := fundRig(t)
-	r.tasks.mu.Lock()
-	for i := range r.tasks.tasks {
-		if r.tasks.tasks[i].ID == "t-e" {
-			r.tasks.tasks[i].ModelAlias = ""
-		}
-	}
-	r.tasks.mu.Unlock()
-	const why = "0.10 EUR free, 0.60 needed"
-	var asked []string
-	r.c.cfg.SessionFunded = func(_ context.Context, taskID, model string) (string, error) {
-		asked = append(asked, taskID+":"+model)
-		return why, nil
-	}
-	_, s := r.loggedIn(t)
-	_, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "")
-	var no *refusal
-	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != why {
-		t.Fatalf("grant on a card with no alias = %v, want the floor's refusal %q", err, why)
-	}
-	if !slices.Equal(asked, []string{"t-e:"}) {
-		t.Errorf("the floor was asked %q, want once for t-e with no alias", asked)
-	}
-	r.fg.mu.Lock()
-	defer r.fg.mu.Unlock()
-	if len(r.fg.comments) != 0 {
-		t.Errorf("a refused grant posted %q", r.fg.comments)
 	}
 }

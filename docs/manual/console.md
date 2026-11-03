@@ -133,13 +133,24 @@ decimals: a task's model calls cost fractions of a cent.
   autonomy lets the agent act alone. The `alerts` tool lists the alerts.
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
-  makes it a task. An escalation's answer is an issue comment as the
-  human, which resumes the task through the human-comment path.
+  makes it a task. An escalation's answer resolves the card's newest open
+  case through factoryd's `Act`, as the human. Words alone go on. A typed
+  action can resume the card, hand it to the same, a stronger or a
+  cheaper model, check it again, route it for approval, rerun its checks,
+  give it more sessions, agent time or lines, fund it, raise its ceiling,
+  file a successor, retry or replan a failed dependency, close it, or note
+  a step and keep waiting. The Grant button gives one more session. A
+  fund can also go beside another action and draws its money with it.
+  Once the answer passes, its words are posted on the issue as the human.
+  A card that waits with no open case refuses the answer until the heal
+  pass opens one, within a minute. The project agent's `answer` takes the
+  same `action` and a `fund_eur` beside it.
 - Approval cards in the human lane, from `approval_requests`. Each opens
   with its brief, one factoryd call (purpose `brief`) a moment after the
   request files. A brief the card's own budget refuses (`refused_budget`)
   says so in its place, and an approver's Fund there (`POST
-  /tasks/{id}/fund`) raises the card's budget and queues the brief again,
+  /tasks/{id}/fund`) draws the card's money from the escalation pool and
+  queues the brief again,
   without answering the card. A resource
   request shows its type, purpose, lease, monthly cost, project and task;
   approve for the task or the project, or deny with a reason (`decided_by`,
@@ -320,12 +331,17 @@ decimals: a task's model calls cost fractions of a cent.
   cap, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
-  one, and a refusal names the fitting action. `set_pool` sets the
-  project's discretionary pool or tops up the standing one (a
-  `discretionary_eur` of a budget block whose `month_eur` and
-  `raise_max_eur` above 0 already stand, written through a pull request
-  on its project file), and the OK is asked for it at every autonomy
-  level.
+  one, and a refusal names the fitting action. `set_pool` sets the money
+  of the project's escalation pool, or tops up the money its project file
+  already sets, as `escalation.pool.eur` written through a pull request on
+  that file. The OK is asked for it at every autonomy level. The
+  escalation pool is what every extend and fund of the project's cards
+  draws from in a UTC month, in three parts: sessions, agent time and
+  money. The policy tree sets them, `escalation.pool` in `policy.yaml` or
+  the project file, and 30 sessions, 30 hours and 60 EUR stand where
+  neither does. The board's pool cell and the chat's status line read
+  what the cards drew against it, and say overdrawn once a part is past
+  its pool. Past it, only the human draws more until the month turns.
 
 ## Projects (task 65)
 

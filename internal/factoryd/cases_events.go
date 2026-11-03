@@ -354,6 +354,10 @@ func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, no
 // own answer ends. newestAskCase leaves them out.
 var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation}
 
+// AnsweredOnCard reports whether an answer on the card ends a case of
+// kind k: every kind but ownAnswerKinds, whose own answers end them.
+func AnsweredOnCard(k CaseKind) bool { return !slices.Contains(ownAnswerKinds, k) }
+
 // newestAskCase is the id of task taskID's newest live case an answer on
 // the card ends, 0 for none: not one of ownAnswerKinds.
 func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (int64, error) {

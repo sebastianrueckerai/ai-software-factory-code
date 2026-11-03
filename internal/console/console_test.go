@@ -1185,6 +1185,13 @@ type rig struct {
 	imageAsks []string
 	imageAsk  factoryd.ImageAsk
 	imageErr  error
+	// acted are the answers Act took, actErr its refusal; the fake has a
+	// case-resolving answer's Post post its comment, as Act does
+	acted  []factoryd.ActInput
+	actErr error
+	// drawn is PoolDrawn's answer, drawnErr its failure
+	drawn    policy.Draw
+	drawnErr error
 }
 
 var monthly = 8.99
@@ -1257,7 +1264,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Pools: r.events,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
@@ -1283,9 +1290,63 @@ func newRig(t *testing.T) *rig {
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
 		},
-		OpenCasesOf: func(_ context.Context, taskID string) ([]factoryd.Case, error) { return r.openCases[taskID], nil },
-		CaseSteps:   func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
-		ChatToken:   func(factoryd.Project) string { return r.chatToken },
+		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+			if r.openCases != nil {
+				return r.openCases[taskID], nil
+			}
+			// a card waiting on a human has its live case, as after the
+			// cases' heal, unless the test seats cases of its own
+			k, ok, _ := r.tasks.Task(ctx, taskID)
+			switch {
+			case !ok || k.Status != "waiting-human":
+				return nil, nil
+			case k.Kind == "human":
+				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
+			}
+			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+		},
+		Act: func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
+			r.acted = append(r.acted, in)
+			if r.actErr != nil {
+				return factoryd.ActResult{}, r.actErr
+			}
+			out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
+			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
+				return out, nil
+			}
+			if in.Post != nil {
+				id, err := in.Post(ctx)
+				if err != nil {
+					return out, err
+				}
+				out.Comment = id
+			}
+			// the answer's row, as Act records it: a grant of sessions is
+			// session_granted, a human card's choice names its value
+			k, _, _ := r.tasks.Task(ctx, in.TaskID)
+			detail := map[string]any{"action": in.Res.Action, "case_id": in.CaseID, "answer": cmp.Or(in.Res.Note, in.Res.Action)}
+			if out.Comment != 0 {
+				detail["comment"] = out.Comment
+			}
+			if k.Kind == "human" {
+				detail["value"] = in.Res.Action
+			}
+			for k, v := range in.Detail {
+				if _, set := detail[k]; !set {
+					detail[k] = v
+				}
+			}
+			kind := factoryd.EventQuestionAnswered
+			if n, _ := in.Res.Args["sessions"].(int); in.Res.Action == factoryd.ActExtend && n > 0 {
+				kind = factoryd.EventSessionGranted
+			}
+			_, err := r.events.Record(ctx, factoryd.Event{Repository: k.Repository, TaskID: in.TaskID, IssueNumber: k.IssueNumber,
+				Kind: kind, Actor: in.By, Via: in.Via, Detail: detail})
+			return out, err
+		},
+		PoolDrawn: func(context.Context, string, time.Time) (policy.Draw, error) { return r.drawn, r.drawnErr },
+		CaseSteps: func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
+		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate
@@ -2161,28 +2222,6 @@ func TestAnswerPostsAnAgentChoiceAsTheMembersWords(t *testing.T) {
 	}
 }
 
-// Roadmap 237: the answer box posts one comment, a whole answer, and
-// names it to the card's workflow (AnswerWhole), which resumes without
-// the quiet window an answer in parts waits out. A failed signal still
-// answers: the comment is on the issue, and the window resumes the card.
-func TestAnswerNamesItsCommentWhole(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.tasks.set("cannot reach the database", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
-	var whole []string
-	r.c.cfg.AnswerWhole = func(ctx context.Context, taskID string, comment int64, by string) error {
-		whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
-		return errors.New("temporal: unavailable")
-	}
-	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
-	}
-	if !slices.Equal(whole, []string{"t-e 1 sebastian"}) {
-		t.Fatalf("whole signals %q, want the posted comment 1 by sebastian", whole)
-	}
-}
-
 // Roadmap 237: an answer reaches the sessions as at most
 // factoryd.MaxAnswer bytes, so the answer box refuses a longer one, naming
 // the bound and the answer's length, and posts nothing: 2000 two-byte "ä"
@@ -2203,46 +2242,6 @@ func TestAnswerRefusedOverMaxAnswer(t *testing.T) {
 	}
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != strings.Repeat("ä", 2000) {
 		t.Fatalf("comment = %d bytes, want the 4000-byte answer whole", len(got))
-	}
-}
-
-// The unfunded answer is refused before it is posted
-// when the task's remaining budget cannot fund a call. No comment goes
-// to the issue, and the refusal carries the message the card will carry:
-// the outstanding holds and the two actions that fit (roadmap 243).
-func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.tasks.set("cannot reach the database", []factoryd.Task{
-		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
-	}...)
-	refusal := "the remaining budget cannot fund a call: 0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and the cheapest call needs more. " +
-		"Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
-	var asked string
-	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
-		asked = taskID + " " + model
-		return refusal, nil
-	}
-	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), refusal) {
-		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
-	}
-	if asked != "t-e factory/small" {
-		t.Fatalf("the floor read %q", asked)
-	}
-	if len(r.fg.comments) != 0 {
-		t.Fatal("the refusal was commented to the issue: no answer reaches the card")
-	}
-	// a failed read refuses the answer with its own verdict: the answer
-	// never dies mid-request, and nothing reaches the card
-	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
-		return "", errors.New("the price book is down")
-	}
-	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "The card's budget could not be read; the answer was not posted. Try again.") {
-		t.Fatalf("answer on a failed read = %d: %s", rec.Code, rec.Body)
-	}
-	if len(r.fg.comments) != 0 {
-		t.Fatal("the refused answer was posted")
 	}
 }
 
@@ -3642,23 +3641,12 @@ func TestConsoleCountsInterventions(t *testing.T) {
 }
 
 // TestPoolReadContract constructs the console via console.New, drives an
-// authenticated HTTP board read with configured EUR 10 and aggregate EUR 3,
-// and asserts HTML and the chat snapshot show EUR 7 remaining through the
-// same projection (poolOf).
+// authenticated HTTP board read with 2 sessions, 30 minutes and EUR 3
+// drawn of the default pool, and asserts the HTML and the chat snapshot
+// show the same projection's words.
 func TestPoolReadContract(t *testing.T) {
 	r := newRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
-	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	record := func(amount float64) {
-		t.Helper()
-		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: from.Add(time.Hour),
-			Detail: map[string]any{"decider": "agent", "amount_eur": amount}}); err != nil {
-			t.Fatalf("record: %v", err)
-		}
-	}
-	record(1.5)
-	record(1.5)
+	r.drawn = policy.Draw{Sessions: 2, AgentTime: 30 * time.Minute, EUR: 3}
 	c, err := New(r.c.cfg)
 	if err != nil {
 		t.Fatalf("console.New: %v", err)
@@ -3671,13 +3659,10 @@ func TestPoolReadContract(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("board = %d", rec.Code)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{"pool €3.00", "/ €10.00", "€7.00 left"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("board HTML lacks %q", want)
-		}
+	const words = "2 of 30 sessions, 30 min of 30 h agent time and €3.00 of €60.00 drawn this UTC month"
+	if body := rec.Body.String(); !strings.Contains(body, "pool: "+words) {
+		t.Errorf("board HTML lacks %q", words)
 	}
-	// The chat's own snapshot carries the same projection's figures.
 	preq := httptest.NewRequest(http.MethodGet, "/chat/ai-software-factory-code", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, s))
 	tn := &turn{c: c, r: preq,
 		a: actor{s: &session{user: "sebastian"}, repository: "sf/code", via: factoryd.ViaChat},
@@ -3686,46 +3671,35 @@ func TestPoolReadContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if want := "pool this month €3.00 of €10.00, €7.00 left"; !strings.Contains(snap, want) {
-		t.Errorf("chat snapshot = %q; want it to contain %q", snap, want)
+	if !strings.Contains(snap, "; pool: "+words) {
+		t.Errorf("chat snapshot = %q; want it to contain %q", snap, words)
 	}
 }
 
-// TestPoolReadMonth gives the shared helper explicit November and December
-// 2026 UTC instants: EUR 3 November use and zero December use yield EUR 7
-// and EUR 10 remaining without changing the EUR 10 ceiling. Aggregate
-// errors answer unavailable, never zero.
+// TestPoolReadMonth hands the projection an explicit November instant:
+// PoolDrawn reads that month, the line names it, and a read that fails
+// answers unreadable words, never a zero draw.
 func TestPoolReadMonth(t *testing.T) {
 	r := newRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
 	nov := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	dec := time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC)
-	novFrom := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	record := func(at time.Time, amount float64) {
-		t.Helper()
-		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: at,
-			Detail: map[string]any{"decider": "agent", "amount_eur": amount}}); err != nil {
-			t.Fatalf("record: %v", err)
-		}
+	var asked []string
+	r.c.cfg.PoolDrawn = func(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
+		asked = append(asked, repository+" "+month.Format(time.RFC3339))
+		return policy.Draw{Sessions: 1}, r.drawnErr
 	}
-	record(novFrom.Add(time.Hour), 1.5)
-	record(novFrom.Add(2*time.Hour), 1.5)
 	v, ok, err := r.ledger.CurrentPolicy(t.Context())
 	if err != nil || !ok {
 		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
 	}
-	plNov, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
-	if err != nil || plNov.Configured != 10 || plNov.Used != 3 || plNov.Remaining != 7 || !plNov.Ready {
-		t.Errorf("November poolOf = %+v, %v; want configured 10, used 3, remaining 7, ready", plNov, err)
+	p := factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}
+	pl := r.c.ProjectPool(t.Context(), v, p, nov)
+	if !pl.Readable || pl.Month != "2026-11" || pl.Drawn != (policy.Draw{Sessions: 1}) || pl.Pool != policy.DefaultEscalation.Pool ||
+		!slices.Equal(asked, []string{"sf/code 2026-11-15T12:00:00Z"}) {
+		t.Errorf("November = %+v, asked %q; want 1 session of the default pool read for November", pl, asked)
 	}
-	plDec, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, dec)
-	if err != nil || plDec.Configured != 10 || plDec.Used != 0 || plDec.Remaining != 10 || !plDec.Ready {
-		t.Errorf("December poolOf = %+v, %v; want configured 10, used 0, remaining 10, ready", plDec, err)
-	}
-	r.events.poolErr = errors.New("aggregate unavailable")
-	plErr, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
-	if err == nil || !plErr.Unavailable || plErr.Ready || plErr.Used != 0 {
-		t.Errorf("error poolOf = %+v, %v; want unavailable, not ready, not zero-use", plErr, err)
+	r.drawnErr = errors.New("the store is down")
+	pl = r.c.ProjectPool(t.Context(), v, p, nov)
+	if want := "the pool is 30 sessions, 30 h of agent time and €60.00 this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
+		t.Errorf("unreadable = %+v; want %q", pl, want)
 	}
 }

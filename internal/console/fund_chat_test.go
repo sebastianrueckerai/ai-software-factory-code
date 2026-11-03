@@ -3,142 +3,39 @@ package console
 import (
 	"context"
 	"errors"
-	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"reflect"
 	"slices"
 	"strconv"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// fundRig is a rig whose project holds a pool of 3 EUR and raises of at
-// most 1 EUR, over the capped card t-e of 2 EUR; the policy's task maximum
-// is 5 EUR.
+// fundRig is a rig over the capped card t-e of 2 EUR, which its budget
+// refusal holds; the policy's task maximum is 5 EUR.
 func fundRig(t *testing.T) *rig {
 	r := newRig(t)
 	cappedCard(r, t)
-	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "factory",
-		Agents: "coder", Process: "maintenance", Budget: &policy.ProjectBudget{DiscretionaryEUR: 3, RaiseMaxEUR: 1}}}
 	return r
 }
 
-// runFund runs the fund tool as the chat's turn does.
-func runFund(t *testing.T, r *rig, in toolInput) (string, error) {
-	t.Helper()
-	_, s := r.loggedIn(t)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
-	tool, ok := r.c.chatTool("fund")
-	if !ok {
-		t.Fatal("there is no fund tool")
-	}
-	note, _, err := tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, in)
-	return note, err
+// fundOf is the fund Act takes of eur with note on case 1, the rig's live
+// case of a card waiting on a human.
+func fundOf(eur float64, note string, rung int, via string) factoryd.ActInput {
+	return factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: via, Rung: rung,
+		Res: factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}}
 }
 
-func fundRefusal(t *testing.T, r *rig, in toolInput) string {
-	t.Helper()
-	_, err := runFund(t, r, in)
-	var no *refusal
-	if !errors.As(err, &no) {
-		t.Fatalf("fund %+v = %v, want a refusal", in, err)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
-		t.Errorf("a refused fund moved the budget to %v", task.BudgetEUR)
-	}
-	return no.msg
-}
-
-func TestFundWithinThePoolRaisesTheCard(t *testing.T) {
+// A wake's fund needs no human's login: the agent's own decision on rung
+// 2, by the woken human, and the note goes on the card as the answer with
+// the project's chat token.
+func TestFundAtAWakeAnswersAsTheChatBot(t *testing.T) {
 	r := fundRig(t)
-	seedAgentFunded(t, r, 1.5)
-	note, err := runFund(t, r, toolInput{TaskID: "t-e", EUR: 1, Text: "the replica is worth it"})
-	if err != nil || note != "Raised #13's budget by 1.00 EUR to 3.00 and posted your note as the answer; the card resumes." {
-		t.Fatalf("fund = %q, %v", note, err)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 3 {
-		t.Errorf("budget_eur = %v, want 3", task.BudgetEUR)
-	}
-	e := agentFundedRow(r.events.rows, 1.0)
-	if e.Kind != factoryd.EventCardFunded || e.Via != factoryd.ViaChat || e.Detail["amount_eur"] != 1.0 {
-		t.Errorf("the raise's row = %+v", e)
-	}
-}
-
-func TestFundAboveRaiseMaxRefuses(t *testing.T) {
-	r := fundRig(t)
-	got := fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 1.5, Text: "more"})
-	if !strings.Contains(got, "raise_max_eur") || !strings.Contains(got, "1.00") || !strings.Contains(got, "attach_analysis") {
-		t.Errorf("the refusal = %q, want raise_max_eur, its 1.00 and attach_analysis", got)
-	}
-}
-
-func TestFundPastThePoolRefuses(t *testing.T) {
-	r := fundRig(t)
-	seedAgentFunded(t, r, 2.5)
-	got := fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 1, Text: "more"})
-	if !strings.Contains(got, "discretionary_eur") || !strings.Contains(got, "0.50 left") || !strings.Contains(got, "attach_analysis") {
-		t.Errorf("the refusal = %q, want discretionary_eur, the 0.50 left and attach_analysis", got)
-	}
-}
-
-func TestFundWithNoPoolRefuses(t *testing.T) {
-	r := fundRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder"}
-	got := fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 0.5, Text: "more"})
-	if !strings.Contains(got, "sets no pool") || !strings.Contains(got, "discretionary_eur is absent or 0") || !strings.Contains(got, "attach_analysis") {
-		t.Errorf("the refusal = %q, want the missing pool named with attach_analysis", got)
-	}
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Budget: &policy.ProjectBudget{DiscretionaryEUR: 3}}
-	if got := fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 0.5, Text: "more"}); !strings.Contains(got, "raise_max_eur") {
-		t.Errorf("the refusal = %q, want raise_max_eur named", got)
-	}
-}
-
-// The card is bounded by the lower of the policy's task_max_eur (5) and
-// the project's own (4): the refusal names the one that binds.
-func TestFundPastTaskMaxRefuses(t *testing.T) {
-	r := fundRig(t)
-	file := func(own float64) {
-		r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-			Budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 4, TaskMaxEUR: own}}
-	}
-	file(0)
-	got := fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 3.5, Text: "more"})
-	if !strings.Contains(got, "the policy's task_max_eur of €5.00") || !strings.Contains(got, "sizing exception") || strings.Contains(got, "split") {
-		t.Errorf("the refusal = %q, want the policy's task_max_eur of 5.00 and a sizing exception", got)
-	}
-	file(4)
-	got = fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 3, Text: "more"})
-	if !strings.Contains(got, "the project's budget.task_max_eur of €4.00") || !strings.Contains(got, "at most €2.00") {
-		t.Errorf("the refusal = %q, want the project's task_max_eur of 4.00 and at most 2.00", got)
-	}
-	file(6)
-	got = fundRefusal(t, r, toolInput{TaskID: "t-e", EUR: 3.5, Text: "more"})
-	if !strings.Contains(got, "the policy's task_max_eur of €5.00") {
-		t.Errorf("the refusal = %q, want the policy's 5.00 where the project's 6 is looser", got)
-	}
-}
-
-// A wake's raise needs no member's login: the agent raises within the
-// pool as factory-chat, one card_funded row records it under the woken
-// member's name with the agent as the decider, and the answer goes to the
-// card with the project's chat token.
-func TestFundAtAWakeRaisesAndAnswersAsTheChatBot(t *testing.T) {
-	r := fundRig(t)
-	var whole []string
-	r.c.cfg.AnswerWhole = func(_ context.Context, taskID string, comment int64, by string) error {
-		whole = append(whole, fmt.Sprintf("%s %d by %s", taskID, comment, by))
-		return nil
-	}
 	p := factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}
 	s, err := r.c.wakeSession(p, "sebastian")
 	if err != nil {
@@ -146,23 +43,16 @@ func TestFundAtAWakeRaisesAndAnswersAsTheChatBot(t *testing.T) {
 	}
 	req := httptest.NewRequest(http.MethodGet, "/", nil)
 	tool, _ := r.c.chatTool("fund")
-	note, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
+	if _, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
 		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: true, decider: "agent", level: policy.AutonomyAutonomous}, p: p},
-		toolInput{TaskID: "t-e", EUR: 1, Text: "go"})
-	if err != nil || note != "Raised #13's budget by 1.00 EUR to 3.00 and posted your note as the answer; the card resumes." {
-		t.Fatalf("fund = %q, %v", note, err)
+		toolInput{TaskID: "t-e", EUR: 1, Text: "go"}); err != nil {
+		t.Fatal(err)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 3 {
-		t.Errorf("budget_eur = %v, want 3", task.BudgetEUR)
-	}
-	var funded []factoryd.Event
-	for _, e := range r.events.all() {
-		if e.Kind == factoryd.EventCardFunded {
-			funded = append(funded, e)
-		}
-	}
-	if len(funded) != 1 || funded[0].Actor != "sebastian" || funded[0].Detail["decider"] != "agent" || funded[0].Detail["amount_eur"] != 1.0 {
-		t.Errorf("card_funded rows = %+v, want one of sebastian's, decided by the agent, of 1 EUR", funded)
+	got, posts := actedOnce(t, r)
+	want := fundOf(1, "go", 2, factoryd.ViaChat)
+	want.Detail = map[string]any{"autonomy": policy.AutonomyAutonomous, "decider": "agent"}
+	if !reflect.DeepEqual(got, want) || !posts {
+		t.Fatalf("Act took %+v (post %v), want %+v with a post", got, posts, want)
 	}
 	r.fg.mu.Lock()
 	defer r.fg.mu.Unlock()
@@ -170,126 +60,47 @@ func TestFundAtAWakeRaisesAndAnswersAsTheChatBot(t *testing.T) {
 		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "go" {
 		t.Errorf("Forgejo calls %q, comments %q: want the note posted on #13 with the chat token", r.fg.calls, r.fg.comments)
 	}
-	if !slices.Equal(whole, []string{"t-e 1 by sebastian"}) {
-		t.Errorf("AnswerWhole = %q, want the answer signalled by the woken member", whole)
-	}
-}
-
-// Money compares in cents: 0.1 and 0.2 fill a pool of 0.3 exactly.
-func TestFundFillsThePoolExactly(t *testing.T) {
-	r := fundRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Budget: &policy.ProjectBudget{DiscretionaryEUR: 0.3, RaiseMaxEUR: 1}}
-	seedAgentFunded(t, r, 0.1)
-	if _, err := runFund(t, r, toolInput{TaskID: "t-e", EUR: 0.2, Text: "fill it"}); err != nil {
-		t.Fatalf("fund of the pool's last 0.2: %v", err)
-	}
 }
 
 const needRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.900000 EUR. Raise the budget (Fund on the board) and answer, or close the card."
 
+// needRig is the fund rig over card t-e held by needRefusal, which names
+// a shortfall of 0.73 EUR.
 func needRig(t *testing.T) *rig {
 	r := fundRig(t)
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
-	// the direct doFund/doAnswerValue tests read this; answerFund overwrites it
-	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) { return r.raisedFloor(ctx, id, ""), nil }
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return needRefusal, nil }
 	return r
 }
 
-func answerFund(t *testing.T, r *rig, via, decider string) (string, error) {
-	t.Helper()
-	_, s := r.loggedIn(t)
-	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) {
-		if task, _, _ := r.tasks.Task(ctx, id); task.BudgetEUR > 2 {
-			return "", nil
+// The answer's fund value draws the shortfall its budget refusal names:
+// the agent's own on rung 2 via the chat, the human's on rung 3 by the
+// board's button.
+func TestAnswerFundValueDrawsTheShortfall(t *testing.T) {
+	for _, tc := range []struct {
+		via, decider string
+		rung         int
+	}{{factoryd.ViaChat, "agent", 2}, {factoryd.ViaButton, "", 3}} {
+		r := needRig(t)
+		_, s := r.loggedIn(t)
+		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: tc.via, decider: tc.decider}, "t-e", "the fix is in", factoryd.AnswerFund, ""); err != nil {
+			t.Fatalf("%s: %v", tc.via, err)
 		}
-		return needRefusal, nil
-	}
-	return r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: via, decider: decider}, "t-e", "the fix is in", factoryd.AnswerFund, "")
-}
-
-// The chat answer's fund value is a chat-attributed raise: it meets the
-// pool, raise_max_eur and the card cap as the fund tool does.
-func TestChatAnswerFundPastThePoolRefusesAndChangesNothing(t *testing.T) {
-	r := needRig(t)
-	seedAgentFunded(t, r, 2.5)
-	_, err := answerFund(t, r, factoryd.ViaChat, "agent")
-	var no *refusal
-	if !errors.As(err, &no) || !strings.Contains(no.msg, "discretionary_eur") {
-		t.Fatalf("answer fund past the pool = %v, want a refusal naming discretionary_eur", err)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 || len(agentFundedRows(r.events.rows)) != 1 || len(r.fg.comments) != 0 {
-		t.Errorf("budget %v, %d rows, %d comments after the refusal, want 2, one seeded, none", task.BudgetEUR, len(agentFundedRows(r.events.rows)), len(r.fg.comments))
-	}
-}
-
-func TestChatAnswerFundWithinTheBoundsRaisesAndRecordsOnce(t *testing.T) {
-	r := needRig(t)
-	if _, err := answerFund(t, r, factoryd.ViaChat, "agent"); err != nil {
-		t.Fatalf("answer fund: %v", err)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.73 {
-		t.Errorf("budget_eur = %v, want 2.73", task.BudgetEUR)
-	}
-	funded := 0
-	for _, e := range r.events.rows {
-		if e.Kind == factoryd.EventCardFunded {
-			funded++
-			if e.Via != factoryd.ViaChat || e.Detail["amount_eur"] != 0.73 {
-				t.Errorf("the card_funded row = %+v", e)
-			}
+		got, _ := actedOnce(t, r)
+		if want := fundOf(0.73, "the fix is in", tc.rung, tc.via); !reflect.DeepEqual(got, want) {
+			t.Errorf("%s: Act took %+v, want %+v", tc.via, got, want)
 		}
-	}
-	if funded != 1 {
-		t.Errorf("%d card_funded rows, want 1", funded)
-	}
-}
-
-// The board's answer keeps no pool: the member's own money.
-func TestBoardAnswerFundIgnoresThePool(t *testing.T) {
-	r := needRig(t)
-	seedAgentFunded(t, r, 2.95)
-	if _, err := answerFund(t, r, factoryd.ViaButton, ""); err != nil {
-		t.Fatalf("board answer fund: %v", err)
-	}
-}
-
-// A raise the member decides is their money: a proposal they confirmed
-// raises past a full pool and past a missing one, and the pool does not
-// count it.
-func TestMemberDecidedFundIgnoresTheAgentsLimits(t *testing.T) {
-	r := needRig(t)
-	seedAgentFunded(t, r, 3)
-	_, s := r.loggedIn(t)
-	req := httptest.NewRequest(http.MethodGet, "/", nil)
-	tool, _ := r.c.chatTool("fund")
-	note, _, err := tool.run(&turn{c: r.c, r: req.WithContext(context.WithValue(req.Context(), ctxKey{}, s)),
-		a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "member"},
-		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}}, toolInput{TaskID: "t-e", EUR: 4, Text: "my call"})
-	if err != nil || !strings.Contains(note, "Raised #13's budget by 4.00 EUR to 6.00") {
-		t.Fatalf("a confirmed fund past the pool, the raise max and the cap = %q, %v; want the raise", note, err)
-	}
-	row := agentFundedRow(r.events.rows, 4.0)
-	if row.Detail["decider"] == "agent" {
-		t.Errorf("the member's raise is stamped %v, which the pool would count", row.Detail["decider"])
 	}
 }
 
 // The member's own click on the chat inbox's fund choice runs the real
-// answer route (the member's button, no decider): it raises on a project
-// that sets no pool, with the pool full.
-func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
+// answer route, the human's button: a fund of the shortfall on rung 3.
+func TestMemberChatInboxFundClickFunds(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
 		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
-	r.c.cfg.SessionFunded = func(ctx context.Context, id, _ string) (string, error) {
-		if task, _, _ := r.tasks.Task(ctx, id); task.BudgetEUR > 2 {
-			return "", nil
-		}
-		return needRefusal, nil
-	}
-	seedAgentFunded(t, r, 3)
+	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return needRefusal, nil }
 	buttons := factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{}, nil)
 	r.tasks.tasks[0].Question = buttons
 	ck, s := r.loggedIn(t)
@@ -303,27 +114,28 @@ func TestMemberChatInboxFundClickRaisesWithoutAPool(t *testing.T) {
 	if code != http.StatusNoContent {
 		t.Fatalf("the answer = %d %q", code, body)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.73 {
-		rows, _ := chat.ChatMessages(t.Context(), "sf/code", "sebastian", inbox, 50)
-		t.Errorf("budget_eur = %v, want 2.73 raised past a project with no pool; the thread: %+v", task.BudgetEUR, rows)
+	got, _ := actedOnce(t, r)
+	if got.Rung != 3 || got.Res.Action != factoryd.ActFund || got.Res.Args["eur"] != 0.73 {
+		t.Errorf("Act took %+v, want a fund of 0.73 EUR on rung 3", got)
 	}
 }
 
 // A premade fund button answers the card alone: its value carries the
-// amount, the click needs no note — the label is the note posted — and a
-// member who is no approver of the project meets the Fund form's refusal.
-func TestOneClickFundChoiceRaisesAndAnswersWithoutANote(t *testing.T) {
+// amount, the click needs no note, the line naming the fund is the note
+// posted, and a human who is no approver of the project meets the Fund
+// form's refusal with nothing acted.
+func TestOneClickFundChoiceFundsWithoutANote(t *testing.T) {
 	r := needRig(t)
 	_, s := r.loggedIn(t)
-	note, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73), "")
-	if err != nil || note != "Raised #13's budget by 0.73 EUR to 2.73 and posted your note as the answer; the card resumes." {
-		t.Fatalf("the one-click fund = %q, %v", note, err)
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.FundChoiceValue(0.73), ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := actedOnce(t, r)
+	if want := fundOf(0.73, "Fund 0.73 EUR and go on.", 3, factoryd.ViaButton); !reflect.DeepEqual(got, want) {
+		t.Fatalf("Act took %+v, want %+v", got, want)
 	}
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "Fund 0.73 EUR and go on." {
 		t.Fatalf("the note posted = %q", got)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2.73 {
-		t.Errorf("budget_eur = %v, want 2.73", task.BudgetEUR)
 	}
 
 	r = needRig(t)
@@ -335,24 +147,23 @@ func TestOneClickFundChoiceRaisesAndAnswersWithoutANote(t *testing.T) {
 	if rec.Code != http.StatusForbidden || strings.TrimSpace(rec.Body.String()) != "Only the approvers of project ai-software-factory-code may fund a card." {
 		t.Fatalf("a non-approver's one-click fund = %d: %s", rec.Code, rec.Body)
 	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
-		t.Errorf("a refused one-click fund moved budget_eur to %v", task.BudgetEUR)
+	if len(r.acted) != 0 {
+		t.Errorf("a refused one-click fund reached Act: %+v", r.acted)
 	}
 }
 
-// A raise another agent turn's raise left past the card's cap reaches the
-// member as the capSpent line through doFund, the budget unchanged.
-func TestFundCardCapErrorReachesTheMemberThroughDoFund(t *testing.T) {
+// A fund another raise left past the card's ceiling reaches the human as
+// the capSpent line: the ceiling, the policy's 5 EUR while the card sets
+// none, and the raise that makes the room.
+func TestFundPastTheCeilingNamesTheRaise(t *testing.T) {
 	r := needRig(t)
 	_, s := r.loggedIn(t)
-	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go", 2.5)
+	r.actErr = &factoryd.CardCapError{Budget: 4.5}
+	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go")
 	var no *refusal
-	want := "Card #13 holds €2.00 now; €0.90 more passes its cap of €2.50. Record your analysis with attach_analysis so the human can make a sizing exception."
-	if !errors.As(err, &no) || no.msg != want {
+	want := "Card #13 holds €4.50 now, and €0.90 more passes its ceiling of €5.00: raise the ceiling first (raise_ceiling), then fund."
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want {
 		t.Fatalf("doFund = %v, want the capSpent refusal %q", err, want)
-	}
-	if task, _, _ := r.tasks.Task(t.Context(), "t-e"); task.BudgetEUR != 2 {
-		t.Errorf("budget_eur = %v after the refusal, want 2", task.BudgetEUR)
 	}
 }
 
@@ -366,38 +177,4 @@ func TestFundProposalNamesTheAmount(t *testing.T) {
 	if len(proposed) == 0 || !strings.Contains(proposed[0], want) {
 		t.Fatalf("proposal %v, want it to hold %s", proposed, want)
 	}
-}
-
-// seedAgentFunded records an agent-decided card_funded row of eur in the
-// current UTC month so AgentFundedEUR sees it as the pool's used sum.
-func seedAgentFunded(t *testing.T, r *rig, eur float64) {
-	t.Helper()
-	now := time.Now().UTC()
-	e := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: now,
-		Detail: map[string]any{"decider": "agent", "amount_eur": eur}}
-	if _, err := r.events.Record(t.Context(), e); err != nil {
-		t.Fatalf("seed agent funded: %v", err)
-	}
-}
-
-// agentFundedRows returns the agent-decided card_funded rows via the chat.
-func agentFundedRows(rows []factoryd.Event) []factoryd.Event {
-	var out []factoryd.Event
-	for _, e := range rows {
-		if e.Kind == factoryd.EventCardFunded && e.Via == factoryd.ViaChat && e.Detail["decider"] == "agent" {
-			out = append(out, e)
-		}
-	}
-	return out
-}
-
-// agentFundedRow returns the agent-decided card_funded row of amount eur,
-// or the zero value if none matches.
-func agentFundedRow(rows []factoryd.Event, eur float64) factoryd.Event {
-	for _, e := range agentFundedRows(rows) {
-		if e.Detail["amount_eur"] == eur {
-			return e
-		}
-	}
-	return factoryd.Event{}
 }

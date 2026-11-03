@@ -722,7 +722,7 @@ func fluxHold(groups []Group, queued []int64) string {
 	if len(plans) == 1 {
 		return "plan " + plans[0] + " has a card in the merge queue"
 	}
-	return "plans " + andList(plans) + " have cards in the merge queue"
+	return "plans " + textutil.AndList(plans) + " have cards in the merge queue"
 }
 
 // fluxBehind answers whether the factory's Kustomization has not applied

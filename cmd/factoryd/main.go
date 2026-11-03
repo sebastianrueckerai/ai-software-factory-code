@@ -588,7 +588,7 @@ func main() {
 		Policies:         store,
 		Costs:            store,
 		Dependencies:     store,
-		Pools:            store,
+		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
@@ -609,9 +609,7 @@ func main() {
 		Hold:       releases.Hold,
 		MainCommit: releases.MainCommit,
 		DeployNow:  releases.DeployNow,
-		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
-			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
-		},
+		Act:        runner.Act,
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, decision, answer, by)
 		},

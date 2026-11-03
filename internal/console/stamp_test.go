@@ -34,9 +34,6 @@ func TestTokenStampsEveryDecisionEvent(t *testing.T) {
 		{"fund", `{"task_id":"t-e","eur":1,"text":"go"}`, func(t *testing.T) (*rig, *chatGateway) {
 			r, _, g := newChatRig(t)
 			cappedCard(r, t)
-			r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "factory",
-				Agents: "coder", Process: "maintenance", Budget: &policy.ProjectBudget{DiscretionaryEUR: 3, RaiseMaxEUR: 1}}}
-			r.c.cfg.AnswerWhole = func(context.Context, string, int64, string) error { return nil }
 			return r, g
 		}, "sebastian", "sf/code"},
 		{"invite", `{"login":"dave"}`, func(t *testing.T) (*rig, *chatGateway) {

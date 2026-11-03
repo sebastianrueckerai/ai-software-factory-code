@@ -230,12 +230,14 @@ func TestStatusLineFigures(t *testing.T) {
 	gauge := func(pct int) string {
 		return fmt.Sprintf(`<span class="gauge"><meter min="0" max="100" value="%d" aria-label="Spend of the month cap">%d percent</meter></span>`, pct, pct)
 	}
+	pool := `<span class="cell pool" title="the escalation pool every extend and fund draws from, set in the policy tree (escalation.pool), policy version 4 (commit c9d98bb), ` +
+		now.Format("2006-01") + ` UTC: the same figures the chat's status line reads">pool: ` + noDraws + "</span>\n"
 	code := `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
 <span class="cell state" data-state="waiting on you"><i class="dot" aria-hidden="true"></i>waiting on you</span>
 <span class="cell"><span><b class="n">2</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">6</b> need you</span></a>
 <span class="cell spend" ` + title + `><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>` + gauge(11) + `</a><span class="pct">11%</span></span>
-`
+` + pool
 	for _, query := range []string{"", "?view=wide"} {
 		if got := line(query); got != code {
 			t.Errorf("board%s: status line\n%s\nwant\n%s", query, got, code)
@@ -250,7 +252,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs on"><span><b class="n">1</b> need you</span></a>
 <span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€3.00</b> <span class="of">/ €12.00</span></span>`+gauge(25)+`</a><span class="pct">25%</span></span>
-`; got != want {
+`+pool; got != want {
 		t.Errorf("demo-app: status line\n%s\nwant\n%s", got, want)
 	}
 	if got, want := line("?project=linkshort"), `<details id="status-line" class="status" aria-label="Status"><summary class="strip">
@@ -258,7 +260,7 @@ func TestStatusLineFigures(t *testing.T) {
 <span class="cell"><span><b class="n">0</b> working</span></span>
 <a href="#needs-you" class="cell needs"><span><b class="n">0</b> need you</span></a>
 <span class="cell spend" `+title+`><a href="/costs"><span><b class="n">€5.50</b> <span class="of">/ €50.00</span></span>`+gauge(11)+`</a><span class="pct">11%</span></span>
-`; got != want {
+`+pool; got != want {
 		t.Errorf("linkshort: status line\n%s\nwant\n%s", got, want)
 	}
 }

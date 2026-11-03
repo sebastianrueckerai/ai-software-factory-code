@@ -69,8 +69,8 @@ const (
 	// factoryd), deploy_now when an approver chose Deploy now (by them, with
 	// "commit" and "decider"). A quiet record, no poke.
 	EventProductionReleased = "production_released"
-	// EventPoolChanged records a project's month pool set or topped up,
-	// the budget block's discretionary_eur: detail {"action",
+	// EventPoolChanged records a project's escalation pool money set or
+	// topped up, escalation.pool.eur of its project file: detail {"action",
 	// "confirmed_eur", "from_eur", "to_eur", "reason", "pr"}, action set
 	// or top_up and pr the pull request that landed it, namespaced by the
 	// configuration repository. The set_pool action that

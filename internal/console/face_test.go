@@ -948,7 +948,8 @@ func TestNeedsYouCardAnswersWithAChoice(t *testing.T) {
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {
 		t.Fatalf("the comment = %q, want the choice", got)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-ch", detail: postedDetail(1)})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-ch",
+		detail: map[string]any{"action": factoryd.ActContinue, "answer": "a shard", "case_id": int64(1), "comment": int64(1)}})
 }
 
 // A shaped question's board card is small: the ask line and its buttons,
@@ -1129,9 +1130,10 @@ func TestNeedsYouCardOpensItsDrawerFromAnywhere(t *testing.T) {
 	}
 }
 
-// The shaped buttons route by value: a park or keep waiting records the
-// answer and leaves the card waiting, nothing posted on the issue, and a
-// typed answer that repeats a button's words takes that button's route.
+// The shaped buttons route by value: a park or keep waiting is a note on
+// the card's case that leaves the card waiting, nothing posted on the
+// issue, and a typed answer that repeats a button's words takes that
+// button's route.
 func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
@@ -1163,8 +1165,9 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "" {
 		t.Fatalf("the park posted %q, want no comment", got)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
-		detail: map[string]any{"answer": "Park it", "value": "park"}})
+	checkRows(t, ev, before)
+	got, _ := actedOnce(t, r)
+	equal(t, "the park", got.Res, factoryd.Resolution{Action: factoryd.ActNote, Note: "Park it"})
 
 	r, ev, ck, s = setup(t)
 	before = ev.count()
@@ -1175,8 +1178,9 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "" {
 		t.Fatalf("the typed label posted %q, want no comment", got)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
-		detail: map[string]any{"answer": "Wait for the window", "value": "keep_waiting"}})
+	checkRows(t, ev, before)
+	got, _ = actedOnce(t, r)
+	equal(t, "the typed label", got.Res, factoryd.Resolution{Action: factoryd.ActNote, Note: "Wait for the window"})
 
 	r, ev, ck, s = setup(t)
 	before = ev.count()
@@ -1187,7 +1191,8 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "hold the card until the roadmap names it" {
 		t.Fatalf("the typed answer posted %q", got)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: postedDetail(1)})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActContinue, "answer": "hold the card until the roadmap names it", "case_id": int64(1), "comment": int64(1)}})
 
 	// past a raised cap the fund answer posts like any answer, the label
 	// retrying the card; the card holds no budget refusal here
@@ -1200,14 +1205,15 @@ func TestNeedsYouCardRoutesTheValue(t *testing.T) {
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/15/comments"]; got != "Fund one more session" {
 		t.Fatalf("the fund answer posted %q", got)
 	}
-	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: postedDetail(1)})
+	checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+		detail: map[string]any{"action": factoryd.ActContinue, "answer": "Fund one more session", "case_id": int64(1), "comment": int64(1)}})
 }
 
 // The one-click buttons of a shaped question post their value alone, no
 // answer field, so doAnswerValue takes the choice's own label as the
-// answer text: each click is the label's sentence on the issue as the
-// member with its question_answered row, and park and keep waiting reach
-// their nothing-posted route.
+// answer text: fund, with no budget refusal left, is the label's sentence
+// on the issue as the human with Act's answer row, and park and keep
+// waiting are a note on the case, nothing posted.
 func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 	question := func() *factoryd.HumanQuestion {
 		return &factoryd.HumanQuestion{
@@ -1250,11 +1256,12 @@ func TestNeedsYouCardAnswersAChoiceWithoutText(t *testing.T) {
 		if !tc.posted && got != "" {
 			t.Fatalf("the %s click posted %q, want no comment", tc.value, got)
 		}
-		detail := map[string]any{"answer": tc.label, "value": tc.value}
-		if tc.posted {
-			detail = map[string]any{"comment": int64(1), "value": tc.value}
+		if !tc.posted {
+			checkRows(t, ev, before)
+			continue
 		}
-		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q", detail: detail})
+		checkRows(t, ev, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-q",
+			detail: map[string]any{"action": factoryd.ActContinue, "answer": tc.label, "case_id": int64(1), "comment": int64(1)}})
 	}
 }
 

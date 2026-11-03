@@ -246,9 +246,15 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 			s.Kind, s.Outcome = "granted", "one more session"
 		case EventCardFunded:
 			s.Kind, s.Outcome = "funded", fmt.Sprintf("%.2f EUR", amount)
+			if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok {
+				s.Kind, s.Outcome = "ceiling", fmt.Sprintf("raised to %.2f EUR", ceiling)
+			}
 		case EventCardExtended:
-			s.Kind, s.Outcome = "extended", fmt.Sprintf("%s, %s, %.2f EUR",
-				textutil.Plural(number("sessions"), "session", "sessions"), textutil.Plural(number("lines"), "line", "lines"), amount)
+			parts := []string{textutil.Plural(number("sessions"), "session", "sessions")}
+			if seconds := number("agent_time_s"); seconds > 0 {
+				parts = append(parts, minutesWord(time.Duration(seconds)*time.Second)+" of agent time")
+			}
+			s.Kind, s.Outcome = "extended", strings.Join(append(parts, textutil.Plural(number("lines"), "line", "lines"), fmt.Sprintf("%.2f EUR", amount)), ", ")
 		case EventCardRetried:
 			s.Kind, s.Outcome = "retried", fmt.Sprintf("as #%d", number("replacement"))
 		case EventCardReplanned:

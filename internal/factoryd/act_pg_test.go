@@ -651,3 +651,55 @@ func TestActTakesAHumanCardsChoice(t *testing.T) {
 		t.Fatalf("signals %+v, comments %q; want none for a human card", g.signals.got, g.forge.comments)
 	}
 }
+
+// A human card's close is a choice like any other: Act records it and
+// resolves the case, and leaves the issue to the console, which closes it
+// as the human. Nothing goes to Forgejo.
+func TestActLeavesAHumanCardsCloseToTheConsole(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "h1", Kind: "human", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app",
+		IssueNumber: 13}); err != nil {
+		t.Fatal(err)
+	}
+	q := HumanQuestion{Ask: "Rotate the key?", Choices: []QuestionChoice{{Value: AnswerGo, Label: "Have the factory do it"}, {Value: AnswerClose, Label: "Done"}}}
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "h1", Kind: IntakeEscalation, Author: "factoryd", Body: q.Ask, Question: &q, Choices: q.Labels()}); err != nil {
+		t.Fatal(err)
+	}
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "h1", Repository: "demo-app/demo-app", Kind: CaseHumanCard, StateKey: "key", Status: CaseAtHuman, Problem: q.Ask})
+	if err != nil {
+		t.Fatal(err)
+	}
+	out, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerClose, Note: "Done"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution.Action != AnswerClose || len(out.Did) != 0 {
+		t.Fatalf("case = %s, %+v, did %+v; want resolved with close and nothing run", got.Status, got.Resolution, out.Did)
+	}
+	if g.forge.closed || len(g.forge.comments) != 0 || len(g.signals.got) != 0 {
+		t.Fatalf("closed %v, comments %q, signals %+v; want no Forgejo call and no signal", g.forge.closed, g.forge.comments, g.signals.got)
+	}
+}
+
+// The keys the caller hands beside an answer ride every row Act writes for
+// it, the draw's and the answer's, so a chat token's turn names its token
+// on each; a key of Act's own is never replaced.
+func TestActCarriesTheCallersDetailOnEveryRow(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	token := map[string]any{"id": 3, "name": "laptop"}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaChat, Rung: 3,
+		Res:    Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}, Note: "go on"},
+		Detail: map[string]any{"token": token, "rung": "the caller's"}}); err != nil {
+		t.Fatal(err)
+	}
+	want := map[string]any{"id": 3.0, "name": "laptop"}
+	funded, answered := g.rows(t, EventCardFunded), g.rows(t, EventQuestionAnswered)
+	if len(funded) != 1 || !reflect.DeepEqual(funded[0].Detail["token"], want) || funded[0].Detail["rung"] != 3.0 {
+		t.Fatalf("card_funded rows = %+v; want one with the token and rung 3", funded)
+	}
+	if len(answered) != 1 || !reflect.DeepEqual(answered[0].Detail["token"], want) {
+		t.Fatalf("question_answered rows = %+v; want one with the token", answered)
+	}
+}

@@ -1237,11 +1237,6 @@ func (f *accBatchChat) ProjectMonthSpend(context.Context, string, time.Time) (fa
 	return factoryd.ProjectSpend{}, nil
 }
 
-// AgentFundedEUR: this rig funds nothing from a pool.
-func (f *accBatchChat) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
-	return 0, nil
-}
-
 func (f *accBatchChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()

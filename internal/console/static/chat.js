@@ -557,8 +557,8 @@ var chatView = (function () {
       var eur = f.elements.eur.value.trim(), reason = f.elements.reason.value.trim();
       if (!eur || !reason) return;
       var text = f.dataset.present === "true"
-        ? "Top the month pool up by EUR " + eur + " — " + reason
-        : "Set the month pool to EUR " + eur + " — " + reason;
+        ? "Top the escalation pool up by EUR " + eur + ": " + reason
+        : "Set the escalation pool to EUR " + eur + ": " + reason;
       f.reset();
       turn(text);
     });

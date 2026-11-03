@@ -237,24 +237,13 @@ func (a *AcceptanceRig) OnReload(fn func()) {
 	a.onReload = fn
 }
 
-// SetLoadedPool installs the budget the policy in force holds for the
-// code project: month EUR 600, task max EUR 5, raise max EUR 1 and the
-// pool at eur. A reload's activation is its only honest caller.
+// SetLoadedPool installs the escalation pool the policy in force holds for
+// the code project, its money at eur, beside a month cap of EUR 600 and a
+// task maximum of EUR 5. A reload's activation is its only honest caller.
 func (a *AcceptanceRig) SetLoadedPool(eur float64) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.pool = &policy.ProjectBudget{MonthEUR: 600, TaskMaxEUR: 5, RaiseMaxEUR: 1, DiscretionaryEUR: eur}
-}
-
-// SetLoadedRaiseMax moves the pool the loaded policy holds to its per-raise
-// bound eur, the one a policy PR writes. A reload's activation is its only
-// honest caller.
-func (a *AcceptanceRig) SetLoadedRaiseMax(eur float64) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	if a.pool != nil {
-		a.pool.RaiseMaxEUR = eur
-	}
+	a.pool = &policy.Escalation{Pool: policy.Draw{EUR: eur}}
 }
 
 // SetLoadedAutonomy installs the autonomy the policy in force holds for
@@ -267,14 +256,15 @@ func (a *AcceptanceRig) SetLoadedAutonomy(level string) {
 	a.autonomy = level
 }
 
-// LoadedPool answers the pool the policy in force holds, false for none.
+// LoadedPool answers the pool money the policy in force holds for the code
+// project's own file, false for none.
 func (a *AcceptanceRig) LoadedPool() (float64, bool) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
 	if a.pool == nil {
 		return 0, false
 	}
-	return a.pool.DiscretionaryEUR, true
+	return a.pool.Pool.EUR, true
 }
 
 // SwitchOnRead makes the fake's next read of path answer the file it
