@@ -653,7 +653,7 @@ func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 	if s := h.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{change}) || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
 		t.Fatalf("fourth session %+v, usage %+v; want attempt 4 with the change request, one attempt granted", s, h.usage[len(h.usage)-1])
 	}
-	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "default-test-run-id", "3"))}; !slices.Equal(grants, want) {
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(grants, want) {
 		t.Fatalf("grants drawn = %q, want %q", grants, want)
 	}
 }

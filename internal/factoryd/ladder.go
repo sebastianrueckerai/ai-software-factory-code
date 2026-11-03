@@ -139,9 +139,10 @@ func caseDep(c Case, f CaseFacts) *DepFact {
 // card waits on that case's ask, with no new face. On a fresh case rung 0
 // runs, and the first row that fires resolves the case through Act. With
 // none, the human is asked (askHuman) and the case waits at the human. A
-// restart's trip (healedReason) waits on the card's newest live ask. An
-// attempt after the first takes what the attempts before left
-// (retriedTrip).
+// restart's trip (healedReason) waits on the card's newest live ask,
+// faces it when it has no face yet, and with none opens the stop the card
+// asked last as its own case again (healedTrip). An attempt after the
+// first takes what the attempts before left (retriedTrip).
 func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (TripOutcome, error) {
 	t, _, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -231,13 +232,14 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 	return nil, "no resolver fits", nil
 }
 
-// healedTrip is trip's of a run that restarted while its card waited on
-// a human: the card's newest live ask (NewestAskCase) at the human waits
-// on with a step and no new face. One with no face yet gets it. With none,
-// the stop the card asked last (restartedStop) opens its own case again,
-// as its trip opened it. Either way the case takes the restart's step of
-// rung 0, a trip under the gate's mark (runGrants), and the face names
-// what moves the card on by the case's kind.
+// healedTrip is the trip, of id trip, of a run that restarted while its
+// card waited on a human: the card's newest live ask (NewestAskCase) at
+// the human waits on with a step and no new face. One with no face yet
+// gets it, on its own reason. With none, the stop the card asked last
+// (restartedStop) opens its own case again, as its trip opened it. Either
+// way the case takes the restart's step of rung 0, a trip under the
+// gate's mark (runGrants), and the face names what moves the card on by
+// the case's kind and reason.
 func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip string) (TripOutcome, error) {
 	const restarted = "asked again after a restart"
 	c, err := r.store.NewestAskCase(ctx, t.ID)
@@ -247,11 +249,11 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 	if c.Status == CaseAtHuman {
 		return r.waitsAtHuman(ctx, t, c, restarted)
 	}
-	stop, err := r.restartedStop(ctx, t)
-	if err != nil {
-		return TripOutcome{}, err
-	}
+	stop, _ := c.Facts["reason"].(string)
 	if c.ID == 0 {
+		if stop, err = r.restartedStop(ctx, t); err != nil {
+			return TripOutcome{}, err
+		}
 		f, err := r.tripFacts(ctx, t, in.Head)
 		if err != nil {
 			return TripOutcome{}, err

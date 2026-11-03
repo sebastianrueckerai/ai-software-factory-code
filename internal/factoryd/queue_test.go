@@ -1311,7 +1311,7 @@ func TestQueueChangeRequestAtTheCapDrawsThePool(t *testing.T) {
 	if len(q.sessions) != 2 || q.sessions[1].Attempt != 4 || slices.Contains(q.steps, "approval c3") {
 		t.Fatalf("sessions = %+v, steps %q; want the fourth after the change request in the queue, c3 never at its approval", q.sessions, q.steps)
 	}
-	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "default-test-run-id", "3"))}; !slices.Equal(grants, want) {
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(grants, want) {
 		t.Fatalf("grants drawn = %q, want %q", grants, want)
 	}
 }

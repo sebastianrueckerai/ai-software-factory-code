@@ -1256,8 +1256,8 @@ func newRig(t *testing.T) *rig {
 			}
 			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 		},
-		// the newest of OpenCasesOf's an answer on the card ends, as the
-		// store reads it
+		// the newest of the cases OpenCasesOf answers that an answer on
+		// the card ends, as the store reads it
 		NewestAskCase: func(ctx context.Context, taskID string) (factoryd.Case, error) {
 			open, err := r.c.cfg.OpenCasesOf(ctx, taskID)
 			var newest factoryd.Case

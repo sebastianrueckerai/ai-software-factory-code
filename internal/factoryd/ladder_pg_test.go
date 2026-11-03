@@ -625,3 +625,24 @@ func TestOpenTripRestartFacesALiveAskWithNone(t *testing.T) {
 		t.Fatalf("outcome %+v, case %+v, faces %d; want case %d at the human on comment 501", out, c, len(g.forge.comments), open.ID)
 	}
 }
+
+// The face a restart gives a live ask with none yet ends on that case's
+// own way out: the agent's ask left open by a failed comment takes a
+// reply, though the card's newest escalation is the merge queue's.
+func TestOpenTripRestartFacesALiveAskByItsOwnReason(t *testing.T) {
+	g := newTripRig(t, "success")
+	ctx := context.Background()
+	g.forge.failComment = true
+	if _, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt"}, tripAttempt{N: 1}); err == nil {
+		t.Fatal("OpenTrip = nil; want the comment's failure")
+	}
+	if _, err := g.s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t1", Kind: IntakeEscalation, Author: "factoryd", Body: leftQueue + ": the job is red",
+		CommentID: 400, Question: &HumanQuestion{Ask: "Put it back in the queue?", Why: "red", Info: plainInfo}}); err != nil {
+		t.Fatal(err)
+	}
+	g.trip(t, healedReason)
+	const reply = "Reply on this issue to start a new attempt with your comment as guidance"
+	if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], reply) {
+		t.Fatalf("faces = %q, want one ending %q", g.forge.comments, reply)
+	}
+}

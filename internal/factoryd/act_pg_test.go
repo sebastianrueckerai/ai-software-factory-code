@@ -1024,3 +1024,27 @@ func TestRungZerosExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
 		t.Fatalf("raised sessions = %d, want 1", card.Usage.RaisedSessions)
 	}
 }
+
+// Two grants of one run at one attempt value, the session cap's and then
+// the agent time's after a session that took no number, are two rows of
+// the pool; a retry of the second writes nothing more.
+func TestRecordGrantKeysEachGrant(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	first := TaskUsage{Attempts: 3, ExtraAttempts: 1}
+	second := TaskUsage{Attempts: 3, ExtraAttempts: 1, ExtraTime: 5 * time.Minute}
+	for _, grant := range []struct {
+		d policy.Draw
+		u TaskUsage
+	}{{policy.Draw{Sessions: 1}, first}, {policy.Draw{AgentTime: 5 * time.Minute}, second}, {policy.Draw{AgentTime: 5 * time.Minute}, second}} {
+		if err := g.r.RecordGrant(ctx, "t1", "sebastian", grant.d, grantKey("run-1", grant.u)); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if rows := g.rows(t, EventCardExtended); len(rows) != 2 {
+		t.Fatalf("card_extended rows = %+v, want the two grants'", rows)
+	}
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn != (policy.Draw{Sessions: 1, AgentTime: 5 * time.Minute}) {
+		t.Fatalf("the pool drew %+v, %v; want 1 session and 5 minutes", drawn, err)
+	}
+}

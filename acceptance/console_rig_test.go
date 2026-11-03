@@ -318,8 +318,8 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
-	// the newest of OpenCasesOf's an answer on the card ends, as the store
-	// reads it
+	// the newest of the cases OpenCasesOf answers that an answer on the
+	// card ends, as the store reads it
 	cfg.NewestAskCase = func(ctx context.Context, taskID string) (factoryd.Case, error) {
 		open, err := cfg.OpenCasesOf(ctx, taskID)
 		var newest factoryd.Case
