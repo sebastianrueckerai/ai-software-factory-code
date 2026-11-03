@@ -27,7 +27,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -146,6 +145,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
 		ActivityEndCase:                     r.EndCase,
+		ActivityOpenTrip:                    r.OpenTrip,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,
@@ -1379,124 +1379,32 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 	return last.Tool, last.Err, true
 }
 
-// Escalate hands the task to a human (architecture 6.6): state
-// waiting-human, mirrored on the issue, a comment with the reason and a
-// question_asked row with its question; the agent's choices, if any, ride
-// on that row, the timeline's step and the intake event the card reads. It
-// returns the comment's id: only later comments answer it.
+// Escalate is the human face of a run from before the cases gate, which
+// takes no resolution: the stop's case opens as OpenTrip opens it, or the
+// live case of its key, or for a restart the card's newest live ask, takes
+// the ask, and no rung runs. It returns the face's comment (askHuman).
 func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
-	t, repo, err := r.task(ctx, taskID)
+	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
-	// the reason in a code block: a mention the agent wrote rings no bell
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	if floorRefused(reason) {
-		// no answer can run: the card names why and the way out
-		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
-	}
-	if capWaitDecision(reason) != "" {
-		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
-	}
-	if strings.HasPrefix(reason, leftQueue) {
-		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
-	}
-	safe := r.untrusted(t, reason)
-	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(safe)
-	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
-		// the fence renders no link: the ones the sanitiser keeps follow it
-		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
-	}
-	body += "\n\n" + next
-	if strings.HasPrefix(reason, screeningAsks) {
-		// the reasons go to the card only: they would teach the author
-		body = screenedLine
-	}
-	var id int64
-	if t.IssueNumber != 0 {
-		// a task without one (a report task) has its question on the card alone
-		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
-			return 0, err
-		}
-	}
-	// a clicked choice is posted as the member's comment: agent text,
-	// sanitised like the reason
-	choices = slices.Clone(choices)
-	for i, c := range choices {
-		choices[i] = r.untrusted(t, c)
-	}
-	question := escalationQuestion(reason)
-	var shaped *HumanQuestion
-	if reason != healedReason && !strings.HasPrefix(reason, screeningAsks) {
-		// the deterministic stops shape their five-part question from the
-		// stop's own numbers; every other ask gets the same five parts
-		// from its reason, so no card asks with words alone
-		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
-		question = shaped.Ask
-		// the refusal the newest session ended on rides with the ask,
-		// verbatim: the blocker reaches the human with no agent-side
-		// reporting to lose it (card #1345)
-		if tool, refusal, ok := r.lastToolRefusal(ctx, taskID); ok {
-			shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
-		}
-	}
+	var c Case
 	if reason == healedReason {
-		// the restart's sentence asks nothing: the row names the question it asks again
-		events, err := r.store.IntakeEvents(ctx, taskID)
-		if err != nil {
-			log.Printf("task %s: the question a healed run asks again: %v", taskID, err)
-		}
-		_, again, _ := answersFrom(events)
-		question = cmp.Or(again, question)
-	}
-	// the durable anchor Reconcile rebuilds the answers from; a retry
-	// with the same comment records nothing twice. It is written before
-	// the wait: a card in waiting-human without its row has no ask
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-		Choices: choices, Question: shaped}); err != nil {
-		return 0, fmt.Errorf("task %s: record escalation comment %d: %w", taskID, id, err)
-	}
-	if t.Status != "waiting-human" {
-		// queued: the screening stage's suspect verdict, before any session;
-		// waiting-deps: a dependency ended failed or closed; waiting-poster:
-		// the author's answer screened suspect, or a cap reached on it;
-		// waiting-image: the image did not come within imageWait
-		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster", "waiting-image"}, "waiting-human"); err != nil {
-			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
-		}
-		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
-		// a parked card holds no slot: the next queued card takes it
-		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
-	}
-	// the shaped question's buttons are not these choices: they carry
-	// values, and park and keep waiting record an answer without posting
-	// one, so the console renders them from the question itself
-	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
-		"reason": textutil.Truncate(reason, 300)}
-	if shaped != nil {
-		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
-		if shaped.Recommendation != "" {
-			asked["recommendation"] = shaped.Recommendation
-		}
-		asked["choices"] = shaped.Labels()
-	}
-	if len(choices) > 0 {
-		step["choices"] = choices
-		if shaped == nil {
-			asked["choices"] = choices
+		c, err = r.liveAsk(ctx, t.ID)
+	} else {
+		var f CaseFacts
+		if f, err = r.tripFacts(ctx, t); err == nil {
+			c, _, _, err = r.openTripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}, CaseAtHuman)
 		}
 	}
-	r.record(ctx, taskID, "escalated", step)
-	r.timeline.RecordRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
-	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
-		return id, nil // the question asked again, or the screening's: its alert is open already
+	if err != nil {
+		return 0, err
 	}
-	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: taskID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
-		log.Printf("task %s: record the escalation alert: %v", taskID, err)
+	id, err := r.askHuman(ctx, t, c, reason, choices)
+	if err != nil || c.ID == 0 {
+		return id, err
 	}
-	return id, nil
+	return id, r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman)
 }
 
 // RequestInfo asks the issue's author for what the agent needs:

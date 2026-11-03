@@ -111,6 +111,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 	// carries the fix.
 	t.Run("#839_cap_return_carries_the_handover", func(t *testing.T) {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		h.taskConfig = askTaskConfig()
 		tests := "TaskFinishTime and TaskPinnedAt fail: the database check forbids the rows they create on purpose"
 		change := "reviewer sebastian requested changes: " + tests
@@ -174,6 +175,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 			g.taskConfig = askTaskConfig()
 			g.branchHead = "c3" // the sync with main left this head unjudged
 		})
+		g.beforeCases()
 		g.onSessions(
 			SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
 			SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},

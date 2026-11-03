@@ -62,6 +62,7 @@ type DepFact struct {
 	Status   string `json:"status"`
 	Why      string `json:"why,omitempty"`      // the end reason of an ended one
 	Replaced string `json:"replaced,omitempty"` // the replacement's task id, if retried
+	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
 }
 
 // tripFacts reads every fact of card t it can and names the readers that
@@ -252,8 +253,9 @@ func CardCeiling(d policy.Document, p policy.ProjectConfig) float64 {
 }
 
 // depFacts are card id's dependencies that are not done: an ended one
-// with the reason of its task_ended row, a failed one with its
-// replacement when a retry filed one (RetryID).
+// with the reason of its task_ended row and the card it replaced when a
+// retry filed it, a failed one with its replacement when a retry filed
+// one (RetryID).
 func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 	deps, err := r.store.OpenDependencies(ctx, id)
 	if err != nil {
@@ -269,6 +271,9 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
 				fact.Why, _ = events[i].Detail["reason"].(string)
+			}
+			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
+				fact.RetryOf, _ = events[i].Detail["replaces"].(string)
 			}
 		}
 		if d.Status == "failed" {

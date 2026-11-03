@@ -251,6 +251,23 @@ func depEndedReason(d Dependency) string {
 	return fmt.Sprintf("dependency #%d (%s) ended %s: close this card, or answer to start it anyway", d.Issue, d.Key, d.Status)
 }
 
+// depFailed opens the question of a card whose dependency failed with no
+// replacement (versionCases), an ask of SourceDependencyFailed.
+const (
+	depFailed              = "A dependency failed: "
+	SourceDependencyFailed = "dependency_failed"
+)
+
+// depFailedReason is the card's question when dependency d failed and no
+// retry replaced it.
+func depFailedReason(d Dependency) string {
+	name := fmt.Sprintf("#%d", d.Issue)
+	if d.Key != "" {
+		name += " (" + d.Key + ")"
+	}
+	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", name, d.TaskID, d.Status)
+}
+
 // signalDependents wakes the waiting cards that depend on taskID, which
 // just turned final. A failed signal is logged: the heal pass and the
 // wait's re-check cover it.
@@ -299,7 +316,10 @@ func (t *taskRun) waitsForDependencies(st RunState, u TaskUsage) bool {
 // again as the healed question): an answer starts the card with the reason
 // as a finding, and the timeline keeps it (dependencies_started), so a
 // later run starts the card without asking again; a close ends it closed,
-// also one found closed by Reconcile.
+// also one found closed by Reconcile. One that failed with no replacement
+// is a trip of its own (versionCases): a retry or a replan of it, rung 0's
+// or a human's, puts the card back in the wait on what replaced it, and
+// any other answer starts the card as a closed one's does.
 func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []string) {
 	switch {
 	case st.IssueClosed:
@@ -314,8 +334,14 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 		if err := workflow.ExecuteActivity(t.short, ActivityDependencies, t.taskID).Get(t.ctx, &d); err != nil {
 			return "failed", "dependencies: " + errMessage(err), nil
 		}
-		if d.Ended != nil {
-			reason := depEndedReason(*d.Ended)
+		failed := d.Ended == nil && d.Failed != nil && t.cases >= versionCases
+		if d.Ended != nil || failed {
+			var reason string
+			if failed {
+				reason = depFailedReason(*d.Failed)
+			} else {
+				reason = depEndedReason(*d.Ended)
+			}
 			var final, why string
 			var answer []string
 			if healed {
@@ -325,6 +351,10 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			}
 			if final != "" {
 				return closedBeforeStart(final, why)
+			}
+			if res := t.takeResolution(); failed && res != nil && (res.Action == ActRetry || res.Action == ActReplan) {
+				healed = false
+				continue
 			}
 			if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, stepDepsStarted, map[string]any{"reason": reason}).Get(t.ctx, nil); err != nil {
 				workflow.GetLogger(t.ctx).Warn("record dependencies_started", "task", t.taskID, "error", err)

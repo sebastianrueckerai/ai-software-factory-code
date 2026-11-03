@@ -26,8 +26,8 @@ const (
 	ActFund          = "fund"          // args: eur
 	ActRaiseCeiling  = "raise_ceiling" // args: eur
 	ActSuccessor     = "successor"
-	ActRetry         = "retry" // args: task_id of the failed dependency
-	ActReplan        = "replan"
+	ActRetry         = "retry"  // args: task_id of the failed dependency
+	ActReplan        = "replan" // args: task_id of a failed dependency, whose work its plan's planner takes (impasse)
 	ActClose         = "close"
 	ActWithdraw      = "withdraw"
 	ActNote          = "note" // records a step and resolves nothing: a park, or keep waiting
@@ -156,7 +156,19 @@ var Actions = []Action{
 		}
 		return retryRefusal(f.Dependencies[i])
 	}},
-	{Name: ActReplan, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+	{Name: ActReplan, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, r Resolution) string {
+		if id, _ := r.Args["task_id"].(string); id != "" {
+			i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id })
+			switch {
+			case f.Plan == "":
+				return "the card is in no plan, so no planner takes the work of " + id + ": retry it instead"
+			case i < 0:
+				return "the card does not depend on " + id
+			case f.Dependencies[i].Status != "failed":
+				return fmt.Sprintf("dependency #%d is %s, not failed", f.Dependencies[i].Issue, f.Dependencies[i].Status)
+			}
+			return ""
+		}
 		if f.Plan == "" && f.Running {
 			return "a session is running on this direct card"
 		}

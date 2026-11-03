@@ -63,8 +63,27 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 }
 
 // askCase opens the case of question_asked event e, or appends a step to
-// the live case it asks again, and tells whether it opened one.
+// the live case it asks again, and tells whether it opened one. An ask
+// that names its case (OpenTrip's face) puts that case at the human with
+// its comment and appends the human's step, while the case is live. One
+// that names none, or a case that ended, goes by its words.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
+	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+		comment, _ := toInt(e.Detail["comment"])
+		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
+			WHERE id = $1 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman).Scan(&id)
+		if err == nil {
+			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
+			if e.Detail["reason"] == healedReason {
+				step.Found = "asked again after a restart"
+			}
+			_, err = appendCaseStep(ctx, tx, step)
+			return false, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
 	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, e.TaskID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -157,7 +176,7 @@ var caseSourceKinds = map[string]CaseKind{
 	"budget": CaseBudgetFloor, SourceMonthCap: CaseMonthCap, "project_cap": CaseProjectCap, "day_cap": CaseDayCap,
 	"provider": CaseProviderRefused, "queue": CaseGateStop, "capacity": CasePodNeverStarted, "no_answer": CaseNoAnswer,
 	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate,
-	"stale": CaseWaitExpired,
+	"stale": CaseWaitExpired, SourceDependencyFailed: CaseDependencyFailed,
 }
 
 // caseKindOf maps the ask's source and reason prefixes to a CaseKind,

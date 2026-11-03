@@ -34,7 +34,8 @@ type ActInput struct {
 	// its outside actions ran (a close included), before the case ends,
 	// and only for an answer that resolves its case. Nil: Act posts factoryd's record
 	// after the case ends, when the card has an issue, except for a human
-	// card's choice, whose work the console does.
+	// card's choice, whose work the console does, and for rung 0, whose
+	// steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
 }
 
@@ -144,7 +145,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !answers {
 		return out, nil
 	}
-	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice {
+	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.Rung != 0 {
 		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}
@@ -348,7 +349,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 
 // actOutside runs what in.Res does outside the run before the case ends:
 // a retry files the failed dependency again, a replan sends the card to
-// the planner. It answers what ran, with its result.
+// the planner, or a failed dependency's work to its plan's planner, which
+// the card then waits on. It answers what ran, with its result.
 func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
 	switch in.Res.Action {
 	case ActRetry:
@@ -365,6 +367,9 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": dep.TaskID},
 			Result: fmt.Sprintf("Filed #%d in place of #%d.", issue, dep.Issue)}}, nil
 	case ActReplan:
+		if id, _ := in.Res.Args["task_id"].(string); id != "" {
+			return r.replanDependency(ctx, t, id)
+		}
 		said, err := r.Replan(ctx, t.ID, ReplanAsk{By: in.By, Comment: in.Res.Note})
 		if err != nil {
 			return nil, err
@@ -372,6 +377,28 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		return []CaseAction{{Action: ActReplan, Result: said}}, nil
 	}
 	return nil, nil
+}
+
+// replanDependency sends failed dependency id of card t to its plan's
+// planner (impasse) and answers what ran. It is refused when the card
+// still waits on it after, as when its plan takes no replan.
+func (r *Runner) replanDependency(ctx context.Context, t Task, id string) ([]CaseAction, error) {
+	dep, _, err := r.task(ctx, id)
+	if err != nil {
+		return nil, err
+	}
+	if err := r.impasse(ctx, dep); err != nil {
+		return nil, err
+	}
+	deps, err := r.store.OpenDependencies(ctx, t.ID)
+	if err != nil {
+		return nil, err
+	}
+	if slices.ContainsFunc(deps, func(d Dependency) bool { return d.TaskID == id }) {
+		return nil, ErrActRefused(fmt.Sprintf("the planner did not take the work of #%d, and card %s still waits on it: retry it or close the card", dep.IssueNumber, cardName(t)))
+	}
+	return []CaseAction{{Action: ActReplan, Args: map[string]any{"task_id": id},
+		Result: fmt.Sprintf("Sent the work of #%d to its plan's planner.", dep.IssueNumber)}}, nil
 }
 
 // closeCard closes card t for in.By: its issue as factoryd's recorded

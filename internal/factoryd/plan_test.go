@@ -1835,6 +1835,7 @@ func TestDirectCardSwitchesBetweenSessions(t *testing.T) {
 // running again, the status BecomePlan accepts.
 func TestDirectCardSwitchesAfterThePersonsWait(t *testing.T) {
 	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s4", "c4")})
+	h.beforeCases()
 	h.env.OnGetVersion("replan", workflow.DefaultVersion, versionReplan).Return(workflow.DefaultVersion)
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
 	h.toPlanAfter(30*time.Minute, toPlanTooBig)

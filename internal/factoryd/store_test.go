@@ -1282,8 +1282,23 @@ func (s *fakeStore) UpdateSession(ctx context.Context, id string, findings []str
 
 var _ Store = (*fakeStore)(nil)
 
+// OpenCase opens c as PGStore.OpenCase does: unless a live case of its
+// task, kind and key exists, which it answers with false, it inserts c
+// with the next id, open when it names no status.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
-	return Case{}, false, nil
+	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
+	if i := slices.IndexFunc(s.cases, func(o Case) bool {
+		return o.TaskID == c.TaskID && o.Kind == c.Kind && o.StateKey == c.StateKey && live(o)
+	}); i >= 0 {
+		return s.cases[i], false, nil
+	}
+	for _, o := range s.cases {
+		c.ID = max(c.ID, o.ID)
+	}
+	c.ID++
+	c.Status = cmp.Or(c.Status, CaseOpen)
+	s.cases = append(s.cases, c)
+	return c, true, nil
 }
 
 func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
@@ -1299,6 +1314,11 @@ func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found st
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	s.cases[i].Status = status
 	return nil
 }
 

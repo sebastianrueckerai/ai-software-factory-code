@@ -314,10 +314,14 @@ func askOutcome(t Task, e Event) string {
 }
 
 // askCaseIndex is the index among cases of the case ask e opened or
-// asked again, -1 for none: the case of its comment when it has one, else
-// the newest of its kind and words opened by the time it was asked, as a
-// plan question's or a human card's ask, which have no comment.
+// asked again, -1 for none: the case it names, else the case of its
+// comment when it has one, else the newest of its kind and words opened by
+// the time it was asked, as a plan question's or a human card's ask, which
+// have no comment.
 func askCaseIndex(t Task, e Event, cases []Case) int {
+	if id, _ := toInt(e.Detail["case_id"]); id > 0 {
+		return slices.IndexFunc(cases, func(c Case) bool { return c.ID == int64(id) })
+	}
 	if comment, _ := toInt(e.Detail["comment"]); comment > 0 {
 		return slices.IndexFunc(cases, func(c Case) bool { return c.CommentID == int64(comment) })
 	}

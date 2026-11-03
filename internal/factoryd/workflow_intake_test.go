@@ -282,7 +282,8 @@ var licenseQuestion = SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", R
 // Roadmap 237: an answer in parts lands whole (card #756 got part 1 of
 // 12). Three comments 10 s apart, then quiet: the wait resumes once, 30 s
 // after the third, and the next session gets all three in the order they
-// were written.
+// were written. The author's information buys an attempt, the human's
+// answer to an escalation none (versionCases: a draw is the row's).
 func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -291,11 +292,12 @@ func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
 		author string
 		got    func(SessionInput) []string
 		want   []string
+		extra  int
 	}{
 		{"an information request", needsInfo("s1"), SignalPosterComment, "visitor", func(in SessionInput) []string { return in.PosterInfo },
-			[]string{"visitor: part 1 of 3", "visitor: part 2 of 3", "visitor: part 3 of 3"}},
+			[]string{"visitor: part 1 of 3", "visitor: part 2 of 3", "visitor: part 3 of 3"}, 1},
 		{"an escalation", licenseQuestion, SignalHumanComment, "sebastian", func(in SessionInput) []string { return in.Answers },
-			[]string{`sebastian, to "Which license?": part 1 of 3`, `sebastian, to "Which license?": part 2 of 3`, `sebastian, to "Which license?": part 3 of 3`}},
+			[]string{`sebastian, to "Which license?": part 1 of 3`, `sebastian, to "Which license?": part 2 of 3`, `sebastian, to "Which license?": part 3 of 3`}, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h, began, _ := providerHarness(t, tc.first, pushed("s2", "c2"))
@@ -315,8 +317,8 @@ func TestWorkflowAnswerInPartsLandsWhole(t *testing.T) {
 			if resumed := (*began)[1].Sub(start); resumed != time.Hour+50*time.Second {
 				t.Fatalf("the second session began %s after the start, want 1h0m50s: the third part at 1h0m20s and 30 s of quiet", resumed)
 			}
-			if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != 1 {
-				t.Fatalf("usage = %+v, want the one extra attempt one answer buys", u)
+			if u := h.usage[len(h.usage)-1]; u.ExtraAttempts != tc.extra {
+				t.Fatalf("usage = %+v, want %d extra attempts", u, tc.extra)
 			}
 		})
 	}

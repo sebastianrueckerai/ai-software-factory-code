@@ -100,9 +100,11 @@ func TestWorkflowGateCancelFailsTheTask(t *testing.T) {
 
 // escalate stops the session and hands the task to a human with the
 // diagnosis and the recommendation; the wait is no agent time, and the
-// answer buys an attempt that carries it.
+// answer buys an attempt that carries it, in a run from before
+// versionCases.
 func TestWorkflowGateEscalateWaitsForAHuman(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	record := func(res SessionResult) func(context.Context, SessionInput) (SessionResult, error) {
 		return func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)

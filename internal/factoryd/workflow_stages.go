@@ -878,6 +878,11 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 	if err := t.ask(reason, escalationQuestion(reason), nil); err != nil {
 		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 	}
+	if t.takeResolution() != nil {
+		// rung 0 took the stop: the gate's stage runs again, no one asked
+		f.answered = true
+		return verdict{}, false
+	}
 	f.asked, f.comment = reason, t.escalation
 	return verdict{}, false
 }
@@ -920,8 +925,13 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 
 // insertAnswer puts text, the answer k names, among the human's answers
 // in answerKey's order, ahead of those Reconcile rebuilt before this run,
-// as Reconcile rebuilds them (answersFrom).
+// as Reconcile rebuilds them (answersFrom). An answer it holds already, as
+// the webhook's copy of a resolution's comment, goes in once
+// (versionCases).
 func (t *taskRun) insertAnswer(k answerKey, text string) {
+	if t.cases >= versionCases && slices.Contains(t.answerKeys, k) {
+		return
+	}
 	i := slices.IndexFunc(t.answerKeys, func(o answerKey) bool { return k.compare(o) < 0 })
 	if i < 0 {
 		i = len(t.answerKeys)
