@@ -246,6 +246,27 @@ func (a *AcceptanceRig) SetLoadedPool(eur float64) {
 	a.pool = &policy.ProjectBudget{MonthEUR: 600, TaskMaxEUR: 5, RaiseMaxEUR: 1, DiscretionaryEUR: eur}
 }
 
+// SetLoadedRaiseMax moves the pool the loaded policy holds to its per-raise
+// bound eur, the one a policy PR writes. A reload's activation is its only
+// honest caller.
+func (a *AcceptanceRig) SetLoadedRaiseMax(eur float64) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	if a.pool != nil {
+		a.pool.RaiseMaxEUR = eur
+	}
+}
+
+// SetLoadedAutonomy installs the autonomy the policy in force holds for
+// the code project — autonomous takes fund off the confirm list, so the
+// agent raises from the pool without a click; manual puts it back. A
+// reload's activation is its only honest caller.
+func (a *AcceptanceRig) SetLoadedAutonomy(level string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.autonomy = level
+}
+
 // LoadedPool answers the pool the policy in force holds, false for none.
 func (a *AcceptanceRig) LoadedPool() (float64, bool) {
 	a.mu.Lock()
