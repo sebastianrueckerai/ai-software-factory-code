@@ -15,10 +15,10 @@ import (
 // answered not reviewed, over the genuine answers. The store case runs
 // the Runner's ModelReview itself against a fake Forgejo and model
 // gateway: a concerns verdict judged the head and stays reviewed, a
-// refused and an unreadable answer did not, a replayed attempt is one
-// answer, a second round and another head are their own, another
-// repository's review stays out, and a keyed row with no classification
-// is counted unknown, never an answer.
+// refused, a failed and an unreadable answer did not, a replayed attempt
+// is one answer, a second head is its own, another repository's review
+// stays out, and a keyed row with no classification is counted unknown,
+// never an answer.
 func TestDivideConquerReviewCoverage(t *testing.T) {
 	t.Run("fake", func(t *testing.T) {
 		rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
@@ -36,11 +36,11 @@ func TestDivideConquerReviewCoverage(t *testing.T) {
 		today := time.Now().UTC().Truncate(24 * time.Hour)
 		span := accSpan(today.AddDate(0, 0, -6), today)
 		dc := rig.reportAt(span).DivideConquer
-		same(t, "reviews_not_reviewed", dc.ReviewsNotReviewed, factoryd.Figure{Value: 2, Has: true, Weeks: [7]float64{6: 2}})
-		same(t, "review answers", dc.ReviewEvidence.Answers, factoryd.Figure{Value: 4, Has: true, Weeks: [7]float64{6: 4}})
+		same(t, "reviews_not_reviewed", dc.ReviewsNotReviewed, factoryd.Figure{Value: 3, Has: true, Weeks: [7]float64{6: 3}})
+		same(t, "review answers", dc.ReviewEvidence.Answers, factoryd.Figure{Value: 5, Has: true, Weeks: [7]float64{6: 5}})
 		same(t, "review unknown", dc.ReviewEvidence.Unknown, factoryd.Figure{Value: 1, Has: true, Weeks: [7]float64{6: 1}})
 		holds(t, panel(t, rig.pageQuery(span), "not reviewed answers"),
-			[]string{">2 of 4 · target 0<", "1 unknown", "TestDivideConquerReviewCoverage in acceptance"}, nil)
+			[]string{">3 of 5 · target 0<", "1 unknown", "TestDivideConquerReviewCoverage in acceptance"}, nil)
 		// a span no review covers is unknown, not a measured zero
 		holds(t, panel(t, rig.pageQuery(accSpan(accDay(100), accDay(106))), "not reviewed answers"), []string{">— · target 0<"}, nil)
 	})
@@ -199,12 +199,25 @@ func TestDivideConquerMetricsCompatibility(t *testing.T) {
 		}
 	}
 	holds(t, panel(t, body, "throughput"), []string{">7 cards<"}, nil)
+	// the seam's JSON carries the legacy values themselves, not keys alone
+	rep := rig.reportAt(accQuery)
+	same(t, "json throughput", rep.Throughput, accFig(7, 6, [7]float64{}))
+	same(t, "json divide eur per merged line", rep.DivideConquer.EurPerMergedLine, factoryd.Figure{Value: 0.02, Prev: 0.01, Has: true, PrevHas: true})
 	// the quick spans end on the window's last date and reach back 7, 28 and 90 days
 	holds(t, body, []string{
 		`/metrics?from=2026-10-05&amp;to=2026-10-11`,
 		`/metrics?from=2026-09-14&amp;to=2026-10-11`,
 		`/metrics?from=2026-07-14&amp;to=2026-10-11`,
 	}, nil)
+
+	// the board route the metrics page sits beside answers unchanged
+	board := httptest.NewRequest(http.MethodGet, "/board", nil)
+	board.AddCookie(rig.ck)
+	brec := httptest.NewRecorder()
+	rig.a.Handler().ServeHTTP(brec, board)
+	if brec.Code != http.StatusOK {
+		t.Errorf("GET board = %d, want the page it always answered", brec.Code)
+	}
 
 	// the login rule: no login, a session nobody holds (a login that
 	// writes no project is refused at the callback), and a
