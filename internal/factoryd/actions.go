@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"math"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 
@@ -76,7 +77,7 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
+	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
 		case !f.PROpen:
 			return "no pull request is open"
@@ -131,17 +132,14 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActRaiseCeiling, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		switch eur, _ := r.Args["eur"].(float64); {
-		case !(eur > 0) || math.IsInf(eur, 1):
+		if eur, _ := r.Args["eur"].(float64); !(eur > 0) || math.IsInf(eur, 1) {
 			return "a raise of the ceiling needs an amount above 0 EUR"
-		case Cents(eur) > Cents(f.PoolLeft.EUR):
-			return fmt.Sprintf("the escalation pool leaves %.2f EUR this month and the raise is %.2f EUR", f.PoolLeft.EUR, eur)
 		}
 		return ""
 	}},
 	{Name: ActSuccessor, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
-		if !f.PROpen && f.Head == "" {
-			return "no pull request is open and no head reached the gates"
+		if !f.PROpen && !f.Pushed && f.Head == "" {
+			return "no pull request is open and no session pushed a branch"
 		}
 		return ""
 	}},
@@ -215,42 +213,68 @@ func Offered(f CaseFacts, rung int) []Action {
 }
 
 // refusal is why rung may not answer f with r by a, "" when it may: a's
-// rungs, its Applies, and the draw r makes, which a draw that bought
-// nothing refuses and drawWithin bounds by rung.
+// rungs, its Applies, and the draw r makes. Money is drawn only on the
+// rungs that may fund. A draw is refused while the reads it is weighed
+// on failed, and after a draw that bought nothing, and drawWithin bounds
+// it by rung: every part against the pool and the card's bound, the money
+// for the budget against the ceiling.
 func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
-	if rung < 0 || rung >= len(a.Rungs) || !a.Rungs[rung] {
-		return fmt.Sprintf("rung %d may not pick %s", rung, a.Name)
+	if rung < 0 || rung > 3 {
+		return fmt.Sprintf("there is no rung %d", rung)
+	}
+	if !a.Rungs[rung] {
+		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
 	}
-	d, toBudget := r.draw()
-	switch {
-	case d.IsZero():
+	d, budget := r.draw()
+	if d.IsZero() {
 		return ""
-	case d.Sessions < 0 || d.AgentTime < 0 || !(d.EUR >= 0) || math.IsInf(d.EUR, 1):
+	}
+	fund, _ := ActionByName(ActFund)
+	unread := slices.IndexFunc(f.Partial, func(p string) bool { return p == "events" || p == "checks" })
+	switch {
+	case badDraw(d) || r.Fund != nil && badDraw(*r.Fund):
 		return "the draw has a part below 0 or an endless one"
+	case d.EUR > 0 && !fund.Rungs[rung]:
+		return fmt.Sprintf("%s may not draw money: %s may", who(rung), rungsText(fund.Rungs))
+	case unread >= 0:
+		return fmt.Sprintf("the card's %s could not be read, so a draw cannot be weighed against the last one: hand up", f.Partial[unread])
 	case boughtNothing(f):
 		return boughtNothingText(f)
 	}
-	return drawWithin(f, rung, d, toBudget)
+	if why := drawWithin(f, rung, d, false); why != "" || budget == 0 {
+		return why
+	}
+	return drawWithin(f, rung, policy.Draw{EUR: budget}, true)
 }
 
-// draw is what r draws from the pool, an extend's sessions and agent time,
-// a fund's money and the draw beside the action, and whether money goes
-// to the card's budget, which its ceiling bounds.
-func (r Resolution) draw() (policy.Draw, bool) {
+// draw is everything r draws from the pool: an extend's sessions and
+// agent time, a fund's or a ceiling raise's money, and the draw beside
+// the action; and of its money the part that goes to the card's budget,
+// which the ceiling bounds.
+func (r Resolution) draw() (policy.Draw, float64) {
 	var d policy.Draw
+	var budget float64
 	switch r.Action {
 	case ActExtend:
 		d = extendDraw(r.Args)
 	case ActFund:
+		budget, _ = r.Args["eur"].(float64)
+		d.EUR = budget
+	case ActRaiseCeiling:
 		d.EUR, _ = r.Args["eur"].(float64)
 	}
 	if r.Fund != nil {
-		d = d.Plus(*r.Fund)
+		d, budget = d.Plus(*r.Fund), budget+r.Fund.EUR
 	}
-	return d, d.EUR != 0
+	return d, budget
+}
+
+// badDraw reports a draw with a part below 0 or an endless one.
+func badDraw(d policy.Draw) bool {
+	return d.Sessions < 0 || d.AgentTime < 0 || !(d.EUR >= 0) || math.IsInf(d.EUR, 1)
 }
 
 // extendDraw is the draw of an extend's args: its sessions and its agent
@@ -264,20 +288,24 @@ func extendDraw(args map[string]any) policy.Draw {
 // sessionRoom is why f leaves no room to open a session, "" when it has
 // it: none running, an attempt under the cap, the agent time a session
 // needs (minSession, or the whole cap when it is shorter), and the money
-// an opening needs.
+// an opening needs, with the action that makes the room.
 func sessionRoom(f CaseFacts) string {
 	limit, left := time.Duration(f.AgentTimeCapS)*time.Second, time.Duration(f.AgentTimeCapS-f.AgentTimeS)*time.Second
 	switch need := min(minSession, limit); {
 	case f.Running:
 		return "a session is running"
 	case f.Attempts >= f.SessionCap:
-		return fmt.Sprintf("the session cap of %d is reached", f.SessionCap)
+		return fmt.Sprintf("the session cap of %d is reached: extend or close", f.SessionCap)
+	case slices.Contains(f.Partial, "config"):
+		return "the agent time cap could not be read: hand up"
 	case left <= 0:
-		return fmt.Sprintf("the agent time cap of %s is reached", minutesWord(limit))
+		return fmt.Sprintf("the agent time cap of %s is reached: extend", minutesWord(limit))
 	case left < need:
-		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s", minutesWord(limit), minutesWord(left), minutesWord(need))
+		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s: extend", minutesWord(limit), minutesWord(left), minutesWord(need))
+	case slices.Contains(f.Partial, "floor"):
+		return "what an opening needs could not be read: hand up"
 	case Cents(f.LeftEUR) < Cents(f.FloorEUR):
-		return fmt.Sprintf("%.2f EUR is left and an opening needs %.2f EUR", f.LeftEUR, f.FloorEUR)
+		return fmt.Sprintf("%.2f EUR is left and an opening needs %.2f EUR: fund", f.LeftEUR, f.FloorEUR)
 	}
 	return ""
 }
@@ -296,20 +324,26 @@ func retryRefusal(d DepFact) string {
 }
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
-// since, the head and the checks unchanged since it.
+// since, the head, the checks and the findings unchanged since it. A draw
+// whose row recorded no findings is weighed on the head and the checks.
 func boughtNothing(f CaseFacts) bool {
-	return f.LastDrawAt != nil && !f.PushedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks
+	return f.LastDrawAt != nil && !f.PushedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks &&
+		(f.DrawFindings == nil || slices.Equal(f.DrawFindings, f.Findings))
 }
 
-// boughtNothingText is boughtNothing's refusal.
+// boughtNothingText is boughtNothing's refusal: the rung hands up, or
+// takes an action that draws nothing.
 func boughtNothingText(f CaseFacts) string {
-	return "the last draw at " + f.LastDrawAt.UTC().Format("15:04") + " UTC bought nothing: no push since and the head and the checks are unchanged"
+	return "the last draw at " + f.LastDrawAt.UTC().Format("15:04") + " UTC bought nothing, with no push since and the head, " +
+		"the checks and the findings unchanged: hand up, or hand over, start a successor, replan or close"
 }
 
 // drawWithin reports why draw d does not fit rung's bounds on f: the pool for
 // rungs 0 to 2, the card bound for rungs 0 and 1, the ceiling for fund.
 func drawWithin(f CaseFacts, rung int, d policy.Draw, toBudget bool) string {
 	switch {
+	case rung < 0 || rung > 3:
+		return fmt.Sprintf("there is no rung %d", rung)
 	case rung <= 1 && !fitsIn(d, f.CardDrawLeft):
 		return fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(f.CardDrawLeft))
 	case rung <= 2 && !fitsIn(d, f.PoolLeft):
@@ -330,4 +364,52 @@ func fitsIn(d, in policy.Draw) bool {
 // drawText says draw d's three parts.
 func drawText(d policy.Draw) string {
 	return fmt.Sprintf("%s, %s of agent time and %.2f EUR", textutil.Plural(d.Sessions, "session", "sessions"), minutesWord(d.AgentTime), d.EUR)
+}
+
+// who is rung as a refusal names it.
+func who(rung int) string {
+	if rung == 3 {
+		return "the human"
+	}
+	return fmt.Sprintf("rung %d", rung)
+}
+
+// rungsText names the rungs of: "rungs 0, 1 and 2", "rung 2 and the
+// human".
+func rungsText(of [4]bool) string {
+	var items []string
+	for n, ok := range of[:3] {
+		if ok {
+			items = append(items, strconv.Itoa(n))
+		}
+	}
+	switch len(items) {
+	case 0:
+	case 1:
+		items[0] = "rung " + items[0]
+	default:
+		items[0] = "rungs " + items[0]
+	}
+	if of[3] {
+		items = append(items, "the human")
+	}
+	if len(items) < 2 {
+		return strings.Join(items, "")
+	}
+	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+}
+
+// alertNoLongerFires is the reason an alert card ends with when its alert
+// stopped firing before its first session (the alert pre-check).
+const alertNoLongerFires = "alert no longer fires"
+
+// terminalEnds mark the end reasons no retry can fix: the policy gate's
+// class forbidden to agents, the issue a human closed and the alert that
+// stopped firing.
+var terminalEnds = []string{refusedToAgents, ReasonIssueClosed, alertNoLongerFires}
+
+// retryableEnd reports whether a card that ended for why may be retried:
+// why names none of terminalEnds.
+func retryableEnd(why string) bool {
+	return !slices.ContainsFunc(terminalEnds, func(end string) bool { return strings.Contains(why, end) })
 }

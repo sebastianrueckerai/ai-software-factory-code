@@ -679,15 +679,78 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if model == "" {
 		return "", nil
 	}
+	n, err := r.needOf(ctx, v, t, model, opening)
+	if err != nil || n.unread != "" {
+		return n.unread, err
+	}
+	req, need := n.req, n.eur
+	own, free, err := r.store.Free(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: req.Ref, Project: req.Project, EUR: need})
+	if err == nil {
+		return "", nil
+	}
+	var refused *policy.Refusal
+	if !errors.As(err, &refused) {
+		return "", err
+	}
+
+	// the free figure rounds down to the tenth of a cent it prints, so a
+	// raise read off it (FundRaise) covers the need; 1e-6 takes up float noise
+	left := math.Floor(max(own.Free(), 0)*1000+1e-6) / 1000
+	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
+	act := "Raise the budget (Fund on the board) and answer, or close the card."
+	switch refused.Decision {
+	case policy.RefusedDayCap:
+		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
+		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
+	case policy.RefusedMonthCap:
+		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
+		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
+	case policy.RefusedProjectCap:
+		file := "projects/" + req.Project + ".yaml"
+		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), req.ProjectEUR, file)
+		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
+	default:
+		if own.Holds > 0 {
+			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
+		}
+	}
+	if o, ok := capRefusals[refused.Decision]; ok {
+		opens = o
+	}
+	// the first line is the card's question row (escalationQuestion), cut
+	// at 300 characters: it carries the actions, the state follows
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, n.call, need, n.measure, n.then), nil
+}
+
+// attemptNeed is what an attempt of card t on model needs free to start,
+// as the gateway's holds take it: the cheapest call, or with opening a
+// session's opening calls as the newest recorded openings made them, and
+// at least the floor of the model's rung. Beside the amount it keeps the
+// hold request, the call it is for, how it was measured and what an
+// attempt short of it meets. A price that cannot be read leaves unread
+// the refusal that names it, and no amount.
+type attemptNeed struct {
+	req                         policy.HoldRequest
+	eur                         float64
+	call, measure, then, unread string
+}
+
+// needOf reads card t's attemptNeed on model under version v.
+func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model string, opening bool) (attemptNeed, error) {
 	alias := aliasOf(model)
 	price, err := r.price(ctx, alias)
 	if err != nil {
 		// a model nobody can price is a hold nobody can bound: the
 		// attempt is refused (roadmap 222, item 5)
-		return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
+		return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err)}, nil
 	}
 	project, projectEUR := v.ProjectCap(t.Repository)
-	req := policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Price: price,
+	req := policy.HoldRequest{TaskID: t.ID, Kind: policy.KindModel, Ref: alias, Price: price,
 		DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
 	// the cheapest call: no prompt and policy.MinCallTokens output tokens
 	inf, cheapest := math.Inf(1), req
@@ -696,15 +759,15 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	need, call, measure, then := h.EUR, "the cheapest call on "+model, fmt.Sprintf("%d output tokens at the hold machinery's minimum", policy.MinCallTokens),
 		"an answer would start an attempt whose first call cannot run"
 	if opening {
-		o, err := r.store.Opening(ctx, taskID, alias)
+		o, err := r.store.Opening(ctx, t.ID, alias)
 		if err != nil {
-			return "", err
+			return attemptNeed{}, err
 		}
 		call, then = "a session's opening on "+model, "a session started now could not make its opening calls"
 		measure = "no session's opening is recorded: " + measure
 		eur, calls, err := o.Hold(req, func(ref string) (policy.Price, error) { return r.price(ctx, ref) })
 		if err != nil {
-			return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
+			return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err)}, nil
 		}
 		if calls != nil {
 			on := "it"
@@ -734,47 +797,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 				"a session started now would run out of money before its work is done"
 		}
 	}
-	own, free, err := r.store.Free(ctx, req)
-	if err != nil {
-		return "", err
-	}
-	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Project: project, EUR: need})
-	if err == nil {
-		return "", nil
-	}
-	var refused *policy.Refusal
-	if !errors.As(err, &refused) {
-		return "", err
-	}
-
-	// the free figure rounds down to the tenth of a cent it prints, so a
-	// raise read off it (FundRaise) covers the need; 1e-6 takes up float noise
-	left := math.Floor(max(own.Free(), 0)*1000+1e-6) / 1000
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
-	act := "Raise the budget (Fund on the board) and answer, or close the card."
-	switch refused.Decision {
-	case policy.RefusedDayCap:
-		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
-		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
-	case policy.RefusedMonthCap:
-		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
-		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
-	case policy.RefusedProjectCap:
-		file := "projects/" + project + ".yaml"
-		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), projectEUR, file)
-		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
-	default:
-		if own.Holds > 0 {
-			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
-			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
-		}
-	}
-	if o, ok := capRefusals[refused.Decision]; ok {
-		opens = o
-	}
-	// the first line is the card's question row (escalationQuestion), cut
-	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, call, need, measure, then), nil
+	return attemptNeed{req: req, eur: need, call: call, measure: measure, then: then}, nil
 }
 
 // CapCheck is a wait on the cap Decision refused: Turned says its period

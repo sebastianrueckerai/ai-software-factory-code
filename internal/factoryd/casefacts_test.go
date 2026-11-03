@@ -2,7 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"reflect"
@@ -18,7 +20,10 @@ import (
 // t1, a large card of demo-app/demo-app, runs the direct track's coder
 // class: 3 sessions, 10 minutes of agent time, task_max_eur 5, floors of
 // 0.30 EUR cheap and 0.60 EUR frontier, and the default pool and card
-// draw.
+// draw. Its last session ran on small, whose recorded opening is two
+// calls at once (TestSessionFundedPricesASessionsOpening's s1): 44,342
+// bytes on big and 7,031 on small, each asking 24,576 output tokens, held
+// at 0.501666 + 0.105335 = 0.607001 EUR.
 type factsRig struct {
 	r     *Runner
 	store *fakeStore
@@ -45,7 +50,11 @@ func newFactsRig(t *testing.T) factsRig {
 	v.Document.Budget.SessionFloorCheapEUR, v.Document.Budget.SessionFloorFrontierEUR = 0.3, 0.6
 	cfg := testRunnerConfig()
 	cfg.Policy = func() policy.Version { return v }
+	cfg.Prices = aliasPrices{"big": {In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768},
+		"small": {In: 1e-6, CacheRead: 1e-7, Out: 4e-6, MaxOutput: 32768}}
 	store, objects := newFakeStore(), &fakeObjectStore{}
+	store.openings = map[string]policy.Opening{"small": {Sessions: [][]policy.OpeningCall{{
+		{Ref: "big", Bytes: 44342, WantOut: 24576}, {Ref: "small", Bytes: 7031, WantOut: 24576}}}}}
 	r := &Runner{store: store, objects: objects, cfg: cfg, now: func() time.Time { return factsNow },
 		forgejo: &Forgejo{BaseURL: forge.URL, BotUser: "factory-agent", BotPassword: "pw"}}
 	store.tasks["t1"] = Task{ID: "t1", Kind: "agent", Repository: "demo-app/demo-app", IssueNumber: 12, Status: "waiting-human",
@@ -62,8 +71,8 @@ func (g factsRig) event(task string, at time.Time, kind string, detail map[strin
 
 // card writes t1's life: a draw at h1 with red checks, a push, h2 reviewed
 // twice and approved the second time, green, a push of h3 the merge gate
-// has not read whose review has concerns, and a fund at 10:04 with no
-// push after it. A draw of t1 last month and one of t2 this month count
+// has not read whose review has concerns, and a fund at 10:04 on h2 with
+// the findings idA and idB and no push after it. A draw of t1 last month and one of t2 this month count
 // for the card and for the pool. t1 depends on a failed card already
 // retried, one the policy forbade, one whose issue closed, a running and
 // a done one. A case on h1 ran its checks again, one on h2 resumed.
@@ -79,7 +88,8 @@ func (g factsRig) card() {
 	g.event("t1", factsAt(9, 45), EventModelReview, map[string]any{"commit": "h2", "round": 2, "reviewed": true, "verdict": "approve"})
 	g.event("t1", factsAt(9, 48), EventSessionPushed, map[string]any{"session": "s3"})
 	g.event("t1", factsAt(9, 50), EventModelReview, map[string]any{"commit": "h3", "round": 1, "reviewed": true, "verdict": "concerns"})
-	g.event("t1", factsAt(10, 4), EventCardFunded, map[string]any{"pool": true, "rung": 3, "amount_eur": 0.5, "head": "h2", "checks": "green"})
+	g.event("t1", factsAt(10, 4), EventCardFunded, map[string]any{"pool": true, "rung": 3, "amount_eur": 0.5, "head": "h2", "checks": "green",
+		"findings": []any{idB, idA}})
 	for id, d := range map[string]Task{
 		"d1": {IssueNumber: 20, Status: "failed"}, "d2": {IssueNumber: 21, Status: "failed"},
 		"d3": {IssueNumber: 22, Status: "running"}, "d4": {IssueNumber: 23, Status: "done"}, "d5": {IssueNumber: 24, Status: "closed"},
@@ -127,8 +137,9 @@ func (g factsRig) timeline(t *testing.T) {
 //   - the checks ran again on h1, not on h2: until a case on h2 does
 //   - sessions 3 + 1 raised = 4; agent time 10m, 15m for a large card, + 5m
 //     raised = 1200 s, 480 s used
-//   - spent 4.50 + 0.25 held = 4.75, left 0.25; the floor of small, the
-//     cheap rung, 0.30; the ceiling task_max_eur 5
+//   - spent 4.50 + 0.25 held = 4.75, left 0.25; an opening on small needs
+//     its recorded opening, 0.607001, above the cheap floor 0.30; the
+//     ceiling task_max_eur 5
 //   - the pool 30, 30h, 60 less November's draws: 1 session and 5 minutes
 //     at 09:00, 0.50 at 10:04 and t2's 1.00 = 29, 29h55m, 58.50
 //   - the card draw 2, 1h, 4 of a medium card is 3, 1h30m, 6 for a large
@@ -142,12 +153,15 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	if math.Abs(got.FloorEUR-0.607001) > 1e-9 {
+		t.Errorf("floor = %v, want the opening's 0.607001 EUR", got.FloorEUR)
+	}
 	drawn := factsAt(10, 4)
 	want := CaseFacts{Head: "h2", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Stage: GateApproval,
 		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, Model: "small",
-		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, FloorEUR: 0.3, CeilingEUR: 5,
+		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, FloorEUR: got.FloorEUR, CeilingEUR: 5,
 		Findings:   []string{idA, idB},
-		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green",
+		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,
 		Dependencies: []DepFact{
 			{TaskID: "d1", Issue: 20, Status: "failed", Why: "session error: the pod is gone", Replaced: RetryID("d1")},
 			{TaskID: "d2", Issue: 21, Status: "failed", Why: "policy version 7: risk class forbidden is forbidden to agents: .forgejo/ci.yaml"},
@@ -171,16 +185,41 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 }
 
-// A card with no timeline object reads every other fact and names the
-// timeline as what it could not read.
-func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
+// A card with no timeline object has no findings, and no reader failed.
+func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"])
 	if err != nil {
 		t.Fatal(err)
 	}
-	if !slices.Equal(got.Partial, []string{"timeline"}) || got.Findings != nil || got.Head != "h2" || got.Checks != "green" || got.SessionCap != 4 {
-		t.Fatalf("facts = %+v, want the timeline partial, no findings, the rest read", got)
+	if got.Partial != nil || got.Findings != nil || got.Head != "h2" || got.Checks != "green" || got.SessionCap != 4 || boughtNothing(got) {
+		t.Fatalf("facts = %+v, want no partial, no findings, the rest read, and the draw's findings idA and idB gone", got)
+	}
+}
+
+// A timeline S3 cannot read and an opening on a model nobody prices are
+// named in Partial, with no findings and no floor; a context that ended
+// fails the read.
+func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
+	g.store.openings["small"] = policy.Opening{Sessions: [][]policy.OpeningCall{{{Ref: "unpriced", Bytes: 7031}}}}
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(got.Partial, []string{"timeline", "floor"}) || got.Findings != nil || got.FloorEUR != 0 || got.Head != "h2" || got.SessionCap != 4 {
+		t.Fatalf("facts = %+v, want the timeline and the floor partial, no findings, no floor, the rest read", got)
+	}
+	if why := sessionRoom(CaseFacts{Attempts: 1, SessionCap: 4, AgentTimeCapS: 1200, Partial: got.Partial}); why != "what an opening needs could not be read: hand up" {
+		t.Errorf("a resume on an unread floor = %q, want it refused", why)
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"]); !errors.Is(err, context.Canceled) {
+		t.Errorf("an ended context: err = %v, want context.Canceled", err)
 	}
 }

@@ -2185,9 +2185,9 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 	if err != nil {
 		return "", err
 	}
-	ceiling, bound := v.Document.Budget.TaskMaxEUR, "the policy's task_max_eur"
-	if own := b.TaskMaxEUR; own > 0 && factoryd.Cents(own) < factoryd.Cents(ceiling) {
-		ceiling, bound = own, "the project's budget.task_max_eur"
+	ceiling, bound := factoryd.CardCeiling(v.Document, v.Projects[p.Name]), "the policy's task_max_eur"
+	if factoryd.Cents(ceiling) < factoryd.Cents(v.Document.Budget.TaskMaxEUR) {
+		bound = "the project's budget.task_max_eur"
 	}
 	switch {
 	case factoryd.Cents(b.DiscretionaryEUR) <= 0:
