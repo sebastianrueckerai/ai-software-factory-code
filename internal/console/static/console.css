@@ -1252,8 +1252,9 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .cmd:hover { color: var(--text); border-color: var(--text-faint); }
 .thread-link, .thread-door { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
 .chat-form.arch .prompt, .chat-form.arch .own { display: none; }
-.arch-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
-.arch-note[hidden] { display: none; }
+.chat-form.inbox .prompt, .chat-form.inbox .cmds, .chat-form.inbox #chat-images, .chat-form.inbox #chat-docs, .chat-form.inbox .growbar { display: none; }
+.arch-note, .inbox-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
+.arch-note[hidden], .inbox-note[hidden] { display: none; }
 #chat-form.theirs .arch-note .linkbtn { display: none; }
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }

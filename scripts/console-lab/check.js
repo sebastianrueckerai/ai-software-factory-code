@@ -5,8 +5,9 @@
 // never over the chat, Escape closing it, Do it becoming an applied line,
 // the routines' ghosts at the foot of their lanes with their control and
 // drawer and their period, the find narrowing the board as you type, a
-// card's press moving the card at once and taking one press, the chat
-// above the board at 390 px, no horizontal scroll at 1440, 960 or 390,
+// card's press moving the card at once and taking one press, the inbox
+// taking presses through /answer and no words, the chat above the board
+// at 390 px, no horizontal scroll at 1440, 960 or 390,
 // typing in the chat, nor on the pages of tables at 390.
 // Exit 1 and one line per failure.
 const crypto = require("crypto");
@@ -22,7 +23,7 @@ const [name, value] = fs.readFileSync(path.join(labDir, "cookie.txt"), "utf8").t
 // both themes (design/rounds/02-multi-chat/check.js)
 const contrastEl = ".trow .ttitle, .trow .tat, .trow.arch .ttitle, .tarch-l, .restore, .badge, .thint, .decider, .esc-l, .answer-l, .answer-or, .msg.settled .fold, " +
   ".cmd, .palette button span, .palette button b, #level-btn, .lvlpop b, .lvlpop .lw, .lvlpop .lp-head span, .msg.sum .said, " +
-  ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .thread-link, " +
+  ".msg.poke .who, .thead .ttl, .thr span, .tacts button, .overlay-box p, .overlay-box h2, .answer button, .arch-note, .inbox-note, .thread-link, " +
   ".doc-path, .doc-facts, .doc-refused, .doc-dot, .doc-base, .doc-note, .doc-confirm-q, .doc-new-l, .doc-discard, #doc-new, " +
   ".doc-recent > summary, .doc-mode button, .doc-recent-label, .doc-none, #doc-article a, .doc-pins-l, .doc-pin, .doc-pin-add, #doc-forgejo";
 
@@ -63,7 +64,8 @@ const labID = (issue) => "t-" + crypto.createHash("sha256").update("lab " + issu
 const mustHave = {
   threads: ["/compact", "/new", "mark · thread · last", "Why is the session store card waiting?", "Give the costs page a from and a to date.",
     "Plan the members page", "Export the project to GitHub", "a turn in flight", "1 new", "New"],
-  escalation: ["Answer:", "or in your words below", "needs you", "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?"],
+  escalation: ["Answer:", "The factory's thread. Answer with its buttons, and write in a thread of your own.", "needs you",
+    "autonomous level · started by the agent", "Which store keeps the nightly board snapshots?", "Retry", "Leave it"],
   poke: ["Inbox", "Why is the session store card waiting?", "1 needs you · 1 new", "archived", "restore", "Archive", "Delete…"],
   compacted: ["4 earlier messages, compacted", "summary", "#11 waits until the store is settled.",
     "Why is the session store card waiting?"],
@@ -107,6 +109,15 @@ async function seed(s) {
   const resp = await fetch(base + "/lab/scenario/" + s);
   if (resp.status !== 204) throw new Error("GET /lab/scenario/" + s + ": " + resp.status);
   return resp.headers.get("x-lab-drawer") || "";
+}
+
+// inboxScenes are the scenes whose story is the inbox: the page lands on
+// the human's own thread, and the inbox opens by its row, as a human
+// opens it
+const inboxScenes = ["escalation", "wake"];
+async function openInbox(page) {
+  await page.locator("#thread-rows .trow.inbox").click();
+  await page.waitForTimeout(600);
 }
 
 // open is a fresh page at viewport in the dark theme; its thread table is
@@ -452,6 +463,10 @@ async function text(page) {
     const p = await open(browser, { width: 1440, height: 900 });
     await p.page.goto(base + (sc === "metrics" ? metricsPath : "/"), { waitUntil: "load" });
     await p.page.waitForTimeout(600);
+    if (inboxScenes.includes(sc)) {
+      if ((await p.page.locator("#thread-head").innerText()).includes("the factory's thread")) fails.push(sc + ": the page lands on the inbox, not a thread of the human's own");
+      await openInbox(p.page);
+    }
     // the status in detail opens on its chevron: its words count too
     const xp = p.page.locator("#status-toggle");
     if (await xp.count()) { await xp.click(); await p.page.waitForTimeout(200); }
@@ -1437,6 +1452,7 @@ async function text(page) {
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#chat-input").isVisible()) fails.push("threads: an archived thread shows the text box");
         if (!(await p.page.locator(".arch-note").isVisible())) fails.push("threads: an archived thread's composer has no restore line");
+        if (await p.page.locator(".arch-note [data-restore-open]").isDisabled()) fails.push("threads: the restore line's restore cannot be pressed");
         await restore.first().click();
         await p.page.waitForTimeout(600);
         if (await p.page.locator("#thread-rows .tarch").count()) fails.push("threads: restore leaves the thread archived");
@@ -1528,6 +1544,44 @@ async function text(page) {
       if (await p.page.locator("form#autonomy").count()) fails.push("level: the board head still carries the old selector");
     }
     if (sc === "escalation") {
+      // the inbox is the factory's thread: no box, no chips and no pool
+      // control, only its note with the way to a thread of the human's
+      // own; "/" puts the focus nowhere
+      if (await p.page.locator("#chat-input").isVisible()) fails.push("inbox: the text box shows");
+      if (await p.page.locator("#chat-form .cmd").first().isVisible()) fails.push("inbox: the command chips show");
+      if (await p.page.locator("[data-pool-ctl]").count()) fails.push("inbox: the pool control shows");
+      const note = p.page.locator("#chat-form .inbox-note");
+      if (!(await note.isVisible())) fails.push("inbox: no note in the box's place");
+      else if (!(await note.innerText()).includes("The factory's thread. Answer with its buttons, and write in a thread of your own.")) fails.push('inbox: the note reads "' + (await note.innerText()) + '"');
+      if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: it speaks here uninvited, you answer with its buttons")) fails.push("inbox: the head does not say the human answers with its buttons");
+      await p.page.evaluate(() => document.activeElement && document.activeElement.blur());
+      await p.page.keyboard.press("/");
+      if (await p.page.evaluate(() => document.activeElement && document.activeElement.id === "chat-input")) fails.push('inbox: "/" puts the focus in the hidden box');
+      // a card's row: its body opens the card's drawer
+      const failedRow = p.page.locator('#chat-log .msg.poke[data-card="' + labID(597) + '"]');
+      const leave = failedRow.getByRole("button", { name: "Leave it", exact: true });
+      if (!(await leave.isVisible())) fails.push("inbox: the failed card's poke offers no Leave it");
+      else {
+        await failedRow.locator(".said").click();
+        await p.page.waitForTimeout(300);
+        const hash = decodeURIComponent(await p.page.evaluate(() => location.hash));
+        if (hash !== "#card=" + labID(597)) fails.push('inbox: the failed card\'s row opens no drawer, hash "' + hash + '"');
+        await p.page.keyboard.press("Escape");
+        await p.page.waitForTimeout(300);
+        // a poke's choice is a press through /answer, never a typed
+        // message: the choice lands as the human's row and the agent's
+        // turn answers it. A poke read once settles at the next read, so
+        // the press comes before the answer row's, which reads the thread again
+        const posts = [];
+        p.page.on("request", (r) => { if (r.method() === "POST") posts.push(new URL(r.url()).pathname); });
+        await leave.click();
+        await p.page.locator("#chat-log .said").filter({ hasText: "#597 stays failed" }).waitFor({ timeout: 8000 }).catch(() => fails.push("inbox: the agent's turn on the press does not land"));
+        if (!posts.includes("/projects/ai-software-factory-code/chat/answer")) fails.push("inbox: the press posts " + JSON.stringify(posts) + ", not to /chat/answer");
+        if (posts.includes("/projects/ai-software-factory-code/chat")) fails.push("inbox: the press posts a typed message");
+        const said = await p.page.locator("#chat-log .msg.you .said").allInnerTexts();
+        if (said[said.length - 1] !== "Leave it") fails.push("inbox: the press lands as " + JSON.stringify(said.slice(-1)) + ", want the human's row Leave it");
+        if (await failedRow.locator(".choices").count()) fails.push("inbox: the pressed poke keeps its choices");
+      }
       // the answer row (C14): the pending escalation's choices once, between the log and the box;
       // a choice answers its card with no model turn and the row goes.
       // A settled ask sits over the escalation: the row still offers the
@@ -1537,11 +1591,21 @@ async function text(page) {
       if (once !== 1) fails.push("escalation: the chat shows the choice Postgres " + once + " times, want once");
       if (!(await row.isVisible())) fails.push("escalation: no answer row under the inbox's escalation");
       else {
+        if ((await row.innerText()).includes("in your words")) fails.push("inbox: the answer row offers words the inbox does not take");
         await row.getByRole("button", { name: "Postgres" }).click();
         await p.page.waitForTimeout(800);
         if (await row.isVisible()) fails.push("escalation: the answer row stays after a choice");
         const log = await p.page.locator("#chat-log").innerText();
         if (!log.includes("Answered #603")) fails.push("escalation: the factory's row on the answer is missing");
+      }
+      // the note's New thread opens a thread of the human's own, the box back and in focus
+      if (await note.isVisible()) {
+        await note.getByRole("button", { name: "New thread" }).click();
+        await p.page.waitForTimeout(800);
+        if (!(await p.page.locator("#thread-head").innerText()).trim().startsWith("New thread")) fails.push("inbox: the note's New thread opens no new thread");
+        if (!(await p.page.locator("#chat-input").isVisible())) fails.push("inbox: the new thread has no text box");
+        if (await note.isVisible()) fails.push("inbox: the note stays in the new thread");
+        if (await p.page.evaluate(() => document.activeElement && document.activeElement.id) !== "chat-input") fails.push("inbox: after New thread the focus is not in the box");
       }
     }
     if (sc === "threads") {
@@ -1566,7 +1630,7 @@ async function text(page) {
       if ((await p.page.locator("#thread-head").innerText()).includes("uninvited")) fails.push("poke: the poke opens the inbox by itself");
       await first.click();
       await p.page.waitForTimeout(600);
-      if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: the agent speaks here uninvited")) fails.push("poke: the inbox's head does not say it is the factory's thread");
+      if (!(await p.page.locator("#thread-head").innerText()).includes("the factory's thread: it speaks here uninvited, you answer with its buttons")) fails.push("poke: the inbox's head does not say it is the factory's thread");
       const log = await p.page.locator("#chat").innerText();
       for (const w of ["#600 is done", "needs you", "#606 waits for you: merge PR #612", "moved on ·"]) if (!log.includes(w)) fails.push('poke: the inbox shows no "' + w + '"');
       const settled = p.page.locator("#chat-log .msg.esc.settled");
@@ -1725,8 +1789,9 @@ async function text(page) {
     const pp = await open(browser, { width: 390, height: 844 });
     await pp.page.goto(base + "/", { waitUntil: "load" });
     await pp.page.waitForTimeout(600);
+    if (inboxScenes.includes(sc)) await openInbox(pp.page);
     const small = await pp.page.evaluate(() => Array.from(document.querySelectorAll(
-      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, " +
+      ".trow, .msg .choices button, .tacts button, .cmd, .restore, #level-btn, .open-arch, .swtg, .sw-sum, .answer button, .inbox-note button, " +
       "header nav a, .menu > summary, .menu .s-out button, .switch select, .theme-switch button"))
       .filter((b) => b.offsetParent).map((b) => [b.className || b.id || b.tagName, b.getBoundingClientRect().height]).filter((x) => x[1] < 43.5));
     if (small.length) fails.push("phone: targets under 44 px in " + sc + ": " + small.map((x) => x[0] + " " + Math.round(x[1])).join(", "));
@@ -1906,7 +1971,7 @@ async function text(page) {
   }
   // the contrast: every text pair of the C14 parts, both themes, 4.5:1 (3:1 for large text)
   for (const theme of ["dark", "light"]) {
-    for (const [sc, act, sel, pg] of [["threads", "delete", contrastEl, ""], ["escalation", "palette", contrastEl, ""], ["assisted", "level", contrastEl, ""],
+    for (const [sc, act, sel, pg] of [["threads", "delete", contrastEl, ""], ["threads", "palette", contrastEl, ""], ["escalation", "inbox", contrastEl, ""], ["assisted", "level", contrastEl, ""],
       ["poke", "", contrastEl, ""], ["busy", "docs", contrastEl, ""], ["busy", "", ghostEl, ""], ["fire", "", ghostEl, ""], ["busy", "", notifyEl, "/notifications"],
       ["metrics", "", metricsEl, metricsPath], ["tokens", "", tokenEl, ""], ["tokens", "made", tokenEl, "/notifications"]]) {
       await seed(sc);
@@ -1919,6 +1984,7 @@ async function text(page) {
       if (act === "delete") await cp.page.locator("#thread-head [data-delete]").click();
       if (act === "palette") { await cp.page.locator("#chat-input").click(); await cp.page.keyboard.type("/"); }
       if (act === "level") await cp.page.locator("#level-btn").click();
+      if (act === "inbox") await openInbox(cp.page);
       if (act === "made") await madeToken(cp.page);
       if (act === "docs") {
         await cp.page.locator("#documents").click();

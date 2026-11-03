@@ -13,6 +13,7 @@
 <form id="chat-form" class="chat-form composer" method="post" action="/projects/{{.Project}}/chat">
 <input type="hidden" name="csrf" value="{{.CSRF}}">
 <p class="arch-note" hidden>archived, read-only <button type="button" class="linkbtn" data-restore-open>restore</button></p>
+<p class="inbox-note" hidden>The factory's thread. Answer with its buttons, and write in a thread of your own. <button type="button" class="linkbtn" data-new-thread>New thread</button></p>
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
 <script type="application/json" id="chat-commands">{{.Commands}}</script>
 <ol id="chat-images" class="chat-images" aria-label="Images riding your next message" title="Each rides the message you send next, named for your text to point at; × drops one. A reload drops them all." hidden></ol>
