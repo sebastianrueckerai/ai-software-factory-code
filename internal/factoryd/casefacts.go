@@ -1,8 +1,10 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"time"
@@ -19,7 +21,7 @@ type CaseFacts struct {
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
-	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // a case on Head was resolved by running its checks again
+	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
 	Stage          string `json:"stage,omitempty"`           // the gate the card is in
 	Attempts       int    `json:"attempts"`
 	SessionCap     int    `json:"session_cap"`
@@ -65,13 +67,14 @@ type DepFact struct {
 	RetryOf  string `json:"retry_of,omitempty"` // the failed card an ended one replaced, if it is a retry
 }
 
-// tripFacts reads every fact of card t it can and names the readers that
-// failed in Partial, their facts left zero. It fails only when ctx ends,
-// since facts read past that are no facts.
-func (r *Runner) tripFacts(ctx context.Context, t Task) (CaseFacts, error) {
+// tripFacts reads every fact of card t on head, the head of the card's
+// newest gate_head row when head is "", and names the readers that failed
+// in Partial, their facts left zero. It fails only when ctx ends, since
+// facts read past that are no facts.
+func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts, error) {
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
-	f := CaseFacts{PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
+	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
@@ -80,6 +83,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task) (CaseFacts, error) {
 		f.Plan = GroupOf(t)
 	}
 	esc := v.EscalationOf(t.Repository)
+	var reran []string
 	// the readers in order, each after the head the events name
 	readers := []struct {
 		name string
@@ -96,7 +100,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task) (CaseFacts, error) {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
 				lines, _ := lineSteps(tl)
-				f.Findings = headFindings(lines, f.Head)
+				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 			}
 			return err
 		}},
@@ -135,9 +139,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task) (CaseFacts, error) {
 		}},
 		{"cases", func() error {
 			cases, err := r.store.CasesOf(ctx, t.ID)
-			f.RerunOnHead = err == nil && f.Head != "" && slices.ContainsFunc(cases, func(c Case) bool {
+			f.RerunOnHead = f.Head != "" && (slices.Contains(reran, f.Head) || (err == nil && slices.ContainsFunc(cases, func(c Case) bool {
 				return c.Resolution != nil && c.Resolution.Action == ActRerunChecks && c.Facts["head"] == f.Head
-			})
+			})))
 			return err
 		}},
 		{"pool", func() error {
@@ -168,14 +172,15 @@ func (r *Runner) tripFacts(ctx context.Context, t Task) (CaseFacts, error) {
 
 // eventFacts sets f's head, its review, whether a session pushed, and its
 // last draw from the card's events, newest first: the head of the newest
-// gate_head row, the newest model_review of that head, and the newest
-// draw from the pool, when its row recorded the head and the checks, with
-// the findings it recorded and whether a session pushed after it.
+// gate_head row unless f has one, the newest model_review of the head,
+// and the newest draw from the pool, when its row recorded the head and
+// the checks, with the findings it recorded and whether a session pushed
+// after it.
 func (f *CaseFacts) eventFacts(events []Event) {
 	word := func(e Event, k string) string { s, _ := e.Detail[k].(string); return s }
 	pushed := func(e Event) bool { return e.Kind == EventSessionPushed }
 	f.Pushed = slices.ContainsFunc(events, pushed)
-	if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventGateHead }); i >= 0 {
+	if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventGateHead }); i >= 0 && f.Head == "" {
 		f.Head = word(events[i], "head")
 	}
 	if i := slices.IndexFunc(events, func(e Event) bool {
@@ -230,6 +235,23 @@ func headFindings(steps []DigestStep, head string) []string {
 	}
 	slices.Sort(ids)
 	return slices.Compact(ids)
+}
+
+// stepChecksRerun is the timeline's line of a rerun of a head's checks:
+// the head it ran again (commit) and the head the rerun made.
+const stepChecksRerun = "checks_rerun"
+
+// rerunHeads are the heads timeline tl ran the checks of again and the
+// heads those reruns made.
+func rerunHeads(tl []byte) []string {
+	var heads []string
+	for _, raw := range bytes.Split(tl, []byte("\n")) {
+		var l struct{ Step, Commit, Head string }
+		if json.Unmarshal(raw, &l) == nil && l.Step == stepChecksRerun {
+			heads = append(heads, l.Commit, l.Head)
+		}
+	}
+	return heads
 }
 
 // checksWord is a head's checks state as the facts name it.

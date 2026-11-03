@@ -11,6 +11,8 @@ import (
 	"slices"
 	"strings"
 
+	"go.temporal.io/sdk/activity"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -19,18 +21,25 @@ import (
 const ActivityOpenTrip = "OpenTrip"
 
 // TripInput is what the run knows when it stops: the reason as today's
-// Escalate took it, the choices, and the head, pull request and stage when
-// it has them. The kind comes from the reason as phase 1's caseKindOf
-// derives it, the state key from the kind: the head for a cap, a floor, a
-// gate stop or a merge matter, the dependency's task id for a dependency
-// kind, phase 1's text key for a plan kind and for a kind with no head.
+// Escalate took it, the choices, and the head and stage when it has them.
+// The facts are read on the head. The kind comes from the reason as phase
+// 1's caseKindOf derives it, the state key from the kind: the head for a
+// cap, a floor, a gate stop or a merge matter, the dependency's task id
+// for a dependency kind, phase 1's text key for a plan kind and for a kind
+// with no head.
 type TripInput struct {
 	TaskID  string
 	Reason  string
 	Choices []string
 	Head    string
-	PR      int64
 	Stage   string
+}
+
+// tripAttempt is one attempt of a trip's activity: its id, the run's and
+// the activity's, and its number, 1 for the first.
+type tripAttempt struct {
+	ID string
+	N  int32
 }
 
 // TripOutcome is what the run gets back: the case, the comment the human
@@ -120,8 +129,10 @@ func caseDep(c Case, f CaseFacts) *DepFact {
 // card waits on that case's ask, with no new face. On a fresh case rung 0
 // runs, and the first row that fires resolves the case through Act. With
 // none, the human is asked (askHuman) and the case waits at the human. A
-// restart's trip (healedReason) waits on the card's newest live ask.
-func (r *Runner) OpenTrip(ctx context.Context, in TripInput) (TripOutcome, error) {
+// restart's trip (healedReason) waits on the card's newest live ask. An
+// attempt after the first takes what the attempts before left
+// (retriedTrip).
+func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (TripOutcome, error) {
 	t, _, err := r.task(ctx, in.TaskID)
 	if err != nil {
 		return TripOutcome{}, err
@@ -129,12 +140,24 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput) (TripOutcome, error
 	if in.Reason == healedReason {
 		return r.healedTrip(ctx, t, in)
 	}
-	f, err := r.tripFacts(ctx, t)
+	f, err := r.tripFacts(ctx, t, in.Head)
 	if err != nil {
 		return TripOutcome{}, err
 	}
 	f.Stage = cmp.Or(in.Stage, f.Stage)
-	c, opened, cases, err := r.openTripCase(ctx, t, f, in, CaseOpen)
+	c, cases, err := r.tripCase(ctx, t, f, in, CaseOpen)
+	if err != nil {
+		return TripOutcome{}, err
+	}
+	if at.N > 1 {
+		if out, ok, err := r.retriedTrip(ctx, t, c.Kind, cases, at.ID); ok || err != nil {
+			return out, err
+		}
+	}
+	if at.ID != "" {
+		c.Facts["trip"] = at.ID
+	}
+	c, opened, err := r.store.OpenCase(ctx, c)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -145,7 +168,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput) (TripOutcome, error
 	if err != nil || res != nil {
 		return TripOutcome{CaseID: c.ID, Resolution: res}, err
 	}
-	if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp}); err != nil {
+	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
 	comment, err := r.askHuman(ctx, t, c, in.Reason, in.Choices)
@@ -216,11 +239,46 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput) (TripOutc
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
 }
 
+// retriedTrip is what the attempts before trip's left on a case of kind,
+// ok false for nothing to take: the case they opened, when rung 0
+// resolved it, with its resolution, or when it waits at the human, on
+// which the card waits with no new step and no new face. It goes by the
+// trip and the kind, not the key: rung 0's retry of a dependency moves
+// the key the trip reads.
+func (r *Runner) retriedTrip(ctx context.Context, t Task, kind CaseKind, cases []Case, trip string) (TripOutcome, bool, error) {
+	i := slices.IndexFunc(cases, func(c Case) bool { return c.Kind == kind && c.Facts["trip"] == trip })
+	if i < 0 {
+		return TripOutcome{}, false, nil
+	}
+	switch c := cases[i]; {
+	case c.Status == CaseResolved && c.Resolution != nil && c.Resolution.Rung == 0:
+		return TripOutcome{CaseID: c.ID, Resolution: &Resolution{Action: c.Resolution.Action, Args: c.Resolution.Args, Note: c.Resolution.Reason}}, true, nil
+	case c.Status == CaseAtHuman:
+		return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}, true, r.waitOnHuman(ctx, t)
+	}
+	return TripOutcome{}, false, nil
+}
+
+// tripStep is rung 0's step on case id that found found and handed the
+// case up, appended once: not again when the case's last step is rung
+// 0's with the same words, as a retried trip would write it.
+func (r *Runner) tripStep(ctx context.Context, id int64, found string) error {
+	steps, err := r.store.CaseSteps(ctx, id)
+	if err != nil {
+		return err
+	}
+	if n := len(steps); n > 0 && steps[n-1].Rung == 0 && steps[n-1].Found == found {
+		return nil
+	}
+	_, err = r.store.AppendCaseStep(ctx, CaseStep{CaseID: id, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp})
+	return err
+}
+
 // waitsAtHuman is the trip that finds case c at the human already: a step
 // on rung 0 that found found and handed up, the card waiting on the human,
 // and the comment of the case's newest ask, which no new face follows.
 func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string) (TripOutcome, error) {
-	if _, err := r.store.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, Found: found, Outcome: StepHandedUp}); err != nil {
+	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
 	if err := r.waitOnHuman(ctx, t); err != nil {
@@ -244,18 +302,17 @@ func (r *Runner) liveAsk(ctx context.Context, taskID string) (Case, error) {
 	return Case{}, nil
 }
 
-// openTripCase opens the case trip in makes on card t with facts f, as
-// status, unless a live case of its kind and key exists, which it answers
-// with opened false, and cases are the card's cases before it. The kind is
-// caseKindOf's of the reason. The problem is the shaped question's ask
-// where a template names the decision, else the reason's first line. The
-// facts are f with the reason, its source and what the reason names, the
-// money the card's for a stop on its own budget, with what the next
-// opening needs at the floor. The case follows the card's newest ended one.
-func (r *Runner) openTripCase(ctx context.Context, t Task, f CaseFacts, in TripInput, status string) (Case, bool, []Case, error) {
+// tripCase is the case trip in makes on card t with facts f, as status,
+// with the card's cases, for OpenCase to open. The kind is caseKindOf's
+// of the reason. The problem is the shaped question's ask where a
+// template names the decision, else the reason's first line. The facts
+// are f with the reason, its source and what the reason names, the money
+// the card's for a stop on its own budget, with what the next opening
+// needs at the floor. The case follows the card's newest ended one.
+func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput, status string) (Case, []Case, error) {
 	cases, err := r.store.CasesOf(ctx, t.ID)
 	if err != nil {
-		return Case{}, false, nil, err
+		return Case{}, nil, err
 	}
 	source := escalationSource(in.Reason)
 	kind, named := caseKindOf(source, in.Reason)
@@ -268,23 +325,22 @@ func (r *Runner) openTripCase(ctx context.Context, t Task, f CaseFacts, in TripI
 	}
 	b, err := json.Marshal(f)
 	if err != nil {
-		return Case{}, false, nil, err
+		return Case{}, nil, err
 	}
 	var facts map[string]any
 	if err := json.Unmarshal(b, &facts); err != nil {
-		return Case{}, false, nil, err
+		return Case{}, nil, err
 	}
 	maps.Copy(facts, named)
 	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: tripKey(kind, problem, cmp.Or(in.Head, f.Head), f),
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: tripKey(kind, problem, f.Head, f),
 		Status: status, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
 		if e.Status != CaseOpen && e.Status != CaseAtHuman {
 			c.Follows = max(c.Follows, e.ID)
 		}
 	}
-	got, opened, err := r.store.OpenCase(ctx, c)
-	return got, opened, cases, err
+	return c, cases, nil
 }
 
 // tripKey is the state key of a trip's case of kind: head for a stop at
@@ -469,4 +525,10 @@ func (r *Runner) waitOnHuman(ctx context.Context, t Task) error {
 	// a parked card holds no slot: the next queued card takes it
 	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	return nil
+}
+
+// openTrip is OpenTrip's activity, on the activity's attempt.
+func (r *Runner) openTrip(ctx context.Context, in TripInput) (TripOutcome, error) {
+	info := activity.GetInfo(ctx)
+	return r.OpenTrip(ctx, in, tripAttempt{ID: info.WorkflowExecution.RunID + "/" + info.ActivityID, N: info.Attempt})
 }

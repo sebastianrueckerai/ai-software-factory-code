@@ -20,7 +20,7 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
 		store.tasks[id] = c
 	}
-	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})})
+	first, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -42,7 +42,7 @@ func TestOpenTripRetriesAFailedDependencyOnce(t *testing.T) {
 
 	n.Status = "failed"
 	store.tasks[again] = n
-	second, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: again, Issue: n.IssueNumber, Status: "failed"})})
+	second, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: again, Issue: n.IssueNumber, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 		store.tasks[id] = c
 	}
 	fj.failCall = "PATCH issues/5"
-	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})})
+	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}, tripAttempt{N: 1})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -151,5 +151,33 @@ func TestOpenTripHandsUpARowThatFails(t *testing.T) {
 	if out.Resolution != nil || out.Comment == 0 || c.Status != CaseAtHuman || len(steps) != 1 ||
 		!strings.HasPrefix(steps[0].Found, "retry_dependency failed: ") || steps[0].Outcome != StepHandedUp {
 		t.Fatalf("outcome %+v, case %+v, steps %+v; want the retry's failure handed up and the human asked", out, c, steps)
+	}
+}
+
+// A trip whose first attempt rung 0 resolved, retried before the run
+// heard, takes that resolution: the same case, no second retry, no ask.
+func TestOpenTripRetriedAfterRungZeroCarriesItsResolution(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := newRetryRig(t)
+	for _, id := range []string{"t-a", "t-b"} {
+		c := store.tasks[id]
+		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
+		store.tasks[id] = c
+	}
+	in := TripInput{TaskID: "t-b", Reason: depFailedReason(Dependency{TaskID: "t-a", Issue: 5, Status: "failed"})}
+	first, err := r.OpenTrip(ctx, in, tripAttempt{ID: "run/7", N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := r.OpenTrip(ctx, in, tripAttempt{ID: "run/7", N: 2})
+	retry := &Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}
+	if err != nil || !reflect.DeepEqual(again, TripOutcome{CaseID: first.CaseID, Resolution: retry}) {
+		t.Fatalf("second attempt = %+v, %v; want case %d's retry of t-a", again, err, first.CaseID)
+	}
+	if cases, _ := store.CasesOf(ctx, "t-b"); len(cases) != 1 || cases[0].Status != CaseResolved {
+		t.Fatalf("cases = %+v, want the first attempt's resolved alone", cases)
+	}
+	if _, ok := store.tasks[RetryID(RetryID("t-a"))]; ok {
+		t.Fatal("the replacement was retried in turn")
 	}
 }

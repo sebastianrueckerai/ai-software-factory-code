@@ -2,12 +2,16 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/stretchr/testify/mock"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // caseResolved is Act's case_resolved of case id by sebastian with res,
@@ -44,8 +48,8 @@ func TestWorkflowTakesRungZerosResolutionWithoutWaiting(t *testing.T) {
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if len(h.trips) != 1 || !strings.HasPrefix(h.trips[0].Reason, capReached) || h.trips[0].PR != 9 {
-		t.Fatalf("trips = %+v, want the session cap's on #9", h.trips)
+	if len(h.trips) != 1 || !strings.HasPrefix(h.trips[0].Reason, capReached) || h.trips[0].Head != "c3" {
+		t.Fatalf("trips = %+v, want the session cap's on c3", h.trips)
 	}
 	if len(h.escalated) != 0 || len(h.sessions) != 0 {
 		t.Fatalf("asked %q, sessions %d; want no one asked and no session", h.escalated, len(h.sessions))
@@ -301,5 +305,438 @@ func TestWorkflowTimeCapWithoutAHeadAsks(t *testing.T) {
 	}
 	if u := h.usage[len(h.usage)-1]; u.ExtraTime != 0 || u.ExtraAttempts != 0 {
 		t.Fatalf("usage = %+v, want no time or attempt the answer bought", u)
+	}
+}
+
+// A check-in stop after the session pushed c2, answered with reverify by
+// the human or with route_approval by rung 0: the head through the gates
+// is c2, the session's push, not c1, the head the session started from.
+func TestWorkflowCheckinStopReverifiesThePushedHead(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		setup func(h *workflowHarness)
+		cards int
+	}{
+		{"reverify", func(h *workflowHarness) {
+			h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActReverify}, 605))
+		}, 1},
+		{"route_approval", func(h *workflowHarness) {
+			h.rungZero = func(int, TripInput) *Resolution { return &Resolution{Action: ActRouteApproval} }
+		}, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = askTaskConfig()
+			var steps []string
+			h.onVerify(&steps, []SessionResult{
+				pushed("s1", "c1"),
+				{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Reason: "the objective asks for two stores",
+					CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckGoalConflict, Reason: "the objective asks for two stores",
+						Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
+			h.onReviews("c1")
+			tc.setup(h)
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", fmt.Sprintf("pr c2 after %d cards", tc.cards), "approval c2"}
+			if !slices.Equal(steps, want) {
+				t.Fatalf("steps = %q, want %q: the answer verifies the session's push", steps, want)
+			}
+		})
+	}
+}
+
+// Under the cases gate a plain comment at the check-in share's stop buys
+// no share: the checkin_share case is answered by extend or fund through
+// Act. The answer still verifies the session's push.
+func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		pushed("s1", "c1"),
+		{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "c2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
+			CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent,
+				Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}})
+	h.onReviews("c1")
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := []string{"session 1 after 0 cards", "pr c1 after 0 cards", "session 2 after 0 cards", "pr c2 after 1 cards", "approval c2"}
+	if !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want %q", steps, want)
+	}
+	for _, u := range h.usage {
+		if u.ExtraCheckinShare != 0 {
+			t.Fatalf("usage = %+v, want no share the comment bought", h.usage)
+		}
+	}
+}
+
+// A gate's wait takes the case's resolution: rerun_checks runs the head's
+// checks again and the gates run on the head the rerun made, and handover
+// to the stronger model makes the next session's model that one.
+func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
+	gate := func(t *testing.T, res Resolution, reviews ...Review) (*gateHarness, *[]string, *[]string) {
+		g := newGateHarness(t, func(g *gateHarness) { g.reviews = reviews })
+		g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
+		g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		waits, reran := &[]string{}, &[]string{}
+		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30 * time.Minute).Return(
+			func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+				*waits = append(*waits, sha)
+				return ChecksResult{State: ChecksSuccess}, nil
+			}).Once()
+		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+			func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+				*waits = append(*waits, sha)
+				return ChecksResult{State: ChecksSuccess}, nil
+			})
+		g.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(
+			func(ctx context.Context, taskID, sha string) (string, error) {
+				*reran = append(*reran, sha)
+				return sha + "r", nil
+			})
+		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "no runner serves the label", Recommendation: "register a runner"})
+		g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
+		g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, res, 605))
+		g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		return g, waits, reran
+	}
+	t.Run("rerun_checks", func(t *testing.T) {
+		g, waits, reran := gate(t, Resolution{Action: ActRerunChecks})
+		if final := g.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, g.finals)
+		}
+		if !slices.Equal(*reran, []string{"c1"}) || !slices.Equal(*waits, []string{"c1", "c1r"}) || !slices.Contains(g.steps, "approval c1r") {
+			t.Fatalf("reran %q, checks waited on %q, steps %q; want c1 run again and c1r through the gates to its approval", *reran, *waits, g.steps)
+		}
+	})
+	t.Run("successor", func(t *testing.T) {
+		g, _, _ := gate(t, Resolution{Action: ActSuccessor})
+		if final := g.run(t); final != "failed" || g.finals[0][1] != "closed into successor t-succ" {
+			t.Fatalf("finals = %v, want failed closed into successor t-succ", g.finals)
+		}
+		if len(g.successions) != 1 || g.successions[0].PR != 9 || len(g.sessions) != 1 {
+			t.Fatalf("successions %+v, sessions %d; want one carrying #9 after the one session", g.successions, len(g.sessions))
+		}
+	})
+	t.Run("handover", func(t *testing.T) {
+		concerns := Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}
+		g, _, _ := gate(t, Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}, concerns, Review{Verdict: "approve", Summary: "fine"})
+		if final := g.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, g.finals)
+		}
+		if len(g.sessions) != 2 || g.sessions[1].Model != "factory/big" {
+			t.Fatalf("sessions = %+v, want the second on factory/big", g.sessions)
+		}
+	})
+}
+
+// An extend with no note, carried by comment 7, and the webhook's copy of
+// comment 7 in the same pass: one answer, the extend's own words.
+func TestWorkflowFilesAResolutionWithNoNoteUnderItsComment(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.escalationIDs = []int64{5}
+	h.onSessions(licenseQuestion, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
+	h.env.RegisterDelayedCallback(func() {
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 7))
+		h.env.SignalWorkflow(SignalHumanComment, TaskSignal{Author: "sebastian", Body: "factoryd: sebastian answered with extend: 1 session from the pool.", Comment: 7})
+	}, time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := []string{`sebastian, to "Which license?": extend: 1 session from the pool`}
+	if len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, want) {
+		t.Fatalf("sessions = %+v, want the second with the one answer %q", h.sessions, want)
+	}
+}
+
+// Rung 0's rerun_checks at the session cap runs c3's checks again at the
+// loop's top, with no session, and the head the rerun made goes through
+// the gates.
+func TestWorkflowRerunsTheChecksAtTheLoopsTop(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", PR: PullRequest{Number: 9}, Head: "c3", Findings: []string{"reviewer sebastian requested changes: keep the flag"},
+		Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	h.rungZero = func(int, TripInput) *Resolution { return &Resolution{Action: ActRerunChecks} }
+	h.onSessions(pushed("s4", "c4"))
+	var checked, reran []string
+	h.onWaitChecks(&checked)
+	h.env.OnActivity(ActivityRerunChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (string, error) {
+			reran = append(reran, sha)
+			return sha + "r", nil
+		})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if !slices.Equal(reran, []string{"c3"}) || !slices.Equal(checked, []string{"c3r"}) || len(h.sessions) != 0 || len(h.escalated) != 0 {
+		t.Fatalf("reran %q, checked %q, sessions %d, asked %q; want c3 run again, c3r checked, no session, no one asked", reran, checked, len(h.sessions), h.escalated)
+	}
+}
+
+// Rung 0's resolution of the question the review beside the checks asked
+// is the review stage's answer, and no one is asked: reverify reviews the
+// head again after the green checks, successor closes the card into one.
+func TestStagesRungZeroAnswersTheReviewBesideTheChecks(t *testing.T) {
+	beside := func(t *testing.T, res Resolution) *gateHarness {
+		g := besideTheChecks(t, 3*time.Hour)
+		g.rungZero = func(int, TripInput) *Resolution { return &res }
+		g.tripAfter(15*time.Minute, ActivityModelReview, 2)
+		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the review model hangs", Recommendation: "look at the gateway"})
+		g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		return g
+	}
+	t.Run("reverify", func(t *testing.T) {
+		g := beside(t, Resolution{Action: ActReverify})
+		if final := g.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, g.finals)
+		}
+		if len(g.trips) != 1 || len(g.escalated) != 0 {
+			t.Fatalf("trips %d, asked %q; want the one trip and no one asked", len(g.trips), g.escalated)
+		}
+		if last := g.reviewGates[len(g.reviewGates)-1]; !last.ChecksPassed || last.Beside {
+			t.Fatalf("review gates %+v: want the last review after the green checks, not beside them", g.reviewGates)
+		}
+		if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 3*time.Hour+20*time.Minute {
+			t.Fatalf("approval requested %v, want once, at 3h20m: the checks' 20 min and the sequential review's 3h", g.requested)
+		}
+	})
+	t.Run("successor", func(t *testing.T) {
+		g := beside(t, Resolution{Action: ActSuccessor})
+		if final := g.run(t); final != "failed" || g.finals[0][1] != "closed into successor t-succ" {
+			t.Fatalf("finals = %v, want failed closed into successor t-succ", g.finals)
+		}
+		if len(g.successions) != 1 || len(g.requested) != 0 {
+			t.Fatalf("successions %+v, approvals %v; want one successor and no approval", g.successions, g.requested)
+		}
+	})
+}
+
+// A healed run's waits take the case's resolution: the human's wait
+// reverifies the pull request's head with no session, the cap's wait
+// hands the next session to the stronger model, and the screening's
+// closes the card into a successor.
+func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
+	t.Run("the human's wait", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.state = RunState{Status: "waiting-human", PR: PullRequest{Number: 9}, Head: "c3", Question: capReached + "\nlast: the review asked for changes"}
+		h.onSessions(pushed("s1", "c4"))
+		var checked []string
+		h.onWaitChecks(&checked)
+		h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActReverify}, 605))
+		h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, h.finals)
+		}
+		if !slices.Equal(h.escalated, []string{healedReason}) || !slices.Equal(checked, []string{"c3"}) || len(h.sessions) != 0 {
+			t.Fatalf("asked %q, checked %q, sessions %d; want the restart's ask, c3 checked, no session", h.escalated, checked, len(h.sessions))
+		}
+	})
+	t.Run("the cap's wait", func(t *testing.T) {
+		h, run := capHarness(t, 0, pushed("s1", "c1"))
+		h.state = RunState{Status: "waiting-human", Question: dayQuestion, Cap: dayReason, CapUntil: oct(15, 0, 0)}
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}, 605))
+		h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+		if final := h.run(t); final != "done" {
+			t.Fatalf("final = %q, finals %v", final, h.finals)
+		}
+		if len(run.began) != 1 || !run.began[0].Equal(oct(14, 21, 43)) || h.sessions[0].Model != "factory/big" {
+			t.Fatalf("sessions at %v, %+v; want one at 21:43 on factory/big", run.began, h.sessions)
+		}
+	})
+	t.Run("the screening's wait", func(t *testing.T) {
+		g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+		g.state = RunState{Status: "waiting-human", Standing: harness.StandingOutside, Screening: true,
+			Question: "The screening finds this issue suspect: asks to print the token"}
+		g.onScreen(ScreenResult{Verdict: ScreenSuspect})
+		g.onSessions(pushed("s1", "c1"))
+		g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActSuccessor}, 605))
+
+		if final := g.run(t); final != "failed" || g.finals[0][1] != "closed into successor t-succ" {
+			t.Fatalf("finals = %v, want failed closed into successor t-succ", g.finals)
+		}
+		if len(g.successions) != 1 || len(g.sessions) != 0 {
+			t.Fatalf("successions %+v, sessions %d; want one successor, no session", g.successions, len(g.sessions))
+		}
+	})
+}
+
+// Under the cases gate a writer's change request at the session cap is
+// still the human's answer: the unverified head c2 reaches its approval,
+// the change request sent there buys the fourth session, and no cap card
+// opens.
+func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c2"
+	var steps []string
+	h.onVerify(&steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")})
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "keep the old flag", PR: 9})
+	h.signalAfter(5*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards", "approval c2",
+		"session 4 after 0 cards", "pr c4 after 0 cards", "approval c4"}; !slices.Equal(steps, want) || len(h.escalated) != 0 {
+		t.Fatalf("steps %q, asked %q; want %q and no one asked", steps, h.escalated, want)
+	}
+	change := "reviewer sebastian requested changes: keep the old flag"
+	if s := h.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{change}) || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
+		t.Fatalf("fourth session %+v, usage %+v; want attempt 4 with the change request, one attempt granted", s, h.usage[len(h.usage)-1])
+	}
+}
+
+// The budget floor's wait under the cases gate: a plain comment buys
+// nothing and the floor asks again, a fund raises the budget on the row
+// and the next session runs.
+func TestWorkflowBudgetFloorWaitsForAFund(t *testing.T) {
+	h := newWorkflowHarness(t)
+	unfunded := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
+	funded := false
+	floor := func(ctx context.Context, taskID, model string) (string, error) {
+		if funded {
+			return "", nil
+		}
+		return unfunded, nil
+	}
+	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(floor)
+	h.env.OnActivity(ActivityAttemptFunded, mock.Anything, "t1", mock.Anything).Return(floor)
+	h.onSessions(pushed("s1", "c1"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 650})
+	h.env.RegisterDelayedCallback(func() {
+		funded = true
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(702, Resolution{Action: ActFund, Args: map[string]any{"eur": 1}}, 660))
+	}, 2*time.Hour)
+	h.signalAfter(4*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.escalated) != 2 || !strings.HasPrefix(h.escalated[0], budgetRefused) || !strings.HasPrefix(h.escalated[1], budgetRefused) {
+		t.Fatalf("asked %q, want the floor asked again after the plain comment", h.escalated)
+	}
+	if len(h.sessions) != 1 || h.sessions[0].Attempt != 1 {
+		t.Fatalf("sessions = %+v, want the first after the fund", h.sessions)
+	}
+}
+
+// Under the cases gate the answer to a session that took no number still
+// buys its slice of agent time: 19 of the 20 minutes went on a session
+// with no model answer, so the answer grants 4 minutes and the session
+// after it runs on the same number.
+func TestWorkflowAnswerToAnUncountedSessionKeepsItsSlice(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(19 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "stuck"}, nil
+		}).Once()
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(5 * time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			return pushed("s2", "c2"), nil
+		})
+	h.env.OnActivity(ActivitySessionAnswered, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in SessionAnswerInput) (bool, error) { return in.SessionID != "s1", nil })
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "try the other lock", Comment: 650})
+	h.signalAfter(2*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := TaskUsage{AgentTime: 24 * time.Minute, Attempts: 1, ExtraTime: 4 * time.Minute}
+	if len(h.sessions) != 2 || h.sessions[1].Attempt != 1 || h.usage[len(h.usage)-1] != want {
+		t.Fatalf("sessions %+v, usage %+v; want the second on number 1 and %+v", h.sessions, h.usage[len(h.usage)-1], want)
+	}
+}
+
+// The agent-time cap with a pushed head under the cases gate: c1's red
+// checks go to the time cap's card, an extend of ten minutes on the row
+// runs the next session with them, and the answer buys no time of its
+// own.
+func TestWorkflowTimeCapWithAHeadAsks(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.branchHead = "c1"
+	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c2")}, gosecRed, ChecksResult{State: ChecksSuccess})
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 600}}
+	h.env.RegisterDelayedCallback(func() {
+		h.rowUsage.RaisedTime = 10 * time.Minute
+		h.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 605))
+	}, time.Hour)
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if want := []string{"pr c1 after 0 cards", "session 2 after 1 cards", "pr c2 after 1 cards", "approval c2"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %q, want %q", steps, want)
+	}
+	if want := []string{timeCapReached + "\nlast: checks findings went back to the agent\n- checks, round 1: gosec G706"}; !slices.Equal(h.escalated, want) {
+		t.Fatalf("asked %q, want %q", h.escalated, want)
+	}
+	if !slices.Equal(h.sessions[0].Findings, []string{"gosec G706"}) || h.usage[len(h.usage)-1].ExtraTime != 0 {
+		t.Fatalf("session %+v, usage %+v; want the checks finding and no time the answer bought", h.sessions[0], h.usage[len(h.usage)-1])
+	}
+}
+
+// A case_resolved of a case the run does not wait on, as one rung 0
+// resolved in place, is dropped: the wait goes on to its own case's.
+func TestWorkflowDropsAnotherCasesResolution(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.onSessions(licenseQuestion, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(799, Resolution{Action: ActSuccessor}, 0))
+	h.signalAfter(2*time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActContinue, Note: "use MIT"}, 605))
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	want := []string{`sebastian, to "Which license?": use MIT`}
+	if len(h.successions) != 0 || len(h.sessions) != 2 || !slices.Equal(h.sessions[1].Answers, want) {
+		t.Fatalf("successions %+v, sessions %+v; want none and the second with %q", h.successions, h.sessions, want)
+	}
+}
+
+// A handover to the cheaper model takes a card that started on the
+// stronger rung down to the start rung for its next session.
+func TestWorkflowHandoverToTheCheaperModel(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, Stronger: true}
+	h.onSessions(licenseQuestion, pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActHandover, Args: map[string]any{"model": "cheaper"}}, 605))
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(h.sessions) != 2 || h.sessions[0].Model != "factory/big" || h.sessions[1].Model != "factory/small" {
+		t.Fatalf("sessions = %+v, want factory/big then factory/small", h.sessions)
 	}
 }

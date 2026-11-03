@@ -145,7 +145,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
 		ActivityEndCase:                     r.EndCase,
-		ActivityOpenTrip:                    r.OpenTrip,
+		ActivityOpenTrip:                    r.openTrip,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,
@@ -1393,8 +1393,10 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		c, err = r.liveAsk(ctx, t.ID)
 	} else {
 		var f CaseFacts
-		if f, err = r.tripFacts(ctx, t); err == nil {
-			c, _, _, err = r.openTripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}, CaseAtHuman)
+		if f, err = r.tripFacts(ctx, t, ""); err == nil {
+			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}, CaseAtHuman); err == nil {
+				c, _, err = r.store.OpenCase(ctx, c)
+			}
 		}
 	}
 	if err != nil {
@@ -2203,7 +2205,7 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}
-	r.record(ctx, taskID, "checks_rerun", map[string]any{"commit": sha, "head": head})
+	r.record(ctx, taskID, stepChecksRerun, map[string]any{"commit": sha, "head": head})
 	return head, nil
 }
 

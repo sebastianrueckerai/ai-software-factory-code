@@ -65,13 +65,14 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 // askCase opens the case of question_asked event e, or appends a step to
 // the live case it asks again, and tells whether it opened one. An ask
 // that names its case (OpenTrip's face) puts that case at the human with
-// its comment and appends the human's step, while the case is live. One
-// that names none, or a case that ended, goes by its words.
+// its comment and appends the human's step, while the case is live and
+// the asking card's. One that names none, another card's case or a case
+// that ended goes by its words.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 		comment, _ := toInt(e.Detail["comment"])
 		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
-			WHERE id = $1 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman).Scan(&id)
+			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID).Scan(&id)
 		if err == nil {
 			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
 			if e.Detail["reason"] == healedReason {

@@ -33,7 +33,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		in   ActInput
 		want string
 	}{
-		{"rung 1's close with no case", ActInput{By: FactoryDecider, Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
+		{"rung 1's close with no case", ActInput{By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take replan"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
 			"no case is open on card #12, so successor has nothing to answer, and the human may take raise_ceiling, replan and close"},
@@ -50,7 +50,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		in   ActInput
 		want string
 	}{
-		{"rung 1's close", ActInput{CaseID: 7, By: FactoryDecider, Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
+		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor, replan and withdraw"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
 			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan and close"},
@@ -210,5 +210,32 @@ func TestActHumanCardRefusals(t *testing.T) {
 	}
 	if len(g.store.resolved) != 0 {
 		t.Fatalf("resolved %v, want none", g.store.resolved)
+	}
+}
+
+// Rung 0 is factoryd's, and factoryd answers on rung 0 alone: a human's
+// answer on rung 0 and factoryd's on rung 2 are refused, and nothing is
+// written.
+func TestActKeysRungZeroOnFactoryd(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseSessionCap, Status: CaseAtHuman})
+	events := len(g.store.events)
+	for _, c := range []struct {
+		in   ActInput
+		want string
+	}{
+		{ActInput{By: "sebastian", Rung: 0}, "rung 0 is factoryd's own: answer on rung 1, 2 or 3"},
+		{ActInput{By: FactoryDecider, Rung: 2}, "rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung 2"},
+	} {
+		c.in.TaskID, c.in.CaseID, c.in.Res = "t1", 7, Resolution{Action: ActWithdraw}
+		var refused ErrActRefused
+		if _, err := g.r.Act(context.Background(), c.in); !errors.As(err, &refused) || err.Error() != c.want {
+			t.Errorf("%s on rung %d = %v, want the refusal %q", c.in.By, c.in.Rung, err, c.want)
+		}
+	}
+	if len(g.store.events) != events || len(g.store.resolved) != 0 || g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman {
+		t.Fatalf("a refused act wrote %d events, resolved %v; want none", len(g.store.events)-events, g.store.resolved)
 	}
 }

@@ -149,7 +149,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	g.timeline(t)
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"])
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -180,7 +180,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 3, TaskID: "t1", Kind: CaseSessionCap, Facts: map[string]any{"head": "h2"},
 		Resolution: &CaseResolution{Action: ActRerunChecks}})
-	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"]); err != nil || !again.RerunOnHead {
+	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !again.RerunOnHead {
 		t.Errorf("after a case on h2 ran its checks again: rerun on head %v (%v), want true", again.RerunOnHead, err)
 	}
 }
@@ -189,7 +189,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"])
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -207,7 +207,7 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	g.timeline(t)
 	g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
 	g.store.openings["small"] = policy.Opening{Sessions: [][]policy.OpeningCall{{{Ref: "unpriced", Bytes: 7031}}}}
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"])
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -219,7 +219,7 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"]); !errors.Is(err, context.Canceled) {
+	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"], ""); !errors.Is(err, context.Canceled) {
 		t.Errorf("an ended context: err = %v, want context.Canceled", err)
 	}
 }

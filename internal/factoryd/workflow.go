@@ -1477,7 +1477,7 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	holds             int              // heads adopted this run (versionHeadHolds)
-	head              string           // the head the running verification's last stage ran on, which verify returns
+	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
 	toolPark          workflow.Version // a missing tool parks the card on an image (versionToolPark)
 	directToPlan      workflow.Version // a direct card takes to_plan before its next session (versionDirectToPlan)
@@ -1533,12 +1533,14 @@ type taskRun struct {
 	// take (takeResolution). stopFindings are the check-in stop's work
 	// state, which a successor chosen at its wait carries. reverify and
 	// rerun make the loop take the head through the gates with no session,
-	// its checks run again first
+	// its checks run again first. nextModel is the model a handover at a
+	// gate's wait chose for the next session, "" for none
 	cases           workflow.Version
 	caseID          int64
 	resolution      *Resolution
 	stopFindings    string
 	reverify, rerun bool
+	nextModel       string
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -2048,6 +2050,13 @@ func (t *taskRun) lifecycle() (string, error) {
 	taken := 0
 	for {
 		t.readRaise(&u)
+		if t.nextModel != "" {
+			model, t.nextModel = t.nextModel, ""
+		}
+		if t.cases >= versionCases && startRef != "" {
+			// the head a trip of this pass stops at (versionCases)
+			t.head = startRef
+		}
 		if t.reverify {
 			// an answer took the head through the gates again, with no
 			// session: its checks first when it ran them again
@@ -2393,11 +2402,15 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			if t.cases >= versionCases {
 				t.stopFindings = workStateLines(res.CheckIn.Findings, res.CheckIn.Review)
+				t.head = cmp.Or(res.Commit, startRef, t.head)
 			}
 			if final, why := held(t.awaitHuman(reason, nil)); final != "" {
 				return t.finish(final, why)
 			}
 			if t.reverify {
+				// the session's push is the head the answer takes through
+				// the gates
+				startRef = cmp.Or(res.Commit, startRef)
 				continue
 			}
 			if t.extendRaise >= versionExtendRaise && t.raiseReload < versionRaiseReload {
@@ -2889,7 +2902,7 @@ func (t *taskRun) checkinAnswer(u *TaskUsage, s checkinStop, open bool, pushed, 
 	case s.callCap && t.checkinRaise >= versionCheckinRaise:
 		t.lastCheckinStop.Granted = true
 	case s.spend && open && t.checkinSpend >= versionCheckinSpend:
-		if s.share && t.checkinAnswers() {
+		if s.share && t.checkinAnswers() && t.cases < versionCases {
 			t.grantCheckin(u, true)
 			t.recordUsage(*u)
 		}
@@ -2914,9 +2927,11 @@ func (t *taskRun) checkinAnswers() bool {
 // human answer, not once per check-in moment. The card's own budget and
 // the check-in call cap stay the caps they were; the call cap's stop buys
 // the session alone (versionCheckinRaise) and grants nothing here. The
-// usage is recorded with the attempt the same answer buys.
+// usage is recorded with the attempt the same answer buys. At versionCases
+// an answer grants nothing: the checkin_share case is answered by extend
+// or fund through Act, whose raise is the row's.
 func (t *taskRun) grantCheckin(u *TaskUsage, share bool) {
-	if share && t.checkinGrant >= versionCheckinGrant {
+	if share && t.checkinGrant >= versionCheckinGrant && t.cases < versionCases {
 		u.ExtraCheckinShare++
 	}
 }
@@ -3743,8 +3758,10 @@ func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
 }
 
 // gateAnswered goes on from the human's answer to a gate's escalation, as
-// gateEscalated describes. A successor chosen there closes the card into
-// one (versionCases).
+// gateEscalated describes. At versionCases a successor chosen there
+// closes the card into one, rerun_checks runs the head's checks again and
+// takes the head the rerun made through the gates, and a handover sets
+// the next session's model before the gate runs again.
 func (t *taskRun) gateAnswered(final, why string, changes []string) (verdict, bool) {
 	res := t.takeResolution()
 	switch {
@@ -3755,6 +3772,15 @@ func (t *taskRun) gateAnswered(final, why string, changes []string) (verdict, bo
 	case res != nil && res.Action == ActSuccessor:
 		final, why := t.closeIntoSuccessor("")
 		return verdict{final: final, reason: why}, true
+	case res != nil && res.Action == ActRerunChecks:
+		head := t.head
+		if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, head).Get(t.ctx, &head); err != nil {
+			return verdict{final: "failed", reason: "re-run the checks: " + errMessage(err)}, true
+		}
+		t.rerunHead = head
+		return t.verify(head), true
+	case res != nil && res.Action == ActHandover:
+		t.nextModel = t.handoverModel("", res.Args)
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 		return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}, true
@@ -4244,7 +4270,7 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	}
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
-	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, PR: t.pr.Number}
+	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err
 	}
@@ -4322,8 +4348,8 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 			if c := done.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID {
 				res := c.Res
 				t.resolution, resolved = &res, true
-				if note := strings.TrimSpace(res.Note); note != "" {
-					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, note, done.At))
+				if note := strings.TrimSpace(res.Note); note != "" || c.Comment != 0 {
+					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, cmp.Or(note, res.sentence()), done.At))
 				}
 				heard = append(heard, c.Comment)
 			}

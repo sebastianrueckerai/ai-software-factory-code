@@ -2003,8 +2003,10 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 // and the card's own budget stays the cap. Without the grant the next
 // moment stops the card again before any model call, and the human pays
 // one answer per stretch.
+// The share's grant is a run's from before versionCases.
 func TestWorkflowCheckSpendAnswerGrantsNextCheckin(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.state = RunState{Status: "waiting-human",
 		Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
 		Usage:    TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
@@ -2032,9 +2034,11 @@ func TestWorkflowCheckSpendAnswerGrantsNextCheckin(t *testing.T) {
 // stops there, not at every check-in moment to come. A run from before the
 // change buys the attempt alone — the next moment would stop the card
 // again.
+// The share's grant is a run's from before versionCases.
 func TestWorkflowCheckSpendAnswerInTheLoopGrantsTheShare(t *testing.T) {
 	for name, pinned := range map[string]bool{"gated": false, "before the gate": true} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if pinned {
 			h.env.OnGetVersion("checkin-grant", workflow.DefaultVersion, versionCheckinGrant).Return(workflow.DefaultVersion)
 		}

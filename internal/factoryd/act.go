@@ -34,8 +34,8 @@ type ActInput struct {
 	// its outside actions ran (a close included), before the case ends,
 	// and only for an answer that resolves its case. Nil: Act posts factoryd's record
 	// after the case ends, when the card has an issue, except for a human
-	// card's choice, whose work the console does, and for rung 0, whose
-	// steps are the case's record.
+	// card's choice, whose work the console does, and for factoryd's own
+	// answer, whose steps are the case's record.
 	Post func(ctx context.Context) (int64, error)
 }
 
@@ -70,8 +70,15 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose}
 // under the project's lock. Then it posts factoryd's comment when the
 // caller posted none, records the answer and signals the run. A note
 // records a step and ends nothing. A human card's case takes a value of its question's
-// choices, which Act records and runs nothing for.
+// choices, which Act records and runs nothing for. Rung 0 is factoryd's,
+// and factoryd answers on rung 0 alone.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
+	switch {
+	case in.Rung == 0 && in.By != FactoryDecider:
+		return ActResult{}, ErrActRefused("rung 0 is factoryd's own: answer on rung 1, 2 or 3")
+	case in.Rung != 0 && in.By == FactoryDecider:
+		return ActResult{}, ErrActRefused(fmt.Sprintf("rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung %d", in.Rung))
+	}
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
 		return ActResult{}, err
@@ -92,7 +99,8 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			return ActResult{}, ErrActRefused(why)
 		}
 	} else {
-		if f, err = r.tripFacts(ctx, t); err != nil {
+		head, _ := c.Facts["head"].(string)
+		if f, err = r.tripFacts(ctx, t, head); err != nil {
 			return ActResult{}, err
 		}
 		if why := actRefusal(f, in, cardName(t)); why != "" {
@@ -145,7 +153,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if !answers {
 		return out, nil
 	}
-	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.Rung != 0 {
+	if out.Comment == 0 && t.IssueNumber != 0 && res.Action != ActClose && !choice && in.By != FactoryDecider {
 		if out.Comment, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, r.answerComment(t, in.By, res)); err != nil {
 			log.Printf("task %s: factoryd's comment of %s's %s on case %d: %v", t.ID, in.By, res.Action, c.ID, err)
 		}

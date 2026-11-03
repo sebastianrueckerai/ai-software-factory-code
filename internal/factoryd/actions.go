@@ -163,9 +163,10 @@ var Actions = []Action{
 			case f.Plan == "":
 				return "the card is in no plan, so no planner takes the work of " + id + ": retry it instead"
 			case i < 0:
-				return "the card does not depend on " + id
+				return "the card does not depend on " + id + ": name a failed dependency's task id, or replan the card itself with no task id"
 			case f.Dependencies[i].Status != "failed":
-				return fmt.Sprintf("dependency #%d is %s, not failed", f.Dependencies[i].Issue, f.Dependencies[i].Status)
+				return fmt.Sprintf("dependency #%d is %s, not failed, so the planner has none of its work to take: replan the card itself with no task id",
+					f.Dependencies[i].Issue, f.Dependencies[i].Status)
 			}
 			return ""
 		}

@@ -762,14 +762,16 @@ func (t *taskRun) remarked(review Review) bool {
 // when it scheduled the call at since. asked is the escalation its gate
 // supervisor asked a human while the checks wait ran, comment its issue
 // comment, answered whether another wait read an answer to it
-// (versionBesideLadder); "" for none.
+// (versionBesideLadder); "" for none. resolution is rung 0's when it took
+// the question (versionCases).
 type besideRun struct {
-	stage    string
-	head     string
-	since    time.Time
-	asked    string
-	comment  int64
-	answered bool
+	stage      string
+	head       string
+	since      time.Time
+	asked      string
+	comment    int64
+	answered   bool
+	resolution *Resolution
 	*gateRun
 }
 
@@ -838,7 +840,8 @@ func (t *taskRun) keepTrip(trip GateTrip) {
 // runs the gate sequentially after the checks, cancelling a call still
 // beside an older head. A human's answer to the awaited call's escalation,
 // or to the one it asked while the checks wait ran (versionBesideLadder),
-// runs the gate sequentially too, as gateActivity runs a gate again.
+// as rung 0's resolution of it (versionCases), runs the gate sequentially
+// too, as gateActivity runs a gate again.
 func (t *taskRun) besideGate(stage, gate, head string, out any, activity string, args ...any) (verdict, bool, error) {
 	if i := slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.stage == stage }); i >= 0 {
 		f := t.beside[i]
@@ -846,7 +849,7 @@ func (t *taskRun) besideGate(stage, gate, head string, out any, activity string,
 		switch {
 		case f.head != head:
 			t.stopBeside(checksFailed, f)
-		case f.asked != "":
+		case f.asked != "" || f.answered:
 			if v, stop := t.besideAnswered(f); stop {
 				return v, true, nil
 			}
@@ -878,9 +881,10 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 	if err := t.ask(reason, escalationQuestion(reason), nil); err != nil {
 		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 	}
-	if t.takeResolution() != nil {
-		// rung 0 took the stop: the gate's stage runs again, no one asked
-		f.answered = true
+	if res := t.takeResolution(); res != nil {
+		// rung 0 took the stop: the gate's stage takes its resolution, no
+		// one asked
+		f.answered, f.resolution = true, res
 		return verdict{}, false
 	}
 	f.asked, f.comment = reason, t.escalation
@@ -889,11 +893,15 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 
 // besideAnswered waits for the answer to f's question, asked while the
 // checks wait ran (askBeside), as gateEscalated waits for one: an answer
-// a later escalation's wait read answers it at once (fileAnswer), and
-// with none the question is asked again after a later escalation.
+// a later escalation's wait read answers it at once (fileAnswer), as rung
+// 0's resolution does, and with none the question is asked again after a
+// later escalation.
 func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
 	switch {
 	case f.answered:
+		if f.resolution != nil {
+			t.resolution = f.resolution
+		}
 		return t.gateAnswered("", "", nil)
 	case f.comment != t.escalation:
 		return t.gateEscalated(f.asked)
