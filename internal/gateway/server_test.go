@@ -2537,12 +2537,37 @@ func TestThreadOnTheAudit(t *testing.T) {
 	}
 }
 
-// A premium call past its cap is refused on the premium cap: no other
-// model serves it, nothing reaches the upstream, and the audit row names
-// the cap.
-func TestPremiumCapRefused(t *testing.T) {
+// The operator purpose admits each class the chat's turns run on: a
+// wake's big beside a member's premium reaches the upstream, and a class
+// no turn names is refused before it.
+func TestOperatorAdmitsEveryChatTurnModel(t *testing.T) {
 	stub := newStubUpstream(t)
-	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 5, Status: "running"}
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-11", BudgetEUR: 5, Status: "running"}
+	store := newMemStore(task)
+	pol := factoryPolicy()
+	pol.Document.Chat = &policy.ChatConfig{Model: policy.Premium, WakeModel: policy.Big}
+	pol.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	store.setPolicy(pol)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: fakePrices{"big": testPrice, "small": testPrice, "premium": testPrice}, FactorydToken: testFactorydToken})
+	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Big)); rr.Code != http.StatusOK {
+		t.Fatalf("the wake's big = %d: %s", rr.Code, rr.Body.String())
+	}
+	rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Small))
+	if want := `model \"small\" is not among the operator models [\"premium\" \"big\"]`; rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), want) {
+		t.Fatalf("small = %d: %s; want 403 naming %s", rr.Code, rr.Body.String(), want)
+	}
+	if len(stub.bodies) != 1 {
+		t.Fatalf("%d upstream calls, want the wake's one", len(stub.bodies))
+	}
+}
+
+// A premium call past its cap that big cannot fit either is refused on
+// big's refusal, and its audit row keeps why it left premium.
+func TestPremiumCapThenBigRefused(t *testing.T) {
+	stub := newStubUpstream(t)
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-10", BudgetEUR: 0.001, Status: "running"}
 	store := newMemStore(task)
 	pol := factoryPolicy()
 	pol.Document.Chat = &policy.ChatConfig{Model: policy.Premium}
@@ -2557,11 +2582,8 @@ func TestPremiumCapRefused(t *testing.T) {
 	}
 	audits := store.auditRows()
 	last := audits[len(audits)-1]
-	if last.Decision != policy.RefusedPremiumCap || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it") {
-		t.Errorf("audit row %s %q, want refused_premium_cap naming the cap", last.Decision, last.Reason)
-	}
-	if len(store.ledger) != 0 {
-		t.Errorf("ledger = %+v, want no row for a refused call", store.ledger)
+	if last.Decision != policy.RefusedBudget || !strings.Contains(last.Reason, "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big, which refused it: free headroom 0.001000 EUR") {
+		t.Errorf("audit row %s %q, want refused_budget naming the premium cap first", last.Decision, last.Reason)
 	}
 }
 
@@ -2576,15 +2598,20 @@ func TestUnbilledOptionsAreNotForwarded(t *testing.T) {
 	}
 }
 
-// A premium call under its cap goes to premium, and with no cap premium
-// is an alias like any other.
-func TestPremiumCapUnderCap(t *testing.T) {
+// A premium call under its cap goes to premium; past it the gateway
+// serves it on big: the forwarded body, the ledger ref and
+// the audit row's alias name big, and the row's reason says why. No cap:
+// premium is an alias like any other.
+func TestPremiumCapServesOnBig(t *testing.T) {
 	for name, tc := range map[string]struct {
 		capEUR                float64
 		wantModel, wantLedger string
+		wantReason            string
 	}{
 		"under the cap": {capEUR: 50, wantModel: policy.Premium, wantLedger: "operator/premium"},
-		"no cap":        {wantModel: policy.Premium, wantLedger: "operator/premium"},
+		"past the cap": {capEUR: 0.001, wantModel: policy.Big, wantLedger: "operator/big",
+			wantReason: "the premium cap budget.premium_month_eur in policy.yaml cannot pay for it; served on big"},
+		"no cap": {wantModel: policy.Premium, wantLedger: "operator/premium"},
 	} {
 		t.Run(name, func(t *testing.T) {
 			stub := newStubUpstream(t)
@@ -2610,8 +2637,8 @@ func TestPremiumCapUnderCap(t *testing.T) {
 			}
 			audits := store.auditRows()
 			last := audits[len(audits)-1]
-			if last.ModelAlias != tc.wantModel || last.Reason != "" {
-				t.Errorf("audit row alias %q reason %q, want %q and no reason", last.ModelAlias, last.Reason, tc.wantModel)
+			if last.ModelAlias != tc.wantModel || !strings.HasSuffix(last.Reason, tc.wantReason) || tc.wantReason == "" && last.Reason != "" {
+				t.Errorf("audit row alias %q reason %q, want %q ending %q", last.ModelAlias, last.Reason, tc.wantModel, tc.wantReason)
 			}
 		})
 	}

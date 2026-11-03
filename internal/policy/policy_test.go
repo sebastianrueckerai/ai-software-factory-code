@@ -860,6 +860,49 @@ func TestFactoryModel(t *testing.T) {
 	}
 }
 
+// The chat's turns run on their own classes: a member's own on model, an
+// MCP client's on mcp_model, the chat's own on wake_model, each absent
+// key on model, and a project's chat block over the policy's. The
+// operator purpose admits every one of them, model first, and factoryd's
+// key on a chat task carries them; the operator purpose of a task that is
+// no chat's admits none.
+func TestChatTurnModels(t *testing.T) {
+	d, err := Parse([]byte(withFactoryModels + "chat: {model: premium, wake_model: small}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	c := d.ChatOf(ProjectConfig{})
+	if got := []string{c.Model, c.MCPModel, c.WakeModel}; !reflect.DeepEqual(got, []string{Premium, Premium, Small}) {
+		t.Fatalf("model, mcp_model, wake_model = %v, want premium, premium (absent: model), small", got)
+	}
+	if got := d.ChatOf(ProjectConfig{Chat: &ChatConfig{MCPModel: Big}}); got.MCPModel != Big || got.WakeModel != Small {
+		t.Fatalf("a project's mcp_model: mcp_model %q, wake_model %q; want big over the policy's, small kept", got.MCPModel, got.WakeModel)
+	}
+	if got := d.PurposeModels([]string{ClassChat}, PurposeOperator); !reflect.DeepEqual(got, []string{Premium, Small}) {
+		t.Fatalf("PurposeModels(chat, operator) = %v, want premium, small", got)
+	}
+	if got := d.FactoryModel([]string{ClassChat}, PurposeOperator); got != Premium {
+		t.Fatalf("FactoryModel(chat, operator) = %q, want the member's own turn's premium", got)
+	}
+	if got := d.PurposeModels([]string{"coder"}, PurposeOperator); got != nil {
+		t.Fatalf("PurposeModels(coder, operator) = %v, want none", got)
+	}
+	if got := d.PurposeModels([]string{"coder"}, PurposeReview); !reflect.DeepEqual(got, []string{"big"}) {
+		t.Fatalf("PurposeModels(coder, review) = %v, want big", got)
+	}
+	// operator premium and small, compaction, digest and title small,
+	// research big, the look the chat's vision model
+	if got := d.FactoryModels([]string{ClassChat}); !reflect.DeepEqual(got, []string{Big, Premium, Small, "vision"}) {
+		t.Fatalf("FactoryModels(chat) = %v", got)
+	}
+	if _, err := Parse([]byte(withFactoryModels + "chat: {wake_model: vision}\n")); err == nil || !strings.Contains(err.Error(), `chat.wake_model "vision": want one of [big small premium]`) {
+		t.Fatalf("a wake_model no chat class: %v", err)
+	}
+	if _, err := Parse([]byte(withFactoryModels + "chat: {mcp_model: vision}\n")); err == nil || !strings.Contains(err.Error(), `chat.mcp_model "vision": want one of [big small premium]`) {
+		t.Fatalf("an mcp_model no chat class: %v", err)
+	}
+}
+
 func TestClampBudget(t *testing.T) {
 	b := Budget{TaskDefaultEUR: 2, TaskMaxEUR: 5, DayEUR: 20, MonthEUR: 50}
 	for requested, want := range map[float64]float64{0: 2, -1: 2, 0.01: 0.01, 3: 3, 5: 5, 9: 5} {
@@ -1043,6 +1086,29 @@ func TestDetectors(t *testing.T) {
 	}
 }
 
+// The stall detector and the open-call bound are policy detectors beside
+// no_write: silence for no_progress trips, unless a tool call is open and
+// younger than open_call.
+func TestStallDetectors(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Detector(DetectorNoProgress); got != 5*time.Minute {
+		t.Errorf("default no_progress = %s, want 5m", got)
+	}
+	if got := d.Detector(DetectorOpenCall); got != 15*time.Minute {
+		t.Errorf("default open_call = %s, want 15m", got)
+	}
+	d, err = Parse([]byte(valid + "supervisor: {no_progress: 120, open_call: 600}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if d.Detector(DetectorNoProgress) != 2*time.Minute || d.Detector(DetectorOpenCall) != 10*time.Minute {
+		t.Errorf("no_progress = %s, open_call = %s, want 2m and 10m", d.Detector(DetectorNoProgress), d.Detector(DetectorOpenCall))
+	}
+}
+
 // A policy without limits.steps, and a version pinned before the key
 // existed, cap a session at DefaultSteps.
 func TestStepCap(t *testing.T) {
@@ -1107,7 +1173,7 @@ func TestNudge(t *testing.T) {
 
 func TestDetectorsRejects(t *testing.T) {
 	for name, tc := range map[string]struct{ section, want string }{
-		"dropped detector": {"{no_commit: 60}", `supervisor: unknown detector "no_commit"`},
+		"dropped detector": {"{no_commit: 60}", `supervisor: unknown detector "no_commit" (known: no_progress no_write open_call)`},
 		"zero seconds":     {"{no_write: 0}", "supervisor.no_write must be a positive number of seconds"},
 		"negative":         {"{no_write: -1}", "supervisor.no_write must be a positive number of seconds"},
 		"not seconds":      {"{no_write: 15m}", "policy:"},

@@ -50,9 +50,9 @@ func (t *turn) window() int {
 	if t.cfg.Window > 0 {
 		return t.cfg.Window
 	}
-	w, err := t.c.cfg.Operator.Window(t.r.Context(), t.task, t.cfg.Model)
+	w, err := t.c.cfg.Operator.Window(t.r.Context(), t.task, t.model())
 	if err != nil {
-		log.Printf("console: the window of %s: %v; the turn bounds its context by its rows alone", t.cfg.Model, err)
+		log.Printf("console: the window of %s: %v; the turn bounds its context by its rows alone", t.model(), err)
 	}
 	return w
 }

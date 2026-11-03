@@ -7,10 +7,16 @@ Build and test machinery, the pull-request runner, telemetry, factoryd's own net
     go build ./...
     make test
 
-`make test` runs `scripts/pg-test.sh go test -race -p 1 ./...`, the line
-`pr.yml` and `ci.yml` run, and `bash check` runs it after vet, gofmt and
+`make test` runs `scripts/pg-test.sh go test -race -p 1 ./...`, the
+suite `ci.yml` runs on main, and `bash check` runs it after vet, gofmt and
 gosec (the runner image's `GOSEC_VERSION`). `bash check static` stops
-before the tests. `.githooks/pre-push` runs `bash check static` on the
+before the tests. `bash check changed`, the run an agent makes before it
+ends, tests only the packages that `scripts/affected-packages.sh` selects
+for the change since `origin/HEAD`, without the race detector and two at a
+time: the packages that import a changed one, test imports included, or
+the whole suite when a non-Go file changed. `pr.yml` tests a pull
+request's selection by the base's copy of the same script, so a pull
+request cannot pick its own tests. `.githooks/pre-push` runs `bash check static` on the
 commit a push to `main` carries and refuses the push on a finding, so a
 push from a clone with the hook on cannot turn `main` red on vet, gofmt or
 gosec (`git push --no-verify` skips it). Turn it on once per clone:

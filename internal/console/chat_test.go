@@ -1018,6 +1018,8 @@ type chatGateway struct {
 	// the turns asked for one
 	window  int
 	windows []string
+	// alias is the class every operator call must name, big when empty
+	alias string
 }
 
 // refuseContext scripts an operator call the provider refuses for a
@@ -1131,9 +1133,9 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	g.requests = append(g.requests, body)
 	if (r.URL.Path != "/v1/chat/completions" || r.Header.Get("Authorization") != "Bearer gw-token" ||
 		r.Header.Get(gateway.HeaderFactoryPurpose) != policy.PurposeOperator || r.Header.Get(gateway.HeaderFactoryTask) != task ||
-		body["model"] != policy.Big || body["stream"] != true || body["max_tokens"] != float64(16384)) && !g.lenient {
-		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias big, streamed",
-			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task)
+		body["model"] != cmp.Or(g.alias, policy.Big) || body["stream"] != true || body["max_tokens"] != float64(16384)) && !g.lenient {
+		g.t.Errorf("model call %s, purpose %q, task %q, body %v: want operator's on %s, alias %s, streamed",
+			r.URL.Path, r.Header.Get(gateway.HeaderFactoryPurpose), r.Header.Get(gateway.HeaderFactoryTask), body, task, cmp.Or(g.alias, policy.Big))
 	}
 	if len(g.replies) == 0 {
 		if g.lenient {

@@ -37,7 +37,7 @@ func testDB(t *testing.T) *sql.DB {
 	// headroom queries and the sweep's audit rows read
 	if _, err := db.ExecContext(ctx, `CREATE TABLE IF NOT EXISTS tasks (
 		id text PRIMARY KEY, budget_eur numeric NOT NULL, spent_eur numeric NOT NULL DEFAULT 0, status text NOT NULL, repository text NOT NULL DEFAULT '',
-		author text NOT NULL DEFAULT '')`); err != nil {
+		author text NOT NULL DEFAULT '', settled_at timestamptz)`); err != nil {
 		t.Fatal(err)
 	}
 	// the gateway's audit table, the columns the sweep writes
@@ -941,7 +941,6 @@ func TestHoldsForTheBriefOfAWaitingCard(t *testing.T) {
 		{"wait", "brief/small", "", true},
 		{"wait", "supervisor/small", "", false},
 		{"wait", "brief/small", "s-1", false},
-		{"done", "brief/small", "", false},
 		{"queued", "brief/small", "", false},
 	} {
 		_, err := TakeHold(ctx, db, HoldRequest{TaskID: c.task, Kind: KindModel, Ref: c.ref, Session: c.session, Bytes: 10, Price: testPrice,
@@ -954,6 +953,58 @@ func TestHoldsForTheBriefOfAWaitingCard(t *testing.T) {
 	var n int
 	if err := db.QueryRowContext(ctx, `SELECT count(*) FROM holds WHERE task_id = 'wait' AND ref = 'brief/small'`).Scan(&n); err != nil || n != 1 {
 		t.Fatalf("brief holds = %d (%v), want 1", n, err)
+	}
+}
+
+// A finished plan's own asks (the brief of its criteria card, the delta
+// round) take a hold on a done task and reopen its final settlement, which
+// then books the call; no other purpose, no sandbox call and no other
+// finished status does, and a refused hold leaves the settlement as it
+// was.
+func TestHoldsForTheCallsOnADoneTask(t *testing.T) {
+	db := testDB(t)
+	ctx := context.Background()
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, spent_eur, status, settled_at) VALUES
+		('done', 1, 0, 'done', now()), ('done2', 1, 0, 'done', now()), ('closed', 1, 0, 'closed', now()), ('broke', 0, 0, 'done', now())`); err != nil {
+		t.Fatal(err)
+	}
+	take := func(task, ref, session string) error {
+		_, err := TakeHold(ctx, db, HoldRequest{TaskID: task, Kind: KindModel, Ref: ref, Session: session, Bytes: 10, Price: testPrice,
+			DayEUR: 20, MonthEUR: 50, ProjectEUR: inf})
+		return err
+	}
+	settled := func(task string) bool {
+		var s bool
+		if err := db.QueryRowContext(ctx, `SELECT settled_at IS NOT NULL FROM tasks WHERE id = $1`, task).Scan(&s); err != nil {
+			t.Fatal(err)
+		}
+		return s
+	}
+	for _, c := range []struct{ task, ref, session string }{
+		{"done", "supervisor/small", ""},
+		{"done", "brief/small", "s-1"},
+		{"closed", "brief/small", ""},
+		{"broke", "brief/small", ""},
+	} {
+		var r *Refusal
+		if err := take(c.task, c.ref, c.session); !errors.As(err, &r) {
+			t.Errorf("%s %s %q: err = %v, want a refusal", c.task, c.ref, c.session, err)
+		}
+		if !settled(c.task) {
+			t.Errorf("%s %s %q: a refused hold reopened the settlement", c.task, c.ref, c.session)
+		}
+	}
+	if err := take("done", "brief/small", ""); err != nil {
+		t.Fatalf("brief on a done task: %v", err)
+	}
+	if settled("done") {
+		t.Error("the brief's hold left the final settlement closed")
+	}
+	if err := take("done2", "review/small", ""); err != nil {
+		t.Fatalf("review on a done task: %v", err)
+	}
+	if settled("done2") {
+		t.Error("the review's hold left the final settlement closed")
 	}
 }
 

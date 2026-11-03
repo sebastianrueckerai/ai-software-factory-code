@@ -28,50 +28,27 @@ jobs:
     runs-on: pr-untrusted
     steps:
       - uses: actions/checkout@v4
-      # Affected-package selection. It lives in this file for the same reason
-      # the image map in `changes` does (.forgejo is closed to agent
-      # edits): a pull request must not be able to edit the code that
-      # decides which of its packages get tested. One rule covers every input
-      # the package walk cannot see — workflows, scripts, Dockerfiles,
-      # migrations, testdata, go.mod: any non-Go file in the diff selects the
-      # whole suite, as does any surprise in the walk itself. Fail open to
-      # more testing, never less. go vet, gofmt and gosec stay wholesale in
-      # their own jobs, so every package is still compiled and checked.
+      # Affected-package selection: the base's copy of
+      # scripts/affected-packages.sh, the rule bash check changed runs in a
+      # sandbox. .forgejo is closed to agent edits and a pull request can
+      # edit the script, so the job takes the script from the base: a pull
+      # request must not be able to edit the code that decides which of its
+      # packages get tested. A base without the script runs the whole suite.
+      # go vet, gofmt and gosec stay wholesale in their own jobs, so every
+      # package is still compiled and checked.
       - name: select the packages the diff reaches
         id: select
         run: |
           set -euo pipefail
           base=${{ github.event.pull_request.base.sha }}
-          full() { echo "./..."; exit 0; }
+          script=$(mktemp)
           # checkout is shallow (HEAD only); fetch just the one base commit to diff against.
-          git fetch -q --depth=1 origin "$base" || { echo "cannot fetch the base commit: full suite"; full; }
-          changed=$(git diff --name-only "$base" HEAD)
-          echo "changed files:"
-          echo "$changed"
-          [ -n "$changed" ] || { echo "empty diff: full suite"; full; }
-          if echo "$changed" | grep -qvE '\.go$'; then
-            echo "a non-Go input changed: full suite"
-            full
+          if git fetch -q --depth=1 origin "$base" && git show "$base:scripts/affected-packages.sh" >"$script"; then
+            pkgs=$(bash "$script" "$base")
+          else
+            echo "cannot read the base's selection: full suite"
+            pkgs=./...
           fi
-          mapfile -t dirs < <(echo "$changed" | while IFS= read -r f; do dirname "$f"; done | sort -u)
-          for d in "${dirs[@]}"; do
-            compgen -G "$d/*.go" >/dev/null || { echo "$d holds no Go files at HEAD: full suite"; full; }
-          done
-          changed_pkgs=$(go list "${dirs[@]/#/.\/}" 2>/dev/null) || { echo "go list failed on a changed directory: full suite"; full; }
-          pkgs=$(
-            go list -test -f '{{.ImportPath}} {{join .Deps " "}}' ./... 2>/dev/null |
-              awk -v changed="$changed_pkgs" '
-                BEGIN { n = split(changed, c, " "); for (i = 1; i <= n; i++) want[c[i]] = 1 }
-                $1 ~ /\.test$/ {
-                  p = substr($1, 1, length($1) - 5)
-                  for (i = 2; i <= NF; i++) if ($i in want) { print p; break }
-                }
-                END { for (p in want) print p }
-              ' | sort -u
-          ) || pkgs=""
-          [ -n "$pkgs" ] || { echo "the walk named no package: full suite"; full; }
-          pkgs=$(printf '%s\n' "$pkgs" | paste -sd' ')
-          echo "packages to test: $pkgs"
           # one line, space-separated: the test step inlines the value into
           # its script, where a second line would run as its own command
           # (PR 689, run 1977: cmd/agent-worker executed as a file name,

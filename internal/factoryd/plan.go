@@ -1559,16 +1559,20 @@ func (s *PGStore) ConfirmationIndex(ctx context.Context, id string, revision int
 }
 
 // PutPlanCatches stores revision's hole catches of one kind and finder,
-// the recording rule's ledger (the spec-intake concept, roadmap 285):
-// false when the revision holds them already, so an activity retry adds
-// nothing.
+// the recording rule's ledger (the spec-intake concept, roadmap 285),
+// after the kind's rows the revision holds: a detail the revision holds
+// of the kind already adds nothing, so an activity retry adds nothing and
+// a second grant adds its own dues. False when nothing was added.
 func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
 	b, err := json.Marshal(details)
 	if err != nil {
 		return false, err
 	}
 	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_catches (task_id, revision, kind, idx, finder, detail)
-		SELECT $1, $2, $3, i, $4, d FROM jsonb_array_elements_text($5::jsonb) WITH ORDINALITY AS a(d, i) ON CONFLICT DO NOTHING`,
+		SELECT $1, $2, $3, (SELECT COALESCE(max(idx), 0) FROM plan_catches WHERE task_id = $1 AND revision = $2 AND kind = $3) + row_number() OVER (ORDER BY i), $4, d
+		FROM jsonb_array_elements_text($5::jsonb) WITH ORDINALITY AS a(d, i)
+		WHERE NOT EXISTS (SELECT 1 FROM plan_catches c WHERE c.task_id = $1 AND c.revision = $2 AND c.kind = $3 AND c.detail = a.d)
+		ON CONFLICT DO NOTHING`,
 		id, revision, kind, finder, b)
 	if err != nil {
 		return false, err

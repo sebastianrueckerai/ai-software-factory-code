@@ -352,6 +352,16 @@ func integrationCard(ctx context.Context, store Store, parent string, p Plan) (T
 	return cards[i], nil
 }
 
+// judgedByPerson: every criterion of p stands on an approver's row, a
+// waiver or a confirmation, so a plan whose integration card ended off
+// main closes on the person's word: no review of that card judged it.
+func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
+	return !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool {
+		v, ok := standingRow(rows, c.ID)
+		return !ok || v.Source != "approver"
+	})
+}
+
 // standingRow is a criterion's standing verdict row: the approver's over
 // the review's; false when no row holds one.
 func standingRow(rows []CriterionVerdict, criterion string) (CriterionVerdict, bool) {
@@ -658,7 +668,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 // deltaSystem is the delta round's system prompt: one card under the open
 // plan that closes the named criteria; %s is the card's image field
 // (imageField).
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"key": "...", "role": "feature", "title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "the command and its expected result"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. The card's key is new. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its command the criterion's test. Keep the card small: it closes the gap, nothing else.`
+const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"key": "...", "title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "the command and its expected result"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. The card's key is new. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its command the criterion's test. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaPrompt is the delta round's system prompt for a project pinning
 // pins.
@@ -674,6 +684,7 @@ type deltaInput struct {
 	Verdicts []CriterionVerdict `json:"verdicts"`
 	Cards    []PlanCard         `json:"cards"`
 	Unfiled  []string           `json:"unfiled_keys,omitempty"`
+	Refused  []deltaRefusal     `json:"refused,omitempty"`
 }
 
 // deltaCriterion is one open criterion as the delta round reads it.
@@ -736,30 +747,6 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		}
 	}
 	input := deltaInput{Spec: p.Spec, Summary: p.Summary, Criteria: criteria, Verdicts: verdicts, Cards: p.Cards, Unfiled: unfiled}
-	alias := r.callModel(t, policy.PurposeReview)
-	content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
-		r.cfg.Policy().Document.Limits.SupervisorTimeout, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
-	if err != nil {
-		log.Printf("plan %s: the delta round's call: %v", t.ID, err)
-		return
-	}
-	var answer struct {
-		Card PlanCard `json:"card"`
-	}
-	dec := json.NewDecoder(strings.NewReader(content))
-	dec.DisallowUnknownFields()
-	if err := dec.Decode(&answer); err != nil {
-		log.Printf("plan %s: the delta round's answer: %v", t.ID, err)
-		r.refuseDelta(ctx, t, repo, dues, "the answer is not a card: "+err.Error())
-		return
-	}
-	if answer.Card.Role != RoleFeature {
-		r.refuseDelta(ctx, t, repo, dues, fmt.Sprintf("the delta card's role is %s; a delta card is a feature card", answer.Card.Role))
-		return
-	}
-	answer.Card.Round = p.Round
-	merged := p
-	merged.Cards = append(slices.Clone(p.Cards), answer.Card)
 	v, err := r.pinnedVersion(ctx, 0)
 	if err != nil {
 		log.Printf("plan %s: the delta round: %v", t.ID, err)
@@ -772,9 +759,25 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	}
 	// a delta card closes a gap on top of its round: the round's cap does not count it
 	shape.MaxCards++
-	merged, findings := judgePlan(merged, shape, v.Document.Limits, projectPins(v, t.Repository))
-	if len(findings) > 0 {
-		r.refuseDelta(ctx, t, repo, dues, "the card broke the plan rules: "+strings.Join(findings, "; "))
+	alias := r.callModel(t, policy.PurposeReview)
+	var card PlanCard
+	var merged Plan
+	why := ""
+	for range deltaAttempts {
+		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
+			r.cfg.Policy().Document.Limits.SupervisorTimeout, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
+		if err != nil {
+			log.Printf("plan %s: the delta round's call: %v", t.ID, err)
+			return
+		}
+		if card, merged, why = judgeDelta(p, content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
+			break
+		}
+		log.Printf("plan %s: the delta round's answer: %s", t.ID, why)
+		input.Refused = append(input.Refused, deltaRefusal{Answer: content, Why: why})
+	}
+	if why != "" {
+		r.refuseDelta(ctx, t, repo, dues, why)
 		return
 	}
 	old, err := r.oldCards(ctx, t)
@@ -791,8 +794,41 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	for _, c := range criteria {
 		ids = append(ids, c.ID)
 	}
-	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: filed the delta card %s for criteria %s (one planner round).", answer.Card.Key, strings.Join(ids, ", ")))
-	r.record(ctx, t.ID, "delta_card", map[string]any{"key": answer.Card.Key, "criteria": ids, "finder": dues[0].Finder})
+	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: filed the delta card %s for criteria %s (one planner round).", card.Key, strings.Join(ids, ", ")))
+	r.record(ctx, t.ID, "delta_card", map[string]any{"key": card.Key, "criteria": ids, "finder": dues[0].Finder})
+}
+
+// deltaAttempts bounds the delta round's answers: each refused one goes
+// back to the model with the rule it broke.
+const deltaAttempts = 3
+
+// deltaRefusal is an answer of the round the plan rules refused, and why.
+type deltaRefusal struct {
+	Answer string `json:"answer"`
+	Why    string `json:"why"`
+}
+
+// judgeDelta reads content as the delta card of plan p and judges p with
+// it: the card, the plan it joins and "", or why the plan rules refuse it.
+// The card is a feature card of p's round whatever role it names.
+func judgeDelta(p Plan, content string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (PlanCard, Plan, string) {
+	var answer struct {
+		Card PlanCard `json:"card"`
+	}
+	dec := json.NewDecoder(strings.NewReader(content))
+	dec.DisallowUnknownFields()
+	if err := dec.Decode(&answer); err != nil {
+		return PlanCard{}, Plan{}, "the answer is not a card: " + err.Error()
+	}
+	answer.Card.Role = RoleFeature
+	answer.Card.Round = p.Round
+	merged := p
+	merged.Cards = append(slices.Clone(p.Cards), answer.Card)
+	merged, findings := judgePlan(merged, shape, limits, pins)
+	if len(findings) > 0 {
+		return PlanCard{}, Plan{}, "the card broke the plan rules: " + strings.Join(findings, "; ")
+	}
+	return answer.Card, merged, ""
 }
 
 // refuseDelta marks the dues refused and says so on the plan's issue: the
@@ -939,7 +975,8 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	if len(openCriteria(p, rows)) == 0 {
-		if r.planClosed(ctx, parent) || (integration.Status != "merged" && integration.Status != "done") || !r.planAtRest(ctx, t) {
+		reached := integration.Status == "merged" || integration.Status == "done"
+		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
 		for _, kind := range criteriaKinds {
@@ -955,7 +992,19 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return
 	}
-	if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+	due, err := r.undraftedDues(ctx, parent)
+	if err != nil {
+		log.Printf("plan %s: the close check: %v", parent, err)
+		return
+	}
+	if len(due) > 0 || slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+		// a granted card answers the gap first; the ask, if it stands,
+		// is withdrawn and a gap still open after the card asks again
+		for _, kind := range criteriaKinds {
+			if err := r.store.ResolveApprovals(ctx, parent, kind, "approved", FactoryDecider, "withdrawn: a granted card answers the gap first"); err != nil {
+				log.Printf("plan %s: withdraw the %s approval: %v", parent, kind, err)
+			}
+		}
 		return
 	}
 	open := openCriteria(p, rows)
@@ -1069,9 +1118,16 @@ func criteriaLines(cs []PlanCriterion, tail string) (ids, lines []string) {
 // openPlanAsk opens plan t's ask of kind, one of criteriaKinds, with
 // reason, comments it on the plan's issue and pokes: never beside a
 // pending ask of either kind, so the two never stack, nor again after a
-// denied one of the same kind and reason, only once the plan is at rest.
+// denied one of the same kind and reason, nor while a delta due stands
+// undrafted, only once the plan is at rest.
 // Its spec names the integration card, whose rows the decisions read.
 func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reason, comment string, ids []string, integration Task) {
+	if due, err := r.undraftedDues(ctx, t.ID); err != nil || len(due) > 0 {
+		if err != nil {
+			log.Printf("plan %s: the gap check: %v", t.ID, err)
+		}
+		return
+	}
 	for _, status := range []string{"pending", "denied"} {
 		all, err := r.store.ApprovalRequests(ctx, status)
 		if err != nil {
@@ -1151,13 +1207,12 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 	}
 }
 
-// draftDue drafts the plan's unanswered delta dues: the delta catches no
-// filed or refused catch marks.
-func (r *Runner) draftDue(ctx context.Context, parent string) {
+// undraftedDues are the plan's delta dues, in detail order: the delta
+// catches no filed or refused catch marks.
+func (r *Runner) undraftedDues(ctx context.Context, parent string) ([]PlanCatch, error) {
 	catches, err := r.store.PlanCatches(ctx, parent)
 	if err != nil {
-		log.Printf("plan %s: the delta dues: %v", parent, err)
-		return
+		return nil, err
 	}
 	marked := map[string]bool{}
 	dues := map[string]PlanCatch{}
@@ -1174,6 +1229,17 @@ func (r *Runner) draftDue(ctx context.Context, parent string) {
 		if !marked[d] {
 			due = append(due, dues[d])
 		}
+	}
+	return due, nil
+}
+
+// draftDue drafts the plan's unanswered delta dues: the delta catches no
+// filed or refused catch marks.
+func (r *Runner) draftDue(ctx context.Context, parent string) {
+	due, err := r.undraftedDues(ctx, parent)
+	if err != nil {
+		log.Printf("plan %s: the delta dues: %v", parent, err)
+		return
 	}
 	if len(due) == 0 {
 		return

@@ -177,7 +177,6 @@ func main() {
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
 		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
-			NoProgressAfter:  envDuration("SUPERVISE_NO_PROGRESS_AFTER", 5*time.Minute),
 			RepetitionEvents: envInt("SUPERVISE_READING_WITHOUT_WRITING", 24),
 			SameFailure:      envInt("SUPERVISE_SAME_FAILURE", factoryd.DefaultSameFailure),
 			Churn:            envInt("SUPERVISE_CHURN", factoryd.DefaultChurn),

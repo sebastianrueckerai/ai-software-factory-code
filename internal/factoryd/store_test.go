@@ -4247,15 +4247,26 @@ func (s *fakeStore) PlanConfirmed(ctx context.Context, id string) (int, bool, er
 }
 
 func (s *fakeStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
-	k := fmt.Sprintf("%s %d %s %s", id, revision, kind, finder)
-	if _, ok := s.catches[k]; ok {
-		return false, nil
-	}
 	if s.catches == nil {
 		s.catches = map[string][]string{}
 	}
-	s.catches[k] = slices.Clone(details)
-	return true, nil
+	held := map[string]bool{}
+	for k, ds := range s.catches {
+		if strings.HasPrefix(k, fmt.Sprintf("%s %d %s ", id, revision, kind)) {
+			for _, d := range ds {
+				held[d] = true
+			}
+		}
+	}
+	k := fmt.Sprintf("%s %d %s %s", id, revision, kind, finder)
+	added := false
+	for _, d := range details {
+		if !held[d] {
+			s.catches[k] = append(s.catches[k], d)
+			added = true
+		}
+	}
+	return added, nil
 }
 
 func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error {

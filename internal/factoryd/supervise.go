@@ -65,7 +65,10 @@ type Trip struct {
 // SupervisorConfig must be validated at task start so a misconfigured
 // watchdog fails the task loudly instead of never firing.
 type SupervisorConfig struct {
-	NoProgressAfter  time.Duration // no events for this long
+	NoProgressAfter time.Duration // no events for this long
+	// OpenCallBound: a tool call the harness reported running holds the
+	// stall until it is this old; 0 = policy.DefaultDetectors.
+	OpenCallBound    time.Duration
 	WallClockCap     time.Duration // hard runtime cap for the whole task, across sessions
 	RepetitionEvents int           // tool calls without a file change before repetition trips
 	SameFailure      int           // 0 = DefaultSameFailure
@@ -114,6 +117,9 @@ func (c SupervisorConfig) validate() error {
 	if c.NoWriteAfter < 0 {
 		return fmt.Errorf("supervisor: NoWriteAfter must be positive (0 = default), is %s", c.NoWriteAfter)
 	}
+	if c.OpenCallBound < 0 {
+		return fmt.Errorf("supervisor: OpenCallBound must be positive (0 = default), is %s", c.OpenCallBound)
+	}
 	if c.NoPushSpend < 0 || c.NoPushSpend >= 1 {
 		return fmt.Errorf("supervisor: NoPushSpend must be a share from 0 up to under 1, is %v", c.NoPushSpend)
 	}
@@ -133,6 +139,9 @@ type Supervisor struct {
 	anchor   time.Time // the task's start: check-ins count from it
 	checkAt  time.Time // the next check-in; zero = none
 	lastSeen time.Time
+	// open are the tool calls the harness reported running and not yet
+	// ended, by call id
+	open map[string]openCall
 
 	sinceChange int
 	traces      *traceDetectors
@@ -166,6 +175,13 @@ type Supervisor struct {
 	reads []string // a report session's distinct read paths, in order
 }
 
+// openCall is a tool call the harness reported running: since when, by
+// factoryd's clock, and which tool.
+type openCall struct {
+	at   time.Time
+	tool string
+}
+
 // NewSupervisor starts watching a session at now; taskStarted anchors the
 // wall-clock cap (the agent time earlier sessions used lies before now),
 // so resumed sessions share the first session's cap and its check-in times.
@@ -175,7 +191,7 @@ func NewSupervisor(cfg SupervisorConfig, taskStarted, now time.Time) (*Superviso
 	}
 	cfg = cfg.withDefaults()
 	s := &Supervisor{cfg: cfg, deadline: taskStarted.Add(cfg.WallClockCap), anchor: taskStarted,
-		lastSeen: now, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}, started: now, cardLines: -1}
+		lastSeen: now, open: map[string]openCall{}, traces: newTraceDetectors(cfg), noWriteFrom: now, seen: map[string]bool{}, started: now, cardLines: -1}
 	s.scheduleCheckIn(now.Add(checkInQuiet - 1))
 	return s, nil
 }
@@ -206,6 +222,17 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 		return s.tripped
 	}
 	s.lastSeen = at
+	if ev.Kind == harness.EventToolRunning {
+		// a call's start says the harness works, no more: no agent event,
+		// so it moves no detector but the stall
+		if id := detailString(ev, "call_id"); id != "" {
+			s.open[id] = openCall{at: at, tool: detailString(ev, "tool")}
+		}
+		return s.limits(at)
+	}
+	if id := detailString(ev, "call_id"); id != "" {
+		delete(s.open, id)
+	}
 	s.noteFinding(ev)
 	s.noteRead(ev)
 	if lines, ok := cardDiffSize(ev); ok {
@@ -334,9 +361,31 @@ func (s *Supervisor) Tick(now time.Time) *Trip {
 		return trip
 	}
 	if silent := now.Sub(s.lastSeen); silent >= s.cfg.NoProgressAfter {
-		return s.trip(&Trip{Kind: TripNoProgress, Detail: fmt.Sprintf("no harness events for %s", silent.Round(time.Second))})
+		detail := fmt.Sprintf("no harness events for %s", silent.Round(time.Second))
+		// a test run is silent while it works; a call open past the bound
+		// is a hung tool or an end the harness lost
+		if call, ok := s.oldestOpen(); ok {
+			age := now.Sub(call.at)
+			if age < s.cfg.OpenCallBound {
+				return nil
+			}
+			detail += fmt.Sprintf(", a %s call open for %s", call.tool, age.Round(time.Second))
+		}
+		return s.trip(&Trip{Kind: TripNoProgress, Detail: detail})
 	}
 	return nil
+}
+
+// oldestOpen is the open tool call that started first.
+func (s *Supervisor) oldestOpen() (openCall, bool) {
+	var oldest openCall
+	ok := false
+	for _, c := range s.open {
+		if !ok || c.at.Before(oldest.at) {
+			oldest, ok = c, true
+		}
+	}
+	return oldest, ok
 }
 
 // limits are the caps every event and tick checks: the task's wall clock,
@@ -598,6 +647,9 @@ func (c SupervisorConfig) withDefaults() SupervisorConfig {
 	}
 	if c.NoWriteAfter == 0 {
 		c.NoWriteAfter = policy.Document{}.Detector(policy.DetectorNoWrite)
+	}
+	if c.OpenCallBound == 0 {
+		c.OpenCallBound = policy.Document{}.Detector(policy.DetectorOpenCall)
 	}
 	after, nudges := policy.Limits{NudgeAfter: c.NudgeAfter, Nudges: c.Nudges}.Nudge()
 	c.NudgeAfter, c.Nudges = after, nudges

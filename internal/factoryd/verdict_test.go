@@ -846,6 +846,36 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}
 }
 
+// A grant on a revision that already holds a refused grant's dues files
+// its own dues: the delta round answers the second grant, as "grant it
+// again" on the refused round's comment says.
+func TestGrantAgainOnTheSameRevision(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{store: s}
+	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 40); err != nil || n != 1 {
+		t.Fatalf("the first grant = %d, %v", n, err)
+	}
+	first, err := r.undraftedDues(ctx, "t-plan")
+	if err != nil || len(first) != 1 {
+		t.Fatalf("dues after the first grant = %+v, %v", first, err)
+	}
+	r.markCatches(ctx, "t-plan", first[0].Revision, CatchDeltaRefused, first)
+	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 42); err != nil || n != 1 {
+		t.Fatalf("the second grant = %d, %v", n, err)
+	}
+	if due, err := r.undraftedDues(ctx, "t-plan"); err != nil || len(due) != 1 || due[0].Detail != "c3 grant 42" {
+		t.Fatalf("dues after the second grant = %+v, %v, want c3 grant 42", due, err)
+	}
+}
+
 // The close tells a judgement that never happened from one that failed:
 // with the cards final, criteria without a row file one criteria_rerun
 // ask naming the integration card's review and its note, the unmet ones
@@ -1395,6 +1425,23 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 			t.Errorf("integration card %s: plan_closed recorded %d times, want %d", status, got, want)
 		}
 	}
+
+	// a person's verdict on every criterion closes the plan of an
+	// integration card that ended off main; one still running holds it
+	for status, want := range map[string]int{"closed": 1, "failed": 1, "running": 0} {
+		s, objs, r := rig(status)
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{
+			{Criterion: "c1", Verdict: "waived", Kind: CriterionTest},
+			{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+			{Criterion: "c3", Verdict: "waived", Kind: CriterionInvariant},
+		}); err != nil {
+			t.Fatal(err)
+		}
+		r.CriteriaPass(ctx)
+		if got := closed(objs); got != want {
+			t.Errorf("integration card %s, every criterion a person's: plan_closed recorded %d times, want %d", status, got, want)
+		}
+	}
 }
 
 // newRevision stores p as plan id's newest revision.
@@ -1599,5 +1646,65 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t-int"); len(rows) != 2 || rows[1].Verdict != "waived" || rows[1].Criterion != "c3" {
 		t.Errorf("the open criterion's waiver rows = %v", rows)
+	}
+}
+
+// A granted card answers a gap before the next ask: while a delta due
+// stands undrafted, no gap ask opens and a pending one is withdrawn as
+// approved by factoryd, so a later identical gap asks again; a card still
+// running withdraws it the same way.
+func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
+	ctx := context.Background()
+	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
+	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	if err := s.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.PutPlanCatches(ctx, "t-gap", 1, CatchDelta, FinderApprover, []string{"c3 grant 9"}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("a gap asked beside an undrafted due: %+v", pending)
+	}
+
+	// the due is drafted and its card runs: no ask, and the old ask is withdrawn
+	if _, err := s.PutPlanCatches(ctx, "t-gap", 1, CatchDeltaFiled, FinderApprover, []string{"c3 grant 9"}); err != nil {
+		t.Fatal(err)
+	}
+	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "in-review"}
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-gap", Project: "sf/code", Reason: "criteria not met with the plan's cards done: c3"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("the ask stands beside a running card: %+v", pending)
+	}
+	approved, _ := s.ApprovalRequests(ctx, "approved")
+	if len(approved) != 1 || approved[0].ID != id || approved[0].DecidedBy != FactoryDecider ||
+		!strings.Contains(approved[0].DecisionNote, "granted card answers") {
+		t.Fatalf("approved = %+v, want ask %d withdrawn by factoryd", approved, id)
+	}
+
+	// the card ends with c3 still open: the gap asks again
+	s.tasks["card-delta"] = Task{ID: "card-delta", Repository: "sf/code", Parent: "t-gap", Source: SourcePlan, PlanKey: "delta", Status: "done"}
+	r.planCloseCheck(ctx, "t-gap")
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if len(pending) != 1 || pending[0].Reason != "criteria not met with the plan's cards done: c3" {
+		t.Fatalf("pending = %+v, want the gap asked again", pending)
+	}
+
+	// an undrafted due withdraws a pending ask with every card final
+	if _, err := s.PutPlanCatches(ctx, "t-gap", 2, CatchDelta, FinderApprover, []string{"c3 grant 10"}); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-gap")
+	if pending, _ = s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("the ask stands beside an undrafted due: %+v", pending)
 	}
 }

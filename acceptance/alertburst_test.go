@@ -281,7 +281,7 @@ func newCardDeps(t *testing.T, rig *intakeRig) *cardDeps {
 		Models:       factoryd.ModelLadder{Start: "factory/small", Stronger: "factory/big"},
 		AnswerTokens: 8192, HeadroomTokens: 16384, ChecksPoll: time.Millisecond,
 		EgressCanary: "example.com:443", EgressDirectIP: "192.0.2.7:443",
-		Supervisor: factoryd.SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
+		Supervisor: factoryd.SupervisorConfig{RepetitionEvents: 24},
 		Policy:     acceptancePolicyVersion,
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
 			v := acceptancePolicyVersion()

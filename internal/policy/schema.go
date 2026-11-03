@@ -69,6 +69,8 @@ var enums = map[string][]string{
 	"Merge.Queue":             Queues,
 	"Merge.Groups":            GroupsValues,
 	"ChatConfig.Model":        ChatModels,
+	"ChatConfig.MCPModel":     ChatModels,
+	"ChatConfig.WakeModel":    ChatModels,
 	"ChatConfig.VisionModel":  VisionModels,
 	"Class.VisionModel":       VisionModels,
 	"ChatConfig.Confirm":      ChatTools,

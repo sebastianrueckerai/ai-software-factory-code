@@ -33,7 +33,7 @@ func TestBoardShowsThePremiumMeterUnderItsCap(t *testing.T) {
 			t.Errorf("the board lacks %s", want)
 		}
 	}
-	if text, err := r.c.policyText(context.Background(), actor{}); err != nil || !strings.Contains(text, "  premium month cap: €50.00 (past it, premium calls are refused)\n") {
+	if text, err := r.c.policyText(context.Background(), actor{}); err != nil || !strings.Contains(text, "  premium month cap: €50.00 (past it, premium calls run on big)\n") {
 		t.Errorf("policy read = (%q, %v), want the premium cap", text, err)
 	}
 	r.ledger.premiumCap = 0

@@ -1017,7 +1017,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		return true, ctx.Err()
 	}
 
-	tick := time.NewTicker(r.supervisionTick())
+	tick := time.NewTicker(r.supervisionTick(supCfg))
 	defer tick.Stop()
 	for {
 		select {
@@ -1468,6 +1468,8 @@ func (r *Runner) climb(ctx context.Context, t Task, s *sessionSpec, ns, pod stri
 func (r *Runner) supervisorConfig(d policy.Document, agentTime, checkIn time.Duration) SupervisorConfig {
 	c := r.cfg.Supervisor
 	c.NoWriteAfter = d.Detector(policy.DetectorNoWrite)
+	c.NoProgressAfter = d.Detector(policy.DetectorNoProgress)
+	c.OpenCallBound = d.Detector(policy.DetectorOpenCall)
 	c.WallClockCap = agentTime
 	c.CheckIn = checkIn
 	c.NudgeAfter, c.Nudges = d.Limits.Nudge()
@@ -2018,11 +2020,13 @@ func (r *Runner) repoURL(repo Repo) string {
 	return strings.TrimSuffix(r.cfg.GitBaseURL, "/") + "/" + repo.String() + ".git"
 }
 
-func (r *Runner) supervisionTick() time.Duration {
+// supervisionTick is the session loop's period: a third of the session's
+// stall time c, between a second and 15.
+func (r *Runner) supervisionTick(c SupervisorConfig) time.Duration {
 	if r.tick > 0 {
 		return r.tick
 	}
-	t := r.cfg.Supervisor.NoProgressAfter / 3
+	t := c.NoProgressAfter / 3
 	if t < time.Second {
 		t = time.Second
 	}

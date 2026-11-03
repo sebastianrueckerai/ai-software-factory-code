@@ -54,7 +54,7 @@ func metricsFiguresReport() factoryd.MetricsReport {
 var metricsBodyKeys = []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
 	"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
 	"interventions", "escalations", "escalated_share", "escalations_handled", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
-	"chat_tool_work", "ci_duration"}
+	"chat_tool_work", "ci_duration", "session_time"}
 
 func TestProjectMetricsJSON(t *testing.T) {
 	r := newRig(t)
@@ -570,8 +570,8 @@ func TestProjectMetricsPage(t *testing.T) {
 	// every row's name carries its one-sentence explanation as a tooltip:
 	// the deck's 22 rows and the divide section's twelve panel rows (the
 	// panels' named detail rows carry no tooltip of their own)
-	if n := strings.Count(body, `class="mname" title="`); n != 34 {
-		t.Fatalf("%d row names carry a title, want 34", n)
+	if n := strings.Count(body, `class="mname" title="`); n != 37 {
+		t.Fatalf("%d row names carry a title, want 37", n)
 	}
 	wants := []string{
 		`class="page page-metrics"`,
@@ -580,7 +580,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"change failure", "reverted · refiled", "time to restore",
 		"spend / week", "per card, median", "tokens / card", "spend by model", "served by", "tools / week", "tool mix",
 		"interventions / card", "escalations", "escalations handled", "human-blocked", "review acceptance",
-		"self-deploys / week", "diff size, median", "chat tool work",
+		"self-deploys / week", "diff size, median", "chat tool work", "check share", "command share", "session time",
 		"How the project runs its work, over the window and against the one before.",
 		`aria-pressed="true">28 days`,
 		`>Metrics</a>`,
@@ -625,6 +625,30 @@ func TestProjectMetricsPage(t *testing.T) {
 }
 
 // TestMetricsFormatters pins every deck string the rows read from.
+// The session-time rows read the report's figures: the two shares with
+// their move and spark, and the hours by class and tool beside the full
+// check's median and the longest command.
+func TestProjectMetricsSessionTime(t *testing.T) {
+	r := newRig(t)
+	r.figures.report = factoryd.MetricsReport{Repository: "sf/code", SessionTime: factoryd.SessionTime{
+		CheckShare:   factoryd.Figure{Value: 0.31, Prev: 0.4, Has: true, PrevHas: true},
+		CommandShare: factoryd.Figure{Value: 0.48, Has: true},
+		Sessions:     62, WallHours: 29.7, ClassHours: map[string]float64{"check": 7.6, "other": 2.1},
+		CheckRuns: 298, CheckMedianS: 460, Longest: factoryd.LongestRun{Class: "check", Seconds: 834, Command: "bash check"}}}
+	ck, _ := r.loggedIn(t)
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck)
+	body := rec.Body.String()
+	for _, want := range []string{
+		`check share</span><span class="mval">31 %</span><span class="mmove">−9</span>`,
+		`command share</span><span class="mval">48 %</span>`,
+		`session time</span><span class="mval">29 h 42 in 62 sessions · check 7 h 36 · other 2 h 06 · full check median 8 m over 298 runs · longest check 14 m: bash check</span>`,
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+}
+
 func TestMetricsFormatters(t *testing.T) {
 	for _, c := range []struct {
 		name string
@@ -663,6 +687,12 @@ func TestMetricsFormatters(t *testing.T) {
 		{"mDiff one file", mDiff(factoryd.DiffSize{Files: 1, Insertions: 3, Deletions: 1, Has: true}), "1 file · +3 −1"},
 		{"mDiff absent", mDiff(factoryd.DiffSize{}), "—"},
 		{"mChat", mChat(factoryd.ChatWork{Calls: 312, Minutes: 41}), "312 calls · 41 min"},
+		{"mSessionTime", mSessionTime(factoryd.SessionTime{Sessions: 62, WallHours: 29.7,
+			ClassHours: map[string]float64{"check": 7.6, "check_changed": 1.5, "other": 2.1}, ToolHours: map[string]float64{"read": 0.01, "edit": 0.002},
+			CheckRuns: 298, CheckMedianS: 460, Longest: factoryd.LongestRun{Class: "check", Seconds: 834, Command: "bash check 2>&1 | tail -25"}}),
+			"29 h 42 in 62 sessions · check 7 h 36 · other 2 h 06 · check_changed 1 h 30 · read 1 m, edit 7 s · full check median 8 m over 298 runs · longest check 14 m: bash check 2>&1 | tail -25"},
+		{"mSessionTime of one session without commands", mSessionTime(factoryd.SessionTime{Sessions: 1, WallHours: 0.25}), "15 m in 1 session"},
+		{"mSessionTime without sessions", mSessionTime(factoryd.SessionTime{}), "—"},
 		{"mChat under a minute", mChat(factoryd.ChatWork{Calls: 170, Minutes: 0.04}), "170 calls · 2 s"},
 	} {
 		if c.got != c.want {

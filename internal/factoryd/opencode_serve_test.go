@@ -44,20 +44,33 @@ func TestOpencodeMapsRecordedServeSession(t *testing.T) {
 			asks = append(asks, out.permission)
 		}
 	}
+	// each call starts once, though opencode sends running twice as its
+	// output streams, and its end carries the same call id
 	want := []harness.EventKind{
-		harness.EventCheckpoint, harness.EventCommand, harness.EventModelCall,
-		harness.EventCheckpoint, harness.EventCommand, harness.EventModelCall,
+		harness.EventCheckpoint, harness.EventToolRunning, harness.EventCommand, harness.EventModelCall,
+		harness.EventCheckpoint, harness.EventToolRunning, harness.EventCommand, harness.EventModelCall,
 		harness.EventCheckpoint, harness.EventModelCall,
 	}
 	if got := kinds(events); !reflect.DeepEqual(got, want) {
 		t.Fatalf("kinds = %v, want %v", got, want)
 	}
-	for i, cmd := range map[int]string{1: "echo one > one.txt", 4: "echo two > two.txt"} {
+	for i, call := range map[int]struct {
+		id      string
+		started int64
+	}{1: {"prt_0eee2534a001UI6rr86hg19U4q", 1790714205006}, 5: {"prt_0eee25392001OT0LTJXo3uyFvk", 1790714205077}} {
+		if d := events[i].Detail; d["call_id"] != call.id || d["tool"] != "bash" || d["started"] != call.started {
+			t.Errorf("start %d = %v, want call %s of bash started at %d", i, d, call.id, call.started)
+		}
+		if got := events[i+1].Detail["call_id"]; got != call.id {
+			t.Errorf("end %d's call_id = %v, want %s", i+1, got, call.id)
+		}
+	}
+	for i, cmd := range map[int]string{2: "echo one > one.txt", 6: "echo two > two.txt"} {
 		if events[i].Detail["command"] != cmd || events[i].Detail["exit"] != 0 {
 			t.Errorf("event %d = %v, want %q exit 0", i, events[i].Detail, cmd)
 		}
 	}
-	for i, reason := range map[int]string{2: "tool-calls", 5: "tool-calls", 7: "stop"} {
+	for i, reason := range map[int]string{3: "tool-calls", 7: "tool-calls", 9: "stop"} {
 		if events[i].Detail["reason"] != reason {
 			t.Errorf("model call %d reason = %v, want %s", i, events[i].Detail["reason"], reason)
 		}

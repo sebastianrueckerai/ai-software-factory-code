@@ -2957,6 +2957,37 @@ func TestPGStoreCatches(t *testing.T) {
 	if !slices.Equal(got, want) {
 		t.Fatalf("catches = %q, want %q", got, want)
 	}
+	// a second grant on the revision files its own dues after the first's,
+	// once, and another finder's due of the kind sits beside them
+	for _, put := range []struct {
+		finder, detail string
+		want           bool
+	}{
+		{FinderApprover, "c1 grant 40", true},
+		{FinderApprover, "c1 grant 42", true},
+		{FinderApprover, "c1 grant 42", false},
+		{FinderReview, "c1 at integration round 2", true},
+	} {
+		if got, err := s.PutPlanCatches(ctx, "t-plan", 1, CatchDelta, put.finder, []string{put.detail}); err != nil || got != put.want {
+			t.Fatalf("put %s %q = %v %v, want %v", put.finder, put.detail, got, err, put.want)
+		}
+	}
+	dues, err := s.db.QueryContext(ctx, `SELECT finder, detail FROM plan_catches WHERE task_id = 't-plan' AND revision = 1 AND kind = $1 ORDER BY idx`, CatchDelta)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dues.Close()
+	got = nil
+	for dues.Next() {
+		var finder, detail string
+		if err := dues.Scan(&finder, &detail); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, finder+" "+detail)
+	}
+	if want := []string{FinderApprover + " c1 grant 40", FinderApprover + " c1 grant 42", FinderReview + " c1 at integration round 2"}; !slices.Equal(got, want) {
+		t.Fatalf("delta catches = %q, want %q", got, want)
+	}
 }
 
 // A planner session that ends without filing a plan says so, with its

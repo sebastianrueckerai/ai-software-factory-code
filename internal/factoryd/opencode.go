@@ -416,6 +416,9 @@ type serveMapper struct {
 	session  string
 	sessions map[string]bool // the session and its subagents' sessions
 	idle     bool
+	// started are the session's tool calls whose start went out: opencode
+	// sends running again as a call's output streams
+	started map[string]bool
 }
 
 // served is one event's upshot: a run line for the parser, a permission
@@ -461,6 +464,7 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 		}
 	case "message.part.updated":
 		var part struct {
+			ID        string `json:"id"`
 			SessionID string `json:"sessionID"`
 			Type      string `json:"type"`
 			State     struct {
@@ -485,6 +489,12 @@ func (m *serveMapper) event(data []byte, at time.Time) served {
 		switch {
 		case part.Type == "tool" && (part.State.Status == "completed" || part.State.Status == "error"):
 			return runLine("tool_use", "part", pr.Part, false)
+		case part.Type == "tool" && part.State.Status == "running" && part.ID != "" && !m.started[part.ID]:
+			if m.started == nil {
+				m.started = map[string]bool{}
+			}
+			m.started[part.ID] = true
+			return runLine("tool_running", "part", pr.Part, false)
 		case part.Type == "step-start":
 			return runLine("step_start", "part", pr.Part, false)
 		case part.Type == "step-finish":
@@ -862,11 +872,10 @@ const downARung = "Routine, well-specified work goes down a rung: in this sessio
 // the session's tools: the checks, the push, the sandbox, the last
 // message.
 func guideEnd(m *imagegen.Manifest, tools []string) string {
-	return "If the repository has a check file at its root, run bash check, the repository's checks, which CI runs too. When it passes, end the session at once with your last message: " +
+	return "If the repository has a check file at its root, run bash check changed in the foreground with a timeout of 600000 ms: the repository's checks of what you changed, where CI runs all of them. When it passes, end the session at once with your last message: " +
 		"no further tests, re-runs or reading of library sources to confirm. " +
 		"When you end, the factory commits your working tree, pushes it and opens the pull request. " +
 		installLine(m, tools) + "Give a command that may run over two minutes a timeout of up to 600000 ms. " +
-		"To wait for a background job (start it with its output in a file and note $!), run agent-worker wait <pid> [seconds up to 590] with a timeout of 600000 ms: one call blocks until the process ends, where a sleep loop costs a model call per poll. " +
 		"End with a short last message: what you changed, and whether you recommend merging it and why."
 }
 
@@ -1099,6 +1108,8 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 		emit(harness.Event{Time: at, Kind: harness.EventCompacted})
 	case "tool_use":
 		p.toolUse(raw.Part, at, raw.Subagent, emit)
+	case "tool_running":
+		p.toolRunning(raw.Part, at, emit)
 	case "text":
 		var part struct {
 			Text string `json:"text"`
@@ -1124,15 +1135,29 @@ func (p *opencodeParser) line(b []byte, emit func(harness.Event)) {
 	}
 }
 
-func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, emit func(harness.Event)) {
-	if subagent {
-		next := emit
-		emit = func(ev harness.Event) {
-			ev.Detail["subagent"] = true
-			next(ev)
-		}
-	}
+// toolRunning is a tool call's start: its part id, which the call's end
+// carries too, its tool and opencode's start time.
+func (p *opencodeParser) toolRunning(partJSON []byte, at time.Time, emit func(harness.Event)) {
 	var part struct {
+		ID    string `json:"id"`
+		Tool  string `json:"tool"`
+		State struct {
+			Time struct {
+				Start int64 `json:"start"`
+			} `json:"time"`
+		} `json:"state"`
+	}
+	if err := json.Unmarshal(partJSON, &part); err != nil {
+		p.errMsg = fmt.Sprintf("unparseable tool_running: %s", partJSON)
+		return
+	}
+	emit(harness.Event{Time: at, Kind: harness.EventToolRunning, Detail: map[string]any{
+		"call_id": part.ID, "tool": part.Tool, "started": part.State.Time.Start}})
+}
+
+func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, emit func(harness.Event)) {
+	var part struct {
+		ID    string `json:"id"`
 		Tool  string `json:"tool"`
 		State struct {
 			Status   string         `json:"status"`
@@ -1151,6 +1176,15 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 	if err := json.Unmarshal(partJSON, &part); err != nil {
 		p.errMsg = fmt.Sprintf("unparseable tool_use: %s", partJSON)
 		return
+	}
+	// the end names the call its start opened
+	next := emit
+	emit = func(ev harness.Event) {
+		ev.Detail["call_id"] = part.ID
+		if subagent {
+			ev.Detail["subagent"] = true
+		}
+		next(ev)
 	}
 	duration := part.State.Time.End - part.State.Time.Start
 	if part.State.Status != "completed" {

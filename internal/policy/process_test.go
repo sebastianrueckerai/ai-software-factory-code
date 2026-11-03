@@ -99,8 +99,8 @@ func TestShippedTreePasses(t *testing.T) {
 }
 
 // The premium class: the chat and the planner on
-// premium under its month cap; a key is minted from the aliases the
-// classes name, with no model beside premium to fall back to.
+// premium under its month cap; every list a key is minted from holds big
+// beside premium, the alias a premium call falls back to.
 func TestPremiumClass(t *testing.T) {
 	files := fixtureTree(t)
 	for _, r := range [][2]string{

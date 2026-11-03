@@ -80,6 +80,19 @@ func TestLab(t *testing.T) {
 	t.Cleanup(model.Close)
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
+	// a waiver stands as the approver's row on the plan's integration card
+	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
+		r.tasks.mu.Lock()
+		defer r.tasks.mu.Unlock()
+		for _, t := range r.tasks.tasks {
+			if t.Parent == id && t.PlanKey == "integration" {
+				r.tasks.criteria[t.ID] = append(r.tasks.criteria[t.ID], factoryd.CriterionVerdict{
+					Criterion: cid, Verdict: verdict, Evidence: reason, Source: "approver", DecidedBy: by})
+				return nil
+			}
+		}
+		return factoryd.ErrNotFound
+	}
 	// the capped card of the fire scene is below the fund's floor, so its approvers get the Fund action (roadmap 210)
 	r.c.cfg.SessionFunded = func(_ context.Context, id, _ string) (string, error) {
 		if id == labID(610) {
@@ -320,6 +333,8 @@ type labScene struct {
 	deps      map[string][]string
 	plans     map[string][]factoryd.PlanRevision
 	questions map[string][]factoryd.PlanQuestion
+	// criteria are the criteria verdict rows by task
+	criteria  map[string][]factoryd.CriterionVerdict
 	approvals []factoryd.ApprovalRequest
 	objects   map[string]string
 	events    []factoryd.Event
@@ -368,7 +383,7 @@ type labScene struct {
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene}
+	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -677,6 +692,7 @@ func (r *rig) seedScene(s labScene) string {
 	labObjects.Unlock()
 	r.tasks.mu.Lock()
 	r.tasks.tasks, r.tasks.chain, r.tasks.deps, r.tasks.plans, r.tasks.questions = s.tasks, s.chain, s.deps, s.plans, s.questions
+	r.tasks.criteria = s.criteria
 	r.tasks.mu.Unlock()
 	// the lab's intake: an issue filed on the repository is the card after
 	// the scene's highest, in the lane its labels ask for
@@ -1437,6 +1453,43 @@ func idleScene(now time.Time) labScene {
 		{ID: 37, Kind: factoryd.AlertMonthCap, Source: "50", RaisedAt: now.Add(-7 * 24 * time.Hour), Fingerprint: now.UTC().Format("2006-01") + "/50"},
 	}
 	return s
+}
+
+// criteriaScene is a plan whose cards ran out with three test criteria
+// partial: its criteria gap card holds a reviewer's long evidence, one
+// unbroken file::test name in it, and a waiver form under each.
+func criteriaScene(now time.Time) labScene {
+	plan := labCard(now, 1344, "done", "plan", 30*time.Hour, "Metrics: divide and conquer", "Twelve panels on the metrics page.")
+	plan.PlanName = "divide and conquer"
+	found := labCard(now, 1345, "done", "direct", 29*time.Hour, "Metrics: the panels' read model", "The figures behind the panels.")
+	integ := labCard(now, 1346, "done", "direct", 28*time.Hour, "Metrics: the panels on the page", "Render the twelve panels.")
+	found.Parent, found.Source, found.PlanKey = plan.ID, factoryd.SourcePlan, "foundation"
+	integ.Parent, integ.Source, integ.PlanKey = plan.ID, factoryd.SourcePlan, "integration"
+	criteria := []factoryd.PlanCriterion{
+		{ID: "size_bound_escape", Kind: factoryd.CriterionTest, Test: "TestDivideConquerSizeBounds in acceptance"},
+		{ID: "window_and_existing_figures", Kind: factoryd.CriterionTest, Test: "TestDivideConquerMetricsCompatibility in acceptance"},
+		{ID: "ledger_retry_integrity", Kind: factoryd.CriterionTest, Test: "TestDivideConquerLedgerIntegrity in acceptance"},
+	}
+	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Two cards: the read model, then the page.", Criteria: criteria,
+		Cards: []factoryd.PlanCard{
+			{Key: "foundation", Role: factoryd.RoleFoundation, Title: "Metrics: the panels' read model", Size: "medium"},
+			{Key: "integration", Role: factoryd.RoleIntegration, Title: "Metrics: the panels on the page", Size: "medium", DependsOn: []string{"foundation"}},
+		}})
+	return labScene{
+		tasks: []factoryd.BoardTask{{Task: plan}, {Task: found}, {Task: integ}},
+		plans: map[string][]factoryd.PlanRevision{plan.ID: {{TaskID: plan.ID, Revision: 0, Plan: planJSON, SHA256: "sha-lab", CreatedAt: now.Add(-30 * time.Hour)}}},
+		criteria: map[string][]factoryd.CriterionVerdict{integ.ID: {
+			{Criterion: "size_bound_escape", Verdict: "partial", Kind: factoryd.CriterionTest, Source: "review",
+				Evidence: "acceptance/divide_size_sessions_test.go adds the named proof using authenticated real-console HTML with both fake figures and actual PGStore. It seeds no missing-bound or unsized cases."},
+			{Criterion: "window_and_existing_figures", Verdict: "partial", Kind: factoryd.CriterionTest, Source: "review",
+				Evidence: "acceptance/divide_review_planning_test.go::TestDivideConquerMetricsCompatibility checks the heading, twelve mproof markers, proof labels, unauthenticated denial and the default UTC range. However, acceptance/divide_rig_test.go::accPanelsReport leaves legacy figures unset."},
+			{Criterion: "ledger_retry_integrity", Verdict: "partial", Kind: factoryd.CriterionTest, Source: "review",
+				Evidence: "acceptance/divide_ledger_test.go adds the named test, but exercises only SettleSpendFinal, SessionAnswered starts and AutoMergeNote readings."},
+		}},
+		approvals: []factoryd.ApprovalRequest{{ID: 1040, Kind: factoryd.ApprovalCriteria, TaskID: plan.ID, Project: "sf/code", Status: "pending",
+			Reason: "criteria not met with the plan's cards done: size_bound_escape, window_and_existing_figures, ledger_retry_integrity",
+			Spec:   json.RawMessage(`{"revision":0,"task":"` + integ.ID + `"}`), CreatedAt: now.Add(-3 * time.Minute)}},
+	}
 }
 
 // historyScene is the idle board after a busy week: 320 more cards

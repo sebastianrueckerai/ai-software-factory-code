@@ -105,7 +105,9 @@ func (b *BriefWriter) Pass(ctx context.Context) error {
 // write files a's brief: the one model call on its task's account, a
 // parse of the answer, and the row; a failed call marks the row and
 // records the failure, once per mark, never an error for the pass. A
-// terminal failure's mark carries its class, which the pass then skips.
+// terminal failure's mark carries its class, which the pass then skips: a
+// failure no retry can fix, and a gateway's refusal for a finished task's
+// status.
 func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 	t, ok, err := b.Store.Task(ctx, a.TaskID)
 	if err != nil || !ok {
@@ -122,7 +124,7 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 		if errors.As(err, &refusal) {
 			mark = refusal.Decision + ": " + refusal.Reason
 		}
-		if isTerminal(err) {
+		if isTerminal(err) || refusal != nil && refusal.Decision == "refused_task_status" && Final(t.Status) {
 			mark = briefTerminal + mark
 		}
 		mark = textutil.Truncate(mark, 500)

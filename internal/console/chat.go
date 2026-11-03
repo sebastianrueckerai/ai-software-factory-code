@@ -194,6 +194,19 @@ type turn struct {
 	stopEntry *stopEntry
 }
 
+// model is the class the turn's model calls run on: the chat's
+// wake_model in a turn the chat starts itself, its mcp_model in one an
+// MCP client asks for on a chat token, its model in a member's own.
+func (t *turn) model() string {
+	switch {
+	case t.a.wake:
+		return t.cfg.WakeModel
+	case t.a.s != nil && t.a.s.chatToken != 0:
+		return t.cfg.MCPModel
+	}
+	return t.cfg.Model
+}
+
 // chatTurn is the request's turn on the project's chat; false once a
 // refusal is written: 404 without the chat's store and model or for no
 // such project. The route's access-table rule has judged the writer.
@@ -1094,7 +1107,7 @@ func (t *turn) run(id, notice string) {
 		// the reasoning rides the bus only (the session_said rule): the
 		// fold reads it live, no row keeps it
 		think := func(d string) { t.send("think", map[string]string{"text": d}) }
-		answer, err := t.c.cfg.Operator.Stream(sctx, id, t.cfg.Model, t.threadRef(), msgs, defs, out.write, think)
+		answer, err := t.c.cfg.Operator.Stream(sctx, id, t.model(), t.threadRef(), msgs, defs, out.write, think)
 		if err != nil {
 			log.Printf("console: the chat of %s on %s: %v", t.a.s.user, t.p.Name, err)
 			if sctx.Err() != nil {

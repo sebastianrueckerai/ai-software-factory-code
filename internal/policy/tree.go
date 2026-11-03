@@ -200,20 +200,23 @@ func checkSessions(d Document) error {
 }
 
 // checkOutputLimits requires prices.max_output_tokens for every alias a
-// class or the chat calls, which Document.Validate leaves out for the
-// gateway: a version stored before the key stays readable, and the gateway
-// refuses its calls (Document.Limited).
+// class or the chat calls, and for Big beside Premium (its fallback),
+// which Document.Validate leaves out for the gateway: a version stored
+// before the key stays readable, and the gateway refuses its calls
+// (Document.Limited).
 func checkOutputLimits(d Document) error {
 	aliases := []string{Small}
-	if m := d.ChatOf(ProjectConfig{}).Model; slices.Contains(ChatModels, m) {
-		aliases = append(aliases, m)
+	for _, m := range d.ChatOf(ProjectConfig{}).Models() {
+		if slices.Contains(ChatModels, m) {
+			aliases = append(aliases, m)
+		}
 	}
 	for _, c := range d.Classes {
 		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel, c.VisionModel, c.SessionModel)
 		aliases = append(aliases, c.Models...)
 	}
 	var errs []error
-	for _, a := range aliases {
+	for _, a := range withFallback(aliases) {
 		if _, ok := d.Prices.MaxOutputTokens[a]; a != "" && !ok {
 			errs = append(errs, fmt.Errorf("prices.max_output_tokens: %s has no output limit; every alias a class or the chat calls needs one", a))
 		}

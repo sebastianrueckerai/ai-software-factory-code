@@ -1101,13 +1101,14 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
 		}
 	}
+	events := r.sessionTranscript(ctx, t.ID, s.id)
 	if res.Outcome != OutcomePushed {
 		// the session may have proven the card itself (roadmap 208): one
 		// of its plan's acceptance commands run green. A read that fails
 		// costs the card nothing: it ends as it always did.
 		if acceptance, err := r.planAcceptance(ctx, t); err != nil {
 			log.Printf("task %s: its plan's acceptance: %v", t.ID, err)
-		} else if hit := r.sessionAcceptance(ctx, t, s.id, acceptance); hit != nil {
+		} else if hit := r.sessionAcceptance(ctx, t, s.id, events, acceptance); hit != nil {
 			res.Acceptance = hit
 		}
 	}
@@ -1119,9 +1120,21 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		// started or could not start is no session to end. A failed write
 		// is the session's error, not a log line: the retry runs a new
 		// session whose own end is the fact the identity keeps single.
+		ended := time.Now()
 		end := SessionEndFact{Session: s.id, Attempt: in.Attempt, Outcome: string(res.Outcome), Started: startedAt}
-		if err := r.timeline.RecordFactRow(ctx, end.Event(t.ID, t.Repository, t.IssueNumber, time.Now())); err != nil {
+		if err := r.timeline.RecordFactRow(ctx, end.Event(t.ID, t.Repository, t.IssueNumber, ended)); err != nil {
 			return SessionResult{}, named("session end fact", err)
+		}
+		// where the session's time went, from its transcript; a transcript
+		// that could not be read gives no row rather than a session of no
+		// commands
+		if events != nil {
+			_, project, _ := r.cfg.Policy().ProjectOf(t.Repository)
+			spent := SessionTimeOf(events, project.CommandClassOf())
+			spent.Session, spent.Attempt, spent.Started = s.id, in.Attempt, startedAt
+			if err := r.timeline.RecordFactRow(ctx, spent.Event(t.ID, t.Repository, t.IssueNumber, ended)); err != nil {
+				return SessionResult{}, named("session time fact", err)
+			}
 		}
 	}
 	if res.Outcome == OutcomePushed {

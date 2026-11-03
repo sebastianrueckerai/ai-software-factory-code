@@ -291,9 +291,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	if want := pv.Document.FactoryModel(task.Classes, purpose); purpose != "" && (want == "" || chatReq.Model != want) {
+	if want := pv.Document.PurposeModels(task.Classes, purpose); purpose != "" && !slices.Contains(want, chatReq.Model) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
-			fmt.Sprintf("model %q is not the %s model %q of capability classes %q under policy version %d", chatReq.Model, purpose, want, task.Classes, pv.ID),
+			fmt.Sprintf("model %q is not among the %s models %q of capability classes %q under policy version %d", chatReq.Model, purpose, want, task.Classes, pv.ID),
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
@@ -331,8 +331,24 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	}
 	hold, err := s.opts.Store.TakeHold(ctx, req)
 	var refusal *policy.Refusal
+	var note string
+	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedPremiumCap {
+		// at the premium cap the call is served on big
+		note = refusal.Reason + "; served on " + policy.Big
+		chatReq.Model, chatReq.fields["model"] = policy.Big, json.RawMessage(strconv.Quote(policy.Big))
+		if req.Price, err = s.price(ctx, pv, task, policy.Big); err != nil {
+			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+			return
+		}
+		req.Ref, req.PremiumEUR = policy.LedgerRef(purpose, policy.Big), 0
+		hold, err = s.opts.Store.TakeHold(ctx, req)
+	}
 	if errors.As(err, &refusal) {
-		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, refusal.Reason)
+		reason := refusal.Reason
+		if note != "" {
+			reason = note + ", which refused it: " + reason
+		}
+		s.refuseSpend(w, pid, task, purpose, refusal.Decision, chatReq.Model, reason)
 		return
 	}
 	if err != nil {
@@ -340,7 +356,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
-		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped}
+		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
 		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {

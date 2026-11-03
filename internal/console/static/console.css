@@ -112,7 +112,7 @@ select { appearance: none; -webkit-appearance: none; height: 28px; padding: 0 28
 select:hover { border-color: var(--text-faint); background-color: var(--bg-hover); }
 select option { background: var(--bg-raised); color: var(--text); }
 label { display: block; margin: 10px 0 4px; color: var(--text-muted); font-size: 12px; }
-fieldset { border: 0; margin: 6px 0; padding: 0; color: var(--text-muted); font-size: 12.5px; }
+fieldset { border: 0; margin: 6px 0; padding: 0; min-inline-size: 0; color: var(--text-muted); font-size: 12.5px; }
 fieldset legend { float: left; margin-right: 6px; color: var(--text-faint); }
 fieldset label { display: inline-flex; align-items: center; gap: 5px; margin: 0 14px 0 0; }
 input[type=radio] { accent-color: var(--st-failed); margin: 0; }
@@ -487,8 +487,11 @@ form.inline button { margin: 0; }
 .lane.five .plan-cards td:nth-child(5) { grid-area: 3 / 1 / 4 / -1; color: var(--text-muted); }
 .lane.five .plan-cards td:nth-child(5):not(:empty)::before { content: "depends on "; }
 .answered { color: var(--text-muted); font-size: 12.5px; }
-fieldset.question { border: 1px solid var(--line); padding: 8px 10px; margin: 8px 0; }
+fieldset.question { border: 1px solid var(--line); padding: 8px 10px; margin: 8px 0; overflow-wrap: anywhere; }
 fieldset.question legend { float: none; color: var(--text); font-weight: 600; font-size: 13px; }
+/* a criterion met or waived: ended, its line greyed */
+fieldset.question.settled { border-style: dashed; }
+fieldset.question.settled legend { color: var(--text-muted); font-weight: 400; }
 .project { margin-bottom: 2rem; }
 .gates meter { width: 12rem; }
 .steps { list-style: none; padding: 0; }

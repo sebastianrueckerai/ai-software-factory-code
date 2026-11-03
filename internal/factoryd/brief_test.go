@@ -527,3 +527,45 @@ func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
 		}
 	}
 }
+
+// A brief the gateway refuses for a finished task's status cannot heal:
+// the mark is terminal, so the next pass makes no second call. A refusal
+// for a task still open keeps retrying.
+func TestBriefWriterEndsOnAFinishedTaskRefusal(t *testing.T) {
+	for _, tt := range []struct {
+		status string
+		mark   string
+		calls  int
+	}{
+		{"closed", "terminal: refused_task_status: task t1 is closed", 1},
+		{"queued", "refused_task_status: task t1 is queued", 2},
+	} {
+		calls := 0
+		gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+			calls++
+			w.Header().Set(gateway.HeaderDecision, "refused_task_status")
+			w.WriteHeader(http.StatusConflict)
+			_, _ = w.Write([]byte(`{"error":{"message":"task t1 is ` + tt.status + `"}}`))
+		}))
+		task := briefTask()
+		task.Status = tt.status
+		store := &fakeBriefStore{tasks: map[string]Task{"t1": task},
+			rows:  []ApprovalRequest{{ID: 9, Kind: ApprovalPlan, TaskID: "t1", Project: "o/r", Status: "pending", Spec: json.RawMessage(`{"revision":2}`)}},
+			brief: map[int64][2]string{}, failed: map[int64]string{}}
+		w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+		for range 2 {
+			if err := w.Pass(context.Background()); err != nil {
+				t.Fatal(err)
+			}
+			if strings.HasPrefix(store.failed[9], briefTerminal) {
+				store.rows = nil
+			} else {
+				store.rows[0].BriefError = store.failed[9]
+			}
+		}
+		gw.Close()
+		if store.failed[9] != tt.mark || calls != tt.calls {
+			t.Errorf("%s: mark %q after %d calls, want %q after %d", tt.status, store.failed[9], calls, tt.mark, tt.calls)
+		}
+	}
+}

@@ -200,18 +200,22 @@ func (t *turn) transcript(taskID string, s sessionRef) ([]byte, error) {
 }
 
 // eachStep calls f with each line of a transcript, numbered from 1; a
-// line too long to decode or no event is an unreadable step.
+// line too long to decode or no event is an unreadable step. A call's
+// start is the supervisor's, not a step: its end says what the call did.
 func eachStep(body []byte, f func(i int, ev harness.Event)) {
 	i := 0
 	for line := range bytes.Lines(body) {
 		if line = bytes.TrimSpace(line); len(line) == 0 {
 			continue
 		}
-		i++
 		var ev harness.Event
 		if len(line) > stepLineMax || json.Unmarshal(line, &ev) != nil {
 			ev = harness.Event{Kind: "unreadable"}
 		}
+		if ev.Kind == harness.EventToolRunning {
+			continue
+		}
+		i++
 		f(i, ev)
 	}
 }

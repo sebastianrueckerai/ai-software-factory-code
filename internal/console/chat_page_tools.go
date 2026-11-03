@@ -263,7 +263,7 @@ func (c *Console) policyText(ctx context.Context, a actor) (string, error) {
 	fmt.Fprintf(&b, "Policy version %d (commit %s).\nLimits and budgets:\n%s", v.ID, v.Commit, limitLines(d))
 	fmt.Fprintf(&b, "  day cap: €%.2f\n  month cap: €%.2f\n", d.Budget.DayEUR, d.Budget.MonthEUR)
 	if d.Budget.PremiumMonthEUR > 0 {
-		fmt.Fprintf(&b, "  premium month cap: €%.2f (past it, premium calls are refused)\n", d.Budget.PremiumMonthEUR)
+		fmt.Fprintf(&b, "  premium month cap: €%.2f (past it, premium calls run on big)\n", d.Budget.PremiumMonthEUR)
 	}
 	names := slices.Sorted(maps.Keys(v.Projects))
 	for _, name := range names {

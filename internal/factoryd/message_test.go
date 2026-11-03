@@ -885,7 +885,7 @@ func TestWallClockStopAnswersThePushRequest(t *testing.T) {
 	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3})
 	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 	runner.stopWait = 10 * time.Second
 	worker, order := watchStop(t, runner, kube)

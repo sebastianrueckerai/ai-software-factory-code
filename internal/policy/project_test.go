@@ -446,3 +446,69 @@ func TestCompanionsDeclare(t *testing.T) {
 		t.Fatal("project schema has no companions property")
 	}
 }
+
+// A project sorts its sessions' commands into classes for the session-time
+// metric: a name and patterns over the command text, the first matching
+// class wins. Without a block, the repository's check script is the check,
+// its changed mode check_changed.
+func TestCommandClasses(t *testing.T) {
+	with := func(block string) map[string][]byte {
+		files := fixtureTree(t)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], block...)
+		return files
+	}
+	tree, err := ParseTree(fixtureTree(t))
+	if err != nil {
+		t.Fatal(err)
+	}
+	classOf := tree.Projects["demo-app"].CommandClassOf()
+	for command, want := range map[string]string{
+		"bash check":                                    "check",
+		"bash check 2>&1 | tail -25":                    "check",
+		"cd /workspace/repo && bash check":              "check",
+		"timeout 900 ./check":                           "check",
+		"bash check changed":                            "check_changed",
+		"cd /workspace/repo && bash check changed 2>&1": "check_changed",
+		"bash check static":                             "check",
+		"go test ./internal/factoryd/":                  "",
+		"cat check":                                     "",
+		"bash checkout.sh":                              "",
+	} {
+		if got := classOf(command); got != want {
+			t.Errorf("class of %q = %q, want %q", command, got, want)
+		}
+	}
+
+	tree, err = ParseTree(with("commands:\n  classes:\n    - {name: test, match: ['go test', '(^|\\s)make test']}\n    - {name: check, match: ['bash check']}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	classOf = tree.Projects["demo-app"].CommandClassOf()
+	for command, want := range map[string]string{
+		"go test ./...":           "test",
+		"bash check":              "check",
+		"make test && bash check": "test",
+		"ls":                      "",
+	} {
+		if got := classOf(command); got != want {
+			t.Errorf("declared: class of %q = %q, want %q", command, got, want)
+		}
+	}
+
+	for name, tc := range map[string]struct{ block, want string }{
+		"pattern":  {"commands: {classes: [{name: test, match: ['go test (']}]}\n", `project demo-app: commands: class test: pattern "go test (": `},
+		"no match": {"commands: {classes: [{name: test, match: []}]}\n", "project demo-app: commands: class test: no pattern"},
+		"no name":  {"commands: {classes: [{name: '', match: [x]}]}\n", "project demo-app: commands: a class without a name"},
+		"twice":    {"commands: {classes: [{name: test, match: [a]}, {name: test, match: [b]}]}\n", "project demo-app: commands: class test: given twice"},
+		"other":    {"commands: {classes: [{name: other, match: [a]}]}\n", `project demo-app: commands: class other: "other" is the rest of the commands`},
+	} {
+		t.Run(name, func(t *testing.T) {
+			if _, err := ParseTree(with(tc.block)); err == nil || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
+			}
+		})
+	}
+	if p := resolvedSchema(t, "project.schema.json").Schema().Properties["commands"]; p == nil {
+		t.Fatal("project schema has no commands property")
+	}
+}

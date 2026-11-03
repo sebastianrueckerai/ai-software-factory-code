@@ -708,7 +708,7 @@ func testRunnerConfig() RunnerConfig {
 		ChecksPoll:           time.Millisecond,
 		EgressCanary:         "example.com:443",
 		EgressDirectIP:       "192.0.2.7:443",
-		Supervisor:           SupervisorConfig{NoProgressAfter: time.Minute, RepetitionEvents: 24},
+		Supervisor:           SupervisorConfig{RepetitionEvents: 24},
 		Policy:               testPolicyVersion,
 		PolicyVersion: func(_ context.Context, id int64) (policy.Version, bool, error) {
 			return testPolicyVersion(), id == testPolicyVersion().ID, nil
@@ -721,6 +721,14 @@ func testRunnerConfig() RunnerConfig {
 }
 
 // setLimits changes the limits of the runner's policy version.
+// setDetectors sets the supervisor detectors, in seconds, of the version r
+// runs.
+func setDetectors(r *Runner, seconds map[string]int) {
+	v := r.cfg.Policy()
+	v.Document.Supervisor = seconds
+	r.cfg.Policy = func() policy.Version { return v }
+}
+
 func setLimits(r *Runner, change func(*policy.Limits)) {
 	v := r.cfg.Policy()
 	change(&v.Document.Limits)
@@ -2500,7 +2508,7 @@ func TestStoppedWorkerNamesHowItEndedWithoutAResult(t *testing.T) {
 		runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 		// the log's follower reads a pod that exited once more, a second on
 		runner.stopWait = 5 * time.Second
-		runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+		setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3})
 		setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 		res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5o", Attempt: 1, Model: "m"}, nil,
 			envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+tc.after)
@@ -2548,8 +2556,9 @@ func TestRunSessionTakesThePinnedVersion(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 			runner, _, _ := newTestRunner(t, task, newFakeKube(), &fakeObjectStore{})
-			runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
 			pinned, current := testPolicyVersion(), testPolicyVersion()
+			pinned.Document.Supervisor = map[string]int{policy.DetectorNoProgress: 3}
+			current.Document.Supervisor = pinned.Document.Supervisor
 			pinned.Document.Limits.AgentTime = tc.pinned
 			current.ID, current.Document.Limits.AgentTime = 8, tc.current
 			runner.cfg.Policy = func() policy.Version { return current }
@@ -2597,7 +2606,7 @@ func TestRunSessionWallClockTrip(t *testing.T) {
 	task := Task{ID: "t5", Status: "running", Objective: "slow", Repository: "sf/repo", Track: "direct"}
 	kube := newFakeKube()
 	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
-	runner.cfg.Supervisor = SupervisorConfig{NoProgressAfter: 3 * time.Second, RepetitionEvents: 24}
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3})
 	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t5", Attempt: 1, Model: "m"}, nil, hangLogs)
@@ -3592,7 +3601,7 @@ func TestRunSessionClimbsInPlace(t *testing.T) {
 	objects := &fakeObjectStore{}
 	runner, hub, store := newTestRunner(t, supervisedTask("t2"), kube, objects)
 	runner.cheapCap = 50 * time.Millisecond
-	runner.cfg.Supervisor.NoProgressAfter = 3 * time.Second // the tick every second
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3}) // the tick every second
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
 	ctx, cancel := context.WithCancel(context.Background())
@@ -3756,7 +3765,7 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 	v := runner.cfg.Policy()
 	v.Document.Limits.NoPushSpend = 99 // the spend detector is task 4's
 	runner.cfg.Policy = func() policy.Version { return v }
-	runner.cfg.Supervisor.NoProgressAfter = time.Minute
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 60})
 	runner.tick = 50 * time.Millisecond
 	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
 	worker.start(t, runner)
@@ -3794,7 +3803,7 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	v := runner.cfg.Policy()
 	v.Document.Limits.NoPushSpend = 99
 	runner.cfg.Policy = func() policy.Version { return v }
-	runner.cfg.Supervisor.NoProgressAfter = time.Minute
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 60})
 	runner.tick = 50 * time.Millisecond
 	worker := &fakeWorkerEndpoint{status: http.StatusServiceUnavailable}
 	worker.start(t, runner)
@@ -3831,7 +3840,7 @@ func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 	tk := store.tasks["t2"]
 	tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
 	store.tasks["t2"] = tk
-	runner.cfg.Supervisor.NoProgressAfter = time.Hour
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
 	runner.tick = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())
 	go func() {
