@@ -688,9 +688,11 @@ document.addEventListener("click", function (e) {
 // Its tabs and related cards load into it by hx-get, and the URL follows
 // the card or the routine it shows.
 function drawer() { return document.getElementById("drawer"); }
+var drawerSettled;
 function showDrawer() {
   var d = drawer(), m = /^#card=([^:]+)(?::([a-z]+))?$/.exec(location.hash),
     rt = /^#routine=([a-z0-9-]+\/[a-z0-9-]+)(?::([a-z]+))?$/.exec(location.hash);
+  document.removeEventListener("htmx:afterSettle", drawerSettled);
   if (!d) return;
   d.setAttribute("aria-label", rt ? "The routine" : "The card");
   document.body.classList.toggle("drawer-open", !!(m || rt));
@@ -709,12 +711,18 @@ function showDrawer() {
   }
   var id;
   try { id = decodeURIComponent(m[1]); } catch (err) { closeDrawer(); return; }
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"}).then(function () {
+  // htmx wires the swapped nodes at the settle, after the swap's promise:
+  // a fold opened before it fires its toggle to no listener
+  drawerSettled = function (e) {
+    if (e.target !== d) return;
+    document.removeEventListener("htmx:afterSettle", drawerSettled);
     var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
     if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
     var h = d.querySelector("h2");
     if (h) h.focus();
-  });
+  };
+  document.addEventListener("htmx:afterSettle", drawerSettled);
+  htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"});
 }
 function closeDrawer() {
   if (location.hash.indexOf("#card=") !== 0 && location.hash.indexOf("#routine=") !== 0) return;
@@ -734,7 +742,7 @@ document.addEventListener("htmx:sendError", drawerFailed);
 // loading line, which htmx keeps on an error
 function lifeFailed(e) {
   var line = e.detail.elt.dataset.sec === "life" && e.detail.target.querySelector("p");
-  if (line) line.textContent = "The card's life could not be read; see the factoryd log.";
+  if (line) line.textContent = "The card's life could not be read; " + (e.type === "htmx:sendError" ? "the factory did not answer." : "see the factoryd log.");
 }
 document.addEventListener("htmx:responseError", lifeFailed);
 document.addEventListener("htmx:sendError", lifeFailed);

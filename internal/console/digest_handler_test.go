@@ -116,8 +116,55 @@ console.log(JSON.stringify([refused.line.textContent, unsent.line.textContent, o
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	failed := `"The card's life could not be read; see the factoryd log."`
-	if want := "[" + failed + "," + failed + `,"Loading…"]`; strings.TrimSpace(string(got)) != want {
+	want := `["The card's life could not be read; see the factoryd log.","The card's life could not be read; the factory did not answer.","Loading…"]`
+	if strings.TrimSpace(string(got)) != want {
+		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A link to #card=<id>:life opens the fold once the drawer has settled:
+// htmx wires the swapped nodes there, after the swap's promise, and a fold
+// opened before it fires its toggle to no listener and stays on its
+// loading line. console.js under node, which the test needs.
+func TestCardLifeLinkOpensTheFoldOnceTheDrawerSettles(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var listeners = {}, focused = [], read = false;
+function el(props) {
+  return Object.assign({dataset: {}, textContent: "", querySelector: function () { return null; }, querySelectorAll: function () { return []; },
+    addEventListener: function () {}, setAttribute: function () {}, getAttribute: function () { return null; }}, props);
+}
+var summary = el({focus: function () { focused.push("summary"); }}), h2 = el({focus: function () { focused.push("h2"); }}),
+  life = el({wired: false, querySelector: function () { return summary; }}),
+  drawer = el({id: "drawer", hidden: true, querySelector: function (sel) { return sel === 'details[data-sec="life"]' ? life : sel === "h2" ? h2 : null; }});
+Object.defineProperty(life, "open", {set: function (v) { if (v && life.wired) read = true; }});
+var sandbox = {URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }},
+  location: {href: "http://lab/#card=t-9:life", pathname: "/", search: "", hash: "#card=t-9:life"}, history: {state: null, replaceState: function () {}, pushState: function () {}},
+  localStorage: {getItem: function () { return null; }, setItem: function () {}},
+  setTimeout: function () {}, setInterval: function () {}, clearTimeout: function () {},
+  Event: function (type) { this.type = type; }, CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
+  htmx: {ajax: function () { return Promise.resolve(); }, swap: function () {}, process: function () {}},
+  window: {addEventListener: function () {}},
+  document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
+    getElementById: function (id) { return id === "drawer" ? drawer : null; }, querySelectorAll: function () { return []; }, querySelector: function () { return null; },
+    removeEventListener: function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); },
+    createElement: function () { return el(); },
+    addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
+require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
+(listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });
+setTimeout(function () {
+  life.wired = true;
+  (listeners["htmx:afterSettle"] || []).slice().forEach(function (fn) { fn({type: "htmx:afterSettle", target: drawer}); });
+  console.log(JSON.stringify([read, focused]));
+}, 20);`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
+	got, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	if want := `[true,["summary"]]`; strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
 }
