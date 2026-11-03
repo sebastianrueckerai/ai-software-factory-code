@@ -2294,6 +2294,44 @@ func TestIdenticalPlanRefileAnswerRowSurvivesARetry(t *testing.T) {
 	}
 }
 
+// A human who answered the identical re-file's confirmation between a
+// filing that asked it and its retry keeps the answer: the factory's
+// answer finds it answered, and its row is the console's, not the
+// factory's, so the retry writes none.
+func TestIdenticalPlanRefileLeavesAHumansAnswer(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, _, _ := fileRig(t, testPlan())
+	raw, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, err := store.AddPlanRevision(ctx, "t-plan", raw, "sha-2"); err != nil || got != 2 {
+		t.Fatalf("revision 2: %d, %v", got, err)
+	}
+	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 1, PlanQuestion{Text: "Confirmation of revision 1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 1, 1, DecisionConfirm, "", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 2, PlanQuestion{Text: "Confirmation of revision 2"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.AnswerPlanQuestion(ctx, "t-plan", 2, 1, DecisionRevise, "split the web card", "alice"); err != nil {
+		t.Fatal(err)
+	}
+	if err := r.askConfirmation(ctx, store.tasks["t-plan"], 2, testPlan()); err != nil {
+		t.Fatalf("the retry: %v", err)
+	}
+	qs, _ := store.PlanQuestions(ctx, "t-plan", 2)
+	if len(qs) != 1 || qs[0].Decision != DecisionRevise || qs[0].Answer != "split the web card" || qs[0].AnsweredBy != "alice" {
+		t.Fatalf("confirmation %+v, want alice's revise standing", qs)
+	}
+	if rows := eventsOfKind(store, EventPlanQuestionAnswered); len(rows) != 0 {
+		t.Fatalf("answer rows %+v, want none from the factory", rows)
+	}
+}
+
 // Every planner session counts against the session cap: at the cap the
 // card waits for a human with the findings, a closed issue ends the task
 // closed. Under the cases change the draw is the row's, read at the top
@@ -2303,7 +2341,7 @@ func TestIdenticalPlanRefileAnswerRowSurvivesARetry(t *testing.T) {
 // resolution alone, or made while the third session ran, runs a fourth
 // session with what the waits brought, else with the planner's finding.
 // A resolution's note and the webhook's copy of its comment are one
-// answer.
+// answer, whichever comes first.
 // A run from before the change takes the comment as the grant of one
 // more session.
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
@@ -2340,6 +2378,16 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 			keepAt(h)
 			h.signalAfter(2*time.Hour, SignalCaseResolved, caseResolved(702, Resolution{Action: ActExtend, Note: "one more go"}, 611))
 			h.signalAfter(2*time.Hour+time.Second, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more go", Comment: 611})
+		}, func(_ *planHarness, since time.Duration) int {
+			if since >= 2*time.Hour {
+				return 1
+			}
+			return 0
+		}, 3 * time.Hour, []string{keep, "writer sebastian asked for changes to the plan: one more go"}, []string{asks, asks, asks}, time.Hour + answerQuiet, 0},
+		{"a plain comment, then an extend with its note, its comment's webhook copy before it, under the cases change", false, func(h *planHarness) {
+			keepAt(h)
+			h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more go", Comment: 611})
+			h.signalAfter(2*time.Hour+time.Second, SignalCaseResolved, caseResolved(702, Resolution{Action: ActExtend, Note: "one more go"}, 611))
 		}, func(_ *planHarness, since time.Duration) int {
 			if since >= 2*time.Hour {
 				return 1
@@ -2401,6 +2449,65 @@ func TestPlanLoopSessionCapAndClose(t *testing.T) {
 				t.Fatalf("usage %+v, want %d attempts, %d granted, %d raised", u, sessions, tc.extra, raised)
 			}
 		})
+	}
+}
+
+// Under the cases change, rung 0 resolving the plan's cap stop at the ask
+// (its extend raised the row) leaves no one to wait for: the loop takes
+// the resolution and runs a fourth session at once, with the planner's
+// finding; at the cap again it asks the human, who closes the issue.
+func TestPlanLoopTakesRungZerosResolutionAtTheAsk(t *testing.T) {
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
+	h := newPlanHarness(t, PlanResult{Findings: invalid})
+	h.rungZero = func(n int, _ TripInput) *Resolution {
+		if n == 1 {
+			return &Resolution{Action: ActExtend}
+		}
+		return nil
+	}
+	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+		row := h.rowUsage
+		row.RaisedSessions = min(len(h.trips), 1)
+		return row, nil
+	})
+	start := h.env.Now()
+	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	asks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
+	if len(h.plans) != 4 || !slices.Equal(h.plans[3], invalid) || len(h.trips) != 2 || !slices.Equal(h.escalated, []string{asks}) {
+		t.Fatalf("plans %q, trips %d, escalated %q; want a fourth session with the planner's finding, then one ask", h.plans, len(h.trips), h.escalated)
+	}
+	if at := h.escalatedAt[0].Sub(start); at != 4*planSession {
+		t.Fatalf("asked %s after the start, want right after the fourth session at %s: no wait for rung 0's stop", at, 4*planSession)
+	}
+}
+
+// Under the cases change the plan loop lets go of a case once it took its
+// resolution: a console extend's webhook copy ends the cap wait, the
+// fourth session files revision 1, and the extend's own case_resolved,
+// late by ten minutes, does not end the revision's wait.
+func TestPlanLoopDropsALateResolutionOfItsTakenCase(t *testing.T) {
+	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
+	h := newPlanHarness(t, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Findings: invalid}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	start := h.env.Now()
+	h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+		row := h.rowUsage
+		if h.env.Now().Sub(start) >= time.Hour {
+			row.RaisedSessions = 2
+		}
+		return row, nil
+	})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more go", Comment: 610})
+	h.signalAfter(time.Hour+10*time.Minute, SignalCaseResolved, caseResolved(701, Resolution{Action: ActExtend, Note: "one more go"}, 610))
+	h.signalAfter(3*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := h.run(t); final != "closed" {
+		t.Fatalf("finals %v", h.finals)
+	}
+	asks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
+	if len(h.plans) != 4 || !slices.Equal(h.requests, []int{1}) || !slices.Equal(h.escalated, []string{asks}) {
+		t.Fatalf("plans %q, requests %v, escalated %q; want revision 1 waiting on its answers to the close", h.plans, h.requests, h.escalated)
 	}
 }
 

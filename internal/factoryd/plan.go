@@ -1959,7 +1959,11 @@ func (t *taskRun) planLoop() (string, error) {
 					// an answer with no words keeps what the planner left
 					findings = named
 				}
-				switch res := t.takeResolution(); {
+				// the wait is over: a late resolution of its case, as its
+				// webhook copy came first, ends no later wait
+				res := t.takeResolution()
+				t.caseID = 0
+				switch {
 				case res == nil:
 				case res.Action == ActSuccessor:
 					return t.finish(t.closeIntoSuccessor(strings.Join(findings, "\n")))
