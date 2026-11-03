@@ -145,6 +145,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
 		ActivityEndCase:                     r.EndCase,
+		ActivityRecordGrant:                 r.RecordGrant,
 		ActivityOpenTrip:                    r.openTrip,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
@@ -1380,9 +1381,10 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 }
 
 // Escalate is the human face of a run from before the cases gate, which
-// takes no resolution: the stop's case opens as OpenTrip opens it, or the
-// live case of its key, or for a restart the card's newest live ask, takes
-// the ask, and no rung runs. It returns the face's comment (askHuman).
+// takes no resolution: the stop's case opens as OpenTrip opens it, open
+// until its face is written, or the live case of its key, or for a
+// restart the card's newest live ask, takes the ask, and no rung runs. It
+// returns the face's comment (askHuman).
 func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -1390,11 +1392,11 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	}
 	var c Case
 	if reason == healedReason {
-		c, err = r.liveAsk(ctx, t.ID)
+		c, err = r.store.NewestAskCase(ctx, t.ID)
 	} else {
 		var f CaseFacts
 		if f, err = r.tripFacts(ctx, t, ""); err == nil {
-			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}, CaseAtHuman); err == nil {
+			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
 				c, _, err = r.store.OpenCase(ctx, c)
 			}
 		}
@@ -1402,7 +1404,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	id, err := r.askHuman(ctx, t, c, reason, choices)
+	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices)
 	if err != nil || c.ID == 0 {
 		return id, err
 	}

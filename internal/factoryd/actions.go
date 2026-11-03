@@ -199,7 +199,9 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActClose, Rungs: rungs(2, 3), Applies: applyAlways},
-	{Name: ActWithdraw, Rungs: rungs(0, 1, 2), Applies: applyAlways},
+	// withdraw is the factory's own: Act signals no run for it, so neither
+	// the chat's agent nor the human takes it
+	{Name: ActWithdraw, Rungs: rungs(0, 1), Applies: applyAlways},
 	{Name: ActNote, Rungs: rungs(1, 2, 3), Applies: func(_ CaseFacts, r Resolution) string {
 		if strings.TrimSpace(r.Note) == "" {
 			return "the answer carries no note"
@@ -277,7 +279,7 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	case d.EUR > 0 && !fund.Rungs[rung]:
 		return fmt.Sprintf("%s may not draw money: %s may", who(rung), rungsText(fund.Rungs))
 	case buys && unread >= 0:
-		return fmt.Sprintf("the card's %s could not be read, so a draw cannot be weighed against the last one: hand up", f.Partial[unread])
+		return fmt.Sprintf("the card's %s could not be read, so a draw cannot be weighed against the last one: try again in a minute, or close the card", f.Partial[unread])
 	case buys && boughtNothing(f):
 		return boughtNothingText(f)
 	}
@@ -358,13 +360,13 @@ func sessionRoom(f CaseFacts) string {
 	case f.Attempts >= f.SessionCap:
 		return fmt.Sprintf("the session cap of %d is reached: extend or close", f.SessionCap)
 	case slices.Contains(f.Partial, "config"):
-		return "the agent time cap could not be read: hand up"
+		return "the agent time cap could not be read: try again in a minute, or close the card"
 	case left <= 0:
 		return fmt.Sprintf("the agent time cap of %s is reached: extend", minutesWord(limit))
 	case left < need:
 		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s: extend", minutesWord(limit), minutesWord(left), minutesWord(need))
 	case slices.Contains(f.Partial, "floor"):
-		return "what an opening needs could not be read: hand up"
+		return "what an opening needs could not be read: try again in a minute, or close the card"
 	case Cents(f.LeftEUR) < Cents(f.FloorEUR):
 		return fmt.Sprintf("%.2f EUR is left and an opening needs %.2f EUR: fund", f.LeftEUR, f.FloorEUR)
 	}
@@ -414,11 +416,11 @@ func boughtNothing(f CaseFacts) bool {
 		(f.DrawFindings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(f.DrawFindings, f.Findings))
 }
 
-// boughtNothingText is boughtNothing's refusal: the rung hands up, or
-// takes an action that draws nothing.
+// boughtNothingText is boughtNothing's refusal, with the actions that
+// draw nothing.
 func boughtNothingText(f CaseFacts) string {
 	return "the last draw at " + f.LastDrawAt.UTC().Format("15:04") + " UTC bought nothing, with no push since and the head, " +
-		"the checks and the findings unchanged: hand up, or hand over, start a successor, replan or close"
+		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 
 // drawWithin reports why draw d does not fit rung's bounds on f: the pool for
@@ -476,10 +478,7 @@ func rungsText(of [4]bool) string {
 	if of[3] {
 		items = append(items, "the human")
 	}
-	if len(items) < 2 {
-		return strings.Join(items, "")
-	}
-	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+	return textutil.AndList(items)
 }
 
 // alertNoLongerFires is the reason an alert card ends with when its alert

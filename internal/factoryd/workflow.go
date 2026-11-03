@@ -1548,6 +1548,9 @@ type taskRun struct {
 	stopFindings    string
 	reverify, rerun bool
 	nextModel       string
+	// changesBy is the writer of the newest change request drained, whose
+	// session a change request at the cap draws (versionCases)
+	changesBy string
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -1560,8 +1563,10 @@ type verdict struct {
 	// cancel of the activity (final failed)
 	escalate  string
 	cancelled bool
-	// requested: the findings are a writer's change request
+	// requested: the findings are a writer's change request, or the
+	// audit's real gap; by is that writer, "" for the audit's
 	requested bool
+	by        string
 	// moved: the head the gates judged was moved past them; its findings
 	// (the moved head's checks) are the checks stage's
 	// (versionHeadHolds)
@@ -1633,7 +1638,8 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// apply takes a verification's findings for the next session. A
 	// writer's change request with no session left is the human's answer
-	// (versionKeepWork): it buys the session, answered.
+	// (versionKeepWork): it buys the session, answered, and at
+	// versionCases what it bought is the writer's draw against the pool
 	apply := func(v verdict) (answered bool) {
 		if v.stronger {
 			model = t.cfg.Models.Stronger
@@ -1649,7 +1655,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
 			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least) {
+			before := u
 			capAnswer()
+			if t.cases >= versionCases && v.by != "" {
+				t.recordGrant(v.by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime})
+			}
 			return true
 		}
 		return false
@@ -1674,9 +1684,10 @@ func (t *taskRun) lifecycle() (string, error) {
 	}
 	// took acts on the resolution the last wait took (versionCases): a
 	// successor closes the card into one with the check-in stop's work
-	// state, a handover sets the next session's model, a re-verification
-	// takes the head through the gates at the loop's top. The rest need
-	// nothing more: the raises are the row's, the note is in t.answers
+	// state, a close waits for the issue's close Act made, a handover sets
+	// the next session's model, a re-verification takes the head through
+	// the gates at the loop's top. The rest need nothing more: the raises
+	// are the row's, the note is in t.answers
 	took := func() (final, why string) {
 		res, findings := t.takeResolution(), t.stopFindings
 		t.stopFindings = ""
@@ -1686,6 +1697,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		switch res.Action {
 		case ActSuccessor:
 			return t.closeIntoSuccessor(findings)
+		case ActClose:
+			return t.awaitClose()
 		case ActHandover:
 			model = t.handoverModel(model, res.Args)
 		case ActReverify, ActRouteApproval, ActRerunChecks:
@@ -1964,7 +1977,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// agent. A head the agent moved past the gates is held,
 				// not died on (versionResumeHold)
 				if len(answer) > 0 {
-					apply(verdict{findings: answer, reason: "changes requested", requested: true})
+					apply(verdict{findings: answer, reason: "changes requested", requested: true, by: t.changesBy})
 					break
 				}
 				t.lastRound = u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded()
@@ -3011,6 +3024,15 @@ func (t *taskRun) grantPoster(u *TaskUsage) {
 	t.grant(u)
 }
 
+// recordGrant records grant d the run made on by's answer as by's draw
+// against the pool (versionCases). The grant stands when the row fails,
+// as the usage's does.
+func (t *taskRun) recordGrant(by string, d policy.Draw) {
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordGrant, t.taskID, by, d).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record the grant's draw", "task", t.taskID, "error", err)
+	}
+}
+
 // recordUsage puts the usage on the task row for the next run; the row is
 // bookkeeping, so a failure (the workflow cancelled mid-retry) is logged,
 // not the task's end.
@@ -3102,7 +3124,7 @@ func (t *taskRun) verify(commit string) (v verdict) {
 	if final != "" {
 		return verdict{final: final, reason: why}
 	}
-	return verdict{findings: requested, reason: "changes requested", requested: true}
+	return verdict{findings: requested, reason: "changes requested", requested: true, by: t.changesBy}
 }
 
 // resumeVerify is a resumed run's answer-verify (versionResumeHold):
@@ -3310,7 +3332,7 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			return verdict{final: final, reason: why}
 		}
 		if findings := t.drainChanges(); len(findings) > 0 {
-			return verdict{findings: findings, reason: "changes requested", requested: true}
+			return verdict{findings: findings, reason: "changes requested", requested: true, by: t.changesBy}
 		}
 		if t.rolling && t.drainFolds() {
 			return verdict{reason: "newer images folded in"}
@@ -3783,18 +3805,22 @@ func (t *taskRun) gateEscalated(reason string) (verdict, bool) {
 
 // gateAnswered goes on from the human's answer to a gate's escalation, as
 // gateEscalated describes. At versionCases a successor chosen there
-// closes the card into one, rerun_checks runs the head's checks again and
-// takes the head the rerun made through the gates, and a handover sets
-// the next session's model before the gate runs again.
+// closes the card into one, a close waits for the issue's close,
+// rerun_checks runs the head's checks again and takes the head the rerun
+// made through the gates, and a handover sets the next session's model
+// before the gate runs again.
 func (t *taskRun) gateAnswered(final, why string, changes []string) (verdict, bool) {
 	res := t.takeResolution()
 	switch {
 	case final != "":
 		return verdict{final: final, reason: why}, true
 	case len(changes) > 0:
-		return verdict{findings: changes, reason: "changes requested", requested: true}, true
+		return verdict{findings: changes, reason: "changes requested", requested: true, by: t.changesBy}, true
 	case res != nil && res.Action == ActSuccessor:
 		final, why := t.closeIntoSuccessor("")
+		return verdict{final: final, reason: why}, true
+	case res != nil && res.Action == ActClose:
+		final, why := t.awaitClose()
 		return verdict{final: final, reason: why}, true
 	case res != nil && res.Action == ActRerunChecks:
 		head := t.head
@@ -4212,6 +4238,7 @@ func (t *taskRun) drainChanges() []string {
 	for workflow.GetSignalChannel(t.ctx, SignalChangesRequested).ReceiveAsync(&sig) {
 		if t.counted(SignalChangesRequested, sig) {
 			out = append(out, changeRequested(sig.Author, sig.Body, sig.At))
+			t.changesBy = sig.Author
 		}
 	}
 	return out
@@ -4231,6 +4258,18 @@ func (t *taskRun) awaitDecision() (final, reason string, findings []string) {
 		}
 		if findings := t.drainChanges(); len(findings) > 0 {
 			return "", "", findings
+		}
+	}
+}
+
+// awaitClose waits for the issue's close a close resolution made
+// (versionCases): Act closed the issue before it resolved the case, and
+// the run ends on its issue_closed. A change request that comes first
+// changes nothing on a closing card.
+func (t *taskRun) awaitClose() (final, why string) {
+	for {
+		if final, why, _ := t.awaitDecision(); final != "" {
+			return final, why
 		}
 	}
 }
@@ -4377,7 +4416,7 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 				res := c.Res
 				t.resolution, resolved = &res, true
 				if note := strings.TrimSpace(res.Note); note != "" || c.Comment != 0 {
-					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, cmp.Or(note, res.sentence()), done.At))
+					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, cmp.Or(note, res.Sentence()), done.At))
 				}
 				heard = append(heard, c.Comment)
 			}

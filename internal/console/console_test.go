@@ -1256,6 +1256,18 @@ func newRig(t *testing.T) *rig {
 			}
 			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 		},
+		// the newest of OpenCasesOf's an answer on the card ends, as the
+		// store reads it
+		NewestAskCase: func(ctx context.Context, taskID string) (factoryd.Case, error) {
+			open, err := r.c.cfg.OpenCasesOf(ctx, taskID)
+			var newest factoryd.Case
+			for _, k := range open {
+				if factoryd.AnsweredOnCard(k.Kind) && k.ID > newest.ID {
+					newest = k
+				}
+			}
+			return newest, err
+		},
 		Act: func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 			r.acted = append(r.acted, in)
 			out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
@@ -1635,11 +1647,12 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 func TestNewRefusesAMissingCardRead(t *testing.T) {
 	r := newRig(t)
 	for name, drop := range map[string]func(*Config){
-		"CardDigest":  func(c *Config) { c.CardDigest = nil },
-		"CardStep":    func(c *Config) { c.CardStep = nil },
-		"BoardDigest": func(c *Config) { c.BoardDigest = nil },
-		"OpenCasesOf": func(c *Config) { c.OpenCasesOf = nil },
-		"CaseSteps":   func(c *Config) { c.CaseSteps = nil },
+		"CardDigest":    func(c *Config) { c.CardDigest = nil },
+		"CardStep":      func(c *Config) { c.CardStep = nil },
+		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
+		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
+		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)

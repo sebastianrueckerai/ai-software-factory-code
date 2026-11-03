@@ -623,10 +623,16 @@ func TestWorkflowHealedWaitsTakeTheResolution(t *testing.T) {
 // Under the cases gate a writer's change request at the session cap is
 // still the human's answer: the unverified head c2 reaches its approval,
 // the change request sent there buys the fourth session, and no cap card
-// opens.
+// opens. The session it buys is sebastian's draw against the pool.
 func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.branchHead = "c2"
+	var grants []string
+	h.env.OnActivity(ActivityRecordGrant, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw) error {
+			grants = append(grants, fmt.Sprintf("%s %+v", by, d))
+			return nil
+		})
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
 		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
@@ -646,6 +652,9 @@ func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 	change := "reviewer sebastian requested changes: keep the old flag"
 	if s := h.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{change}) || h.usage[len(h.usage)-1].ExtraAttempts != 1 {
 		t.Fatalf("fourth session %+v, usage %+v; want attempt 4 with the change request, one attempt granted", s, h.usage[len(h.usage)-1])
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v", policy.Draw{Sessions: 1})}; !slices.Equal(grants, want) {
+		t.Fatalf("grants drawn = %q, want %q", grants, want)
 	}
 }
 
@@ -815,4 +824,61 @@ func TestCheckinSpendStopTellsItsTripTheStop(t *testing.T) {
 			t.Errorf("trip %d's stop = %q, want %q", i, trip.CheckinStop, CheckinStopShare)
 		}
 	}
+}
+
+// A close resolution reaches the run while Act's close of the issue is on
+// its way: the run waits for the issue's close and ends on it, with no ask
+// again, no gate run again and no session, at the session cap, at a
+// gate's wait and on a failed dependency alike.
+func TestWorkflowCloseWaitsForTheIssuesClose(t *testing.T) {
+	closing := Resolution{Action: ActClose}
+	closed := [2]string{"closed", ReasonIssueClosed + " without merge"}
+	t.Run("the session cap", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+		h.onSessions(pushed("s4", "c4"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, closing, 0))
+		h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+		h.run(t)
+		if len(h.finals) != 1 || h.finals[0] != closed || len(h.escalated) != 1 || len(h.sessions) != 0 {
+			t.Fatalf("finals %v, asked %q, sessions %d; want %v after the one ask and no session", h.finals, h.escalated, len(h.sessions), closed)
+		}
+	})
+	t.Run("a gate's wait", func(t *testing.T) {
+		g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+		g.onSessions(pushed("s1", "c1"))
+		g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+		var waits []string
+		g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30 * time.Minute).Return(
+			func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+				waits = append(waits, sha)
+				return ChecksResult{State: ChecksSuccess}, nil
+			})
+		g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "no runner serves the label", Recommendation: "register a runner"})
+		g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
+		g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, closing, 0))
+		g.signalAfter(5*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+		g.run(t)
+		if len(g.finals) != 1 || g.finals[0] != closed || !slices.Equal(waits, []string{"c1"}) || slices.Contains(g.steps, "approval c1") {
+			t.Fatalf("finals %v, checks waited on %q, steps %q; want %v with the tripped checks wait alone", g.finals, waits, g.steps, closed)
+		}
+	})
+	t.Run("a failed dependency", func(t *testing.T) {
+		h := newWorkflowHarness(t)
+		h.taskConfig = depsConfig()
+		failed := Dependency{TaskID: "t-a", Issue: 5, Key: "links", Status: "failed"}
+		h.env.OnActivity(ActivityDependencies, mock.Anything, "t1").Return(DepState{Waiting: []int64{5}, Failed: &failed}, nil)
+		h.onSessions(pushed("s1", "c1"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, closing, 0))
+		h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+		h.run(t)
+		if len(h.finals) != 1 || h.finals[0] != closed || len(h.escalated) != 1 || len(h.sessions) != 0 {
+			t.Fatalf("finals %v, asked %q, sessions %d; want %v before the card starts", h.finals, h.escalated, len(h.sessions), closed)
+		}
+	})
 }

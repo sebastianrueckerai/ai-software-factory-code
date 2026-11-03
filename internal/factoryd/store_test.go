@@ -254,15 +254,18 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float6
 }
 
 // extendCard raises task id's caps by d and lines and records e with the
-// raise in its detail, as PGStore's drawCase does.
-func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines, shares int, e Event) (from, to float64, err error) {
+// raise in its detail, as PGStore's drawCase does: d's sessions and agent
+// time in the row alone when the run grants them (runGrants).
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines, shares int, runGrants bool, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
 	}
 	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+d.EUR
-	t.Usage.RaisedSessions += d.Sessions
-	t.Usage.RaisedTime += d.AgentTime
+	if !runGrants {
+		t.Usage.RaisedSessions += d.Sessions
+		t.Usage.RaisedTime += d.AgentTime
+	}
 	t.Usage.ExtraLines += lines
 	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
@@ -350,7 +353,7 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 		}
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.Shares, extend); err != nil {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend); err != nil {
 			return err
 		}
 	}
@@ -1327,14 +1330,23 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 }
 
 // ResolveCase records its call in resolved and ends case id of cases by r
-// as PGStore.ResolveCase does, the draw and the step with it.
+// as PGStore.ResolveCase does, the draw and the step with it: a live case,
+// or one the webhook's copy of r's comment resolved as a plain answer.
 func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
 	if i < 0 {
 		return fmt.Errorf("case %d: %w", id, ErrNotFound)
 	}
-	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman {
+	comment, _ := toInt(r.Args["comment"])
+	copied := func(c Case) bool {
+		if comment == 0 || c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Action != caseAnswer {
+			return false
+		}
+		answered, _ := toInt(c.Resolution.Args["comment"])
+		return answered == comment
+	}
+	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman && !copied(c) {
 		return ErrCaseEnded{c}
 	}
 	if d != nil {
@@ -1375,6 +1387,18 @@ func (s *fakeStore) OpenCasesOf(ctx context.Context, taskID string) ([]Case, err
 		}
 	}
 	return out, nil
+}
+
+// NewestAskCase is taskID's newest live case an answer on the card ends,
+// as PGStore's newestAskCase reads it.
+func (s *fakeStore) NewestAskCase(ctx context.Context, taskID string) (Case, error) {
+	var newest Case
+	for _, c := range s.cases {
+		if c.TaskID == taskID && (c.Status == CaseOpen || c.Status == CaseAtHuman) && AnsweredOnCard(c.Kind) && c.ID > newest.ID {
+			newest = c
+		}
+	}
+	return newest, nil
 }
 
 func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) {

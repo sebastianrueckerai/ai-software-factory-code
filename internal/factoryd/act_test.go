@@ -300,3 +300,75 @@ func TestActRefusesAFundOnAnEndedCard(t *testing.T) {
 		t.Fatalf("events %+v, budget %v; want nothing written and 5 EUR", g.store.events, g.store.tasks["t1"].BudgetEUR)
 	}
 }
+
+// A grant the run made itself, the session a change request bought at the
+// cap, is the writer's draw against the pool: a card_extended row of rung
+// 3 that the pool counts, never refused past the pool, and no raise on the
+// card's row, whose run granted it already.
+func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	before := g.store.tasks["t1"].Usage
+	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
+	if err := g.r.RecordGrant(ctx, "t1", "sebastian", policy.Draw{Sessions: 1}); err != nil {
+		t.Fatal(err)
+	}
+	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
+	if drawn.Minus(drawnBefore) != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool drew %+v more, want 1 session", drawn.Minus(drawnBefore))
+	}
+	last := g.store.events[len(g.store.events)-1]
+	if last.Kind != EventCardExtended || last.Actor != "sebastian" || last.Detail["rung"] != 3 || last.Detail["pool"] != true {
+		t.Fatalf("the row = %+v, want sebastian's pool draw on rung 3", last)
+	}
+	if u := g.store.tasks["t1"].Usage; u.RaisedSessions != before.RaisedSessions || u.RaisedTime != before.RaisedTime {
+		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
+	}
+}
+
+// Forgejo was down when a retry of failed t-a (#5) filed its replacement's
+// issue: the replacement stands in its place and t-b waits on it, with no
+// issue. alice's retry on t-b's case finishes that retry: #9 is filed for
+// the replacement and #5 closes, and the case resolves naming #9.
+func TestActFinishesAStoppedRetry(t *testing.T) {
+	const replacement = "t-33198a8c2c69"
+	r, store, _, fj, _ := newRetryRig(t)
+	ctx := context.Background()
+	fj.failCall = "POST issues"
+	if _, err := r.RetryCard(ctx, "t-a", "alice"); err == nil || store.tasks[replacement].IssueNumber != 0 {
+		t.Fatalf("first retry: %v, replacement on #%d; want it stopped before its issue", err, store.tasks[replacement].IssueNumber)
+	}
+	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, StateKey: "t-a", Status: CaseAtHuman}}
+	got, err := r.Act(ctx, ActInput{TaskID: "t-b", CaseID: 3, By: "alice", Rung: 3, Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a", "replacement": int64(9)}, Result: "Filed #9 in place of #5."}}
+	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved {
+		t.Fatalf("result = %+v, want case 3 resolved with the retry that filed #9", got)
+	}
+	if store.tasks[replacement].IssueNumber != 9 || fj.issues[5].state != "closed" {
+		t.Fatalf("replacement on #%d, #5 %s; want #9 and #5 closed", store.tasks[replacement].IssueNumber, fj.issues[5].state)
+	}
+}
+
+// The fake ends a case as PGStore's endCase does: the webhook's copy of
+// comment 77 resolved case 3 as a plain answer, and the answer that posted
+// 77 resolves it again with its own action. An answer on another comment
+// finds it ended.
+func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	at := time.Now()
+	store.cases = []Case{{ID: 3, TaskID: "t1", Status: CaseResolved, ResolvedAt: &at,
+		Resolution: &CaseResolution{By: "sebastian", Rung: 3, Action: caseAnswer, Args: map[string]any{"answer": "go on", "comment": 77}}}}
+	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "ana", Rung: 3, Action: ActContinue, Args: map[string]any{"comment": int64(78)}}, nil, nil); !errors.As(err, new(ErrCaseEnded)) {
+		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
+	}
+	if err := store.ResolveCase(ctx, 3, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend, Args: map[string]any{"comment": int64(77)}}, nil, nil); err != nil {
+		t.Fatalf("the answer on comment 77 = %v, want it resolved again", err)
+	}
+	if c := store.cases[0]; c.Status != CaseResolved || c.Resolution.Action != ActExtend {
+		t.Fatalf("case = %+v, %+v; want resolved again with extend", c, c.Resolution)
+	}
+}

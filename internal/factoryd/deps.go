@@ -318,8 +318,9 @@ func (t *taskRun) waitsForDependencies(st RunState, u TaskUsage) bool {
 // later run starts the card without asking again; a close ends it closed,
 // also one found closed by Reconcile. One that failed with no replacement
 // is a trip of its own (versionCases): a retry or a replan of it, rung 0's
-// or a human's, puts the card back in the wait on what replaced it, and
-// any other answer starts the card as a closed one's does.
+// or a human's, puts the card back in the wait on what replaced it, a
+// close waits for the issue's close, and any other answer starts the card
+// as a closed one's does.
 func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []string) {
 	switch {
 	case st.IssueClosed:
@@ -352,7 +353,10 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			if final != "" {
 				return closedBeforeStart(final, why)
 			}
-			if res := t.takeResolution(); failed && res != nil && (res.Action == ActRetry || res.Action == ActReplan) {
+			switch res := t.takeResolution(); {
+			case res != nil && res.Action == ActClose:
+				return closedBeforeStart(t.awaitClose())
+			case failed && res != nil && (res.Action == ActRetry || res.Action == ActReplan):
 				healed = false
 				continue
 			}

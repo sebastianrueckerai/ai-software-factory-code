@@ -158,11 +158,11 @@ func fitting(t factoryd.Task, f capFacts) string {
 		case t.IssueNumber == 0:
 			return "close ends it (close)"
 		case t.Kind == "human":
-			return "one of its choices answers it (answer); close ends it"
+			return "one of its choices answers it (answer). Close ends it"
 		case f.timeCap:
-			return "an answer with the findings grants more agent time (answer); close ends it"
+			return "an answer with the findings grants more agent time (answer). Close ends it"
 		case f.capped:
-			return "an answer with the findings grants one session (answer); close ends it"
+			return "an answer with the findings grants one session (answer). Close ends it"
 		case f.rerun:
 			return factoryRedFits
 		case f.returns:
@@ -170,7 +170,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 		case f.merge:
 			return "approve_merge or deny_merge decide its merge request"
 		case f.plan:
-			return "answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner"
+			return "answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner"
 		}
 		return "answer it (answer)"
 	case "waiting-poster":
@@ -952,7 +952,7 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 		value = factoryd.AnswerGrant // continue finds no room at a cap: words grant, as its form's button says
 	}
 	res := answerAction(value, text, eur, k, c.cardTime(ctx, t))
-	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res.Note))
+	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
 		return "", err
 	}
@@ -1303,7 +1303,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		note, posted, err := c.closeIssue(ctx, a, t, label)
 		return done(note, posted, err, chosen)
 	case factoryd.AnswerRetryRoll:
-		if _, err := c.actOn(ctx, a, t, k.ID, chosen, c.posting(a, t, label)); err != nil {
+		if _, err := c.actOn(ctx, a, t, k.ID, chosen, c.posting(a, t, chosen)); err != nil {
 			return "", err
 		}
 		return fmt.Sprintf("Answered #%d: the roller starts the roll again and closes the card.", t.IssueNumber), nil
@@ -1373,22 +1373,15 @@ func (a actor) rung() int {
 	return 3
 }
 
-// newestCase is the case an answer on card t ends: its newest live case,
-// those whose own door answers them (a merge, a plan question) aside; none
+// newestCase is the case an answer on card t ends (NewestAskCase); none
 // (ID 0) when it has none.
 func (c *Console) newestCase(ctx context.Context, t factoryd.Task) (factoryd.Case, error) {
-	open, err := c.cfg.OpenCasesOf(ctx, t.ID)
+	k, err := c.cfg.NewestAskCase(ctx, t.ID)
 	if err != nil {
 		log.Printf("console: the cases of %s: %v", t.ID, err)
 		return factoryd.Case{}, refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
 	}
-	var newest factoryd.Case
-	for _, k := range open {
-		if factoryd.AnsweredOnCard(k.Kind) && k.ID > newest.ID {
-			newest = k
-		}
-	}
-	return newest, nil
+	return k, nil
 }
 
 // liveCase is newestCase, a card waiting on a human with none refused
@@ -1408,23 +1401,28 @@ func (c *Console) answerCard(ctx context.Context, a actor, t factoryd.Task, res 
 	if err != nil {
 		return "", err
 	}
-	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res.Note))
+	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
 		return "", err
 	}
 	return out.Text, nil
 }
 
-// posting is the Post that posts note as a's comment on card t, so a run
-// from before the cases gate wakes on the human's own words; nil for no
-// note.
-func (c *Console) posting(a actor, t factoryd.Task, note string) func(context.Context) (int64, error) {
-	if strings.TrimSpace(note) == "" {
-		return nil
+// posting is the Post that posts a's answer res on card t as a's own
+// comment, the one a run from before the cases gate wakes on, as it wakes
+// on no comment of factoryd's: res's words, else its sentence. A close
+// with no words posts none: its issue's close ends that run.
+func (c *Console) posting(a actor, t factoryd.Task, res factoryd.Resolution) func(context.Context) (int64, error) {
+	text := res.Note
+	if strings.TrimSpace(text) == "" {
+		if res.Action == factoryd.ActClose {
+			return nil
+		}
+		text = res.Sentence()
 	}
 	return func(ctx context.Context) (int64, error) {
 		var posted int64
-		if err := c.comment(ctx, a, t, note, &posted); err != nil {
+		if err := c.comment(ctx, a, t, text, &posted); err != nil {
 			return 0, &forgejoRefusal{"post the answer", err}
 		}
 		return posted, nil
@@ -1547,7 +1545,7 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 		args = map[string]any{"sessions": 1}
 	}
 	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: args, Note: text}
-	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res.Note))
+	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res))
 	if err != nil {
 		return "", err
 	}
@@ -1733,7 +1731,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	}
 	closing := factoryd.Resolution{Action: factoryd.ActClose, Note: note}
 	if k.ID != 0 && t.Kind != "human" {
-		out, err := c.actOn(ctx, a, t, k.ID, closing, c.posting(a, t, note))
+		out, err := c.actOn(ctx, a, t, k.ID, closing, c.posting(a, t, closing))
 		if err != nil {
 			return "", err
 		}

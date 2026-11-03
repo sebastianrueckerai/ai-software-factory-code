@@ -4608,7 +4608,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	}
 	equal(t, "stream refusals", events[:6], []string{
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
-			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer); close ends it."),
+			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer). Close ends it."),
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
 			"Refused: Card #13 "+human+", not a pending merge request: answer it (answer)."),
 		refused("steer", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 "+queued+", not a running session: nothing to do until it starts."),
@@ -4659,10 +4659,10 @@ func TestWrongState(t *testing.T) {
 		want string
 	}{
 		{factoryd.Task{Kind: "human", Status: "waiting-human", IssueNumber: 1}, capFacts{},
-			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer); close ends it."},
+			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer). Close ends it."},
 		{factoryd.Task{Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, IssueNumber: 2}, capFacts{plan: true},
 			"Card #2 waits on a human: an answer, an approval or a decision, not a running session: " +
-				"answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."},
+				"answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."},
 		{factoryd.Task{Status: "waiting-poster", IssueNumber: 3}, capFacts{},
 			"Card #3 waits on its poster's information, not a running session: the poster must answer on the issue."},
 		{factoryd.Task{Status: "queued", IssueNumber: 4}, capFacts{}, "Card #4 waits for a free work slot, in filing order, not a running session: nothing to do until it starts."},

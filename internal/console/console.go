@@ -334,6 +334,11 @@ type Config struct {
 	// refuses a Config without either.
 	OpenCasesOf func(ctx context.Context, taskID string) ([]factoryd.Case, error)
 	CaseSteps   func(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error)
+	// NewestAskCase is the case an answer on a card ends: its newest live
+	// case, those whose own door answers them (a merge, a plan question)
+	// aside, the zero Case for none (factoryd's PGStore). New refuses a
+	// Config without it.
+	NewestAskCase func(ctx context.Context, taskID string) (factoryd.Case, error)
 	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
 	// "" when the task's free headroom can fund a session's opening calls and
 	// its rung's floor on model, else the refusal (factoryd's
@@ -599,6 +604,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no OpenCasesOf")
 	case cfg.CaseSteps == nil:
 		return nil, errors.New("console: no CaseSteps")
+	case cfg.NewestAskCase == nil:
+		return nil, errors.New("console: no NewestAskCase")
 	case cfg.Act == nil:
 		return nil, errors.New("console: no Act")
 	case cfg.PoolDrawn == nil:

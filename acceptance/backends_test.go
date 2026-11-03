@@ -1074,7 +1074,7 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling fl
 }
 
 // extendCard raises card id's caps by d and lines, as PGStore's drawCase does.
-func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int) error {
+func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int, runGrants bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -1082,8 +1082,10 @@ func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int
 		return factoryd.ErrNotFound
 	}
 	t.BudgetEUR += d.EUR
-	t.Usage.RaisedSessions += d.Sessions
-	t.Usage.RaisedTime += d.AgentTime
+	if !runGrants {
+		t.Usage.RaisedSessions += d.Sessions
+		t.Usage.RaisedTime += d.AgentTime
+	}
 	t.Usage.ExtraLines += lines
 	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
@@ -1116,7 +1118,7 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 		}
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		if err := s.extendCard(id, d.Extend, d.Lines, d.Shares); err != nil {
+		if err := s.extendCard(id, d.Extend, d.Lines, d.Shares, d.RunGrants); err != nil {
 			return err
 		}
 	}
@@ -1354,6 +1356,10 @@ func (s *acceptanceStore) CaseByID(context.Context, int64) (factoryd.Case, error
 
 func (s *acceptanceStore) OpenCasesOf(context.Context, string) ([]factoryd.Case, error) {
 	return nil, nil
+}
+
+func (s *acceptanceStore) NewestAskCase(context.Context, string) (factoryd.Case, error) {
+	return factoryd.Case{}, nil
 }
 
 func (s *acceptanceStore) CasesOf(context.Context, string) ([]factoryd.Case, error) {

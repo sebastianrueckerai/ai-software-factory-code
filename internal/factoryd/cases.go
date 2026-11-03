@@ -290,8 +290,10 @@ func (e ErrCaseEnded) Error() string {
 // from the pool, then FundEUR into the budget, which the card's
 // ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
 // draw bound, which rungs 0 and 1 draw within, and the project's month of
-// draws, which rungs 0 to 2 draw within. Event is the rows' repository,
-// issue, actor, via and detail.
+// draws, which rungs 0 to 2 draw within. RunGrants: the card's run grants
+// Extend's sessions and agent time itself, so the rows record them against
+// the pool and the card's row raises neither. Event is the rows'
+// repository, issue, actor, via and detail.
 type CaseDraw struct {
 	Rung          int
 	Raise         float64
@@ -302,6 +304,7 @@ type CaseDraw struct {
 	PolicyCeiling float64
 	CardBound     policy.Draw
 	Pool          policy.Draw
+	RunGrants     bool
 	Event         Event
 }
 
@@ -381,7 +384,7 @@ func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 		rows = append(rows, stored)
 	}
 	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
-		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.Shares, extend)
+		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend)
 		if err != nil {
 			return nil, err
 		}

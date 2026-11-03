@@ -673,6 +673,7 @@ func main() {
 		BoardDigest:    runner.BoardDigest,
 		OpenCasesOf:    store.OpenCasesOf,
 		CaseSteps:      store.CaseSteps,
+		NewestAskCase:  store.NewestAskCase,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		ChatTokens:     store,

@@ -280,6 +280,21 @@ func TestEscalateOpensTheCaseByTheTripsKey(t *testing.T) {
 	}
 }
 
+// Escalate opens its case open and puts it at the human once its face is
+// written, as OpenTrip does: a face whose comment fails leaves the case
+// open, faceless, for the heal pass to weigh by its age.
+func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
+	g := newTripRig(t, "success")
+	g.forge.failComment = true
+	if _, err := g.r.Escalate(context.Background(), "t1", tripCap, nil); err == nil {
+		t.Fatal("Escalate = nil; want the comment's failure")
+	}
+	cases, err := g.s.CasesOf(context.Background(), "t1")
+	if err != nil || len(cases) != 1 || cases[0].Kind != CaseSessionCap || cases[0].Status != CaseOpen {
+		t.Fatalf("cases = %+v, %v; want the session cap open, its face not written", cases, err)
+	}
+}
+
 // A budget floor's case carries the money: 0.30 EUR an opening needs less
 // the 0.15 left of 3 EUR with 2.85 spent is 0.15 EUR, which buys one
 // session on the card's model.
@@ -453,5 +468,116 @@ func TestAnAskNamingAnotherCardsCaseGoesByItsWords(t *testing.T) {
 	}
 	if got := caseByID(t, s, other.ID); got.Status != CaseOpen || got.CommentID != 0 || len(caseStepsOf(t, s, other.ID)) != 0 {
 		t.Fatalf("the other card's case = %+v, want it untouched", got)
+	}
+}
+
+// extendOne is sebastian's extend of one session on t1's case id, carried
+// by his comment 77, and what it left: the card's raised sessions and its
+// card_extended rows.
+func (g tripRig) extendOne(t *testing.T, id int64) (int, []Event) {
+	t.Helper()
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: id, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Post: posting(77, nil), Res: oneSession}); err != nil {
+		t.Fatalf("Act: %v", err)
+	}
+	card, _, err := g.s.Task(context.Background(), "t1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	return card.Usage.RaisedSessions, actRig{s: g.s}.rows(t, EventCardExtended)
+}
+
+// A run from before the cases gate asks through Escalate and grants its
+// own session when the human's comment wakes it: the human's extend on
+// that case writes its draw against the pool as a row of rung 3 and
+// raises nothing on the card's row. A case a trip under the gate waits on
+// carries the trip's step of rung 0, and the extend raises the row there:
+// the case the trip opened, and the old run's case a restarted run under
+// the gate waits on.
+func TestActLeavesTheGrantToARunFromBeforeTheGate(t *testing.T) {
+	poolRow := func(t *testing.T, rows []Event) {
+		t.Helper()
+		if len(rows) != 1 || rows[0].Detail["pool"] != true || rows[0].Detail["rung"] != 3.0 || rows[0].Detail["sessions"] != 1.0 {
+			t.Fatalf("card_extended rows = %+v, want one pool draw of 1 session on rung 3", rows)
+		}
+	}
+	t.Run("a run from before the gate", func(t *testing.T) {
+		g := newTripRig(t, "success")
+		if _, err := g.r.Escalate(context.Background(), "t1", tripCap, nil); err != nil {
+			t.Fatal(err)
+		}
+		c := onlyLiveCase(t, g.s, "t1")
+		raised, rows := g.extendOne(t, c.ID)
+		poolRow(t, rows)
+		if raised != 0 {
+			t.Fatalf("raised sessions = %d, want 0: the run grants its own", raised)
+		}
+	})
+	for name, open := range map[string]func(t *testing.T, g tripRig) int64{
+		"a trip's case": func(t *testing.T, g tripRig) int64 { return g.trip(t, tripCap).CaseID },
+		"the old run's case after a restart": func(t *testing.T, g tripRig) int64 {
+			if _, err := g.r.Escalate(context.Background(), "t1", tripCap, nil); err != nil {
+				t.Fatal(err)
+			}
+			return g.trip(t, healedReason).CaseID
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newTripRig(t, "success")
+			id := open(t, g)
+			if c := onlyLiveCase(t, g.s, "t1"); c.ID != id {
+				t.Fatalf("live case %d, the trip waits on %d", c.ID, id)
+			}
+			raised, rows := g.extendOne(t, id)
+			poolRow(t, rows)
+			if raised != 1 {
+				t.Fatalf("raised sessions = %d, want 1: the run under the gate reads the row", raised)
+			}
+		})
+	}
+}
+
+// onlyLiveCase is taskID's one live case.
+func onlyLiveCase(t *testing.T, s *PGStore, taskID string) Case {
+	t.Helper()
+	open, err := s.OpenCasesOf(context.Background(), taskID)
+	if err != nil || len(open) != 1 {
+		t.Fatalf("OpenCasesOf = %+v, %v; want one case", open, err)
+	}
+	return open[0]
+}
+
+// The face's last line says what moves the card on, by the case's kind:
+// under the cases gate a reply at a cap or at a budget floor is a continue
+// that asks again, so the face names Extend or the Fund form and the
+// chat; any other stop takes a reply. A run from before the gate grants
+// on a reply, and its face says so at a cap too.
+func TestOpenTripsFaceNamesWhatMovesTheCard(t *testing.T) {
+	const reply = "Reply on this issue to start a new attempt"
+	extend := "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none."
+	fund := "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none."
+	for _, tc := range []struct {
+		name, reason, want string
+		escalate           bool
+	}{
+		{"the session cap", tripCap, extend, false},
+		{"the agent time cap", timeCapReached + "\nlast: no session produced a result", extend, false},
+		{"the budget floor", budgetRefused + ": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR", fund, false},
+		{"an agent's question", AgentAsks + "Which file?\nWhy: two match\nRecommendation: a.txt", reply, false},
+		{"a run from before the gate at the session cap", tripCap, reply, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newTripRig(t, "success")
+			if tc.escalate {
+				if _, err := g.r.Escalate(context.Background(), "t1", tc.reason, nil); err != nil {
+					t.Fatal(err)
+				}
+			} else {
+				g.trip(t, tc.reason)
+			}
+			if len(g.forge.comments) != 1 || !strings.Contains(g.forge.comments[0], tc.want) {
+				t.Fatalf("faces = %q, want one ending %q", g.forge.comments, tc.want)
+			}
+		})
 	}
 }

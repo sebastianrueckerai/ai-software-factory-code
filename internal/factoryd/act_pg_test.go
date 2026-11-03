@@ -53,6 +53,7 @@ type actForge struct {
 	mu         sync.Mutex
 	comments   []string
 	closed     bool
+	closes     int  // the closes of issue 12 that went through
 	closeFails bool // the close of issue 12 answers 500
 }
 
@@ -75,6 +76,7 @@ func (f *actForge) serve(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPatch && r.URL.Path == issue:
 			f.closed = true
+			f.closes++
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprint(w, `{}`)
 		default:
@@ -137,6 +139,17 @@ func (g actRig) card(t *testing.T) Task {
 
 var oneSession = Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
 
+// tripWaits writes on t1's case the step of rung 0 a trip under the cases
+// gate writes on the case it waits on: its run reads an extend's raise
+// from the card's row (runGrants).
+func (g actRig) tripWaits(t *testing.T) {
+	t.Helper()
+	if _, err := g.s.AppendCaseStep(context.Background(), CaseStep{CaseID: g.c.ID, Rung: 0, Actor: FactoryDecider, Found: "no resolver fits",
+		Outcome: StepHandedUp}); err != nil {
+		t.Fatal(err)
+	}
+}
+
 // posting is a Post that answers comment id once before ran.
 func posting(id int64, before func()) func(context.Context) (int64, error) {
 	return func(context.Context) (int64, error) {
@@ -147,13 +160,14 @@ func posting(id int64, before func()) func(context.Context) (int64, error) {
 	}
 }
 
-// The human's extend of one session on the live case resolves it and
-// raises the card's sessions in one transaction: the case reads resolved
+// The human's extend of one session on the live case a trip waits on
+// resolves it and raises the card's sessions in one transaction: the case reads resolved
 // by sebastian on rung 3 with extend, its step says what was drawn, and
 // the card_extended row is a pool draw of rung 3 naming the case. A second
 // answer finds the case ended, names the first, and draws nothing.
 func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 	g := newActRig(t)
+	g.tripWaits(t)
 	ctx := context.Background()
 	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Post: posting(77, nil), Res: oneSession})
 	if err != nil {
@@ -426,15 +440,16 @@ func TestActPostsTheHumansCommentAfterTheClose(t *testing.T) {
 }
 
 // A withdrawal with no note gives the reason who withdrew it, so its end
-// never reads as a withdrawal for no reason.
+// never reads as a withdrawal for no reason. Withdraw is the factory's
+// own: factoryd withdraws on rung 0.
 func TestActWithdrawalWithNoNoteNamesWhoWithdrew(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: Resolution{Action: ActWithdraw}}); err != nil {
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: FactoryDecider, Rung: 0, Res: Resolution{Action: ActWithdraw}}); err != nil {
 		t.Fatal(err)
 	}
 	c := caseByID(t, g.s, g.c.ID)
-	want := fmt.Sprintf("case %d was withdrawn at %s UTC: withdrawn by %s", c.ID, c.ResolvedAt.UTC().Format("15:04"), ChatUser)
+	want := fmt.Sprintf("case %d was withdrawn at %s UTC: withdrawn by %s", c.ID, c.ResolvedAt.UTC().Format("15:04"), FactoryDecider)
 	if err := (ErrCaseEnded{c}); err.Error() != want {
 		t.Fatalf("the ended case reads %q, want %q", err.Error(), want)
 	}
@@ -446,6 +461,7 @@ func TestActWithdrawalWithNoNoteNamesWhoWithdrew(t *testing.T) {
 // resolved stays ended as that answer, and the run hears nothing more.
 func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 	g := newActRig(t)
+	g.tripWaits(t)
 	ctx := context.Background()
 	webhook := func(comment int64) func() {
 		return func() {
@@ -477,22 +493,22 @@ func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 	}
 }
 
-// A rung withdraws a case the card outgrew: the case reads withdrawn by
-// the chat on rung 2 with the reason, its step says so, and no comment,
-// answer row or signal follows.
+// factoryd withdraws a case the card outgrew on rung 0, withdraw being
+// the factory's own: the case reads withdrawn by factoryd with the
+// reason, its step says so, and no comment, answer row or signal follows.
 func TestActWithdrawsTheCase(t *testing.T) {
 	g := newActRig(t)
-	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2,
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: FactoryDecider, Rung: 0,
 		Res: Resolution{Action: ActWithdraw, Note: "the card moved past its cap"}}); err != nil {
 		t.Fatal(err)
 	}
 	c := caseByID(t, g.s, g.c.ID)
-	want := &CaseResolution{By: ChatUser, Rung: 2, Action: ActWithdraw, Reason: "the card moved past its cap"}
+	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: "the card moved past its cap"}
 	if c.Status != CaseWithdrawn || !reflect.DeepEqual(c.Resolution, want) {
 		t.Fatalf("case = %s, %+v; want withdrawn by %+v", c.Status, c.Resolution, want)
 	}
-	if steps := caseStepsOf(t, g.s, g.c.ID); len(steps) != 1 || steps[0].Outcome != StepWithdrawn || steps[0].Rung != 2 {
-		t.Fatalf("steps = %+v, want the chat's withdrawn step", steps)
+	if steps := caseStepsOf(t, g.s, g.c.ID); len(steps) != 1 || steps[0].Outcome != StepWithdrawn || steps[0].Rung != 0 {
+		t.Fatalf("steps = %+v, want factoryd's withdrawn step", steps)
 	}
 	if len(g.forge.comments) != 0 || len(g.signals.got) != 0 || len(g.rows(t, EventQuestionAnswered)) != 0 {
 		t.Fatalf("comments %q, signals %+v: want none", g.forge.comments, g.signals.got)
@@ -890,11 +906,70 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 func TestTripCaseKeepsTheCheckinStop(t *testing.T) {
 	g := newActRig(t)
 	repeat := checkinSpendAsk + "The restart produced no new commit, the head is still c1. What should the agent do?"
-	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopShare}, CaseOpen)
+	c, _, err := g.r.tripCase(context.Background(), g.card(t), CaseFacts{}, TripInput{TaskID: "t1", Reason: repeat, CheckinStop: CheckinStopShare})
 	if err != nil {
 		t.Fatal(err)
 	}
 	if c.Kind != CaseCheckinShare || c.Facts["checkin_stop"] != CheckinStopShare {
 		t.Fatalf("case = %s, facts %v; want checkin_share with checkin_stop %q", c.Kind, c.Facts, CheckinStopShare)
+	}
+}
+
+// alice and bob both close t1's live case at once. alice's answer holds
+// the case from its read to its end: her close of #12 runs and her Post
+// waits while bob's answer comes. bob's waits for the case, then finds it
+// resolved by alice with close and is refused, with no close and no Post
+// of his run: one close of #12, one Post.
+func TestActHoldsTheCaseFromItsReadToItsEnd(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	closing := Resolution{Action: ActClose}
+	var mu sync.Mutex
+	var posts []string
+	inside, release, bobPosted := make(chan struct{}), make(chan struct{}), make(chan struct{})
+	post := func(by string, wait bool) func(context.Context) (int64, error) {
+		return func(context.Context) (int64, error) {
+			mu.Lock()
+			posts = append(posts, by)
+			mu.Unlock()
+			if wait {
+				close(inside)
+				<-release
+				return 601, nil
+			}
+			close(bobPosted)
+			return 602, nil
+		}
+	}
+	errs := make(chan error, 2)
+	go func() {
+		_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "alice", Rung: 3, Res: closing, Post: post("alice", true)})
+		errs <- err
+	}()
+	<-inside
+	var bob error
+	bobDone := make(chan struct{})
+	go func() {
+		_, bob = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "bob", Rung: 3, Res: closing, Post: post("bob", false)})
+		close(bobDone)
+	}()
+	select {
+	case <-bobPosted:
+	case <-time.After(300 * time.Millisecond):
+	}
+	close(release)
+	if err := <-errs; err != nil {
+		t.Fatalf("alice's close: %v", err)
+	}
+	<-bobDone
+	var ended ErrCaseEnded
+	if !errors.As(bob, &ended) || ended.Case.Resolution == nil || ended.Case.Resolution.By != "alice" || ended.Case.Resolution.Action != ActClose {
+		t.Fatalf("bob's close = %v; want refused, the case resolved by alice with close", bob)
+	}
+	g.forge.mu.Lock()
+	closes := g.forge.closes
+	g.forge.mu.Unlock()
+	if closes != 1 || !slices.Equal(posts, []string{"alice"}) {
+		t.Fatalf("closes of #12 %d, posts %q; want one close and alice's Post alone", closes, posts)
 	}
 }

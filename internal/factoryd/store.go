@@ -807,6 +807,7 @@ type Store interface {
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
 	OpenCasesOf(ctx context.Context, taskID string) ([]Case, error)
+	NewestAskCase(ctx context.Context, taskID string) (Case, error)
 	CasesOf(ctx context.Context, taskID string) ([]Case, error)
 	CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error)
 	OpenCasesIn(ctx context.Context, repository string) ([]Case, error)
@@ -1826,15 +1827,21 @@ func (s *PGStore) fundCard(ctx context.Context, tx *sql.Tx, id string, eur, ceil
 // extendCard raises task id's caps by d (its sessions, its agent time
 // and its budget), its line bound by lines and its check-in's share of the
 // budget by shares, and writes e, its card_extended row, inside tx, which
-// the caller commits before it publishes stored. No task: ErrNotFound.
-func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines, shares int, e Event) (from, to float64, stored Event, err error) {
+// the caller commits before it publishes stored. With runGrants the row
+// records d's sessions and agent time, which the card's run grants
+// itself, and the caps take neither. No task: ErrNotFound.
+func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d policy.Draw, lines, shares int, runGrants bool, e Event) (from, to float64, stored Event, err error) {
 	seconds := int64(d.AgentTime / time.Second)
+	sessions, raised := d.Sessions, seconds
+	if runGrants {
+		sessions, raised = 0, 0
+	}
 	err = tx.QueryRowContext(ctx,
 		`UPDATE tasks SET raised_sessions = raised_sessions + $2, raised_time_s = raised_time_s + $3,
 			   extra_lines = extra_lines + $4, budget_eur = budget_eur + $5, extra_checkin_share = extra_checkin_share + $6
 		 WHERE id = $1
 		 RETURNING (budget_eur - $5::numeric)::float8, budget_eur::float8`,
-		id, d.Sessions, seconds, lines, d.EUR, shares).Scan(&from, &to)
+		id, sessions, raised, lines, d.EUR, shares).Scan(&from, &to)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, 0, Event{}, ErrNotFound
 	}

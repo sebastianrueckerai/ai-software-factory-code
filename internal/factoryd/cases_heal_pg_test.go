@@ -404,3 +404,60 @@ func TestReconcileCasesWithdrawsTheAsksOfACardThatMovedOn(t *testing.T) {
 		t.Fatalf("OpenCasesOf = %+v, %v; want the plan question and the merge live", open, err)
 	}
 }
+
+// openTripCase opens a session cap case on caseTask as OpenTrip opens it,
+// open with no face yet, opened ago before now.
+func openTripCase(t *testing.T, s *PGStore, ago string) Case {
+	t.Helper()
+	ctx := context.Background()
+	c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseSessionCap, StateKey: "c0ffee1", Problem: capAsk})
+	if err != nil {
+		t.Fatalf("OpenCase: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE cases SET opened_at = now() - $2::interval WHERE id = $1`, c.ID, ago); err != nil {
+		t.Fatalf("age the case: %v", err)
+	}
+	return c
+}
+
+// A trip's case opens before its face, while its card still runs: the
+// moved-on sweep leaves a case opened seconds ago alone, and withdraws one
+// left open past the ten minutes a face takes at most.
+func TestReconcileCasesLeavesATripsCaseToItsFace(t *testing.T) {
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "running")
+	fresh := openTripCase(t, s, "5 seconds")
+
+	reconcile(t, s, CaseHealReport{})
+	if got := caseByID(t, s, fresh.ID); got.Status != CaseOpen {
+		t.Fatalf("case = %+v; want it open, its face to come", got)
+	}
+
+	if _, err := s.db.ExecContext(context.Background(), `UPDATE cases SET opened_at = now() - interval '11 minutes' WHERE id = $1`, fresh.ID); err != nil {
+		t.Fatalf("age the case: %v", err)
+	}
+	reconcile(t, s, CaseHealReport{Moved: 1})
+	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: "the card moved on to running"}
+	if got := caseByID(t, s, fresh.ID); got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, want) {
+		t.Fatalf("case = %+v, resolution %+v; want withdrawn %+v", got, got.Resolution, want)
+	}
+}
+
+// The human resolves the trip's case after its ask, and the card still
+// waits on the human until its run moves it: the heal pass opens no case
+// for the ask the resolution answered.
+func TestReconcileCasesOpensNoStrayCaseForAnAskResolvedAfterIt(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	c := openTripCase(t, s, "3 minutes")
+	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: capReached + "\nlast: x",
+		CommentID: 27001, Question: &HumanQuestion{Ask: capAsk, Why: "the card used its 3 sessions", Info: plainInfo}})
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend}, nil, nil); err != nil {
+		t.Fatalf("ResolveCase: %v", err)
+	}
+
+	reconcile(t, s, CaseHealReport{})
+	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 || cs[0].Status != CaseResolved {
+		t.Fatalf("CasesOf = %+v, %v; want the one resolved case", cs, err)
+	}
+}

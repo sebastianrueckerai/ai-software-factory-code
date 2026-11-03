@@ -183,7 +183,8 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 // gate_head row unless f has one, the newest model_review of the head,
 // and the newest draw from the pool, when its row recorded the head and
 // the checks, with the findings it recorded and whether a session pushed
-// after it.
+// after it. A row of no sessions, no agent time and no money, an extend
+// of lines or of a check-in share alone, drew nothing and is no draw.
 func (f *CaseFacts) eventFacts(events []Event) {
 	word := func(e Event, k string) string { s, _ := e.Detail[k].(string); return s }
 	pushed := func(e Event) bool { return e.Kind == EventSessionPushed }
@@ -198,7 +199,10 @@ func (f *CaseFacts) eventFacts(events []Event) {
 		f.ReviewApproved = reviewed && word(events[i], "verdict") == "approve"
 	}
 	i := slices.IndexFunc(events, func(e Event) bool {
-		return (e.Kind == EventCardFunded || e.Kind == EventCardExtended) && e.Detail["pool"] == true
+		sessions, _ := toInt(e.Detail["sessions"])
+		seconds, _ := toInt(e.Detail["agent_time_s"])
+		eur, _ := e.Detail["amount_eur"].(float64)
+		return (e.Kind == EventCardFunded || e.Kind == EventCardExtended) && e.Detail["pool"] == true && (sessions != 0 || seconds != 0 || eur != 0)
 	})
 	if i < 0 {
 		return

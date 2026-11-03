@@ -747,11 +747,14 @@ func (t *turn) answer(in toolInput) (string, error) {
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
 
-// actionNames are the action table's names, the answer tool's actions.
+// actionNames are the names of the actions rung 2 or the human may take,
+// the answer tool's actions.
 func actionNames() []string {
-	names := make([]string, len(factoryd.Actions))
-	for i, a := range factoryd.Actions {
-		names[i] = a.Name
+	var names []string
+	for _, a := range factoryd.Actions {
+		if a.Rungs[2] || a.Rungs[3] {
+			names = append(names, a.Name)
+		}
 	}
 	return names
 }

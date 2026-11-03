@@ -702,6 +702,9 @@ func (s *accBatchStore) CaseByID(ctx context.Context, id int64) (factoryd.Case, 
 func (s *accBatchStore) OpenCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }
+func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (factoryd.Case, error) {
+	panic("unused")
+}
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
 	panic("unused")
 }

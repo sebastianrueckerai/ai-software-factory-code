@@ -9,6 +9,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"sync"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -16,6 +17,9 @@ import (
 
 // ActivityEndCase is EndCase's activity.
 const ActivityEndCase = "EndCase"
+
+// ActivityRecordGrant is RecordGrant's activity.
+const ActivityRecordGrant = "RecordGrant"
 
 // ActInput is one answer: by whom, how it reached the factory (ViaConsole,
 // ViaChat, "" for ViaFactoryd), on which rung, and on which case of the
@@ -74,13 +78,20 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose}
 // caller posted none, records the answer and signals the run. A note
 // records a step and ends nothing. A human card's case takes a value of its question's
 // choices, which Act records and runs nothing for. Rung 0 is factoryd's,
-// and factoryd answers on rung 0 alone.
+// and factoryd answers on rung 0 alone. An answer holds its case from its
+// first read to its end, so a second answer on it waits, then finds it
+// ended, with nothing of its own run.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	switch {
 	case in.Rung == 0 && in.By != FactoryDecider:
 		return ActResult{}, ErrActRefused("rung 0 is factoryd's own: answer on rung 1, 2 or 3")
 	case in.Rung != 0 && in.By == FactoryDecider:
 		return ActResult{}, ErrActRefused(fmt.Sprintf("rung 0 is factoryd's own, and factoryd answers on rung 0 alone: answer on rung 0, not rung %d", in.Rung))
+	}
+	if in.CaseID != 0 {
+		lock, _ := r.caseLocks.LoadOrStore(in.CaseID, &sync.Mutex{})
+		lock.(*sync.Mutex).Lock()
+		defer lock.(*sync.Mutex).Unlock()
 	}
 	t, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -119,10 +130,16 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	var out ActResult
 	var draw *CaseDraw
 	if !choice {
+		grants, err := r.runGrants(ctx, c, res)
+		if err != nil {
+			return out, err
+		}
 		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
 			return out, err
 		}
-		draw = r.caseDraw(t, f, c, in, via)
+		if draw = r.caseDraw(t, f, c, in, via); draw != nil {
+			draw.RunGrants = grants
+		}
 	}
 	ends := c.ID != 0 && res.Action != ActNote
 	answers := ends && res.Action != ActWithdraw
@@ -170,7 +187,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if draw != nil && draw.Extend.Sessions > 0 {
 		kind = EventSessionGranted
 	}
-	detail := map[string]any{"action": res.Action, "case_id": c.ID, "answer": cmp.Or(strings.TrimSpace(res.Note), res.sentence())}
+	detail := map[string]any{"action": res.Action, "case_id": c.ID, "answer": cmp.Or(strings.TrimSpace(res.Note), res.Sentence())}
 	if out.Comment != 0 {
 		detail["comment"] = out.Comment
 	}
@@ -195,16 +212,11 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 // live ask case is refused: it would draw and leave the case waiting.
 func (r *Runner) actCase(ctx context.Context, t Task, id int64) (Case, error) {
 	if id == 0 {
-		open, err := r.store.OpenCasesOf(ctx, t.ID)
-		if err != nil {
-			return Case{}, err
+		c, err := r.store.NewestAskCase(ctx, t.ID)
+		if err == nil && c.ID != 0 {
+			err = ErrActRefused(fmt.Sprintf("card %s waits on its case %d: answer that case by its id", cardName(t), c.ID))
 		}
-		for _, c := range slices.Backward(open) {
-			if !slices.Contains(ownAnswerKinds, c.Kind) {
-				return Case{}, ErrActRefused(fmt.Sprintf("card %s waits on its case %d: answer that case by its id", cardName(t), c.ID))
-			}
-		}
-		return Case{}, nil
+		return Case{}, err
 	}
 	c, err := r.store.CaseByID(ctx, id)
 	if err != nil {
@@ -256,6 +268,22 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, did 
 		return ErrActRefused(bound.Error())
 	}
 	return err
+}
+
+// runGrants reports whether the run waiting on case c grants the sessions
+// and agent time res draws itself: a run from before the cases gate, which
+// wakes on the human's comment and grants its own. Every trip under the
+// gate writes a step of rung 0 on the case it waits on, the old run's case
+// a restarted run takes among them, and no older face does.
+func (r *Runner) runGrants(ctx context.Context, c Case, res Resolution) (bool, error) {
+	if d, _ := res.draw(); c.ID == 0 || d.Sessions == 0 && d.AgentTime == 0 {
+		return false, nil
+	}
+	steps, err := r.store.CaseSteps(ctx, c.ID)
+	if err != nil {
+		return false, err
+	}
+	return !slices.ContainsFunc(steps, func(s CaseStep) bool { return s.Rung == 0 }), nil
 }
 
 // ranErr is err after the outside actions of did ran: their results lead
@@ -367,31 +395,36 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 }
 
 // actOutside runs what in.Res does outside the run before the case ends:
-// a retry files the failed dependency again, a replan sends the card to
-// the planner, or a failed dependency's work to its plan's planner, which
-// the card then waits on. It answers what ran, with its result.
+// a retry files the failed dependency again, or finishes a retry of it
+// that stopped part way, and names the replacement of one retried already;
+// a replan sends the card to the planner, or a failed dependency's work to
+// its plan's planner, which the card then waits on. It answers what ran,
+// with its result.
 func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
 	switch in.Res.Action {
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
-		if as, ok := retriedAs(f, id); ok {
-			old, _, err := r.task(ctx, id)
-			if err != nil {
-				return nil, err
+		if id == "" {
+			i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return retryRefusal(d) == "" })
+			if i < 0 {
+				return nil, ErrActRefused("no failed dependency is open to a retry")
 			}
-			return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id}, Result: fmt.Sprintf("%s was retried as %s already.", cardName(old), as)}}, nil
+			id = f.Dependencies[i].TaskID
 		}
-		i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id || id == "" && retryRefusal(d) == "" })
-		if i < 0 {
-			return nil, ErrActRefused("no failed dependency is open to a retry")
-		}
-		dep := f.Dependencies[i]
-		issue, err := r.RetryCard(ctx, dep.TaskID, in.By)
+		old, _, err := r.task(ctx, id)
 		if err != nil {
 			return nil, err
 		}
-		return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": dep.TaskID, "replacement": issue},
-			Result: fmt.Sprintf("Filed #%d in place of #%d.", issue, dep.Issue)}}, nil
+		issue, err := r.RetryCard(ctx, id, in.By)
+		var no ErrNoRetry
+		if as, ok := retriedAs(f, id); errors.As(err, &no) && ok {
+			return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id}, Result: fmt.Sprintf("%s was retried as %s already.", cardName(old), as)}}, nil
+		}
+		if err != nil {
+			return nil, err
+		}
+		return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": id, "replacement": issue},
+			Result: fmt.Sprintf("Filed #%d in place of #%d.", issue, old.IssueNumber)}}, nil
 	case ActReplan:
 		if id, _ := in.Res.Args["task_id"].(string); id != "" {
 			return r.replanDependency(ctx, t, id)
@@ -480,6 +513,23 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	return draw
 }
 
+// RecordGrant records grant d, which card taskID's run made itself on
+// by's answer (a writer's change request at the cap), as by's draw
+// against the pool: a row of rung 3, never refused, that raises nothing
+// on the card's row (RunGrants).
+func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Draw) error {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	v := r.cfg.Policy()
+	_, project, _ := v.ProjectOf(t.Repository)
+	esc := v.EscalationOf(t.Repository)
+	return r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
+		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
+			Detail: map[string]any{"pool": true, "rung": 3}}})
+}
+
 // beside adds the keys of extra that detail does not hold.
 func beside(detail, extra map[string]any) {
 	for k, v := range extra {
@@ -538,8 +588,8 @@ func drawWords(d policy.Draw) string {
 	return textutil.AndList(parts)
 }
 
-// sentence says r in a few words: its action and every part it raises.
-func (r Resolution) sentence() string {
+// Sentence says r in a few words: its action and every part it raises.
+func (r Resolution) Sentence() string {
 	d, _ := r.draw()
 	lines, shares := r.bounds()
 	if said := raisedWords(d, lines, shares); said != "" {
@@ -551,7 +601,7 @@ func (r Resolution) sentence() string {
 // answerComment is factoryd's record on t's issue of by's answer res: the
 // action in words, and the note fenced below it.
 func (r *Runner) answerComment(t Task, by string, res Resolution) string {
-	body := fmt.Sprintf("factoryd: %s answered with %s.", by, res.sentence())
+	body := fmt.Sprintf("factoryd: %s answered with %s.", by, res.Sentence())
 	if note := strings.TrimSpace(res.Note); note != "" {
 		body += "\n\n" + fenced(r.untrusted(t, note))
 	}
@@ -564,13 +614,13 @@ func actText(t Task, c Case, res Resolution, did []CaseAction) string {
 	var text string
 	switch {
 	case c.ID == 0:
-		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.sentence())
+		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
 		text = fmt.Sprintf("The note is on case %d, which stays open.", c.ID)
 	case res.Action == ActWithdraw:
 		text = fmt.Sprintf("Case %d is withdrawn.", c.ID)
 	default:
-		text = fmt.Sprintf("Case %d is resolved with %s.", c.ID, res.sentence())
+		text = fmt.Sprintf("Case %d is resolved with %s.", c.ID, res.Sentence())
 	}
 	for _, a := range did {
 		if slices.Contains(outsideActions, a.Action) {

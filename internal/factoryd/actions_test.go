@@ -55,9 +55,9 @@ func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 			"the agent time cap of 20 minutes leaves 2 minutes and a session needs 5 minutes: extend"},
 		{"time spent", ActResume, with(func(f *CaseFacts) { f.AgentTimeS = 1200 }), Resolution{}, "the agent time cap of 20 minutes is reached: extend"},
 		{"cap unread", ActResume, with(func(f *CaseFacts) { f.AgentTimeCapS, f.Partial = 0, []string{"config"} }), Resolution{},
-			"the agent time cap could not be read: hand up"},
+			"the agent time cap could not be read: try again in a minute, or close the card"},
 		{"floor unread", ActResume, with(func(f *CaseFacts) { f.FloorEUR, f.Partial = 0, []string{"floor"} }), Resolution{},
-			"what an opening needs could not be read: hand up"},
+			"what an opening needs could not be read: try again in a minute, or close the card"},
 		{"handover same", ActHandover, room, Resolution{Args: map[string]any{"model": "same"}}, ""},
 		{"handover at the cap", ActHandover, with(func(f *CaseFacts) { f.Attempts = 3 }), Resolution{Args: map[string]any{"model": "stronger"}},
 			"the session cap of 3 is reached: extend or close"},
@@ -125,7 +125,7 @@ func TestExtendRefusesWhenTheLastDrawBoughtNothing(t *testing.T) {
 		PoolLeft:     policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4},
 		BudgetEUR: 5, CeilingEUR: 10}
 	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
-		"hand up, or hand over, start a successor, replan or close"
+		"hand over, start a successor, replan or close"
 	extend := Resolution{Args: map[string]any{"sessions": 1}}
 	if got := applies(t, ActExtend, stuck, extend); got != refused {
 		t.Errorf("extend applies = %q, want %q", got, refused)
@@ -314,7 +314,7 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 	for _, reader := range []string{"events", "checks"} {
 		blind := f
 		blind.Partial = []string{reader}
-		want := "the card's " + reader + " could not be read, so a draw cannot be weighed against the last one: hand up"
+		want := "the card's " + reader + " could not be read, so a draw cannot be weighed against the last one: try again in a minute, or close the card"
 		if got := extend.refusal(blind, 3, Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}); got != want {
 			t.Errorf("%s unread: extend = %q, want %q", reader, got, want)
 		}
@@ -327,7 +327,7 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 		t.Errorf("rung 1's close = %q, want %q", got, want)
 	}
 	withdraw, _ := ActionByName(ActWithdraw)
-	if got, want := withdraw.refusal(f, 3, Resolution{Action: ActWithdraw}), "the human may not pick withdraw: rungs 0, 1 and 2 may"; got != want {
+	if got, want := withdraw.refusal(f, 3, Resolution{Action: ActWithdraw}), "the human may not pick withdraw: rungs 0 and 1 may"; got != want {
 		t.Errorf("the human's withdraw = %q, want %q", got, want)
 	}
 }
@@ -344,7 +344,7 @@ func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
 	beside := byTwo
 	beside.Fund = &policy.Draw{EUR: 1}
 	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
-		"hand up, or hand over, start a successor, replan or close"
+		"hand over, start a successor, replan or close"
 	if got := raise.refusal(stuck, 3, byTwo); got != "" {
 		t.Errorf("the human's raise after a draw that bought nothing = %q, want none", got)
 	}
@@ -356,7 +356,7 @@ func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
 	if got := raise.refusal(blind, 2, byTwo); got != "" {
 		t.Errorf("rung 2's raise with the events unread = %q, want none", got)
 	}
-	if got, want := raise.refusal(blind, 2, beside), "the card's events could not be read, so a draw cannot be weighed against the last one: hand up"; got != want {
+	if got, want := raise.refusal(blind, 2, beside), "the card's events could not be read, so a draw cannot be weighed against the last one: try again in a minute, or close the card"; got != want {
 		t.Errorf("a fund beside the raise with the events unread = %q, want %q", got, want)
 	}
 }
@@ -495,6 +495,25 @@ func TestExtendOnAMoneyStopNamesTheFund(t *testing.T) {
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
 			t.Errorf("an extend on %s = %q, want %q", kind, got, want)
+		}
+	}
+}
+
+// A withdrawal through Act sends the run no signal, so withdraw is the
+// factory's own (EndCase and the heal pass): neither the chat's agent on
+// rung 2 nor the human is offered it, on a card with no case, at a cap,
+// on red checks or with a failed dependency.
+func TestWithdrawIsOfferedToNoHumanAndNoChat(t *testing.T) {
+	for _, f := range []CaseFacts{
+		{},
+		{Kind: CaseSessionCap, Attempts: 3, SessionCap: 3, AgentTimeCapS: 1800, LeftEUR: 1, FloorEUR: 0.3, CeilingEUR: 5},
+		{Kind: CaseGateStop, Head: "h1", PR: 9, PROpen: true, Checks: "red", SessionCap: 3, AgentTimeCapS: 1800},
+		{Kind: CaseDependencyFailed, Dependencies: []DepFact{{TaskID: "d4", Issue: 23, Status: "failed", Why: "checks: timeout"}}},
+	} {
+		for _, rung := range []int{2, 3} {
+			if got := offeredNames(f, rung); slices.Contains(got, ActWithdraw) {
+				t.Errorf("rung %d on %+v is offered %v, want no withdraw", rung, f, got)
+			}
 		}
 	}
 }

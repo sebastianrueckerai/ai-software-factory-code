@@ -786,7 +786,7 @@ func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 		t.Fatalf("the time-capped card's answer form =\n%s\nwant it to grant agent time", esc)
 	}
 	if got, want := fitting(factoryd.Task{Status: "waiting-human", IssueNumber: 13}, capFacts{capped: true, timeCap: true}),
-		"an answer with the findings grants more agent time (answer); close ends it"; got != want {
+		"an answer with the findings grants more agent time (answer). Close ends it"; got != want {
 		t.Fatalf("fitting = %q, want %q", got, want)
 	}
 }
@@ -801,5 +801,39 @@ func TestGrantSessionSaysWhatItGrants(t *testing.T) {
 	}
 	if want := "Grant what the stop asks for"; tool.title != want {
 		t.Fatalf("grant_session's title = %q, want %q", tool.title, want)
+	}
+}
+
+// The chat's answer tool names the actions rung 2 or the human may take:
+// withdraw, the factory's own, is none of them.
+func TestChatAnswerOffersNoWithdraw(t *testing.T) {
+	i := slices.IndexFunc(tools, func(t chatTool) bool { return t.name == "answer" })
+	action, _ := tools[i].params["action"].(map[string]any)
+	enum, _ := action["enum"].([]string)
+	if slices.Contains(enum, factoryd.ActWithdraw) || !slices.Contains(enum, factoryd.ActExtend) || !slices.Contains(enum, factoryd.ActRouteApproval) {
+		t.Fatalf("the answer tool's actions = %q, want rung 2's and the human's, no withdraw", enum)
+	}
+}
+
+// A typed answer with no words posts its resolution's sentence as the
+// human's own comment, the comment a run from before the cases gate wakes
+// on, where factoryd's record of it wakes nothing: the chat's extend of one
+// session with no text posts "extend: 1 session from the pool" as
+// sebastian.
+func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
+	r := newRig(t)
+	caseCard(r)
+	r.openCases["t-e"][0].Kind = factoryd.CaseSessionCap
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Action: factoryd.ActExtend, Args: json.RawMessage(`{"sessions":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if _, posts := actedOnce(t, r); !posts {
+		t.Fatal("Act took no Post: factoryd would post the record, which no run from before the gate wakes on")
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if !slices.Contains(r.fg.calls, "POST /api/v1/repos/sf/code/issues/13/comments Bearer access-1") ||
+		r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"] != "extend: 1 session from the pool" {
+		t.Fatalf("Forgejo calls %q, comments %q; want the sentence posted on #13 as sebastian", r.fg.calls, r.fg.comments)
 	}
 }

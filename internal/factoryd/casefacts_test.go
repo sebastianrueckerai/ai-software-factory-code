@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"maps"
 	"math"
 	"net/http"
 	"net/http/httptest"
@@ -214,12 +215,36 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	if !slices.Equal(got.Partial, []string{"timeline", "floor"}) || got.Findings != nil || got.FloorEUR != 0 || got.Head != "h2" || got.SessionCap != 4 {
 		t.Fatalf("facts = %+v, want the timeline and the floor partial, no findings, no floor, the rest read", got)
 	}
-	if why := sessionRoom(CaseFacts{Attempts: 1, SessionCap: 4, AgentTimeCapS: 1200, Partial: got.Partial}); why != "what an opening needs could not be read: hand up" {
+	if why := sessionRoom(CaseFacts{Attempts: 1, SessionCap: 4, AgentTimeCapS: 1200, Partial: got.Partial}); why != "what an opening needs could not be read: try again in a minute, or close the card" {
 		t.Errorf("a resume on an unread floor = %q, want it refused", why)
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
 	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"], ""); !errors.Is(err, context.Canceled) {
 		t.Errorf("an ended context: err = %v, want context.Canceled", err)
+	}
+}
+
+// An extend of lines alone and one of a check-in share alone draw nothing
+// from the pool: their rows, written after the fund at 10:04 on h2, are
+// no last draw, so the fund stays the last; a card with no other row has
+// no last draw at all.
+func TestEventFactsPassOverADrawOfNothing(t *testing.T) {
+	row := func(at time.Time, kind string, detail map[string]any) Event {
+		d := map[string]any{"pool": true, "head": "h2", "checks": "green", "sessions": 0.0, "agent_time_s": 0.0, "amount_eur": 0.0}
+		maps.Copy(d, detail)
+		return Event{At: at, Kind: kind, Detail: d}
+	}
+	lines := row(factsAt(10, 30), EventCardExtended, map[string]any{"lines": 40.0})
+	share := row(factsAt(10, 20), EventCardExtended, map[string]any{"checkin_shares": 1.0})
+	fund := row(factsAt(10, 4), EventCardFunded, map[string]any{"amount_eur": 0.5})
+	var f CaseFacts
+	f.eventFacts([]Event{lines, share, fund})
+	if f.LastDrawAt == nil || !f.LastDrawAt.Equal(factsAt(10, 4)) {
+		t.Fatalf("last draw at %v, want the fund's 10:04", f.LastDrawAt)
+	}
+	var none CaseFacts
+	if none.eventFacts([]Event{lines, share}); none.LastDrawAt != nil {
+		t.Fatalf("last draw at %v, want none", none.LastDrawAt)
 	}
 }

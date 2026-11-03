@@ -21,7 +21,7 @@ import (
 const ActivityOpenTrip = "OpenTrip"
 
 // TripInput is what the run knows when it stops: the reason as today's
-// Escalate took it, the choices, and the head and stage when it has them.
+// Escalate took it, the choices, and the head when it has one.
 // The facts are read on the head. The kind comes from the reason as phase
 // 1's caseKindOf derives it, the state key from the kind: the head for a
 // cap, a floor, a gate stop or a merge matter, the dependency's task id
@@ -32,7 +32,6 @@ type TripInput struct {
 	Reason  string
 	Choices []string
 	Head    string
-	Stage   string
 	// CheckinStop is the check-in spend stop the trip is (CheckinStop*),
 	// "" for any other stop: its repeat's ask no longer names it.
 	CheckinStop string
@@ -155,8 +154,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	f.Stage = cmp.Or(in.Stage, f.Stage)
-	c, cases, err := r.tripCase(ctx, t, f, in, CaseOpen)
+	c, cases, err := r.tripCase(ctx, t, f, in)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -183,7 +181,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c.Kind, in.Reason), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -234,22 +232,22 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 }
 
 // healedTrip is the trip of a run that restarted while its card waited on
-// a human: the card's newest live ask, as askCase finds it, waits on with
+// a human: the card's newest live ask (NewestAskCase) waits on with
 // a step and no new face. With none, the question is asked again as
 // Escalate asked it, and its words open its case.
 func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput) (TripOutcome, error) {
-	c, err := r.liveAsk(ctx, t.ID)
+	c, err := r.store.NewestAskCase(ctx, t.ID)
 	if err != nil {
 		return TripOutcome{}, err
 	}
 	if c.ID != 0 {
 		return r.waitsAtHuman(ctx, t, c, "asked again after a restart")
 	}
-	comment, err := r.askHuman(ctx, t, Case{}, in.Reason, in.Choices)
+	comment, err := r.askHuman(ctx, t, Case{}, in.Reason, replyNext(in.Reason), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if c, err = r.liveAsk(ctx, t.ID); err != nil {
+	if c, err = r.store.NewestAskCase(ctx, t.ID); err != nil {
 		return TripOutcome{}, err
 	}
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
@@ -303,29 +301,14 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 	return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}, nil
 }
 
-// liveAsk is card taskID's newest live case an answer on the card ends
-// (newestAskCase), the zero Case for none.
-func (r *Runner) liveAsk(ctx context.Context, taskID string) (Case, error) {
-	open, err := r.store.OpenCasesOf(ctx, taskID)
-	if err != nil {
-		return Case{}, err
-	}
-	for _, c := range slices.Backward(open) {
-		if !slices.Contains(ownAnswerKinds, c.Kind) {
-			return c, nil
-		}
-	}
-	return Case{}, nil
-}
-
-// tripCase is the case trip in makes on card t with facts f, as status,
-// with the card's cases, for OpenCase to open. The kind is caseKindOf's
+// tripCase is the case trip in makes on card t with facts f, open until
+// its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
 // of the reason. The problem is the shaped question's ask where a
 // template names the decision, else the reason's first line. The facts
 // are f with the reason, its source and what the reason names, the money
 // the card's for a stop on its own budget, with what the next opening
 // needs at the floor. The case follows the card's newest ended one.
-func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput, status string) (Case, []Case, error) {
+func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput) (Case, []Case, error) {
 	cases, err := r.store.CasesOf(ctx, t.ID)
 	if err != nil {
 		return Case{}, nil, err
@@ -353,7 +336,7 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 		facts["checkin_stop"] = in.CheckinStop
 	}
 	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: tripKey(kind, problem, f.Head, f),
-		Status: status, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
+		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
 		if e.Status != CaseOpen && e.Status != CaseAtHuman {
 			c.Follows = max(c.Follows, e.ID)
@@ -412,29 +395,50 @@ func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 	return nil
 }
 
+// replyNext is the last line of the face of reason when a reply moves the
+// card on, as it does in a run from before the cases gate: a reply starts
+// an attempt, except at a budget floor no answer can fund, and at a cap
+// that turns on its own it starts one sooner.
+func replyNext(reason string) string {
+	switch {
+	case strings.HasPrefix(reason, leftQueue):
+		return "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
+	case capWaitDecision(reason) != "":
+		return "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
+	case floorRefused(reason):
+		// no answer can run: the card names why and the way out
+		return "An answer starts an attempt only once the budget can fund a call, as above. Close this issue to end the task."
+	}
+	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
+}
+
+// tripNext is the last line of a trip's face for a case of kind: at a
+// cap, where a reply is a continue that asks again, the Extend form or
+// the chat's extend start the next attempt, at a budget floor the Fund
+// form or the chat's fund, and elsewhere a reply (replyNext).
+func tripNext(kind CaseKind, reason string) string {
+	switch kind {
+	case CaseSessionCap, CaseAgentTimeCap:
+		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
+	case CaseBudgetFloor:
+		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
+	}
+	return replyNext(reason)
+}
+
 // askHuman is a case's human face (architecture 6.6): state
-// waiting-human, mirrored on the issue, a comment with the reason and a
-// question_asked row with its question and case c (none for the zero
-// Case); the agent's choices, if any, ride on that row, the timeline's step
-// and the intake event the card reads. It returns the comment's id: only
-// later comments answer it.
-func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason string, choices []string) (int64, error) {
+// waiting-human, mirrored on the issue, a comment with the reason and
+// next, the line that says what moves the card on, and a question_asked
+// row with its question and case c (none for the zero Case); the agent's
+// choices, if any, ride on that row, the timeline's step and the intake
+// event the card reads. It returns the comment's id: only later comments
+// answer it.
+func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string) (int64, error) {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return 0, terminalError("%v", err)
 	}
 	// the reason in a code block: a mention the agent wrote rings no bell
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	if floorRefused(reason) {
-		// no answer can run: the card names why and the way out
-		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
-	}
-	if capWaitDecision(reason) != "" {
-		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
-	}
-	if strings.HasPrefix(reason, leftQueue) {
-		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
-	}
 	safe := r.untrusted(t, reason)
 	body := "factoryd: task " + t.ID + " needs a human.\n\n" + fenced(safe)
 	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {

@@ -579,3 +579,34 @@ func TestCaseFromAskNamesAHumanCardsAskAndRefusesNoAsk(t *testing.T) {
 		t.Fatal("caseFromAsk of an ask with no words = nil error")
 	}
 }
+
+// NewestAskCase is the one read of the case an answer on the card ends:
+// the newest live one, the merge and the plan's questions aside, which
+// their own answers end; none once that case ended.
+func TestNewestAskCaseIsTheCardsLiveAsk(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	open := func(kind CaseKind, key string) Case {
+		c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: kind, StateKey: key, Problem: key, Status: CaseAtHuman})
+		if err != nil {
+			t.Fatalf("OpenCase %s: %v", kind, err)
+		}
+		return c
+	}
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.ID != 0 {
+		t.Fatalf("NewestAskCase with none = %+v, %v; want the zero case", c, err)
+	}
+	older := open(CaseSessionCap, "h1")
+	ask := open(CaseAgentEscalate, "which")
+	open(CaseMergeApproval, "pr:9@h1")
+	open(CasePlanQuestion, "q1@1")
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.ID != ask.ID || c.Kind != CaseAgentEscalate || c.Problem != "which" {
+		t.Fatalf("NewestAskCase = %+v, %v; want case %d, the agent's ask", c, err, ask.ID)
+	}
+	if err := s.WithdrawCase(ctx, ask.ID, "moved on"); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.ID != older.ID {
+		t.Fatalf("NewestAskCase after the ask ended = %+v, %v; want case %d", c, err, older.ID)
+	}
+}
