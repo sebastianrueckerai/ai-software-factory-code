@@ -258,6 +258,249 @@ func TestDivideConquerMetricsContract(t *testing.T) {
 	}
 }
 
+// dividePanelsReport seeds every divide-and-conquer panel with a
+// measured answer: the twelve panels' values, their coverage holes and
+// their named comparisons, precise milliseconds beside the legacy hour
+// fields the JSON keeps.
+func dividePanelsReport() factoryd.DivideConquer {
+	move := func(value, prev float64, weeks [7]float64) factoryd.Figure {
+		return factoryd.Figure{Value: value, Prev: prev, Has: true, PrevHas: true, Weeks: weeks}
+	}
+	count := func(value float64) factoryd.Figure {
+		return factoryd.Figure{Value: value, Has: true}
+	}
+	return factoryd.DivideConquer{
+		CoveredFrom: time.Date(2026, 10, 29, 0, 0, 0, 0, time.UTC),
+		// panel 1: one card over its bound, against the target of none
+		GateAboveBound:    move(1, 0, [7]float64{0, 1, 0, 0, 0, 0, 1}),
+		GateBoundCoverage: factoryd.GateBoundCoverage{Readings: 3, Measured: 2, UnknownSize: 1},
+		// panel 2: two sessions per merged card, small and medium alike
+		SessionsPerCard: []factoryd.SizeFigure{
+			{Size: "small", Figure: move(2.0, 1.0, [7]float64{1, 2, 2, 1, 2, 2, 2})},
+			{Size: "medium", Figure: move(2.0, 2.5, [7]float64{2, 2, 3, 2, 2, 2, 2})},
+		},
+		SessionsCoverage: factoryd.SessionsCoverage{Cards: 5, UnknownSize: 1, MissingStarts: 1},
+		// panel 3: the causes the runner's outcomes name
+		SessionEnds: []factoryd.NamedCount{{Name: "pushed", Count: 2}, {Name: "wall_clock", Count: 1}},
+		// panels 4 and 5: the window's economics
+		EurPerMergedLine: move(0.02, 0.01, [7]float64{0.01, 0.02, 0.02, 0.01, 0.02, 0.02, 0.02}),
+		FixedEurPerCard: []factoryd.SizeIntercept{
+			{Size: "small", EUR: 2, Available: true, Cards: 3},
+			{Size: "medium", EUR: 3, Available: true, Cards: 4},
+			{Size: "large", Available: false},
+		},
+		EconomicsCoverage: factoryd.EconomicsCoverage{Cards: 7, MissingCost: 1, MissingLines: 1, MissingSize: 1},
+		// panel 6: two cuts, one cut group the window saw closed
+		Cuts:            move(2, 1, [7]float64{0, 1, 0, 1, 0, 0, 2}),
+		CutGroupsClosed: count(1),
+		// panel 7: 21,600,000 ms is the 6.0 hours the panel words
+		GroupOpenMillis:    move(21.6e6, 7.2e6, [7]float64{5e6, 6e6, 7e6, 6e6, 5e6, 6e6, 6e6}),
+		GroupOpenHours:     move(6, 2, [7]float64{5, 6, 7, 6, 5, 6, 6}),
+		GroupHoursCoverage: factoryd.GroupHoursCoverage{Groups: 2, Open: 1, MissingStart: 1},
+		// panel 8: 13,500,000 ms is the 3.75 hours the panel words
+		HoldWaitMillis:   move(13.5e6, 0, [7]float64{0, 0, 13.5e6, 0, 0, 0, 13.5e6}),
+		HoldWaitHours:    move(3.75, 0, [7]float64{0, 0, 3.75, 0, 0, 0, 3.75}),
+		HoldWaitCoverage: factoryd.HoldWaitCoverage{Ended: 2, Open: 1, Missing: 1},
+		// panel 9: two not-reviewed answers over three genuine ones
+		ReviewsNotReviewed: count(2),
+		ReviewEvidence: factoryd.ReviewEvidence{
+			Answers: count(3),
+			Unknown: count(1),
+		},
+		// panels 10 to 12: the named comparisons, current, prior and all
+		// seven weeks
+		PlansByRoundsSpans: []factoryd.NamedFigure{
+			{Name: "1", Figure: move(1, 2, [7]float64{2, 1, 0, 0, 0, 1, 1})},
+			{Name: "2", Figure: move(1, 0, [7]float64{0, 0, 1, 0, 0, 0, 1})},
+		},
+		CardsFirstRound:  count(4),
+		CardsLaterRounds: count(3),
+		CardsByRound: []factoryd.NamedFigure{
+			{Name: "1", Figure: move(4, 3, [7]float64{1, 1, 1, 0, 1, 1, 1})},
+			{Name: "2", Figure: move(2, 1, [7]float64{0, 1, 0, 0, 0, 1, 1})},
+			{Name: "3", Figure: move(1, 0, [7]float64{0, 0, 0, 0, 0, 0, 1})},
+		},
+		ReplansByOriginSpans: []factoryd.NamedFigure{
+			{Name: "person", Figure: move(1, 0, [7]float64{0, 1, 0, 0, 0, 0, 1})},
+			{Name: "cut", Figure: move(1, 0, [7]float64{0, 0, 1, 0, 0, 0, 1})},
+			{Name: "round", Figure: move(1, 1, [7]float64{0, 0, 0, 1, 0, 0, 1})},
+			{Name: "unknown", Figure: move(2, 1, [7]float64{0, 0, 0, 0, 1, 1, 1})},
+		},
+	}
+}
+
+// TestDivideConquerMetricPanels drives the real authenticated metrics
+// route over the fake figures seam and pins the twelve
+// divide-and-conquer panels (roadmap 336): the literal heading, every
+// panel's proof label and own numbers — the named comparisons' current,
+// prior and seven-week figures among them — the three states of
+// measured zero, unknown evidence and undefined kept apart, and the old
+// deck, the auth floor and the additive JSON untouched.
+func TestDivideConquerMetricPanels(t *testing.T) {
+	r := newRig(t)
+	report := metricsFiguresReport()
+	report.DivideConquer = dividePanelsReport()
+	r.figures.report = report
+	ck, _ := r.loggedIn(t)
+	page := func() string {
+		t.Helper()
+		rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("GET metrics page = %d: %s", rec.Code, rec.Body)
+		}
+		return rec.Body.String()
+	}
+	body := page()
+	if !strings.Contains(body, "Divide and conquer (roadmap 336)") {
+		t.Error("page lacks the literal divide-and-conquer heading")
+	}
+	// exactly twelve panels, each printing its proof label
+	if n := strings.Count(body, `class="mproof"`); n != 12 {
+		t.Errorf("%d panels print a proof label, want 12", n)
+	}
+	for proof, want := range map[string]int{
+		"TestDivideConquerSizeBounds in acceptance":     1,
+		"TestDivideConquerSessions in acceptance":       2,
+		"TestDivideConquerEconomics in acceptance":      2,
+		"TestDivideConquerCuts in acceptance":           1,
+		"TestDivideConquerGroupHours in acceptance":     1,
+		"TestDivideConquerProductionHold in acceptance": 1,
+		"TestDivideConquerReviewCoverage in acceptance": 1,
+		"TestDivideConquerPlanning in acceptance":       3,
+	} {
+		if n := strings.Count(body, proof); n != want {
+			t.Errorf("proof %q prints %d times, want %d", proof, n, want)
+		}
+	}
+	// every panel's own numbers, its coverage and its named detail
+	for _, want := range []string{
+		">1 · target 0<", // panel 1: one card over, the target none
+		"3 readings · 2 measured · 1 unknown size",    // panel 1's evidence, its hole named
+		"small 2.0 · medium 2.0",                      // panel 2's per-size averages
+		"5 cards · 1 unknown size · 1 missing starts", // panel 2's cohort and holes
+		"pushed 2 · wall_clock 1",                     // panel 3's causes
+		"€0.0200",                                     // panel 4's euros per merged line
+		"7 cards · 1 missing cost · 1 missing lines · 1 missing size",
+		"small 2.00 / medium 3.00 / large unavailable", // panel 5's fits, unavailable never zero
+		">2 / 1<",                                // panel 6's cuts and closed cut groups
+		">6.0 hours<",                            // panel 7's mean from precise milliseconds
+		"cohort 2 · open 1 · missing start 1",    // panel 7's open and missing coverage apart
+		">3.75 hours<",                           // panel 8's total from precise milliseconds
+		"ended 2 · open 1 · missing 1",           // panel 8's evidence
+		">2 of 3 · target 0<",                    // panel 9's count, denominator and target
+		"1 unknown · ",                           // panel 9's unknown evidence, never a success
+		"1 round:1 / 2 rounds:1",                 // panel 10's rounds, from the named comparison
+		"first 4 · later 3",                      // panel 11's first and later totals
+		"1 round:4 / 2 rounds:2 / 3 rounds:1",    // panel 11's per-round detail, uncollapsed
+		"person:1 / cut:1 / round:1 / unknown:2", // panel 12's origins, unknown apart
+		`class="mmove">−1<`,                      // a named round's move against the prior window
+		`class="mmove">&#43;4.0 hours<`,          // panel 7's move, hours out of milliseconds
+		`viewBox="0 0 240 30"`,                   // the named rounds keep their sparks
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	// the old deck renders unchanged beside the panels
+	for _, want := range []string{"Delivery", "Stability", "Cost", "Autonomy", "The factory itself",
+		"deploys / week", "chat tool work", `<span class="mval">2</span>`} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	// the three states never collapse: undefined reads its dash, a hole
+	// its own label, and missing evidence can never masquerade as the
+	// target met
+	r.figures.report.DivideConquer.GateAboveBound = factoryd.Figure{}
+	r.figures.report.DivideConquer.EurPerMergedLine = factoryd.Figure{}
+	body = page()
+	if !strings.Contains(body, ">— · target 0<") {
+		t.Error("an uncovered target reads a dash, not a zero")
+	}
+	if strings.Contains(body, ">0 · target 0<") {
+		t.Error("missing evidence masquerades as the target met")
+	}
+	if !strings.Contains(body, `<span class="mval">—</span>`) {
+		t.Error("an undefined rate reads a dash, not a zero")
+	}
+	r.figures.report.DivideConquer.GateAboveBound = factoryd.Figure{Value: 0, Has: true}
+	body = page()
+	if !strings.Contains(body, ">0 · target 0<") || strings.Contains(body, ">— · target 0<") {
+		t.Error("a measured zero reads 0, apart from the dash and the hole")
+	}
+	// unavailable counts: a Figure the window does not hold reads its
+	// dash wherever a count would render — the cuts pair, the first/later
+	// totals, a named comparison and its detail row — never a measured
+	// zero, and a detail row moves against nothing without its own value
+	r.figures.report.DivideConquer.Cuts = factoryd.Figure{Value: 5, Prev: 2, PrevHas: true}
+	r.figures.report.DivideConquer.CutGroupsClosed = factoryd.Figure{Value: 4, Prev: 1, PrevHas: true}
+	r.figures.report.DivideConquer.CardsFirstRound = factoryd.Figure{Value: 9, Prev: 3, PrevHas: true}
+	r.figures.report.DivideConquer.CardsLaterRounds = factoryd.Figure{Value: 8, Prev: 2, PrevHas: true}
+	for i, nf := range r.figures.report.DivideConquer.ReplansByOriginSpans {
+		if nf.Name == "cut" {
+			nf.Figure = factoryd.Figure{Value: 7, Prev: 2, PrevHas: true, Weeks: nf.Figure.Weeks}
+			r.figures.report.DivideConquer.ReplansByOriginSpans[i] = nf
+		}
+	}
+	body = page()
+	for _, want := range []string{
+		">— / —<", // the cuts panel's pair, both unheld
+		"first — · later —",
+		"person:1 / cut:— / round:1 / unknown:2", // the named comparison, its unheld name apart
+	} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
+	}
+	for _, masked := range []string{
+		">5 / 4<", ">5 / —<", ">— / 4<", // an unheld count never reads its value
+		"first 9", "later 8",
+		"cut:7",
+		`class="mmove">+5<`, // no move without the window's own value
+	} {
+		if strings.Contains(body, masked) {
+			t.Errorf("page renders an unheld figure as measured: %q", masked)
+		}
+	}
+	// the JSON stays additive: the deck's keys stand and the block keeps
+	// its legacy hour semantics beside the precise milliseconds the page
+	// reads
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics?format=json", nil), ck)
+	if rec.Code != http.StatusOK {
+		t.Fatalf("GET metrics json = %d: %s", rec.Code, rec.Body)
+	}
+	var raw map[string]any
+	if err := json.Unmarshal(rec.Body.Bytes(), &raw); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	for _, key := range metricsBodyKeys {
+		if _, ok := raw[key]; !ok {
+			t.Errorf("body lacks %s", key)
+		}
+	}
+	dc, ok := raw["divide_conquer"].(map[string]any)
+	if !ok {
+		t.Fatalf("divide_conquer = %v", raw["divide_conquer"])
+	}
+	if ms := dc["hold_wait_milliseconds"].(map[string]any); ms["value"] != float64(13500000) {
+		t.Errorf("hold_wait_milliseconds = %v, want the precise 13500000", ms["value"])
+	}
+	if h := dc["hold_wait_hours"].(map[string]any); h["value"] != float64(3.75) {
+		t.Errorf("hold_wait_hours = %v, want the legacy 3.75", h["value"])
+	}
+	// the authenticated scoping stands: no session redirects to the
+	// login, a writer outside the project is refused
+	rec = r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil))
+	if rec.Code != http.StatusSeeOther || rec.Header().Get("Location") != "/login" {
+		t.Errorf("unauthenticated = %d %q, want the login redirect", rec.Code, rec.Header().Get("Location"))
+	}
+	r.repoWriters["sf/code"] = []string{"someone-else"}
+	r.forgetWriters()
+	if rec = r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck); rec.Code != http.StatusForbidden {
+		t.Errorf("non-writer = %d, want 403", rec.Code)
+	}
+}
+
 func TestProjectMetricsWindowAndRefusals(t *testing.T) {
 	r := newRig(t)
 	r.figures.report = metricsFiguresReport()
@@ -324,9 +567,11 @@ func TestProjectMetricsPage(t *testing.T) {
 		t.Fatalf("GET metrics page = %d: %s", rec.Code, rec.Body)
 	}
 	body := rec.Body.String()
-	// every row's name carries its one-sentence explanation as a tooltip
-	if n := strings.Count(body, `class="mname" title="`); n != 22 {
-		t.Fatalf("%d row names carry a title, want 22", n)
+	// every row's name carries its one-sentence explanation as a tooltip:
+	// the deck's 22 rows and the divide section's twelve panel rows (the
+	// panels' named detail rows carry no tooltip of their own)
+	if n := strings.Count(body, `class="mname" title="`); n != 34 {
+		t.Fatalf("%d row names carry a title, want 34", n)
 	}
 	wants := []string{
 		`class="page page-metrics"`,
