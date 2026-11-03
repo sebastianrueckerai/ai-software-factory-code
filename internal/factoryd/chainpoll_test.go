@@ -27,7 +27,8 @@ import (
 
 // The chain rows, as PGStore keeps them: one per pull request the newest
 // run it carries carries, plus the head row (pr 0) of the newest run's
-// commit, per repository.
+// commit and the green row (pr -1) of a green run no other row records,
+// per repository.
 
 type fakeChainRun struct {
 	repo   string
@@ -101,6 +102,30 @@ func (s *fakeStore) RecordChainHead(ctx context.Context, repository, sha string,
 		return nil
 	}
 	s.chain = append(s.chain, fakeChainRun{repo: repository, pr: 0, sha: sha, run: run, index: index, status: status, updated: s.stamp()})
+	return nil
+}
+
+func (s *fakeStore) ChainGreen(ctx context.Context, repository string) (int64, error) {
+	var green int64
+	for _, c := range s.chain {
+		if c.repo == repository && c.status == "success" && c.run > green {
+			green = c.run
+		}
+	}
+	return green, nil
+}
+
+func (s *fakeStore) RecordChainGreen(ctx context.Context, repository, sha string, run, index int64) error {
+	row := fakeChainRun{repo: repository, pr: -1, sha: sha, run: run, index: index, status: "success", updated: s.stamp()}
+	for i, c := range s.chain {
+		if c.repo == repository && c.pr == -1 {
+			if c.run < run {
+				s.chain[i] = row
+			}
+			return nil
+		}
+	}
+	s.chain = append(s.chain, row)
 	return nil
 }
 
@@ -1379,6 +1404,133 @@ func TestChainPollerRecordsTheChainOfEveryMainRun(t *testing.T) {
 	}
 	if head, _ := store.ChainHead(ctx, codeRepo); head != 64 {
 		t.Fatalf("chain head %d, want 64", head)
+	}
+}
+
+// A run no pull request rides that goes green while a newer run waits
+// covers the cards before it: the green row records it once its commit's
+// verdict is green, not at its own status alone, and follows the newest
+// green run.
+func TestAGreenRunBehindAWaitingOneCoversTheCardsBeforeIt(t *testing.T) {
+	d3 := "d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3d3"
+	e4 := "e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4e4"
+	f5 := "f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5f5"
+	roll := func(state string) []map[string]string {
+		return []map[string]string{{"status": state, "context": "factory/roll"}}
+	}
+	f := &chainForgejo{
+		runs: map[string][]map[string]any{codeRepo: {chainRun(61, commitC2, "running")}},
+		carries: map[string]map[string][]map[string]any{
+			codeRepo: {
+				"parent-of-" + commitC2 + "..." + commitC2: {{"sha": mergePR12}},
+				commitC2 + "..." + d3:                      {},
+				d3 + "..." + e4:                            {},
+				e4 + "..." + f5:                            {},
+			},
+		},
+		statuses: map[string]map[string][]map[string]string{codeRepo: {
+			commitC2: roll("success"), d3: roll("pending"), e4: roll("success"),
+		}},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}}},
+		}}}
+	}
+	store.tasks = map[string]Task{
+		"t-12": {ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, MergeCommit: mergePR12},
+	}
+	var ended []string
+	p.End = func(ctx context.Context, taskID string, run int64) error {
+		ended = append(ended, fmt.Sprintf("%s run %d", taskID, run))
+		return nil
+	}
+	tick := func(runs ...map[string]any) {
+		t.Helper()
+		f.runs[codeRepo] = runs
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+	green := func() fakeChainRun {
+		for _, c := range chainOf(store, codeRepo) {
+			if c.pr == -1 {
+				return c
+			}
+		}
+		return fakeChainRun{}
+	}
+	tick(chainRun(61, commitC2, "running"))
+	// the card's own run went red, two pushes no pull request rides queue
+	// behind it
+	tick(chainRun(63, e4, "waiting"), chainRun(62, d3, "running"), chainRun(61, commitC2, "failure"))
+	// run 62 is green, its commit's required context is not yet
+	tick(chainRun(63, e4, "running"), chainRun(62, d3, "success"), chainRun(61, commitC2, "failure"))
+	if g := green(); g.run != 0 || len(ended) != 0 {
+		t.Fatalf("green row %+v, ended %q, under a pending required context; want neither", g, ended)
+	}
+	f.statuses[codeRepo][d3] = roll("success")
+	tick(chainRun(63, e4, "running"), chainRun(62, d3, "success"), chainRun(61, commitC2, "failure"))
+	if g := green(); g.sha != d3 || g.run != 62 || g.index != 57 || g.status != "success" {
+		t.Fatalf("green row %+v, want d3 green under run 62 (number 57)", g)
+	}
+	if !slices.Equal(ended, []string{"t-12 run 57"}) {
+		t.Fatalf("ended %q, want t-12 covered by run 57 while run 63 still runs", ended)
+	}
+	tick(chainRun(64, f5, "waiting"), chainRun(63, e4, "success"), chainRun(62, d3, "success"))
+	if g := green(); g.sha != e4 || g.run != 63 {
+		t.Fatalf("green row %+v, want it moved to e4 under run 63", g)
+	}
+}
+
+// The green row covers a card carried by a red run before it, and an
+// older green run never unseats it. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func TestTheGreenRowOverPostgres(t *testing.T) {
+	ctx := context.Background()
+	pg, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer pg.db.Close()
+	if _, err := pg.db.ExecContext(ctx, `TRUNCATE tasks, sessions, intake_events, chain_runs, alerts CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := pg.CreateTask(ctx, Task{ID: "t-12", Status: "merged", FinishedAt: justNow(), Repository: codeRepo, PRNumber: 12, BudgetEUR: 1, Kind: "agent", Track: "direct"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	if err := pg.RecordChainRun(ctx, codeRepo, 12, "c2", 61, 56, "failure"); err != nil {
+		t.Fatal(err)
+	}
+	if err := pg.RecordChainHead(ctx, codeRepo, "e4", 63, 58, "pending"); err != nil {
+		t.Fatal(err)
+	}
+	state := func() (int64, map[string]int64) {
+		t.Helper()
+		green, err := pg.ChainGreen(ctx, codeRepo)
+		if err != nil {
+			t.Fatalf("ChainGreen: %v", err)
+		}
+		covered, err := pg.ChainCovered(ctx, codeRepo)
+		if err != nil {
+			t.Fatalf("ChainCovered: %v", err)
+		}
+		return green, covered
+	}
+	if green, covered := state(); green != 0 || len(covered) != 0 {
+		t.Fatalf("green %d, covered %v before the green row; want 0 and none", green, covered)
+	}
+	for _, r := range []struct {
+		sha        string
+		run, index int64
+	}{{"d3", 62, 57}, {"c1", 60, 55}} {
+		if err := pg.RecordChainGreen(ctx, codeRepo, r.sha, r.run, r.index); err != nil {
+			t.Fatalf("RecordChainGreen %+v: %v", r, err)
+		}
+	}
+	if green, covered := state(); green != 62 || !maps.Equal(covered, map[string]int64{"t-12": 57}) {
+		t.Fatalf("green %d, covered %v; want run 62 covering t-12 at number 57", green, covered)
 	}
 }
 

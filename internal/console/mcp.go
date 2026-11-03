@@ -20,7 +20,7 @@ import (
 )
 
 // chatSendWait bounds chat_send's wait for its turn's end.
-var chatSendWait = 4 * time.Minute // a var so tests shorten it
+var chatSendWait = 50 * time.Second // a var so tests shorten it
 
 // tokenCall is the chat token a /mcp request came with, its project and
 // the session its human's request runs as.
@@ -129,9 +129,9 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 	}
 	srv := mcp.NewServer(&mcp.Implementation{Name: "factory-chat", Version: "1"}, nil)
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_send", Description: "Send a message to the project agent of " + call.p.Name +
-		" as yourself, as the console's chat does, and wait up to 4 minutes for the turn's end: its reply, the tools it called, " +
+		" as yourself, as the console's chat does, and wait up to 50 seconds for the turn's end: its reply, the tools it called, " +
 		"the proposals it raised, which run only once you confirm them, and what it applied. Without a conversation it writes in " +
-		"this token's own conversation. A turn that outlasts the wait goes on; chat_read reads its end."},
+		"this token's own conversation. A turn longer than 50 seconds answers ended: false and goes on; chat_read with after set to the last id gets the rest."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in sendInput) (*mcp.CallToolResult, any, error) {
 			// the request's own context: the SDK ends the handler's with it
 			// on its newest protocol only, and a client that gives up ends it
@@ -146,9 +146,9 @@ func (c *Console) mcpServer(r *http.Request) *mcp.Server {
 			return c.chatRead(ctx, call, in)
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: "chat_confirm", Description: "Confirm one proposal of the project agent of " + call.p.Name +
-		", as the console's Do it does, and wait up to 4 minutes for the turn's end. You may confirm every proposal you could press in the console, " +
+		", as the console's Do it does, and wait up to 50 seconds for the turn's end. You may confirm every proposal you could press in the console, " +
 		"a merge approval included, which Forgejo records as your own review. Each proposal runs once and expires. The answer is chat_send's: " +
-		"what ran is in applied and a refused action in error; a proposal that cannot be pressed is refused as the tool's error."},
+		"what ran is in applied and a refused action in error; a proposal that cannot be pressed is refused as the tool's error. A turn longer than 50 seconds answers ended: false and goes on; chat_read with after set to the last id gets the rest."},
 		func(_ context.Context, _ *mcp.CallToolRequest, in confirmInput) (*mcp.CallToolResult, any, error) {
 			return c.chatConfirm(r.Context(), call, in)
 		})

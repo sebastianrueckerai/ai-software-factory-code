@@ -381,10 +381,10 @@ func TestASettledFailedRollEndsItsReleaseWindow(t *testing.T) {
 	if err := s.MarkRollsCommitted(ctx, "rt1", []string{"f"}, "commit-f"); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDeployNow(ctx, repo, "f", at); err != nil {
+	if err := s.SetDeployNow(ctx, repo, "f", at, Event{}); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetDeployNow(ctx, "sf/linkshort", "g", at); err != nil {
+	if err := s.SetDeployNow(ctx, "sf/linkshort", "g", at, Event{}); err != nil {
 		t.Fatal(err)
 	}
 	settled, err := s.SettleRollRequests(ctx)

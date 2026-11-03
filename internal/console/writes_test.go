@@ -844,9 +844,9 @@ func TestPoolProposalAccess(t *testing.T) {
 	custom := &turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, owner: "alice",
 		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, cfg: policy.ChatConfig{Confirm: []string{}}}
 	custom.stream(func(string) error { return nil }, nil)
-	result, customToken := custom.call(factoryd.OperatorCall{ID: "call_1", Name: "set_pool", Arguments: setArgs})
-	if customToken == "" || result != "Proposed to alice: Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR. Nothing runs until they press Do it." {
-		t.Fatalf("a custom confirm list that omits set_pool: %q %q", result, customToken)
+	result, customToken, customCode := custom.call(factoryd.OperatorCall{ID: "call_1", Name: "set_pool", Arguments: setArgs})
+	if customToken == "" || customCode != 0 || result != "Proposed to alice: Set the pool, the pool stands at 10.00 EUR, set it at 10.00 EUR, reason the findings cost money, it would stand at 10.00 EUR. Nothing runs until they press Do it." {
+		t.Fatalf("a custom confirm list that omits set_pool: %q %q %d", result, customToken, customCode)
 	}
 
 	// a member who writes the project's code nothing does not even reach

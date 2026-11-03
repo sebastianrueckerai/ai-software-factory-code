@@ -1052,6 +1052,12 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		g.serveTitle(w, r)
 		return
 	}
+	// the call arrives whole: a stop the test sends once it arrived may
+	// cancel the request before its body is sent
+	var body map[string]any
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !g.lenient {
+		g.t.Errorf("model call body: %v", err)
+	}
 	if g.arrived != nil {
 		g.arrived <- struct{}{}
 	}
@@ -1064,10 +1070,6 @@ func (g *chatGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	time.Sleep(slow)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	var body map[string]any
-	if err := json.NewDecoder(r.Body).Decode(&body); err != nil && !g.lenient {
-		g.t.Errorf("model call body: %v", err)
-	}
 	task := factoryd.ChatTaskID(cmp.Or(g.project, "ai-software-factory-code"), time.Now())
 	if r.Header.Get(gateway.HeaderFactoryPurpose) == policy.PurposeCompact {
 		if r.Header.Get(gateway.HeaderFactoryTask) != task || body["model"] != policy.Small || body["max_tokens"] != float64(2048) {
@@ -1590,6 +1592,7 @@ func TestChatTextReply(t *testing.T) {
 			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}],` +
+			`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"},` +
 			`"open_question":"what is open?"}`})
 }
 
@@ -4370,11 +4373,13 @@ func TestChatNewConversation(t *testing.T) {
 	equal(t, "GET", get(chatPath), `{"conversation":2,"thread":{"login":"sebastian","number":2,"title":"world","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
-		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}]}`)
+		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}],`+
+		`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"}}`)
 	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
-		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}]}`)
+		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}],`+
+		`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"}}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
 		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
 			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},`+

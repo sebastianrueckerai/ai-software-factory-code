@@ -1795,3 +1795,270 @@ func TestDivideConquerPlanningSQL(t *testing.T) {
 			rp.DivideConquer.PlansByRounds, rp.DivideConquer.ReplansByOrigin, rp.DivideConquer.ReplansByOriginSpans)
 	}
 }
+
+// dcGroupChild inserts a plan's filed card the group contract reads:
+// source plan, its parent the plan's id and its plan key beside both.
+func dcGroupChild(t *testing.T, s *PGStore, id, plan, repository string, issue int64) {
+	t.Helper()
+	if err := s.insertTask(context.Background(), Task{ID: id, Status: "done", Objective: "the group hours' fixture",
+		Repository: repository, Kind: "agent", Source: SourcePlan, Parent: plan, PlanKey: id, Track: "direct", BudgetEUR: 5, IssueNumber: issue}, ""); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// TestDivideConquerGroupHoursSQL — panel 7: how long a group stayed
+// open, the mean milliseconds over the groups whose first closure
+// lands in the span, each from its first actual child merge. A group
+// opened before the window counts its whole wait, never clipped to the
+// window's start; duplicate merge and closure rows move nothing; a
+// closure at the window's very end belongs to no span of the report
+// and one at the spark's first instant to the first bucket alone; a
+// closed group no merge covers and a group still open sit the mean
+// out, counted in the coverage; and the legacy hours are the same
+// milliseconds scaled, fractions kept. Other repositories answer their
+// own reports alone.
+func TestDivideConquerGroupHoursSQL(t *testing.T) {
+	s := metricsStore(t)
+	// the package's tests share one database: clear the tables the
+	// panels read, as the metrics suite's own seeds do, so earlier
+	// files' cards cannot collide with these fixtures' ids
+	for _, table := range []string{"events", "alerts", "ledger", "audit", "project_rolls", "ci_runs", "rolls", "chat_messages", "tasks"} {
+		if _, err := s.db.ExecContext(context.Background(), `TRUNCATE `+table+` CASCADE`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	from, to := metricsTestWindow()
+	// g-pre: opened Sep 27 22:00, before the window, closed Sep 28
+	// 02:00 — four whole hours, not the two a clipped start would count
+	dcPlan(t, s, "t-gh-pre", "sf/dc12", 401)
+	dcGroupChild(t, s, "t-gh-pre-1", "t-gh-pre", "sf/dc12", 411)
+	dcMerged(t, s, "t-gh-pre-1", "sf/dc12", from.AddDate(0, 0, -1).Add(22*time.Hour))
+	dcClosed(t, s, "t-gh-pre", "sf/dc12", from.Add(2*time.Hour))
+	// g-win: opened Oct 3 06:00 by a child whose merge commit alone
+	// speaks, no event; a second child's merge row at 08:00, doubled
+	// half an hour later, opens nothing earlier; its closure doubled the
+	// day after — minima all, so the group is the eight hours its first
+	// facts name
+	dcPlan(t, s, "t-gh-win", "sf/dc12", 402)
+	dcGroupChild(t, s, "t-gh-win-1", "t-gh-win", "sf/dc12", 412)
+	dcMerged(t, s, "t-gh-win-1", "sf/dc12", from.AddDate(0, 0, 5).Add(8*time.Hour))
+	dcMerged(t, s, "t-gh-win-1", "sf/dc12", from.AddDate(0, 0, 5).Add(8*time.Hour+30*time.Minute))
+	dcGroupChild(t, s, "t-gh-win-2", "t-gh-win", "sf/dc12", 418)
+	if _, err := s.db.ExecContext(context.Background(),
+		`UPDATE tasks SET merge_commit = 'mc-win', finished_at = $2 WHERE id = $1`,
+		"t-gh-win-2", from.AddDate(0, 0, 5).Add(6*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	dcClosed(t, s, "t-gh-win", "sf/dc12", from.AddDate(0, 0, 5).Add(14*time.Hour))
+	dcClosed(t, s, "t-gh-win", "sf/dc12", from.AddDate(0, 0, 6).Add(9*time.Hour))
+	// g-early: the previous window's own, its opening a merge commit
+	// alone — finished_at beside the commit, no event — five and a
+	// half hours, the fraction an integer hour would blur
+	dcPlan(t, s, "t-gh-early", "sf/dc12", 403)
+	dcGroupChild(t, s, "t-gh-early-1", "t-gh-early", "sf/dc12", 413)
+	if _, err := s.db.ExecContext(context.Background(),
+		`UPDATE tasks SET merge_commit = 'mc-early', finished_at = $2 WHERE id = $1`,
+		"t-gh-early-1", from.AddDate(0, 0, -13)); err != nil {
+		t.Fatal(err)
+	}
+	dcClosed(t, s, "t-gh-early", "sf/dc12", from.AddDate(0, 0, -13).Add(5*time.Hour+30*time.Minute))
+	// g-open: a merge, no closure ever — open at the report, never a
+	// finished wait; g-none: closed in the window, no merge covers its
+	// start — no measured wait, named in the coverage
+	dcPlan(t, s, "t-gh-open", "sf/dc12", 404)
+	dcGroupChild(t, s, "t-gh-open-1", "t-gh-open", "sf/dc12", 414)
+	dcMerged(t, s, "t-gh-open-1", "sf/dc12", from.AddDate(0, 0, 6).Add(9*time.Hour))
+	dcPlan(t, s, "t-gh-none", "sf/dc12", 405)
+	dcGroupChild(t, s, "t-gh-none-1", "t-gh-none", "sf/dc12", 415)
+	dcClosed(t, s, "t-gh-none", "sf/dc12", from.AddDate(0, 0, 8).Add(10*time.Hour))
+	// g-end: closed at the window's very end, Oct 12 — no span of this
+	// report holds that closure; g-spark: closed at the spark's first
+	// instant — the first bucket's alone, one hour
+	dcPlan(t, s, "t-gh-end", "sf/dc12", 406)
+	dcGroupChild(t, s, "t-gh-end-1", "t-gh-end", "sf/dc12", 416)
+	dcMerged(t, s, "t-gh-end-1", "sf/dc12", to.Add(20*time.Hour))
+	dcClosed(t, s, "t-gh-end", "sf/dc12", to.Add(24*time.Hour))
+	dcPlan(t, s, "t-gh-spark", "sf/dc12", 407)
+	dcGroupChild(t, s, "t-gh-spark-1", "t-gh-spark", "sf/dc12", 417)
+	dcMerged(t, s, "t-gh-spark-1", "sf/dc12", from.AddDate(0, 0, -36).Add(23*time.Hour))
+	dcClosed(t, s, "t-gh-spark", "sf/dc12", from.AddDate(0, 0, -35))
+	// the other repository's own group, four hours of its own
+	dcPlan(t, s, "t-gh-away", "sf/other12", 421)
+	dcGroupChild(t, s, "t-gh-away-1", "t-gh-away", "sf/other12", 431)
+	dcMerged(t, s, "t-gh-away-1", "sf/other12", from.AddDate(0, 0, 4).Add(8*time.Hour))
+	dcClosed(t, s, "t-gh-away", "sf/other12", from.AddDate(0, 0, 4).Add(12*time.Hour))
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc12", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := r.DivideConquer
+	// the mean of four and eight hours in milliseconds, the previous
+	// window's five and a half, the spark's first bucket its own hour
+	if d.GroupOpenMillis != (Figure{Value: 21600000, Has: true, Prev: 19800000, PrevHas: true,
+		Weeks: [7]float64{3600000, 0, 0, 19800000, 0, 21600000, 0}}) {
+		t.Fatalf("group open milliseconds = %+v", d.GroupOpenMillis)
+	}
+	if d.GroupOpenHours != (Figure{Value: 6, Has: true, Prev: 5.5, PrevHas: true,
+		Weeks: [7]float64{1, 0, 0, 5.5, 0, 6, 0}}) {
+		t.Fatalf("group open hours = %+v, want the milliseconds scaled, fractions kept", d.GroupOpenHours)
+	}
+	// two measured groups, the startless closed one beside them, the
+	// open one at the report
+	if d.GroupHoursCoverage != (GroupHoursCoverage{Groups: 2, MissingStart: 1, Open: 1}) {
+		t.Fatalf("group hours coverage = %+v", d.GroupHoursCoverage)
+	}
+	// the other repository: its own group alone, its previous window
+	// and its earlier weeks empty cohorts — undefined, never zero
+	ro, err := s.ProjectMetrics(context.Background(), "sf/other12", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ro.DivideConquer.GroupOpenMillis != (Figure{Value: 14400000, Has: true,
+		Weeks: [7]float64{0, 0, 0, 0, 0, 14400000, 0}}) {
+		t.Fatalf("sf/other12 group open milliseconds = %+v, want its own four hours alone", ro.DivideConquer.GroupOpenMillis)
+	}
+	if ro.DivideConquer.GroupHoursCoverage != (GroupHoursCoverage{Groups: 1}) {
+		t.Fatalf("sf/other12 group hours coverage = %+v, want its own group alone", ro.DivideConquer.GroupHoursCoverage)
+	}
+	// a repository no group covers: undefined, never a zero
+	empty, err := s.ProjectMetrics(context.Background(), "sf/dc-none12", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if empty.DivideConquer.GroupOpenMillis != (Figure{}) || empty.DivideConquer.GroupOpenHours != (Figure{}) ||
+		empty.DivideConquer.GroupHoursCoverage != (GroupHoursCoverage{}) {
+		t.Fatalf("group hours without evidence = %+v %+v %+v, want unknown and none",
+			empty.DivideConquer.GroupOpenMillis, empty.DivideConquer.GroupOpenHours, empty.DivideConquer.GroupHoursCoverage)
+	}
+}
+
+// TestDivideConquerProductionHoldSQL — panel 8: the milliseconds the
+// project waited on production holds. Each hold is the half-open
+// interval its fact names — held_since to the row's at — clipped to
+// the span and unioned: overlapping, duplicate and nested rows wait
+// their time once, a hold that only touches the span's boundary waits
+// none of it, and the fractions stay exact. A hold still on at the
+// report ends at the captured as-of, one end every span of the report
+// reads — a span already past ends it at its own end the sooner, a
+// window past now at the as-of alone. A row whose held_since names no
+// instant measures nothing and the coverage names it. Other
+// repositories answer their own reports alone.
+func TestDivideConquerProductionHoldSQL(t *testing.T) {
+	s := metricsStore(t)
+	// the package's tests share one database: clear the tables the
+	// panels read — the releases row too, this panel's own — as the
+	// metrics suite's own seeds do
+	for _, table := range []string{"events", "alerts", "ledger", "audit", "project_rolls", "ci_runs", "rolls", "chat_messages", "tasks", "releases"} {
+		if _, err := s.db.ExecContext(context.Background(), `TRUNCATE `+table+` CASCADE`); err != nil {
+			t.Fatal(err)
+		}
+	}
+	from, to := metricsTestWindow()
+	hold := func(since, at time.Time) {
+		dcRecord(t, s, HoldIntervalFact{Repository: "sf/dc13", HeldSince: since, How: "closed"}.Event(), at)
+	}
+	// 1.5 hours, Sep 30 10:00 to 11:30, and its legacy double: the same
+	// interval twice-told waits once
+	hold(from.AddDate(0, 0, 2).Add(10*time.Hour), from.AddDate(0, 0, 2).Add(11*time.Hour+30*time.Minute))
+	dcRecord(t, s, Event{Repository: "sf/dc13", Kind: EventProductionReleased, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"how": "closed", "held_since": "2026-09-30T10:00:00Z", "hours": 1.5}},
+		from.AddDate(0, 0, 2).Add(11*time.Hour+30*time.Minute))
+	// 2.25 hours, Oct 6 09:00 to 11:15 — the fraction exact — with a
+	// half hour nested inside it
+	hold(from.AddDate(0, 0, 8).Add(9*time.Hour), from.AddDate(0, 0, 8).Add(11*time.Hour+15*time.Minute))
+	hold(from.AddDate(0, 0, 8).Add(10*time.Hour), from.AddDate(0, 0, 8).Add(10*time.Hour+30*time.Minute))
+	// the previous window's own: Sep 16 08:00 to 09:15, and one that
+	// ends at the window's very start — one hour there, none here
+	hold(from.AddDate(0, 0, -12).Add(8*time.Hour), from.AddDate(0, 0, -12).Add(9*time.Hour+15*time.Minute))
+	hold(from.AddDate(0, 0, -1).Add(23*time.Hour), from)
+	// one that starts at the window's very end, Oct 12: no span of this
+	// report holds it — and one whose held_since names no instant, a
+	// row that measures nothing
+	hold(to.AddDate(0, 0, 1), to.AddDate(0, 0, 1).Add(time.Hour))
+	dcRecord(t, s, Event{Repository: "sf/dc13", Kind: EventProductionReleased, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"how": "closed", "hours": 2}}, from.AddDate(0, 0, 10).Add(8*time.Hour))
+	// the other repository's own hour
+	dcRecord(t, s, HoldIntervalFact{Repository: "sf/other13",
+		HeldSince: from.AddDate(0, 0, 9).Add(time.Hour), How: "closed"}.Event(), from.AddDate(0, 0, 9).Add(2*time.Hour))
+
+	r, err := s.ProjectMetrics(context.Background(), "sf/dc13", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	d := r.DivideConquer
+	// 1.5 + 2.25 hours in the window — the doubled row and the nested
+	// half hour wait nothing more — 1.25 + 1 in the previous, the weeks
+	// each their own holds alone
+	if d.HoldWaitMillis != (Figure{Value: 13500000, Has: true, Prev: 8100000, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 4500000, 3600000, 5400000, 8100000}}) {
+		t.Fatalf("hold wait milliseconds = %+v", d.HoldWaitMillis)
+	}
+	if d.HoldWaitHours != (Figure{Value: 3.75, Has: true, Prev: 2.25, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 1.25, 1, 1.5, 2.25}}) {
+		t.Fatalf("hold wait hours = %+v, want the milliseconds scaled, fractions kept", d.HoldWaitHours)
+	}
+	// six distinct ended holds — the doubled row one of them — the row
+	// without a start named, none open
+	if d.HoldWaitCoverage != (HoldWaitCoverage{Ended: 6, Missing: 1}) {
+		t.Fatalf("hold wait coverage = %+v", d.HoldWaitCoverage)
+	}
+	// the other repository: its own hour alone; a repository no hold
+	// ever touched: a measured zero, never unknown
+	ro, err := s.ProjectMetrics(context.Background(), "sf/other13", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ro.DivideConquer.HoldWaitMillis != (Figure{Value: 3600000, Has: true, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 0, 0, 0, 3600000}}) {
+		t.Fatalf("sf/other13 hold wait milliseconds = %+v, want its own hour alone", ro.DivideConquer.HoldWaitMillis)
+	}
+	none, err := s.ProjectMetrics(context.Background(), "sf/dc-none13", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if none.DivideConquer.HoldWaitMillis != (Figure{Has: true, PrevHas: true}) ||
+		none.DivideConquer.HoldWaitCoverage != (HoldWaitCoverage{}) {
+		t.Fatalf("hold wait without holds = %+v %+v, want a measured zero over no evidence",
+			none.DivideConquer.HoldWaitMillis, none.DivideConquer.HoldWaitCoverage)
+	}
+	// the hold still on: the releases row's clock, ended at the
+	// report's captured as-of — the window's own end the sooner, a
+	// window already past, so 36 hours of it here and no more
+	if _, err := s.db.ExecContext(context.Background(),
+		`INSERT INTO releases (repository, held_since) VALUES ('sf/dc13', $1)`,
+		from.AddDate(0, 0, 12).Add(12*time.Hour)); err != nil {
+		t.Fatal(err)
+	}
+	ongoing, err := s.ProjectMetrics(context.Background(), "sf/dc13", from, to)
+	if err != nil {
+		t.Fatal(err)
+	}
+	o := ongoing.DivideConquer
+	if o.HoldWaitMillis != (Figure{Value: 143100000, Has: true, Prev: 8100000, PrevHas: true,
+		Weeks: [7]float64{0, 0, 0, 4500000, 3600000, 5400000, 137700000}}) {
+		t.Fatalf("hold wait milliseconds with the open hold = %+v", o.HoldWaitMillis)
+	}
+	if o.HoldWaitCoverage != (HoldWaitCoverage{Ended: 6, Open: 1, Missing: 1}) {
+		t.Fatalf("hold wait coverage with the open hold = %+v", o.HoldWaitCoverage)
+	}
+	// a window past now: the same open hold ends at the captured as-of
+	// there, its own hours since the window began, and the window
+	// before it — past now itself at its far end, past at its near one
+	// — ends the hold at its own end, exactly its fourteen days
+	asofFrom := time.Now().UTC().Truncate(time.Hour).AddDate(0, 0, -1)
+	// the as-of is cut to the store's microsecond, so the bound below is too
+	t1 := time.Now().UTC().Truncate(time.Microsecond)
+	future, err := s.ProjectMetrics(context.Background(), "sf/dc13", asofFrom, asofFrom.AddDate(0, 0, 13))
+	t2 := time.Now().UTC()
+	if err != nil {
+		t.Fatal(err)
+	}
+	lo, hi := float64(t1.Sub(asofFrom))/float64(time.Millisecond), float64(t2.Sub(asofFrom))/float64(time.Millisecond)
+	if v := future.DivideConquer.HoldWaitMillis.Value; v < lo || v > hi {
+		t.Fatalf("hold wait milliseconds of the window past now = %v, want the captured as-of's own [%.0f, %.0f]", v, lo, hi)
+	}
+	if prev := future.DivideConquer.HoldWaitMillis.Prev; prev != 1209600000 {
+		t.Fatalf("hold wait milliseconds before the window past now = %v, want the window's own fourteen days", prev)
+	}
+}

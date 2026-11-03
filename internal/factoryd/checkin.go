@@ -148,6 +148,9 @@ type CheckInOutcome struct {
 	// fabricated stop names the work, not the spend alone
 	Findings []CheckFinding `json:",omitempty"`
 	Review   *Review        `json:",omitempty"`
+	// Share is the card's check-in share in euros when the check-in ran:
+	// the policy's share of the budget, widened by every granted share
+	Share float64 `json:",omitempty"`
 }
 
 // CheckInRecord is one check-in's record for the timeline: the model under
@@ -449,7 +452,7 @@ func checkinSystemFor(moment string, replan bool) string {
 // checkinTools is the tool list the statement names: the transcript and the
 // card factoryd answers, the workspace through the pod.
 var checkinTools = []CheckinTool{
-	{Name: "transcript_search", Description: "search the parent session's record for lines matching a query",
+	{Name: "transcript_search", Description: "search the parent session's record for lines holding a text, exact and case-sensitive",
 		Parameters: toolSchema(map[string]any{"query": toolArg("the text to find")}, "query")},
 	{Name: "transcript_read", Description: "read a span of the parent session's record by event number",
 		Parameters: toolSchema(map[string]any{"from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}}, "from", "to")},
@@ -457,10 +460,10 @@ var checkinTools = []CheckinTool{
 	{Name: "card_step", Description: "one step of the card's digest in full, by the number its line starts with",
 		Parameters: toolSchema(map[string]any{"step": map[string]any{"type": "integer", "minimum": 1, "description": "the step's number"}}, "step")},
 	{Name: "gates", Description: "the gates' full results for the round", Parameters: toolSchema(nil)},
-	{Name: "read_file", Description: "read a file in the workspace",
-		Parameters: toolSchema(map[string]any{"path": toolArg("the file's path under the workspace")}, "path")},
-	{Name: "grep", Description: "git grep the workspace at a ref",
-		Parameters: toolSchema(map[string]any{"pattern": toolArg("the pattern"), "ref": toolArg("head or main"), "path": toolArg("a path prefix")}, "pattern")},
+	{Name: "read_file", Description: "read a file of the repository by its path, as grep prints it",
+		Parameters: toolSchema(map[string]any{"path": toolArg("the file's path in the repository, or absolute under /workspace")}, "path")},
+	{Name: "grep", Description: "git grep the repository at a ref for a fixed string as a whole word, no regex",
+		Parameters: toolSchema(map[string]any{"pattern": toolArg("the fixed string"), "ref": toolArg("head or main"), "path": toolArg("a path prefix")}, "pattern")},
 	{Name: "git_log", Description: "the workspace's history; only -n, --oneline and -- <path> are allowed",
 		Parameters: toolSchema(map[string]any{"args": toolArg("the arguments as one string")}, "args")},
 	{Name: "run", Description: "run one command in the workspace and read its output",
@@ -619,20 +622,27 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // the round runs as if no check-in existed. An answer the runner cannot
 // read gets one repair round and then a human, at once on the last call.
 // The last call carries no tools and asks for the answer; a tool asked
-// for on it is the call cap's human ask under spend. The conversation
-// ends at timeCap too, a call or a tool in flight cut: the time cap's
-// human ask under spend. Every call lands in the record.
+// for on it is the call cap's human ask under spend. The last call comes
+// at the call cap or once the time cap's reserve for it begins, whichever
+// is first: the reserve is the longest call so far, at least
+// policy.CheckinCallTime, at most half the cap, and an evidence call
+// still running when it begins is cut. An answer call the cap cuts is the
+// time cap's human ask under spend. Every call lands in the record.
 func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int, timeCap time.Duration) CheckInOutcome {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeCap)
 	defer cancel()
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
-	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap)
+	var longest time.Duration
+	due := func() time.Time { return start.Add(timeCap - min(timeCap/2, max(policy.CheckinCallTime, longest))) }
+	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap) +
+		fmt.Sprintf(", your answer due within %s", time.Until(due()).Round(time.Second))
 	rec.StatementBytes = len(conv)
 	timeStop := func() CheckInOutcome {
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinTimeCapStop
-		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinTimeCapStop, Record: rec}
+		reason := checkinCapStop(checkinTimeCapStop, timeCap.String())
+		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
+		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
 	}
 
 	calls, repairs := 0, 0
@@ -640,30 +650,39 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		if time.Since(start) >= timeCap {
 			return timeStop()
 		}
-		last := calls >= callsLeft-1
+		last := calls >= callsLeft-1 || !time.Now().Before(due())
 		if last {
 			conv += "\n\nThis is your last call: answer now with the JSON object, no tool."
 		}
 		req := CheckinRequest{System: checkinSystemFor(ask.Moment, ask.Replan), Input: conv}
+		callCtx, cancelCall := ctx, context.CancelFunc(func() {})
 		if !last {
 			req.Tools = checkinToolsFor(ask.Moment)
+			callCtx, cancelCall = context.WithDeadline(ctx, due())
 		}
 		calls++
 		at := time.Now()
-		resp, err := chat.Call(ctx, taskID, alias, req)
-		rec.Calls = append(rec.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: time.Since(at)})
+		resp, err := chat.Call(callCtx, taskID, alias, req)
+		cancelCall()
+		d := time.Since(at)
+		longest = max(longest, d)
+		rec.Calls = append(rec.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: d})
 		rec.CostEUR += resp.UsageEUR
 		if err != nil {
 			if time.Since(start) >= timeCap {
 				return timeStop()
+			}
+			if !last && ctx.Err() == nil && !time.Now().Before(due()) {
+				continue // the evidence call ran into the answer's reserve
 			}
 			rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+err.Error()
 			return CheckInOutcome{Decision: CheckHandover, Record: rec}
 		}
 		if resp.ToolName != "" {
 			if last {
-				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, checkinCallCapStop
-				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: checkinCallCapStop, Record: rec}
+				reason := checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft))
+				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
+				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
 			}
 			args, _ := json.Marshal(resp.ToolArgs)
 			at := time.Now()
@@ -676,7 +695,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			}
 			rec.Calls = append(rec.Calls, CheckCall{Name: resp.ToolName, Args: textutil.Truncate(string(args), 512), ResultBytes: len(out), Duration: d})
 			rec.ToolCalls++
-			conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d)", resp.ToolName, args, out, callsLeft-calls)
+			conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d, your answer due within %s)", resp.ToolName, args, out, callsLeft-calls, max(0, time.Until(due())).Round(time.Second))
 			continue
 		}
 		a, perr := parseCheckinAnswer(resp.Text, ask)

@@ -66,15 +66,21 @@ func (s *PGStore) QueuedPlans(ctx context.Context, repository string) ([]int64, 
 	return out, rows.Err()
 }
 
+// groupOpenings is each plan's opening, its first actual child merge:
+// per child its earliest pull_request_merged row, else its finish when it
+// holds its own merge commit, reverted children out, and the plan's
+// earliest of those. OpenGroups and the group-open panel read it.
+const groupOpenings = `SELECT plan, repository, min(merged) AS first_merge FROM (
+		SELECT c.parent_task AS plan, c.repository,
+			COALESCE(min(e.at), min(c.finished_at) FILTER (WHERE c.merge_commit <> '')) AS merged
+		FROM tasks c
+		LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
+		WHERE c.source = 'plan' AND c.plan_key IS NOT NULL AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
+		GROUP BY c.parent_task, c.repository, c.id
+	) child GROUP BY plan, repository`
+
 func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
-	rows, err := s.db.QueryContext(ctx, `WITH merged AS (
-			SELECT c.parent_task AS plan,
-				COALESCE(min(e.at), min(c.finished_at) FILTER (WHERE c.merge_commit <> '')) AS first_merge
-			FROM tasks c
-			LEFT JOIN events e ON e.task_id = c.id AND e.kind = 'pull_request_merged'
-			WHERE c.source = 'plan' AND c.plan_key IS NOT NULL AND (c.merge_commit <> '' OR e.id IS NOT NULL) AND c.reverted_at IS NULL
-			GROUP BY c.parent_task
-		)
+	rows, err := s.db.QueryContext(ctx, `WITH merged AS (`+groupOpenings+`)
 		SELECT p.id, p.issue_number, p.repository, m.first_merge
 		FROM merged m JOIN tasks p ON p.id = m.plan
 		WHERE NOT EXISTS (SELECT 1 FROM events WHERE task_id = p.id AND kind = 'plan_closed')

@@ -543,7 +543,10 @@ func (s *fakeStore) PutReleaseHold(ctx context.Context, repository string, since
 	return true, nil
 }
 
-func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error {
+func (s *fakeStore) SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error {
+	if err := s.recordEnded(ctx, repository, ended, true); err != nil {
+		return err
+	}
 	s.putRelease(repository, func(r *Release) { r.DeployNow, r.HeldSince, r.AskedAt = commit, since, time.Time{} })
 	return nil
 }
@@ -556,12 +559,33 @@ func (s *fakeStore) ClearDeployNow(ctx context.Context, repository, commit strin
 	return nil
 }
 
-func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string) error {
+func (s *fakeStore) EndReleaseHold(ctx context.Context, repository string, ended Event) error {
+	if err := s.recordEnded(ctx, repository, ended, false); err != nil {
+		return err
+	}
 	if r, ok := s.releases[repository]; ok {
 		r.HeldSince, r.AskedAt, r.DeployNow = time.Time{}, time.Time{}, ""
 		s.releases[repository] = r
 	}
 	return nil
+}
+
+// recordEnded writes a hold's fact before the release state it closes,
+// as PGStore's one transaction holds them: a refused fact changes
+// nothing, and a hold that moved from the one the fact ends refuses with
+// ErrHoldMoved, as does a missing row the write cannot create. A zero
+// ended writes none and guards nothing.
+func (s *fakeStore) recordEnded(ctx context.Context, repository string, ended Event, creates bool) error {
+	if ended.Kind == "" {
+		return nil
+	}
+	r, ok := s.releases[repository]
+	held, _ := time.Parse(time.RFC3339Nano, fmt.Sprint(ended.Detail["held_since"]))
+	if !ok && !creates || ok && !r.HeldSince.IsZero() && !r.HeldSince.Equal(held) {
+		return ErrHoldMoved
+	}
+	_, err := s.Record(ctx, ended)
+	return err
 }
 
 func (s *fakeStore) ClearToldHeld(ctx context.Context, repository, commit string) error {
@@ -4876,5 +4900,86 @@ func TestEndedCardIssuesBackfill(t *testing.T) {
 		if !slices.Equal(got, want) {
 			t.Fatalf("run %d: factory closes\n%s\nwant\n%s", run, strings.Join(got, "\n"), strings.Join(want, "\n"))
 		}
+	}
+}
+
+// heldStore opens the store with task t-held filed: a budget of 5.00
+// with 4.50 spent. Requires a disposable Postgres
+// (FACTORYD_TEST_DATABASE_URL).
+func heldStore(t *testing.T) *PGStore {
+	t.Helper()
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	t.Cleanup(func() { s.db.Close() })
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, holds CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-held", Kind: "agent", Track: "direct", Repository: "sf/r", Status: "running",
+		BudgetEUR: 5, SpentEUR: 4.5}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	return s
+}
+
+// putHold takes a hold of eur on task id, expiring after the interval
+// expires (negative: already expired).
+func putHold(t *testing.T, s *PGStore, id string, eur float64, expires string) {
+	t.Helper()
+	if _, err := s.db.ExecContext(context.Background(), `INSERT INTO holds (task_id, kind, ref, eur, expires_at)
+		VALUES ($1, 'model', 'small', $2, now() + $3::interval)`, id, eur, expires); err != nil {
+		t.Fatalf("hold: %v", err)
+	}
+}
+
+// A call in flight holds its money in holds, not in spent_eur: the task
+// row reads net it, the point read and the list reads alike. A card of
+// 5.00 with 4.50 spent and one hold of 0.40 has 4.90 spent as the caps
+// count it and 0.10 left, its settled spend still 4.50.
+func TestTaskReadNetsHolds(t *testing.T) {
+	ctx := context.Background()
+	s := heldStore(t)
+	putHold(t, s, "t-held", 0.4, "1 hour")
+	k, ok, err := s.Task(ctx, "t-held")
+	if err != nil || !ok {
+		t.Fatalf("Task = %v, %v", ok, err)
+	}
+	if k.SpentEUR != 4.5 || k.HeldEUR != 0.4 || k.EnforcedSpent() != 4.9 || Cents(k.Left()) != 10 {
+		t.Fatalf("spent %v, held %v, enforced %v, left %v; want 4.50 settled, 0.40 held, 4.90 enforced, 0.10 left",
+			k.SpentEUR, k.HeldEUR, k.EnforcedSpent(), k.Left())
+	}
+	list, err := s.ListTasksByStatus(ctx, "running")
+	if err != nil || len(list) != 1 || list[0].HeldEUR != 0.4 {
+		t.Fatalf("ListTasksByStatus = %+v, %v; want t-held with 0.40 held", list, err)
+	}
+}
+
+// A card with no hold of its own reads its settled spend: another card's
+// hold is not its, so 4.50 of 5.00 spent leaves 0.50.
+func TestTaskReadWithoutHoldsIsUnchanged(t *testing.T) {
+	s := heldStore(t)
+	putHold(t, s, "t-other", 0.4, "1 hour")
+	k, ok, err := s.Task(context.Background(), "t-held")
+	if err != nil || !ok {
+		t.Fatalf("Task = %v, %v", ok, err)
+	}
+	if k.HeldEUR != 0 || k.EnforcedSpent() != 4.5 || Cents(k.Left()) != 50 {
+		t.Fatalf("held %v, enforced %v, left %v; want nothing held, 4.50 spent, 0.50 left", k.HeldEUR, k.EnforcedSpent(), k.Left())
+	}
+}
+
+// A hold past its expiry that the sweep has not released yet still
+// counts, as it does for the gateway's TakeHold and the floor.
+func TestTaskReadCountsAnExpiredUnsweptHold(t *testing.T) {
+	s := heldStore(t)
+	putHold(t, s, "t-held", 0.4, "-1 minute")
+	k, ok, err := s.Task(context.Background(), "t-held")
+	if err != nil || !ok {
+		t.Fatalf("Task = %v, %v", ok, err)
+	}
+	if k.HeldEUR != 0.4 || Cents(k.Left()) != 10 {
+		t.Fatalf("held %v, left %v; want the expired hold's 0.40 held and 0.10 left", k.HeldEUR, k.Left())
 	}
 }

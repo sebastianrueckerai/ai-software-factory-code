@@ -103,6 +103,40 @@ type AcceptanceRig struct {
 	// chat is the chat block the policy names when the rig seats the
 	// documents: the project's chat.doc_repo.
 	intake map[string]bool // the repositories' closed intake switches
+	// The configuration repository's fake (the pool-policy rig): infra
+	// main's files by path under factory/, the branches' changes, the
+	// guarded commits, pull requests and merges it landed with its counted
+	// pull numbers, every call it saw, and the knobs its failure
+	// injections turn — a refused commit or merge, a refused or failed
+	// change check, a failed reload or audit row, a file switched under a
+	// change between its two reads — plus the pool the policy in force holds, which only a reload's activation (onReload)
+	// changes, never an acknowledgement alone.
+	// forgejo is the configuration repository fake's own URL, set once
+	// before it serves, for the tests that call its guarded endpoints
+	// directly.
+	forgejo    string
+	infra      map[string]string
+	branches   map[string][]AccFileChange
+	prBranch   map[int64]string
+	infraCalls []string
+	commits    []AccInfraCommit
+	pulls      []AccInfraPull
+	merges     []AccInfraMerge
+	prNext     int64
+	switchPath string
+	switchText string
+	commitStat int
+	commitMsg  string
+	mergeStat  int
+	mergeMsg   string
+	checkRefus []string
+	checkFail  error
+	checked    []map[string]string
+	reloads    int
+	onReload   func()
+	reloadFail error
+	recordFail error
+	pool       *policy.ProjectBudget
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -130,7 +164,7 @@ type accProposal struct {
 func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*AcceptanceRig, *AccDocs, string) {
 	t.Helper()
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
-		timelines: acceptObjects{}}
+		timelines: acceptObjects{}, prNext: 100} // the counted pull numbers, 101 first
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -142,6 +176,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 	}
 	fg := httptest.NewServer(http.HandlerFunc(a.serveForgejo))
 	t.Cleanup(fg.Close)
+	a.forgejo = fg.URL
 	gw := httptest.NewServer(http.HandlerFunc(a.serveGateway))
 	t.Cleanup(gw.Close)
 
@@ -156,7 +191,29 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 		Writes: func(_ context.Context, repository, user string) (bool, error) {
 			return repository == "sf/code" && user == "sebastian", nil
 		},
-		Operator: &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
+		Operator:  &factoryd.OperatorModel{GatewayURL: gw.URL, Token: "gw-token"},
+		InfraRepo: factoryd.Repo{Owner: "sf", Name: "infra"}, InfraToken: "config-token",
+		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
+		CheckChange: func(_ context.Context, changes map[string][]byte) ([]string, error) {
+			a.mu.Lock()
+			defer a.mu.Unlock()
+			one := map[string]string{}
+			for p, b := range changes {
+				one[p] = string(b)
+			}
+			a.checked = append(a.checked, one)
+			return a.checkRefus, a.checkFail
+		},
+		PolicyReload: func(context.Context) error {
+			a.mu.Lock()
+			a.reloads++
+			hook, err := a.onReload, a.reloadFail
+			a.mu.Unlock()
+			if hook != nil {
+				hook()
+			}
+			return err
+		},
 	}
 	if steer {
 		cfg.Steer = func(_ context.Context, taskID, user, text string) error {
@@ -550,6 +607,10 @@ func (a *AcceptanceRig) serveForgejo(w http.ResponseWriter, r *http.Request) {
 			"refresh_token": fmt.Sprintf("refresh-%d", a.tokenN), "token_type": "bearer", "expires_in": 3600})
 		return
 	}
+	if strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/infra/") {
+		a.serveInfra(w, r)
+		return
+	}
 	a.fgCalls = append(a.fgCalls, r.Method+" "+r.URL.Path+" "+r.Header.Get("Authorization"))
 	switch {
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/user":
@@ -826,6 +887,11 @@ func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, erro
 		return 0, fmt.Errorf("event: repository and kind are required")
 	}
 	a.mu.Lock()
+	if a.recordFail != nil {
+		err := a.recordFail
+		a.mu.Unlock()
+		return 0, err
+	}
 	e.ID = int64(len(a.events) + 1)
 	if e.At.IsZero() {
 		e.At = time.Now()
@@ -1180,7 +1246,7 @@ func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error
 
 func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	a.mu.Lock()
-	chat := a.chat
+	chat, pool := a.chat, a.pool
 	a.mu.Unlock()
 	stages := []policy.Stage{
 		{Name: "screening", OnFindings: "human", When: "outsider"},
@@ -1191,6 +1257,14 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 		"maintenance": {Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}},
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
 	}
+	projects := map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}}
+	if pool != nil {
+		// the loaded policy's pool, installed by a reload's activation
+		// alone: the merged file's own pool is the fake's, separate.
+		code := projects[accProjectName]
+		code.Budget = pool
+		projects[accProjectName] = code
+	}
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Now(), ActivatedAt: time.Now(),
 			Tree: policy.Tree{
 				Document: policy.Document{Version: 1, Chat: chat,
@@ -1199,7 +1273,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 					Limits:          policy.Limits{Sessions: 3, AgentTime: 20 * time.Minute, SupervisorCalls: 3, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 1},
 					Approvers:       []string{"sebastian"},
 					EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20}},
-				Projects:  map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: "human", Objects: "seed", Agents: "coder", Process: "maintenance"}},
+				Projects:  projects,
 				Processes: processes}},
 		true, nil
 }

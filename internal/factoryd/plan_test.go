@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"math"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -1093,7 +1094,7 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	for key, issue := range map[string]int64{"foundation": 2, "links-api": 3, "redirects": 4, "integration": 5} {
 		c := cards[key]
 		if c.IssueNumber != issue || c.Status != "queued" || c.Track != policy.TrackDirect || !slices.Equal(c.RequiredCapabilities, []string{policy.ClassCoder}) ||
-			c.SHA != "m1" || c.Process != "spec" || c.Source != SourcePlan || c.Parent != "t-plan" || c.Author != "alice" || !c.AuthorWriter ||
+			c.SHA != "" || c.Process != "spec" || c.Source != SourcePlan || c.Parent != "t-plan" || c.Author != "alice" || !c.AuthorWriter ||
 			c.Kind != "agent" || c.Priority != 2 {
 			t.Fatalf("card %s = %+v", key, c)
 		}
@@ -2886,6 +2887,89 @@ func TestRunPlanEscalatesAPodThatCannotStart(t *testing.T) {
 	}
 }
 
+// A planner session the card's own money cannot open is refused before
+// anything opens: no session row, no pod, and the floor's refusal is the
+// planner's start failure, its money ask. 0.100 EUR of 2 is left, and the
+// frontier rung's floor asks 0.60.
+func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2, SpentEUR: 1.9,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR, v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.3, 0.6
+	runner.cfg.Policy = func() policy.Version { return v }
+	runner.cfg.Prices = stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}}
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatalf("RunPlan: %v", err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("RunPlan opened a session the budget cannot pay")
+	}
+	want := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
+		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/big needs 0.600000 EUR " +
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done."
+	if res.Escalate != want || !strings.Contains(res.Escalate, "(Fund on the board) and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
+		t.Fatalf("result %+v, want the money ask %q", res, want)
+	}
+	if len(store.sessions) != 0 || len(kube.podOrder) != 0 {
+		t.Fatalf("sessions %v, pods %d; want nothing opened", store.sessions, len(kube.podOrder))
+	}
+}
+
+// A floor refused at the day cap is no start failure: the planner session
+// opens, and the gateway's refusal of its first call takes the plan loop's
+// cap wait. The day has 0.01 EUR free; the cheapest call on big asks
+// 1024 output tokens at 1.5e-5, 0.01536 EUR.
+func TestReportSessionLeavesADayCapToTheCapWait(t *testing.T) {
+	plan := Task{ID: "t-plan", Kind: "agent", Status: "running", Track: policy.TrackPlan, Process: "spec", Repository: "linkshort/linkshort",
+		SHA: "abc123", IssueNumber: 1, Author: "alice", AuthorWriter: true, RequiredCapabilities: []string{"planner"}, BudgetEUR: 2,
+		Objective: "Link shortener\n\nBuild a link shortener."}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, plan, kube, &fakeObjectStore{})
+	pinned := fixtureVersion(t)
+	runner.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	runner.cfg.Prices = stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}}
+	inf := math.Inf(1)
+	store.capsFree = &policy.Free{Day: 0.01, Month: inf, Project: inf}
+	if why, err := runner.SessionFunded(context.Background(), "t-plan", "factory/big"); err != nil {
+		t.Fatal(err)
+	} else if d, ok := CapDecision(why); !ok || d != policy.RefusedDayCap {
+		t.Fatalf("the floor = %q, want the day cap's refusal", why)
+	}
+	var res PlanResult
+	done := make(chan error)
+	go func() {
+		val, err := execActivity(t, runner, ActivityRunPlan, "t-plan", "factory/big", int64(7), []string(nil))
+		if err == nil {
+			err = val.Get(&res)
+		}
+		done <- err
+	}()
+	awaitPod(t, kube, done)
+	kube.scriptPods(0, resultLine(true, "no plan"))
+	if err := <-done; err != nil {
+		t.Fatalf("RunPlan: %v", err)
+	}
+	if res.StartFailed || res.Escalate != "" || len(kube.podOrder) != 1 {
+		t.Fatalf("result %+v, pods %d; want the session opened, no start failure", res, len(kube.podOrder))
+	}
+}
+
 // file_plan checks the whole plan json at once, in the session that files
 // it: a refusal names every finding and stores nothing, the corrected plan
 // files as the next revision and is held for the running session, and a
@@ -4523,8 +4607,9 @@ func TestPlanCommentNamesTakeOffMain(t *testing.T) {
 	}
 }
 
-// A card whose from names a card taken off main files at main's head,
-// with no branch copied, and its issue says to land the work again from
+// A card whose from names a card taken off main files with no base stamp,
+// its first session's start at main's head, with no branch copied, and its
+// issue says to land the work again from
 // the salvage branch.
 func TestFilingLandsAgainFromSalvage(t *testing.T) {
 	ctx := context.Background()
@@ -4552,8 +4637,8 @@ func TestFilingLandsAgainFromSalvage(t *testing.T) {
 	again := cardsByKey(t, store)["links-api-2"]
 	line := fmt.Sprintf("Lands again the work of #%d (links-api), which was taken off main: apply its changes from the salvage branch, salvage in your clone "+
 		"(git diff 4f1c2a9e^1 4f1c2a9e shows them), make it build green, and land it.", api.IssueNumber)
-	if again.SHA != "m1" || !strings.Contains(fj.issues[again.IssueNumber].body, "\n"+line+"\n") {
-		t.Fatalf("links-api-2 at %s, its issue:\n%s\nwant main's head m1 and the line %q", again.SHA, fj.issues[again.IssueNumber].body, line)
+	if again.SHA != "" || !strings.Contains(fj.issues[again.IssueNumber].body, "\n"+line+"\n") {
+		t.Fatalf("links-api-2 at %q, its issue:\n%s\nwant no base stamp and the line %q", again.SHA, fj.issues[again.IssueNumber].body, line)
 	}
 	if slices.ContainsFunc(fj.calls, func(c string) bool { return strings.HasPrefix(c, "POST fork branches") }) {
 		t.Fatalf("calls %q, want no branch copied", fj.calls)

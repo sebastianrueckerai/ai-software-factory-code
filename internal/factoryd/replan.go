@@ -117,7 +117,7 @@ func (r *Runner) fundPlanner(ctx context.Context, id string) error {
 	}
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
-	short := Cents(policy.CardBudget(v.Document.Budget, project.Budget, "", false, 0)) - (Cents(t.BudgetEUR) - Cents(t.SpentEUR))
+	short := Cents(policy.CardBudget(v.Document.Budget, project.Budget, "", false, 0)) - (Cents(t.BudgetEUR) - Cents(t.EnforcedSpent()))
 	if short <= 0 {
 		return nil
 	}

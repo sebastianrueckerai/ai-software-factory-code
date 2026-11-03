@@ -655,3 +655,37 @@ func TestBareGrantReoffersTheDenialsNote(t *testing.T) {
 		t.Errorf("posted = %q, want the denial's note re-offered", posted)
 	}
 }
+
+// A plan card that has run no session yet has no alias on its row: the
+// grant still asks the floor, which prices the class's session model, and
+// the floor's refusal turns the grant away with nothing posted.
+func TestUnfundedSessionAsksTheFloorForACardWithNoAlias(t *testing.T) {
+	r := fundRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == "t-e" {
+			r.tasks.tasks[i].ModelAlias = ""
+		}
+	}
+	r.tasks.mu.Unlock()
+	const why = "0.10 EUR free, 0.60 needed"
+	var asked []string
+	r.c.cfg.SessionFunded = func(_ context.Context, taskID, model string) (string, error) {
+		asked = append(asked, taskID+":"+model)
+		return why, nil
+	}
+	_, s := r.loggedIn(t)
+	_, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "", factoryd.AnswerGrant, "")
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != why {
+		t.Fatalf("grant on a card with no alias = %v, want the floor's refusal %q", err, why)
+	}
+	if !slices.Equal(asked, []string{"t-e:"}) {
+		t.Errorf("the floor was asked %q, want once for t-e with no alias", asked)
+	}
+	r.fg.mu.Lock()
+	defer r.fg.mu.Unlock()
+	if len(r.fg.comments) != 0 {
+		t.Errorf("a refused grant posted %q", r.fg.comments)
+	}
+}

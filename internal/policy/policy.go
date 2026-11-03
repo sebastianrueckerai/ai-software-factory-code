@@ -351,7 +351,8 @@ type Limits struct {
 	// DefaultCheckinCalls.
 	CheckinCalls int `yaml:"checkin_calls,omitempty" json:"checkin_calls,omitempty"`
 	// CheckinTime is how long one check-in conversation may run before
-	// its ask goes to a human; 0 means DefaultCheckinTime.
+	// its ask goes to a human; 0 means CheckinCallTime for each of its
+	// calls (CheckinTimeCap).
 	CheckinTime time.Duration `yaml:"checkin_time,omitempty" json:"checkin_time,omitempty"`
 	// CheckinShare is the most percent of the card's budget the check-in's
 	// calls may spend. Absent: DefaultCheckinShare.
@@ -426,7 +427,8 @@ func (l Limits) NoPushShare() float64 {
 // version pinned before they existed (the escalation ladder's plan D).
 const (
 	DefaultCheckinCalls         = 20
-	DefaultCheckinTime          = 5 * time.Minute
+	CheckinCallTime             = 90 * time.Second
+	MaxCheckinTime              = 30 * time.Minute
 	DefaultCheckinShare         = 10
 	DefaultCheckinTailKiB       = 24
 	DefaultCheckinHandoverChars = 2000
@@ -439,8 +441,11 @@ const (
 func (l Limits) CheckinCallCap() int { return cmp.Or(l.CheckinCalls, DefaultCheckinCalls) }
 
 // CheckinTimeCap is how long one check-in conversation may run,
-// limits.checkin_time or DefaultCheckinTime.
-func (l Limits) CheckinTimeCap() time.Duration { return cmp.Or(l.CheckinTime, DefaultCheckinTime) }
+// limits.checkin_time or CheckinCallTime for each call of its call cap,
+// at most MaxCheckinTime.
+func (l Limits) CheckinTimeCap() time.Duration {
+	return min(cmp.Or(l.CheckinTime, time.Duration(l.CheckinCallCap())*CheckinCallTime), MaxCheckinTime)
+}
 
 // CheckinShareOf is CheckinShare as a share of budget, its default
 // where unset.
@@ -622,8 +627,8 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.review_diff_kib must be 0 or lie between %d and %d, is %d", DefaultReviewDiffKiB, MaxReviewDiffKiB, l.ReviewDiffKiB)
 	case l.CheckinCalls != 0 && (l.CheckinCalls < 1 || l.CheckinCalls > 48):
 		return fmt.Errorf("policy: limits.checkin_calls must be 0 or lie between 1 and 48, is %d", l.CheckinCalls)
-	case l.CheckinTime != 0 && (l.CheckinTime < time.Minute || l.CheckinTime > 30*time.Minute):
-		return fmt.Errorf("policy: limits.checkin_time must be 0 or lie between 1m and 30m, is %s", l.CheckinTime)
+	case l.CheckinTime != 0 && (l.CheckinTime < time.Minute || l.CheckinTime > MaxCheckinTime):
+		return fmt.Errorf("policy: limits.checkin_time must be 0 or lie between 1m and %.0fm, is %s", MaxCheckinTime.Minutes(), l.CheckinTime)
 	case l.CheckinShare != 0 && (l.CheckinShare < 1 || l.CheckinShare > 100):
 		return fmt.Errorf("policy: limits.checkin_share must be 0 or lie between 1 and 100, is %d", l.CheckinShare)
 	case l.CheckinTailKiB != 0 && (l.CheckinTailKiB < 4 || l.CheckinTailKiB > 64):

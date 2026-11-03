@@ -619,12 +619,14 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 
 // deltaRound runs draftDelta on twoRounds with ten more features of
 // round 2 (extras), 12 cards in the round, every card filed and done,
-// redirect_302 unmet in the integration card's review, and answer as the
-// delta round's model answer: the store and the plan's timeline after.
-func deltaRound(t *testing.T, answer string) (*fakeStore, string) {
+// redirect_302 unmet in the integration card's review, the plan asking
+// questions, and answer as the delta round's model answer: the store and
+// the plan's timeline after.
+func deltaRound(t *testing.T, answer string, questions ...PlanQuestion) (*fakeStore, string) {
 	t.Helper()
 	ctx := context.Background()
 	p := extras(10)
+	p.Questions = questions
 	r, store, objects, fj, _ := fileRig(t, p)
 	v := fixtureVersion(t)
 	r.cfg.Policy = func() policy.Version { return v }
@@ -668,6 +670,26 @@ func TestDeltaCardJoinsTheLastRound(t *testing.T) {
 	}
 	if !slices.Equal(store.deps[fix.ID], []string{"t-stats"}) {
 		t.Fatalf("task_deps of fix-stats %v, want [t-stats]", store.deps[fix.ID])
+	}
+}
+
+// The question bound is the writer's (file_plan): a stored revision
+// whose answered question runs to 400 characters, as one filed before the
+// bound may, still files its round, and a delta round on it still files
+// its card.
+func TestStoredPlanKeepsAQuestionOverTheBound(t *testing.T) {
+	long := []PlanQuestion{{Text: strings.Repeat("q", 400), Choices: []string{"7 days", "30 days"}}}
+	two := twoRounds()
+	two.Questions = long
+	r, store, _, _, _ := roundTwoFiling(t, roundOne(), two)
+	if res := fileRound(t, r, store, 2); len(res.Refused) != 0 || !slices.Equal(res.Issues, []int64{5, 6}) {
+		t.Errorf("the stored revision 2: %+v, want stats #5 and integration #6 filed", res)
+	}
+
+	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", `+
+		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`, long...)
+	if _, filed := cardsByKey(t, store)["fix-stats"]; !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
+		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
 }
 

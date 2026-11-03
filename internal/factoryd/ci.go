@@ -15,8 +15,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
-// CIConfig carries the untrusted PR-runner spawner's facts (task 41, ruling
-// 78): one ephemeral gVisor pod per waiting Actions job, no repository or
+// CIConfig carries the untrusted PR-runner spawner's facts (task 41):
+// one ephemeral gVisor pod per waiting Actions job, no repository or
 // registry credentials, default-deny egress.
 type CIConfig struct {
 	FactoryNamespace string // where the pull secret lives

@@ -400,8 +400,8 @@ pass its admin checks, and as the owner of exactly the project organisations
 this token reaches them and nothing else. It cannot create or delete an
 organisation or a repository (that needs `write:organization`, which it
 lacks), and cannot touch teams. It can transfer a project repository
-(Forgejo files transfer under the repository scope): accepted under ruling
-164, since the damage stays inside the projects' bound and the next reconcile
+(Forgejo files transfer under the repository scope): accepted, since the
+damage stays inside the projects' bound and the next reconcile
 reports the repository as waiting. Registration adopts only the CI user and
 team it made itself (the user's address `ci-<name>@factory.local`, the team
 package write and nothing else on no repository); any other `ci-<name>` or

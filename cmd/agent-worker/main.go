@@ -1172,8 +1172,8 @@ func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, 
 }
 
 // refuseWorkflowDirChange stops a push whose tree entries for the workflow
-// directories (.forgejo, .gitea, .github) differ from the base's (ruling
-// 100): Forgejo's protected_file_patterns rejects every new factory/*
+// directories (.forgejo, .gitea, .github) differ from the base's:
+// Forgejo's protected_file_patterns rejects every new factory/*
 // branch outright, so branch protection cannot gate this — the worker,
 // trusted and running with the agent already dead, is where the guard
 // lives. Object ids are compared, never a diff's path listing, so a

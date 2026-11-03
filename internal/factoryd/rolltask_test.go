@@ -907,7 +907,7 @@ func TestRollerClearsAReleaseWhoseRollFailed(t *testing.T) {
 		MergeCommit: "a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1a1", FinishedAt: at}
 	store.tasks["t-roll"] = Task{ID: "t-roll", Status: "failed", FinishedAt: justNow(), Repository: codeRepo}
 	store.rolls = []RollRequest{{SHA: commitC1, Repository: codeRepo, RunID: 57, State: RollOpened, TaskID: "t-roll"}}
-	if err := store.SetDeployNow(ctx, codeRepo, commitC1, *at); err != nil {
+	if err := store.SetDeployNow(ctx, codeRepo, commitC1, *at, Event{}); err != nil {
 		t.Fatal(err)
 	}
 	if err := roller.poll(ctx); err != nil {

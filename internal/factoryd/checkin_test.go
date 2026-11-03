@@ -264,18 +264,66 @@ func (c *scriptedChat) Call(ctx context.Context, _, alias string, in CheckinRequ
 
 type scriptedTools struct{ out map[string]string }
 
-// A conversation past its time cap stops as at the call cap: the call in
-// flight is cut, no further call is made, and the human ask carries the
-// time stop.
+// A conversation whose answer call the time cap cuts stops as at the call
+// cap: the evidence call is cut where the answer's reserve begins, the
+// tool-less answer call at the cap, and the human ask carries the time
+// stop with the time the conversation had.
 func TestCheckinTimeCapAsksAHuman(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
-	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != checkinTimeCapStop {
+	const reason = "check-in time cap reached after 20ms"
+	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's human ask", out.Decision, out.ReasonKind, out.Reason)
 	}
-	if chat.calls != 1 || out.Record.Reason != checkinTimeCapStop || len(out.Record.Calls) != 1 {
-		t.Fatalf("calls = %d, record %+v; want the one call the cap cut", chat.calls, out.Record)
+	if chat.calls != 2 || out.Record.Reason != reason || len(out.Record.Calls) != 2 || chat.gots[1].Tools != nil {
+		t.Fatalf("calls = %d, record %+v; want the evidence call the reserve cut and the answer call the cap cut", chat.calls, out.Record)
+	}
+}
+
+// toolsUntilLast plays a model that asks for a tool on every call that
+// offers tools and answers once a call offers none, each call taking
+// delay unless its context ends first.
+type toolsUntilLast struct {
+	delay  time.Duration
+	answer string
+	reqs   []CheckinRequest
+}
+
+func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinRequest) (CheckinResponse, error) {
+	c.reqs = append(c.reqs, in)
+	select {
+	case <-time.After(c.delay):
+	case <-ctx.Done():
+		return CheckinResponse{}, ctx.Err()
+	}
+	if in.Tools == nil {
+		return CheckinResponse{Text: c.answer}, nil
+	}
+	return CheckinResponse{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}, nil
+}
+
+// A model that would read until its calls run out still answers within
+// the time cap: once the answer's reserve begins — half the cap here, the
+// policy's per-call time being longer — the evidence call in flight is
+// cut and the tool-less last call asks for the answer, long before the
+// call cap.
+func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
+	chat := &toolsUntilLast{delay: 60 * time.Millisecond, answer: `{"findings":[],"decision":"handover","handover":"go on"}`}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 400*time.Millisecond)
+	if out.Decision != CheckHandover || out.Handover != "go on" {
+		t.Fatalf("outcome = %+v, want the answer's handover", out)
+	}
+	last := chat.reqs[len(chat.reqs)-1]
+	if last.Tools != nil || !strings.Contains(last.Input, "This is your last call") {
+		t.Fatalf("the last call carries tools %v or no ask for the answer", last.Tools)
+	}
+	if n := len(chat.reqs); n < 2 || n >= 20 {
+		t.Fatalf("%d calls, want the evidence calls the reserve allowed and the answer, far below the call cap", n)
+	}
+	if !strings.Contains(chat.reqs[0].Input, ", your answer due within ") {
+		t.Fatalf("the statement does not name when the answer is due:\n%s", chat.reqs[0].Input)
 	}
 }
 
@@ -526,7 +574,7 @@ func TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer(t *testing.T) {
 	if !strings.HasSuffix(chat.gots[1].Input, "\n\nThis is your last call: answer now with the JSON object, no tool.") {
 		t.Errorf("the last call's input does not end on the ask for the answer:\n%s", chat.gots[1].Input)
 	}
-	if !strings.Contains(chat.gots[1].Input, "\n(calls left 1)") {
+	if !strings.Contains(chat.gots[1].Input, "\n(calls left 1, your answer due within ") {
 		t.Errorf("the tool answer does not name the calls left:\n%s", chat.gots[1].Input)
 	}
 	if out.Decision != "continue" {
@@ -535,13 +583,13 @@ func TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer(t *testing.T) {
 }
 
 // A tool asked for on the last call is never run: the conversation ends
-// at the call cap's human ask under spend.
+// at the call cap's human ask under spend, which names the calls it had.
 func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
 		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached" {
+	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached after 2 calls" {
 		t.Fatalf("outcome = %+v, want the cap's human ask under spend", out)
 	}
 	if chat.calls != 2 {
@@ -558,7 +606,7 @@ func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{Text: "the session looks fine"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 1, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || out.Reason == "check-in call cap reached" {
+	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || strings.HasPrefix(out.Reason, checkinCallCapStop) {
 		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
 	}
 	if out.ReasonKind != "" || out.Record.Reason != out.Reason {
@@ -663,8 +711,8 @@ func TestRunnerTools(t *testing.T) {
 	if out, cut, err := tools.Tool(t.Context(), "transcript_search", map[string]any{"query": "beta"}); out != "beta" || cut || err != nil {
 		t.Fatalf("search = (%q, %v, %v), want the matching line", out, cut, err)
 	}
-	if out, _, _ := tools.Tool(t.Context(), "transcript_search", map[string]any{"query": "zzz"}); out != "" {
-		t.Fatalf("search without a match = %q, want the empty answer git grep gives", out)
+	if out, _, _ := tools.Tool(t.Context(), "transcript_search", map[string]any{"query": "zzz"}); out != `no line of the record holds "zzz" (the match is exact and case-sensitive)` {
+		t.Fatalf("search without a match = %q, want the miss said, never an empty answer", out)
 	}
 	if out, cut, err := tools.Tool(t.Context(), "transcript_read", map[string]any{"from": 2.0, "to": 3.0}); out != "beta\ngamma" || cut || err != nil {
 		t.Fatalf("read = (%q, %v, %v), want the span's lines", out, cut, err)

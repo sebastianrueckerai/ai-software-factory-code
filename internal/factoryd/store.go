@@ -30,7 +30,8 @@ type Task struct {
 	RequiredCapabilities []string
 	RiskClass            string
 	BudgetEUR            float64
-	SpentEUR             float64
+	SpentEUR             float64 // the settled ledger sum
+	HeldEUR              float64 // the holds of the calls in flight
 	Status               string
 	Objective            string
 	Repository           string
@@ -161,6 +162,13 @@ var Accents = []string{"red", "orange", "amber", "green", "teal", "blue", "viole
 // set-accent action is its sole caller and refuses a colour outside the
 // fixed list before it writes the row; the list never changes at runtime.
 func IsAccent(name string) bool { return slices.Contains(Accents, name) }
+
+// EnforcedSpent is the spend the caps and the floor count: the settled
+// sum and the holds. Every figure a human or an agent decides on reads it.
+func (t Task) EnforcedSpent() float64 { return t.SpentEUR + t.HeldEUR }
+
+// Left is the budget the caps and the floor leave the card.
+func (t Task) Left() float64 { return t.BudgetEUR - t.EnforcedSpent() }
 
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
@@ -611,14 +619,16 @@ type Store interface {
 	// four. Only the keeper's Pass calls it.
 	PutReleaseHold(ctx context.Context, repository string, since, asked, was, wasHeld time.Time) (bool, error)
 	// SetDeployNow releases commit: the clock restarts at since and the
-	// last ask is cleared.
-	SetDeployNow(ctx context.Context, repository, commit string, since time.Time) error
+	// last ask is cleared, with ended, the ended hold's fact, in the same
+	// transaction (none when zero).
+	SetDeployNow(ctx context.Context, repository, commit string, since time.Time, ended Event) error
 	// ClearDeployNow ends the Deploy now window of commit; a newer Deploy
 	// now stands.
 	ClearDeployNow(ctx context.Context, repository, commit string) error
 	// EndReleaseHold is the release: the clock, the last ask and Deploy now
-	// cleared.
-	EndReleaseHold(ctx context.Context, repository string) error
+	// cleared, with ended, the hold's fact, in the same transaction (none
+	// when zero).
+	EndReleaseHold(ctx context.Context, repository string, ended Event) error
 	// ClearToldHeld forgets commit as told held; a newer one stands.
 	ClearToldHeld(ctx context.Context, repository, commit string) error
 	// FixesMergedSince are repository's fix cards (fixSources) merged
@@ -810,8 +820,8 @@ const (
 	ApprovalCriteriaRerun = "criteria_rerun"
 )
 
-// ApprovalRequest is a decision the factory waits on a human for (ruling
-// 116): kind merge is a task's pull request through its gates (Spec a
+// ApprovalRequest is a decision the factory waits on a human for:
+// kind merge is a task's pull request through its gates (Spec a
 // MergeSpec), kind resource a commissioning request (Task 53). Status:
 // pending, approved or denied.
 type ApprovalRequest struct {
@@ -1160,7 +1170,13 @@ func defaultKind(kind string) string {
 	return kind
 }
 
-const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, status,
+// heldEURSQL is the task row's holds, the calls in flight that the
+// gateway's caps and the floor count before the ledger settles them. It
+// binds to tasks by name: a query that selects taskColumns gives the
+// table no alias.
+const heldEURSQL = "(SELECT COALESCE(sum(eur), 0)::float8 FROM holds WHERE holds.task_id = tasks.id)"
+
+const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, ` + heldEURSQL + `, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, raised_sessions, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
@@ -1175,7 +1191,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 func scanTask(scan func(dest ...any) error) (Task, error) {
 	var t Task
 	var caps, ships, egress []byte
-	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.Status,
+	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
 		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.RaisedSessions,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,

@@ -937,7 +937,7 @@ func (s *acceptanceStore) PutReleaseHold(context.Context, string, time.Time, tim
 	return true, nil
 }
 
-func (s *acceptanceStore) SetDeployNow(context.Context, string, string, time.Time) error {
+func (s *acceptanceStore) SetDeployNow(context.Context, string, string, time.Time, factoryd.Event) error {
 	return nil
 }
 
@@ -945,7 +945,7 @@ func (s *acceptanceStore) ClearDeployNow(context.Context, string, string) error 
 	return nil
 }
 
-func (s *acceptanceStore) EndReleaseHold(context.Context, string) error {
+func (s *acceptanceStore) EndReleaseHold(context.Context, string, factoryd.Event) error {
 	return nil
 }
 

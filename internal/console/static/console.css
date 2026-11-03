@@ -210,9 +210,19 @@ footer#live:empty { display: none; }
 [data-theme=light] .lane.five #needs-you.lit::after { border-color: var(--need-text); }
 .lane.five #needs-you.lit > h3 { color: var(--need-text); border-bottom-color: color-mix(in srgb, var(--need) 35%, transparent); }
 .lane.five #needs-you.lit > h3 .count { min-width: 20px; padding: 0 6px; border-radius: 2px; background: var(--need); color: var(--need-ink); font-weight: 600; font-size: 11.5px; line-height: 19px; text-align: center; }
-.lane.five #needs-you > .card { background: color-mix(in srgb, var(--need) 4%, var(--bg-card)); border-color: color-mix(in srgb, var(--need) 38%, var(--line)); box-shadow: inset 3px 0 0 var(--need); padding-left: 14px; }
-[data-theme=light] .lane.five #needs-you > .card { background: var(--bg-card); border-color: color-mix(in srgb, var(--need) 55%, var(--line)); }
-.lane.five #needs-you > .card h4 { font-size: 16px; line-height: 1.3; }
+/* a Needs-you card opens on an amber band behind its head row and stands
+   12 px from the next (C44) */
+.lane.five #needs-you .cards > .card { background: color-mix(in srgb, var(--need) 4%, var(--bg-card)); border-color: color-mix(in srgb, var(--need) 38%, var(--line)); box-shadow: inset 3px 0 0 var(--need); padding-top: 0; padding-left: 14px; margin-bottom: 12px; }
+[data-theme=light] .lane.five #needs-you .cards > .card { background: var(--bg-card); border-color: color-mix(in srgb, var(--need) 55%, var(--line)); }
+.lane.five #needs-you .cards > .card h4 { font-size: 16px; line-height: 1.3; }
+.lane.five #needs-you .cards > .card > :is(.need-top, h4:first-child),
+.lane.five #needs-you .cards > .card.escalation > .face > .line1,
+.lane.five #needs-you .cards > .card.face > .line1 { min-height: 32px; margin: 0 -8px 6px -11px; padding: 6px 8px 6px 11px; background: color-mix(in srgb, var(--need) 14%, var(--bg-card)); border-bottom: 1px solid color-mix(in srgb, var(--need) 40%, transparent); }
+[data-theme=light] .lane.five #needs-you .cards > .card > :is(.need-top, h4:first-child),
+[data-theme=light] .lane.five #needs-you .cards > .card.escalation > .face > .line1,
+[data-theme=light] .lane.five #needs-you .cards > .card.face > .line1 { background: color-mix(in srgb, var(--need) 22%, var(--bg-card)); border-bottom-color: color-mix(in srgb, var(--need) 60%, transparent); }
+.lane.five #needs-you .cards > .card :is(.need-top, h4:first-child, .line1) .ref { color: var(--need-text); font-weight: 600; }
+.lane.five #needs-you .cards > .card .need-top .since { color: var(--text-muted); }
 
 /* a card: a hairline box, the state's hue as a 2 px left rule */
 .card { position: relative; background: var(--bg-card); border: 1px solid var(--line); border-radius: 2px; padding: 7px 8px 8px; margin-bottom: 6px; transition: background-color .12s, border-color .12s; }
@@ -817,6 +827,26 @@ details.tool pre, .proposal pre { margin: 0; padding: 6px 10px 8px 23px; border-
 .proposal .pfoot button { margin: 0; }
 .proposal .doit { height: 28px; }
 button.skip { height: 28px; padding: 0 12px; font-size: 13px; color: var(--text); }
+/* the pool proposal's own half (the pool-chat-controls plan): the
+   cent-precision amount, the reason fixed at the capture, and the
+   ceiling preview that follows the edited number */
+form.pool-edit { margin: 8px 0 0; padding: 8px 10px; border: 1px dashed var(--line-strong); font-size: 13px; }
+form.pool-edit label { display: flex; align-items: center; gap: 6px; margin: 0; }
+form.pool-edit input[type=number] { width: 7rem; }
+.pool-reason { margin: 6px 0 0; color: var(--text-muted); font-size: 12.5px; }
+.pool-preview { margin: 6px 0 0; color: var(--text); font: 12px var(--font-mono); }
+/* the panel's pool control under the log, above the composer: the pool
+   line the settings and policy pages read, and the ask an approver
+   alone may start */
+.pool-host:empty { display: none; }
+.poolctl { margin: 0; padding: 8px 14px; border-top: 1px solid var(--line); background: color-mix(in srgb, var(--bg) 35%, var(--bg-raised)); }
+.poolctl .pool-note { margin: 0 0 6px; color: var(--text-muted); font-size: 12.5px; }
+form.poolctl { display: flex; flex-wrap: wrap; gap: 6px; align-items: end; }
+form.poolctl label { margin: 0; }
+form.poolctl input[type=number] { width: 7rem; }
+form.poolctl input[type=text] { width: 14rem; max-width: 100%; }
+form.poolctl button { height: 28px; background: none; color: var(--text); border-color: var(--btn-line); }
+.poolctl .pool-why { flex: 1 0 100%; margin: 6px 0 0; color: var(--text-faint); font-size: 11.5px; }
 .applied { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; margin: 10px 0 0; color: var(--text-muted); font: 12px/1.6 var(--font-mono); }
 .applied .ok { color: var(--st-done); }
 .applied .undone { color: var(--text-faint); }

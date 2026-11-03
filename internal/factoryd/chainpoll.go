@@ -76,9 +76,9 @@ func (s *PGStore) MergedCardCommits(ctx context.Context, repository string, shas
 // request and no carry row, the merge commit recorded or not: the cards
 // the late mapping gives a row, and those a silent chain alerts for.
 func (s *PGStore) UncarriedMerged(ctx context.Context, repository string) ([]Task, error) {
-	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks t
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks
 		WHERE repository = $1 AND status = 'merged' AND pr_number > 0
-		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = t.repository AND c.pr_number = t.pr_number)
+		AND NOT EXISTS (SELECT 1 FROM chain_runs c WHERE c.repository = tasks.repository AND c.pr_number = tasks.pr_number)
 		ORDER BY id`, repository)
 }
 
@@ -177,6 +177,27 @@ func (s *PGStore) RecordChainHead(ctx context.Context, repository, sha string, r
 		WHERE chain_runs.run_id <= $3 AND (chain_runs.sha <> $2 OR chain_runs.run_id <> $3 OR chain_runs.status <> $5)
 		AND NOT (chain_runs.status = 'stalled' AND $5 = 'pending' AND chain_runs.run_id = $3 AND chain_runs.sha = $2)`,
 		repository, sha, run, index, status)
+	return err
+}
+
+// ChainGreen is the newest green run any of repository's rows records, 0
+// for none: the run the coverage read compares against.
+func (s *PGStore) ChainGreen(ctx context.Context, repository string) (int64, error) {
+	var green int64
+	err := s.db.QueryRowContext(ctx, `SELECT COALESCE(max(run_id), 0) FROM chain_runs
+		WHERE repository = $1 AND status = 'success'`, repository).Scan(&green)
+	return green, err
+}
+
+// RecordChainGreen upserts the green row (pr -1) to run, a run whose
+// commit's verdict is green: a run no pull request rides that went green
+// while a newer run waited is in no other row, and its green still covers
+// every card carried before it. An older run never unseats it.
+func (s *PGStore) RecordChainGreen(ctx context.Context, repository, sha string, run, index int64) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO chain_runs (repository, pr_number, sha, run_id, run_index, status, updated_at)
+		VALUES ($1, -1, $2, $3, $4, 'success', now())
+		ON CONFLICT (repository, pr_number) DO UPDATE SET sha = $2, run_id = $3, run_index = $4, updated_at = now()
+		WHERE chain_runs.run_id < $3`, repository, sha, run, index)
 	return err
 }
 
@@ -376,6 +397,8 @@ type ChainStore interface {
 	UncarriedMerged(ctx context.Context, repository string) ([]Task, error)
 	RecordChainRun(ctx context.Context, repository string, pr int64, sha string, run, index int64, status string) error
 	RecordChainHead(ctx context.Context, repository, sha string, run, index int64, status string) error
+	ChainGreen(ctx context.Context, repository string) (int64, error)
+	RecordChainGreen(ctx context.Context, repository, sha string, run, index int64) error
 	UnmappedChainRuns(ctx context.Context) (map[string][]int64, error)
 	SetChainRunIndex(ctx context.Context, repository string, runID, index int64) error
 	UnsettledChainCommits(ctx context.Context, repository string, shas []string) (map[string]bool, error)
@@ -860,8 +883,9 @@ func (p *ChainPoller) watching(ctx context.Context, repo Repo) (bool, error) {
 }
 
 // record writes the repository's chain: one row per pull request whose
-// change a new run carries, and the head row of the newest run's
-// commit. Every row's status is its commit's verdict — the AND of the
+// change a new run carries, the head row of the newest run's commit, and
+// the green row of the newest green run no other row records yet. Every
+// row's status is its commit's verdict — the AND of the
 // runs and required contexts on that commit, the same value the head
 // row gets — so every reader of the rows (the coverage read, the
 // inform, the facts) inherits the required contexts. A run newer than
@@ -949,8 +973,31 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	if err != nil {
 		return err
 	}
+	verdicts[newest.CommitSHA] = verdict
 	if err := p.Store.RecordChainHead(ctx, proj.Repository, newest.CommitSHA, newest.ID, newest.Index, verdict); err != nil {
 		return err
+	}
+	green, err := p.Store.ChainGreen(ctx, proj.Repository)
+	if err != nil {
+		return err
+	}
+	for _, run := range slices.Backward(main) {
+		if run.ID <= green {
+			break
+		}
+		if run.Status != "success" {
+			continue
+		}
+		v, err := verdictOf(run.CommitSHA)
+		if err != nil {
+			return err
+		}
+		if v == "success" {
+			if err := p.Store.RecordChainGreen(ctx, proj.Repository, run.CommitSHA, run.ID, run.Index); err != nil {
+				return err
+			}
+			break
+		}
 	}
 	p.watch(ctx, proj, verdict, cfg.Stall, newest, findings, stuck)
 	// the late path never gates the head, the watch or the reconciler

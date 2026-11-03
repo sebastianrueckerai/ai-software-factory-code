@@ -216,6 +216,22 @@ func TestChatPlanBuiltFromAnswers(t *testing.T) {
 		[]string{"revision 3, sha256 7c3d\n" + summary + "1. Which cache? (choices: none / redis)\n" + readsPlanRows})
 }
 
+// The card read's money nets the gateway's holds: 4.50 settled and 0.40
+// held of 5.00 reads 4.90 spent.
+func TestChatCardMoneyNetsHolds(t *testing.T) {
+	r, g := newReadsRig(t)
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if k := &r.tasks.tasks[i]; k.ID == "t-r" {
+			k.SpentEUR, k.HeldEUR = 4.5, 0.4
+		}
+	}
+	r.tasks.mu.Unlock()
+	if got := reads(t, r, g, "card", `{"task_id":"t-r"}`)[0]; !strings.Contains(got, ", €4.90 of €5.00\n") {
+		t.Fatalf("the card read = %q, want €4.90 of €5.00", got)
+	}
+}
+
 // The card read is the card in full: its state, gate and spend, lane,
 // issue, sessions of its cap, the cards it depends on (the open ones
 // first) and those that depend on it, its pull request with its head and

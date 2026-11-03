@@ -560,8 +560,8 @@ records the commit it wrote and sets the task's base to the main head the
 branch was cut from, and the head goes through the pull request, the checks (no image build: no
 Dockerfile input changed), the policy gate (`k8s/**` is high) and the
 card. The approver's click, `factory-merge` merges, Flux applies, and the
-roll watcher records the rows. The merge waits for a session gap (ruling
-269; the card says so): factoryd runs one replica, so its restart stops
+roll watcher records the rows. The merge waits for a session gap (the
+card says so): factoryd runs one replica, so its restart stops
 every running session. `AwaitSessionGap` holds new sessions (a
 `roll_holds` row) and polls every 15 s until no session runs in factoryd,
 the roll's own aside, or until the longest agent time in force (limits,

@@ -18,8 +18,8 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The console's pages as the project agent's tools (roadmap 158, ruling
-// 261): every read a page makes is a read tool, never behind an OK, and
+// The console's pages as the project agent's tools (roadmap 158):
+// every read a page makes is a read tool, never behind an OK, and
 // each shows exactly what its page shows to the same member, down to the
 // refusal. The writes call the same functions the pages' POST handlers
 // call.
