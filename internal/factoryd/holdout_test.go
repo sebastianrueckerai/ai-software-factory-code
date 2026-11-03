@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"errors"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
@@ -14,88 +15,35 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The dry run writes every draft into a scratch package of its own and
-// reports one marker line per draft; the heredoc marker carries the
-// draft's idx, so a drafted test cannot forge another draft's marker.
-func TestHoldoutScriptRunsEachDraftInItsOwnPackage(t *testing.T) {
-	drafts := []Holdout{{Idx: 1, TestName: "TestDoorShut", TestCode: "door code"}, {Idx: 2, TestName: "TestKeyLog", TestCode: "log code"}}
-	want := `mkdir -p .holdout1
-cat > .holdout1/holdout_test.go <<'FACTORYD_HOLDOUT1'
-package holdout
-door code
-FACTORYD_HOLDOUT1
-o=/tmp/ho1
-go test -v -run '^TestDoorShut$' ./.holdout1 >"$o" 2>&1
-rc=$?
-ran=$(grep -c '^=== RUN   TestDoorShut$' "$o")
-fail=$(grep -c '^--- FAIL: TestDoorShut ' "$o")
-ev=$(grep -m1 '^--- FAIL: ' "$o")
-[ -n "$ev" ] || ev=$(head -n 1 "$o")
-printf '__holdout 1 exit=%s ran=%s fail=%s %s\n' "$rc" "$ran" "$fail" "$ev"
-` + `mkdir -p .holdout2
-cat > .holdout2/holdout_test.go <<'FACTORYD_HOLDOUT2'
-package holdout
-log code
-FACTORYD_HOLDOUT2
-o=/tmp/ho2
-go test -v -run '^TestKeyLog$' ./.holdout2 >"$o" 2>&1
-rc=$?
-ran=$(grep -c '^=== RUN   TestKeyLog$' "$o")
-fail=$(grep -c '^--- FAIL: TestKeyLog ' "$o")
-ev=$(grep -m1 '^--- FAIL: ' "$o")
-[ -n "$ev" ] || ev=$(head -n 1 "$o")
-printf '__holdout 2 exit=%s ran=%s fail=%s %s\n' "$rc" "$ran" "$fail" "$ev"
-`
-	if got := holdoutScript(drafts); got != want {
-		t.Fatalf("script = %q, want %q", got, want)
+// A draft is one proof of its own: its file written into a scratch
+// package inside the repository, its test run by name there.
+func TestHoldoutProofWritesTheDraftIntoItsOwnPackage(t *testing.T) {
+	got := holdoutProof(Holdout{Idx: 2, TestName: "TestKeyLog", TestCode: "func TestKeyLog(t *testing.T) {}"})
+	want := harness.Proof{ID: "holdout-2", Suite: "./.holdout2", Name: "TestKeyLog",
+		File: &harness.ProofFile{Path: ".holdout2/holdout_test.go", Content: "package holdout\nfunc TestKeyLog(t *testing.T) {}\n"}}
+	if !reflect.DeepEqual(got, want) {
+		t.Fatalf("proof = %+v %+v, want %+v %+v", got, got.File, want, want.File)
 	}
 }
 
-// Marker lines parse however the sandbox printed them; the last marker
-// of a draft wins and the evidence is optional.
-func TestParseHoldoutMarkers(t *testing.T) {
-	out := strings.Join([]string{
-		"agent-worker: probing",
-		"__holdout 1 exit=1 ran=1 fail=1 first try",
-		"not a marker: __holdout 9 exit=1 ran=1 fail=1 x",
-		"__holdout 1 exit=0 ran=2 fail=0 second try",
-		"__holdout 2 exit=2 ran=0 fail=0",
-	}, "\n")
-	m := parseHoldoutMarkers(out)
-	if len(m) != 2 {
-		t.Fatalf("markers = %v", m)
-	}
-	if m[1] != (criterionVerdict{exit: 0, ranCount: 2, failCount: 0, evidence: "second try"}) {
-		t.Fatalf("marker 1 = %+v", m[1])
-	}
-	if m[2] != (criterionVerdict{exit: 2, evidence: ""}) {
-		t.Fatalf("marker 2 = %+v", m[2])
-	}
-	if holdoutRan(m, 3) || !holdoutRan(m, 2) {
-		t.Fatalf("holdoutRan: 3 runs, 2 does not; markers %v", m)
-	}
-}
-
-// The dry verdict, hand-derived one arm at a time: a lost marker is no
-// verdict, a failure is red even when nothing ran, a run without the
-// test or a bad exit is unrunnable, and long evidence shortens.
+// The dry verdict, hand-derived one outcome at a time: a failure is red,
+// a pass green, and anything else (no such test, a build that fails, a
+// skip, no report) unrunnable; the evidence is one line, shortened.
 func TestHoldoutDryVerdict(t *testing.T) {
 	for name, tc := range map[string]struct {
-		v       criterionVerdict
-		ok      bool
+		o       proofOutcome
 		wantDry string
 		wantEv  string
 	}{
-		"no marker":       {ok: false, wantDry: HoldoutUnrunnable, wantEv: "no verdict from the run"},
-		"red":             {v: criterionVerdict{exit: 1, ranCount: 1, failCount: 1, evidence: "--- FAIL: TestX (0.00s)"}, ok: true, wantDry: "red", wantEv: "--- FAIL: TestX (0.00s)"},
-		"red without ran": {v: criterionVerdict{exit: 1, ranCount: 0, failCount: 1, evidence: "boom"}, ok: true, wantDry: "red", wantEv: "boom"},
-		"never ran":       {v: criterionVerdict{exit: 1, ranCount: 0, failCount: 0, evidence: "no tests to run"}, ok: true, wantDry: HoldoutUnrunnable, wantEv: "no tests to run"},
-		"bad exit":        {v: criterionVerdict{exit: 2, ranCount: 1, failCount: 0, evidence: "exit status 2"}, ok: true, wantDry: HoldoutUnrunnable, wantEv: "exit status 2"},
-		"green":           {v: criterionVerdict{exit: 0, ranCount: 1}, ok: true, wantDry: "green"},
-		"long evidence":   {v: criterionVerdict{exit: 1, ranCount: 1, failCount: 1, evidence: strings.Repeat("a", 250)}, ok: true, wantDry: "red", wantEv: strings.Repeat("a", 200) + "..."},
+		"red":           {proofOutcome{proofFailed, "Failed\n--- FAIL: TestX (0.00s)"}, "red", "Failed --- FAIL: TestX (0.00s)"},
+		"green":         {proofOutcome{proofPassed, ""}, "green", ""},
+		"build failed":  {proofOutcome{proofMissing, "Failed\nFAIL\tsf/repo/.holdout2 [build failed]"}, HoldoutUnrunnable, "Failed FAIL sf/repo/.holdout2 [build failed]"},
+		"skipped":       {proofOutcome{proofSkipped, "no db"}, HoldoutUnrunnable, "no db"},
+		"no report":     {proofOutcome{proofNoReport, "check test wrote no report (exit 1)"}, HoldoutUnrunnable, "check test wrote no report (exit 1)"},
+		"long evidence": {proofOutcome{proofFailed, strings.Repeat("a", 250)}, "red", strings.Repeat("a", 200) + "..."},
 	} {
 		t.Run(name, func(t *testing.T) {
-			dry, ev := holdoutDryVerdict(tc.v, tc.ok)
+			dry, ev := holdoutDryVerdict(tc.o)
 			if dry != tc.wantDry || ev != tc.wantEv {
 				t.Fatalf("dry verdict = (%q, %q), want (%q, %q)", dry, ev, tc.wantDry, tc.wantEv)
 			}
@@ -134,8 +82,11 @@ func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 		done <- r.askHoldouts(context.Background(), holdoutPlanTask(), 1, p)
 	}()
 	scriptReproPods(kube,
-		reproLine(0, "__holdout 1 exit=1 ran=1 fail=1 --- FAIL: TestDoorShut (0.00s)\n__holdout 2 exit=1 ran=0 fail=0 no tests to run"),
-		reproLine(0, "__holdout 2 exit=1 ran=1 fail=1 --- FAIL: TestKeyLog (0.00s)"))
+		proofLines(
+			harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorShut"><failure message="Failed">--- FAIL: TestDoorShut (0.00s)</failure></testcase>`))},
+			harness.ProofRun{ID: "holdout-2", Exit: 1, Report: junitGz(t, wrap(`<testcase classname="" name="TestMain"><failure message="Failed">FAIL&#x9;sf/repo/.holdout2 [build failed]</failure></testcase>`))}),
+		proofLines(
+			harness.ProofRun{ID: "holdout-2", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))}))
 	if err := <-done; err != nil {
 		t.Fatal(err)
 	}
@@ -145,17 +96,31 @@ func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 	}
 	want1 := Holdout{Idx: 1, Round: 1, ID: "door_state", Origin: HoldoutDrafted,
 		Criterion: "The door stays shut until a key that fits turns the lock", State: HoldoutProposed,
-		DryHead: "base", DryVerdict: "red", DryOutput: "--- FAIL: TestDoorShut (0.00s)",
+		DryHead: "base", DryVerdict: "red", DryOutput: "Failed --- FAIL: TestDoorShut (0.00s)",
 		TestName: "TestDoorShut", TestCode: "func TestDoorShut(t *testing.T) {\n\tt.Fatal(\"shut\")\n}"}
 	want2 := Holdout{Idx: 2, Round: 1, ID: "key_log", Origin: HoldoutMechanical,
 		Criterion: "Every key turn lands in the log", State: HoldoutProposed,
-		DryHead: "base", DryVerdict: "red", DryOutput: "--- FAIL: TestKeyLog (0.00s)",
+		DryHead: "base", DryVerdict: "red", DryOutput: "Failed --- FAIL: TestKeyLog (0.00s)",
 		TestName: "TestKeyLog", TestCode: "func TestKeyLog(t *testing.T) {\n\tt.Fatal(\"log\")\n}"}
 	if rows[0] != want1 || rows[1] != want2 {
 		t.Fatalf("rows =\n%+v\n%+v\nwant\n%+v\n%+v", rows[0], rows[1], want1, want2)
 	}
 	if len(kube.podOrder) != 2 {
 		t.Fatalf("pods %d, want the dry run and the corrective one", len(kube.podOrder))
+	}
+	// the second pass runs the redrafted draft alone
+	for i, want := range [][]string{{"holdout-1", "holdout-2"}, {"holdout-2"}} {
+		var list []harness.Proof
+		if err := json.Unmarshal([]byte(podEnv(kube.podOrder[i])["PROOFS"]), &list); err != nil {
+			t.Fatal(err)
+		}
+		var ids []string
+		for _, p := range list {
+			ids = append(ids, p.ID)
+		}
+		if !slices.Equal(ids, want) {
+			t.Fatalf("pod %d runs %v, want %v", i, ids, want)
+		}
 	}
 	// the planner's sandbox went with its session: the dry runs build
 	// their own, with a read token, and tear it down
@@ -171,7 +136,7 @@ func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 			t.Fatalf("the proposal call lacks %q: %s", want, first)
 		}
 	}
-	for _, want := range []string{"TestKeyLog", "no tests to run"} {
+	for _, want := range []string{"TestKeyLog", "build failed"} {
 		if !strings.Contains(second, want) {
 			t.Fatalf("the redraft call lacks %q: %s", want, second)
 		}
@@ -553,11 +518,11 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 		defer close(done)
 		res, err = runCriteria(t, r)
 	}()
-	scriptReproPods(kube, reproLine(0, strings.Join([]string{
-		"__criterion a_green exit=0 ran=1 fail=0 --- PASS: TestA",
-		"__holdout 1 exit=1 ran=1 fail=1 --- FAIL: TestDoorState (0.01s)",
-		"__holdout 2 exit=0 ran=1 fail=0",
-	}, "\n")))
+	scriptReproPods(kube, proofLines(
+		harness.ProofRun{ID: "a_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
+		harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorState"><failure message="Failed">--- FAIL: TestDoorState (0.01s)</failure></testcase>`))},
+		harness.ProofRun{ID: "holdout-2", Report: junitGz(t, wrap(`<testcase name="TestKeyLog"></testcase>`))},
+	))
 	<-done
 	if err != nil {
 		t.Fatal(err)
@@ -565,7 +530,7 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 	if len(res.Findings) != 0 || res.Skipped != "" || res.Escalate != "" {
 		t.Fatalf("result = %+v, want the criteria met", res)
 	}
-	wantHoldouts := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorState (0.01s)"}}
+	wantHoldouts := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "Failed --- FAIL: TestDoorState (0.01s)"}}
 	if !slices.Equal(res.Holdouts, wantHoldouts) {
 		t.Fatalf("holdouts = %+v, want %+v", res.Holdouts, wantHoldouts)
 	}
@@ -575,9 +540,22 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "1 of 1 criteria met") {
 		t.Fatalf("comments = %q", hub.comments)
 	}
+	var list []harness.Proof
+	if err := json.Unmarshal([]byte(podEnv(kube.podOrder[0])["PROOFS"]), &list); err != nil || len(list) != 3 {
+		t.Fatalf("PROOFS = %+v (%v), want the criterion and the two hold-outs", list, err)
+	}
+	for i, h := range rows {
+		if want := holdoutProof(h); !reflect.DeepEqual(list[1+i], want) || list[1+i].File == nil {
+			t.Fatalf("entry %d = %+v, want %+v with its file", 1+i, list[1+i], want)
+		}
+	}
+	verdicts, _ := store.CriteriaVerdicts(context.Background(), "t1")
+	if len(verdicts) != 1 || verdicts[0].Criterion != "a_green" || verdicts[0].Verdict != "met" {
+		t.Fatalf("verdict rows = %+v, want a_green's alone", verdicts)
+	}
 	for _, leak := range []string{"door_state", "key_log", "TestDoorState"} {
-		if strings.Contains(hub.comments[0], leak) {
-			t.Fatalf("the comment carries the hold-out %q: %s", leak, hub.comments[0])
+		if strings.Contains(hub.comments[0], leak) || strings.Contains(verdicts[0].Evidence, leak) {
+			t.Fatalf("the comment or a row carries the hold-out %q: %s; %+v", leak, hub.comments[0], verdicts)
 		}
 	}
 	step := timelineStep(t, objects, "t1", "gate_criteria")
@@ -719,15 +697,18 @@ func TestSettleHoldoutsKeepsARewriteThatHolds(t *testing.T) {
 		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock",
 			Quote: "The door opens only for a key that fits", TestCode: rewrite},
 		sessionLog("audited"),
-		reproLine(0, "__holdout 1 exit=1 ran=1 fail=1 --- FAIL: TestDoorShut (0.00s)"))
+		proofLines(harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorShut"><failure message="Failed">--- FAIL: TestDoorShut (0.00s)</failure></testcase>`))}))
 	if err != nil {
 		t.Fatal(err)
 	}
 	if !res.Settled {
 		t.Fatalf("settlement = %+v", res)
 	}
+	if at := initContainer(t, kube.podOrder[1].spec["spec"].(map[string]any), "fetch"); containerEnv(at)["CHECKOUT_SHA"] != "base" {
+		t.Fatalf("the rewrite's fetch env = %v, want the hold-out's dry head", containerEnv(at))
+	}
 	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].TestCode != rewrite || rows[0].DryVerdict != "red" || rows[0].DryOutput != "--- FAIL: TestDoorShut (0.00s)" ||
+	if rows[0].TestCode != rewrite || rows[0].DryVerdict != "red" || rows[0].DryOutput != "Failed --- FAIL: TestDoorShut (0.00s)" ||
 		rows[0].AuditVerdict != "" || rows[0].Rewrite != "" || rows[0].State != HoldoutStored {
 		t.Fatalf("row = %+v", rows[0])
 	}
@@ -745,9 +726,12 @@ func TestSettleHoldoutsRefusesARewriteThatBends(t *testing.T) {
 		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock",
 			Quote: "The door opens only for a key that fits", TestCode: "func TestDoorShut(t *testing.T) {}"},
 		sessionLog("audited"),
-		reproLine(0, "__holdout 1 exit=0 ran=1 fail=0"))
+		proofLines(harness.ProofRun{ID: "holdout-1", Report: junitGz(t, wrap(`<testcase name="TestDoorShut"></testcase>`))}))
 	if err != nil {
 		t.Fatal(err)
+	}
+	if at := initContainer(t, kube.podOrder[1].spec["spec"].(map[string]any), "fetch"); containerEnv(at)["CHECKOUT_SHA"] != "base" {
+		t.Fatalf("the rewrite's fetch env = %v, want the hold-out's dry head", containerEnv(at))
 	}
 	if res.Settled || !strings.Contains(res.Ask, "the audit's rewrite of hold-out door_state green on the base head") ||
 		!strings.Contains(res.Ask, "the hold-out keeps its own test") {

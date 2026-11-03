@@ -6,16 +6,19 @@ import (
 	"fmt"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
+	"unicode/utf8"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The criteria gate (the spec-intake concept, piece 4): on the plan's
 // integration card, at the approval, it runs the plan's test and invariant
-// criteria once against the head and reports every criterion not met as a
-// finding on the approval card. Judgement and human criteria are outside
-// the gate: their proof is the review's verdict or the approver's
-// decision.
+// criteria once against the head, writes each one's gate verdict row and
+// reports every criterion not met as a finding on the approval card.
+// Judgement and human criteria are outside the gate: their proof is the
+// review's verdict or the approver's decision.
 
 // CriteriaResult is GateCriteria's verdict: Skipped names why the gate did
 // not run (no plan filed, or the card is not the plan's integration
@@ -33,159 +36,177 @@ type CriteriaResult struct {
 }
 
 // The house format of the criteria's test fields, as the gate reads them:
-// "TestXxx in <package>" (a test bash check runs) and "go test <suite>
-// passes" (an invariant). The charsets admit no shell metacharacter, so
-// the fields quoted into the sandbox script cannot leave their argument.
+// "TestXxx in <package>" (one test) and "go test <suite> passes" (an
+// invariant: every test of the suite).
 var (
 	criterionTestField      = regexp.MustCompile(`^(Test[A-Za-z0-9_]*) in ([A-Za-z0-9_./-]+)$`)
 	criterionInvariantField = regexp.MustCompile(`^go test ([A-Za-z0-9_./-]+) passes$`)
-	// criterionMarker reads a marker line the script prints, one per
-	// criterion: its exit, run and fail counts and one line of evidence.
-	// The fields parse positionally, so a forged suffix in the evidence
-	// cannot flip them.
-	criterionMarker = regexp.MustCompile(`^__criterion ([a-z][a-z0-9_]{1,31}) exit=(-?[0-9]+) ran=([0-9]+) fail=([0-9]+)(?: (.*))?$`)
 )
 
-// criterionRun is one criterion of the plan the gate runs in the sandbox:
-// kind test names its test and its package, kind invariant its suite.
+// maxProofMessage caps a proof's message on the timeline.
+const maxProofMessage = 4 << 10
+
+// criterionRun is one test or invariant criterion of the plan: kind test
+// names its test and its package, kind invariant its suite; refused is the
+// finding on a field off the house format, which never runs.
 type criterionRun struct {
-	id        string
+	id, kind  string
 	test, pkg string
 	suite     string
+	refused   string
 }
 
-// criteriaRuns parses the plan's test and invariant criteria into runs;
-// judgement and human criteria are outside the gate. A test field off the
-// house format is a finding, never a run: what cannot be parsed is not
-// executed.
-func criteriaRuns(p Plan) (runs []criterionRun, findings []string) {
+// criteriaRuns are the plan's test and invariant criteria, in plan order;
+// judgement and human criteria are outside the gate. What cannot be
+// parsed is not executed.
+func criteriaRuns(p Plan) []criterionRun {
+	var runs []criterionRun
 	for _, c := range p.Criteria {
+		run := criterionRun{id: c.ID, kind: c.Kind}
 		switch c.Kind {
 		case CriterionTest:
 			if m := criterionTestField.FindStringSubmatch(c.Test); m != nil {
-				runs = append(runs, criterionRun{id: c.ID, test: m[1], pkg: m[2]})
-				continue
+				run.test, run.pkg = m[1], goPackage(m[2])
+			} else {
+				run.refused = fmt.Sprintf("criterion %s: test %q is not TestXxx in <package>", c.ID, c.Test)
 			}
-			findings = append(findings, fmt.Sprintf("criterion %s: test %q is not TestXxx in <package>", c.ID, c.Test))
 		case CriterionInvariant:
 			if m := criterionInvariantField.FindStringSubmatch(c.Test); m != nil {
-				runs = append(runs, criterionRun{id: c.ID, suite: m[1]})
-				continue
+				run.suite = goPackage(m[1])
+			} else {
+				run.refused = fmt.Sprintf("criterion %s: suite %q is not go test <suite> passes", c.ID, c.Test)
 			}
-			findings = append(findings, fmt.Sprintf("criterion %s: suite %q is not go test <suite> passes", c.ID, c.Test))
-		}
-	}
-	return runs, findings
-}
-
-// criteriaScript is the sandbox run: one go test per criterion, in the
-// plan's order, every output to a file of its own, so the script's stdout
-// is the marker lines alone and the tail keeps them whole. The test kind
-// runs with -v: its "=== RUN" lines count the named test ("=== RUN" and
-// three spaces, a subtest's name carries a slash); the fail count greps
-// the test's own "--- FAIL" line, the evidence the first failed test's.
-func criteriaScript(runs []criterionRun) string {
-	var b strings.Builder
-	for i, r := range runs {
-		fmt.Fprintf(&b, "o=/tmp/k%d\n", i+1)
-		if r.suite != "" {
-			fmt.Fprintf(&b, "go test %s >\"$o\" 2>&1\n", r.suite)
-		} else {
-			fmt.Fprintf(&b, "go test -v -run '^%s$' %s >\"$o\" 2>&1\n", r.test, r.pkg)
-		}
-		b.WriteString("rc=$?\n")
-		if r.suite != "" {
-			b.WriteString("ran=$(grep -c '^ok' \"$o\")\nfail=$(grep -c '^FAIL' \"$o\")\n")
-		} else {
-			fmt.Fprintf(&b, "ran=$(grep -c '^=== RUN   %s$' \"$o\")\nfail=$(grep -c '^--- FAIL: %s ' \"$o\")\n", r.test, r.test)
-		}
-		b.WriteString("ev=$(grep -m1 '^--- FAIL: ' \"$o\")\n[ -n \"$ev\" ] || ev=$(head -n 1 \"$o\")\n")
-		fmt.Fprintf(&b, "printf '__criterion %s exit=%%s ran=%%s fail=%%s %%s\\n' \"$rc\" \"$ran\" \"$fail\" \"$ev\"\n", r.id)
-	}
-	return b.String()
-}
-
-// criterionVerdict is one criterion's counts in its marker line.
-type criterionVerdict struct {
-	exit, ranCount, failCount int
-	evidence                  string
-}
-
-// parseCriteriaMarkers reads the run's marker lines from the output tail.
-// The last marker of a criterion wins; a line that matches no marker is
-// test output the script never wrote to stdout.
-func parseCriteriaMarkers(output string) map[string]criterionVerdict {
-	out := map[string]criterionVerdict{}
-	for _, line := range strings.Split(output, "\n") {
-		m := criterionMarker.FindStringSubmatch(line)
-		if m == nil {
+		default:
 			continue
 		}
-		exit, _ := strconv.Atoi(m[2])
-		ran, _ := strconv.Atoi(m[3])
-		fail, _ := strconv.Atoi(m[4])
-		out[m[1]] = criterionVerdict{exit: exit, ranCount: ran, failCount: fail, evidence: m[5]}
+		runs = append(runs, run)
 	}
-	return out
+	return runs
 }
 
-// shortenEvidence keeps a criterion's evidence line readable on a card.
+// goPackage reads a criterion's package as a directory of the repository:
+// go test reads a bare path as a standard library package, and a leading
+// dash as a flag.
+func goPackage(p string) string {
+	first, _, _ := strings.Cut(p, "/")
+	if strings.HasPrefix(p, "-") || (first != "" && !strings.Contains(first, ".")) {
+		return "./" + p
+	}
+	return p
+}
+
+// proof is the run's entry in the runner's list.
+func (c criterionRun) proof() harness.Proof {
+	if c.kind == CriterionInvariant {
+		return harness.Proof{ID: c.id, Suite: c.suite}
+	}
+	return harness.Proof{ID: c.id, Suite: c.pkg, Name: c.test}
+}
+
+// gateProof is one criterion's run as the gate_criteria timeline line records it.
+type gateProof struct {
+	ID      string `json:"id"`
+	Kind    string `json:"kind"`
+	Suite   string `json:"suite,omitempty"`
+	Name    string `json:"name,omitempty"`
+	Outcome string `json:"outcome"` // a proof* constant; "" for a refused criterion
+	Met     bool   `json:"met"`
+	Line    string `json:"line"`
+	Message string `json:"message,omitempty"` // at most maxProofMessage
+}
+
+// shortenEvidence keeps a proof's message readable on a card: one line,
+// at most 200 bytes.
 func shortenEvidence(s string) string {
-	if len(s) > 200 {
-		return s[:200] + "..."
+	s = strings.Join(strings.Fields(s), " ")
+	if len(s) <= 200 {
+		return s
 	}
-	return s
+	n := 200
+	for !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }
 
-// criteriaReport judges the runs against their markers: findings for the
-// approval card, lines for the comment, entries for the timeline. A
-// criterion whose marker the tail lost is "no verdict from the run": a
-// gate that runs and reports nothing does not pass.
-func criteriaReport(runs []criterionRun, markers map[string]criterionVerdict) (findings, lines []string, entries []map[string]any) {
+// criteriaReport judges the runs by their outcomes: findings for the
+// approval card, lines for the comment, entries for the timeline. A run
+// without an outcome reported nothing: a gate that runs and reports
+// nothing does not pass.
+func criteriaReport(runs []criterionRun, outcomes map[string]proofOutcome) (findings, lines []string, proofs []gateProof) {
+	proofs = make([]gateProof, 0, len(runs))
 	for _, r := range runs {
-		v, ok := markers[r.id]
-		ev := shortenEvidence(v.evidence)
-		line, verdict := "", "passed"
-		switch {
-		case !ok:
-			verdict = "no verdict"
-			line = fmt.Sprintf("criterion %s: no verdict from the run", r.id)
-		case r.suite != "" && v.exit != 0:
-			verdict = "failed"
-			line = fmt.Sprintf("criterion %s: suite %s failed: %s", r.id, r.suite, ev)
-		case r.suite != "" && v.ranCount == 0:
-			verdict = "no tests"
-			line = fmt.Sprintf("criterion %s: suite %s ran no tests", r.id, r.suite)
-		case r.suite != "":
-			line = fmt.Sprintf("criterion %s: suite %s passed", r.id, r.suite)
-		case v.ranCount == 0:
-			verdict = "no test"
-			line = fmt.Sprintf("criterion %s: no test %s in %s", r.id, r.test, r.pkg)
-		case v.failCount > 0:
-			verdict = "failed"
-			line = fmt.Sprintf("criterion %s: %s in %s failed: %s", r.id, r.test, r.pkg, ev)
-		case v.exit != 0:
-			verdict = "failed"
-			line = fmt.Sprintf("criterion %s: %s in %s did not run green (exit %d): %s", r.id, r.test, r.pkg, v.exit, ev)
-		default:
-			line = fmt.Sprintf("criterion %s: %s in %s passed", r.id, r.test, r.pkg)
+		p := r.proof()
+		g := gateProof{ID: r.id, Kind: r.kind, Suite: p.Suite, Name: p.Name, Line: r.refused}
+		if r.refused == "" {
+			o, ok := outcomes[r.id]
+			if !ok {
+				o = proofOutcome{proofNoReport, "the run reported nothing"}
+			}
+			g.Outcome, g.Met, g.Line, g.Message = o.Outcome, o.Outcome == proofPassed, criterionLine(r, o), textutil.Truncate(o.Message, maxProofMessage)
 		}
-		lines = append(lines, line)
-		if verdict != "passed" {
-			findings = append(findings, line)
+		lines = append(lines, g.Line)
+		if !g.Met {
+			findings = append(findings, g.Line)
 		}
-		entries = append(entries, map[string]any{"id": r.id, "verdict": verdict, "exit": v.exit})
+		proofs = append(proofs, g)
 	}
-	return findings, lines, entries
+	return findings, lines, proofs
+}
+
+// criterionLine is a run's line for the comment and the card.
+func criterionLine(r criterionRun, o proofOutcome) string {
+	what := r.test + " in " + r.pkg
+	if r.kind == CriterionInvariant {
+		what = "suite " + r.suite
+	}
+	s := what
+	switch o.Outcome {
+	case proofPassed:
+		s += " passed"
+	case proofFailed:
+		s += " failed"
+	case proofMissing:
+		s = "no test " + what
+		if r.kind == CriterionInvariant {
+			s = what + " ran no tests"
+		}
+	case proofSkipped:
+		s += " skipped"
+		if r.kind == CriterionInvariant {
+			s += " every test"
+		}
+	}
+	switch ev := shortenEvidence(o.Message); {
+	case ev == "":
+	case o.Outcome == proofPassed:
+		s += " (" + ev + ")"
+	default:
+		s += ": " + ev
+	}
+	return "criterion " + r.id + ": " + s
+}
+
+// gateRows are the gate's verdict rows: met for a criterion that passed,
+// unmet for any other, its line the evidence.
+func gateRows(proofs []gateProof) []CriterionVerdict {
+	rows := make([]CriterionVerdict, 0, len(proofs))
+	for _, g := range proofs {
+		verdict := "unmet"
+		if g.Met {
+			verdict = "met"
+		}
+		rows = append(rows, CriterionVerdict{Criterion: g.ID, Verdict: verdict, Evidence: g.Line, Kind: g.Kind})
+	}
+	return rows
 }
 
 // GateCriteria runs the plan's criteria against the pull request head in a
-// fresh sandbox with no agent: the worker's repro mode runs a
-// factoryd-written script (the task's own reproduction stays untouched),
-// one pod for every criterion together. Not the plan's integration card:
-// not run, the timeline says why. A plan that names no criteria names no
-// proof: that is a finding, for the human. The namespace and the token go
-// when it ends, however it ends.
+// fresh sandbox with no agent: one runner pod runs every criterion and
+// every stored hold-out through the tree's check test. Not the plan's
+// integration card: not run, the timeline says why. A plan that names no
+// criteria names no proof: that is a finding, for the human. The
+// namespace and the token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
@@ -209,66 +230,70 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": "not the plan's integration card"}))
 		return CriteriaResult{Skipped: "not the plan's integration card"}, nil
 	}
-	runs, findings := criteriaRuns(p)
+	runs := criteriaRuns(p)
+	// the plan's stored hold-outs run here too, after the criteria, so no
+	// criterion's run sees a hold-out's file: their outcomes never reach
+	// the card's findings, the comment or a verdict row (blind by routing
+	// and storage), they go to the settlement as Holdouts
+	hos := r.gateHoldouts(ctx, t.Parent)
+	var entries []harness.Proof
+	for _, c := range runs {
+		if c.refused == "" {
+			entries = append(entries, c.proof())
+		}
+	}
+	for _, h := range hos {
+		entries = append(entries, holdoutProof(h))
+	}
+	var outcomes map[string]proofOutcome
+	if len(entries) > 0 {
+		// a sandbox that cannot start is the start escalation, as a
+		// reproduction's is
+		cannotStart := func(err error) (CriteriaResult, error) {
+			var f *startFailure
+			if !errors.As(err, &f) {
+				return CriteriaResult{}, err
+			}
+			r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "start_failed": f.text}))
+			return CriteriaResult{Escalate: f.escalation(thenCriteria)}, nil
+		}
+		done, err := r.reproSandbox(ctx, &t, repo)
+		if err != nil {
+			return cannotStart(err)
+		}
+		defer done()
+		if outcomes, err = r.runProofs(ctx, t, repo, pullRef(pr), commit, "", entries); err != nil {
+			return cannotStart(err)
+		}
+	}
+	findings, lines, proofs := criteriaReport(runs, outcomes)
+	met := len(lines) - len(findings)
 	if len(p.Criteria) == 0 {
 		findings = append(findings, "criteria gate: the plan names no criteria")
 	}
-	// the plan's stored hold-outs run here too, beside the criteria: their
-	// reds never reach the card's findings or the comment (blind by
-	// routing and storage), they go to the settlement as Holdouts
-	hos := r.gateHoldouts(ctx, t.Parent)
-	entries := make([]map[string]any, 0, len(runs))
+	var holdouts []HoldoutGateResult
 	holdoutEntries := make([]map[string]any, 0, len(hos))
-	detail := func() map[string]any {
-		return gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "criteria": entries, "holdouts": holdoutEntries})
-	}
-	// nothing to run (an empty plan, or every runnable criterion off the
-	// format): the sandbox would report nothing
-	if len(runs) == 0 && len(hos) == 0 {
-		if len(findings) > 0 {
-			r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
-				commit, fenced(strings.Join(findings, "\n")))))
-		}
-		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "criteria": entries, "findings": findings}))
-		return CriteriaResult{Findings: findings}, nil
-	}
-	// a sandbox that cannot start is the start escalation, as a
-	// reproduction's is
-	cannotStart := func(err error) (CriteriaResult, error) {
-		var f *startFailure
-		if !errors.As(err, &f) {
-			return CriteriaResult{}, err
-		}
-		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "start_failed": f.text}))
-		return CriteriaResult{Escalate: f.escalation(thenCriteria)}, nil
-	}
-	done, err := r.reproSandbox(ctx, &t, repo)
-	if err != nil {
-		return cannotStart(err)
-	}
-	defer done()
-	run := t
-	run.ReproCommand = criteriaScript(runs) + holdoutScript(hos)
-	rep, err := r.runRepro(ctx, run, repo, pullRef(pr), commit, "")
-	if err != nil {
-		return cannotStart(err)
-	}
-	markers := parseCriteriaMarkers(rep.Output)
-	var runFindings, lines []string
-	runFindings, lines, entries = criteriaReport(runs, markers)
-	findings = append(findings, runFindings...)
-	met := len(runs) - len(runFindings)
-	holdouts := make([]HoldoutGateResult, 0, len(hos))
-	hmarkers := parseHoldoutMarkers(rep.Output)
 	for _, h := range hos {
-		dry, ev := holdoutDryVerdict(hmarkers[h.Idx], holdoutRan(hmarkers, h.Idx))
+		dry, ev := holdoutDryVerdict(outcomes[holdoutEntry(h.Idx)])
 		holdoutEntries = append(holdoutEntries, map[string]any{"id": h.ID, "verdict": dry})
 		if dry == "red" || dry == HoldoutUnrunnable {
 			holdouts = append(holdouts, HoldoutGateResult{Idx: h.Idx, ID: h.ID, Verdict: dry, Evidence: ev})
 		}
 	}
-	r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, met, lines)))
-	r.record(ctx, t.ID, "gate_criteria", detail())
+	if err := r.store.PutCriteriaVerdicts(ctx, t.ID, CriteriaSourceGate, FactoryDecider, gateRows(proofs)); err != nil {
+		return CriteriaResult{}, err
+	}
+	switch {
+	case len(entries) > 0:
+		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, met, lines)))
+	case len(findings) > 0:
+		// nothing ran: an empty plan, or every runnable criterion off the
+		// format
+		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
+			commit, fenced(strings.Join(findings, "\n")))))
+	}
+	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
+		"proofs": proofs, "holdouts": holdoutEntries, "findings": findings}))
 	return CriteriaResult{Findings: findings, Holdouts: holdouts}, nil
 }
 

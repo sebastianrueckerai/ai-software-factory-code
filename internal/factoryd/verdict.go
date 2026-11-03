@@ -30,6 +30,14 @@ const (
 	FinderApprover    = "approver"
 )
 
+// The sources of a criterion's verdict row: the approver's decision, the
+// criteria gate's run, the review's reading.
+const (
+	CriteriaSourceApprover = "approver"
+	CriteriaSourceGate     = "gate"
+	CriteriaSourceReview   = "review"
+)
+
 // CriterionVerdict is the verdict on one criterion: the review's answer
 // (criterion, verdict, evidence, fix) or the standing row the store reads
 // (with kind, source and decided_by). A human criterion's review row
@@ -200,7 +208,7 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	if verdict == "waived" && effectiveVerdict(rows, cid) == "met" {
 		return ErrCriterionMet
 	}
-	return store.PutCriteriaVerdicts(ctx, integration.ID, "approver", by,
+	return store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by,
 		[]CriterionVerdict{{Criterion: cid, Verdict: verdict, Evidence: reason, Kind: c.Kind}})
 }
 
@@ -275,7 +283,7 @@ func RecordHumanCriteria(ctx context.Context, store Store, taskID, approver stri
 	if len(rows) == 0 {
 		return 0, nil
 	}
-	return len(rows), store.PutCriteriaVerdicts(ctx, t.ID, "approver", approver, rows)
+	return len(rows), store.PutCriteriaVerdicts(ctx, t.ID, CriteriaSourceApprover, approver, rows)
 }
 
 // ErrChildOpen is a plan's card that is not done or merged, which a
@@ -324,7 +332,7 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 	for i, c := range open {
 		out[i] = CriterionVerdict{Criterion: c.ID, Verdict: "met", Evidence: cmp.Or(line, "confirmed by "+by), Kind: c.Kind}
 	}
-	if err := store.PutCriteriaVerdicts(ctx, integration.ID, "approver", by, out); err != nil {
+	if err := store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by, out); err != nil {
 		return 0, err
 	}
 	log.Printf("plan %s: %s confirmed the delivered cards meet %d criteria", id, by, len(out))
@@ -358,7 +366,7 @@ func integrationCard(ctx context.Context, store Store, parent string, p Plan) (T
 func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
 	return !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool {
 		v, ok := standingRow(rows, c.ID)
-		return !ok || v.Source != "approver"
+		return !ok || v.Source != CriteriaSourceApprover
 	})
 }
 
@@ -366,7 +374,7 @@ func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
 // the review's; false when no row holds one.
 func standingRow(rows []CriterionVerdict, criterion string) (CriterionVerdict, bool) {
 	for _, v := range rows {
-		if v.Source == "approver" && v.Criterion == criterion {
+		if v.Source == CriteriaSourceApprover && v.Criterion == criterion {
 			return v, true
 		}
 	}
@@ -633,7 +641,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 	rows, behaviours := normalizeCriteria(p, rv.Criteria, rv.Behaviours)
 	rv.Criteria, rv.Behaviours = rows, behaviours
 	if len(rows) > 0 {
-		if err := r.store.PutCriteriaVerdicts(ctx, integration.ID, "review", FactoryDecider, rows); err != nil {
+		if err := r.store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceReview, FactoryDecider, rows); err != nil {
 			log.Printf("task %s: store the criteria verdicts: %v", integration.ID, err)
 		}
 	}

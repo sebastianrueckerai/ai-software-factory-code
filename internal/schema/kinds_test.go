@@ -61,7 +61,8 @@ func kindConstants(t *testing.T, pattern string) map[string]string {
 // Every migration that adds a kind rewrites the whole check, so of two
 // parallel ones only the last applied keeps its kind: after all migrations,
 // every alert kind, alert verdict, approval kind, roll request state, case
-// kind, case status and case step outcome factoryd names is accepted.
+// kind, case status, case step outcome and criteria verdict source factoryd
+// names is accepted.
 func TestKindChecksAccept(t *testing.T) {
 	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds"))
 	if err != nil {
@@ -73,6 +74,10 @@ func TestKindChecksAccept(t *testing.T) {
 		t.Fatal(err)
 	}
 	if _, err := db.ExecContext(ctx, `DELETE FROM alerts; DELETE FROM approval_requests; DELETE FROM roll_requests`); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := db.ExecContext(ctx, `INSERT INTO tasks (id, budget_eur, status, track) VALUES ('kinds-verdicts', 5, 'running', 'direct') ON CONFLICT (id) DO NOTHING;
+		DELETE FROM criteria_verdicts WHERE task_id = 'kinds-verdicts'`); err != nil {
 		t.Fatal(err)
 	}
 	for name, kind := range kindConstants(t, `^Alert[A-Z]`) {
@@ -119,6 +124,11 @@ func TestKindChecksAccept(t *testing.T) {
 	for name, outcome := range kindConstants(t, `^Step(InProgress|Resolved|HandedUp|Withdrawn)$`) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO case_steps (case_id, rung, actor, outcome) VALUES ($1, 0, 'kinds', $2)`, caseID, outcome); err != nil {
 			t.Errorf("case step outcome %s (%q): %v", name, outcome, err)
+		}
+	}
+	for name, source := range kindConstants(t, `^CriteriaSource[A-Z]`) {
+		if _, err := db.ExecContext(ctx, `INSERT INTO criteria_verdicts (task_id, criterion_id, kind, verdict, source) VALUES ('kinds-verdicts', $1, 'test', 'met', $1)`, source); err != nil {
+			t.Errorf("criteria verdict source %s (%q): %v", name, source, err)
 		}
 	}
 }

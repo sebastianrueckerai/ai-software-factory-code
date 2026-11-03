@@ -865,15 +865,83 @@ func (r *Runner) reproSandbox(ctx context.Context, t *Task, repo Repo) (done fun
 // history (the base) when given. A sandbox that cannot start is a
 // *startFailure.
 func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, at string) (harness.Repro, error) {
+	var rep harness.Repro
+	err := r.runnerPod(ctx, t, r.reproPodSpec(t, repo, ref, commit, at), func(ns, podName string) error {
+		var err error
+		rep, err = r.readRepro(ctx, ns, podName, t.ID)
+		return err
+	})
+	return rep, err
+}
+
+// proofsBudget is the proofs pod's run budget: the activity's bound less
+// the pod's start (awaitPodStart's 10 minutes) and the reads.
+const proofsBudget = reproActivityTimeout - 15*time.Minute
+
+// runProofs runs entries in one sandbox pod and reads each one's outcome
+// by its id; a sandbox that cannot start is a *startFailure.
+func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
+	list, err := json.Marshal(entries)
+	if err != nil {
+		return nil, err
+	}
+	var runs []harness.ProofRun
+	var runErr string
+	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, list), func(ns, podName string) error {
+		var err error
+		runs, runErr, err = r.readProofs(ctx, ns, podName, t.ID)
+		return err
+	})
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]harness.ProofRun, len(runs))
+	for _, run := range runs {
+		byID[run.ID] = run
+	}
+	out := make(map[string]proofOutcome, len(entries))
+	for _, e := range entries {
+		run, ok := byID[e.ID]
+		out[e.ID] = proofResult(run, ok, runErr, e.Name)
+	}
+	return out, nil
+}
+
+// proofResult is one entry's outcome: why the run reported none (ok
+// false), why check test wrote no report, or the report's reading.
+func proofResult(run harness.ProofRun, ok bool, runErr, name string) proofOutcome {
+	if !ok {
+		if runErr == "" {
+			runErr = "the run reported nothing for this entry"
+		}
+		return proofOutcome{proofNoReport, runErr}
+	}
+	if run.Report == nil {
+		why := fmt.Sprintf("check test wrote no report (exit %d)", run.Exit)
+		lines := strings.Split(run.Output, "\n")
+		for i := len(lines) - 1; i >= 0; i-- {
+			if l := strings.TrimSpace(lines[i]); l != "" {
+				why += ": " + l
+				break
+			}
+		}
+		return proofOutcome{proofNoReport, why}
+	}
+	return readReport(run.Report, name)
+}
+
+// runnerPod creates the runner pod of spec in the task's namespace, awaits
+// its start and hands it to read.
+func (r *Runner) runnerPod(ctx context.Context, t Task, spec map[string]any, read func(ns, podName string) error) error {
 	ns, podName := r.agentNamespace(t.ID), "repro-"+strings.TrimPrefix(newID("s-"), "s-")
-	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, ref, commit, at)); err != nil {
-		return harness.Repro{}, fmt.Errorf("create pod: %w", err)
+	if err := r.kube.CreatePod(ctx, ns, podName, spec); err != nil {
+		return fmt.Errorf("create pod: %w", err)
 	}
 	defer r.trackPod(t.ID, ns, podName)()
 	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute, nil); err != nil {
-		return harness.Repro{}, err
+		return err
 	}
-	return r.readRepro(ctx, ns, podName, t.ID)
+	return read(ns, podName)
 }
 
 // commentOnce posts body on the pull request unless it is there already:
@@ -937,31 +1005,68 @@ func NotReproduced(summary string) string {
 // readRepro follows the repro pod's log to its report, or to the start
 // failure its worker reported instead (workerStartFailure).
 func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (harness.Repro, error) {
+	var rep *harness.Repro
+	err := r.readRunnerLog(ctx, ns, podName, taskID, func(env harness.WorkerEnvelope) (bool, bool) {
+		rep = env.Repro
+		return rep != nil, rep != nil
+	})
+	if err != nil {
+		return harness.Repro{}, err
+	}
+	return *rep, nil
+}
+
+// readProofs follows the proofs pod's log to its closing line: the runs
+// it reported, and why none ran when it says.
+func (r *Runner) readProofs(ctx context.Context, ns, podName, taskID string) (runs []harness.ProofRun, runErr string, err error) {
+	err = r.readRunnerLog(ctx, ns, podName, taskID, func(env harness.WorkerEnvelope) (bool, bool) {
+		switch {
+		case env.Proof != nil:
+			runs = append(runs, *env.Proof)
+			return true, false
+		case env.Proofs != nil:
+			runErr = env.Proofs.Error
+			return true, true
+		}
+		return false, false
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	return runs, runErr, nil
+}
+
+// readRunnerLog follows a runner pod's log, handing each envelope to take
+// until take is done, or to the start failure its worker reported instead
+// (workerStartFailure). A line take does not read is logged.
+func (r *Runner) readRunnerLog(ctx context.Context, ns, podName, taskID string, take func(harness.WorkerEnvelope) (read, done bool)) error {
 	logCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	lines := followPodLog(logCtx, r.kube, ns, podName, taskID, nil)
 	for {
 		select {
 		case <-ctx.Done():
-			return harness.Repro{}, ctx.Err()
+			return ctx.Err()
 		case line, ok := <-lines.lines:
 			if !ok {
 				if err := lines.err(); err != nil {
-					return harness.Repro{}, err
+					return err
 				}
-				return harness.Repro{}, errors.New("the reproduction pod exited without a report")
+				return errors.New("the reproduction pod exited without a report")
 			}
 			var env harness.WorkerEnvelope
 			if json.Unmarshal(line, &env) == nil && env.Result != nil {
 				if err := workerStartFailure(*env.Result); err != nil {
-					return harness.Repro{}, err
+					return err
 				}
 			}
-			if env.Repro == nil {
+			read, done := take(env)
+			if !read {
 				log.Printf("task %s: repro: %s", taskID, line)
-				continue
 			}
-			return *env.Repro, nil
+			if done {
+				return nil
+			}
 		}
 	}
 }
@@ -1016,26 +1121,44 @@ func fenced(s string) string {
 	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
 }
 
-// reproPodSpec is the worker pod in repro mode: no gateway token, no push
-// token, the same labels (so the sandbox egress policy selects it), image
-// and confinement. Its fetch init container alone holds the read token,
-// runs the factory's image and leaves the head in the workspace; the container that runs the
-// agent-written command holds no token at all. Neither run mounts the
-// project's shared cache, where an agent may have planted a binary or a
-// build result: Go and npm build cold in the pod's own
-// emptyDir, with PATH naming no cache directory.
+// reproPodSpec is the runner pod in repro mode: the task's reproduction
+// command.
 func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[string]any {
-	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", []map[string]any{
+	return r.runnerPodSpec(t, repo, ref, commit, at, []map[string]any{
 		{"name": "MODE", "value": "repro"},
-		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_COMMAND", "value": t.ReproCommand},
+	})
+}
+
+// proofsPodSpec is the runner pod in proofs mode: list is the entries'
+// JSON, each entry bounded by the reproduction timeout, all by proofsBudget.
+func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at string, list []byte) map[string]any {
+	return r.runnerPodSpec(t, repo, ref, commit, at, []map[string]any{
+		{"name": "MODE", "value": "proofs"},
+		{"name": "PROOFS", "value": string(list)},
+		{"name": "PROOFS_BUDGET", "value": strconv.Itoa(int(proofsBudget.Seconds()))},
+	})
+}
+
+// runnerPodSpec is the worker pod of a run with no agent, mode's env
+// first: no gateway token, no push token, the same labels (so the
+// sandbox egress policy selects it), image and confinement. Its fetch
+// init container alone holds the read token, runs the factory's image
+// and leaves the head in the workspace; the container that runs the
+// agent-written command or the tree's check holds no token at all.
+// Neither run mounts the project's shared cache, where an agent may have
+// planted a binary or a build result: Go and npm build cold in the pod's
+// own emptyDir, with PATH naming no cache directory.
+func (r *Runner) runnerPodSpec(t Task, repo Repo, ref, commit, at string, mode []map[string]any) map[string]any {
+	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", slices.Concat(mode, []map[string]any{
+		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_TIMEOUT", "value": strconv.Itoa(int(r.cfg.ReproTimeout.Seconds()))},
 		{"name": "GOPATH", "value": "/build/go"},
 		{"name": "GOMODCACHE", "value": "/build/go/pkg/mod"},
 		{"name": "GOCACHE", "value": "/build/go-build"},
 		{"name": "npm_config_cache", "value": "/build/npm"},
 		{"name": "PATH", "value": "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-	}, false)
+	}), false)
 	spec := pod["spec"].(map[string]any)
 	spec["volumes"] = append(spec["volumes"].([]any), map[string]any{"name": "build", "emptyDir": map[string]any{"sizeLimit": "8Gi"}})
 	worker := spec["containers"].([]any)[0].(map[string]any)
