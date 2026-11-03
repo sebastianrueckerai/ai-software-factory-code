@@ -380,24 +380,33 @@ func retryMarker(id string) string {
 	return fmt.Sprintf("<!-- factoryd retry of %s -->", id)
 }
 
-// RetryCard files failed card taskID again for by (item 119), whatever
-// its source: the replacement keeps the card's source, its plan and its
-// key, if any. One transaction puts the replacement, by its deterministic
-// id RetryID, in its place, once: the key, the dependencies and the
-// dependents; its base stays the failed card's. Then the replacement gets
-// its issue as fileChildren files a card's and the failed card's branch,
-// if any, to start from; the dependents wake, and the failed card's issue
-// closes as factoryd's recorded close. Each step after
-// the transaction is safe to repeat: a retry that stopped is finished by
-// the next. The replacement is queued on the direct track, where it starts
-// under the work bound once its branch is copied. It returns its issue.
+// RetryCard files failed work card taskID again for by (item 119): a
+// card on the direct track that a person, a routine or a plan filed. The
+// replacement keeps the card's source, its plan and its key, if any, and
+// its size, so it is not sized again. One transaction puts the
+// replacement, by its deterministic id RetryID, in its place, once: the
+// key, the dependencies and the dependents; its base stays the failed
+// card's. Then the replacement gets its issue as fileChildren files a
+// card's and the failed card's branch, if any, to start from; the
+// dependents wake, and the failed card's issue closes as factoryd's
+// recorded close. Each step after the transaction is safe to repeat: a
+// retry that stopped is finished by the next. The replacement is queued on
+// the direct track, where it starts under the work bound once its branch
+// is copied. It returns its issue.
 func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error) {
 	old, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
 	retried := ErrNoRetry(fmt.Sprintf("Card #%d was already retried.", old.IssueNumber))
-	if old.Status != "failed" {
+	switch {
+	case old.Track == policy.TrackPlan:
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
+	case old.Source == SourceScreening || old.Source == SourceSizing:
+		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
+	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
+	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))
 	}
 	tl, err := r.objects.Get(ctx, "sessions/"+old.ID+"/timeline.jsonl")
@@ -425,7 +434,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 			cmp.Or(reason, "the timeline records no reason")))
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
-			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
+			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
 		switch ok, err := r.store.ReplaceFailedCard(ctx, old.ID, t); {
 		case err != nil:
 			return 0, err
@@ -459,7 +468,11 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
 			return 0, stopped("linking its issue #"+fmt.Sprint(t.IssueNumber), err)
 		}
-		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
+		created := map[string]any{"by": by, "issue": t.IssueNumber, "replaces": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR}
+		if old.Parent != "" {
+			created["plan"] = old.Parent
+		}
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, created)
 	}
 	// a retry that stopped at the labels labels it the next time
 	if t.Status == "queued" {
@@ -469,6 +482,13 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 	}
 	if err := r.forgejo.CopyBranch(ctx, r.forgejo.Fork(repo), taskBranch(old), taskBranch(t)); err != nil {
 		return 0, stopped("copying the branch", err)
+	}
+	// the sizing step reads a recorded step first: the work was sized once
+	if lastStep(tl, StepSizing) != nil {
+		if _, err := r.timeline.AppendOnce(ctx, t.ID, StepSizing, map[string]any{"size": t.Size,
+			"skipped": fmt.Sprintf("it replaces #%d, which was sized", old.IssueNumber)}); err != nil {
+			return 0, stopped("recording its size", err)
+		}
 	}
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the replacement %s: %v", old.ID, t.ID, err)

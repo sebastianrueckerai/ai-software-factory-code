@@ -1528,7 +1528,7 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "File a failed plan card again, which starts once a work slot is free.",
+		about: "File a failed work card again as its replacement, once, which starts when a work slot is free.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err

@@ -417,16 +417,28 @@ func TestClosedDependencyOpensCard(t *testing.T) {
 // The activity names the first dependency that failed and has no
 // replacement: #3 of the failed #3 and #4, then #4 once #3 is replaced,
 // then none once both are, each replacement waited on in its place. An
-// edge to #3 added after its retry names it no more.
+// edge to #3 added after its retry names it no more. A closed #2 beside a
+// failed #6 sets both Ended and Failed.
 func TestDependenciesNamesTheFirstFailedOne(t *testing.T) {
 	ctx := context.Background()
 	card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
 	r, store, _ := newActivityRunner(t, card, &prForgejo{})
-	for _, d := range []Task{{ID: "t-a", Status: "failed", IssueNumber: 3}, {ID: "t-e", Status: "failed", IssueNumber: 4}, {ID: "t-b", Status: "running", IssueNumber: 5}} {
-		d.Kind, d.Repository, d.Track = "agent", "sf/repo", "direct"
-		store.CreateTask(ctx, d)
+	create := func(id, status string, issue int64) {
+		t.Helper()
+		if err := store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: status, Track: "direct", Repository: "sf/repo", IssueNumber: issue}); err != nil {
+			t.Fatal(err)
+		}
 	}
-	store.AddTaskDeps(ctx, "t-c", []string{"t-a", "t-e", "t-b"})
+	dependOn := func(ids ...string) {
+		t.Helper()
+		if err := store.AddTaskDeps(ctx, "t-c", ids); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create("t-a", "failed", 3)
+	create("t-e", "failed", 4)
+	create("t-b", "running", 5)
+	dependOn("t-a", "t-e", "t-b")
 	ask := func() DepState {
 		t.Helper()
 		v, err := execActivity(t, r, ActivityDependencies, "t-c")
@@ -446,24 +458,33 @@ func TestDependenciesNamesTheFirstFailedOne(t *testing.T) {
 			t.Fatalf("replace %s = %v, %v", id, ok, err)
 		}
 	}
-	failed := func(id string, issue int64) *Dependency {
-		return &Dependency{TaskID: id, Issue: issue, Status: "failed"}
+	dep := func(id string, issue int64, status string) *Dependency {
+		return &Dependency{TaskID: id, Issue: issue, Status: status}
+	}
+	same := func(got, want *Dependency) bool {
+		return got == nil && want == nil || got != nil && want != nil && *got == *want
 	}
 	for _, step := range []struct {
-		name    string
-		before  func()
-		failed  *Dependency
-		waiting []int64
+		name          string
+		before        func()
+		failed, ended *Dependency
+		waiting       []int64
 	}{
-		{"both failed", func() {}, failed("t-a", 3), []int64{3, 4, 5}},
-		{"#3 replaced as #9", func() { replace("t-a", 9) }, failed("t-e", 4), []int64{4, 5, 9}},
-		{"#4 replaced as #10", func() { replace("t-e", 10) }, nil, []int64{5, 9, 10}},
-		{"an edge to #3 again", func() { store.AddTaskDeps(ctx, "t-c", []string{"t-a"}) }, nil, []int64{3, 5, 9, 10}},
+		{"both failed", func() {}, dep("t-a", 3, "failed"), nil, []int64{3, 4, 5}},
+		{"#3 replaced as #9", func() { replace("t-a", 9) }, dep("t-e", 4, "failed"), nil, []int64{4, 5, 9}},
+		{"#4 replaced as #10", func() { replace("t-e", 10) }, nil, nil, []int64{5, 9, 10}},
+		{"an edge to #3 again", func() { dependOn("t-a") }, nil, nil, []int64{3, 5, 9, 10}},
+		{"a closed #2 beside a failed #6", func() {
+			create("t-x", "closed", 2)
+			create("t-z", "failed", 6)
+			dependOn("t-x", "t-z")
+		}, dep("t-z", 6, "failed"), dep("t-x", 2, "closed"), nil},
 	} {
 		step.before()
 		d := ask()
-		if (d.Failed == nil) != (step.failed == nil) || d.Failed != nil && *d.Failed != *step.failed || d.Ended != nil || !slices.Equal(d.Waiting, step.waiting) {
-			t.Fatalf("%s: Failed %+v, Ended %+v, Waiting %v; want Failed %+v, Waiting %v", step.name, d.Failed, d.Ended, d.Waiting, step.failed, step.waiting)
+		if !same(d.Failed, step.failed) || !same(d.Ended, step.ended) || !slices.Equal(d.Waiting, step.waiting) {
+			t.Fatalf("%s: Failed %+v, Ended %+v, Waiting %v; want Failed %+v, Ended %+v, Waiting %v",
+				step.name, d.Failed, d.Ended, d.Waiting, step.failed, step.ended, step.waiting)
 		}
 	}
 }
@@ -710,21 +731,23 @@ func TestRetryCardKeepsTheImage(t *testing.T) {
 func TestRetryCardReplacesADirectCardOnce(t *testing.T) {
 	const objective = "Fix the redirect loop\n\nThe redirect loops."
 	ctx := context.Background()
-	r, store, _, fj, wf := newRetryRig(t)
+	r, store, objects, fj, wf := newRetryRig(t)
 	for _, id := range []string{"t-a", "t-b"} {
 		c := store.tasks[id]
 		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
 		store.tasks[id] = c
 	}
 	a := store.tasks["t-a"]
-	a.Objective = objective
+	a.Objective, a.Size = objective, "small"
 	store.tasks["t-a"] = a
+	objects.Put(ctx, "sessions/t-a/timeline.jsonl", []byte(`{"step":"sizing","size":"small","filed":"","sized":"small","reason":"one handler","plan":false}`+"\n"+
+		`{"step":"final","state":"failed","reason":"wall-clock cap reached"}`+"\n"))
 	issue, err := r.RetryCard(ctx, "t-a", "alice")
 	if err != nil || issue != 9 {
 		t.Fatalf("RetryCard = %d, %v; want #9", issue, err)
 	}
 	n, ok := store.tasks["t-33198a8c2c69"]
-	if !ok || n.Source != "webhook" || n.Parent != "" || n.PlanKey != "" || n.Status != "queued" || n.Track != policy.TrackDirect ||
+	if !ok || n.Source != "webhook" || n.Parent != "" || n.PlanKey != "" || n.Size != "small" || n.Status != "queued" || n.Track != policy.TrackDirect ||
 		!slices.Equal(n.RequiredCapabilities, []string{policy.ClassCoder}) || n.IssueNumber != 9 ||
 		n.Objective != objective+"\n\nReplaces #5, which failed: wall-clock cap reached" {
 		t.Fatalf("replacement = %+v (found %v)", n, ok)
@@ -734,6 +757,23 @@ func TestRetryCardReplacesADirectCardOnce(t *testing.T) {
 	}
 	if fj.issues[5].state != "closed" || !slices.Equal(wf.started, []string{n.ID}) || !slices.Equal(wf.signals, []string{"t-b dep_ended  #0: "}) {
 		t.Fatalf("#5 %s, started %q, signals %q; want #5 closed, the replacement started and dep_ended to B", fj.issues[5].state, wf.started, wf.signals)
+	}
+	tl, _ := objects.Get(ctx, "sessions/"+n.ID+"/timeline.jsonl")
+	if created := lastStep(tl, StepEvent); created["event"] != EventCardCreated || created["plan"] != nil {
+		t.Fatalf("the replacement's card_created = %v, want one with no plan", created)
+	}
+	v, err := execActivity(t, r, ActivitySizeCard, n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sized SizeResult
+	if err := v.Get(&sized); err != nil || sized.Size != "small" || sized.ToPlan != nil {
+		t.Fatalf("SizeCard of the replacement = %+v, %v; want small, no switch", sized, err)
+	}
+	for _, c := range store.tasks {
+		if c.Source == SourceSizing {
+			t.Fatalf("the replacement was sized again by %s", c.ID)
+		}
 	}
 	fj.calls = nil
 	tasks := len(store.tasks)
@@ -746,19 +786,31 @@ func TestRetryCardReplacesADirectCardOnce(t *testing.T) {
 	}
 }
 
-// A card retried once and a card that did not fail are refused, and
-// nothing is filed.
+// A card retried once, a card that did not fail, and a failed plan, report
+// task and card of the factory's own are refused, and nothing is filed.
 func TestRetryRefusedTwice(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
 	if _, err := r.RetryCard(ctx, "t-a", "alice"); err != nil {
 		t.Fatal(err)
 	}
+	plan := store.tasks["t-plan"]
+	plan.Status = "failed"
+	store.tasks["t-plan"] = plan
+	for _, c := range []Task{{ID: "t-size", Source: SourceSizing, Parent: "t-b"}, {ID: "t-fix", Source: SourceMainFix, IssueNumber: 7}} {
+		c.Kind, c.Status, c.Track, c.Repository = "agent", "failed", policy.TrackDirect, "linkshort/linkshort"
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
 	fj.calls = nil
 	tasks := len(store.tasks)
 	for id, want := range map[string]string{
-		"t-a": "Card #5 was already retried.",
-		"t-b": "Card #6 did not fail: it is waiting-deps.",
+		"t-a":    "Card #5 was already retried.",
+		"t-b":    "Card #6 did not fail: it is waiting-deps.",
+		"t-plan": "Card #1 is a plan: ask for changes to it, or replan it.",
+		"t-size": "Task t-size is the sizing report of task t-b, not a work card: retry that card if it failed.",
+		"t-fix":  "Card #7 is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.",
 	} {
 		_, err := r.RetryCard(ctx, id, "alice")
 		var no ErrNoRetry
