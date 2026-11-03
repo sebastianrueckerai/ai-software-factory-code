@@ -36,7 +36,7 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"rung 1's close with no case", ActInput{By: FactoryDecider, Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
 			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take replan"},
 		{"a successor with no case", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActSuccessor}},
-			"successor answers a case and none is named: answer the card's open case"},
+			"no case is open on card #12, so successor has nothing to answer, and the human may take raise_ceiling, replan and close"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -142,18 +142,19 @@ func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseD
 }
 
 // When the case cannot end after the retry filed its replacement, the
-// error leads with what ran, so the human reads that #9 exists.
+// error leads with what ran, so the human reads that #9 exists, and the
+// session drawn beside it, which rolled back, is in neither Did nor Drawn.
 func TestActSaysWhatRanWhenTheCaseCannotEnd(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman}}
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
 	r.store = resolveFails{store, Case{ID: 3, Status: CaseResolved, ResolvedAt: &at, Resolution: &CaseResolution{By: "bo", Action: ActResume}}}
 	got, err := r.Act(context.Background(), ActInput{TaskID: "t-b", CaseID: 3, By: "alice", Rung: 3,
-		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}})
+		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Fund: &policy.Draw{Sessions: 1}}})
 	var ended ErrCaseEnded
 	const want = "Filed #9 in place of #5. The answer stopped there: case 3 was resolved by bo with resume at 10:04 UTC"
-	if !errors.As(err, &ended) || err.Error() != want || len(got.Did) != 1 || got.Did[0].Action != ActRetry {
-		t.Fatalf("Act = %+v, %v; want the retry in Did and the error %q", got, err, want)
+	if !errors.As(err, &ended) || err.Error() != want || len(got.Did) != 1 || got.Did[0].Action != ActRetry || !got.Drawn.IsZero() {
+		t.Fatalf("Act = %+v, %v; want the retry alone in Did, nothing drawn, and the error %q", got, err, want)
 	}
 }
 

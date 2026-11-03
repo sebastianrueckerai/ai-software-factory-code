@@ -50,9 +50,10 @@ func (w *caseSignals) Signal(_ context.Context, taskID, name string, sig TaskSig
 // actForge is a Forgejo for the issues of demo-app/demo-app: it keeps the
 // comments posted and whether issue 12 was closed.
 type actForge struct {
-	mu       sync.Mutex
-	comments []string
-	closed   bool
+	mu         sync.Mutex
+	comments   []string
+	closed     bool
+	closeFails bool // the close of issue 12 answers 500
 }
 
 func (f *actForge) serve(t *testing.T) *httptest.Server {
@@ -70,6 +71,8 @@ func (f *actForge) serve(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, `{"id": %d}`, 500+len(f.comments))
 		case r.Method == http.MethodGet && r.URL.Path == issue+"/dependencies":
 			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPatch && r.URL.Path == issue && f.closeFails:
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPatch && r.URL.Path == issue:
 			f.closed = true
 			w.WriteHeader(http.StatusCreated)
@@ -389,6 +392,54 @@ func TestActClosesTheIssueAsFactory(t *testing.T) {
 	}
 }
 
+// The human's comment comes after the close: a close Forgejo refuses
+// leaves the case open with nothing posted, and once the close goes
+// through, Post runs on the closed issue and factoryd posts no comment of
+// its own.
+func TestActPostsTheHumansCommentAfterTheClose(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	var closedAtPost []bool
+	post := func(context.Context) (int64, error) {
+		g.forge.mu.Lock()
+		defer g.forge.mu.Unlock()
+		closedAtPost = append(closedAtPost, g.forge.closed)
+		return 91, nil
+	}
+	in := ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "not worth it"}, Post: post}
+	g.forge.closeFails = true
+	if _, err := g.r.Act(ctx, in); err == nil {
+		t.Fatal("the close Forgejo refused went through")
+	}
+	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || len(closedAtPost) != 0 {
+		t.Fatalf("case %s, Post called %d times; want the case open and no Post", c.Status, len(closedAtPost))
+	}
+	g.forge.closeFails = false
+	got, err := g.r.Act(ctx, in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(closedAtPost, []bool{true}) || got.Comment != 91 || len(g.forge.comments) != 0 || caseByID(t, g.s, g.c.ID).Status != CaseResolved {
+		t.Fatalf("closed at Post %v, comment %d, factoryd's comments %q; want one Post after the close, comment 91, none of factoryd's, the case resolved",
+			closedAtPost, got.Comment, g.forge.comments)
+	}
+}
+
+// A withdrawal with no note gives the reason who withdrew it, so its end
+// never reads as a withdrawal for no reason.
+func TestActWithdrawalWithNoNoteNamesWhoWithdrew(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2, Res: Resolution{Action: ActWithdraw}}); err != nil {
+		t.Fatal(err)
+	}
+	c := caseByID(t, g.s, g.c.ID)
+	want := fmt.Sprintf("case %d was withdrawn at %s UTC: withdrawn by %s", c.ID, c.ResolvedAt.UTC().Format("15:04"), ChatUser)
+	if err := (ErrCaseEnded{c}); err.Error() != want {
+		t.Fatalf("the ended case reads %q, want %q", err.Error(), want)
+	}
+}
+
 // The webhook's copy of the human's comment may resolve the case between
 // Post and the transaction: Act's answer on that very comment resolves it
 // again with its action and draw. A case the copy of another comment
@@ -499,20 +550,49 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 		Detail: map[string]any{"pool": true, "rung": 2, "sessions": 30}}); err != nil {
 		t.Fatal(err)
 	}
-	draw := CaseDraw{Extend: policy.Draw{Sessions: 1}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+	draw := CaseDraw{Rung: 2, Extend: policy.Draw{Sessions: 1}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
 		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
 	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
-	var spent *PoolSpentError
-	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}); !errors.As(err, &spent) ||
+	var spent *DrawBoundError
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}); !errors.As(err, &spent) || spent.Card ||
 		spent.Left != (policy.Draw{AgentTime: 30 * time.Hour, EUR: 60}) {
-		t.Fatalf("ResolveCase past the pool = %v, want PoolSpentError leaving 0 sessions", err)
+		t.Fatalf("ResolveCase past the pool = %v, want the pool's DrawBoundError leaving 0 sessions", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 || len(caseStepsOf(t, g.s, g.c.ID)) != 0 {
 		t.Fatalf("case %s, raised %d: want it live, nothing raised and no step", c.Status, g.card(t).Usage.RaisedSessions)
 	}
-	draw.Pool, res.By, res.Rung = policy.Draw{}, "sebastian", 3
+	draw.Rung, res.By, res.Rung = 3, "sebastian", 3
 	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
 		t.Fatalf("the human's draw = %v, raised %d; want it through", err, g.card(t).Usage.RaisedSessions)
+	}
+}
+
+// The card's draw bound is weighed in the transaction too: with rung 1's
+// draws of 3 sessions on t1, the whole bound of a large card, rung 1's
+// draw of one more is refused naming the bound and the case stays live.
+// Rung 2 draws past the card's bound, within the pool.
+func TestResolveCaseWeighsTheCardsDrawBoundUnderTheLock(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"pool": true, "rung": 1, "sessions": 3}}); err != nil {
+		t.Fatal(err)
+	}
+	draw := CaseDraw{Rung: 1, Extend: policy.Draw{Sessions: 1}, CardBound: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 6},
+		Pool:  policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"pool": true, "rung": 1}}}
+	res := CaseResolution{By: FactoryDecider, Rung: 1, Action: ActExtend}
+	var bound *DrawBoundError
+	err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil)
+	if !errors.As(err, &bound) || !bound.Card || err.Error() != "the card's draw bound leaves 0 sessions, 90 minutes of agent time and 6.00 EUR: rung 2 or the human may draw more" {
+		t.Fatalf("ResolveCase past the card's bound = %v, want the card's DrawBoundError", err)
+	}
+	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 {
+		t.Fatalf("case %s, raised %d: want it live and nothing raised", c.Status, g.card(t).Usage.RaisedSessions)
+	}
+	draw.Rung, res.Rung = 2, 2
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
+		t.Fatalf("rung 2's draw = %v, raised %d; want it through", err, g.card(t).Usage.RaisedSessions)
 	}
 }
 
@@ -522,7 +602,7 @@ func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
 func TestResolveCaseLeavesTheCaseLiveWhenItsDrawFails(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	draw := CaseDraw{FundEUR: 10, PolicyCeiling: 5, Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: "sebastian", Via: ViaConsole,
+	draw := CaseDraw{Rung: 3, FundEUR: 10, PolicyCeiling: 5, Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: "sebastian", Via: ViaConsole,
 		Detail: map[string]any{"pool": true, "rung": 3}}}
 	var capped *CardCapError
 	if err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActFund}, &draw, &CaseStep{Rung: 3, Actor: "sebastian"}); !errors.As(err, &capped) {

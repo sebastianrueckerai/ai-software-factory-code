@@ -284,18 +284,21 @@ func (e ErrCaseEnded) Error() string {
 	return fmt.Sprintf("case %d was resolved by %s with %s at %s UTC", c.ID, c.Resolution.By, c.Resolution.Action, at)
 }
 
-// CaseDraw is what an answer draws beside its resolution: a raise of the
-// card's ceiling by Raise (0 for none), then Extend's sessions and agent
-// time with Lines, then FundEUR into the budget, which the card's ceiling
-// bounds, else PolicyCeiling. Pool is the rung's bound on the project's
-// month of draws, zero for the human. Event is the rows' repository,
+// CaseDraw is what an answer on Rung draws beside its resolution: a raise
+// of the card's ceiling by Raise (0 for none), then Extend's sessions and
+// agent time with Lines, then FundEUR into the budget, which the card's
+// ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
+// draw bound, which rungs 0 and 1 draw within, and the project's month of
+// draws, which rungs 0 to 2 draw within. Event is the rows' repository,
 // issue, actor, via and detail.
 type CaseDraw struct {
+	Rung          int
 	Raise         float64
 	Extend        policy.Draw
 	Lines         int
 	FundEUR       float64
 	PolicyCeiling float64
+	CardBound     policy.Draw
 	Pool          policy.Draw
 	Event         Event
 }
@@ -360,10 +363,10 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 	})
 }
 
-// drawCase writes d for card taskID inside tx once its pool fits it
-// (poolFits), the raise first, and answers the rows it wrote.
+// drawCase writes d for card taskID inside tx once its rung's bounds fit
+// it (drawFits), the raise first, and answers the rows it wrote.
 func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) ([]Event, error) {
-	if err := s.poolFits(ctx, tx, d); err != nil {
+	if err := s.drawFits(ctx, tx, taskID, d); err != nil {
 		return nil, err
 	}
 	ceiling, extend, fund := d.rows()

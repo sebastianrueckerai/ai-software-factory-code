@@ -338,8 +338,12 @@ var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanCon
 // the card ends, 0 for none: not one of ownAnswerKinds.
 func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (int64, error) {
 	var id int64
-	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND `+caseLive+` AND kind NOT IN ($2, $3, $4)
-		ORDER BY id DESC LIMIT 1`, taskID, ownAnswerKinds[0], ownAnswerKinds[1], ownAnswerKinds[2]).Scan(&id)
+	kinds := make([]string, len(ownAnswerKinds))
+	for i, k := range ownAnswerKinds {
+		kinds[i] = string(k)
+	}
+	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND `+caseLive+` AND NOT kind = ANY($2::text[])
+		ORDER BY id DESC LIMIT 1`, taskID, kinds).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}

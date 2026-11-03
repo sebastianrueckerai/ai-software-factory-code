@@ -1872,8 +1872,8 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 // ceiling. A raise of no whole cent above zero is refused. No task:
 // ErrNotFound.
 func (s *PGStore) raiseCeiling(ctx context.Context, tx *sql.Tx, taskID string, eur, policyCeiling float64, e Event) (stored Event, err error) {
-	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
-		return Event{}, fmt.Errorf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
+	if why := raiseRefusal(eur); why != "" {
+		return Event{}, errors.New(why)
 	}
 	var ceiling, budget float64
 	err = tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = COALESCE(ceiling_eur, $3) + $2 WHERE id = $1
@@ -1899,32 +1899,48 @@ func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) error
 	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) { return s.drawCase(ctx, tx, taskID, d) })
 }
 
-// PoolSpentError refuses a draw past its rung's pool: Left is what the
-// month's pool held when the draw met it.
-type PoolSpentError struct{ Left policy.Draw }
+// DrawBoundError refuses a draw past a bound of its rung: the card's draw
+// bound (Card) or the project's pool, with what the bound left when the
+// draw met it.
+type DrawBoundError struct {
+	Card bool
+	Left policy.Draw
+}
 
-func (e *PoolSpentError) Error() string {
+func (e *DrawBoundError) Error() string {
+	if e.Card {
+		return fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(e.Left))
+	}
 	return fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
 }
 
-// poolFits takes the project's pool lock for tx, so draws on one project
-// are weighed one at a time, and refuses d past its rung's bound: the
-// month's pool rows with d's sessions, agent time and money, a raise of
-// the ceiling included. The human's draw, whose bound is zero, takes the
-// lock and is refused nothing.
-func (s *PGStore) poolFits(ctx context.Context, tx *sql.Tx, d CaseDraw) error {
+// drawFits takes the project's pool lock for tx, so draws on one project
+// are weighed one at a time, and refuses d of card taskID past its rung's
+// bounds as drawWithin does: on rungs 0 and 1 the card's rows of those
+// rungs with d against CardBound, on rungs 0 to 2 the month's pool rows
+// with d against Pool, a raise of the ceiling included. The human's draw
+// takes the lock and is refused nothing.
+func (s *PGStore) drawFits(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) error {
 	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pool:' || $1::text))`, d.Event.Repository); err != nil {
 		return err
 	}
-	if d.Pool.IsZero() {
-		return nil
+	if d.Rung <= 1 {
+		drawn, err := cardDrawn(ctx, tx, taskID)
+		if err != nil {
+			return err
+		}
+		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
+			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
+		}
 	}
-	drawn, err := poolDrawn(ctx, tx, d.Event.Repository, time.Now())
-	if err != nil {
-		return err
-	}
-	if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
-		return &PoolSpentError{Left: d.Pool.Minus(drawn)}
+	if d.Rung <= 2 {
+		drawn, err := poolDrawn(ctx, tx, d.Event.Repository, time.Now())
+		if err != nil {
+			return err
+		}
+		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
+			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
+		}
 	}
 	return nil
 }
@@ -1960,7 +1976,11 @@ func poolDrawn(ctx context.Context, q rowQuerier, repository string, month time.
 // and 1, the draws its per-card bound counts. The rung is compared as
 // text: a card_created row's rung is a model rung's name.
 func (s *PGStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, error) {
-	return drawn(ctx, s.db, `task_id = $1 AND detail->>'rung' IN ('0', '1')`, taskID)
+	return cardDrawn(ctx, s.db, taskID)
+}
+
+func cardDrawn(ctx context.Context, q rowQuerier, taskID string) (policy.Draw, error) {
+	return drawn(ctx, q, `task_id = $1 AND detail->>'rung' IN ('0', '1')`, taskID)
 }
 
 // agentFundedEUR is the EUR the agent funded cards with in repository: the

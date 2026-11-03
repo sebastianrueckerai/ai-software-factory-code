@@ -31,8 +31,8 @@ type ActInput struct {
 	// Post posts the answer's issue comment as By and answers its id: the
 	// console's, as the human, is the comment a run from before the cases
 	// gate wakes on. Act calls it once the answer passed its checks and
-	// its outside actions ran, before the case ends, and only for an
-	// answer that resolves its case. Nil: Act posts factoryd's record
+	// its outside actions ran (a close included), before the case ends,
+	// and only for an answer that resolves its case. Nil: Act posts factoryd's record
 	// after the case ends, when the card has an issue, except for a human
 	// card's choice, whose work the console does.
 	Post func(ctx context.Context) (int64, error)
@@ -65,10 +65,10 @@ var outsideActions = []string{ActRetry, ActReplan, ActClose}
 // or a draw past the rung's bounds. It runs the outside actions first, so
 // a refusal of theirs leaves the case open, then has the caller post its
 // comment. It ends the case and writes the draw and the step in one
-// transaction, which weighs the draw against the pool again under the
-// project's lock. Then it posts factoryd's comment when the caller posted
-// none, records the answer and signals the run. A note records a step and
-// ends nothing. A human card's case takes a value of its question's
+// transaction, which weighs the draw against its rung's bounds again
+// under the project's lock. Then it posts factoryd's comment when the
+// caller posted none, records the answer and signals the run. A note
+// records a step and ends nothing. A human card's case takes a value of its question's
 // choices, which Act records and runs nothing for.
 func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	t, repo, err := r.task(ctx, in.TaskID)
@@ -94,7 +94,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		if f, err = r.tripFacts(ctx, t); err != nil {
 			return ActResult{}, err
 		}
-		if why := actRefusal(f, in); why != "" {
+		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
 	}
@@ -109,24 +109,29 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	ends := c.ID != 0 && res.Action != ActNote
 	answers := ends && res.Action != ActWithdraw
-	if answers && in.Post != nil {
-		if out.Comment, err = in.Post(ctx); err != nil {
-			return out, ranErr(out.Did, err)
-		}
-	}
+	posts := answers && in.Post != nil
 	if res.Action == ActClose {
-		closed, err := r.closeCard(ctx, t, in, out.Comment != 0)
+		closed, err := r.closeCard(ctx, t, in, posts)
 		if err != nil {
 			return out, ranErr(out.Did, err)
 		}
 		out.Did = append(out.Did, closed)
 	}
+	if posts {
+		if out.Comment, err = in.Post(ctx); err != nil {
+			return out, ranErr(out.Did, err)
+		}
+	}
+	var drew []CaseAction
+	if draw != nil {
+		drew = drawActions(res, *draw)
+	}
+	if err := r.actWrite(ctx, t, c, in, slices.Concat(out.Did, drew), out.Comment, draw, ends); err != nil {
+		return out, ranErr(out.Did, err)
+	}
+	out.Did = append(out.Did, drew...)
 	if draw != nil {
 		out.Drawn = draw.Extend.Plus(policy.Draw{EUR: draw.FundEUR})
-		out.Did = append(out.Did, drawActions(res, *draw)...)
-	}
-	if err := r.actWrite(ctx, t, c, in, out, draw, ends); err != nil {
-		return out, ranErr(out.Did, err)
 	}
 	out.Case = c
 	if c.ID != 0 {
@@ -198,25 +203,27 @@ func (r *Runner) actCase(ctx context.Context, t Task, id int64) (Case, error) {
 	return c, nil
 }
 
-// actWrite writes answer in on card t: with its case c ending, the
-// resolution or the withdrawal with the draw and the step in one
-// transaction; with none, the draw alone, and a note's step, which stays
-// in progress. A draw past the pool is refused.
-func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, out ActResult, draw *CaseDraw, ends bool) error {
+// actWrite writes answer in on card t, with what it did and the comment
+// that carries it: with its case c ending, the resolution or the
+// withdrawal with the draw and the step in one transaction; with none, the
+// draw alone, and a note's step, which stays in progress. A draw past its
+// rung's bounds is refused.
+func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, did []CaseAction, comment int64, draw *CaseDraw, ends bool) error {
 	res := in.Res
-	step := CaseStep{CaseID: c.ID, Rung: in.Rung, Actor: in.By, Did: out.Did, Decision: res.Action, Grounds: res.Note, Outcome: StepResolved}
+	step := CaseStep{CaseID: c.ID, Rung: in.Rung, Actor: in.By, Did: did, Decision: res.Action, Grounds: res.Note, Outcome: StepResolved}
 	var err error
 	switch {
 	case ends:
 		resolution := CaseResolution{By: in.By, Rung: in.Rung, Action: res.Action, Args: maps.Clone(res.Args), Reason: res.Note}
-		if out.Comment != 0 {
+		if comment != 0 {
 			if resolution.Args == nil {
 				resolution.Args = map[string]any{}
 			}
-			resolution.Args["comment"] = out.Comment
+			resolution.Args["comment"] = comment
 		}
 		if res.Action == ActWithdraw {
 			step.Outcome = StepWithdrawn
+			resolution.Reason = cmp.Or(strings.TrimSpace(res.Note), "withdrawn by "+in.By)
 		}
 		err = r.store.ResolveCase(ctx, c.ID, resolution, draw, &step)
 	case draw != nil:
@@ -226,9 +233,9 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, out 
 		step.Outcome = StepInProgress
 		_, err = r.store.AppendCaseStep(ctx, step)
 	}
-	var spent *PoolSpentError
-	if errors.As(err, &spent) {
-		return ErrActRefused(spent.Error())
+	var bound *DrawBoundError
+	if errors.As(err, &bound) {
+		return ErrActRefused(bound.Error())
 	}
 	return err
 }
@@ -273,11 +280,11 @@ func answersACase(a Action) bool {
 	return a.InRun && a.Name != ActExtend && a.Name != ActFund || a.Name == ActWithdraw || a.Name == ActNote
 }
 
-// actRefusal is why in may not answer card facts f, "" when it may: no
-// such rung, an action the table does not hold, an action that answers a
-// case asked with none, or the table's refusal, with the actions the rung
-// may take.
-func actRefusal(f CaseFacts, in ActInput) string {
+// actRefusal is why in may not answer the facts f of card, "" when it
+// may: no such rung, an action the table does not hold, an action that
+// answers a case on a card with none open, or the table's refusal, with
+// the actions the rung may take there.
+func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if in.Rung < 0 || in.Rung > 3 {
 		return fmt.Sprintf("there is no rung %d", in.Rung)
 	}
@@ -287,7 +294,7 @@ func actRefusal(f CaseFacts, in ActInput) string {
 	case !ok:
 		why = "there is no action " + in.Res.Action
 	case in.CaseID == 0 && answersACase(a):
-		return a.Name + " answers a case and none is named: answer the card's open case"
+		why = fmt.Sprintf("no case is open on card %s, so %s has nothing to answer", card, a.Name)
 	default:
 		why = a.refusal(f, in.Rung, in.Res)
 	}
@@ -301,7 +308,7 @@ func actRefusal(f CaseFacts, in ActInput) string {
 		}
 	}
 	if len(names) == 0 {
-		return why + ", and " + who(in.Rung) + " may take no action on a card that waits on no case"
+		return why + ", and " + who(in.Rung) + " may take no action on a card with no open case"
 	}
 	return why + ", and " + who(in.Rung) + " may take " + andList(names)
 }
@@ -369,7 +376,8 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 
 // closeCard closes card t for in.By: its issue as factoryd's recorded
 // close, which the webhook then ends the card on, with factoryd's comment
-// unless the caller posted its own, or with no issue a signal to its run.
+// unless the caller posts its own after the close, or with no issue a
+// signal to its run.
 func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool) (CaseAction, error) {
 	if t.IssueNumber == 0 {
 		if err := r.cfg.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: in.By}); err != nil {
@@ -389,7 +397,8 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 
 // caseDraw is what in draws for card t on facts f, nil for nothing: a raise
 // of the ceiling, an extend's sessions, agent time and lines, and the
-// money for the budget, bounded by the pool on rungs 0 to 2. Its rows are
+// money for the budget, with the card's draw bound and the pool its rung
+// draws within. Its rows are
 // pool draws of in's rung for case c, with the head, the checks and, when
 // the timeline was read, the findings they were weighed on (boughtNothing).
 func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) *CaseDraw {
@@ -403,11 +412,10 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	if !slices.Contains(f.Partial, "timeline") {
 		detail["findings"] = nonNil(f.Findings)
 	}
-	draw := &CaseDraw{Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget, PolicyCeiling: CardCeiling(v.Document, project),
+	esc := v.EscalationOf(t.Repository)
+	draw := &CaseDraw{Rung: in.Rung, Extend: policy.Draw{Sessions: d.Sessions, AgentTime: d.AgentTime}, FundEUR: budget,
+		PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size), Pool: esc.Pool,
 		Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: in.By, Via: via, Detail: detail}}
-	if in.Rung <= 2 {
-		draw.Pool = v.EscalationOf(t.Repository).Pool
-	}
 	switch in.Res.Action {
 	case ActRaiseCeiling:
 		draw.Raise, _ = in.Res.Args["eur"].(float64)

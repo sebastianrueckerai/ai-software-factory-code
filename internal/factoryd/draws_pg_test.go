@@ -154,7 +154,7 @@ func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-f", 5)
 	raise := func(id string, eur, policyCeiling float64) error {
-		return s.DrawCard(ctx, id, CaseDraw{Raise: eur, PolicyCeiling: policyCeiling,
+		return s.DrawCard(ctx, id, CaseDraw{Rung: 3, Raise: eur, PolicyCeiling: policyCeiling,
 			Event: Event{Repository: "sf/r", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}})
 	}
 	if err := raise("t-f", 1, 5); err != nil {

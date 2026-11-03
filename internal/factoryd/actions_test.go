@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"fmt"
 	"slices"
 	"testing"
 	"time"
@@ -372,6 +373,19 @@ func TestBoughtNothingWeighsHeadAndChecksWhenTheTimelineIsUnread(t *testing.T) {
 	f.Checks = "green"
 	if boughtNothing(f) {
 		t.Error("the timeline unread, the checks turned green: the draw bought something")
+	}
+}
+
+// A raise of the ceiling is a whole cent or more, as the store keeps it.
+func TestRaiseCeilingNeedsAWholeCent(t *testing.T) {
+	for _, eur := range []float64{0.004, 0, -1} {
+		want := fmt.Sprintf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
+		if got := applies(t, ActRaiseCeiling, CaseFacts{}, Resolution{Args: map[string]any{"eur": eur}}); got != want {
+			t.Errorf("a raise of %v = %q, want %q", eur, got, want)
+		}
+	}
+	if got := applies(t, ActRaiseCeiling, CaseFacts{}, Resolution{Args: map[string]any{"eur": 0.01}}); got != "" {
+		t.Errorf("a raise of a cent = %q, want it to apply", got)
 	}
 }
 

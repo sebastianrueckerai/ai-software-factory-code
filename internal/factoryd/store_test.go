@@ -307,15 +307,28 @@ func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
 	return d
 }
 
-// DrawCard writes d as PGStore.DrawCard does, one part after another:
-// the pool's refusal first, then the raise of the ceiling, the extend and
-// the fund.
-func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) error {
+// DrawCard writes d as PGStore.DrawCard does: the rung's bounds first,
+// then the raise of the ceiling, the extend and the fund, the card and its
+// rows as they were when a part fails.
+func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (err error) {
 	ceiling, extend, fund := d.rows()
-	if !d.Pool.IsZero() {
+	before, had := s.tasks[taskID]
+	rows := len(s.events)
+	defer func() {
+		if err != nil && had {
+			s.tasks[taskID], s.events = before, s.events[:rows]
+		}
+	}()
+	if d.Rung <= 1 {
+		drawn, _ := s.CardDrawn(ctx, taskID)
+		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
+			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
+		}
+	}
+	if d.Rung <= 2 {
 		drawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
 		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
-			return &PoolSpentError{Left: d.Pool.Minus(drawn)}
+			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
 		}
 	}
 	if d.Raise != 0 {

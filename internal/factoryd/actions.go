@@ -133,10 +133,8 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActRaiseCeiling, Rungs: rungs(2, 3), Applies: func(f CaseFacts, r Resolution) string {
-		if eur, _ := r.Args["eur"].(float64); !(eur > 0) || math.IsInf(eur, 1) {
-			return "a raise of the ceiling needs an amount above 0 EUR"
-		}
-		return ""
+		eur, _ := r.Args["eur"].(float64)
+		return raiseRefusal(eur)
 	}},
 	{Name: ActSuccessor, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		if !f.PROpen && !f.Pushed && f.Head == "" {
@@ -292,6 +290,15 @@ func extendDraw(args map[string]any) policy.Draw {
 	return policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second}
 }
 
+// raiseRefusal is why a raise of the ceiling by eur is refused, "" when it
+// is a whole cent or more: the store keeps cents.
+func raiseRefusal(eur float64) string {
+	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
+		return fmt.Sprintf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
+	}
+	return ""
+}
+
 // sessionRoom is why f leaves no room to open a session, "" when it has
 // it: none running, an attempt under the cap, the agent time a session
 // needs (minSession, or the whole cap when it is shorter), and the money
@@ -353,9 +360,9 @@ func drawWithin(f CaseFacts, rung int, d policy.Draw, toBudget bool) string {
 	case rung < 0 || rung > 3:
 		return fmt.Sprintf("there is no rung %d", rung)
 	case rung <= 1 && !fitsIn(d, f.CardDrawLeft):
-		return fmt.Sprintf("the card's draw bound leaves %s: rung 2 or the human may draw more", drawText(f.CardDrawLeft))
+		return (&DrawBoundError{Card: true, Left: f.CardDrawLeft}).Error()
 	case rung <= 2 && !fitsIn(d, f.PoolLeft):
-		return fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(f.PoolLeft))
+		return (&DrawBoundError{Left: f.PoolLeft}).Error()
 	case toBudget && Cents(f.BudgetEUR)+Cents(d.EUR) > Cents(f.CeilingEUR):
 		return fmt.Sprintf("%.2f EUR more takes the budget of %.2f EUR past the card's ceiling of %.2f EUR: raise the ceiling first",
 			d.EUR, f.BudgetEUR, f.CeilingEUR)
