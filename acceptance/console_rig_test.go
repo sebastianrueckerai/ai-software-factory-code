@@ -904,7 +904,8 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 // held against the month's pool and the card's cap — and without them the
 // member decided it and no bound applies. The money is judged before
 // anything moves — the raise finite, above zero and whole cents, the
-// budget it lands on and their sum whole cents — and the budget's change
+// budget it lands on whole cents, the two summed in integer cents as
+// PGStore's numeric sums them — and the budget's change
 // and the card_funded row commit as one under a.mu, the row appended by
 // the spine's own fallible append so a spine that refuses it leaves the
 // budget untouched too. No task: ErrNotFound.
@@ -926,11 +927,14 @@ func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, boun
 	case !accWholeCents(from):
 		a.mu.Unlock()
 		return 0, 0, fmt.Errorf("the card's budget of %s is no amount in whole cents", strconv.FormatFloat(from, 'f', -1, 64))
-	case !accWholeCents(from + eur):
+	}
+	raiseCents, fromCents := factoryd.Cents(eur), factoryd.Cents(from)
+	if raiseCents < 0 || fromCents < 0 || raiseCents > math.MaxInt64-fromCents {
 		a.mu.Unlock()
 		return 0, 0, fmt.Errorf("the raise of %s on %s reaches no amount in whole cents",
 			strconv.FormatFloat(eur, 'f', -1, 64), strconv.FormatFloat(from, 'f', -1, 64))
 	}
+	fromEur, toEur := float64(fromCents)/100, float64(fromCents+raiseCents)/100
 	detail := maps.Clone(e.Detail)
 	if detail == nil {
 		detail = map[string]any{}
@@ -938,33 +942,33 @@ func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, boun
 	if bounds != nil {
 		detail["decider"] = "agent"
 		funded := a.agentFundedLocked(e.Repository, time.Now())
-		if factoryd.Cents(funded)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
+		if factoryd.Cents(funded)+raiseCents > factoryd.Cents(bounds.PoolEUR) {
 			short := &factoryd.PoolSpentError{Funded: funded}
 			a.mu.Unlock()
 			return 0, 0, short
 		}
-		if factoryd.Cents(from)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
+		if fromCents+raiseCents > factoryd.Cents(bounds.CardCapEUR) {
 			a.mu.Unlock()
 			return 0, 0, &factoryd.CardCapError{Budget: from}
 		}
 	}
-	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = from, from+eur, eur
+	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = fromEur, toEur, float64(raiseCents)/100
 	e.Detail = detail
 	stored, err := a.appendEventLocked(e)
 	if err != nil {
 		a.mu.Unlock()
 		return 0, 0, err
 	}
-	a.tasks[i].BudgetEUR = from + eur
+	a.tasks[i].BudgetEUR = toEur
 	a.mu.Unlock()
 	a.bus.Publish(stored)
-	return from, from + eur, nil
+	return fromEur, toEur, nil
 }
 
 // accWholeCents reports whether eur is money this rig stores: finite and
 // whole cents, the unit the production money path carries end to end
-// (pool.go's poolCents; the sum's check catches an overflow no single
-// amount makes).
+// (pool.go's poolCents; FundCard's integer sum catches an overflow no
+// single amount makes).
 func accWholeCents(eur float64) bool {
 	return !math.IsNaN(eur) && !math.IsInf(eur, 0) && eur == math.Round(eur*100)/100
 }

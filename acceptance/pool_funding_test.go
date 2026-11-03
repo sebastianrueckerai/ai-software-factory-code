@@ -284,11 +284,26 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	r.SetCardBudget("t-e", held.BudgetEUR)
 	unchanged("the refused raise on a budget no whole cents")
 	r.FailRecords(errors.New("the spine is down"))
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 5}, raise); err == nil {
-		t.Fatal("the raise committed without its card_funded row")
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 12}, raise); err == nil || err.Error() != "the spine is down" {
+		t.Fatalf("the refused audit row = %v, want the spine's own refusal", err)
 	}
 	unchanged("the refused audit row")
 	r.FailRecords(nil)
+
+	// the sum PGStore's numeric accepts: a budget of 2.20 raised by 0.10
+	// lands at 2.30, the row's own figures from the integer cents of the
+	// sum
+	r.SetCardBudget("t-e", 2.20)
+	from, to, err := r.FundCard(t.Context(), "t-e", 0.10, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 12}, raise)
+	if err != nil || from != 2.2 || to != 2.3 {
+		t.Fatalf("the 2.20 + 0.10 raise = %v, %v, %v; want 2.20, 2.30", from, to, err)
+	}
+	if card, _, _ = r.Task(t.Context(), "t-e"); card.BudgetEUR != 2.3 {
+		t.Fatalf("the stored budget = %v, want 2.3", card.BudgetEUR)
+	}
+	if rows := agentFundRows(r); rows[len(rows)-1].Detail["to_eur"] != 2.3 {
+		t.Fatalf("the success row's to_eur = %v, want 2.3", rows[len(rows)-1].Detail["to_eur"])
+	}
 }
 
 // TestPoolEscalationFallback is every refusal that hands the raise back
