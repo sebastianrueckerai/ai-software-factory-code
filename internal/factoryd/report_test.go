@@ -293,6 +293,7 @@ func TestScreenAnswerAsksTheReviewModel(t *testing.T) {
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	system, _ := msgs[0].(map[string]any)["content"].(string)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
+	user = strings.TrimPrefix(user, chatInputLead)
 	var in struct{ Answer string }
 	if err := json.Unmarshal([]byte(user), &in); err != nil {
 		t.Fatalf("input %s: %v", user, err)

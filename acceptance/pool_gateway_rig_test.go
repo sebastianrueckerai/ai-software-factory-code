@@ -12,10 +12,13 @@ package acceptance
 // the file's, its pool with them.
 
 import (
+	"bytes"
 	"context"
 	"fmt"
+	"math"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -379,4 +382,101 @@ func (s *accStubLiteLLM) calls() []string {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return append([]string(nil), s.seen...)
+}
+
+// gwPost posts the proofs' chat request at the handler as the caller's
+// sandbox and answers its recorder.
+func gwPost(h http.Handler, body []byte) *httptest.ResponseRecorder {
+	req := httptest.NewRequest(http.MethodPost, "/v1/chat/completions", bytes.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("Authorization", "Bearer the-sandbox-token")
+	rec := httptest.NewRecorder()
+	h.ServeHTTP(rec, req)
+	return rec
+}
+
+// TestPoolGatewayRig is the rig's smoke proof, and this recovery card's
+// whole proof: the real gateway handler stood on this file's fakes admits
+// a call whose irreducible one-euro reservation binds nothing — the hold
+// fitted at the actual handler boundary, the key minted, the backend
+// called, the cost booked, the hold released — and the same call at the
+// day cap, a sibling's synchronized ledger row and live hold having
+// spent it to EUR 0.50 free, is refused by production policy.Fit with
+// nothing minted, booked or proxied. The caller's seeded card-budget
+// allocation (EUR 100) is not ledger spend: the fit's task figure stays
+// the allocation and the day's, the month's and the project's stay
+// their ceilings, so the call is admitted — were the allocation spend,
+// every bound would read 0 and refuse. The complete fixed-cap matrix —
+// each ceiling bound on its own, before and after a confirmed Top up —
+// is the next card's, on this recovered rig.
+func TestPoolGatewayRig(t *testing.T) {
+	head, err := accGatewayPolicy(1, gwPoolHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body, bodyBytes := gwChatBody(t), gwBodyBytes(t)
+
+	// the nonbinding reservation: every bound loose, the call runs
+	t.Run("admits a nonbinding reservation", func(t *testing.T) {
+		store := newAccGatewayStore(gwCaller)
+		store.setPolicy(head)
+		minter, stub := &accGatewayMinter{}, newAccStubLiteLLM(t)
+		rec := gwPost(gwGateway(store, minter, accGatewayPrices{price: gwPrice(bodyBytes)}, stub.URL), body)
+		if rec.Code != http.StatusOK {
+			t.Fatalf("the admitted call = %d:\n%s", rec.Code, rec.Body.String())
+		}
+		if rec.Body.String() != "{}" {
+			t.Fatalf("the admitted call's body = %q, want the stub's", rec.Body.String())
+		}
+		// the actual handler hold: one request, the version's ceilings
+		reqs := store.holdRequests()
+		if len(reqs) != 1 {
+			t.Fatalf("the handler fitted %d hold requests, want the one", len(reqs))
+		}
+		gwHoldRequest(t, "the admitted call", reqs[0], bodyBytes)
+		// the backend activity: one key minted, one call proxied
+		equal(t, "the minted keys", minter.calls(), []string{gwCaller.ID + " " + gwCaller.ID + " big,small"})
+		equal(t, "the backend calls", stub.calls(), []string{"POST /v1/chat/completions"})
+		// the booking: the hold released into the one ledger row, at the
+		// hold's full amount — the stub reports no cost — and the
+		// allocation of EUR 100 books nothing itself
+		if got := store.openHolds(); got != 0 {
+			t.Fatalf("the admitted call left %d holds open, want none", got)
+		}
+		booked := store.spent(gwCaller.ID)
+		rows := store.auditRows()
+		if len(rows) != 1 {
+			t.Fatalf("the admitted call wrote %d audit rows, want the one", len(rows))
+		}
+		row := rows[0]
+		limit := 32768
+		equal(t, "the admitted call's audit row",
+			[]any{row.TaskID, row.Kind, row.Decision, row.ModelAlias, row.PolicyVersion, row.OutputLimit, row.Status, row.CallCostEUR},
+			[]any{gwCaller.ID, "", "allowed", "small", &head.ID, &limit, "200", (*float64)(nil)})
+		want := float64(reqs[0].Bytes)*reqs[0].Price.In + float64(limit)*reqs[0].Price.Out
+		for what, got := range map[string]float64{"the booked spend": booked, "the audit row's hold": *row.HoldEUR, "the audit row's spend": *row.SpendEUR} {
+			if math.Abs(got-want) > 1e-9 {
+				t.Errorf("%s = %f, want the hold's %f", what, got, want)
+			}
+		}
+		if row.Reason != "cost not reported, booked the hold "+strconv.FormatFloat(want, 'f', 6, 64)+" EUR" {
+			t.Errorf("the admitted call's audit reason = %q", row.Reason)
+		}
+	})
+
+	// the binding day cap: the sibling's row and live hold leave EUR 0.50
+	// of the day, and the same one-euro reservation no longer fits
+	t.Run("refuses the same reservation at the day cap", func(t *testing.T) {
+		store := newAccGatewayStore(gwCaller, gwOtherRepo)
+		store.seedDay(gwOtherRepo.ID, 98.5)
+		store.seedHold(gwOtherRepo.ID, 1)
+		store.setPolicy(head)
+		minter, stub := &accGatewayMinter{}, newAccStubLiteLLM(t)
+		h := gwGateway(store, minter, accGatewayPrices{price: gwPrice(bodyBytes)}, stub.URL)
+		req := gwRefused(t, "the day cap", h, body, store, minter, stub, head.ID, policy.RefusedDayCap,
+			"free headroom 0.500000 EUR (task 100.000000, day 0.500000, month 500.500000, project 100.000000) "+
+				"fits 0 output tokens after a request of "+strconv.Itoa(bodyBytes)+" bytes (at most "+strconv.Itoa(bodyBytes)+" prompt tokens), "+
+				"below the minimum call of "+strconv.Itoa(policy.MinCallTokens))
+		gwHoldRequest(t, "the day cap", req, bodyBytes)
+	})
 }

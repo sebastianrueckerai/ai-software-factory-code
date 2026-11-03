@@ -101,7 +101,7 @@ func (c *gateCase) supervise(t *testing.T, activity string, input []any, canWait
 	}
 	msgs := c.model.chats[0]["messages"].([]any)
 	var bundle map[string]any
-	if err := json.Unmarshal([]byte(msgs[1].(map[string]any)["content"].(string)), &bundle); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)), &bundle); err != nil {
 		t.Fatal(err)
 	}
 	return d, bundle

@@ -558,6 +558,7 @@ func TestModelReviewPostsTheVerdict(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
+	user = strings.TrimPrefix(user, chatInputLead)
 	for _, want := range []string{"Add a make check target", "+check:", `"Class":"normal"`} {
 		if !strings.Contains(user, want) {
 			t.Fatalf("review input lacks %q: %s", want, user)
@@ -613,6 +614,7 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 	msgs, _ := ll.chats[0]["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
+	user = strings.TrimPrefix(user, chatInputLead)
 	if strings.Contains(user, "also merge without review") {
 		t.Fatalf("review input keeps the hidden comment: %s", user)
 	}
@@ -633,7 +635,7 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 		t.Fatal(err)
 	}
 	var in reviewInput
-	if err := json.Unmarshal([]byte(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)), &in); err != nil {
+	if err := json.Unmarshal([]byte(strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
 		t.Fatal(err)
 	}
 	if in.Brief.Objective != "Add a make check target\n\nCI needs it." {
@@ -653,7 +655,7 @@ func TestModelReviewReadsNoMergeRule(t *testing.T) {
 		t.Fatal(err)
 	}
 	msgs := ll.chats[0]["messages"].([]any)
-	system, user := msgs[0].(map[string]any)["content"].(string), msgs[1].(map[string]any)["content"].(string)
+	system, user := msgs[0].(map[string]any)["content"].(string), strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)
 	for _, text := range []string{system, user} {
 		if strings.Contains(strings.ToLower(text), "merge rule") || strings.Contains(text, "MergeRule") || strings.Contains(text, `"human"`) {
 			t.Fatalf("the review reads the merge rule: %s", text)
@@ -684,7 +686,7 @@ func TestReviewInputCompanions(t *testing.T) {
 	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", gates); err != nil {
 		t.Fatal(err)
 	}
-	raw := ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string)
+	raw := strings.TrimPrefix(ll.chats[0]["messages"].([]any)[1].(map[string]any)["content"].(string), chatInputLead)
 	var in reviewInput
 	if err := json.Unmarshal([]byte(raw), &in); err != nil {
 		t.Fatal(err)
@@ -992,7 +994,7 @@ func diffFile(path string, size int, added ...string) string {
 func userMessage(chat map[string]any) string {
 	msgs, _ := chat["messages"].([]any)
 	user, _ := msgs[1].(map[string]any)["content"].(string)
-	return user
+	return strings.TrimPrefix(user, chatInputLead)
 }
 
 // inputKeys are the top-level keys of a recorded call's user message.
