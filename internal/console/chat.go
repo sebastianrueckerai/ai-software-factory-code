@@ -283,7 +283,7 @@ type chatGetAnswer struct {
 	Messages     []factoryd.ChatMessage    `json:"messages"`
 	Proposals    []factoryd.ProposalState  `json:"proposals,omitempty"`
 	Budget       *chatBudget               `json:"budget,omitempty"`
-	// Pool is the project's pool line (projectPool) the panel's Set the
+	// Pool is the project's pool line (ProjectPool) the panel's Set the
 	// pool / Top up control reads, absent while the policy is unreadable:
 	// the same words the settings, policy and project pages read, and
 	// whether the reader is an approver, the only ask a pool change takes.
@@ -384,7 +384,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	}
 	answer := chatGetAnswer{Conversation: t.conv, Thread: th, Messages: msgs, Budget: c.fundState(ctx, stop, t.a.s.user, repo)}
 	if v, ok := c.inForce(ctx); ok {
-		pl := c.projectPool(ctx, v, t.p, time.Now())
+		pl := c.ProjectPool(ctx, v, t.p, time.Now())
 		answer.Pool = &chatPool{Present: pl.Present, CanAsk: c.isApprover(ctx, t.a.s.user, repo), Words: pl.Words}
 	}
 	if q, passed, err := c.cfg.Chat.ChatOpenQuestion(ctx, repo, owner, t.conv); err != nil {

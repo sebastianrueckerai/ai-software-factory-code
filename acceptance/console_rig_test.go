@@ -901,22 +901,35 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 // FundCard mirrors PGStore.FundCard, the Actions fake this rig is: with
 // bounds the raise is the agent's own — its row stamped decider agent, the
 // repository's agent-funded sum read under the same lock and the raise
-// held against the month's pool and the card's cap, money whole cents —
-// and without them the member decided it and no bound applies. The
-// budget's change and the card_funded row commit as one — this section
-// under a.mu is the rig's transaction, the row appended inline because
-// Record would relock — so a refusal moves neither. No amount in EUR
-// above zero refuses; no task: ErrNotFound.
+// held against the month's pool and the card's cap — and without them the
+// member decided it and no bound applies. The money is judged before
+// anything moves — the raise finite, above zero and whole cents, the
+// budget it lands on and their sum whole cents — and the budget's change
+// and the card_funded row commit as one under a.mu, the row appended by
+// the spine's own fallible append so a spine that refuses it leaves the
+// budget untouched too. No task: ErrNotFound.
 func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
 	a.mu.Lock()
 	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
-	switch {
-	case i < 0:
+	if i < 0 {
 		a.mu.Unlock()
 		return 0, 0, factoryd.ErrNotFound
+	}
+	from := a.tasks[i].BudgetEUR
+	switch {
 	case math.IsNaN(eur) || math.IsInf(eur, 0) || !(eur > 0):
 		a.mu.Unlock()
 		return 0, 0, fmt.Errorf("the raise of %s is no amount in EUR above zero", strconv.FormatFloat(eur, 'f', -1, 64))
+	case !accWholeCents(eur):
+		a.mu.Unlock()
+		return 0, 0, fmt.Errorf("the raise of %s is no amount in whole cents", strconv.FormatFloat(eur, 'f', -1, 64))
+	case !accWholeCents(from):
+		a.mu.Unlock()
+		return 0, 0, fmt.Errorf("the card's budget of %s is no amount in whole cents", strconv.FormatFloat(from, 'f', -1, 64))
+	case !accWholeCents(from + eur):
+		a.mu.Unlock()
+		return 0, 0, fmt.Errorf("the raise of %s on %s reaches no amount in whole cents",
+			strconv.FormatFloat(eur, 'f', -1, 64), strconv.FormatFloat(from, 'f', -1, 64))
 	}
 	detail := maps.Clone(e.Detail)
 	if detail == nil {
@@ -930,23 +943,30 @@ func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, boun
 			a.mu.Unlock()
 			return 0, 0, short
 		}
-		if factoryd.Cents(a.tasks[i].BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
-			held := a.tasks[i].BudgetEUR
+		if factoryd.Cents(from)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
 			a.mu.Unlock()
-			return 0, 0, &factoryd.CardCapError{Budget: held}
+			return 0, 0, &factoryd.CardCapError{Budget: from}
 		}
 	}
-	from := a.tasks[i].BudgetEUR
-	a.tasks[i].BudgetEUR = from + eur
 	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = from, from+eur, eur
-	e.Detail, e.ID = detail, int64(len(a.events)+1)
-	if e.At.IsZero() {
-		e.At = time.Now()
+	e.Detail = detail
+	stored, err := a.appendEventLocked(e)
+	if err != nil {
+		a.mu.Unlock()
+		return 0, 0, err
 	}
-	a.events = append(a.events, e)
+	a.tasks[i].BudgetEUR = from + eur
 	a.mu.Unlock()
-	a.bus.Publish(e)
+	a.bus.Publish(stored)
 	return from, from + eur, nil
+}
+
+// accWholeCents reports whether eur is money this rig stores: finite and
+// whole cents, the unit the production money path carries end to end
+// (pool.go's poolCents; the sum's check catches an overflow no single
+// amount makes).
+func accWholeCents(eur float64) bool {
+	return !math.IsNaN(eur) && !math.IsInf(eur, 0) && eur == math.Round(eur*100)/100
 }
 
 // AttachAnalysis mirrors PGStore.AttachAnalysis for the rig's asks: the
@@ -976,10 +996,11 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 	if recommendation != "" {
 		analysis += "\nRecommendation: " + recommendation
 	}
-	if k := strings.Index(a.msgs[ask].Content, "\nAnalysis: "); k >= 0 { // a new attach replaces the earlier one's words
-		a.msgs[ask].Content = a.msgs[ask].Content[:k]
+	content := a.msgs[ask].Content
+	if k := strings.Index(content, "\nAnalysis: "); k >= 0 { // a new attach replaces the earlier one's words
+		content = content[:k]
 	}
-	a.msgs[ask].Content += analysis
+	content += analysis
 	e.TaskID, e.IssueNumber, e.Kind = taskID, a.tasks[i].IssueNumber, factoryd.EventAnalysisAttached
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -989,13 +1010,14 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 	if recommendation != "" {
 		e.Detail["recommendation"] = recommendation
 	}
-	e.ID = int64(len(a.events) + 1)
-	if e.At.IsZero() {
-		e.At = time.Now()
+	stored, err := a.appendEventLocked(e)
+	if err != nil {
+		a.mu.Unlock()
+		return err
 	}
-	a.events = append(a.events, e)
+	a.msgs[ask].Content = content
 	a.mu.Unlock()
-	a.bus.Publish(e)
+	a.bus.Publish(stored)
 	return nil
 }
 
@@ -1059,24 +1081,35 @@ func (a *AcceptanceRig) RetryApprovalBrief(_ context.Context, id int64) error {
 
 // Events: the event spine in memory.
 
-func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, error) {
-	if e.Repository == "" || e.Kind == "" {
-		return 0, fmt.Errorf("event: repository and kind are required")
-	}
-	a.mu.Lock()
+// appendEventLocked stores e on the event spine with a.mu held: the
+// lock-aware, fallible append every one of the rig's store actions
+// shares, so a write and its audit row commit as one — a spine that
+// refuses the row (FailRecords) stores nothing and answers its error,
+// the caller's own mutation never made. It answers the stored row.
+func (a *AcceptanceRig) appendEventLocked(e factoryd.Event) (factoryd.Event, error) {
 	if a.recordFail != nil {
-		err := a.recordFail
-		a.mu.Unlock()
-		return 0, err
+		return factoryd.Event{}, a.recordFail
 	}
 	e.ID = int64(len(a.events) + 1)
 	if e.At.IsZero() {
 		e.At = time.Now()
 	}
 	a.events = append(a.events, e)
+	return e, nil
+}
+
+func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, error) {
+	if e.Repository == "" || e.Kind == "" {
+		return 0, fmt.Errorf("event: repository and kind are required")
+	}
+	a.mu.Lock()
+	stored, err := a.appendEventLocked(e)
 	a.mu.Unlock()
-	a.bus.Publish(e)
-	return e.ID, nil
+	if err != nil {
+		return 0, err
+	}
+	a.bus.Publish(stored)
+	return stored.ID, nil
 }
 
 // AgentFundedEUR mirrors PGStore.AgentFundedEUR: the card_funded rows of

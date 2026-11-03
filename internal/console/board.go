@@ -1326,7 +1326,7 @@ type statusLine struct {
 	// chat's own) or the month's turn; ChatTask is its task id. Approver:
 	// the viewer may fund it.
 	ChatSpent bool
-	// Pool is the project face's pool status (projectPool): the same
+	// Pool is the project face's pool status (ProjectPool): the same
 	// projection the chat's status line and the board read tool read, so
 	// the face and the chat agree on its figures.
 	Pool     poolLine
@@ -2567,7 +2567,7 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 	if v.policyOK {
 		s.DayCapEUR = v.policy.Document.Budget.DayEUR
 		s.PremiumCapEUR = v.policy.Document.Budget.PremiumMonthEUR
-		s.Pool = c.projectPool(ctx, v.policy, p, time.Now())
+		s.Pool = c.ProjectPool(ctx, v.policy, p, time.Now())
 	}
 	s.TodayEUR = e.Day
 	if s.PremiumCapEUR > 0 {

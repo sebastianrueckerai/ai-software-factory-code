@@ -155,7 +155,9 @@ func pageGET(t *testing.T, r *AcceptanceRig, ck *http.Cookie, path string) strin
 // card holds 3, the month's use 4 of 12, EUR 8 left, one agent-decided
 // card_funded row. A raise the member confirms is their money: the pool
 // does not count it, while the card's own state still refuses a raise it
-// needs no raise for.
+// needs no raise for. The raise's own money is judged first — a store
+// that refuses the amount, or the audit row it must carry, moves neither
+// the card nor the spine.
 func TestPoolAuthorisesFunding(t *testing.T) {
 	r, path, ck, csrf := fundRig(t)
 	r.SetLoadedPool(10)
@@ -245,6 +247,48 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	if len(theirs) != 1 || theirs[0].Detail["decider"] == "agent" {
 		t.Fatalf("the member's row = %+v, want one the pool does not count", theirs)
 	}
+
+	// the raise and its card_funded row commit as one: an amount the
+	// store refuses — no amount above zero, a fraction below a cent — and
+	// a spine that refuses the audit row each leave the card and the
+	// funding rows exactly as they stand
+	held, _, _ := r.Task(t.Context(), "t-e")
+	auditRows, spine := len(agentFundRows(r)), len(r.Events())
+	raise := factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat,
+		Actor: "anna", TaskID: "t-e", Detail: map[string]any{}}
+	unchanged := func(what string) {
+		t.Helper()
+		card, _, _ := r.Task(t.Context(), "t-e")
+		if card.BudgetEUR != held.BudgetEUR || len(agentFundRows(r)) != auditRows || len(r.Events()) != spine {
+			t.Fatalf("%s moved the card to %v or wrote a row (agent rows %d of %d, spine %d of %d)",
+				what, card.BudgetEUR, len(agentFundRows(r)), auditRows, len(r.Events()), spine)
+		}
+	}
+	for _, tc := range []struct {
+		name string
+		eur  float64
+		want string
+	}{
+		{"no amount in EUR above zero", -1, "no amount in EUR above zero"},
+		{"a fraction below a cent", 0.001, "no amount in whole cents"},
+	} {
+		if _, _, err := r.FundCard(t.Context(), "t-e", tc.eur, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 5}, raise); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Fatalf("the %s refusal = %v, want it to name %q", tc.name, err, tc.want)
+		}
+		unchanged("the " + tc.name + " refusal")
+	}
+	r.SetCardBudget("t-e", 2.005) // a budget itself no whole cents
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 5}, raise); err == nil || !strings.Contains(err.Error(), "no amount in whole cents") {
+		t.Fatalf("the raise on a budget no whole cents = %v", err)
+	}
+	r.SetCardBudget("t-e", held.BudgetEUR)
+	unchanged("the refused raise on a budget no whole cents")
+	r.FailRecords(errors.New("the spine is down"))
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, &factoryd.FundBounds{PoolEUR: 12, CardCapEUR: 5}, raise); err == nil {
+		t.Fatal("the raise committed without its card_funded row")
+	}
+	unchanged("the refused audit row")
+	r.FailRecords(nil)
 }
 
 // TestPoolEscalationFallback is every refusal that hands the raise back
@@ -366,7 +410,10 @@ func TestPoolReadouts(t *testing.T) {
 	// configured 10, use 3, remaining 7: the rig's own rows alone
 	r.SetLoadedPool(10)
 	now := time.Now().UTC()
-	lastMonth := now.AddDate(0, -1, 0)
+	// the month before this one off its own UTC start: AddDate off the
+	// day itself would normalise a March 31 into March 3 and count the
+	// decoy toward this month
+	lastMonth := time.Date(now.Year(), now.Month(), 1, 0, 0, 0, 0, time.UTC).AddDate(0, -1, 0)
 	for _, eur := range []float64{1.5, 1, 0.5} {
 		seedFundRow(t, r, eur, now)
 	}
@@ -421,19 +468,29 @@ func TestPoolReadouts(t *testing.T) {
 		}
 	}
 
-	// the November-to-December rollover, the explicit instant alone
+	// the November-to-December rollover, the explicit instant alone: the
+	// production read-helper (Console.ProjectPool) carries its instant in
+	// its contract, so the fixture reads it at both — allowance from the
+	// policy in force, usage the month's own rows, remaining their
+	// difference — and the turn of the month preserves the allowance
+	// while the use resets and the remaining returns to it
 	nov, dec := time.Date(2026, 11, 18, 10, 0, 0, 0, time.UTC), time.Date(2026, 12, 3, 9, 0, 0, 0, time.UTC)
 	r2, _, _ := NewAcceptanceRig(t, false, nil)
 	r2.SetLoadedPool(10)
 	seedFundRow(t, r2, 1.5, time.Date(2026, 11, 5, 8, 0, 0, 0, time.UTC))
 	seedFundRow(t, r2, 0.5, time.Date(2026, 11, 21, 18, 0, 0, 0, time.UTC))
-	if used, err := r2.AgentFundedEUR(t.Context(), "sf/code", nov); err != nil || used != 2 {
-		t.Fatalf("November's use = %v, %v; want 2", used, err)
+	v2, ok, err := r2.CurrentPolicy(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("the policy in force = %v, %v", ok, err)
 	}
-	if used, err := r2.AgentFundedEUR(t.Context(), "sf/code", dec); err != nil || used != 0 {
-		t.Fatalf("December's use = %v, %v; want 0", used, err)
+	p2 := factoryd.Project{Name: accProjectName, Repository: "sf/code"}
+	readout := func(at time.Time) []any {
+		pl := r2.c.ProjectPool(t.Context(), v2, p2, at)
+		return []any{pl.ConfiguredEUR, pl.UsedEUR, pl.RemainingEUR, pl.Month}
 	}
-	if eur, ok := r2.LoadedPool(); !ok || eur != 10 {
-		t.Fatalf("the pool after the turn of the month = %v, %v; want the allowance 10 preserved", eur, ok)
+	equal(t, "November's readout", readout(nov), []any{10.0, 2.0, 8.0, "2026-11"})
+	equal(t, "December's readout", readout(dec), []any{10.0, 0.0, 10.0, "2026-12"})
+	if words := r2.c.ProjectPool(t.Context(), v2, p2, dec).Words; !strings.Contains(words, "€10.00 left") {
+		t.Fatalf("December's words lack the remaining 10:\n%s", words)
 	}
 }
