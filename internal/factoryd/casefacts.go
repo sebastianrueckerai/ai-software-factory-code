@@ -16,6 +16,11 @@ import (
 // state of the work, the money, the open findings, the dependencies and
 // what the pool still holds. Stored as the case's facts.
 type CaseFacts struct {
+	// Kind is the kind of the case the facts are weighed for, "" for an
+	// answer on no case.
+	Kind CaseKind `json:"kind,omitempty"`
+	// Final is the card's status once it ended, "" while it lives.
+	Final          string `json:"final,omitempty"`
 	Head           string `json:"head,omitempty"`
 	PR             int64  `json:"pr,omitempty"`
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
@@ -79,6 +84,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
 		Running: t.Status == "running", Autonomy: project.AutonomyState()}
+	if Final(t.Status) {
+		f.Final = t.Status
+	}
 	if InPlan(t) {
 		f.Plan = GroupOf(t)
 	}

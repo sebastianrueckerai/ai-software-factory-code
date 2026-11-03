@@ -254,6 +254,9 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 			if seconds := number("agent_time_s"); seconds > 0 {
 				parts = append(parts, minutesWord(time.Duration(seconds)*time.Second)+" of agent time")
 			}
+			if shares := number("checkin_shares"); shares > 0 {
+				parts = append(parts, textutil.Plural(shares, "check-in share", "check-in shares"))
+			}
 			s.Kind, s.Outcome = "extended", strings.Join(append(parts, textutil.Plural(number("lines"), "line", "lines"), fmt.Sprintf("%.2f EUR", amount)), ", ")
 		case EventCardRetried:
 			s.Kind, s.Outcome = "retried", fmt.Sprintf("as #%d", number("replacement"))

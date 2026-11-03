@@ -139,11 +139,16 @@ decimals: a task's model calls cost fractions of a cent.
   cheaper model, check it again, route it for approval, rerun its checks,
   give it more sessions, agent time or lines, fund it, raise its ceiling,
   file a successor, retry or replan a failed dependency, close it, or note
-  a step and keep waiting. The Grant button gives one more session. A
-  fund can also go beside another action and draws its money with it.
-  The Fund form's ceiling field raises the card's ceiling first, for a
-  fund that would pass it. Words on a card at its session cap grant one
-  session. Once the answer passes, its words are posted on the issue as
+  a step and keep waiting. An extend answers a cap, or the owner exits
+  of a gate stop and of findings that repeat, never a question. The
+  Grant button buys what the stop asks for: one session at a session cap,
+  the card draw's agent time at an agent time cap, one more check-in share
+  at the check-in's share stop, one session at its call or time cap, and
+  at a stop that asked a question it goes on. A fund can also go beside
+  another action and draws its money with it, and a fund on a card that
+  ended is refused. The Fund form's ceiling field raises the card's
+  ceiling first, for a fund that would pass it. Words on a card at its
+  session or agent time cap grant. Once the answer passes, its words are posted on the issue as
   the human. A human card's choice does its own work first, and its case
   takes the comment that work posted. A card that waits with no open case
   refuses the answer until the heal pass opens one, within a minute. The
@@ -335,8 +340,9 @@ decimals: a task's model calls cost fractions of a cent.
   Close shows on every failed card; a done plan whose later rounds are still to plan
   shows Close too, and its close ends it `closed`: no later round starts, and a
   card's open case ends with the close as the human's answer), `edit` its title or body and the task's objective, which the
-  next session's brief reads, `grant_session` answers a card at its session
-  or agent time cap and is refused on any other, and `set_dependency` adds or removes a dependency of a card that has
+  next session's brief reads, `grant_session` grants a card at a cap what
+  the cap asks for, and the action table refuses it on a card that asked
+  a question, and `set_dependency` adds or removes a dependency of a card that has
   not started, in the store and on the issues as the bot. An added
   dependency joins two cards of one plan; a card of no plan is a group of
   one, and a refusal names the fitting action. `set_pool` sets the money

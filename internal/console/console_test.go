@@ -1133,10 +1133,14 @@ type rig struct {
 	imageAsks []string
 	imageAsk  factoryd.ImageAsk
 	imageErr  error
-	// acted are the answers Act took, actErr its refusal; the fake has a
-	// case-resolving answer's Post post its comment, as Act does
-	acted  []factoryd.ActInput
-	actErr error
+	// acted are the answers Act took, actErr its refusal, actErrs the
+	// refusal of the nth answer; the fake has a case-resolving answer's
+	// Post post its comment, as Act does, and actDid says what an answer
+	// ran
+	acted   []factoryd.ActInput
+	actErr  error
+	actErrs map[int]error
+	actDid  func(factoryd.ActInput) []factoryd.CaseAction
 	// drawn is PoolDrawn's answer, drawnErr its failure
 	drawn    policy.Draw
 	drawnErr error
@@ -1254,10 +1258,13 @@ func newRig(t *testing.T) *rig {
 		},
 		Act: func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 			r.acted = append(r.acted, in)
-			if r.actErr != nil {
-				return factoryd.ActResult{}, r.actErr
+			if err := cmp.Or(r.actErrs[len(r.acted)], r.actErr); err != nil {
+				return factoryd.ActResult{}, err
 			}
 			out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
+			if r.actDid != nil {
+				out.Did = r.actDid(in)
+			}
 			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
 				return out, nil
 			}

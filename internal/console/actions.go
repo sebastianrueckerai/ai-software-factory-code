@@ -527,6 +527,7 @@ func pinnedImage(p factoryd.Project, image string) (string, error) {
 // free. Every card that waits on id at the human, its dependency_failed
 // case open, has the retry answer that case through Act: the first files
 // the replacement, the next name it, and each card goes back to its wait.
+// card_retried is the filing answer's, written as it lands.
 func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, error) {
 	t, err := c.cardIn(ctx, a, id)
 	if err != nil {
@@ -549,13 +550,10 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 				return "", err
 			}
 			said = append(said, out.Text)
+			if issue, ok := filedReplacement(out.Did); ok {
+				c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
+			}
 		}
-		next, ok, err := c.cfg.Tasks.Task(ctx, factoryd.RetryID(t.ID))
-		if err != nil || !ok {
-			log.Printf("console: the replacement of %s: found %v, %v", t.ID, ok, err)
-			return strings.Join(said, " ") + " The retry ran, but its replacement could not be read, so no card_retried row was written.", nil
-		}
-		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": next.IssueNumber})
 		return strings.Join(said, " "), nil
 	}
 	issue, err := c.cfg.RetryCard(ctx, t.ID, a.s.user)
@@ -570,6 +568,18 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 	log.Printf("console: %s retried %s (%s#%d) as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
 	return fmt.Sprintf("Retried #%d as #%d; it starts once a work slot is free.", t.IssueNumber, issue), nil
+}
+
+// filedReplacement is the issue of the replacement a retry among did
+// filed; false when it filed none, as when it named one a retry filed
+// before.
+func filedReplacement(did []factoryd.CaseAction) (int64, bool) {
+	for _, d := range did {
+		if issue, ok := d.Args["replacement"].(int64); ok && d.Action == factoryd.ActRetry {
+			return issue, true
+		}
+	}
+	return 0, false
 }
 
 // waitingCase is a card that waits on another at the human and its live
@@ -932,10 +942,10 @@ func (c *Console) doAnswerValue(ctx context.Context, a actor, id, text, value, i
 	if err != nil {
 		return "", err
 	}
-	if value == "" && k.Kind == factoryd.CaseSessionCap {
-		value = factoryd.AnswerGrant // continue finds no room at the cap: words grant a session, as its form's button says
+	if value == "" && (k.Kind == factoryd.CaseSessionCap || k.Kind == factoryd.CaseAgentTimeCap) {
+		value = factoryd.AnswerGrant // continue finds no room at a cap: words grant, as its form's button says
 	}
-	res := answerAction(value, text, eur)
+	res := answerAction(value, text, eur, k, c.cardTime(ctx, t))
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res.Note))
 	if err != nil {
 		return "", err
@@ -973,6 +983,10 @@ func (c *Console) answerGates(ctx context.Context, a actor, id, text, value stri
 	return t, "", false, nil
 }
 
+// answerArgs are the keys of an action's args the answer tool's schema
+// names; any other key of the chat's args is dropped.
+var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "checkin_shares", "eur"}
+
 // doAnswerAs answers card id with the typed action the chat names, after
 // every answer's gates (answerGates): text its note and the comment, args
 // passed through to the action, eur the money it draws, the fund's or the
@@ -982,8 +996,17 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 	text = strings.TrimSpace(text)
 	res := factoryd.Resolution{Action: cmp.Or(action, factoryd.ActContinue), Note: text}
 	if len(args) > 0 {
-		if err := json.Unmarshal(args, &res.Args); err != nil {
+		var all map[string]any
+		if err := json.Unmarshal(args, &all); err != nil {
 			return "", refuse(http.StatusBadRequest, "args is a JSON object of the action's arguments")
+		}
+		for _, key := range answerArgs {
+			if v, ok := all[key]; ok {
+				if res.Args == nil {
+					res.Args = map[string]any{}
+				}
+				res.Args[key] = v
+			}
 		}
 	}
 	switch {
@@ -1025,17 +1048,20 @@ func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factory
 	return 0, refuse(http.StatusConflict, "this budget refusal names no amount: use the Fund form on the card, where you name it")
 }
 
-// answerAction maps a choice value of the five-part question to its
-// action, text its note: grant extends by one session, fund and fund:N
-// fund eur, go resumes, close and successor are their own, extend takes
-// the Extend form's amounts, park and keep waiting are a note that ends
-// nothing, overrule re-verifies with the reason as its note, and words
-// alone continue.
-func answerAction(value, text string, eur float64) factoryd.Resolution {
+// answerAction maps a choice value of the five-part question on case k to
+// its action, text its note: grant buys what k's stop asks for
+// (grantOf), else goes on, fund and fund:N fund eur, go resumes, close
+// and successor are their own, extend takes the Extend form's amounts,
+// park and keep waiting are a note that ends nothing, overrule re-verifies
+// with the reason as its note, and words alone continue. agentTime is the
+// card draw's agent time, the grant at an agent time cap.
+func answerAction(value, text string, eur float64, k factoryd.Case, agentTime time.Duration) factoryd.Resolution {
 	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
 	switch {
 	case value == factoryd.AnswerGrant:
-		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": 1}
+		if args, ok := grantOf(k, agentTime); ok {
+			res.Action, res.Args = factoryd.ActExtend, args
+		}
 	case value == factoryd.AnswerFund || strings.HasPrefix(value, factoryd.AnswerFund+":"):
 		res.Action, res.Args = factoryd.ActFund, map[string]any{"eur": eur}
 	case value == factoryd.AnswerGo:
@@ -1048,6 +1074,35 @@ func answerAction(value, text string, eur float64) factoryd.Resolution {
 		res.Action = factoryd.ActReverify
 	}
 	return res
+}
+
+// grantOf is what a grant on case k buys, the extend's args: one session
+// at a session cap, agentTime at an agent time cap (one session when the
+// policy gave none), and at a check-in's spend stop one more check-in
+// share when its reason is the share's, one session when it is the call
+// or time cap's. ok is false on a stop that asked a question, where a
+// grant goes on.
+func grantOf(k factoryd.Case, agentTime time.Duration) (map[string]any, bool) {
+	reason, _ := k.Facts["reason"].(string)
+	switch {
+	case k.Kind == factoryd.CaseAgentTimeCap && agentTime > 0:
+		return map[string]any{"agent_time_s": int(agentTime / time.Second)}, true
+	case k.Kind == factoryd.CaseCheckinShare && factoryd.AtCheckinShareStop(reason):
+		return map[string]any{"checkin_shares": 1}, true
+	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseAgentTimeCap, k.Kind == factoryd.CaseCheckinShare:
+		return map[string]any{"sessions": 1}, true
+	}
+	return nil, false
+}
+
+// cardTime is card t's draw of agent time by the policy in force: its
+// project's card draw for its size; 0 when the policy cannot be read.
+func (c *Console) cardTime(ctx context.Context, t factoryd.Task) time.Duration {
+	v, ok := c.inForce(ctx)
+	if !ok {
+		return 0
+	}
+	return v.EscalationOf(t.Repository).CardDrawOf(t.Size).AgentTime
 }
 
 // grantText is a grant press's answer: the instruction its form named, or
@@ -1461,11 +1516,10 @@ func (c *Console) ceilingOf(ctx context.Context, t factoryd.Task) float64 {
 	return factoryd.CardCeiling(v.Document, project)
 }
 
-// doGrantSession grants card id, waiting at its session or agent time
-// cap, one more session: an extend by one session through Act on that
-// case, the human's answer to its findings the note. A card whose newest
-// case is no cap waits on an answer, which the table would take an extend
-// for: the grant is refused with the fitting action.
+// doGrantSession grants card id what its cap asks for (grantOf), an
+// extend through Act on its live case, the human's answer to its findings
+// the note. On a case that asked a question it is an extend of one
+// session, which Act's table refuses there, naming the question.
 func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) (string, error) {
 	text = strings.TrimSpace(text)
 	if err := answerFits(text); err != nil {
@@ -1476,13 +1530,14 @@ func (c *Console) doGrantSession(ctx context.Context, a actor, id, text string) 
 		return "", err
 	}
 	k, err := c.liveCase(ctx, t)
-	switch {
-	case err != nil:
+	if err != nil {
 		return "", err
-	case t.IssueNumber == 0 || k.Kind != factoryd.CaseSessionCap && k.Kind != factoryd.CaseAgentTimeCap:
-		return "", wrongState(t, c.capFactsOf(ctx, t), "a card at its session cap")
 	}
-	res := answerAction(factoryd.AnswerGrant, text, 0)
+	args, ok := grantOf(k, c.cardTime(ctx, t))
+	if !ok {
+		args = map[string]any{"sessions": 1}
+	}
+	res := factoryd.Resolution{Action: factoryd.ActExtend, Args: args, Note: text}
 	out, err := c.actOn(ctx, a, t, k.ID, res, c.posting(a, t, res.Note))
 	if err != nil {
 		return "", err

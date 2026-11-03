@@ -1072,7 +1072,7 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling fl
 }
 
 // extendCard raises card id's caps by d and lines, as PGStore's drawCase does.
-func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines int) error {
+func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
@@ -1083,6 +1083,7 @@ func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines int) error 
 	t.Usage.RaisedSessions += d.Sessions
 	t.Usage.RaisedTime += d.AgentTime
 	t.Usage.ExtraLines += lines
+	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
 	return nil
 }
@@ -1112,8 +1113,8 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 			return factoryd.ErrNotFound
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 {
-		if err := s.extendCard(id, d.Extend, d.Lines); err != nil {
+	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
+		if err := s.extendCard(id, d.Extend, d.Lines, d.Shares); err != nil {
 			return err
 		}
 	}

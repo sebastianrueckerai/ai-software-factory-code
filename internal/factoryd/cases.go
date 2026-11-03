@@ -286,7 +286,8 @@ func (e ErrCaseEnded) Error() string {
 
 // CaseDraw is what an answer on Rung draws beside its resolution: a raise
 // of the card's ceiling by Raise (0 for none), then Extend's sessions and
-// agent time with Lines, then FundEUR into the budget, which the card's
+// agent time with Lines and the check-in's Shares, which draw nothing
+// from the pool, then FundEUR into the budget, which the card's
 // ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
 // draw bound, which rungs 0 and 1 draw within, and the project's month of
 // draws, which rungs 0 to 2 draw within. Event is the rows' repository,
@@ -296,6 +297,7 @@ type CaseDraw struct {
 	Raise         float64
 	Extend        policy.Draw
 	Lines         int
+	Shares        int
 	FundEUR       float64
 	PolicyCeiling float64
 	CardBound     policy.Draw
@@ -378,8 +380,8 @@ func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d Cas
 		}
 		rows = append(rows, stored)
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 {
-		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, extend)
+	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
+		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.Shares, extend)
 		if err != nil {
 			return nil, err
 		}

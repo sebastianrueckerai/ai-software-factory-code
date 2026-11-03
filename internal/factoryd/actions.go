@@ -53,6 +53,10 @@ type Action struct {
 	InRun   bool // the run carries it out on case_resolved; false: Act runs it
 }
 
+// extendKinds are the cases an extend answers: the caps, and the stops
+// whose questions offer extending the card as an owner exit.
+var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
+
 // handoverModels are the rungs a handover names, against the session's.
 var handoverModels = []string{"same", "stronger", "cheaper"}
 
@@ -113,11 +117,14 @@ var Actions = []Action{
 	{Name: ActExtend, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		d := extendDraw(r.Args)
 		lines, _ := toInt(r.Args["lines"])
+		shares, _ := toInt(r.Args["checkin_shares"])
 		switch {
-		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0:
+		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0 || shares < 0:
 			return "an extend takes no part below 0"
-		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0:
-			return "an extend needs sessions, agent time or lines above 0"
+		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
+			return "this card asked a question, not for a session: answer it, or extend at its cap"
+		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
+			return "an extend needs sessions, agent time, lines or check-in shares above 0"
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -125,6 +132,8 @@ var Actions = []Action{
 	}},
 	{Name: ActFund, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		switch eur, _ := r.Args["eur"].(float64); {
+		case f.Final != "":
+			return "this card ended " + f.Final + ": a fund buys nothing, file a new card"
 		case !(eur > 0) || math.IsInf(eur, 1):
 			return "a fund needs an amount above 0 EUR"
 		case boughtNothing(f):

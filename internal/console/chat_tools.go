@@ -1489,11 +1489,12 @@ var tools = []chatTool{
 			"description": "the EUR it draws: the fund's own, else beside the action"},
 		"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
 			"properties": map[string]any{
-				"model":        map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
-				"sessions":     map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
-				"agent_time_s": map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
-				"lines":        map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
-				"eur":          map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"}}},
+				"model":          map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+				"sessions":       map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
+				"agent_time_s":   map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
+				"lines":          map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
+				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "description": "extend's more shares of the check-in's budget"},
+				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -2100,7 +2101,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
-  answer's action takes its args: handover a model, extend sessions, agent_time_s or lines, fund and raise_ceiling eur, and retry and replan none.
+  answer's action takes its args: handover a model, extend sessions, agent_time_s, lines or checkin_shares, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human, answered by a press or their next message, and ends the turn.

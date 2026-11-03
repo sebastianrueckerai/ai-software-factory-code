@@ -90,6 +90,10 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
+	if _, ok := in.Res.Args["comment"]; ok {
+		in.Res.Args = maps.Clone(in.Res.Args)
+		delete(in.Res.Args, "comment") // the comment is the one the answer posts
+	}
 	res := in.Res
 	choice := c.Kind == CaseHumanCard && res.Action != ActNote
 	var f CaseFacts
@@ -106,6 +110,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		if f, err = r.tripFacts(ctx, t, head); err != nil {
 			return ActResult{}, err
 		}
+		f.Kind = c.Kind
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}
@@ -385,7 +390,7 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		if err != nil {
 			return nil, err
 		}
-		return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": dep.TaskID},
+		return []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": dep.TaskID, "replacement": issue},
 			Result: fmt.Sprintf("Filed #%d in place of #%d.", issue, dep.Issue)}}, nil
 	case ActReplan:
 		if id, _ := in.Res.Args["task_id"].(string); id != "" {
@@ -452,10 +457,11 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) *CaseDraw {
 	d, budget := in.Res.draw()
 	lines, _ := toInt(in.Res.Args["lines"])
+	shares, _ := toInt(in.Res.Args["checkin_shares"])
 	if in.Res.Action != ActExtend {
-		lines = 0
+		lines, shares = 0, 0
 	}
-	if d.IsZero() && lines <= 0 {
+	if d.IsZero() && lines <= 0 && shares <= 0 {
 		return nil
 	}
 	v := r.cfg.Policy()
@@ -473,7 +479,7 @@ func (r *Runner) caseDraw(t Task, f CaseFacts, c Case, in ActInput, via string) 
 	case ActRaiseCeiling:
 		draw.Raise, _ = in.Res.Args["eur"].(float64)
 	case ActExtend:
-		draw.Lines = lines
+		draw.Lines, draw.Shares = lines, shares
 	}
 	return draw
 }
@@ -499,6 +505,8 @@ func drawActions(res Resolution, d CaseDraw) []CaseAction {
 		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Drew " + drawWords(own) + " from the pool."})
 	case d.Lines > 0:
 		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: fmt.Sprintf("Raised the line bound by %s.", textutil.Plural(d.Lines, "line", "lines"))})
+	case d.Shares > 0:
+		out = append(out, CaseAction{Action: res.Action, Args: res.Args, Result: "Granted " + textutil.Plural(d.Shares, "more check-in share", "more check-in shares") + "."})
 	}
 	if res.Fund != nil && !res.Fund.IsZero() {
 		out = append(out, CaseAction{Action: ActFund, Result: "Drew " + drawWords(*res.Fund) + " from the pool."})

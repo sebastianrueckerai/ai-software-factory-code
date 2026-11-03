@@ -119,7 +119,7 @@ func TestActRetriesTheFailedDependency(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Result: "Filed #9 in place of #5."}}
+	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a", "replacement": int64(9)}, Result: "Filed #9 in place of #5."}}
 	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved || got.Case.Resolution.Action != ActRetry ||
 		got.Text != "Case 3 is resolved with retry. Filed #9 in place of #5." {
 		t.Fatalf("result = %+v, want case 3 resolved with the retry that filed #9", got)
@@ -247,6 +247,15 @@ func TestActKeysRungZeroOnFactoryd(t *testing.T) {
 // failed dependency, files nothing more: it resolves the case naming #9,
 // and #9 is the one replacement.
 func TestActRetryOfARetriedDependencyNamesTheReplacement(t *testing.T) {
+	for _, second := range []ActInput{{By: "alice", Rung: 3}, {By: FactoryDecider, Rung: 0}} {
+		retriedTwice(t, second)
+	}
+}
+
+// retriedTwice is the replacement test's run, t-c's case answered by
+// second's answerer: the human on rung 3, or rung 0.
+func retriedTwice(t *testing.T, second ActInput) {
+	t.Helper()
 	r, store, _, fj, _ := newRetryRig(t)
 	ctx := context.Background()
 	if err := store.CreateTask(ctx, Task{ID: "t-c", Kind: "agent", Status: "waiting-human", Track: policy.TrackDirect, Process: "spec",
@@ -262,9 +271,9 @@ func TestActRetryOfARetriedDependencyNamesTheReplacement(t *testing.T) {
 		t.Fatal(err)
 	}
 	issues := len(fj.issues)
-	got, err := r.Act(ctx, ActInput{TaskID: "t-c", CaseID: 4, By: "alice", Rung: 3, Res: retry})
+	got, err := r.Act(ctx, ActInput{TaskID: "t-c", CaseID: 4, By: second.By, Rung: second.Rung, Res: retry})
 	if err != nil {
-		t.Fatal(err)
+		t.Fatalf("%s: %v", second.By, err)
 	}
 	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Result: "#5 was retried as #9 already."}}
 	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved || got.Case.Resolution.Action != ActRetry {
@@ -272,5 +281,22 @@ func TestActRetryOfARetriedDependencyNamesTheReplacement(t *testing.T) {
 	}
 	if cards := cardsByKey(t, store); len(fj.issues) != issues || len(cards) != 4 || cards["links-api"].IssueNumber != 9 {
 		t.Fatalf("issues %d, plan cards %v; want no new issue and #9 the one replacement of the four", len(fj.issues), slices.Sorted(maps.Keys(cards)))
+	}
+}
+
+// A fund on a card that ended is refused naming its end, with no case
+// needed, and nothing is drawn.
+func TestActRefusesAFundOnAnEndedCard(t *testing.T) {
+	g := newFactsRig(t)
+	card := g.store.tasks["t1"]
+	card.Status = "done"
+	g.store.tasks["t1"] = card
+	_, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 1.0}}})
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "this card ended done: a fund buys nothing, file a new card") {
+		t.Fatalf("a fund on a done card = %v, want the refusal naming its end", err)
+	}
+	if len(g.store.events) != 0 || g.store.tasks["t1"].BudgetEUR != 5 {
+		t.Fatalf("events %+v, budget %v; want nothing written and 5 EUR", g.store.events, g.store.tasks["t1"].BudgetEUR)
 	}
 }

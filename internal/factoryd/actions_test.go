@@ -414,7 +414,36 @@ func TestExtendOfLinesAloneApplies(t *testing.T) {
 	if got := extend.refusal(stuck, 3, lines); got != "" {
 		t.Errorf("the human's extend of 200 lines = %q, want it to apply", got)
 	}
-	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{}), "an extend needs sessions, agent time or lines above 0"; got != want {
+	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{}), "an extend needs sessions, agent time, lines or check-in shares above 0"; got != want {
 		t.Errorf("an extend of nothing = %q, want %q", got, want)
+	}
+}
+
+// An extend answers a cap: a session cap, an agent time cap, a check-in
+// share, and the owner exits of a gate stop and of findings that repeat,
+// whose questions offer "Extend the card"; with no case it raises a live
+// card's caps. Any other case asked a question, which an extend does not
+// answer, and the human is not offered one there.
+func TestExtendAnswersACapAlone(t *testing.T) {
+	const asked = "this card asked a question, not for a session: answer it, or extend at its cap"
+	one := Resolution{Args: map[string]any{"sessions": 1}}
+	for kind, want := range map[CaseKind]string{
+		CaseSessionCap: "", CaseAgentTimeCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
+		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseBudgetFloor: asked, CaseCheckinHuman: asked, CaseMonthCap: asked,
+	} {
+		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
+			t.Errorf("an extend on %q = %q, want %q", kind, got, want)
+		}
+	}
+	if got := offeredNames(CaseFacts{Kind: CaseAgentEscalate, SessionCap: 3, AgentTimeCapS: 7200}, 3); slices.Contains(got, ActExtend) {
+		t.Errorf("the human on an ask is offered %v, want no extend", got)
+	}
+}
+
+// A fund on a card that ended buys nothing: it is refused naming the end.
+func TestFundRefusesAnEndedCard(t *testing.T) {
+	if got, want := applies(t, ActFund, CaseFacts{Final: "done"}, Resolution{Args: map[string]any{"eur": 1.0}}),
+		"this card ended done: a fund buys nothing, file a new card"; got != want {
+		t.Errorf("a fund on a done card = %q, want %q", got, want)
 	}
 }

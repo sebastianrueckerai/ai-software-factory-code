@@ -255,7 +255,7 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float6
 
 // extendCard raises task id's caps by d and lines and records e with the
 // raise in its detail, as PGStore's drawCase does.
-func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error) {
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines, shares int, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
@@ -264,6 +264,7 @@ func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, li
 	t.Usage.RaisedSessions += d.Sessions
 	t.Usage.RaisedTime += d.AgentTime
 	t.Usage.ExtraLines += lines
+	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
@@ -347,8 +348,8 @@ func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (er
 			return err
 		}
 	}
-	if !d.Extend.IsZero() || d.Lines > 0 {
-		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, extend); err != nil {
+	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.Shares, extend); err != nil {
 			return err
 		}
 	}

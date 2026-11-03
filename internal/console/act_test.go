@@ -59,14 +59,15 @@ func runTool(t *testing.T, r *rig, name, decider string, in toolInput) (string, 
 	return note, err
 }
 
-// The Grant button answers the card's newest live case through Act, the
-// merge case aside: an extend of one session on rung 3 by the human, the
-// choice's label its note, which Act has the console post as the human's
-// comment.
+// The Grant button of a card at its session cap answers the card's newest
+// live case through Act, the merge case aside: an extend of one session on
+// rung 3 by the human, the choice's label its note, which Act has the
+// console post as the human's comment.
 func TestAnswerGoesThroughActOnTheCardsCase(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	caseCard(r)
+	r.openCases["t-e"][0].Kind = factoryd.CaseSessionCap
 	r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "Grant a session?",
 		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerGrant, Label: "Grant one session"}}}
 	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "value": {factoryd.AnswerGrant}}), ck); rec.Code != http.StatusSeeOther {
@@ -221,12 +222,13 @@ func committed(t *testing.T, infra *infraFake, i int) string {
 }
 
 // Words on a card whose newest case is its session cap grant it one
-// session, as the cap's own answer does: continue would find no room.
-// Words on a card whose newest case is an ask go on, whatever its
-// session count says.
+// session, and at its agent time cap the card draw's hour, as the cap's
+// own answer does: continue would find no room. Words on a card whose
+// newest case is an ask go on, whatever its session count says.
 func TestWordsGrantASessionOnlyAtASessionCap(t *testing.T) {
 	for kind, want := range map[factoryd.CaseKind]factoryd.Resolution{
 		factoryd.CaseSessionCap:    {Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "use the replica"},
+		factoryd.CaseAgentTimeCap:  {Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 3600}, Note: "use the replica"},
 		factoryd.CaseAgentEscalate: {Action: factoryd.ActContinue, Note: "use the replica"},
 	} {
 		r := newRig(t)
@@ -365,20 +367,33 @@ func retryRig(t *testing.T) *rig {
 }
 
 // One Retry of a failed card answers every dependency case on it through
-// Act, the first filing the replacement and the next naming it, and files
-// nothing itself; the card_retried row names the replacement, #9. When
-// the replacement cannot be read the answer says the retry ran and that
-// its row could not be written, and no row names a replacement of 0.
+// Act and files nothing itself. card_retried is written once, by the
+// answer whose retry filed the replacement (its step names #9), even when
+// a later dependent's answer stops; a press whose answers only named the
+// replacement a retry filed before writes none.
 func TestRetryAnswersEveryDependentsCase(t *testing.T) {
 	retry := factoryd.Resolution{Action: factoryd.ActRetry, Args: map[string]any{"task_id": "t-c7"}}
-	r, ev := retryRig(t), (*fakeEvents)(nil)
-	ev = r.events
-	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.RetryID("t-c7"), Kind: "agent", Status: "queued",
-		Repository: "linkshort/linkshort", IssueNumber: 9}})
-	_, s := r.loggedIn(t)
-	a := actor{s: s, repository: "linkshort/linkshort", via: factoryd.ViaButton}
-	before := ev.count()
-	said, err := r.c.doRetry(t.Context(), a, "t-c7")
+	filed := []factoryd.CaseAction{{Action: factoryd.ActRetry, Args: map[string]any{"task_id": "t-c7", "replacement": int64(9)}, Result: "Filed #9 in place of #7."}}
+	named := []factoryd.CaseAction{{Action: factoryd.ActRetry, Args: map[string]any{"task_id": "t-c7"}, Result: "#7 was retried as #9 already."}}
+	answered := func(id string, caseID int64) wantRow {
+		return wantRow{kind: factoryd.EventQuestionAnswered, repo: "linkshort/linkshort", taskID: id,
+			detail: map[string]any{"action": factoryd.ActRetry, "case_id": caseID, "answer": factoryd.ActRetry}}
+	}
+	retried := wantRow{kind: factoryd.EventCardRetried, repo: "linkshort/linkshort", taskID: "t-c7", detail: map[string]any{"replacement": int64(9)}}
+	press := func(r *rig) (string, error) {
+		_, s := r.loggedIn(t)
+		return r.c.doRetry(t.Context(), actor{s: s, repository: "linkshort/linkshort", via: factoryd.ViaButton}, "t-c7")
+	}
+
+	r := retryRig(t)
+	r.actDid = func(in factoryd.ActInput) []factoryd.CaseAction {
+		if in.TaskID == "t-d1" {
+			return filed
+		}
+		return named
+	}
+	before := r.events.count()
+	said, err := press(r)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -394,19 +409,22 @@ func TestRetryAnswersEveryDependentsCase(t *testing.T) {
 	if !reflect.DeepEqual(got, want) || len(r.retried) != 0 || said != "Case 5 took retry. Case 6 took retry." {
 		t.Fatalf("Act took %+v, RetryCard %v, said %q; want both cases answered and no direct retry", got, r.retried, said)
 	}
-	answered := func(id string, caseID int64) wantRow {
-		return wantRow{kind: factoryd.EventQuestionAnswered, repo: "linkshort/linkshort", taskID: id,
-			detail: map[string]any{"action": factoryd.ActRetry, "case_id": caseID, "answer": factoryd.ActRetry}}
-	}
-	checkRows(t, ev, before, answered("t-d1", 5), answered("t-d2", 6), wantRow{kind: factoryd.EventCardRetried, repo: "linkshort/linkshort", taskID: "t-c7",
-		detail: map[string]any{"replacement": int64(9)}})
+	checkRows(t, r.events, before, answered("t-d1", 5), retried, answered("t-d2", 6))
 
 	r = retryRig(t)
-	_, s = r.loggedIn(t)
+	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction { return filed }
+	r.actErrs = map[int]error{2: factoryd.ErrActRefused("the card does not depend on t-c7")}
 	before = r.events.count()
-	said, err = r.c.doRetry(t.Context(), actor{s: s, repository: "linkshort/linkshort", via: factoryd.ViaButton}, "t-c7")
-	if err != nil || said != "Case 5 took retry. Case 6 took retry. The retry ran, but its replacement could not be read, so no card_retried row was written." {
-		t.Fatalf("doRetry = %q, %v", said, err)
+	if _, err := press(r); err == nil || err.Error() != "Case 5 took retry. The next answer stopped: the card does not depend on t-c7" {
+		t.Fatalf("the stopped press = %v", err)
+	}
+	checkRows(t, r.events, before, answered("t-d1", 5), retried)
+
+	r = retryRig(t)
+	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction { return named }
+	before = r.events.count()
+	if said, err := press(r); err != nil || said != "Case 5 took retry. Case 6 took retry." {
+		t.Fatalf("the naming press = %q, %v", said, err)
 	}
 	checkRows(t, r.events, before, answered("t-d1", 5), answered("t-d2", 6))
 }
@@ -491,7 +509,7 @@ func TestChatAnswerPassesItsArgs(t *testing.T) {
 // 3 that the table takes. The pairs the table refuses stay away from Act:
 // words at a session cap would be a continue with no room, which the
 // console turns into a grant, and a grant on an ask is an extend the
-// table would take, which the console's grant_session refuses.
+// table does not offer there.
 func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 	room := factoryd.CaseFacts{Attempts: 1, SessionCap: 3, AgentTimeS: 600, AgentTimeCapS: 7200, BudgetEUR: 2, LeftEUR: 1.5, FloorEUR: 0.5, CeilingEUR: 5}
 	with := func(edit func(*factoryd.CaseFacts)) factoryd.CaseFacts {
@@ -526,6 +544,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		{factoryd.CaseBudgetFloor, needRefusal, nil, with(func(f *factoryd.CaseFacts) { f.LeftEUR, f.FloorEUR = 0.17, 0.9 })},
 		{factoryd.CaseMonthCap, "the month cap is reached", nil, room},
 		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the check-in's share of the budget is spent", nil, room},
+		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": check-in call cap reached (3 calls)", nil, room},
 		{factoryd.CaseGateStop, "The gate supervisor stopped WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.", nil, pr},
 		{factoryd.CaseGateStop, "The gate supervisor stopped review: review: concerns on the head", nil, pr},
 		{factoryd.CaseFindingsRepeated, "No reply can change this: the head and the card's limits are unchanged since the last stop.", nil, pr},
@@ -534,12 +553,14 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		{factoryd.CaseWaitExpired, "The card was quiet for 3 days.", nil, room},
 	} {
 		q := factoryd.ShapedQuestion(tc.reason, factoryd.QuestionFacts{}, tc.choices)
+		tc.facts.Kind = tc.kind
 		for _, c := range q.Choices {
 			r := newRig(t)
 			_, s := r.loggedIn(t)
 			r.tasks.set(tc.reason, factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, BudgetEUR: 2})
 			r.tasks.tasks[0].Question = q
-			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman}}}
+			r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman,
+				Facts: map[string]any{"reason": tc.reason}}}}
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
 			var err error
 			if c.Value == factoryd.AnswerExtend {
@@ -581,15 +602,114 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 	if got, want := fits(capped, factoryd.Resolution{Action: factoryd.ActContinue, Note: "go on"}), "the session cap of 3 is reached: extend or close"; got != want {
 		t.Errorf("a continue at the cap = %q, want the table's refusal %q", got, want)
 	}
-	if got := fits(room, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}}); got != "" {
-		t.Errorf("an extend on an ask = %q, want the table to take it, so the console's grant_session refuses it", got)
+	ask := room
+	ask.Kind = factoryd.CaseAgentEscalate
+	if slices.ContainsFunc(factoryd.Offered(ask, 3), func(o factoryd.Action) bool { return o.Name == factoryd.ActExtend }) {
+		t.Errorf("the human on an ask is offered an extend, want none: a grant there answers no question")
 	}
+}
+
+// The Grant value buys what the case's stop asks for: one session at a
+// session cap, the card draw's agent time at an agent time cap (an hour,
+// one and a half for a large card), one more check-in share at the
+// check-in's share stop, which the case's reason names, one session at the
+// check-in's other spend stops, and on a stop that asked a question it
+// goes on with its label.
+func TestGrantBuysWhatTheStopAsksFor(t *testing.T) {
+	const shareStop, callCap = "check-in: spend_above_policy: the check-in's share of the budget is spent", "check-in: spend_above_policy: check-in call cap reached (3 calls)"
+	for _, tc := range []struct {
+		kind   factoryd.CaseKind
+		reason string
+		size   string
+		want   factoryd.Resolution
+	}{
+		{factoryd.CaseSessionCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
+		{factoryd.CaseAgentTimeCap, "", "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 3600}, Note: "Go on"}},
+		{factoryd.CaseAgentTimeCap, "", "large", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"agent_time_s": 5400}, Note: "Go on"}},
+		{factoryd.CaseCheckinShare, shareStop, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"checkin_shares": 1}, Note: "Go on"}},
+		{factoryd.CaseCheckinShare, callCap, "", factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Go on"}},
+		{factoryd.CaseOther, "", "", factoryd.Resolution{Action: factoryd.ActContinue, Note: "Go on"}},
+	} {
+		r := newRig(t)
+		_, s := r.loggedIn(t)
+		r.tasks.set("a stop", factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Size: tc.size})
+		r.tasks.tasks[0].Question = &factoryd.HumanQuestion{Ask: "May it go on?", Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerGrant, Label: "Go on"}}}
+		r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: tc.kind, Status: factoryd.CaseAtHuman, Facts: map[string]any{"reason": tc.reason}}}}
+		if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-k", "", factoryd.AnswerGrant, ""); err != nil {
+			t.Fatalf("%s %s: %v", tc.kind, tc.size, err)
+		}
+		if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, tc.want) {
+			t.Errorf("%s %q %s: Act took %+v, want %+v", tc.kind, tc.reason, tc.size, got.Res, tc.want)
+		}
+	}
+}
+
+// grant_session reaches Act on any card: on an ask its extend of one
+// session meets the table's refusal, which the console does not judge
+// before it.
+func TestGrantSessionLeavesTheAskToAct(t *testing.T) {
 	r := newRig(t)
-	r.tasks.set(factoryd.AgentAsks+"Use a replica?", factoryd.Task{ID: "t-k", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
-	r.openCases = map[string][]factoryd.Case{"t-k": {{ID: 1, TaskID: "t-k", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}}}
-	_, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-k", Text: "yes"})
+	caseCard(r)
+	if _, err := runTool(t, r, "grant_session", "member", toolInput{TaskID: "t-e", Text: "yes"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "yes"}) {
+		t.Fatalf("Act took %+v, want an extend of one session", got.Res)
+	}
+}
+
+// The chat's args reach Act with the keys its schema names alone: a
+// "comment" or a key of no action is dropped.
+func TestChatArgsKeepTheSchemasKeys(t *testing.T) {
+	r := newRig(t)
+	caseCard(r)
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Text: "try the bigger one", Action: factoryd.ActHandover,
+		Args: json.RawMessage(`{"model":"stronger","comment":5,"evil":1}`)}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res.Args, map[string]any{"model": "stronger"}) {
+		t.Fatalf("Act took args %+v, want the model alone", got.Res.Args)
+	}
+}
+
+// A human card's typed answer is one of its choices: args or fund_eur on
+// it are refused with 400, and nothing reaches Act or Forgejo.
+func TestHumanCardsTypedAnswerTakesNoArgs(t *testing.T) {
+	for _, in := range []toolInput{
+		{TaskID: "t-hq", Action: factoryd.ActClose, Args: json.RawMessage(`{"sessions":1}`)},
+		{TaskID: "t-hq", Action: factoryd.ActClose, FundEUR: 1},
+	} {
+		r := newRig(t)
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: factoryd.AnswerClose, Label: "Done"})}
+		_, err := runTool(t, r, "answer", "member", in)
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusBadRequest ||
+			no.msg != "Card #51 is a human card: its answer is one of its choices, which draws nothing and takes no args." || len(r.acted) != 0 ||
+			len(r.fg.comments) != 0 || len(r.fg.patched) != 0 {
+			t.Errorf("%+v = %v, Act took %+v, comments %v, patched %v; want the 400 alone", in, err, r.acted, r.fg.comments, r.fg.patched)
+		}
+	}
+}
+
+// A fund on a card that ended reaches Act, whose fund rule refuses it
+// naming the end: the console carries that refusal whole as a 409.
+func TestFundOnAnEndedCardMeetsTheTable(t *testing.T) {
+	r := needRig(t)
+	r.tasks.tasks[0].Status = "done"
+	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 0.9}, Note: "go"}
+	fund, _ := factoryd.ActionByName(factoryd.ActFund)
+	why := fund.Applies(factoryd.CaseFacts{Final: "done"}, res)
+	if why != "this card ended done: a fund buys nothing, file a new card" {
+		t.Fatalf("the table's fund rule on a done card = %q", why)
+	}
+	r.actErr = factoryd.ErrActRefused(why)
+	_, s := r.loggedIn(t)
+	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", 0.9, "go", 0)
 	var no *refusal
-	if want := "Card #13 waits on a human: an answer, an approval or a decision, not a card at its session cap: answer it (answer)."; !errors.As(err, &no) || no.msg != want || len(r.acted) != 0 {
-		t.Errorf("a grant on an ask = %v, Act took %+v; want %q and nothing acted", err, r.acted, want)
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != why {
+		t.Fatalf("doFund = %v, want 409 %q", err, why)
+	}
+	if got, _ := actedOnce(t, r); !reflect.DeepEqual(got.Res, res) || got.CaseID != 0 {
+		t.Fatalf("Act took %+v, want the fund on no case", got)
 	}
 }

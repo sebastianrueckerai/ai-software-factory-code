@@ -769,3 +769,52 @@ func TestActTakesAHumanCardsCloseItsQuestionDoesNotOffer(t *testing.T) {
 		t.Fatalf("closed %v, comments %q; want no Forgejo call", g.forge.closed, g.forge.comments)
 	}
 }
+
+// The grant at a check-in share is one more share of the check-in's
+// budget: the extend raises the card's extra check-in share by 1 and
+// draws nothing, its card_extended row names the share, and the run's
+// usage snapshot, which never holds it, does not write it away.
+func TestActGrantsACheckinShare(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseCheckinShare, StateKey: "share",
+		Status: CaseAtHuman, Problem: "check-in: spend_above_policy: the check-in's share of the budget is spent"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActExtend, Args: map[string]any{"checkin_shares": 1}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"checkin_shares": 1}, Result: "Granted 1 more check-in share."}}
+	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) {
+		t.Fatalf("result = %+v, want nothing drawn and %+v", got, want)
+	}
+	if card := g.card(t); card.Usage.ExtraCheckinShare != 1 {
+		t.Fatalf("extra check-in share = %d, want 1", card.Usage.ExtraCheckinShare)
+	}
+	rows := g.rows(t, EventCardExtended)
+	if len(rows) != 1 || rows[0].Detail["checkin_shares"] != 1.0 || rows[0].Detail["sessions"] != 0.0 {
+		t.Fatalf("card_extended rows = %+v, want one of 1 check-in share", rows)
+	}
+	if err := g.s.SetTaskUsage(ctx, "t1", TaskUsage{Attempts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if card := g.card(t); card.Usage.ExtraCheckinShare != 1 || card.Usage.Attempts != 2 {
+		t.Fatalf("after the run's snapshot: extra check-in share %d, attempts %d; want 1 and 2", card.Usage.ExtraCheckinShare, card.Usage.Attempts)
+	}
+}
+
+// A caller's own "comment" key never reaches the case: the comment the
+// resolution names is the one the answer posted, and an answer that
+// posted none names none.
+func TestActDropsTheCallersComment(t *testing.T) {
+	g := newActRig(t)
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1, "comment": 99}}}); err != nil {
+		t.Fatal(err)
+	}
+	if c := caseByID(t, g.s, g.c.ID); c.Resolution == nil || c.Resolution.Args["comment"] != nil {
+		t.Fatalf("resolution = %+v, want no comment of the caller's", c.Resolution)
+	}
+}

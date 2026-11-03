@@ -90,6 +90,8 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		f.Plan, f.Dependencies = plan, []DepFact{{TaskID: "t-a", Issue: 5, Status: "failed", RetryOf: retryOf}}
 		return f
 	}
+	replaced := failed("", "")
+	replaced.Dependencies[0].Replaced = RetryID("t-a")
 	for _, tc := range []struct {
 		name string
 		kind CaseKind
@@ -104,10 +106,15 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		{"the day cap", CaseDayCap, head("green", true), nil},
 		{"a failed dependency", CaseDependencyFailed, failed("", ""), &Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}},
 		{"a failed retry", CaseDependencyFailed, failed("", "t-old"), nil},
+		// a retry filed its replacement already: rung 0's retry names it (Act)
+		{"a dependency retried already", CaseDependencyFailed, replaced, &Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}},
 		{"a failed dependency in a plan", CaseDependencyFailed, failed("t-plan", ""), &Resolution{Action: ActReplan, Args: map[string]any{"task_id": "t-a"}}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			c := Case{Kind: tc.kind, StateKey: tripKey(tc.kind, "the stop", tc.f.Head, tc.f)}
+			if tc.kind == CaseDependencyFailed {
+				c.StateKey = "t-a" // the dependency the case opened on, replaced or not
+			}
 			var got *Resolution
 			for _, row := range rung0 {
 				if res, err := row.Fire(context.Background(), nil, c, tc.f); err != nil || res != nil {
