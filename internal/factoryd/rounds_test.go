@@ -624,6 +624,13 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 // the plan's timeline after.
 func deltaRound(t *testing.T, answer string, questions ...PlanQuestion) (*fakeStore, string) {
 	t.Helper()
+	store, tl := deltaRoundOn(t, &fakeLiteLLM{content: answer}, questions...)
+	return store, tl
+}
+
+// deltaRoundOn is deltaRound with model as the delta round's model.
+func deltaRoundOn(t *testing.T, model *fakeLiteLLM, questions ...PlanQuestion) (*fakeStore, string) {
+	t.Helper()
 	ctx := context.Background()
 	p := extras(10)
 	p.Questions = questions
@@ -648,7 +655,7 @@ func deltaRound(t *testing.T, answer string, questions ...PlanQuestion) (*fakeSt
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: answer}).srv(t).URL)
+	r.supervisor = testSupervisorModel(model.srv(t).URL)
 	t1, repo, err := r.task(ctx, "t-plan")
 	if err != nil {
 		t.Fatal(err)
@@ -709,6 +716,44 @@ func TestDeltaCardIsAFeature(t *testing.T) {
 	}
 	if len(store.deps[card.ID]) != 0 {
 		t.Fatalf("task_deps of stats-proof %v, want none", store.deps[card.ID])
+	}
+}
+
+// A card that breaks a plan rule goes back to the model with the rule it
+// broke, and the corrected answer files: the grant holds through one
+// wrong answer, as on plan #1344 where the model made its card wait on
+// the integration card.
+func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
+	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
+		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
+	fixed := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
+		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
+	model := &fakeLiteLLM{contents: []string{broken, fixed}}
+	store, tl := deltaRoundOn(t, model)
+	if _, filed := cardsByKey(t, store)["fix-stats"]; !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
+		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
+	}
+	if len(model.chats) != 2 {
+		t.Fatalf("model calls = %d, want 2", len(model.chats))
+	}
+	if second := userMessage(model.chats[1]); !strings.Contains(second, "depends on the integration card, which comes last") || !strings.Contains(second, `\"depends_on\": [\"integration\"]`) {
+		t.Fatalf("the second call's input lacks the broken rule or the answer that broke it:\n%s", second)
+	}
+}
+
+// A model that breaks the plan rules on every attempt ends the grant
+// after three answers, naming the last rule broken.
+func TestDeltaRoundRefusesAfterThreeBrokenAnswers(t *testing.T) {
+	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
+		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
+	model := &fakeLiteLLM{content: broken}
+	store, tl := deltaRoundOn(t, model)
+	if _, filed := cardsByKey(t, store)["fix-stats"]; filed || !strings.Contains(tl, `"step":"delta_refused"`) ||
+		!strings.Contains(tl, "depends on the integration card, which comes last") {
+		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
+	}
+	if len(model.chats) != 3 {
+		t.Fatalf("model calls = %d, want 3", len(model.chats))
 	}
 }
 
