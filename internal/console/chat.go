@@ -353,7 +353,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("console: the chat stop of %s: %v", repo, err)
 	}
-	t.settleRows(ctx, msgs, th.SeenUpto, stop)
+	t.settleRows(ctx, msgs, owner, t.conv, th.SeenUpto, stop)
 	// the owner's Clear old swept the rows up to their marker from view;
 	// an open ask or fund row stays whatever the marker says, and the
 	// record keeps every row. Past the summary's fold the answer carries
@@ -507,13 +507,13 @@ func (t *turn) attachRows(ctx context.Context, msgs []factoryd.ChatMessage) {
 	}
 }
 
-// settleRows stamps each poke row's derived state onto the log (the
-// notification-settling concept): an ask past its settling event or its
-// wait facts gets its reason line, a poke the member has read recedes,
-// and a fund row settles by the chat's stop. Nothing is written; the
-// state derives at read, seenUpto the thread's seen marker before this
-// read.
-func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seenUpto int64, stop chatStop) {
+// settleRows stamps each poke row's derived state onto the log of
+// login's thread conv (the notification-settling concept): an ask past
+// its settling event or its wait facts gets its reason line, a poke the
+// member has read recedes, and a fund row settles by the chat's stop.
+// Nothing is written; the state derives at read, seenUpto the thread's
+// seen marker before this read.
+func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, login string, conv int64, seenUpto int64, stop chatStop) {
 	pending, err := t.c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	if err != nil {
 		log.Printf("console: the approval requests: %v", err)
@@ -534,8 +534,8 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 	}
 	live := map[string]bool{}
-	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
-		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Repository, err)
+	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, login, conv, time.Now()); err != nil {
+		log.Printf("console: the ask bindings of %s on %s: %v", login, t.p.Repository, err)
 	} else {
 		for _, b := range binds {
 			live[b.Token] = true
