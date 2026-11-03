@@ -171,6 +171,222 @@ func mChat(c factoryd.ChatWork) string {
 
 func msub(a, b float64) float64 { return a - b }
 
+// mInt is an integer count as the coverage notes read it.
+func mInt(n int) string { return strconv.FormatInt(int64(n), 10) }
+
+// mEur4 is money to four digits, the EUR-per-line panel's own precision.
+func mEur4(v float64) string { return "€" + fmt.Sprintf("%.4f", v) }
+
+func mEur4Move(d float64) string { return msign(d) + mEur4(math.Abs(d)) }
+
+// mHours reads the divide panels' precise milliseconds as hours: two
+// digits kept, one never dropped — 6.0, 3.75 — the page's own words
+// over the milliseconds the report answers, beside the legacy hour
+// fields the JSON keeps unchanged.
+func mHours(ms float64) string {
+	h := fmt.Sprintf("%.2f", ms/3.6e6)
+	if strings.HasSuffix(h, "0") {
+		h = h[:len(h)-1]
+	}
+	return h + " hours"
+}
+
+func mHoursMove(d float64) string { return msign(d) + mHours(math.Abs(d)) }
+
+// mSizes lists the sessions panel's per-size averages: small 2.0 ·
+// medium 2.0; a size the window measured none of reads its dash.
+func mSizes(sizes []factoryd.SizeFigure) string {
+	if len(sizes) == 0 {
+		return "—"
+	}
+	parts := make([]string, 0, len(sizes))
+	for _, s := range sizes {
+		if s.Figure.Has {
+			parts = append(parts, s.Size+" "+mDec(s.Figure.Value))
+		} else {
+			parts = append(parts, s.Size+" —")
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mNamed lists a typed distribution's counts: pushed 2 · wall_clock 1.
+func mNamed(counts []factoryd.NamedCount) string {
+	if len(counts) == 0 {
+		return "—"
+	}
+	parts := make([]string, 0, len(counts))
+	for _, nc := range counts {
+		parts = append(parts, nc.Name+" "+mCount(nc.Count))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mIntercepts lists the fixed-EUR-per-card fits, a size's euros to the
+// cent — small 2.00 / medium 3.00 — and unavailable, never zero, where
+// the cohort cannot hold the fit.
+func mIntercepts(fits []factoryd.SizeIntercept) string {
+	if len(fits) == 0 {
+		return "—"
+	}
+	parts := make([]string, 0, len(fits))
+	for _, f := range fits {
+		if f.Available {
+			parts = append(parts, f.Size+" "+fmt.Sprintf("%.2f", f.EUR))
+		} else {
+			parts = append(parts, f.Size+" unavailable")
+		}
+	}
+	return strings.Join(parts, " / ")
+}
+
+// mRoundName words one round bucket: 1 round, 2 rounds; a name that is
+// no number — the unknown bucket — its own words.
+func mRoundName(name string) string {
+	if n, err := strconv.Atoi(name); err == nil {
+		if n == 1 {
+			return "1 round"
+		}
+		return fmt.Sprintf("%d rounds", n)
+	}
+	return name
+}
+
+// mRoundSpans lists a named round comparison's window counts: 1
+// round:1 / 2 rounds:1, the unknown bucket last.
+func mRoundSpans(figs []factoryd.NamedFigure) string {
+	return mNamedSpans(figs, mRoundName)
+}
+
+// mOriginSpans lists the replans panel's origins: person:1 / cut:1 /
+// round:1, the unknown bucket last.
+func mOriginSpans(figs []factoryd.NamedFigure) string {
+	return mNamedSpans(figs, func(name string) string { return name })
+}
+
+// mNamedSpans lists a named comparison's window counts, name by name —
+// the explicit names with slashes, the unknown bucket apart at the end —
+// never collapsing one name into another; a count the window does not
+// hold reads its dash, never a measured zero.
+func mNamedSpans(figs []factoryd.NamedFigure, name func(string) string) string {
+	if len(figs) == 0 {
+		return "—"
+	}
+	count := func(f factoryd.Figure) string {
+		if f.Has {
+			return mCount(f.Value)
+		}
+		return "—"
+	}
+	var parts []string
+	for _, nf := range figs {
+		if nf.Name != "unknown" {
+			parts = append(parts, name(nf.Name)+":"+count(nf.Figure))
+		}
+	}
+	for _, nf := range figs {
+		if nf.Name == "unknown" {
+			parts = append(parts, name(nf.Name)+":"+count(nf.Figure))
+		}
+	}
+	return strings.Join(parts, " / ")
+}
+
+// mGateCov words the size-bound panel's evidence: its readings, the
+// measured rest it stands on, and every hole by its own name.
+func mGateCov(c factoryd.GateBoundCoverage) string {
+	parts := []string{mInt(c.Readings) + " readings", mInt(c.Measured) + " measured"}
+	for _, hole := range []struct {
+		n    int
+		word string
+	}{
+		{c.MissingBound, "no bound"},
+		{c.MissingLines, "no lines"},
+		{c.UnknownSize, "unknown size"},
+		{c.UnsizedSize, "unsized"},
+		{c.Identityless, "no identity"},
+	} {
+		if hole.n > 0 {
+			parts = append(parts, mInt(hole.n)+" "+hole.word)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mSessCov words the sessions panel's cohort and the holes its averages
+// read around.
+func mSessCov(c factoryd.SessionsCoverage) string {
+	parts := []string{mInt(c.Cards) + " cards"}
+	for _, hole := range []struct {
+		n    int
+		word string
+	}{
+		{c.UnknownSize, "unknown size"},
+		{c.Unsized, "unsized"},
+		{c.MissingStarts, "missing starts"},
+		{c.PartialStarts, "partial starts"},
+	} {
+		if hole.n > 0 {
+			parts = append(parts, mInt(hole.n)+" "+hole.word)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mEconCov words the economics panels' cohort and its holes: a missing
+// cost is never a free card.
+func mEconCov(c factoryd.EconomicsCoverage) string {
+	parts := []string{mInt(c.Cards) + " cards"}
+	for _, hole := range []struct {
+		n    int
+		word string
+	}{
+		{c.MissingCost, "missing cost"},
+		{c.MissingLines, "missing lines"},
+		{c.MissingSize, "missing size"},
+	} {
+		if hole.n > 0 {
+			parts = append(parts, mInt(hole.n)+" "+hole.word)
+		}
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mGroupCov words the group-open panel's cohort and the groups its mean
+// never reads: the open and the startless, each its own label.
+func mGroupCov(c factoryd.GroupHoursCoverage) string {
+	parts := []string{"cohort " + mInt(c.Groups)}
+	if c.Open > 0 {
+		parts = append(parts, "open "+mInt(c.Open))
+	}
+	if c.MissingStart > 0 {
+		parts = append(parts, "missing start "+mInt(c.MissingStart))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mHoldCov words the hold panel's evidence: the ended holds, the one
+// still running, and the rows no interval covers.
+func mHoldCov(c factoryd.HoldWaitCoverage) string {
+	parts := []string{"ended " + mInt(c.Ended)}
+	if c.Open > 0 {
+		parts = append(parts, "open "+mInt(c.Open))
+	}
+	if c.Missing > 0 {
+		parts = append(parts, "missing "+mInt(c.Missing))
+	}
+	return strings.Join(parts, " · ")
+}
+
+// mReviewCov words the review panel's holes: the rows no usable
+// evidence covers, unknown and never an inferred success.
+func mReviewCov(e factoryd.ReviewEvidence) string {
+	if !e.Unknown.Has || e.Unknown.Value == 0 {
+		return ""
+	}
+	return mCount(e.Unknown.Value) + " unknown"
+}
+
 // sparkSVG renders one figure's weeks as a hairline trace with an
 // endpoint dot (C30). A range narrower than 15% of the weeks' middle
 // widens to 30% so a near-constant figure reads as flat, not swinging.
