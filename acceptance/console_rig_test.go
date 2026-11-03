@@ -163,6 +163,22 @@ type accProposal struct {
 // and the project's chat path.
 func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*AcceptanceRig, *AccDocs, string) {
 	t.Helper()
+	return newAcceptanceRig(t, steer, docs, nil)
+}
+
+// NewMetricsRig builds the rig with figures wired as the console's
+// Figures port: the metrics page of an authenticated member reads the
+// port a test hands it — a fake report or a real store's answer.
+func NewMetricsRig(t *testing.T, figures console.Metrics) (*AcceptanceRig, string) {
+	t.Helper()
+	a, _, _ := newAcceptanceRig(t, false, nil, figures)
+	return a, "/projects/" + accProjectName + "/metrics"
+}
+
+// newAcceptanceRig is the rig's builder; figures, when not nil, is the
+// console's Figures port instead of none.
+func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures console.Metrics) (*AcceptanceRig, *AccDocs, string) {
+	t.Helper()
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
 		timelines: acceptObjects{}, prNext: 100} // the counted pull numbers, 101 first
 	a.tasks = []factoryd.BoardTask{
@@ -241,6 +257,7 @@ func NewAcceptanceRig(t *testing.T, steer bool, docs map[string]string) (*Accept
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
 	cardReads(&cfg, a)
+	cfg.Figures = figures
 	c, err := console.New(cfg)
 	if err != nil {
 		t.Fatal(err)
