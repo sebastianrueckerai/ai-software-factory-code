@@ -231,13 +231,13 @@ func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]stri
 }
 
 // FundCard raises task id's budget by eur and records e with the raise in
-// its detail; the card's ceiling refuses a raise past it.
-func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, e Event) (from, to float64, err error) {
+// its detail; the card's ceiling, else ceiling, refuses a raise past it.
+func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
 	}
-	if t.CeilingEUR > 0 && Cents(t.BudgetEUR)+Cents(eur) > Cents(t.CeilingEUR) {
+	if bound := cmp.Or(t.CeilingEUR, ceiling); bound > 0 && Cents(t.BudgetEUR)+Cents(eur) > Cents(bound) {
 		return 0, 0, &CardCapError{Budget: t.BudgetEUR}
 	}
 	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
@@ -285,7 +285,7 @@ func (s *fakeStore) PoolDrawn(_ context.Context, repository string, month time.T
 // CardDrawn sums task taskID's pool draws of rungs 0 and 1.
 func (s *fakeStore) CardDrawn(_ context.Context, taskID string) (policy.Draw, error) {
 	return s.drawn(func(e Event) bool {
-		rung, ok := e.Detail["rung"].(int)
+		rung, ok := toInt(e.Detail["rung"])
 		return e.TaskID == taskID && ok && rung <= 1
 	}), nil
 }
@@ -297,8 +297,8 @@ func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
 		if (e.Kind != EventCardFunded && e.Kind != EventCardExtended) || e.Detail["pool"] != true || !pick(e) {
 			continue
 		}
-		sessions, _ := e.Detail["sessions"].(int)
-		seconds, _ := e.Detail["agent_time_s"].(int64)
+		sessions, _ := toInt(e.Detail["sessions"])
+		seconds, _ := toInt(e.Detail["agent_time_s"])
 		eur, _ := e.Detail["amount_eur"].(float64)
 		d = d.Plus(policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second, EUR: eur})
 	}
@@ -308,6 +308,9 @@ func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
 // SetCeiling sets task taskID's ceiling and records e as its card_funded
 // row of 0 EUR.
 func (s *fakeStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
+	if err := ceilingRefusal(eur); err != nil {
+		return err
+	}
 	t, ok := s.tasks[taskID]
 	if !ok {
 		return ErrNotFound
@@ -1076,7 +1079,7 @@ func (s *fakeStore) SetTaskSizeBudget(ctx context.Context, id, size string, held
 		return nil
 	}
 	_, err := s.Record(ctx, Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd,
-		Detail: map[string]any{"size": size, "from_eur": from, "to_eur": t.BudgetEUR, "amount_eur": float64(Cents(t.BudgetEUR)-Cents(from)) / 100, "by": "size gate"}})
+		Detail: map[string]any{"size": size, "from_eur": from, "to_eur": t.BudgetEUR, "amount_eur": float64(Cents(t.BudgetEUR)-Cents(from)) / 100, "by": sizeGateBy}})
 	return err
 }
 

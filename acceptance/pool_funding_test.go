@@ -272,19 +272,19 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 		{"no amount in EUR above zero", -1, "no amount in EUR above zero"},
 		{"a fraction below a cent", 0.001, "no amount in whole cents"},
 	} {
-		if _, _, err := r.FundCard(t.Context(), "t-e", tc.eur, raise); err == nil || !strings.Contains(err.Error(), tc.want) {
+		if _, _, err := r.FundCard(t.Context(), "t-e", tc.eur, 5, raise); err == nil || !strings.Contains(err.Error(), tc.want) {
 			t.Fatalf("the %s refusal = %v, want it to name %q", tc.name, err, tc.want)
 		}
 		unchanged("the " + tc.name + " refusal")
 	}
 	r.SetCardBudget("t-e", 2.005) // a budget itself no whole cents
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, raise); err == nil || !strings.Contains(err.Error(), "no amount in whole cents") {
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, 5, raise); err == nil || !strings.Contains(err.Error(), "no amount in whole cents") {
 		t.Fatalf("the raise on a budget no whole cents = %v", err)
 	}
 	r.SetCardBudget("t-e", held.BudgetEUR)
 	unchanged("the refused raise on a budget no whole cents")
 	r.FailRecords(errors.New("the spine is down"))
-	if _, _, err := r.FundCard(t.Context(), "t-e", 1, raise); err == nil || err.Error() != "the spine is down" {
+	if _, _, err := r.FundCard(t.Context(), "t-e", 1, 12, raise); err == nil || err.Error() != "the spine is down" {
 		t.Fatalf("the refused audit row = %v, want the spine's own refusal", err)
 	}
 	unchanged("the refused audit row")
@@ -294,7 +294,7 @@ func TestPoolAuthorisesFunding(t *testing.T) {
 	// lands at 2.30, the row's own figures from the integer cents of the
 	// sum
 	r.SetCardBudget("t-e", 2.20)
-	from, to, err := r.FundCard(t.Context(), "t-e", 0.10, raise)
+	from, to, err := r.FundCard(t.Context(), "t-e", 0.10, 12, raise)
 	if err != nil || from != 2.2 || to != 2.3 {
 		t.Fatalf("the 2.20 + 0.10 raise = %v, %v, %v; want 2.20, 2.30", from, to, err)
 	}

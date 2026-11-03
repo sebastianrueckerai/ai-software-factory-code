@@ -686,9 +686,9 @@ type Store interface {
 	// instead, and answers those cards; a card that waits on to already
 	// keeps that one edge.
 	MoveDependents(ctx context.Context, from, to string) ([]string, error)
-	// FundCard raises task id's budget by eur and writes e, its card_funded
-	// row (PGStore.FundCard).
-	FundCard(ctx context.Context, id string, eur float64, e Event) (from, to float64, err error)
+	// FundCard raises task id's budget by eur, up to its ceiling, else up
+	// to ceiling, and writes e, its card_funded row (PGStore.FundCard).
+	FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error)
 	// ExtendCard raises task id's caps by d and lines and writes e, its
 	// card_extended row (PGStore.ExtendCard).
 	ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e Event) (from, to float64, err error)
@@ -1508,6 +1508,9 @@ func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	return oneRow(res, err, "task "+id)
 }
 
+// sizeGateBy is the "by" of the size gate's card_funded row.
+const sizeGateBy = "size gate"
+
 // SetTaskSizeBudget sets task id's size and, when the budget still lies
 // on the size's held cents, its budget: only the card's last size holds
 // its budget (roadmap 278). A budget that moved is recorded as a
@@ -1544,7 +1547,7 @@ func (s *PGStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCe
 		return tx.Commit()
 	}
 	e, _, err := s.insertEvent(ctx, tx, Event{Repository: repository, TaskID: id, IssueNumber: issue, Kind: EventCardFunded,
-		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"size": size, "from_eur": from, "to_eur": to, "amount_eur": float64(Cents(to)-Cents(from)) / 100, "by": "size gate"}})
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"size": size, "from_eur": from, "to_eur": to, "amount_eur": float64(Cents(to)-Cents(from)) / 100, "by": sizeGateBy}})
 	if err != nil {
 		return err
 	}
@@ -1770,11 +1773,13 @@ func (s *PGStore) commitRow(ctx context.Context, write func(tx *sql.Tx) (Event, 
 }
 
 // FundCard raises task id's budget by eur and writes e, its card_funded
-// row, in one transaction. The card's own ceiling bounds it
-// (CardCapError); no task: ErrNotFound.
-func (s *PGStore) FundCard(ctx context.Context, id string, eur float64, e Event) (from, to float64, err error) {
+// row, in one transaction. The bound is the UPDATE's predicate, so
+// parallel raises never pass it (CardCapError): the card's own ceiling,
+// else ceiling, the caller's policy cap, 0 for none. No task:
+// ErrNotFound.
+func (s *PGStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error) {
 	err = s.commitRow(ctx, func(tx *sql.Tx) (stored Event, err error) {
-		from, to, stored, err = s.fundCard(ctx, tx, id, eur, 0, e)
+		from, to, stored, err = s.fundCard(ctx, tx, id, eur, ceiling, e)
 		return stored, err
 	})
 	if err != nil {
@@ -1858,9 +1863,13 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 }
 
 // SetCeiling sets task taskID's ceiling to eur and writes e as the card's
-// card_funded row of 0 EUR naming the ceiling, in one transaction. No
+// card_funded row of 0 EUR naming the ceiling, in one transaction. A
+// ceiling of no whole cent above zero is refused (ceilingRefusal). No
 // task: ErrNotFound.
 func (s *PGStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
+	if err := ceilingRefusal(eur); err != nil {
+		return err
+	}
 	return s.commitRow(ctx, func(tx *sql.Tx) (Event, error) {
 		var budget float64
 		err := tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = $2 WHERE id = $1 RETURNING budget_eur::float8, repository, issue_number`,
@@ -1878,6 +1887,15 @@ func (s *PGStore) SetCeiling(ctx context.Context, taskID string, eur float64, e 
 		stored, _, err := s.insertEvent(ctx, tx, e)
 		return stored, err
 	})
+}
+
+// ceilingRefusal refuses a ceiling that is no amount of whole cents above
+// zero: a ceiling of 0 would read as the policy's.
+func ceilingRefusal(eur float64) error {
+	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
+		return fmt.Errorf("a ceiling of %v EUR is no amount above zero: give the most the card may be funded to, at least 0.01 EUR", eur)
+	}
+	return nil
 }
 
 // poolDraws picks the event rows that are draws from the escalation pool.

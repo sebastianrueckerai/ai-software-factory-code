@@ -334,6 +334,10 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "budget_eur": 7.0})
 		}, []DigestFlag{{"budget_moved_no_event", "9.00 EUR not 7.00 EUR"}}},
 		{"a human card, which spends no budget", func(c *Task) { c.Kind, c.BudgetEUR = "human", 0 }, nil, nil},
+		{"a budget the size gate moved on a card filed before the rows recorded it", func(c *Task) { c.Size, c.BudgetEUR = "small", 5 }, func(t *testing.T, g digestRig) {
+			g.event(1, EventCardFunded, FactoryDecider, map[string]any{"size": "small", "from_eur": 5.0, "to_eur": 4.0, "amount_eur": -1.0, "by": "size gate"})
+			g.event(2, EventCardFunded, "sebastian", map[string]any{"amount_eur": 1.0})
+		}, nil},
 		{"a budget a fund and an extend moved", func(c *Task) { c.BudgetEUR = 7.5 }, func(t *testing.T, g digestRig) {
 			g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 2.0})
 			g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "lines": 0, "amount_eur": 0.5})

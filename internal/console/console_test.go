@@ -421,11 +421,12 @@ func (s *fakeTasks) ProjectImageParks(_ context.Context, project string) ([]fact
 }
 
 // FundCard raises task id's budget and records e, both or neither, as the
-// store's one transaction does; the card's ceiling refuses a raise past it.
-func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
+// store's one transaction does; the card's ceiling, else ceiling, refuses
+// a raise past it.
+func (s *fakeTasks) FundCard(ctx context.Context, id string, eur, ceiling float64, e factoryd.Event) (float64, float64, error) {
 	s.mu.Lock()
 	for _, k := range s.tasks {
-		if k.ID == id && k.CeilingEUR > 0 && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(k.CeilingEUR) {
+		if bound := cmp.Or(k.CeilingEUR, ceiling); k.ID == id && bound > 0 && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bound) {
 			s.mu.Unlock()
 			return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
 		}

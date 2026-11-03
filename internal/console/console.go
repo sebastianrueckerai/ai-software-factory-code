@@ -125,8 +125,9 @@ type Tasks interface {
 	RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error)
 	// FundCard raises task id's budget by eur and writes e, the raise's
 	// card_funded row, with its budgets added, in one transaction; the
-	// card's ceiling refuses a raise past it (*factoryd.CardCapError).
-	FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (from, to float64, err error)
+	// card's ceiling, else ceiling (0 for none), refuses a raise past it
+	// in the same transaction (*factoryd.CardCapError).
+	FundCard(ctx context.Context, id string, eur, ceiling float64, e factoryd.Event) (from, to float64, err error)
 	// ExtendCard raises task id's caps by d and its line bound by lines,
 	// and writes e, the raise's card_extended row, in one transaction.
 	ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (from, to float64, err error)

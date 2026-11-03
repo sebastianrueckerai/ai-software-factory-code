@@ -48,8 +48,8 @@ func (e stampedEvents) Record(ctx context.Context, ev factoryd.Event) (int64, er
 // transaction.
 type stampedTasks struct{ Tasks }
 
-func (t stampedTasks) FundCard(ctx context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
-	return t.Tasks.FundCard(ctx, id, eur, stamped(ctx, e))
+func (t stampedTasks) FundCard(ctx context.Context, id string, eur, ceiling float64, e factoryd.Event) (float64, float64, error) {
+	return t.Tasks.FundCard(ctx, id, eur, ceiling, stamped(ctx, e))
 }
 
 func (t stampedTasks) ExtendCard(ctx context.Context, id string, d policy.Draw, lines int, e factoryd.Event) (float64, float64, error) {

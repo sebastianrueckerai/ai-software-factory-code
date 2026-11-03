@@ -3,7 +3,9 @@ package factoryd
 import (
 	"context"
 	"errors"
+	"math"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -144,7 +146,8 @@ func TestExtendCardRaisesTimeAndWritesTheDraw(t *testing.T) {
 
 // A card's ceiling, once set, bounds every fund: at 5 EUR under a ceiling
 // of 6, a fund of 2 is refused with the budget it met and one of 1 lands
-// on 6. SetCeiling writes a card_funded row that moves no money.
+// on 6. SetCeiling writes a card_funded row that moves no money, and
+// refuses a ceiling below a cent.
 func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-f", 5)
@@ -165,44 +168,38 @@ func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	}
 	fund := Event{Repository: "sf/r", TaskID: "t-f", IssueNumber: 9, Kind: EventCardFunded, Actor: "sebastian", Via: ViaConsole}
 	var capped *CardCapError
-	if _, _, err := s.FundCard(ctx, "t-f", 2, fund); !errors.As(err, &capped) || capped.Budget != 5 {
+	if _, _, err := s.FundCard(ctx, "t-f", 2, 0, fund); !errors.As(err, &capped) || capped.Budget != 5 {
 		t.Fatalf("FundCard 2 past the ceiling = %v, want CardCapError at 5", err)
 	}
-	if from, to, err := s.FundCard(ctx, "t-f", 1, fund); err != nil || from != 5 || to != 6 {
+	if from, to, err := s.FundCard(ctx, "t-f", 1, 0, fund); err != nil || from != 5 || to != 6 {
 		t.Fatalf("FundCard 1 = (%v, %v, %v), want (5, 6, nil)", from, to, err)
 	}
 	if err := s.SetCeiling(ctx, "nope", 6, Event{Actor: "sebastian", Via: ViaConsole}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetCeiling of no task = %v, want ErrNotFound", err)
 	}
+	for _, eur := range []float64{0, -1, 0.004, math.NaN(), math.Inf(1)} {
+		if err := s.SetCeiling(ctx, "t-f", eur, Event{Actor: "sebastian", Via: ViaConsole}); err == nil || !strings.Contains(err.Error(), "at least 0.01 EUR") {
+			t.Fatalf("SetCeiling %v = %v, want the refusal naming the least ceiling", eur, err)
+		}
+	}
+	if card, _, _ := s.Task(ctx, "t-f"); card.CeilingEUR != 6 {
+		t.Fatalf("ceiling %v after the refused ceilings, want 6", card.CeilingEUR)
+	}
 
-	// the inner form's ceiling is the policy's: it bounds a card with no
+	// the caller's ceiling is the policy's: it bounds a card with no
 	// ceiling of its own, and the card's own ceiling wins over it
 	drawCard(t, s, "t-g", 10, 2)
-	inner := func(id string, eur, ceiling float64) (float64, error) {
-		t.Helper()
-		tx, err := s.db.BeginTx(ctx, nil)
-		if err != nil {
-			t.Fatal(err)
-		}
-		defer tx.Rollback()
-		e := fund
-		e.TaskID = id
-		_, to, _, err := s.fundCard(ctx, tx, id, eur, ceiling, e)
-		if err != nil {
-			return 0, err
-		}
-		return to, tx.Commit()
-	}
-	if _, err := inner("t-g", 1.5, 3); !errors.As(err, &capped) || capped.Budget != 2 {
+	fund.TaskID, fund.IssueNumber = "t-g", 10
+	if _, _, err := s.FundCard(ctx, "t-g", 1.5, 3, fund); !errors.As(err, &capped) || capped.Budget != 2 {
 		t.Fatalf("a fund of 1.5 on 2 under the policy's 3 = %v, want CardCapError at 2", err)
 	}
-	if to, err := inner("t-g", 1, 3); err != nil || to != 3 {
+	if _, to, err := s.FundCard(ctx, "t-g", 1, 3, fund); err != nil || to != 3 {
 		t.Fatalf("a fund of 1 on 2 under the policy's 3 = %v, %v; want 3", to, err)
 	}
 	if err := s.SetCeiling(ctx, "t-g", 8, Event{Actor: "sebastian", Via: ViaConsole}); err != nil {
 		t.Fatal(err)
 	}
-	if to, err := inner("t-g", 5, 3); err != nil || to != 8 {
+	if _, to, err := s.FundCard(ctx, "t-g", 5, 3, fund); err != nil || to != 8 {
 		t.Fatalf("a fund of 5 on 3 under its own ceiling of 8 = %v, %v; want 8", to, err)
 	}
 }

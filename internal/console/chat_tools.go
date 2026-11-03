@@ -2162,7 +2162,7 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+id); err != nil {
 			return "", err
 		}
-		return c.doFund(ctx, a, id, eur, text)
+		return c.doFund(ctx, a, id, eur, text, 0)
 	}
 	p, ok, err := c.projectAt(ctx, a.repository)
 	switch {
@@ -2198,7 +2198,7 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the human can make a sizing exception.",
 			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
 	}
-	unread := refuse(http.StatusServiceUnavailable, "The month's pool could not be read; nothing was raised. Try again.")
+	unread := refuse(http.StatusServiceUnavailable, "The month's pool could not be read, so nothing was raised. Try again.")
 	if c.cfg.Pools == nil {
 		return "", unread
 	}
@@ -2210,7 +2210,7 @@ func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur 
 	case factoryd.Cents(in.EUR) > factoryd.Cents(b.DiscretionaryEUR)-factoryd.Cents(funded):
 		return "", refuse(http.StatusConflict, poolSpent(b.DiscretionaryEUR, funded, in.EUR))
 	}
-	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text)
+	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, ceiling)
 }
 
 // capSpent is the refusal of a raise past the card's ceiling.

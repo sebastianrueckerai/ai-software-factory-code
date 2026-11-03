@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -918,14 +919,15 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 }
 
 // FundCard mirrors PGStore.FundCard, the Actions fake this rig is: the
-// card's ceiling, when set, holds the raise back (CardCapError). The money
+// card's ceiling, else ceiling (0 for none), holds the raise back under
+// the same lock (CardCapError). The money
 // is judged before anything moves — the raise finite, above zero and whole
 // cents, the budget it lands on whole cents, the two summed in integer
 // cents as PGStore's numeric sums them — and the budget's change and the
 // card_funded row commit as one under a.mu, the row appended by the
 // spine's own fallible append so a spine that refuses it leaves the
 // budget untouched too. No task: ErrNotFound.
-func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, e factoryd.Event) (float64, float64, error) {
+func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur, ceiling float64, e factoryd.Event) (float64, float64, error) {
 	a.mu.Lock()
 	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
 	if i < 0 {
@@ -955,7 +957,7 @@ func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, e fa
 	if detail == nil {
 		detail = map[string]any{}
 	}
-	if ceiling := a.tasks[i].CeilingEUR; ceiling > 0 && fromCents+raiseCents > factoryd.Cents(ceiling) {
+	if bound := cmp.Or(a.tasks[i].CeilingEUR, ceiling); bound > 0 && fromCents+raiseCents > factoryd.Cents(bound) {
 		a.mu.Unlock()
 		return 0, 0, &factoryd.CardCapError{Budget: from}
 	}

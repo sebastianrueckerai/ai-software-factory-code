@@ -340,14 +340,12 @@ func TestOneClickFundChoiceRaisesAndAnswersWithoutANote(t *testing.T) {
 	}
 }
 
-// A raise past the card's ceiling reaches the member as the capSpent line
-// through doFund, the budget unchanged.
+// A raise another agent turn's raise left past the card's cap reaches the
+// member as the capSpent line through doFund, the budget unchanged.
 func TestFundCardCapErrorReachesTheMemberThroughDoFund(t *testing.T) {
 	r := needRig(t)
-	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, CeilingEUR: 2.5, ModelAlias: "factory/small"})
 	_, s := r.loggedIn(t)
-	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go")
+	_, err := r.c.doFund(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent"}, "t-e", 0.9, "go", 2.5)
 	var no *refusal
 	want := "Card #13 holds €2.00 now; €0.90 more passes its cap of €2.50. Record your analysis with attach_analysis so the human can make a sizing exception."
 	if !errors.As(err, &no) || no.msg != want {

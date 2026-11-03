@@ -516,7 +516,7 @@ func fundEvent() Event {
 func TestFundCardRaisesAndRecordsOrNothing(t *testing.T) {
 	s := fundStore(t)
 	ctx := context.Background()
-	from, to, err := s.FundCard(ctx, "t-c", 0.5, fundEvent())
+	from, to, err := s.FundCard(ctx, "t-c", 0.5, 0, fundEvent())
 	if err != nil || from != 2 || to != 2.5 {
 		t.Fatalf("FundCard = (%v, %v, %v), want (2, 2.5, nil)", from, to, err)
 	}
@@ -526,26 +526,23 @@ func TestFundCardRaisesAndRecordsOrNothing(t *testing.T) {
 	}
 	bad := fundEvent()
 	bad.Detail = map[string]any{"unmarshalable": make(chan int)}
-	if _, _, err := s.FundCard(ctx, "t-c", 1, bad); err == nil {
+	if _, _, err := s.FundCard(ctx, "t-c", 1, 0, bad); err == nil {
 		t.Fatal("a ledger row that cannot be written was accepted")
 	}
 	if got, _, _ := s.Task(ctx, "t-c"); got.BudgetEUR != 2.5 {
 		t.Fatalf("budget_eur = %v after a failed ledger write, want 2.5 (rolled back)", got.BudgetEUR)
 	}
-	if _, _, err := s.FundCard(ctx, "nope", 1, fundEvent()); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.FundCard(ctx, "nope", 1, 0, fundEvent()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("FundCard of no task = %v, want ErrNotFound", err)
 	}
 }
 
-// The card's ceiling is the UPDATE's predicate: of five parallel raises
-// of 1 EUR on a card of 2 EUR under a ceiling of 5, exactly three land,
-// the rest get the CardCapError with the budget they met.
+// The policy's cap is the UPDATE's predicate: of five parallel raises of
+// 1 EUR on a card of 2 EUR under a cap of 5, exactly three land, the rest
+// get the CardCapError with the budget they met.
 func TestFundCardCapHoldsUnderParallelTurns(t *testing.T) {
 	s := fundStore(t)
 	ctx := context.Background()
-	if err := s.SetCeiling(ctx, "t-c", 5, Event{Actor: "alice", Via: ViaChat}); err != nil {
-		t.Fatal(err)
-	}
 	var wg sync.WaitGroup
 	var mu sync.Mutex
 	var ok, capped int
@@ -553,7 +550,7 @@ func TestFundCardCapHoldsUnderParallelTurns(t *testing.T) {
 		wg.Add(1)
 		go func() {
 			defer wg.Done()
-			_, _, err := s.FundCard(ctx, "t-c", 1, fundEvent())
+			_, _, err := s.FundCard(ctx, "t-c", 1, 5, fundEvent())
 			mu.Lock()
 			defer mu.Unlock()
 			var c *CardCapError
@@ -574,7 +571,7 @@ func TestFundCardCapHoldsUnderParallelTurns(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t-c"); got.BudgetEUR != 5 {
 		t.Fatalf("budget_eur = %v, want 5", got.BudgetEUR)
 	}
-	if _, _, err := s.FundCard(ctx, "nope", 1, fundEvent()); !errors.Is(err, ErrNotFound) {
+	if _, _, err := s.FundCard(ctx, "nope", 1, 0, fundEvent()); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("FundCard of no task = %v, want ErrNotFound", err)
 	}
 }

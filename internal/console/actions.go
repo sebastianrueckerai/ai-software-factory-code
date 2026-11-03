@@ -1312,8 +1312,10 @@ func fundAmountOf(value string) float64 {
 // floor still refuses a session after the raise, the raise and the note
 // stand and the response is a refusal naming the floor's reason, so the
 // member learns the amount now, not on the card's next question. The raise
-// and its card_funded row commit together, within the card's ceiling.
-func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string) (string, error) {
+// and its card_funded row commit together, within the card's ceiling, else
+// within ceiling, the agent's cap (0 for a human's raise), so parallel
+// turns never pass it.
+func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, note string, ceiling float64) (string, error) {
 	note = strings.TrimSpace(note)
 	switch {
 	case !(eur > 0) || math.IsNaN(eur) || math.IsInf(eur, 0):
@@ -1354,12 +1356,12 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	if a.decider == "agent" {
 		detail["decider"] = a.decider // the agent's raise is the pool's
 	}
-	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur,
+	from, to, err := c.cfg.Tasks.FundCard(ctx, t.ID, eur, ceiling,
 		c.eventOf(a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardFunded, detail))
 	var capped *factoryd.CardCapError
 	switch {
 	case errors.As(err, &capped):
-		return "", refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, eur, t.CeilingEUR))
+		return "", refuse(http.StatusConflict, capSpent(t.IssueNumber, capped.Budget, eur, cmp.Or(t.CeilingEUR, ceiling)))
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusNotFound, "There is no card "+id+" in this project.")
 	case err != nil:

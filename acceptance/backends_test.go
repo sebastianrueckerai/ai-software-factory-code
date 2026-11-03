@@ -1055,14 +1055,14 @@ func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) ([]
 	return moved, nil
 }
 
-func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ factoryd.Event) (float64, float64, error) {
+func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling float64, _ factoryd.Event) (float64, float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, factoryd.ErrNotFound
 	}
-	if t.CeilingEUR > 0 && factoryd.Cents(t.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(t.CeilingEUR) {
+	if bound := cmp.Or(t.CeilingEUR, ceiling); bound > 0 && factoryd.Cents(t.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bound) {
 		return 0, 0, &factoryd.CardCapError{Budget: t.BudgetEUR}
 	}
 	from := t.BudgetEUR
