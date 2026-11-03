@@ -240,6 +240,11 @@ type SupervisorModel struct {
 	HTTP       *http.Client // nil = http.DefaultClient
 }
 
+// chatInputLead opens every JSON-mode call's user message: OpenAI refuses
+// JSON mode when no input message names JSON, and an input's own JSON
+// does not always hold the word.
+const chatInputLead = "The input, as JSON:\n"
+
 // chatPayload builds one JSON-mode call's body.
 func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 	return json.Marshal(map[string]any{
@@ -248,7 +253,7 @@ func chatPayload(alias, system string, user []byte, limit int) ([]byte, error) {
 		"response_format": map[string]string{"type": "json_object"},
 		"messages": []map[string]string{
 			{"role": "system", "content": system},
-			{"role": "user", "content": string(user)},
+			{"role": "user", "content": chatInputLead + string(user)},
 		},
 	})
 }
