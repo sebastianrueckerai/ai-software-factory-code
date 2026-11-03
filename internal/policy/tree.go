@@ -205,8 +205,10 @@ func checkSessions(d Document) error {
 // refuses its calls (Document.Limited).
 func checkOutputLimits(d Document) error {
 	aliases := []string{Small}
-	if m := d.ChatOf(ProjectConfig{}).Model; slices.Contains(ChatModels, m) {
-		aliases = append(aliases, m)
+	for _, m := range d.ChatOf(ProjectConfig{}).Models() {
+		if slices.Contains(ChatModels, m) {
+			aliases = append(aliases, m)
+		}
 	}
 	for _, c := range d.Classes {
 		aliases = append(aliases, c.ReviewModel, c.SupervisorModel, c.AuditModel, c.CheckinModel, c.VisionModel, c.SessionModel)

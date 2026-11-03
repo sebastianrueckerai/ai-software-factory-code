@@ -41,6 +41,34 @@ func TestStartWakeRunsATurnWithoutHTTP(t *testing.T) {
 	}
 }
 
+// Each turn runs on its origin's class of the chat block, its model calls
+// and its window read alike: a member's own turn on model, an MCP
+// client's on mcp_model, a wake's on wake_model.
+func TestEachTurnRunsOnItsOriginsModel(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{Model: policy.Premium, MCPModel: policy.Small, WakeModel: policy.Big}
+	g.window = 200000
+	ck, s := r.loggedIn(t)
+	g.alias, g.replies = policy.Premium, [][]string{{say("Two cards wait.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	g.alias, g.replies = policy.Small, [][]string{{say("hi")}}
+	answerOf(t, tokenSession(t, r), "chat_send", map[string]any{"message": "hi"})
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.alias, g.replies = policy.Big, [][]string{{say("I looked.")}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "Wake: 1 ask waits."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	var models []any
+	for _, c := range g.calls() {
+		models = append(models, c["model"])
+	}
+	equal(t, "the turns' classes", models, []any{policy.Premium, policy.Small, policy.Big})
+	equal(t, "the windows asked for", g.windows, []string{policy.Premium, policy.Small, policy.Big})
+}
+
 // A wake whose model cannot be reached ends in a row that says so, under
 // the wake's own: no member reads its stream, so the thread keeps the
 // failure.

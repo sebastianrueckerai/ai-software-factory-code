@@ -16,7 +16,7 @@ func TestChatDefaults(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := ChatConfig{Model: Big, VisionModel: "vision", MonthlyEUR: 5,
+	want := ChatConfig{Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 5,
 		Confirm: []string{"new_card", "request_image", "answer", "tell_card", "steer", "retry", "request_changes",
 			"approve_merge", "deny_merge", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan",
 			"alert_verdict", "promote_resource", "release_resource", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run", "routine_skip", "set_pool"}}
@@ -113,10 +113,10 @@ func TestChatProjectBlockReplacesThePolicys(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]ChatConfig{
-		"linkshort": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource",
+		"linkshort": {Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: []string{"deny_merge", "approve_merge", "invite", "alert_verdict", "promote_resource",
 			"release_resource", "github_export", "github_sync", "write_doc", "set_autonomy", "routine_write", "routine_delete", "set_pool", "fund"}},
-		"demo-app":                 {Model: Big, VisionModel: "vision", MonthlyEUR: 2.5, Confirm: append(slices.Clone(AlwaysConfirm), "fund")},
-		"ai-software-factory-code": {Model: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: append(append([]string{"new_card"}, AlwaysConfirm...), "fund")},
+		"demo-app":                 {Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 2.5, Confirm: append(slices.Clone(AlwaysConfirm), "fund")},
+		"ai-software-factory-code": {Model: Big, MCPModel: Big, WakeModel: Big, VisionModel: "vision", MonthlyEUR: 4, Confirm: append(append([]string{"new_card"}, AlwaysConfirm...), "fund")},
 	} {
 		if got := tree.Document.ChatOf(tree.Projects[name]); !reflect.DeepEqual(got, want) {
 			t.Errorf("ChatOf(%s) = %#v, want %#v", name, got, want)

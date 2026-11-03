@@ -291,9 +291,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	if want := pv.Document.FactoryModel(task.Classes, purpose); purpose != "" && (want == "" || chatReq.Model != want) {
+	if want := pv.Document.PurposeModels(task.Classes, purpose); purpose != "" && !slices.Contains(want, chatReq.Model) {
 		s.refuse(w, pid, id.TaskID, purpose, "refused_capability",
-			fmt.Sprintf("model %q is not the %s model %q of capability classes %q under policy version %d", chatReq.Model, purpose, want, task.Classes, pv.ID),
+			fmt.Sprintf("model %q is not among the %s models %q of capability classes %q under policy version %d", chatReq.Model, purpose, want, task.Classes, pv.ID),
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}

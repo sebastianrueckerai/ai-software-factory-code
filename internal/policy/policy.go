@@ -90,9 +90,16 @@ func (d Document) Location() (*time.Location, error) {
 // file, whose keys replace the policy's: a preference, not a cap, but for
 // monthly_eur, which may not exceed the policy's.
 type ChatConfig struct {
-	// Model is the class the project agent calls (purpose operator); the
-	// compaction of its threads calls Small.
+	// Model is the class the project agent calls (purpose operator) in a
+	// member's own turn, the one a member typed in the console or answered
+	// a card into; the compaction of its threads calls Small.
 	Model string `yaml:"model,omitempty" json:"model,omitempty"`
+	// MCPModel is the class of a turn an MCP client asks for on a chat
+	// token. Absent: Model.
+	MCPModel string `yaml:"mcp_model,omitempty" json:"mcp_model,omitempty"`
+	// WakeModel is the class of a turn the chat starts itself, a wake's
+	// or a fund's resume. Absent: Model.
+	WakeModel string `yaml:"wake_model,omitempty" json:"wake_model,omitempty"`
 	// VisionModel is the alias a chat turn's image look runs on (purpose
 	// vision); the member who pasted the image approved its spend.
 	VisionModel string `yaml:"vision_model,omitempty" json:"vision_model,omitempty"`
@@ -237,6 +244,8 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 			continue
 		}
 		c.Model = cmp.Or(b.Model, c.Model)
+		c.MCPModel = cmp.Or(b.MCPModel, c.MCPModel)
+		c.WakeModel = cmp.Or(b.WakeModel, c.WakeModel)
 		c.VisionModel = cmp.Or(b.VisionModel, c.VisionModel)
 		c.MonthlyEUR = cmp.Or(b.MonthlyEUR, c.MonthlyEUR)
 		c.DocRepo = cmp.Or(b.DocRepo, c.DocRepo)
@@ -252,12 +261,25 @@ func (d Document) ChatOf(p ProjectConfig) ChatConfig {
 			c.Tools = merged
 		}
 	}
+	c.MCPModel, c.WakeModel = cmp.Or(c.MCPModel, c.Model), cmp.Or(c.WakeModel, c.Model)
 	c.Confirm = ConfirmFor(p.Autonomy, p.MergeRule, c.Confirm)
 	return c
 }
 
+// Models are the classes the chat's turns call, Model first, once each.
+func (c ChatConfig) Models() []string {
+	var out []string
+	for _, m := range []string{c.Model, c.MCPModel, c.WakeModel} {
+		if m != "" && !slices.Contains(out, m) {
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
 // validate is the chat block's own judgement, run from
-// Document.Validate: model and vision_model among the known aliases,
+// Document.Validate: model, mcp_model, wake_model and vision_model among
+// the known aliases,
 // monthly_eur and parallel_turns not negative, confirm tools among
 // ChatTools, a window of at least 1000 tokens and doc_repo an
 // owner/name.
@@ -265,8 +287,10 @@ func (c *ChatConfig) validate() error {
 	if c == nil {
 		return nil
 	}
-	if c.Model != "" && !slices.Contains(ChatModels, c.Model) {
-		return fmt.Errorf("chat.model %q: want one of %v", c.Model, ChatModels)
+	for key, m := range map[string]string{"model": c.Model, "mcp_model": c.MCPModel, "wake_model": c.WakeModel} {
+		if m != "" && !slices.Contains(ChatModels, m) {
+			return fmt.Errorf("chat.%s %q: want one of %v", key, m, ChatModels)
+		}
 	}
 	if c.VisionModel != "" && !slices.Contains(VisionModels, c.VisionModel) {
 		return fmt.Errorf("chat.vision_model %q: want one of %v", c.VisionModel, VisionModels)
@@ -1436,7 +1460,8 @@ const ClassChat = "chat"
 // FactoryModel is the alias factoryd calls for purpose on a task of
 // classes: the first of classes that names one; "" when none does. The
 // digest's and the naming's are Small, on any task. The project agent's
-// (operator) is the chat block's; the compaction's is Small, for a chat
+// (operator) is the chat block's model, a member's own turn's
+// (PurposeModels has every turn's); the compaction's is Small, for a chat
 // task only; a chat task's look is the chat block's vision model, a
 // session's its class's.
 func (d Document) FactoryModel(classes []string, purpose string) string {
@@ -1480,14 +1505,25 @@ func (d Document) FactoryModel(classes []string, purpose string) string {
 	return ""
 }
 
+// PurposeModels are the aliases factoryd may call for purpose on a task
+// of classes: the chat's turn classes for the chat's operator calls,
+// FactoryModel's one otherwise, none where it names none.
+func (d Document) PurposeModels(classes []string, purpose string) []string {
+	if purpose == PurposeOperator && slices.Contains(classes, ClassChat) {
+		return d.ChatOf(ProjectConfig{}).Models()
+	}
+	if m := d.FactoryModel(classes, purpose); m != "" {
+		return []string{m}
+	}
+	return nil
+}
+
 // FactoryModels are the aliases factoryd may call on a task of classes,
 // sorted, once each.
 func (d Document) FactoryModels(classes []string) []string {
 	var out []string
 	for _, p := range Purposes {
-		if m := d.FactoryModel(classes, p); m != "" {
-			out = append(out, m)
-		}
+		out = append(out, d.PurposeModels(classes, p)...)
 	}
 	slices.Sort(out)
 	return slices.Compact(out)

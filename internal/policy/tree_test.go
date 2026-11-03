@@ -127,6 +127,8 @@ func TestParseTreeRejects(t *testing.T) {
 			"policy.yaml: prices.max_output_tokens: small has no output limit; every alias a class or the chat calls needs one"},
 		"a premium chat without its output limit": {edit("policy.yaml", "budget:\n", "chat: {model: premium}\nbudget:\n"),
 			"policy.yaml: prices.max_output_tokens: premium has no output limit; every alias a class or the chat calls needs one"},
+		"a premium wake without its output limit": {edit("policy.yaml", "budget:\n", "chat: {wake_model: premium}\nbudget:\n"),
+			"policy.yaml: prices.max_output_tokens: premium has no output limit; every alias a class or the chat calls needs one"},
 		"a negative premium cap": {edit("policy.yaml", "  month_eur: 50\n", "  month_eur: 50\n  premium_month_eur: -1\n"),
 			"policy: budget.premium_month_eur must not be negative (0: premium has no cap of its own)"},
 		"a session model on a code class": {edit("policy.yaml", "    session: code\n", "    session: code\n    session_model: big\n"),

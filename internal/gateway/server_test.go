@@ -2537,6 +2537,32 @@ func TestThreadOnTheAudit(t *testing.T) {
 	}
 }
 
+// The operator purpose admits each class the chat's turns run on: a
+// wake's big beside a member's premium reaches the upstream, and a class
+// no turn names is refused before it.
+func TestOperatorAdmitsEveryChatTurnModel(t *testing.T) {
+	stub := newStubUpstream(t)
+	stub.setResp(stubResp{status: http.StatusOK, body: `{}`})
+	task := Task{Classes: []string{policy.ClassChat}, ID: "t-chat-x-2026-11", BudgetEUR: 5, Status: "running"}
+	store := newMemStore(task)
+	pol := factoryPolicy()
+	pol.Document.Chat = &policy.ChatConfig{Model: policy.Premium, WakeModel: policy.Big}
+	pol.Document.Prices.MaxOutputTokens[policy.Premium] = 32768
+	store.setPolicy(pol)
+	s := NewServer(ServerOptions{Auth: fakeAuth{err: errors.New("not a JWT")}, Store: store, Minter: &fakeMinter{},
+		LiteLLMURL: stub.URL, Prices: fakePrices{"big": testPrice, "small": testPrice, "premium": testPrice}, FactorydToken: testFactorydToken})
+	if rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Big)); rr.Code != http.StatusOK {
+		t.Fatalf("the wake's big = %d: %s", rr.Code, rr.Body.String())
+	}
+	rr := doFactorydChat(t, s.Routes("test"), testFactorydToken, task.ID, policy.PurposeOperator, chatBody(policy.Small))
+	if want := `model \"small\" is not among the operator models [\"premium\" \"big\"]`; rr.Code != http.StatusForbidden || !strings.Contains(rr.Body.String(), want) {
+		t.Fatalf("small = %d: %s; want 403 naming %s", rr.Code, rr.Body.String(), want)
+	}
+	if len(stub.bodies) != 1 {
+		t.Fatalf("%d upstream calls, want the wake's one", len(stub.bodies))
+	}
+}
+
 // A premium call past its cap is refused on the premium cap: no other
 // model serves it, nothing reaches the upstream, and the audit row names
 // the cap.
