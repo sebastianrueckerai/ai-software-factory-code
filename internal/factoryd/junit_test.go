@@ -20,6 +20,7 @@ func TestReadJUnit(t *testing.T) {
 		{"TestA", wrap(`<testcase name="TestA"><failure message="Failed">want 3, got 2</failure></testcase>`), proofOutcome{proofFailed, "Failed\nwant 3, got 2"}},
 		{"TestA", wrap(`<testcase name="TestA"><error message="panic: boom"></error></testcase>`), proofOutcome{proofFailed, "panic: boom"}},
 		{"TestA", wrap(`<testcase name="TestA"><skipped message="FACTORYD_TEST_DATABASE_URL not set"></skipped></testcase>`), proofOutcome{proofSkipped, "FACTORYD_TEST_DATABASE_URL not set"}},
+		{"TestA", wrap(`<testcase name="TestA"><skipped message="s"/><failure message="F">x</failure></testcase>`), proofOutcome{proofFailed, "F\nx"}},
 		{"TestA", wrap(`<testcase name="TestB"></testcase>`), proofOutcome{proofMissing, ""}},
 		{"TestB", wrap(`<testcase classname="" name="TestMain"><failure message="Failed">FAIL&#x9;x/b [build failed]&#xA;</failure></testcase>`), proofOutcome{proofMissing, "Failed\nFAIL\tx/b [build failed]"}},
 		{"TestA", wrap(`<testcase name="TestA/sub"><skipped message="s"></skipped></testcase><testcase name="TestA"></testcase>`), proofOutcome{proofPassed, ""}},
@@ -45,7 +46,7 @@ func TestReadJUnit(t *testing.T) {
 	}
 }
 
-// gotestsumReport is gotestsum v1.13.0's report of three packages: a build
+// gotestsumReport is gotestsum v1.13.0's report of two packages: a build
 // failure, a failed, a skipped, and a passed test with a subtest.
 const gotestsumReport = `<?xml version="1.0" encoding="UTF-8"?>
 <testsuites tests="5" failures="2" errors="1" time="0.001704">
@@ -97,11 +98,15 @@ func gzipped(t *testing.T, b []byte) []byte {
 }
 
 func TestReadReportUnzips(t *testing.T) {
-	if got, want := readReport(gzipped(t, []byte(wrap(`<testcase name="TestA"></testcase>`))), "TestA"), (proofOutcome{proofPassed, ""}); got != want {
+	gz := gzipped(t, []byte(wrap(`<testcase name="TestA"></testcase>`)))
+	if got, want := readReport(gz, "TestA"), (proofOutcome{proofPassed, ""}); got != want {
 		t.Errorf("gzipped report = %+v, want %+v", got, want)
 	}
 	if got := readReport([]byte("not gzip"), "TestA"); got.Outcome != proofNoReport || !strings.HasPrefix(got.Message, "the report does not unzip: ") {
 		t.Errorf("not gzip = %+v, want no report, the report does not unzip", got)
+	}
+	if got := readReport(gz[:len(gz)-4], "TestA"); got.Outcome != proofNoReport || !strings.HasPrefix(got.Message, "the report does not unzip: ") {
+		t.Errorf("cut-off stream = %+v, want no report, the report does not unzip", got)
 	}
 	if got, want := readReport(gzipped(t, make([]byte, maxReportXML+1)), "TestA"), (proofOutcome{proofNoReport, "the report passes 32 MiB unzipped"}); got != want {
 		t.Errorf("past the cap = %+v, want %+v", got, want)
