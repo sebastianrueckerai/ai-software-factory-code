@@ -46,6 +46,25 @@ type digestSession struct {
 // or one it cannot parse, is skipped; the asks and approvals there are
 // the events' too, and come from them.
 func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([]DigestStep, error) {
+	out, sessions := lineSteps(tl)
+	for i, s := range sessions {
+		var next *digestSession
+		if i+1 < len(sessions) {
+			next = sessions[i+1]
+		}
+		step, err := r.sessionStep(ctx, taskID, s, next)
+		if err != nil {
+			return nil, err
+		}
+		out = append(out, step)
+	}
+	return out, nil
+}
+
+// lineSteps are the steps of timeline tl's lines other than its
+// sessions, in line order, and its sessions in the order its lines first
+// name them.
+func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 	var out []DigestStep
 	var sessions []*digestSession
 	byID := map[string]*digestSession{}
@@ -65,7 +84,7 @@ func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([
 		if json.Unmarshal(raw, &l) != nil {
 			continue
 		}
-		step := DigestStep{At: l.Time, Ref: DigestRef{Session: l.Session, Step: strconv.Itoa(i + 1)}}
+		step := DigestStep{At: l.Time, Ref: DigestRef{Session: l.Session, Step: strconv.Itoa(i + 1)}, commit: l.Commit}
 		switch l.Step {
 		case "session_start":
 			s := session(l, i+1)
@@ -107,18 +126,7 @@ func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([
 		}
 		out = append(out, step)
 	}
-	for i, s := range sessions {
-		var next *digestSession
-		if i+1 < len(sessions) {
-			next = sessions[i+1]
-		}
-		step, err := r.sessionStep(ctx, taskID, s, next)
-		if err != nil {
-			return nil, err
-		}
-		out = append(out, step)
-	}
-	return out, nil
+	return out, sessions
 }
 
 // sessionStep is session s's step: its outcome, with the head it pushed,

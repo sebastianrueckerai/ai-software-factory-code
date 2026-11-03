@@ -59,6 +59,8 @@ type DigestStep struct {
 	state string
 	// calls are a session's model calls, by the audit rows
 	calls int
+	// commit is the head a checks, review or audit line judged
+	commit string
 }
 
 // DigestRef names the rows a step was read from, whichever apply: its
