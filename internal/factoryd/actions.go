@@ -112,8 +112,9 @@ var Actions = []Action{
 	}},
 	{Name: ActExtend, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, r Resolution) string {
 		d := extendDraw(r.Args)
+		lines, _ := toInt(r.Args["lines"])
 		switch {
-		case d.Sessions < 0 || d.AgentTime < 0:
+		case d.Sessions < 0 || d.AgentTime < 0 || lines < 0:
 			return "an extend takes no part below 0"
 		case d.Sessions == 0 && d.AgentTime == 0:
 			return "an extend needs sessions or agent time above 0"

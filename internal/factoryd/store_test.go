@@ -90,6 +90,8 @@ type fakeStore struct {
 	// cases are CasesOf's rows, oldest first; caseSteps CaseSteps' by case
 	cases     []Case
 	caseSteps map[int64][]CaseStep
+	// resolved are ResolveCase's calls, by case id
+	resolved []int64
 	// enforced is Enforced's answer
 	enforced policy.Enforced
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
@@ -305,26 +307,44 @@ func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
 	return d
 }
 
-// SetCeiling sets task taskID's ceiling and records e as its card_funded
-// row of 0 EUR.
-func (s *fakeStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
-	if err := ceilingRefusal(eur); err != nil {
-		return err
+// DrawCard writes d as PGStore.DrawCard does, one part after another:
+// the pool's refusal first, then the raise of the ceiling, the extend and
+// the fund.
+func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) error {
+	ceiling, extend, fund := d.rows()
+	if !d.Pool.IsZero() {
+		drawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
+		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
+			return &PoolSpentError{Left: d.Pool.Minus(drawn)}
+		}
 	}
-	t, ok := s.tasks[taskID]
-	if !ok {
-		return ErrNotFound
+	if d.Raise != 0 {
+		t, ok := s.tasks[taskID]
+		if !ok {
+			return ErrNotFound
+		}
+		t.CeilingEUR = cmp.Or(t.CeilingEUR, d.PolicyCeiling) + d.Raise
+		s.tasks[taskID] = t
+		if ceiling.Detail == nil {
+			ceiling.Detail = map[string]any{}
+		}
+		ceiling.Detail["ceiling_eur"], ceiling.Detail["amount_eur"] = t.CeilingEUR, 0.0
+		ceiling.TaskID, ceiling.Kind = taskID, EventCardFunded
+		if _, err := s.Record(ctx, ceiling); err != nil {
+			return err
+		}
 	}
-	t.CeilingEUR = eur
-	s.tasks[taskID] = t
-	e.Detail = maps.Clone(e.Detail)
-	if e.Detail == nil {
-		e.Detail = map[string]any{}
+	if !d.Extend.IsZero() || d.Lines > 0 {
+		if _, _, err := s.ExtendCard(ctx, taskID, d.Extend, d.Lines, extend); err != nil {
+			return err
+		}
 	}
-	e.Detail["ceiling_eur"], e.Detail["amount_eur"], e.Detail["from_eur"], e.Detail["to_eur"] = eur, 0.0, t.BudgetEUR, t.BudgetEUR
-	e.Repository, e.TaskID, e.IssueNumber, e.Kind = t.Repository, taskID, t.IssueNumber, EventCardFunded
-	_, err := s.Record(ctx, e)
-	return err
+	if d.FundEUR > 0 {
+		if _, _, err := s.FundCard(ctx, taskID, d.FundEUR, d.PolicyCeiling, fund); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
@@ -1254,7 +1274,11 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 }
 
 func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
-	return 0, nil
+	if s.caseSteps == nil {
+		s.caseSteps = map[int64][]CaseStep{}
+	}
+	s.caseSteps[st.CaseID] = append(s.caseSteps[st.CaseID], st)
+	return int64(len(s.caseSteps[st.CaseID])), nil
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
@@ -1265,7 +1289,32 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	return nil
 }
 
+// ResolveCase records its call in resolved and ends case id of cases by r
+// as PGStore.ResolveCase does, the draw and the step with it.
 func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+	s.resolved = append(s.resolved, id)
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
+	if i < 0 {
+		return fmt.Errorf("case %d: %w", id, ErrNotFound)
+	}
+	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman {
+		return ErrCaseEnded{c}
+	}
+	if d != nil {
+		if err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {
+			return err
+		}
+	}
+	status, now := CaseResolved, time.Now()
+	if r.Action == ActWithdraw {
+		status = CaseWithdrawn
+	}
+	s.cases[i].Status, s.cases[i].Resolution, s.cases[i].ResolvedAt = status, &r, &now
+	if st != nil {
+		step := *st
+		step.CaseID = id
+		_, _ = s.AppendCaseStep(ctx, step)
+	}
 	return nil
 }
 
@@ -1274,11 +1323,21 @@ func (s *fakeStore) WithdrawCase(ctx context.Context, id int64, reason string) e
 }
 
 func (s *fakeStore) CaseByID(ctx context.Context, id int64) (Case, error) {
-	return Case{}, nil
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
+	if i < 0 {
+		return Case{}, fmt.Errorf("case %d: %w", id, ErrNotFound)
+	}
+	return s.cases[i], nil
 }
 
 func (s *fakeStore) OpenCasesOf(ctx context.Context, taskID string) ([]Case, error) {
-	return nil, nil
+	var out []Case
+	for _, c := range s.cases {
+		if c.TaskID == taskID && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
 }
 
 func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) {

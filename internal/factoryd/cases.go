@@ -284,18 +284,26 @@ func (e ErrCaseEnded) Error() string {
 	return fmt.Sprintf("case %d was resolved by %s with %s at %s UTC", c.ID, c.Resolution.By, c.Resolution.Action, at)
 }
 
-// CaseDraw is what an answer draws beside its resolution: the card's
-// ceiling raised to Ceiling (0 for none), then Extend's sessions and
-// agent time with Lines, then FundEUR into the budget, which the card's
-// ceiling bounds, else PolicyCeiling. Event is the rows' repository,
+// CaseDraw is what an answer draws beside its resolution: a raise of the
+// card's ceiling by Raise (0 for none), then Extend's sessions and agent
+// time with Lines, then FundEUR into the budget, which the card's ceiling
+// bounds, else PolicyCeiling. Pool is the rung's bound on the project's
+// month of draws, zero for the human. Event is the rows' repository,
 // issue, actor, via and detail.
 type CaseDraw struct {
-	Ceiling       float64
+	Raise         float64
 	Extend        policy.Draw
 	Lines         int
 	FundEUR       float64
 	PolicyCeiling float64
+	Pool          policy.Draw
 	Event         Event
+}
+
+// amount is what d takes from the pool: its sessions, agent time and
+// money, the raise's included.
+func (d CaseDraw) amount() policy.Draw {
+	return d.Extend.Plus(policy.Draw{EUR: d.FundEUR + d.Raise})
 }
 
 // rows are d's events: the ceiling's, the extend's and the fund's. A
@@ -308,16 +316,20 @@ func (d CaseDraw) rows() (ceiling, extend, fund Event) {
 	return ceiling, extend, fund
 }
 
-// ResolveCase ends live case id as resolved by r, its in-progress steps
-// with it, and in the same transaction writes draw d for the case's card
-// and appends step st (nil for none). A case the webhook's copy of r's
-// answer comment (r.Args["comment"]) resolved first as a plain answer is
-// resolved again by r. A case that ended otherwise is ErrCaseEnded, no
-// case ErrNotFound.
+// ResolveCase ends live case id by r, withdrawn when r withdraws it,
+// else resolved, its in-progress steps with it, and in the same
+// transaction writes draw d for the case's card and appends step st (nil
+// for none). A case the webhook's copy of r's answer comment
+// (r.Args["comment"]) resolved first as a plain answer is resolved again
+// by r. A case that ended otherwise is ErrCaseEnded, no case ErrNotFound.
 func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
 	comment, _ := toInt(r.Args["comment"])
+	status, outcome := CaseResolved, StepResolved
+	if r.Action == ActWithdraw {
+		status, outcome = CaseWithdrawn, StepWithdrawn
+	}
 	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
-		taskID, err := endCase(ctx, tx, id, CaseResolved, StepResolved, r, int64(comment))
+		taskID, err := endCase(ctx, tx, id, status, outcome, r, int64(comment))
 		if errors.Is(err, ErrNotFound) {
 			c, cerr := scanCase(tx.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE id = $1`, id))
 			if errors.Is(cerr, sql.ErrNoRows) {
@@ -348,13 +360,16 @@ func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d
 	})
 }
 
-// drawCase writes d for card taskID inside tx, the raise first, and
-// answers the rows it wrote.
+// drawCase writes d for card taskID inside tx once its pool fits it
+// (poolFits), the raise first, and answers the rows it wrote.
 func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) ([]Event, error) {
+	if err := s.poolFits(ctx, tx, d); err != nil {
+		return nil, err
+	}
 	ceiling, extend, fund := d.rows()
 	var rows []Event
-	if d.Ceiling > 0 {
-		stored, err := s.setCeiling(ctx, tx, taskID, d.Ceiling, ceiling)
+	if d.Raise != 0 {
+		stored, err := s.raiseCeiling(ctx, tx, taskID, d.Raise, d.PolicyCeiling, ceiling)
 		if err != nil {
 			return nil, err
 		}

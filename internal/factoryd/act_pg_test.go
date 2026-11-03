@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"testing"
@@ -21,8 +22,9 @@ import (
 // demo-app/demo-app on the direct track, waiting at a human on issue 12
 // with a budget of 3 EUR under the policy's ceiling of 5 EUR, the default
 // pool (30 sessions, 30 hours, 60 EUR) and card draw. Its live session cap
-// case was asked by comment 70. Forgejo takes comments on issue 12 (ids
-// 501 on) and closes it, and the workflows record every signal.
+// case was asked with no comment of its own. Forgejo takes comments on the
+// project's issues (ids 501 on) and closes them, and the workflows record
+// every signal.
 type actRig struct {
 	r       *Runner
 	s       *PGStore
@@ -45,8 +47,8 @@ func (w *caseSignals) Signal(_ context.Context, taskID, name string, sig TaskSig
 	return nil
 }
 
-// actForge is a Forgejo for issue 12 of demo-app/demo-app: it keeps the
-// comments posted and whether the issue was closed.
+// actForge is a Forgejo for the issues of demo-app/demo-app: it keeps the
+// comments posted and whether issue 12 was closed.
 type actForge struct {
 	mu       sync.Mutex
 	comments []string
@@ -59,7 +61,7 @@ func (f *actForge) serve(t *testing.T) *httptest.Server {
 		defer f.mu.Unlock()
 		const issue = "/api/v1/repos/demo-app/demo-app/issues/12"
 		switch {
-		case r.Method == http.MethodPost && r.URL.Path == issue+"/comments":
+		case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/issues/") && strings.HasSuffix(r.URL.Path, "/comments"):
 			var c struct{ Body string }
 			b, _ := io.ReadAll(r.Body)
 			_ = json.Unmarshal(b, &c)
@@ -90,7 +92,7 @@ func newActRig(t *testing.T) actRig {
 		t.Fatalf("CreateTask: %v", err)
 	}
 	c, opened, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
-		Status: CaseAtHuman, Problem: "Card #12 used its sessions", CommentID: 70})
+		Status: CaseAtHuman, Problem: "Card #12 used its sessions"})
 	if err != nil || !opened {
 		t.Fatalf("OpenCase = %+v, %v, %v", c, opened, err)
 	}
@@ -132,6 +134,16 @@ func (g actRig) card(t *testing.T) Task {
 
 var oneSession = Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}}
 
+// posting is a Post that answers comment id once before ran.
+func posting(id int64, before func()) func(context.Context) (int64, error) {
+	return func(context.Context) (int64, error) {
+		if before != nil {
+			before()
+		}
+		return id, nil
+	}
+}
+
 // The human's extend of one session on the live case resolves it and
 // raises the card's sessions in one transaction: the case reads resolved
 // by sebastian on rung 3 with extend, its step says what was drawn, and
@@ -140,7 +152,7 @@ var oneSession = Resolution{Action: ActExtend, Args: map[string]any{"sessions": 
 func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Comment: 77, Res: oneSession})
+	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Post: posting(77, nil), Res: oneSession})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -166,7 +178,7 @@ func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 	steps := caseStepsOf(t, g.s, g.c.ID)
 	last := steps[len(steps)-1]
 	if last.Rung != 3 || last.Actor != "sebastian" || last.Decision != ActExtend || last.Outcome != StepResolved ||
-		len(last.Did) != 1 || last.Did[0].Action != ActExtend || last.Did[0].Result != "1 session from the pool" {
+		len(last.Did) != 1 || last.Did[0].Action != ActExtend || last.Did[0].Result != "Drew 1 session from the pool." {
 		t.Fatalf("the step = %+v, want sebastian's extend on rung 3, resolved, that drew 1 session from the pool", last)
 	}
 
@@ -214,14 +226,26 @@ func TestActRefusesARungsDrawPastThePool(t *testing.T) {
 	}
 }
 
-// With no comment of its caller, Act posts factoryd's on the issue the case
-// asked on, naming the human and the action. case_resolved carries the
-// case, the rung, the answer and that comment, and answer_whole the
-// comment. The answer row is a session_granted: its draw holds a session.
-// A caller's own comment is not posted again and rides in both signals.
+// A refused answer and a note call no Post. With no Post, Act posts
+// factoryd's comment on the card's issue, naming the human and the action.
+// case_resolved carries the case, the rung, the answer and that comment,
+// and answer_whole the comment. The answer row is a session_granted: its
+// draw holds a session. A caller's Post is called once, its comment is not
+// posted again by factoryd and rides in both signals.
 func TestActSignalsTheRunAndPostsTheComment(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
+	posted := 0
+	count := posting(90, func() { posted++ })
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Post: count, Res: Resolution{Action: ActRouteApproval}}); err == nil {
+		t.Fatal("the human's route_approval went through, want it refused")
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Post: count, Res: Resolution{Action: ActNote, Note: "wait"}}); err != nil {
+		t.Fatal(err)
+	}
+	if posted != 0 || len(g.forge.comments) != 0 {
+		t.Fatalf("Post called %d times, forgejo holds %q; want none for a refusal and a note", posted, g.forge.comments)
+	}
 	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Via: ViaConsole, Rung: 3, Res: oneSession})
 	if err != nil {
 		t.Fatal(err)
@@ -250,7 +274,7 @@ func TestActSignalsTheRunAndPostsTheComment(t *testing.T) {
 		t.Fatal(err)
 	}
 	cont := Resolution{Action: ActContinue, Note: "the one under cmd"}
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: second.ID, By: "sebastian", Rung: 3, Comment: 88, Res: cont}); err != nil {
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: second.ID, By: "sebastian", Rung: 3, Post: posting(88, nil), Res: cont}); err != nil {
 		t.Fatal(err)
 	}
 	if len(g.forge.comments) != 1 {
@@ -319,14 +343,14 @@ func TestActRaisesTheCeilingThenFundsInOneTransaction(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
 	res := Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": 2.0}, Fund: &policy.Draw{EUR: 2}}
-	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Comment: 77, Res: Resolution{
+	got, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: Resolution{
 		Action: ActFund, Args: map[string]any{"eur": 3.0}}})
 	var refused ErrActRefused
 	if !errors.As(err, &refused) || !strings.HasPrefix(err.Error(), "3.00 EUR more takes the budget of 3.00 EUR past the card's ceiling of 5.00 EUR: raise the ceiling first") {
 		t.Fatalf("a fund of 3 = %+v, %v; want the ceiling's refusal", got, err)
 	}
 	res.Fund.EUR = 4
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Comment: 77, Res: res}); err != nil {
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Res: res}); err != nil {
 		t.Fatal(err)
 	}
 	card := g.card(t)
@@ -365,29 +389,148 @@ func TestActClosesTheIssueAsFactory(t *testing.T) {
 	}
 }
 
-// The webhook's copy of the human's answer comment may resolve the case
-// before Act does: Act's answer on that very comment resolves it again
-// with its action and draw. Another comment's answer does not.
+// The webhook's copy of the human's comment may resolve the case between
+// Post and the transaction: Act's answer on that very comment resolves it
+// again with its action and draw. A case the copy of another comment
+// resolved stays ended as that answer, and the run hears nothing more.
 func TestActTakesOverTheWebhooksCopyOfItsComment(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventQuestionAnswered,
-		Actor: "sebastian", Via: ViaWebhook, Detail: map[string]any{"comment": int64(77)}}); err != nil {
-		t.Fatal(err)
+	webhook := func(comment int64) func() {
+		return func() {
+			if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", IssueNumber: 12, Kind: EventQuestionAnswered,
+				Actor: "sebastian", Via: ViaWebhook, Detail: map[string]any{"comment": comment}}); err != nil {
+				t.Fatal(err)
+			}
+		}
 	}
-	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseResolved || c.Resolution.Action != "answer" {
-		t.Fatalf("case after the webhook's copy = %s, %+v; want resolved with answer", c.Status, c.Resolution)
-	}
-	_, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Comment: 78, Res: oneSession})
-	var ended ErrCaseEnded
-	if !errors.As(err, &ended) {
-		t.Fatalf("an answer on comment 78 = %v, want the case ended", err)
-	}
-	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Comment: 77, Res: oneSession}); err != nil {
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3, Post: posting(77, webhook(77)), Res: oneSession}); err != nil {
 		t.Fatalf("the answer on comment 77: %v", err)
 	}
 	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseResolved || c.Resolution.Action != ActExtend || g.card(t).Usage.RaisedSessions != 1 {
 		t.Fatalf("case = %s, %+v, raised %d; want resolved with extend and 1 session raised", c.Status, c.Resolution, g.card(t).Usage.RaisedSessions)
+	}
+	second, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentEscalate, StateKey: "ask",
+		Status: CaseAtHuman, Problem: "Which file?"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cont := Resolution{Action: ActContinue, Note: "the one under cmd"}
+	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: second.ID, By: "sebastian", Rung: 3, Post: posting(79, webhook(78)), Res: cont})
+	var ended ErrCaseEnded
+	if !errors.As(err, &ended) || ended.Case.Resolution.Action != caseAnswer {
+		t.Fatalf("an answer on comment 79 after the copy of 78 resolved its case = %v, want the case ended with answer", err)
+	}
+	if c := caseByID(t, g.s, second.ID); c.Resolution.Action != caseAnswer || len(g.signals.got) != 2 {
+		t.Fatalf("the second case = %+v, signals %+v; want the webhook copy's answer kept and only the first answer's two signals", c.Resolution, g.signals.got)
+	}
+}
+
+// A rung withdraws a case the card outgrew: the case reads withdrawn by
+// the chat on rung 2 with the reason, its step says so, and no comment,
+// answer row or signal follows.
+func TestActWithdrawsTheCase(t *testing.T) {
+	g := newActRig(t)
+	if _, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: ChatUser, Rung: 2,
+		Res: Resolution{Action: ActWithdraw, Note: "the card moved past its cap"}}); err != nil {
+		t.Fatal(err)
+	}
+	c := caseByID(t, g.s, g.c.ID)
+	want := &CaseResolution{By: ChatUser, Rung: 2, Action: ActWithdraw, Reason: "the card moved past its cap"}
+	if c.Status != CaseWithdrawn || !reflect.DeepEqual(c.Resolution, want) {
+		t.Fatalf("case = %s, %+v; want withdrawn by %+v", c.Status, c.Resolution, want)
+	}
+	if steps := caseStepsOf(t, g.s, g.c.ID); len(steps) != 1 || steps[0].Outcome != StepWithdrawn || steps[0].Rung != 2 {
+		t.Fatalf("steps = %+v, want the chat's withdrawn step", steps)
+	}
+	if len(g.forge.comments) != 0 || len(g.signals.got) != 0 || len(g.rows(t, EventQuestionAnswered)) != 0 {
+		t.Fatalf("comments %q, signals %+v: want none", g.forge.comments, g.signals.got)
+	}
+}
+
+// One session is left in the project's pool and two cards' cases are
+// answered by the chat at the same moment, each drawing one: one lands, the
+// other is refused naming the pool, and the month reads 30 sessions drawn.
+func TestActDrawsThePoolOnceUnderTwoAnswers(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "waiting-human", Objective: "x", Repository: "demo-app/demo-app",
+		IssueNumber: 14, Track: policy.TrackDirect, Size: "large", BudgetEUR: 3}); err != nil {
+		t.Fatal(err)
+	}
+	other, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+		Status: CaseAtHuman, Problem: "Card #14 used its sessions"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t2", Kind: EventCardExtended, Actor: ChatUser, Via: ViaChat,
+		Detail: map[string]any{"pool": true, "rung": 2, "sessions": 29}}); err != nil {
+		t.Fatal(err)
+	}
+	errs := make([]error, 2)
+	var wg sync.WaitGroup
+	for i, in := range []ActInput{{TaskID: "t1", CaseID: g.c.ID}, {TaskID: "t2", CaseID: other.ID}} {
+		in.By, in.Rung, in.Res = ChatUser, 2, oneSession
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			_, errs[i] = g.r.Act(ctx, in)
+		}()
+	}
+	wg.Wait()
+	var refused ErrActRefused
+	landed := slices.IndexFunc(errs, func(err error) bool { return err == nil })
+	if landed < 0 || !errors.As(errs[1-landed], &refused) || !strings.Contains(errs[1-landed].Error(), "the escalation pool leaves 0 sessions") {
+		t.Fatalf("errors = %v, want one answer to land and the other refused by the pool", errs)
+	}
+	if drawn, err := g.s.PoolDrawn(ctx, "demo-app/demo-app", time.Now()); err != nil || drawn.Sessions != 30 {
+		t.Fatalf("PoolDrawn = %+v, %v; want 30 sessions", drawn, err)
+	}
+}
+
+// The resolution's transaction weighs the draw against the pool again
+// under the project's lock: with the pool's 30 sessions drawn, a draw of
+// one more the facts let through is refused, the case stays live and
+// nothing is drawn. The human's draw, with no bound, goes through.
+func TestResolveCaseWeighsThePoolUnderItsLock(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	if _, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", TaskID: "t1", Kind: EventCardExtended, Actor: ChatUser, Via: ViaChat,
+		Detail: map[string]any{"pool": true, "rung": 2, "sessions": 30}}); err != nil {
+		t.Fatal(err)
+	}
+	draw := CaseDraw{Extend: policy.Draw{Sessions: 1}, Pool: policy.Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60},
+		Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: ChatUser, Via: ViaChat, Detail: map[string]any{"pool": true, "rung": 2}}}
+	res := CaseResolution{By: ChatUser, Rung: 2, Action: ActExtend}
+	var spent *PoolSpentError
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, &CaseStep{Rung: 2, Actor: ChatUser}); !errors.As(err, &spent) ||
+		spent.Left != (policy.Draw{AgentTime: 30 * time.Hour, EUR: 60}) {
+		t.Fatalf("ResolveCase past the pool = %v, want PoolSpentError leaving 0 sessions", err)
+	}
+	if c := caseByID(t, g.s, g.c.ID); c.Status != CaseAtHuman || g.card(t).Usage.RaisedSessions != 0 || len(caseStepsOf(t, g.s, g.c.ID)) != 0 {
+		t.Fatalf("case %s, raised %d: want it live, nothing raised and no step", c.Status, g.card(t).Usage.RaisedSessions)
+	}
+	draw.Pool, res.By, res.Rung = policy.Draw{}, "sebastian", 3
+	if err := g.s.ResolveCase(ctx, g.c.ID, res, &draw, nil); err != nil || g.card(t).Usage.RaisedSessions != 1 {
+		t.Fatalf("the human's draw = %v, raised %d; want it through", err, g.card(t).Usage.RaisedSessions)
+	}
+}
+
+// A draw that fails in the resolution's transaction, a fund of 10 EUR past
+// the policy's ceiling of 5 on a budget of 3, rolls the case's end back:
+// it stays at the human with no step, and nothing is drawn.
+func TestResolveCaseLeavesTheCaseLiveWhenItsDrawFails(t *testing.T) {
+	g := newActRig(t)
+	ctx := context.Background()
+	draw := CaseDraw{FundEUR: 10, PolicyCeiling: 5, Event: Event{Repository: "demo-app/demo-app", IssueNumber: 12, Actor: "sebastian", Via: ViaConsole,
+		Detail: map[string]any{"pool": true, "rung": 3}}}
+	var capped *CardCapError
+	if err := g.s.ResolveCase(ctx, g.c.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActFund}, &draw, &CaseStep{Rung: 3, Actor: "sebastian"}); !errors.As(err, &capped) {
+		t.Fatalf("ResolveCase = %v, want CardCapError", err)
+	}
+	c := caseByID(t, g.s, g.c.ID)
+	if c.Status != CaseAtHuman || c.Resolution != nil || g.card(t).BudgetEUR != 3 || len(g.rows(t, EventCardFunded)) != 0 || len(caseStepsOf(t, g.s, g.c.ID)) != 0 {
+		t.Fatalf("case %s, %+v, budget %v: want it at the human, unresolved, 3 EUR, no row and no step", c.Status, c.Resolution, g.card(t).BudgetEUR)
 	}
 }
 
@@ -411,7 +554,7 @@ func TestActTakesAHumanCardsChoice(t *testing.T) {
 	}
 	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: "deploy"}})
 	var refused ErrActRefused
-	if want := "card #13 takes one of its choices or a note: dismiss, check_again"; !errors.As(err, &refused) || err.Error() != want {
+	if want := "card #13 takes one of its choices or a note: Dismiss (dismiss), Check again (check_again)"; !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("a value it does not offer = %v, want %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDismiss}}); err != nil {

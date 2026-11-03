@@ -327,3 +327,57 @@ func TestRefusalBoundsEveryMoneyPart(t *testing.T) {
 		t.Errorf("the human's withdraw = %q, want %q", got, want)
 	}
 }
+
+// A raise of the ceiling moves no money into the budget, so the bought-
+// nothing rule and the reads it is weighed on refuse an extend, a fund and
+// a draw beside the raise, never the raise alone.
+func TestRaiseCeilingIsNoDrawThatBuys(t *testing.T) {
+	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
+	stuck := CaseFacts{Head: "h1", Checks: "red", Findings: []string{idA}, LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red",
+		DrawFindings: []string{idA}, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20}, BudgetEUR: 5, CeilingEUR: 6}
+	raise, _ := ActionByName(ActRaiseCeiling)
+	byTwo := Resolution{Action: ActRaiseCeiling, Args: map[string]any{"eur": 2.0}}
+	beside := byTwo
+	beside.Fund = &policy.Draw{EUR: 1}
+	const refused = "the last draw at 10:04 UTC bought nothing, with no push since and the head, the checks and the findings unchanged: " +
+		"hand up, or hand over, start a successor, replan or close"
+	if got := raise.refusal(stuck, 3, byTwo); got != "" {
+		t.Errorf("the human's raise after a draw that bought nothing = %q, want none", got)
+	}
+	if got := raise.refusal(stuck, 3, beside); got != refused {
+		t.Errorf("a fund beside the raise = %q, want %q", got, refused)
+	}
+	blind := stuck
+	blind.LastDrawAt, blind.Partial = nil, []string{"events"}
+	if got := raise.refusal(blind, 2, byTwo); got != "" {
+		t.Errorf("rung 2's raise with the events unread = %q, want none", got)
+	}
+	if got, want := raise.refusal(blind, 2, beside), "the card's events could not be read, so a draw cannot be weighed against the last one: hand up"; got != want {
+		t.Errorf("a fund beside the raise with the events unread = %q, want %q", got, want)
+	}
+}
+
+// An unread timeline leaves the findings unknown: a draw is weighed on the
+// head and the checks alone, never taken as one whose findings went.
+func TestBoughtNothingWeighsHeadAndChecksWhenTheTimelineIsUnread(t *testing.T) {
+	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
+	f := CaseFacts{Head: "h1", Checks: "red", LastDrawAt: &at, DrawHead: "h1", DrawChecks: "red", DrawFindings: []string{idA}}
+	if boughtNothing(f) {
+		t.Error("the timeline read with no findings against idA at the draw: the draw bought something")
+	}
+	f.Partial = []string{"timeline"}
+	if !boughtNothing(f) {
+		t.Error("the timeline unread, head and checks as at the draw: want bought nothing")
+	}
+	f.Checks = "green"
+	if boughtNothing(f) {
+		t.Error("the timeline unread, the checks turned green: the draw bought something")
+	}
+}
+
+// An extend's lines may not lower the card's line bound.
+func TestExtendRefusesLinesBelowZero(t *testing.T) {
+	if got, want := applies(t, ActExtend, CaseFacts{}, Resolution{Args: map[string]any{"sessions": 1, "lines": -5}}), "an extend takes no part below 0"; got != want {
+		t.Errorf("an extend of -5 lines = %q, want %q", got, want)
+	}
+}

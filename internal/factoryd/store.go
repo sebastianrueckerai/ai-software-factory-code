@@ -698,9 +698,9 @@ type Store interface {
 	// CardDrawn is what task taskID drew from the pool in its life on
 	// rungs 0 and 1, the draws the per-card bound counts.
 	CardDrawn(ctx context.Context, taskID string) (policy.Draw, error)
-	// SetCeiling sets task taskID's ceiling to eur and writes e as its
-	// card_funded row of 0 EUR (PGStore.SetCeiling).
-	SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error
+	// DrawCard writes an answer's draw for card taskID when no case ends
+	// with it (PGStore.DrawCard).
+	DrawCard(ctx context.Context, taskID string, d CaseDraw) error
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
@@ -1866,26 +1866,19 @@ func (s *PGStore) extendCard(ctx context.Context, tx *sql.Tx, id string, d polic
 	return from, to, stored, nil
 }
 
-// SetCeiling sets task taskID's ceiling to eur and writes e as the card's
-// card_funded row of 0 EUR naming the ceiling, in one transaction. A
-// ceiling of no whole cent above zero is refused (ceilingRefusal). No
-// task: ErrNotFound.
-func (s *PGStore) SetCeiling(ctx context.Context, taskID string, eur float64, e Event) error {
-	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
-		stored, err := s.setCeiling(ctx, tx, taskID, eur, e)
-		return []Event{stored}, err
-	})
-}
-
-// setCeiling is SetCeiling inside tx, which the caller commits before it
-// publishes stored.
-func (s *PGStore) setCeiling(ctx context.Context, tx *sql.Tx, taskID string, eur float64, e Event) (stored Event, err error) {
-	if err := ceilingRefusal(eur); err != nil {
-		return Event{}, err
+// raiseCeiling raises task taskID's ceiling by eur inside tx, from its own
+// ceiling, else from policyCeiling, so two raises side by side both
+// count, and writes e as its card_funded row of 0 EUR naming the new
+// ceiling. A raise of no whole cent above zero is refused. No task:
+// ErrNotFound.
+func (s *PGStore) raiseCeiling(ctx context.Context, tx *sql.Tx, taskID string, eur, policyCeiling float64, e Event) (stored Event, err error) {
+	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
+		return Event{}, fmt.Errorf("a raise of the ceiling by %v EUR is no amount above zero: raise it by at least 0.01 EUR", eur)
 	}
-	var budget float64
-	err = tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = $2 WHERE id = $1 RETURNING budget_eur::float8, repository, issue_number`,
-		taskID, eur).Scan(&budget, &e.Repository, &e.IssueNumber)
+	var ceiling, budget float64
+	err = tx.QueryRowContext(ctx, `UPDATE tasks SET ceiling_eur = COALESCE(ceiling_eur, $3) + $2 WHERE id = $1
+		RETURNING ceiling_eur::float8, budget_eur::float8, repository, issue_number`,
+		taskID, eur, policyCeiling).Scan(&ceiling, &budget, &e.Repository, &e.IssueNumber)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Event{}, ErrNotFound
 	}
@@ -1894,17 +1887,44 @@ func (s *PGStore) setCeiling(ctx context.Context, tx *sql.Tx, taskID string, eur
 	}
 	detail := map[string]any{}
 	maps.Copy(detail, e.Detail)
-	detail["ceiling_eur"], detail["amount_eur"], detail["from_eur"], detail["to_eur"] = eur, 0.0, budget, budget
+	detail["ceiling_eur"], detail["amount_eur"], detail["from_eur"], detail["to_eur"] = ceiling, 0.0, budget, budget
 	e.TaskID, e.Kind, e.Detail = taskID, EventCardFunded, detail
 	stored, _, err = s.insertEvent(ctx, tx, e)
 	return stored, err
 }
 
-// ceilingRefusal refuses a ceiling that is no amount of whole cents above
-// zero: a ceiling of 0 would read as the policy's.
-func ceilingRefusal(eur float64) error {
-	if math.IsNaN(eur) || math.IsInf(eur, 0) || Cents(eur) <= 0 {
-		return fmt.Errorf("a ceiling of %v EUR is no amount above zero: give the most the card may be funded to, at least 0.01 EUR", eur)
+// DrawCard writes draw d for card taskID when no case ends with it, in
+// one transaction (drawCase).
+func (s *PGStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) error {
+	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) { return s.drawCase(ctx, tx, taskID, d) })
+}
+
+// PoolSpentError refuses a draw past its rung's pool: Left is what the
+// month's pool held when the draw met it.
+type PoolSpentError struct{ Left policy.Draw }
+
+func (e *PoolSpentError) Error() string {
+	return fmt.Sprintf("the escalation pool leaves %s this month: only the human draws more", drawText(e.Left))
+}
+
+// poolFits takes the project's pool lock for tx, so draws on one project
+// are weighed one at a time, and refuses d past its rung's bound: the
+// month's pool rows with d's sessions, agent time and money, a raise of
+// the ceiling included. The human's draw, whose bound is zero, takes the
+// lock and is refused nothing.
+func (s *PGStore) poolFits(ctx context.Context, tx *sql.Tx, d CaseDraw) error {
+	if _, err := tx.ExecContext(ctx, `SELECT pg_advisory_xact_lock(hashtext('pool:' || $1::text))`, d.Event.Repository); err != nil {
+		return err
+	}
+	if d.Pool.IsZero() {
+		return nil
+	}
+	drawn, err := poolDrawn(ctx, tx, d.Event.Repository, time.Now())
+	if err != nil {
+		return err
+	}
+	if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
+		return &PoolSpentError{Left: d.Pool.Minus(drawn)}
 	}
 	return nil
 }
@@ -1913,10 +1933,10 @@ func ceilingRefusal(eur float64) error {
 const poolDraws = `kind IN ('card_funded', 'card_extended') AND detail->>'pool' = 'true'`
 
 // drawn sums the pool draws of the rows where picks out of them.
-func (s *PGStore) drawn(ctx context.Context, where string, args ...any) (policy.Draw, error) {
+func drawn(ctx context.Context, q rowQuerier, where string, args ...any) (policy.Draw, error) {
 	var d policy.Draw
 	var seconds int64
-	err := s.db.QueryRowContext(ctx,
+	err := q.QueryRowContext(ctx,
 		`SELECT COALESCE(sum((detail->>'sessions')::int), 0), COALESCE(sum((detail->>'agent_time_s')::bigint), 0),
 		        COALESCE(sum((detail->>'amount_eur')::numeric), 0)::float8
 		 FROM events WHERE `+poolDraws+` AND `+where, args...).Scan(&d.Sessions, &seconds, &d.EUR)
@@ -1927,7 +1947,11 @@ func (s *PGStore) drawn(ctx context.Context, where string, args ...any) (policy.
 // PoolDrawn is what repository's cards drew from the escalation pool in
 // the UTC calendar month of month, on every rung.
 func (s *PGStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {
-	return s.drawn(ctx, `repository = $1
+	return poolDrawn(ctx, s.db, repository, month)
+}
+
+func poolDrawn(ctx context.Context, q rowQuerier, repository string, month time.Time) (policy.Draw, error) {
+	return drawn(ctx, q, `repository = $1
 		AND at >= date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') AT TIME ZONE 'UTC'
 		AND at < (date_trunc('month', $2::timestamptz AT TIME ZONE 'UTC') + interval '1 month') AT TIME ZONE 'UTC'`, repository, month)
 }
@@ -1936,7 +1960,7 @@ func (s *PGStore) PoolDrawn(ctx context.Context, repository string, month time.T
 // and 1, the draws its per-card bound counts. The rung is compared as
 // text: a card_created row's rung is a model rung's name.
 func (s *PGStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, error) {
-	return s.drawn(ctx, `task_id = $1 AND detail->>'rung' IN ('0', '1')`, taskID)
+	return drawn(ctx, s.db, `task_id = $1 AND detail->>'rung' IN ('0', '1')`, taskID)
 }
 
 // agentFundedEUR is the EUR the agent funded cards with in repository: the

@@ -1097,15 +1097,31 @@ func (s *acceptanceStore) CardDrawn(context.Context, string) (policy.Draw, error
 	return policy.Draw{}, nil
 }
 
-func (s *acceptanceStore) SetCeiling(_ context.Context, id string, eur float64, _ factoryd.Event) error {
-	s.mu.Lock()
-	defer s.mu.Unlock()
-	t, ok := s.tasks[id]
-	if !ok {
-		return factoryd.ErrNotFound
+// DrawCard raises the ceiling, extends and funds the card in turn: this
+// store keeps no event rows and weighs no pool.
+func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.CaseDraw) error {
+	if d.Raise != 0 {
+		s.mu.Lock()
+		t, ok := s.tasks[id]
+		if ok {
+			t.CeilingEUR = cmp.Or(t.CeilingEUR, d.PolicyCeiling) + d.Raise
+			s.tasks[id] = t
+		}
+		s.mu.Unlock()
+		if !ok {
+			return factoryd.ErrNotFound
+		}
 	}
-	t.CeilingEUR = eur
-	s.tasks[id] = t
+	if !d.Extend.IsZero() || d.Lines > 0 {
+		if _, _, err := s.ExtendCard(ctx, id, d.Extend, d.Lines, d.Event); err != nil {
+			return err
+		}
+	}
+	if d.FundEUR > 0 {
+		if _, _, err := s.FundCard(ctx, id, d.FundEUR, d.PolicyCeiling, d.Event); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

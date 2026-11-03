@@ -329,13 +329,17 @@ func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, no
 	return CaseResolved, resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: action, Reason: note})
 }
 
+// ownAnswerKinds are the cases an answer on the card does not end: a
+// merge, which its request's decision ends, and a plan question, which its
+// own answer ends. newestAskCase leaves them out.
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation}
+
 // newestAskCase is the id of task taskID's newest live case an answer on
-// the card ends, 0 for none: not a merge, which its request's decision
-// ends, nor a plan question, which its own answer does.
+// the card ends, 0 for none: not one of ownAnswerKinds.
 func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (int64, error) {
 	var id int64
 	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND `+caseLive+` AND kind NOT IN ($2, $3, $4)
-		ORDER BY id DESC LIMIT 1`, taskID, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation).Scan(&id)
+		ORDER BY id DESC LIMIT 1`, taskID, ownAnswerKinds[0], ownAnswerKinds[1], ownAnswerKinds[2]).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return 0, nil
 	}

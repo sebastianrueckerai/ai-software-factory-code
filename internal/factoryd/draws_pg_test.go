@@ -144,15 +144,21 @@ func TestExtendCardRaisesTimeAndWritesTheDraw(t *testing.T) {
 	}
 }
 
-// A card's ceiling, once set, bounds every fund: at 5 EUR under a ceiling
-// of 6, a fund of 2 is refused with the budget it met and one of 1 lands
-// on 6. SetCeiling writes a card_funded row that moves no money, and
-// refuses a ceiling below a cent.
+// A card's ceiling, once raised, bounds every fund: a raise of 1 EUR on a
+// card of 5 EUR under the policy's ceiling of 5 makes 6, where a fund of 2
+// is refused with the budget it met and one of 1 lands on 6. The raise's
+// card_funded row moves no money and is no pool draw. A raise below a
+// cent is refused, two raises both count, and a card's own ceiling wins
+// over the policy's.
 func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	ctx := context.Background()
 	s := drawStore(t, "t-f", 5)
-	if err := s.SetCeiling(ctx, "t-f", 6, Event{Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"rung": 3}}); err != nil {
-		t.Fatalf("SetCeiling: %v", err)
+	raise := func(id string, eur, policyCeiling float64) error {
+		return s.DrawCard(ctx, id, CaseDraw{Raise: eur, PolicyCeiling: policyCeiling,
+			Event: Event{Repository: "sf/r", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}})
+	}
+	if err := raise("t-f", 1, 5); err != nil {
+		t.Fatalf("the raise: %v", err)
 	}
 	card, _, err := s.Task(ctx, "t-f")
 	if err != nil || card.CeilingEUR != 6 || card.BudgetEUR != 5 {
@@ -160,11 +166,11 @@ func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	}
 	rows, err := s.TaskEvents(ctx, "t-f", 10)
 	if err != nil || len(rows) != 1 {
-		t.Fatalf("the rows = %+v, %v; want SetCeiling's one row", rows, err)
+		t.Fatalf("the rows = %+v, %v; want the raise's one row", rows, err)
 	}
-	if r := rows[0]; r.Kind != EventCardFunded || r.Repository != "sf/r" || r.IssueNumber != 9 || r.Actor != "sebastian" ||
+	if r := rows[0]; r.Kind != EventCardFunded || r.Repository != "sf/r" || r.IssueNumber != 9 || r.Actor != "sebastian" || r.Detail["pool"] != nil ||
 		r.Detail["ceiling_eur"] != 6.0 || r.Detail["amount_eur"] != 0.0 || r.Detail["from_eur"] != 5.0 || r.Detail["to_eur"] != 5.0 || r.Detail["rung"] != 3.0 {
-		t.Fatalf("SetCeiling's row = %+v, want card_funded on #9 of 0 EUR from 5 to 5 with ceiling_eur 6 and the caller's rung", r)
+		t.Fatalf("the raise's row = %+v, want card_funded on #9 of 0 EUR from 5 to 5 with ceiling_eur 6, the caller's rung and no pool key", r)
 	}
 	fund := Event{Repository: "sf/r", TaskID: "t-f", IssueNumber: 9, Kind: EventCardFunded, Actor: "sebastian", Via: ViaConsole}
 	var capped *CardCapError
@@ -174,16 +180,16 @@ func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	if from, to, err := s.FundCard(ctx, "t-f", 1, 0, fund); err != nil || from != 5 || to != 6 {
 		t.Fatalf("FundCard 1 = (%v, %v, %v), want (5, 6, nil)", from, to, err)
 	}
-	if err := s.SetCeiling(ctx, "nope", 6, Event{Actor: "sebastian", Via: ViaConsole}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("SetCeiling of no task = %v, want ErrNotFound", err)
+	if err := raise("nope", 1, 5); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a raise of no task = %v, want ErrNotFound", err)
 	}
-	for _, eur := range []float64{0, -1, 0.004, math.NaN(), math.Inf(1)} {
-		if err := s.SetCeiling(ctx, "t-f", eur, Event{Actor: "sebastian", Via: ViaConsole}); err == nil || !strings.Contains(err.Error(), "at least 0.01 EUR") {
-			t.Fatalf("SetCeiling %v = %v, want the refusal naming the least ceiling", eur, err)
+	for _, eur := range []float64{-1, 0.004, math.NaN(), math.Inf(1)} {
+		if err := raise("t-f", eur, 5); err == nil || !strings.Contains(err.Error(), "at least 0.01 EUR") {
+			t.Fatalf("a raise of %v = %v, want the refusal naming the least raise", eur, err)
 		}
 	}
 	if card, _, _ := s.Task(ctx, "t-f"); card.CeilingEUR != 6 {
-		t.Fatalf("ceiling %v after the refused ceilings, want 6", card.CeilingEUR)
+		t.Fatalf("ceiling %v after the refused raises, want 6", card.CeilingEUR)
 	}
 
 	// the caller's ceiling is the policy's: it bounds a card with no
@@ -196,11 +202,13 @@ func TestFundCardStopsAtTheCardsCeiling(t *testing.T) {
 	if _, to, err := s.FundCard(ctx, "t-g", 1, 3, fund); err != nil || to != 3 {
 		t.Fatalf("a fund of 1 on 2 under the policy's 3 = %v, %v; want 3", to, err)
 	}
-	if err := s.SetCeiling(ctx, "t-g", 8, Event{Actor: "sebastian", Via: ViaConsole}); err != nil {
-		t.Fatal(err)
+	for _, eur := range []float64{4, 1} {
+		if err := raise("t-g", eur, 3); err != nil {
+			t.Fatal(err)
+		}
 	}
 	if _, to, err := s.FundCard(ctx, "t-g", 5, 3, fund); err != nil || to != 8 {
-		t.Fatalf("a fund of 5 on 3 under its own ceiling of 8 = %v, %v; want 8", to, err)
+		t.Fatalf("a fund of 5 on 3 under its own ceiling of 3 + 4 + 1 = %v, %v; want 8", to, err)
 	}
 }
 
