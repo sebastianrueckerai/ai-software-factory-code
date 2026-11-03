@@ -271,6 +271,13 @@ func (f ReviewAttemptFact) identity() map[string]any {
 // and the round, so two genuine reviews of one head stay two.
 const EventModelReview = "model_review"
 
+// EventGateAudit is one audit attempt on a head, the row beside the
+// audit's timeline line. Detail {"pr", "commit", "model", "ran",
+// "verdict"}: ran false when the audit gave no verdict, with "reason",
+// the bounded why of its first such finding, and no verdict. Identity:
+// the commit and the stages' round, so a retried attempt writes once.
+const EventGateAudit = "gate_audit"
+
 // maxFactReason bounds a fact row's reason; the notes it carries are
 // bounded again where they were written.
 const maxFactReason = 500

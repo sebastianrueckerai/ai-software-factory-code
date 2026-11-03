@@ -8,6 +8,8 @@ import (
 	"fmt"
 	"io"
 	"regexp"
+	"slices"
+	"strconv"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -131,8 +133,10 @@ func parseAudit(content string) ([]AuditFinding, string) {
 // card cannot pay for, or past maxDiffRead, is one finding and no call.
 // The findings go to the card and the timeline, never to the
 // pull request, which the agent reads. An audit beside the checks wait
-// (gates.Beside) starts its gate at its own schedule.
-func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
+// (gates.Beside) starts its gate at its own schedule. round is the
+// stages' pass that runs it, which keys its fact row with the head; 0 is
+// an activity scheduled before the workflow passed it.
+func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, round int) (AuditResult, error) {
 	stopBeats := beatUntilDone(ctx, "audit")
 	defer stopBeats()
 	t, repo, err := r.task(ctx, taskID)
@@ -156,12 +160,12 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 			return AuditResult{}, err
 		}
 		noVerdict("the audit did not run: " + errMessage(err))
-		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, redact.New()), nil
+		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, redact.New())
 	}
 	prFiles, err := r.forgejo.PullRequestFileDiffs(ctx, repo.Owner, repo.Name, pr.Number)
 	if errors.Is(err, ErrDiffTooLong) {
 		noVerdict("the audit did not run: " + err.Error())
-		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, redact.New()), nil
+		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, redact.New())
 	}
 	if err != nil {
 		return AuditResult{}, err
@@ -204,7 +208,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	} else if why != "" {
 		noVerdict("the audit did not run: " + why + unfundedRemedy)
 		stopBeats()
-		return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
+		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, scrub)
 	}
 	results, err := r.callAll(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, calls)
 	if err != nil {
@@ -263,7 +267,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 	}
 	res.Findings = append(res.Findings, found...)
 	stopBeats()
-	return r.recordAudit(ctx, t, pr, commit, gates.Beside, res, scrub), nil
+	return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, scrub)
 }
 
 // failedStatus is a failed call's status, which keys its finding: the
@@ -273,9 +277,10 @@ var failedStatus = regexp.MustCompile(`^status \d+`)
 // recordAudit scrubs the item and why of res's findings, the model's and
 // the errors', of the diff's secret values and the generic shapes (a
 // model's file is scrubbed where it is read, a pre-check hit's path is
-// the diff's own), settles its verdict and puts it on the timeline;
-// beside: the audit ran beside the checks wait (besideEnd).
-func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, beside bool, res AuditResult, scrub *redact.Scrubber) AuditResult {
+// the diff's own), settles its verdict and puts it on the timeline and
+// in its fact row (auditFact); beside: the audit ran beside the checks
+// wait (besideEnd).
+func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit string, round int, beside bool, res AuditResult, scrub *redact.Scrubber) (AuditResult, error) {
 	for i, f := range res.Findings {
 		res.Findings[i] = AuditFinding{Item: textutil.Truncate(scrub.String(f.Item), maxAuditField), File: textutil.Truncate(f.File, maxAuditField),
 			Line: f.Line, Why: textutil.Truncate(scrub.String(f.Why), maxAuditField)}
@@ -286,5 +291,18 @@ func (r *Runner) recordAudit(ctx context.Context, t Task, pr PullRequest, commit
 	}
 	r.record(ctx, t.ID, "audit", besideEnd(ctx, t, GateAudit, beside, map[string]any{"pr": pr.Number, "commit": commit, "model": res.Model,
 		"deployment": res.Deployment, "verdict": res.Verdict, "findings": res.Findings}))
-	return res
+	return res, r.auditFact(ctx, t, pr, commit, round, res)
+}
+
+// auditFact writes the audit attempt's fact row (EventGateAudit): ran
+// false when res holds the no-verdict finding, its why the bounded
+// reason. A failed write is the caller's, and the activity's retry
+// writes the row the identity keeps single.
+func (r *Runner) auditFact(ctx context.Context, t Task, pr PullRequest, commit string, round int, res AuditResult) error {
+	detail := map[string]any{"pr": pr.Number, "commit": commit, "model": aliasOf(res.Model), "ran": true, "verdict": res.Verdict}
+	if i := slices.IndexFunc(res.Findings, func(f AuditFinding) bool { return f.Item == auditNoVerdict }); i >= 0 {
+		detail["ran"], detail["verdict"], detail["reason"] = false, "", textutil.Truncate(res.Findings[i].Why, maxFactReason)
+	}
+	return r.timeline.RecordFactRow(ctx, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Kind: EventGateAudit,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail, IdentityKey: identityKey(EventGateAudit, commit, strconv.Itoa(round))})
 }

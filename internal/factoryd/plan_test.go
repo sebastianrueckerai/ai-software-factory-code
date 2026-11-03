@@ -2148,26 +2148,143 @@ func TestFileRevisionRefusesACycle(t *testing.T) {
 	}
 }
 
+// The identical re-file (incident I1): revision 6 reads as revision 5,
+// whose confirmation was confirmed, its whitespace aside. The filing still
+// asks 6's confirmation and the factory answers it at once naming 5, so
+// the record shows the ask and its answer, no one is poked and the cards
+// file. A changed spec asks the human as before.
+func TestIdenticalPlanRefileConfirmsItself(t *testing.T) {
+	drifted := testPlan()
+	drifted.Spec.Outcome = "  A link shortener:\n links  with slugs that redirect and count clicks.\n"
+	drifted.Criteria[0].Expected = "201 and the row\tin the store "
+	changed := testPlan()
+	changed.Spec.Outcome = "A link shortener: links with slugs that redirect."
+	const answer = "the same plan as revision 5, confirmed there"
+	for _, tc := range []struct {
+		name string
+		six  Plan
+		same bool
+	}{
+		{"the same text", testPlan(), true},
+		{"the same text, its whitespace drifted", drifted, true},
+		{"a changed spec", changed, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			r, store, _, _, _ := fileRig(t, testPlan())
+			for n := 2; n <= 6; n++ {
+				p := testPlan()
+				if n == 6 {
+					p = tc.six
+				}
+				raw, err := json.Marshal(p)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if got, err := store.AddPlanRevision(ctx, "t-plan", raw, fmt.Sprintf("sha-%d", n)); err != nil || got != n {
+					t.Fatalf("revision %d: %d, %v", n, got, err)
+				}
+			}
+			if _, _, err := store.PutPlanConfirmation(ctx, "t-plan", 5, PlanQuestion{Text: "Confirmation of revision 5"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.AnswerPlanQuestion(ctx, "t-plan", 5, 1, DecisionConfirm, "", "alice"); err != nil {
+				t.Fatal(err)
+			}
+			ref, err := r.RequestPlan(ctx, "t-plan", 6, 7)
+			if err != nil {
+				t.Fatal(err)
+			}
+			qs, _ := store.PlanQuestions(ctx, "t-plan", 6)
+			open, _ := store.OpenPlanQuestions(ctx, "t-plan", 6)
+			var asked, answered []Event
+			for _, e := range store.events {
+				switch {
+				case e.Kind == EventQuestionAsked && e.Detail["revision"] == 6:
+					asked = append(asked, e)
+				case e.Kind == EventPlanQuestionAnswered:
+					answered = append(answered, e)
+				}
+			}
+			if len(qs) != 1 || qs[0].Kind != QuestionConfirmation || len(asked) != 1 || asked[0].Detail["kind"] != QuestionConfirmation {
+				t.Fatalf("questions %+v, asked rows %+v; want revision 6's confirmation asked", qs, asked)
+			}
+			_, poked := pokeOf(asked[0], store.tasks["t-plan"])
+			if !tc.same {
+				if qs[0].Decision != "" || open != 1 || !poked || len(answered) != 0 || len(ref.Filed) != 0 || ref.Comment == 0 {
+					t.Fatalf("confirmation %+v, open %d, poked %v, answers %+v, ref %+v; want it asked of the human", qs[0], open, poked, answered, ref)
+				}
+				return
+			}
+			if q := qs[0]; q.Decision != DecisionConfirm || q.Answer != answer || q.AnsweredBy != FactoryDecider || open != 0 {
+				t.Fatalf("confirmation %+v, open %d; want it confirmed by the factory: %q", q, open, answer)
+			}
+			if poked {
+				t.Fatalf("the ask %+v pokes the inbox, want no poke for a confirmation the factory answered", asked[0])
+			}
+			want := map[string]any{"revision": 6, "index": 1, "answer": answer, "decision": DecisionConfirm}
+			if len(answered) != 1 || answered[0].Actor != FactoryDecider || answered[0].Via != ViaFactoryd || !reflect.DeepEqual(answered[0].Detail, want) {
+				t.Fatalf("answer rows %+v, want the factory's %v", answered, want)
+			}
+			if len(ref.Filed) != 4 || len(store.approvals) != 0 {
+				t.Fatalf("ref %+v, approvals %+v; want the four cards filed and no human asked", ref, store.approvals)
+			}
+		})
+	}
+}
+
 // Every planner session counts against the session cap: at the cap the
-// card waits for a human with the findings, a writer's comment buys one
-// more session, a closed issue ends the task closed.
+// card waits for a human with the findings, a closed issue ends the task
+// closed. Under the cases change the draw is the row's: a writer's plain
+// comment adds no session and the loop asks again at once, carrying the
+// comment, while an extend the row holds runs one more session with the
+// comment as its finding. A run from before the change takes the comment
+// as the grant of one more session.
 func TestPlanLoopSessionCapAndClose(t *testing.T) {
 	invalid := []string{"plan: card web: size huge: split it; a card is one package, one page or one set of endpoints"}
-	h := newPlanHarness(t, PlanResult{Findings: invalid})
-	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
-	h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
-	if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan filed its cards" {
-		t.Fatalf("finals %v", h.finals)
-	}
-	if len(h.plans) != 4 || !slices.Equal(h.plans[3], []string{"writer alice asked for changes to the plan: keep the web card small"}) {
-		t.Fatalf("plans %q", h.plans)
-	}
-	want := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
-	if len(h.escalated) != 2 || h.escalated[0] != want || h.escalated[1] != want {
-		t.Fatalf("escalated %q, want twice %q", h.escalated, want)
-	}
-	if u := h.usage[len(h.usage)-1]; u.Attempts != 4 || u.ExtraAttempts != 1 {
-		t.Fatalf("usage %+v", u)
+	asks := capReached + "\nlast: the planner filed no plan\n- " + invalid[0]
+	comment := "writer alice asked for changes to the plan: keep the web card small"
+	for _, tc := range []struct {
+		name          string
+		before        bool
+		raised        int
+		plans         int
+		escalated     []string
+		extra, raises int
+	}{
+		{"a plain comment under the cases change", false, 0, 3, []string{asks, capReached + "\nlast: the planner filed no plan\n- " + comment}, 0, 0},
+		{"an extend under the cases change", false, 1, 4, []string{asks, asks}, 0, 1},
+		{"a plain comment before the cases change", true, 0, 4, []string{asks, asks}, 1, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Findings: invalid})
+			if tc.before {
+				h.beforeCases()
+			}
+			h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+				row := h.rowUsage
+				row.RaisedSessions = tc.raised
+				return row, nil
+			})
+			start := h.env.Now()
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "alice", Body: "keep the web card small", Comment: 610})
+			h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "alice"})
+			if final := h.run(t); final != "closed" || h.finals[0][1] != ReasonIssueClosed+" before the plan filed its cards" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			if len(h.plans) != tc.plans || tc.plans == 4 && !slices.Equal(h.plans[3], []string{comment}) {
+				t.Fatalf("plans %q, want %d, a fourth with the comment", h.plans, tc.plans)
+			}
+			if !slices.Equal(h.escalated, tc.escalated) {
+				t.Fatalf("escalated %q, want %q", h.escalated, tc.escalated)
+			}
+			if tc.plans == 3 && h.escalatedAt[1].Sub(start) != time.Hour+answerQuiet {
+				t.Fatalf("asked again %s after the start, want once the comment's burst is quiet", h.escalatedAt[1].Sub(start))
+			}
+			if u := h.usage[len(h.usage)-1]; u.Attempts != tc.plans || u.ExtraAttempts != tc.extra || u.RaisedSessions != tc.raises {
+				t.Fatalf("usage %+v, want %d attempts, %d granted, %d raised", u, tc.plans, tc.extra, tc.raises)
+			}
+		})
 	}
 }
 
@@ -4268,9 +4385,10 @@ func TestPlanLoopTimeLimitStartsAFreshPlanner(t *testing.T) {
 // Once only: a planner out of time with no automatic session to come asks
 // a human, its retry used (20m cap + 10m retry - 30m used = 0 left) or its
 // cap too short for one (half of 8m, 4m, is under the 5m a session needs).
-// The answer buys what an answer leaves a session, 5m (a quarter of 20m;
-// for 8m the 5m minimum), and starts a session with them (5m + 2m grace)
-// and the answer. A run from before the gate fails at once.
+// In a run from before the cases change the answer buys what an answer
+// leaves a session, 5m (a quarter of 20m; for 8m the 5m minimum), and
+// starts a session with them (5m + 2m grace) and the answer. A run from
+// before the planner-retry gate fails at once.
 func TestPlanLoopOutOfTimeAsksAHuman(t *testing.T) {
 	retryUsed := TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}
 	shortCap := TaskUsage{AgentTime: 8 * time.Minute, Attempts: 1}
@@ -4290,6 +4408,7 @@ func TestPlanLoopOutOfTimeAsksAHuman(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			h.beforeCases()
 			if tc.cap != 0 {
 				h.taskConfig.AgentTime = tc.cap
 			}
@@ -4326,12 +4445,14 @@ func TestPlanLoopOutOfTimeAsksAHuman(t *testing.T) {
 	}
 }
 
-// An answer to the planner's own question that finds its time used, the
-// retry with it, buys agent time and asks nothing more: 25m used of the
-// 20m cap + 10m retry leaves 5m, a session (5m + 2m grace) that asks and
-// uses them; the answer buys 5m for the next (7m again).
+// In a run from before the cases change, an answer to the planner's own
+// question that finds its time used, the retry with it, buys agent time
+// and asks nothing more: 25m used of the 20m cap + 10m retry leaves 5m, a
+// session (5m + 2m grace) that asks and uses them; the answer buys 5m for
+// the next (7m again).
 func TestPlanLoopAnswerAtTheTimeLimitBuysTime(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Escalate: "which login do accounts use?"}, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.beforeCases()
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 25 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
 	var budgets []time.Duration
 	h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
@@ -4353,12 +4474,67 @@ func TestPlanLoopAnswerAtTheTimeLimitBuysTime(t *testing.T) {
 	}
 }
 
-// A run healed while it waited on the time question asks it again
-// (healedReason, which opens no second alert) and its answer still buys
-// the time: 30m used of the 20m cap + 10m retry leaves none, the answer
-// buys 5m, and the session (5m + 2m grace) files the plan.
+// Under the cases change the planner's time is the row's: out of time,
+// its retry used (20m cap + 10m retry - 30m used = 0 left), it asks what
+// buys a session; a plain answer buys nothing and the ask comes again
+// once the answer's burst is quiet, while an extend of 5m the row holds
+// runs a session of 5m (7m with the grace) with the answer and files.
+func TestPlanLoopOutOfTimeUnderCasesTakesTheRowsTime(t *testing.T) {
+	ask := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings"
+	for _, tc := range []struct {
+		name   string
+		raised time.Duration
+	}{
+		{"a plain answer", 0},
+		{"an extend", 5 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+			h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+			h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+				row := h.rowUsage
+				row.RaisedTime = tc.raised
+				return row, nil
+			})
+			var budgets []time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityRunPlan {
+					budgets = append(budgets, info.StartToCloseTimeout)
+				}
+			})
+			start := h.env.Now()
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "plan the API alone", Comment: 801})
+			h.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			h.file = map[int]bool{1: true}
+			final := h.run(t)
+			if tc.raised == 0 {
+				if final != "closed" || !slices.Equal(h.escalated, []string{ask, ask}) || h.escalatedAt[1].Sub(start) != time.Hour+answerQuiet || len(h.plans) != 0 {
+					t.Fatalf("final %q, escalated %q at %v, plans %q; want the ask again after the answer and no session", final, h.escalated, h.escalatedAt, h.plans)
+				}
+				return
+			}
+			if final != "done" || !slices.Equal(h.escalated, []string{ask}) {
+				t.Fatalf("final %q, finals %v, escalated %q; want done after one ask", final, h.finals, h.escalated)
+			}
+			if len(h.plans) != 1 || !slices.Equal(h.plans[0], []string{"writer sebastian asked for changes to the plan: plan the API alone"}) ||
+				!slices.Equal(budgets, []time.Duration{7 * time.Minute}) {
+				t.Fatalf("plans %q, budgets %v; want one session of 7m with the answer", h.plans, budgets)
+			}
+			if u := h.usage[len(h.usage)-1]; u.ExtraTime != 0 || u.RaisedTime != 5*time.Minute {
+				t.Fatalf("usage %+v, want the row's 5m and no grant", u)
+			}
+		})
+	}
+}
+
+// A run from before the cases change healed while it waited on the time
+// question asks it again (healedReason, which opens no second alert) and
+// its answer still buys the time: 30m used of the 20m cap + 10m retry
+// leaves none, the answer buys 5m, and the session (5m + 2m grace) files
+// the plan.
 func TestPlanLoopHealedOnTheTimeQuestionAsksAgain(t *testing.T) {
 	h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
+	h.beforeCases()
 	h.state = RunState{Status: "waiting-human", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
 	h.requestPlan = func(taskID string, revision int) (PlanRef, error) {
 		if revision == 0 {

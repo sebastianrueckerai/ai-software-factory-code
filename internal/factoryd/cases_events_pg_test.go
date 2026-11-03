@@ -477,6 +477,52 @@ func TestAPlanAnswerResolvesItsQuestionsCase(t *testing.T) {
 	}
 }
 
+// The identical re-file's confirmation opens its case and the factory's
+// answer resolves it in the same filing, at rung 0, with no human asked.
+func TestIdenticalPlanRefileResolvesItsCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	raw, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n, sha := range []string{"s1", "s2"} {
+		if got, err := s.AddPlanRevision(ctx, caseTask, raw, sha); err != nil || got != n+1 {
+			t.Fatalf("AddPlanRevision %d: %d, %v", n+1, got, err)
+		}
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, caseTask, 1, PlanQuestion{Text: "Confirmation of revision 1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerPlanQuestion(ctx, caseTask, 1, 1, DecisionConfirm, "", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewRunner(testRunnerConfig(), s, newFakeKube(), &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "bot-pw"},
+		&Completion{Store: s}, &fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := s.Task(ctx, caseTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.askConfirmation(ctx, task, 2, testPlan()); err != nil {
+		t.Fatalf("askConfirmation: %v", err)
+	}
+	cs, err := s.CasesOf(ctx, caseTask)
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("CasesOf = %+v, %v; want the confirmation's one case", cs, err)
+	}
+	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "answer",
+		Args: map[string]any{"answer": "the same plan as revision 1, confirmed there", "decision": DecisionConfirm}}
+	if c := cs[0]; c.Kind != CasePlanConfirmation || c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, want) {
+		t.Fatalf("case = %+v, resolution %+v; want the plan confirmation resolved %+v", c, c.Resolution, want)
+	}
+	if open, err := s.OpenPlanQuestions(ctx, caseTask, 2); err != nil || open != 0 {
+		t.Fatalf("OpenPlanQuestions = %d, %v; want none", open, err)
+	}
+}
+
 func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 	run := &taskRun{}
 	for _, tc := range []struct {
@@ -487,6 +533,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"cap", run.sessionCapCard(capReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
 		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
+		{"cap", (&taskRun{cases: versionCases}).plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CaseCheckinHuman, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", checkinShareStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},

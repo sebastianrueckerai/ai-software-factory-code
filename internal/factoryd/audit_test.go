@@ -7,6 +7,7 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
+	"reflect"
 	"slices"
 	"strings"
 	"sync/atomic"
@@ -480,5 +481,53 @@ func TestGateAuditKeepsThePreChecksPath(t *testing.T) {
 	res := getInto[AuditResult](t, val, err)
 	if len(res.Findings) != 2 || res.Findings[0].File != "k8s/hunter2hunter2.yaml" || res.Findings[1].File != "k8s/[redacted].yaml" {
 		t.Fatalf("findings = %+v", res.Findings)
+	}
+}
+
+// Every audit attempt is a gate_audit row beside its timeline line, keyed
+// by the head and the stages' round: a clear audit ran, a second attempt
+// of one round on one head writes no second row, a second round adds its
+// own, and an audit the card cannot pay for did not run and says why.
+func TestAuditRecordsItsAttemptAsAnEvent(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n--- a/Makefile\n+++ b/Makefile\n@@ -1 +1,2 @@\n all:\n+check:\n"}
+	r, _ := newAuditRunner(t, fj, &fakeLiteLLM{content: `{"verdict":"clear","findings":[]}`}, true)
+	store := r.store.(*fakeStore)
+	for _, round := range []int{1, 1, 2} {
+		val, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, round)
+		if res := getInto[AuditResult](t, val, err); res.Verdict != AuditClear {
+			t.Fatalf("round %d: audit = %+v", round, res)
+		}
+	}
+	rows := eventsOfKind(store, EventGateAudit)
+	if len(rows) != 2 {
+		t.Fatalf("gate_audit rows = %d (%+v), want one per round", len(rows), rows)
+	}
+	for i, row := range rows {
+		if key := fmt.Sprintf("gate_audit c1 %d", i+1); row.IdentityKey != key || row.TaskID != "t1" || row.Repository != "sf/repo" || row.IssueNumber != 4 ||
+			row.Actor != FactoryDecider || row.Via != ViaFactoryd {
+			t.Fatalf("row %d = %+v, want t1's card keyed %q", i, row, key)
+		}
+		want := map[string]any{"pr": int64(9), "commit": "c1", "model": "big", "ran": true, "verdict": AuditClear}
+		if !reflect.DeepEqual(row.Detail, want) {
+			t.Fatalf("row %d detail = %v, want %v", i, row.Detail, want)
+		}
+	}
+
+	task := gateTask
+	task.BudgetEUR = 0.30
+	r, store, _ = newGateRunner(t, task, &gateForgejo{diff: fourParts})
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"clear"}`}).srv(t).URL)
+	v := auditVersion(true)
+	r.cfg.Policy = func() policy.Version { return v }
+	r.cfg.Prices = stubPrices{price: policy.Price{In: 1e-9, Out: 1e-5}}
+	if _, err := execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{}, 1); err != nil {
+		t.Fatal(err)
+	}
+	rows = eventsOfKind(store, EventGateAudit)
+	want := map[string]any{"pr": int64(9), "commit": "c1", "model": "big", "ran": false, "verdict": "",
+		"reason": "the audit did not run: its 4 calls would cost about 0.36 EUR, and the card has 0.30 EUR free. " +
+			"Read the diff, then Approve the merge or Deny it (Close on a pull request factoryd opened)."}
+	if len(rows) != 1 || rows[0].IdentityKey != "gate_audit c1 1" || !reflect.DeepEqual(rows[0].Detail, want) {
+		t.Fatalf("gate_audit rows = %+v, want one not run: %v", rows, want)
 	}
 }

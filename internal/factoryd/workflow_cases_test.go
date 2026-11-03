@@ -380,7 +380,8 @@ func TestWorkflowPlainAnswerAtTheShareStopBuysNoShare(t *testing.T) {
 
 // A gate's wait takes the case's resolution: rerun_checks runs the head's
 // checks again and the gates run once on the head the rerun made, the
-// review and the audit beside its checks; handover to the stronger model
+// review and the audit beside its checks, the audit given the stages'
+// second pass as its round; handover to the stronger model
 // makes the next session's model that one; successor closes the card into
 // one.
 func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
@@ -422,6 +423,9 @@ func TestWorkflowGateWaitTakesRerunAndHandover(t *testing.T) {
 			if n := len(slices.DeleteFunc(slices.Clone(g.steps), func(s string) bool { return s != gate })); n != 1 {
 				t.Errorf("steps %q: %s %d times, want once", g.steps, gate, n)
 			}
+		}
+		if !slices.Equal(g.auditRounds, []int{1, 2}) {
+			t.Errorf("audit rounds %v, want c1's in the stages' first pass and c1r's in the second", g.auditRounds)
 		}
 	})
 	t.Run("successor", func(t *testing.T) {

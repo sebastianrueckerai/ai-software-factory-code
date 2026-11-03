@@ -816,7 +816,7 @@ func (t *taskRun) scheduleBeside(head string, g *GateResults) {
 		start(policy.StageReview, ActivityModelReview, t.taskID, t.pr, head, review, lastVerdict(t.reviews), len(t.reviews)+1)
 	}
 	if t.auditBeside >= versionAuditBeside && runs(at(policy.StageAudit)) {
-		start(policy.StageAudit, ActivityGateAudit, t.taskID, t.pr, head, gates)
+		start(policy.StageAudit, ActivityGateAudit, t.taskID, t.pr, head, gates, t.round)
 	}
 }
 
@@ -1044,7 +1044,7 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 // for good is a finding too.
 func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v verdict, stop bool) {
 	var a AuditResult
-	v, decided, err := t.besideGate(policy.StageAudit, GateAudit, commit, &a, ActivityGateAudit, t.taskID, t.pr, commit, *g)
+	v, decided, err := t.besideGate(policy.StageAudit, GateAudit, commit, &a, ActivityGateAudit, t.taskID, t.pr, commit, *g, t.round)
 	if decided {
 		return nil, v, true
 	}

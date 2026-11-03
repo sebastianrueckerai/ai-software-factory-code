@@ -1374,17 +1374,38 @@ func checkPlanDecision(confirming bool, decision, answer string) error {
 }
 
 // AnswerPlanQuestions is the console's batch answer by a member to every
-// question of plan revision revision it names at once, which must be the
-// newest (ErrStalePlan): all answers are stored in one statement (any bad
-// entry — ErrAnswered for an answered question, ErrNotFound for an unknown
-// one — stores none), then the plan task's workflow signalled once per
-// answer, which sends the planner back once none is open. When no question
-// of the revision stays open the plan's request resolves as superseded:
-// the planner revises the revision with the answers.
+// question of plan revision revision it names at once (storePlanAnswers),
+// then the plan task's workflow signalled once per answer, which sends
+// the planner back once none is open. When no question of the revision
+// stays open the plan's request resolves as superseded: the planner
+// revises the revision with the answers.
 func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID string, revision int, answers []PlanAnswer, by string) error {
 	if _, err := pendingPlan(ctx, store, taskID); err != nil {
 		return err
 	}
+	if err := storePlanAnswers(ctx, store, taskID, revision, answers, by); err != nil {
+		return err
+	}
+	for _, a := range answers {
+		if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: a.Idx}); err != nil {
+			return fmt.Errorf("%w: %v", ErrAnswerUnsignalled, err)
+		}
+	}
+	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
+		return err
+	}
+	return resolveAnswered(ctx, store, taskID, revision)
+}
+
+// storePlanAnswers stores by's answers to questions of plan revision
+// revision, which must be the newest (ErrStalePlan), in one statement:
+// any bad entry (ErrAnswered for an answered question, ErrNotFound for an
+// unknown one) stores none. A confirmation waits for the round's
+// hold-outs, and its answer drops those still undecided. The filing's own
+// answer to an identical re-file's confirmation (askConfirmation) stores
+// through here too, with no request to resolve and no wait to signal: the
+// filing is the step that reads it.
+func storePlanAnswers(ctx context.Context, store Store, taskID string, revision int, answers []PlanAnswer, by string) error {
 	newest, ok, err := store.PlanRevision(ctx, taskID, 0)
 	if err != nil {
 		return err
@@ -1414,19 +1435,9 @@ func AnswerPlanQuestions(ctx context.Context, store Store, wf Workflows, taskID 
 		return err
 	}
 	if confirming {
-		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
-			return err
-		}
+		return store.SweepPlanHoldouts(ctx, taskID)
 	}
-	for _, a := range answers {
-		if err := wf.Signal(ctx, taskID, SignalPlanAnswered, TaskSignal{Author: by, Revision: revision, Index: a.Idx}); err != nil {
-			return fmt.Errorf("%w: %v", ErrAnswerUnsignalled, err)
-		}
-	}
-	if open, err := store.OpenPlanQuestions(ctx, taskID, revision); err != nil || open > 0 {
-		return err
-	}
-	return resolveAnswered(ctx, store, taskID, revision)
+	return nil
 }
 
 // pendingPlan is the task's pending approval request of kind plan.
@@ -1888,7 +1899,7 @@ func (t *taskRun) planLoop() (string, error) {
 	var onCap *capWait
 	// a healed run with no plan pending whose planner is out of time with
 	// no retry due re-asks as healedReason, so no second alert posts; the
-	// answer buys the time at the wait's branch below
+	// wait's branch below takes the time the answer bought
 	if healed && !wait && t.plannerRetry >= versionPlannerRetry {
 		if short, retry := t.plannerTime(u); short && !retry {
 			ask = healedReason
@@ -1939,11 +1950,16 @@ func (t *taskRun) planLoop() (string, error) {
 					wait = true
 				}
 			}
-			// an answer at the session cap buys a session; one to a planner
-			// out of time, its automatic session used or the cap too short
-			// for one, buys agent time (versionPlannerRetry); an answer on
-			// a cap's wait that ended on its own buys nothing
-			if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() && !onCap.over() {
+			// the draw is the row's (versionCases): an extend raised it and
+			// the loop's top reads the caps again, so a plain answer asks
+			// again. Before, an answer at the session cap buys a session;
+			// one to a planner out of time, its automatic session used or
+			// the cap too short for one, buys agent time
+			// (versionPlannerRetry); an answer on a cap's wait that ended
+			// on its own buys nothing
+			if t.cases >= versionCases {
+				t.readRaise(&u)
+			} else if u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() && !onCap.over() {
 				t.grant(&u)
 			} else if short, retry := t.plannerTime(u); t.plannerRetry >= versionPlannerRetry && short && !retry && !onCap.over() {
 				t.grantTime(&u)
@@ -2141,11 +2157,15 @@ func (t *taskRun) plannerTime(u TaskUsage) (short, retry bool) {
 const plannerOutOfTime = "the planner used its agent time"
 
 // plannerTimeCard is that question: the automatic session used, or the cap
-// too short for one, and what an answer buys.
+// too short for one, and what buys the next session: an extend of the
+// card's agent time (versionCases), else any answer.
 func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 	what := " and its automatic second session without filing a plan"
 	if u.RetryTime == 0 {
 		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
+	}
+	if t.cases >= versionCases {
+		return plannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
 	}
 	return fmt.Sprintf("%s%s: an answer starts one more planner session with %g minutes of agent time and the answer among its findings",
 		plannerOutOfTime, what, t.answerTime().Minutes())
@@ -2608,7 +2628,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		if err != nil {
 			return PlanResult{}, err
 		}
-		gate, err := r.confirms(ctx, t, p)
+		gate, _, err := r.confirms(ctx, t, p)
 		if err != nil {
 			return PlanResult{}, err
 		}
@@ -2637,7 +2657,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.restartChildren(ctx, t, repo, n, p)
 	}
 	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
-	gate, err := r.confirms(ctx, t, p)
+	gate, _, err := r.confirms(ctx, t, p)
 	if err != nil {
 		return PlanResult{}, err
 	}
@@ -2901,7 +2921,7 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 	// the round's hold-outs are drafted before a question is stored, a
 	// review model call and dry runs of minutes: the questions, the
 	// confirmation and the zone then reach Needs you as the plan waits
-	if confirm, err := r.confirms(ctx, t, p); err != nil {
+	if confirm, _, err := r.confirms(ctx, t, p); err != nil {
 		return PlanRef{}, err
 	} else if confirm {
 		if err := r.askHoldouts(ctx, t, rev.Revision, p); err != nil {
@@ -3029,35 +3049,109 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 // revise with its words carries them to the next planner round, a comment
 // on the issue starts one too. Asked until answered once, and again for a
 // revision that changes the spec or a criterion (confirms). A plan
-// without criteria carries no spec to confirm.
+// without criteria carries no spec to confirm. A revision that reads as
+// the newest confirmed one (an identical re-file) is asked too, and the
+// factory answers it at once in the same filing: its ask row says so,
+// which pokes no one, and its answer resolves the ask's case.
 func (r *Runner) askConfirmation(ctx context.Context, t Task, revision int, p Plan) error {
-	if confirm, err := r.confirms(ctx, t, p); err != nil || !confirm {
+	ask, same, err := r.confirms(ctx, t, p)
+	if err != nil || !ask && (same == 0 || same == revision) {
 		return err
 	}
 	q := PlanQuestion{Text: r.untrusted(t, confirmationQuestion(revision, p))}
 	idx, inserted, err := r.store.PutPlanConfirmation(ctx, t.ID, revision, q)
-	if err != nil || !inserted {
+	if err != nil {
 		return err
 	}
-	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-		map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"})
+	answer := fmt.Sprintf("the same plan as revision %d, confirmed there", same)
+	if inserted {
+		asked := map[string]any{"question": q.Text, "revision": revision, "index": idx, "kind": "confirmation"}
+		if same > 0 {
+			asked["settled"] = answer
+		}
+		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
+	}
+	if same == 0 {
+		return nil
+	}
+	if !inserted {
+		// an activity retry: the ask stands, its answer may not
+		if idx, _, err = r.store.ConfirmationIndex(ctx, t.ID, revision); err != nil {
+			return err
+		}
+	}
+	var stale ErrStalePlan
+	switch err := storePlanAnswers(ctx, r.store, t.ID, revision, []PlanAnswer{{Idx: idx, Text: answer, Decision: DecisionConfirm}}, FactoryDecider); {
+	case errors.Is(err, ErrAnswered), errors.As(err, &stale):
+		// answered by an earlier try, or a newer revision asks its own
+		return nil
+	case err != nil:
+		return err
+	}
+	r.timeline.RecordRow(ctx, t.ID, EventPlanQuestionAnswered, FactoryDecider, ViaFactoryd,
+		map[string]any{"revision": revision, "index": idx, "answer": answer, "decision": DecisionConfirm})
 	return nil
 }
 
 // confirms reports whether plan p of task t asks the confirmation: it
 // carries criteria, and no revision's confirmation was answered yet or p
 // changes the spec or a criterion of the newest revision whose
-// confirmation was.
-func (r *Runner) confirms(ctx context.Context, t Task, p Plan) (bool, error) {
+// confirmation was. same is that revision when p reads as it does
+// (samePlanText): its confirmation stands for p, which asks none.
+func (r *Runner) confirms(ctx context.Context, t Task, p Plan) (ask bool, same int, err error) {
 	if len(p.Criteria) == 0 {
-		return false, nil
+		return false, 0, nil
 	}
 	confirmed, ok, err := r.store.PlanConfirmed(ctx, t.ID)
 	if err != nil || !ok || confirmed < 1 {
-		return err == nil && !ok, err
+		return err == nil && !ok, 0, err
 	}
 	prev, _, err := r.planAt(ctx, t.ID, confirmed)
-	return err == nil && prev != nil && specChanged(*prev, p), err
+	switch {
+	case err != nil || prev == nil:
+		return false, 0, err
+	case samePlanText(*prev, p):
+		return false, confirmed, nil
+	}
+	return specChanged(*prev, p), 0, nil
+}
+
+// samePlanText tells whether a and b read alike: equal once every text
+// field is trimmed and its runs of whitespace folded to one space.
+func samePlanText(a, b Plan) bool {
+	fa, errA := foldedPlan(a)
+	fb, errB := foldedPlan(b)
+	return errA == nil && errB == nil && reflect.DeepEqual(fa, fb)
+}
+
+// foldedPlan is p as its JSON values, every string trimmed and its runs
+// of whitespace folded to one space.
+func foldedPlan(p Plan) (any, error) {
+	raw, err := json.Marshal(p)
+	if err != nil {
+		return nil, err
+	}
+	var v any
+	if err := json.Unmarshal(raw, &v); err != nil {
+		return nil, err
+	}
+	var fold func(v any) any
+	fold = func(v any) any {
+		switch v := v.(type) {
+		case string:
+			return strings.Join(strings.Fields(v), " ")
+		case []any:
+			for i := range v {
+				v[i] = fold(v[i])
+			}
+		case map[string]any:
+			for k := range v {
+				v[k] = fold(v[k])
+			}
+		}
+		return v
+	}
+	return fold(v), nil
 }
 
 // specChanged tells whether next changes prev's spec, its outcome or its

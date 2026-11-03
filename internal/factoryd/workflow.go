@@ -1133,8 +1133,9 @@ const (
 	// TaskUsage.RetryTime, which a human's extra time leaves alone; a cap
 	// whose half is under that minimum gets none. Out of time with no such
 	// session to come, the planner asks a human (plannerTimeCard), and an
-	// answer to any wait then buys agent time (grantTime). A run from
-	// before the change fails at the limit at once.
+	// answer to any wait then buys agent time (grantTime) until
+	// versionCases, under which an extend does. A run from before the
+	// change fails at the limit at once.
 	versionPlannerRetry workflow.Version = 1
 	// versionAnsweredRouting (change id "answered-routing"): an answer
 	// that confirmed the revision with no open question and no writer's
@@ -1310,7 +1311,8 @@ const (
 	// card into one, a handover sets the model, and a re-verification takes
 	// the head through the gates with no session. A draw is the row's, so
 	// an answer buys no session or agent time of its own, at a cap or after
-	// a session, and the loop reads the caps again. A wait that ends on its
+	// a session, in the card loop and the plan loop alike, and the loop
+	// reads the caps again. A wait that ends on its
 	// own withdraws its case, and a dependency that failed with no
 	// replacement is a trip. A run from before asks through Escalate and
 	// takes none of it.

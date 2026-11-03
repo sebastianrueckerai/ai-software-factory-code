@@ -216,18 +216,24 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 
 	// #851, design section 4 problem 5 and its replay row: the planner
 	// read its agent time away and filed nothing; the time card asks the
-	// human, whose answer starts the filing session — the gate moment does
-	// not exist on a card with no review, so no check-in runs.
+	// human, whose extend of the card's agent time, with their comment,
+	// starts the filing session — the gate moment does not exist on a card
+	// with no review, so no check-in runs.
 	t.Run("#851_planner_still_asks_the_human", func(t *testing.T) {
 		h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+			row := h.rowUsage
+			row.RaisedTime = 5 * time.Minute
+			return row, nil
+		})
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "file what you have", Comment: 801})
 		h.file = map[int]bool{1: true}
 
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, escalated = %q", final, h.escalated)
 		}
-		question := "the planner used its agent time and its automatic second session without filing a plan: an answer starts one more planner session with 5 minutes of agent time and the answer among its findings"
+		question := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings"
 		if !slices.Equal(h.escalated, []string{question}) {
 			t.Fatalf("escalations = %q, want the time card alone", h.escalated)
 		}
