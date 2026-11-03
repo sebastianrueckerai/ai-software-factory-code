@@ -763,16 +763,13 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 		number("budget.task_max_eur", b.TaskMaxEUR, d.Budget.TaskMaxEUR, "budget.task_max_eur")
 	}
 	if e := p.Escalation; e != nil {
-		bound := d.escalationOf(ProjectConfig{})
-		for _, draw := range []struct {
-			key      string
-			v, bound Draw
-		}{{"pool", e.Pool, bound.Pool}, {"card_draw", e.CardDraw, bound.CardDraw}} {
-			b := draw.bound.parts()
-			for i, part := range draw.v.parts() {
-				if part.n > b[i].n {
+		bounds := d.escalationOf(ProjectConfig{}).draws()
+		for i, draw := range e.draws() {
+			b := bounds[i].d.parts()
+			for j, part := range draw.d.parts() {
+				if part.n > b[j].n {
 					field := "escalation." + draw.key + "." + part.key
-					looser(field, part.show, b[i].show, field)
+					looser(field, part.show, b[j].show, field)
 				}
 			}
 		}

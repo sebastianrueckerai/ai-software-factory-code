@@ -23,17 +23,20 @@ type Draw struct {
 // when the AI rungs run.
 type Escalation struct {
 	// Pool is what all rungs together may extend and grant in a project
-	// per UTC month. Absent parts: 30 sessions, 30h, 60 EUR.
+	// per UTC month. Absent or 0: the part takes policy.yaml's figure, and
+	// in policy.yaml 30 sessions, 30h, 60 EUR.
 	Pool Draw `yaml:"pool,omitempty" json:"pool"`
 	// CardDraw is the most the code and the check-in may draw from the
 	// pool for one medium card over its whole life: a small card half of
 	// it, a large one one and a half times, sessions rounded up. At most
-	// the pool in each part. Absent parts: 2 sessions, 1h, 4 EUR.
+	// the pool in each part. Absent or 0: the part takes policy.yaml's
+	// figure, and in policy.yaml 2 sessions, 1h, 4 EUR.
 	CardDraw Draw `yaml:"card_draw,omitempty" json:"card_draw"`
 	// Judgment is when the check-in and the factory agent judge a case the
-	// code did not resolve: always, or autonomous_and_above, at autonomous
-	// and full auto only, so at manual and assisted such a case goes
-	// straight to a human. Absent: always.
+	// code did not resolve. With always they judge it at every autonomy
+	// level. With autonomous_and_above they judge it at autonomous and full
+	// auto only, and at manual and assisted it goes straight to a human.
+	// Absent: always.
 	Judgment string `yaml:"judgment,omitempty" json:"judgment,omitempty"`
 }
 
@@ -104,7 +107,7 @@ func (d Draw) MarshalJSON() ([]byte, error) {
 	return json.Marshal(j)
 }
 
-// UnmarshalJSON reads drawJSON back into Draw; a bad duration fails the
+// UnmarshalJSON reads drawJSON back into Draw. A bad duration fails the
 // whole read.
 func (d *Draw) UnmarshalJSON(b []byte) error {
 	var j drawJSON
@@ -159,13 +162,21 @@ func (e Escalation) CardDrawOf(size string) Draw {
 	return d
 }
 
+// keyedDraw is one of a block's two draws by its key.
+type keyedDraw struct {
+	key string
+	d   Draw
+}
+
+// draws are the block's pool and card draw by their keys.
+func (e Escalation) draws() [2]keyedDraw {
+	return [2]keyedDraw{{"pool", e.Pool}, {"card_draw", e.CardDraw}}
+}
+
 // validate is the block's own judgement, as a file sets it: no part
 // negative, judgment one of JudgmentValues.
 func (e Escalation) validate() error {
-	for _, draw := range []struct {
-		key string
-		d   Draw
-	}{{"pool", e.Pool}, {"card_draw", e.CardDraw}} {
+	for _, draw := range e.draws() {
 		for _, p := range draw.d.parts() {
 			if p.n < 0 {
 				return fmt.Errorf("escalation.%s.%s must not be negative, is %v", draw.key, p.key, p.show)

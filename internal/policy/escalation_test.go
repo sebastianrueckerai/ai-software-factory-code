@@ -10,7 +10,7 @@ import (
 )
 
 // A document that sets the pool's money alone keeps the default sessions,
-// agent time, card draw and judgment; a document without the block reads
+// agent time, card draw and judgment. A document without the block reads
 // the default whole.
 func TestEscalationDefaultsFieldByField(t *testing.T) {
 	d, err := Parse([]byte(valid + "escalation: {pool: {eur: 10}}\n"))
@@ -33,7 +33,7 @@ func TestEscalationDefaultsFieldByField(t *testing.T) {
 
 // A project file may lower the pool and the card draw, never raise them
 // above policy.yaml's (the fixture sets none, so the default's: pool 30
-// sessions, 30h, 60 EUR; card draw 2, 1h, 4 EUR), and its lowered pool
+// sessions, 30h, 60 EUR, card draw 2, 1h, 4 EUR), and its lowered pool
 // still holds its card draw.
 func TestProjectEscalationMayOnlyLower(t *testing.T) {
 	with := func(block string) map[string][]byte {
@@ -70,8 +70,28 @@ func TestProjectEscalationMayOnlyLower(t *testing.T) {
 	}
 }
 
+// A part set to 0 reads as absent: a pool of 0 EUR takes policy.yaml's
+// figure. The schema refuses 0 sessions, which the code would ignore.
+func TestEscalationZeroReadsAsAbsent(t *testing.T) {
+	with := func(block string) map[string][]byte {
+		files := fixtureTree(t)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], block...)
+		return files
+	}
+	tree, err := ParseTree(with("escalation: {pool: {eur: 0}}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := tree.EscalationOf("demo-app/demo-app").Pool; got != (Draw{Sessions: 30, AgentTime: 30 * time.Hour, EUR: 60}) {
+		t.Errorf("pool with eur 0 = %+v, want policy.yaml's 30 sessions, 30h, 60 EUR", got)
+	}
+	if _, err := ParseTree(with("escalation: {card_draw: {sessions: 0}}\n")); err == nil || !strings.Contains(err.Error(), "projects/demo-app.yaml: schema:") {
+		t.Errorf("ParseTree with card_draw sessions 0 = %v, want the schema's refusal", err)
+	}
+}
+
 // Small halves the medium card draw, large takes one and a half times,
-// sessions rounded up; any other size keeps the medium figure.
+// sessions rounded up. Any other size keeps the medium figure.
 func TestCardDrawOfScalesBySize(t *testing.T) {
 	e := Escalation{CardDraw: Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}}
 	for size, want := range map[string]Draw{

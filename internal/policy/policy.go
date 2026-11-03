@@ -1201,8 +1201,8 @@ type FalPrices struct {
 }
 
 // Validate judges d as a whole: schema version 1, a sane budget, and
-// every block's own judgement — limits, escalation, chat, risk, envelope
-// default and project_default, plus the cross-block rules: approvers distinct,
+// every block's own judgement (limits, escalation, chat, risk, envelope
+// default and project_default), plus the cross-block rules: approvers distinct,
 // hosts well formed, bounds and supervisor detectors known, the time
 // zone an IANA zone, the routines policy.yaml's, the capability classes
 // named and their tools capped. ParseTree runs it on a tree read from
