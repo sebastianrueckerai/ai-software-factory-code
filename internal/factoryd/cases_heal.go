@@ -13,14 +13,16 @@ import (
 // CaseHealReport counts what ReconcileCases changed: Withdrawn the cases
 // of ended cards, of replaced plan revisions and of merges the factory
 // denied; Resolved the merge cases a decision ended; Moved the cases of
-// cards that moved on with no answer; Opened the asks that had no case.
+// cards that moved on with no answer; Opened the asks and the pending
+// merge requests that had no case.
 type CaseHealReport struct {
 	Withdrawn, Resolved, Moved, Opened int
 }
 
 // ReconcileCases ends repository's live cases the events writer cannot
-// reach, and opens a case for each ask it missed, an ask older than the
-// cases table among them. The heal pass runs it once a minute.
+// reach, and opens a case for each ask and pending merge request it
+// missed, those older than the cases table among them. The heal pass runs
+// it once a minute.
 func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHealReport, error) {
 	var r CaseHealReport
 	var err error
@@ -49,7 +51,11 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation); err != nil {
 		return r, err
 	}
-	r.Opened, err = s.openMissedAsks(ctx, repository)
+	if r.Opened, err = s.openMissedAsks(ctx, repository); err != nil {
+		return r, err
+	}
+	merges, err := s.openMissedMerges(ctx, repository)
+	r.Opened += merges
 	return r, err
 }
 
@@ -155,10 +161,46 @@ func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, e
 	if err != nil {
 		return 0, err
 	}
+	return openEach(ctx, s.db, asks, askCase)
+}
+
+// openMissedMerges opens the merge case of each of repository's pending
+// merge requests whose card has no live merge case, a request older than
+// the cases table among them, and counts the cases it opened. A request
+// younger than a minute is left to its approval_requested row, written
+// after it; an ended card's is left alone, as the ended rule would
+// withdraw its case.
+func (s *PGStore) openMissedMerges(ctx context.Context, repository string) (int, error) {
+	ids, err := queryAll(ctx, s.db, `SELECT a.id FROM approval_requests a JOIN tasks t ON t.id = a.task_id
+		WHERE t.repository = $1 AND a.kind = $2 AND a.status = 'pending' AND a.created_at < now() - interval '1 minute'
+		AND t.status NOT IN ('done', 'failed', 'closed')
+		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = a.task_id AND c.kind = $3 AND c.status IN `+caseLiveStatuses+`)`,
+		[]any{repository, ApprovalMerge, CaseMergeApproval}, func(row rowScanner) (id int64, err error) {
+			return id, row.Scan(&id)
+		})
+	if err != nil {
+		return 0, err
+	}
+	return openEach(ctx, s.db, ids, func(ctx context.Context, tx *sql.Tx, id int64) (bool, error) {
+		return openMergeCase(ctx, tx, id)
+	})
+}
+
+// openEach runs open on each of items, each in its own transaction as the
+// events writer runs it inside its own, and counts the cases it opened.
+func openEach[T any](ctx context.Context, db *sql.DB, items []T, open func(context.Context, *sql.Tx, T) (bool, error)) (int, error) {
 	n := 0
-	for _, e := range asks {
-		opened, err := s.openAsk(ctx, e)
+	for _, item := range items {
+		tx, err := db.BeginTx(ctx, nil)
 		if err != nil {
+			return n, err
+		}
+		opened, err := open(ctx, tx, item)
+		if err == nil {
+			err = tx.Commit()
+		}
+		if err != nil {
+			_ = tx.Rollback() // #nosec G104 -- the error that matters is err
 			return n, err
 		}
 		if opened {
@@ -166,21 +208,6 @@ func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, e
 		}
 	}
 	return n, nil
-}
-
-// openAsk opens the case of ask e in one transaction, as askCase does
-// inside the events writer's.
-func (s *PGStore) openAsk(ctx context.Context, e Event) (bool, error) {
-	tx, err := s.db.BeginTx(ctx, nil)
-	if err != nil {
-		return false, err
-	}
-	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
-	opened, err := askCase(ctx, tx, e)
-	if err != nil {
-		return false, err
-	}
-	return opened, tx.Commit()
 }
 
 // queryAll reads every row of query through scan, so its caller writes

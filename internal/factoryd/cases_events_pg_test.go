@@ -399,7 +399,7 @@ func TestAPlanAnswerResolvesItsQuestionsCase(t *testing.T) {
 	recordCaseEvent(t, s, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{
 		"question": "Which database?", "choices": []string{"Postgres", "SQLite"}, "revision": rev, "index": 1})
 	c := onlyOpenCase(t, s)
-	if c.Kind != CasePlanQuestion || c.Problem != "Which database?" || c.StateKey != "77a551c3111d00d9" {
+	if c.Kind != CasePlanQuestion || c.Problem != "Which database?" || c.StateKey != "77a551c3111d00d9@r1" {
 		t.Fatalf("plan case = %+v", c)
 	}
 	recordCaseEvent(t, s, EventPlanQuestionAnswered, "sebastian", ViaButton, map[string]any{"revision": rev, "index": 1, "answer": "Postgres"})

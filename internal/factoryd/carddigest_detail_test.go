@@ -87,6 +87,65 @@ func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 	}
 }
 
+// At the session cap the console's answer is a grant: it answers the ask.
+func TestCardStepShowsAGrantAsTheCapAsksAnswer(t *testing.T) {
+	g := newDigestRig(nil)
+	g.event(30, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Card 1410 asks: grant one more session?", "comment": 27001,
+		"source": "cap", "reason": "the card used its sessions"})
+	g.event(40, EventSessionGranted, "sebastian", map[string]any{"comment": 27002})
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if !strings.Contains(got, "\nAnswer by sebastian: one more session granted\n") {
+		t.Fatalf("CardStep of the granted ask =\n%s\nwant the grant as its answer", got)
+	}
+}
+
+// Plan questions are asked in a batch with no comment: each finds its own
+// answer by revision and index past its siblings, and its case by kind and
+// words, the newest opened by the time it was asked.
+func TestCardStepShowsAPlanQuestionsAnswerAndCase(t *testing.T) {
+	ctx := context.Background()
+	g := newDigestRig(nil)
+	g.event(30, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which database?", "choices": []any{"Postgres", "SQLite"},
+		"revision": 1, "index": 1})
+	g.event(30, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which cache?", "revision": 1, "index": 2})
+	g.event(40, EventPlanQuestionAnswered, "sebastian", map[string]any{"revision": 1, "index": 2, "answer": "Redis"})
+	g.event(41, EventPlanQuestionAnswered, "sebastian", map[string]any{"revision": 1, "index": 1, "answer": "Postgres"})
+	g.event(50, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which database?", "revision": 2, "index": 1})
+	answered := &CaseResolution{By: "sebastian", Rung: 3, Action: "answer"}
+	g.store.cases = []Case{
+		{ID: 7, TaskID: "t1410", Kind: CasePlanQuestion, StateKey: "k@r1", Status: CaseResolved, Problem: "Which database?",
+			OpenedAt: digestAt(30), Resolution: answered},
+		{ID: 8, TaskID: "t1410", Kind: CasePlanQuestion, StateKey: "c@r1", Status: CaseResolved, Problem: "Which cache?",
+			OpenedAt: digestAt(30), Resolution: answered},
+		{ID: 9, TaskID: "t1410", Kind: CasePlanQuestion, StateKey: "k@r2", Status: CaseAtHuman, Problem: "Which database?", OpenedAt: digestAt(50)},
+	}
+	g.store.caseSteps = map[int64][]CaseStep{7: {{ID: 1, CaseID: 7, Rung: 3, Actor: FactoryDecider, Outcome: StepResolved}}}
+	first, err := g.r.CardStep(ctx, "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if want := "\nChoices: Postgres; SQLite\nAnswer by sebastian: Postgres\ncase 7 plan_question, resolved by sebastian: answer\n rung 3 by factoryd → resolved\n"; !strings.HasSuffix(first, want) {
+		t.Fatalf("CardStep of the first question =\n%s\nwant it to end\n%s", first, want)
+	}
+	second, err := g.r.CardStep(ctx, "t1410", 3, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if want := "\nAnswer by sebastian: Redis\ncase 8 plan_question, resolved by sebastian: answer\n"; !strings.HasSuffix(second, want) {
+		t.Fatalf("CardStep of the second question =\n%s\nwant it to end\n%s", second, want)
+	}
+	again, err := g.r.CardStep(ctx, "t1410", 6, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if want := "\nAnswer: none yet\ncase 9 plan_question, at_human\n"; !strings.HasSuffix(again, want) {
+		t.Fatalf("CardStep of revision 2's question =\n%s\nwant it to end\n%s", again, want)
+	}
+}
+
 func TestCardStepRefusesAnUnknownStep(t *testing.T) {
 	g := skeletonRig(t)
 	for _, n := range []int{0, 9} {

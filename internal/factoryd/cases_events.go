@@ -50,7 +50,8 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return resolvePlanCase(ctx, tx, e)
 	case EventApprovalRequested:
 		id, _ := toInt(e.Detail["approval"])
-		return openMergeCase(ctx, tx, int64(id))
+		_, err := openMergeCase(ctx, tx, int64(id))
+		return err
 	}
 	return nil
 }
@@ -111,7 +112,8 @@ var cardMoneyKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloo
 
 // caseFromAsk maps question_asked event e of task t to the case it opens
 // or appends to; head is the task's newest gate head, "" for none. A plan
-// question's case keys on its words alone, which its answer finds it by.
+// question's case keys on its words and its revision, which its answer
+// finds it by: a later revision asking the same words opens its own.
 func caseFromAsk(t Task, e Event, head string) (Case, error) {
 	ask := askSentence(e)
 	if strings.TrimSpace(ask) == "" {
@@ -125,9 +127,9 @@ func caseFromAsk(t Task, e Event, head string) (Case, error) {
 	var kind CaseKind
 	switch {
 	case revision > 0 && str("kind") == QuestionConfirmation:
-		kind, head = CasePlanConfirmation, ""
+		kind, head = CasePlanConfirmation, planHead(revision)
 	case revision > 0:
-		kind, head = CasePlanQuestion, ""
+		kind, head = CasePlanQuestion, planHead(revision)
 	default:
 		var named map[string]any
 		kind, named = caseKindOf(str("source"), cmp.Or(str("reason"), ask))
@@ -187,7 +189,7 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 }
 
 // caseStateKey is sha256(kind + "|" + normalised ask)[:16], plus "@" +
-// head when a gate_head fact names one.
+// head when a gate_head fact or a plan revision names one.
 func caseStateKey(kind CaseKind, ask, head string) string {
 	sum := sha256.Sum256([]byte(string(kind) + "|" + strings.Join(strings.Fields(ask), " ")))
 	key := hex.EncodeToString(sum[:])[:16]
@@ -196,6 +198,9 @@ func caseStateKey(kind CaseKind, ask, head string) string {
 	}
 	return key
 }
+
+// planHead is the head of a plan question's state key: its revision.
+func planHead(revision int) string { return fmt.Sprintf("r%d", revision) }
 
 // resolvePlanCase resolves the live case of the plan question
 // plan_question_answered event e answers.
@@ -217,7 +222,7 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 	}
 	var id int64
 	err = q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND kind = $2 AND state_key = $3 AND `+caseLive,
-		e.TaskID, ck, caseStateKey(ck, text, "")).Scan(&id)
+		e.TaskID, ck, caseStateKey(ck, text, planHead(revision))).Scan(&id)
 	if errors.Is(err, sql.ErrNoRows) {
 		return nil
 	}
@@ -234,36 +239,36 @@ func resolvePlanCase(ctx context.Context, q rowQuerier, e Event) error {
 
 // openMergeCase opens the merge case of approval request id while it is
 // a pending merge request: its pull request at the head the gates
-// passed.
-func openMergeCase(ctx context.Context, q rowQuerier, id int64) error {
+// passed. It tells whether it opened one.
+func openMergeCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 	c := Case{Kind: CaseMergeApproval, Status: CaseAtHuman}
 	var pr int64
 	var raw []byte
 	err := q.QueryRowContext(ctx, `SELECT task_id, project, COALESCE(pr_number, 0), spec FROM approval_requests
 		WHERE id = $1 AND kind = $2 AND status = 'pending'`, id, ApprovalMerge).Scan(&c.TaskID, &c.Repository, &pr, &raw)
 	if errors.Is(err, sql.ErrNoRows) {
-		return nil
+		return false, nil
 	}
 	if err != nil {
-		return err
+		return false, err
 	}
 	var spec MergeSpec
 	if err := json.Unmarshal(raw, &spec); err != nil {
-		return err
+		return false, err
 	}
 	c.StateKey = fmt.Sprintf("pr:%d@%s", pr, spec.HeadSHA)
 	c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
 	c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass,
 		"factory": spec.Factory, "red_checks": spec.RedChecks}
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
-		return err
+		return false, err
 	}
 	got, opened, err := openCase(ctx, q, c)
 	if err != nil || !opened {
-		return err
+		return false, err
 	}
 	_, err = appendCaseStep(ctx, q, CaseStep{CaseID: got.ID, Rung: 3, Actor: FactoryDecider})
-	return err
+	return err == nil, err
 }
 
 // endMergeCase ends task taskID's live merge case by its request's

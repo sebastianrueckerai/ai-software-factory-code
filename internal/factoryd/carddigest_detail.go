@@ -162,7 +162,7 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 	}
 	fmt.Fprintf(b, "Ask: %s\nWhy: %s\nInfo: %s\nRecommendation: %s\nChoices: %s\n", cmp.Or(askSentence(e), "none"), word("why"), word("info"),
 		word("recommendation"), cmp.Or(strings.Join(choices, "; "), "none"))
-	b.WriteString(askAnswer(rows.events[i+1:]) + "\n")
+	b.WriteString(askAnswer(e, rows.events[i+1:]) + "\n")
 	c := slices.IndexFunc(rows.cases, func(c Case) bool { return strconv.FormatInt(c.ID, 10) == s.Ref.Case })
 	if c < 0 {
 		return nil
@@ -190,17 +190,33 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 	return nil
 }
 
-// askAnswer is the answer among events, those after an ask, that came
-// before the next ask.
-func askAnswer(events []Event) string {
+// askAnswer is ask's answer among events, those after it. A plan
+// question's is the plan answer of its revision and index, past the
+// questions asked with it, until a later revision asks again; any other
+// ask's is the answer or grant before the next such ask.
+func askAnswer(ask Event, events []Event) string {
+	revision, _ := toInt(ask.Detail["revision"])
+	index, _ := toInt(ask.Detail["index"])
 	for _, e := range events {
 		word := func(k string) string { v, _ := e.Detail[k].(string); return v }
-		switch e.Kind {
-		case EventQuestionAsked:
-			return "Answer: none"
-		case EventQuestionAnswered:
+		answer := func() string {
 			return fmt.Sprintf("Answer by %s: %s", e.Actor, cmp.Or(word("answer"), word("decision"), "answered"))
-		case EventQuestionWithdrawn:
+		}
+		rev, _ := toInt(e.Detail["revision"])
+		idx, _ := toInt(e.Detail["index"])
+		switch {
+		case revision > 0 && e.Kind == EventQuestionAsked && rev > revision:
+			return "Answer: none"
+		case revision > 0 && e.Kind == EventPlanQuestionAnswered && rev == revision && idx == index:
+			return answer()
+		case revision > 0:
+		case e.Kind == EventQuestionAsked && rev == 0:
+			return "Answer: none"
+		case e.Kind == EventQuestionAnswered:
+			return answer()
+		case e.Kind == EventSessionGranted:
+			return fmt.Sprintf("Answer by %s: %s", e.Actor, cmp.Or(word("answer"), "one more session granted"))
+		case e.Kind == EventQuestionWithdrawn:
 			return "Withdrawn: " + cmp.Or(word("reason"), "no reason given")
 		}
 	}

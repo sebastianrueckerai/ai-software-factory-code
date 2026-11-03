@@ -235,7 +235,7 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 		switch e.Kind {
 		case EventQuestionAsked:
 			s.Kind, s.Actor, s.Outcome = "ask", "", askOutcome(t, e)
-			if i := slices.IndexFunc(cases, func(c Case) bool { return comment > 0 && c.CommentID == int64(comment) }); i >= 0 {
+			if i := askCaseIndex(t, e, cases); i >= 0 {
 				s.Ref.Case = strconv.FormatInt(cases[i].ID, 10)
 			}
 		case EventQuestionAnswered, EventPlanQuestionAnswered:
@@ -309,6 +309,26 @@ func askOutcome(t Task, e Event) string {
 		return "an ask with no words"
 	}
 	return string(c.Kind) + ": " + digestText(c.Problem)
+}
+
+// askCaseIndex is the index among cases of the case ask e opened or
+// asked again, -1 for none: the case of its comment when it has one, else
+// the newest of its kind and words opened by the time it was asked, as a
+// plan question's or a human card's ask, which have no comment.
+func askCaseIndex(t Task, e Event, cases []Case) int {
+	if comment, _ := toInt(e.Detail["comment"]); comment > 0 {
+		return slices.IndexFunc(cases, func(c Case) bool { return c.CommentID == int64(comment) })
+	}
+	want, err := caseFromAsk(t, e, "")
+	if err != nil {
+		return -1
+	}
+	for i, c := range slices.Backward(cases) {
+		if c.Kind == want.Kind && c.Problem == want.Problem && !c.OpenedAt.After(e.At) {
+			return i
+		}
+	}
+	return -1
 }
 
 // criteriaSteps are the card's criteria verdicts, one step per write of a

@@ -2444,7 +2444,7 @@ func (s *PGStore) UndecideApproval(ctx context.Context, id int64) error {
 		WHERE id = $1`, id); err != nil {
 		return err
 	}
-	if err := openMergeCase(ctx, tx, id); err != nil {
+	if _, err := openMergeCase(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()
@@ -2471,7 +2471,7 @@ func (s *PGStore) ReopenApproval(ctx context.Context, taskID, kind, note string)
 	if err != nil {
 		return err
 	}
-	if err := openMergeCase(ctx, tx, id); err != nil {
+	if _, err := openMergeCase(ctx, tx, id); err != nil {
 		return err
 	}
 	return tx.Commit()

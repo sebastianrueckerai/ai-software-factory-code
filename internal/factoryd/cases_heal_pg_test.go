@@ -264,6 +264,60 @@ func TestReconcileCasesResolvesAMergeCaseWhoseApprovalWasDecided(t *testing.T) {
 	withdrawnFor(t, s, c.ID, leftQueue)
 }
 
+// agedMerge opens a merge request of caseTask for pull request 1479 at
+// head abc1479 with no approval_requested row, as one older than the
+// cases table, and ages it by age.
+func agedMerge(t *testing.T, s *PGStore, age string) int64 {
+	t.Helper()
+	ctx := context.Background()
+	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: "abc1479"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	id, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: caseTask, Project: "sf/r", PRNumber: 1479, Spec: spec})
+	if err != nil {
+		t.Fatalf("OpenApproval: %v", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE approval_requests SET created_at = now() - $2::interval WHERE id = $1`, id, age); err != nil {
+		t.Fatalf("age the request: %v", err)
+	}
+	return id
+}
+
+func TestReconcileCasesOpensTheCaseOfAPendingMergeWithNone(t *testing.T) {
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "in-review")
+	id := agedMerge(t, s, "30 seconds")
+	// a request younger than a minute is its approval_requested row's
+	reconcile(t, s, CaseHealReport{})
+
+	if _, err := s.db.ExecContext(context.Background(), `UPDATE approval_requests SET created_at = now() - interval '2 minutes'`); err != nil {
+		t.Fatalf("age the request: %v", err)
+	}
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	c := onlyOpenCase(t, s)
+	if c.Kind != CaseMergeApproval || c.StateKey != "pr:1479@abc1479" || c.Status != CaseAtHuman || c.Facts["approval"] != float64(id) {
+		t.Fatalf("case = %+v; want the pending request's merge case at the human", c)
+	}
+	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Outcome != StepInProgress {
+		t.Fatalf("steps = %+v; want one running rung 3 step", steps)
+	}
+	reconcile(t, s, CaseHealReport{})
+}
+
+// A pending request on an ended card opens nothing: the ended rule would
+// withdraw its case the next minute.
+func TestReconcileCasesOpensNoMergeCaseOnAnEndedCard(t *testing.T) {
+	s := cardCaseStore(t, "cases_heal")
+	setCaseTaskStatus(t, s, "done")
+	agedMerge(t, s, "2 minutes")
+
+	reconcile(t, s, CaseHealReport{})
+	if cs, err := s.CasesOf(context.Background(), caseTask); err != nil || len(cs) != 0 {
+		t.Fatalf("CasesOf = %+v, %v; want none", cs, err)
+	}
+}
+
 func TestReconcileCasesWithdrawsThePlanQuestionsANewerRevisionReplaced(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")
@@ -285,6 +339,31 @@ func TestReconcileCasesWithdrawsThePlanQuestionsANewerRevisionReplaced(t *testin
 	withdrawnFor(t, s, open[1].ID, "plan revision 2 replaced it")
 	if live := onlyOpenCase(t, s); live.ID != open[2].ID {
 		t.Fatalf("live case = %+v; want revision 2's question", live)
+	}
+}
+
+// A question a later revision asks again in the same words is that
+// revision's own case: the earlier revision's case goes, the later stays.
+func TestReconcileCasesKeepsAQuestionALaterRevisionAsksAgain(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	for _, sha := range []string{"s1", "s2"} {
+		if _, err := s.AddPlanRevision(ctx, caseTask, json.RawMessage(`{"summary": "`+sha+`"}`), sha); err != nil {
+			t.Fatalf("AddPlanRevision: %v", err)
+		}
+	}
+	askPlan(t, s, "Which database?", 1, "")
+	first := onlyOpenCase(t, s)
+	askPlan(t, s, "Which database?", 2, "")
+	open, err := s.OpenCasesOf(ctx, caseTask)
+	if err != nil || len(open) != 2 || open[1].StateKey != "77a551c3111d00d9@r2" || open[1].Facts["revision"] != float64(2) {
+		t.Fatalf("OpenCasesOf = %+v, %v; want a second case keyed to revision 2", open, err)
+	}
+
+	reconcile(t, s, CaseHealReport{Withdrawn: 1})
+	withdrawnFor(t, s, first.ID, "plan revision 2 replaced it")
+	if live := onlyOpenCase(t, s); live.ID != open[1].ID || live.Status != CaseAtHuman {
+		t.Fatalf("live case = %+v; want revision 2's question at the human", live)
 	}
 }
 
