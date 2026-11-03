@@ -92,7 +92,9 @@ func TestDivideConquerSizeBounds(t *testing.T) {
 // card holds two, and a card no reading covers sits the averages out.
 // The ends count the window's terminal results: a reattached end is one
 // end, a never-started attempt's none, and an end at the window's
-// exclusive end falls outside it.
+// exclusive end falls outside it. The real exported session producer
+// runs over the seeded store at the last: its reattached replay adds
+// neither a session nor a terminal end.
 func TestDivideConquerSessions(t *testing.T) {
 	rig := newDivideRig(t, &accFigures{report: accPanelsReport()})
 	holds(t, rig.page(), []string{
@@ -167,4 +169,21 @@ func TestDivideConquerSessions(t *testing.T) {
 		"4 cards · 1 unknown size",
 		"TestDivideConquerSessions in acceptance",
 	}, []string{"pushed 3", "wall_clock 2", "not_started"})
+
+	// the real exported session producer over the seeded store, the one
+	// whose reattachment the workflow replays: it records no start the
+	// seeded session's identity does not already hold, so neither the
+	// session count nor a terminal end moves
+	runner := newLedgerRunner(t, &accLedger{PGStore: s}, "", "")
+	in := factoryd.SessionAnswerInput{TaskID: "s2", SessionID: "sc", Model: "factory/small", Attempt: 2, Since: accDay(4)}
+	if ok, err := runner.SessionAnswered(t.Context(), in); err != nil || !ok {
+		t.Fatalf("the reattached SessionAnswered = (%v, %v), want (true, nil)", ok, err)
+	}
+	dc = rig.report()
+	same(t, "sessions_per_card after the reattachment", dc.SessionsPerCard, []factoryd.SizeFigure{
+		{Size: "medium", Figure: factoryd.Figure{Value: 2, Has: true, Weeks: [7]float64{0, 0, 0, 0, 0, 0, 2}}},
+		{Size: "small", Figure: accFig(2, 4, [7]float64{0, 0, 0, 4, 0, 1, 3})},
+	})
+	same(t, "session_ends after the reattachment", dc.SessionEnds,
+		[]factoryd.NamedCount{{Name: "pushed", Count: 2}, {Name: "wall_clock", Count: 1}})
 }
