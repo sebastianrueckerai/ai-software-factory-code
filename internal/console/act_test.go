@@ -791,11 +791,15 @@ func TestTimeCappedCardNamesItsGrant(t *testing.T) {
 	}
 }
 
-// grant_session says what it grants: what the cap asks for.
+// grant_session says what it grants, in its sentence and in the title its
+// proposal leads with: what the cap asks for.
 func TestGrantSessionSaysWhatItGrants(t *testing.T) {
 	r := newRig(t)
 	tool, _ := r.c.chatTool("grant_session")
 	if want := "Grant a card at a cap what the cap asks for, with an answer to its findings."; tool.about != want {
 		t.Fatalf("grant_session's about = %q, want %q", tool.about, want)
+	}
+	if want := "Grant what the stop asks for"; tool.title != want {
+		t.Fatalf("grant_session's title = %q, want %q", tool.title, want)
 	}
 }

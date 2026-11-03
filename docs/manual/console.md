@@ -141,24 +141,27 @@ decimals: a task's model calls cost fractions of a cent.
   file a successor, retry or replan a failed dependency, close it, or note
   a step and keep waiting. An extend answers a cap, or the owner exits
   of a gate stop and of findings that repeat, never a question, and a
-  stop on money takes a fund. An extend grants one more check-in share
-  at a time, and an extend of lines or a share draws nothing. The
-  Grant button buys what the stop asks for: one session at a session cap,
-  the card draw's agent time at an agent time cap, one more check-in share
-  at the check-in's share stop, one session at its call or time cap, and
-  at a stop that asked a question it goes on. A fund can also go beside
-  another action and draws its money with it. A fund, an extend or a
-  raise of the ceiling on a card that ended is refused. The Fund form's ceiling field raises the card's
-  ceiling first, for a fund that would pass it. Words on a card at its
-  session or agent time cap grant. Once the answer passes, its words are posted on the issue as
-  the human. A human card's choice does its own work first, and its case
-  takes the comment that work posted. A card that waits with no open case
-  refuses the answer until the heal pass opens one, within a minute. The
-  project agent's `answer` takes the same `action`, its `args` (a
-  handover's model, an extend's sessions, agent time and lines, the EUR
-  of a fund or a ceiling raise) and a `fund_eur` beside it. Every answer
-  meets the same gates first: a running card's words steer its session,
-  and an action on a card no answer fits is refused.
+  stop on money takes a fund. At the month cap a fund waits for a raise
+  of budget.month_eur or the month's turn. An extend grants one more
+  check-in share at a time, and an extend of lines or a share draws
+  nothing. The Grant button buys what the stop asks for: one session at
+  a session cap, the card draw's agent time at an agent time cap, one
+  more check-in share at the check-in's share stop, one session at its
+  call or time cap, and at a stop that asked a question it goes on. A
+  fund can also go beside another action and draws its money with it. A
+  fund, an extend or a raise of the ceiling on a card that ended is
+  refused. The Fund form's ceiling field raises the card's ceiling
+  first, for a fund that would pass it. Words on a card at its session
+  or agent time cap grant. Once the answer passes, its words are posted
+  on the issue as the human. A human card's choice does its own work
+  first, and its case takes the comment that work posted. A card that
+  waits with no open case refuses the answer until the heal pass opens
+  one, within a minute. The project agent's `answer` takes the same
+  `action`, its `args` (a handover's model, an extend's sessions, agent
+  time and lines, the EUR of a fund or a ceiling raise) and a `fund_eur`
+  beside it. Every answer meets the same gates first: a running card's
+  words steer its session, and an action on a card no answer fits is
+  refused.
 - Approval cards in the human lane, from `approval_requests`. Each opens
   with its brief, one factoryd call (purpose `brief`) a moment after the
   request files. A brief the card's own budget refuses (`refused_budget`)

@@ -125,8 +125,10 @@ var Actions = []Action{
 			return "an extend grants one more check-in share at a time"
 		case f.Final != "":
 			return "this card ended " + f.Final + ": an extend buys nothing, file a new card"
-		case f.Kind == CaseBudgetFloor || f.Kind == CaseMonthCap:
+		case f.Kind == CaseBudgetFloor:
 			return "this card waits on money, not a session: fund it"
+		case f.Kind == CaseMonthCap:
+			return "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry"
 		case f.Kind != "" && !slices.Contains(extendKinds, f.Kind):
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
 		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
@@ -309,6 +311,17 @@ func (r Resolution) draw() (policy.Draw, float64) {
 		d, budget = d.Plus(*r.Fund), budget+r.Fund.EUR
 	}
 	return d, budget
+}
+
+// bounds are the lines and check-in shares an extend r raises its card's
+// bounds by, 0 for any other action.
+func (r Resolution) bounds() (lines, shares int) {
+	if r.Action != ActExtend {
+		return 0, 0
+	}
+	lines, _ = toInt(r.Args["lines"])
+	shares, _ = toInt(r.Args["checkin_shares"])
+	return lines, shares
 }
 
 // badDraw reports a draw with a part below 0 or an endless one.

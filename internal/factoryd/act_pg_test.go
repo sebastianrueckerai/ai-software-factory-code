@@ -181,7 +181,7 @@ func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 	steps := caseStepsOf(t, g.s, g.c.ID)
 	last := steps[len(steps)-1]
 	if last.Rung != 3 || last.Actor != "sebastian" || last.Decision != ActExtend || last.Outcome != StepResolved ||
-		len(last.Did) != 1 || last.Did[0].Action != ActExtend || last.Did[0].Result != "Drew 1 session from the pool." {
+		len(last.Did) != 1 || last.Did[0].Action != ActExtend || last.Did[0].Result != "Added 1 session from the pool." {
 		t.Fatalf("the step = %+v, want sebastian's extend on rung 3, resolved, that drew 1 session from the pool", last)
 	}
 
@@ -715,7 +715,7 @@ func TestActExtendsTheLinesAlone(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"lines": 200}, Result: "Raised the line bound by 200 lines."}}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"lines": 200}, Result: "Added 200 lines to its line bound."}}
 	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved {
 		t.Fatalf("result = %+v, want case resolved, nothing drawn and the step %+v", got, want)
 	}
@@ -786,9 +786,12 @@ func TestActGrantsACheckinShare(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"checkin_shares": 1}, Result: "Granted 1 more check-in share."}}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"checkin_shares": 1}, Result: "Added 1 more check-in share."}}
 	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("result = %+v, want nothing drawn and %+v", got, want)
+	}
+	if text := fmt.Sprintf("Case %d is resolved with extend: 1 more check-in share.", c.ID); got.Text != text {
+		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 	if card := g.card(t); card.Usage.ExtraCheckinShare != 1 {
 		t.Fatalf("extra check-in share = %d, want 1", card.Usage.ExtraCheckinShare)
@@ -863,8 +866,8 @@ func TestActWeighsNoDrawOfNothing(t *testing.T) {
 	}
 }
 
-// An extend's step names every part it raised: a session from the pool
-// and the line bound beside it.
+// An extend's step and its answer's text name every part it raised: a
+// session from the pool and the line bound beside it.
 func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 	g := newActRig(t)
 	got, err := g.r.Act(context.Background(), ActInput{TaskID: "t1", CaseID: g.c.ID, By: "sebastian", Rung: 3,
@@ -872,9 +875,12 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1, "lines": 100}, Result: "Drew 1 session from the pool and raised the line bound by 100 lines."}}
+	want := []CaseAction{{Action: ActExtend, Args: map[string]any{"sessions": 1, "lines": 100}, Result: "Added 1 session from the pool and 100 lines to its line bound."}}
 	if !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("did = %+v, want %+v", got.Did, want)
+	}
+	if text := fmt.Sprintf("Case %d is resolved with extend: 1 session from the pool and 100 lines to its line bound.", g.c.ID); got.Text != text {
+		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 }
 

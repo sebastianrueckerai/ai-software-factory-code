@@ -1692,7 +1692,7 @@ var tools = []chatTool{
 			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, in.Title, in.Body)
 			return note, nil, err
 		}},
-	{name: "grant_session", title: "Grant a session", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+	{name: "grant_session", title: "Grant what the stop asks for", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
 		about:    "Grant a card at a cap what the cap asks for, with an answer to its findings.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {

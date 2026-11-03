@@ -431,7 +431,8 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	for kind, want := range map[CaseKind]string{
 		CaseSessionCap: "", CaseAgentTimeCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
 		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
-		CaseBudgetFloor: "this card waits on money, not a session: fund it", CaseMonthCap: "this card waits on money, not a session: fund it",
+		CaseBudgetFloor: "this card waits on money, not a session: fund it",
+		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
 	} {
 		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, one); got != want {
 			t.Errorf("an extend on %q = %q, want %q", kind, got, want)
@@ -485,9 +486,14 @@ func TestExtendGrantsOneCheckinShareAtATime(t *testing.T) {
 }
 
 // A card short of money is answered by a fund: an extend there names it.
+// At the month cap the gateway refuses every call until the cap moves, so
+// the refusal names the cap before the fund.
 func TestExtendOnAMoneyStopNamesTheFund(t *testing.T) {
-	for _, kind := range []CaseKind{CaseBudgetFloor, CaseMonthCap} {
-		if got, want := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}), "this card waits on money, not a session: fund it"; got != want {
+	for kind, want := range map[CaseKind]string{
+		CaseBudgetFloor: "this card waits on money, not a session: fund it",
+		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
+	} {
+		if got := applies(t, ActExtend, CaseFacts{Kind: kind}, Resolution{Args: map[string]any{"sessions": 1}}); got != want {
 			t.Errorf("an extend on %s = %q, want %q", kind, got, want)
 		}
 	}

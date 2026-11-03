@@ -219,7 +219,7 @@ func TestChatGrantSession(t *testing.T) {
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"grant_session"}`,
+		`proposal {"arguments":` + args + `,"description":"Grant what the stop asks for, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"grant_session"}`,
 		`done {}`})
 	equal(t, "Do it", done, ran("grant_session", args, "Case 1 took extend."))
 	got, posts := actedOnce(t, r)
