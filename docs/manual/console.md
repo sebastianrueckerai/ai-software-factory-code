@@ -98,11 +98,11 @@ decimals: a task's model calls cost fractions of a cent.
   revision's open questions. It shows the spec's first lines, the
   summary, the cards (key, role, title, size, depends on, factoryd's
   edges included) and each open question with its choices and a free
-  answer, posted on the issue as the member. The answers go to the
+  answer, posted on the issue as the human. The answers go to the
   planner, and its next revision with no open question files the cards,
   `queued` on the direct track, and the plan card ends done. A stale
   revision shows `the plan changed to revision <m>; reload` on the card.
-  "Request changes" posts a comment as the member, which the planner
+  "Request changes" posts a comment as the human, which the planner
   revises the plan with. A done plan lists its cards by issue and state. A
   done plan with rounds shows `round <k>: <n> cards, <d> done.` and what
   is still to plan in place of its rollup, on its card; its drawer and
@@ -204,23 +204,26 @@ decimals: a task's model calls cost fractions of a cent.
   gates and section on sandbox images come from `internal/manual`, which
   the workers' `manual` tool reads too), `board`,
   `card` (the card in full, led by its life: where it stands, one line
-  per step with its number, like steps in a row folded into one, and the
-  flags the steps show; with a pointer to the read holding its reviews,
-  audit, checks, plan and sessions), `history`, `card_history`,
-  `card_step` (one step of the card's life in full, by its number),
-  `board_digest` (the board in a few lines: the live cards with their
-  flags, the queue with what holds each card, the work slots, the open
-  plans and the caps), `costs`, `diff`, `plan` (a plan's newest revision: its rows with their
-  issues and the filed cards' states, and for a revision without questions
-  the earlier revision's answers it was built from), `pr` (the newest checks' jobs, the
-  model reviews, the audit, the files' diff stat, the diff on request),
-  `file` (a file at a ref, read raw through the member's token, cut at 64
+  per step with its number, repeated steps in a row folded into one, and
+  the flags the steps show, or `digest unreadable: <why>` when its life
+  cannot be read; with a pointer to the read holding its reviews, audit,
+  checks, plan and sessions), `history`, `card_history`, `card_step` (one
+  step of the card's life in full, by its number), `board_digest` (the
+  board in a few lines: the live cards with their flags, a card whose
+  life cannot be read with why, the queue with what holds each card, the
+  work slots, the open plans and the caps), `costs`, `diff`, `plan` (a
+  plan's newest revision: its rows with their issues and the filed
+  cards' states, and for a revision without questions the earlier
+  revision's answers it was built from), `pr` (the newest checks' jobs,
+  the model reviews, the audit, the files' diff stat, the diff on
+  request),
+  `file` (a file at a ref, read raw through the human's token, cut at 64
   KiB, a binary one refused), `session`, `session_steps`, `session_step`,
   `session_search` (a session's summary with why it started, its steps one
   line each, steps in full, a search of the transcripts and, with no step
   matching, of the sessions' ends; transcripts over 8 MiB are only
   searched), `ci` (a commit's combined CI status with each job's, main's
-  head unless a ref or sha names another, through the member's token) and
+  head unless a ref or sha names another, through the human's token) and
   `project_images` (the project's pins in force with their tools, egress,
   short digest and key, its open tool cards, and its cards in
   `waiting-image` with the image each waits for), and
@@ -238,11 +241,11 @@ decimals: a task's model calls cost fractions of a cent.
   `attachments`, at most 4 of the thread's images by name (`img1`): an
   unknown name refuses before anything is posted; the text gains a line
   `Attachments: img1.png, ...` and each image goes up as an asset of the
-  issue or the comment, named for its type, as the member. An upload
+  issue or the comment, named for its type, as the human. An upload
   Forgejo refuses leaves the card or comment standing, and the answer
   names the images to attach again. A session looks at them with
   `analyze_image`. `request_image` (`tool`, `need`, an
-  optional `image`, else one named after the tool) puts the member's ask
+  optional `image`, else one named after the tool) puts the human's ask
   on a tool card as a session's `request_tool` does (above), refused at
   the same cap; the card opens with who asked for which tool and why. A
   filing meets the chat's admission as `new_card`'s does (a wake files
@@ -250,9 +253,9 @@ decimals: a task's model calls cost fractions of a cent.
   join files nothing and meets neither) and writes a `card_filed` row
   with the track, the reason for it, the title, image and tool. A project without agents offers
   neither `project_images` nor `request_image`. Proposals and
-  undo tokens are the member's on
+  undo tokens are the human's on
   that project, used once, for 30 minutes (404 otherwise, 403 for
-  another member's). The `ask` tool questions the thread's human in
+  another human's). The `ask` tool questions the thread's human in
   place: an ask row with its choices offered as presses, the turn
   ending on it, and a press or their next message the answer the next
   turn reads; any later row settles an unbound ask. The ask may bind
@@ -268,14 +271,14 @@ decimals: a task's model calls cost fractions of a cent.
   lives, a typed message settles nothing and the bound tool refuses in
   the turn, naming the press as its answer; the binding lives the
   proposal's 30 minutes, and its expiry leaves the question an
-  ordinary ask, its presses answering it by the row and the turn. A wake, the turn the Waker starts on a member's
-  thread with no member behind it, makes every Forgejo call as
+  ordinary ask, its presses answering it by the row and the turn. A wake, the turn the Waker starts on a human's
+  thread with no human behind it, makes every Forgejo call as
   `factory-chat` with the project's chat token (`Forgejo.Access`'s
-  `Chat`): it needs no login of the member and reads none. A wake's turn
+  `Chat`): it needs no login of the human and reads none. A wake's turn
   that fails, as a fund's resume or a card answer in words that fails,
-  leaves `This turn failed: <why>` in its thread, since no member reads
+  leaves `This turn failed: <why>` in its thread, since no human reads
   its stream. Its chat rows
-  and events stay the woken member's, decided by the agent, and so do the
+  and events stay the woken human's, decided by the agent, and so do the
   cards it files (the intake reads the author of an issue `factory-chat`
   posted from the console's `card_filed` row; an issue with none is no
   card) and the cards of a plan it files. A filing whose `card_filed`
@@ -284,13 +287,13 @@ decimals: a task's model calls cost fractions of a cent.
   `factory-chat`'s: the agent reads such an answer as the project agent's,
   never a human's. The intake judges a label by its Forgejo actor, so a
   wake labels as `factory-chat`, a writer. A review the agent decides, in a
-  wake or in a member's turn, goes out as `factory-chat` too: an approval
+  wake or in a human's turn, goes out as `factory-chat` too: an approval
   posts none, a change request is `factory-chat`'s, which the intake
   trusts and signals and which blocks no later merge. A project without a chat
   token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
   running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation
-  is `chat_messages`, per project and member, each assistant row with its
+  is `chat_messages`, per project and human, each assistant row with its
   tool calls and their results; a turn's context is the project's status
   line (for a project without a board, agents none or not worked on,
   why it has none and its spend this month against its month cap), a
@@ -306,11 +309,11 @@ decimals: a task's model calls cost fractions of a cent.
   policy's. By default the OK is asked for `new_card`, `request_image`,
   `answer` and `steer` (text injected into the board could otherwise make
   the agent answer a waiting card or message a running session as the
-  member), `retry`, `request_changes`, `approve_merge`, `deny_merge`,
+  human), `retry`, `request_changes`, `approve_merge`, `deny_merge`,
   `invite`, `github_export`, `github_sync`, `close`, `edit`,
   `grant_session` and `set_dependency`; `confirm: []` asks for none.
   `new_card` takes a `track` (`direct`, `plan` or `human`) and a one-line
-  `track_reason`, both required. `close` closes the card's issue as the member (the face's Close
+  `track_reason`, both required. `close` closes the card's issue as the human (the face's Close
   button too; a failed card's close ends it `closed`, with an issue or without, and
   Close shows on every failed card; a done plan whose later rounds are still to plan
   shows Close too, and its close ends it `closed`: no later round starts), `edit` its title or body and the task's objective, which the
@@ -381,7 +384,7 @@ missing gate token. The code repository names `forgejo-ci-registrar`
 infra repository `forgejo-config` (read: the trust gate and the heal
 pass's close of a human-lane task; the org-read token adds the teams) and
 `forgejo-chat`. `factory-chat` is a write collaborator on no whitelist:
-the trust gate hears its comments as a writer's, as a member's, it can
+the trust gate hears its comments as a writer's, as a human's, it can
 neither push to main nor merge, and no approval of its counts. The factory's own project is the one whose file lists factoryd's
 namespace: its CI runs and rolls are watched (with its Actions token), its
 writers log into the console. factoryd does not boot without it: a configuration
