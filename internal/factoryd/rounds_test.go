@@ -693,18 +693,22 @@ func TestStoredPlanKeepsAQuestionOverTheBound(t *testing.T) {
 	}
 }
 
-// A delta card is a feature card: a foundation answer, which a later round
-// would take as its first, is refused, and no finished card of the round
-// is made to wait for it.
+// A delta card is a feature card whatever role the answer names: the
+// factory sets it, so an answer naming integration, as a model did on a
+// gap in acceptance tests, files a feature card that waits on nothing it
+// did not name.
 func TestDeltaCardIsAFeature(t *testing.T) {
-	store, tl := deltaRound(t, `{"card": {"key": "stats-contract", "role": "foundation", "title": "Stats contract", "brief": "The stats schema.", `+
+	store, tl := deltaRound(t, `{"card": {"key": "stats-proof", "role": "integration", "title": "Stats proof", "brief": "Prove each redirect counts once.", `+
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
-	if _, filed := cardsByKey(t, store)["stats-contract"]; filed || strings.Contains(tl, `"step":"delta_card"`) ||
-		!strings.Contains(tl, `"why":"the delta card's role is foundation; a delta card is a feature card"`) {
-		t.Fatalf("stats-contract filed %v; the plan's timeline:\n%s", filed, tl)
+	card, filed := cardsByKey(t, store)["stats-proof"]
+	if !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
+		t.Fatalf("stats-proof filed %v; the plan's timeline:\n%s", filed, tl)
 	}
-	if len(store.deps) != 0 {
-		t.Fatalf("task_deps %v, want none", store.deps)
+	if strings.Contains(card.Objective, "The spec of the whole feature:") {
+		t.Fatalf("stats-proof filed as an integration card, with the spec:\n%s", card.Objective)
+	}
+	if len(store.deps[card.ID]) != 0 {
+		t.Fatalf("task_deps of stats-proof %v, want none", store.deps[card.ID])
 	}
 }
 
