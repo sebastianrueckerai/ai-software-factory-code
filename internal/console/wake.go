@@ -88,10 +88,10 @@ var answerInChat func(c *Console, ctx context.Context, a actor, t factoryd.Task,
 func init() { answerInChat = (*Console).answerInChatTurn }
 
 // answerInChatTurn stores the member's words as a user row on their
-// current thread, a new one of their own when the inbox is current, before
-// it returns, runs the turn on without the request, and answers the note
-// the answer route reads to land the member on the chat page, where the
-// agent reads the card and answers with its own judgement.
+// current thread before it returns, runs the turn on without the request,
+// and answers the note the answer route reads to land the member on the
+// chat page, where the agent reads the card and answers with its own
+// judgement.
 func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task, text string) (string, error) {
 	p, ok, err := c.projectAt(ctx, t.Repository)
 	switch {
@@ -102,19 +102,9 @@ func (c *Console) answerInChatTurn(ctx context.Context, a actor, t factoryd.Task
 		return "", refuse(http.StatusNotFound, "There is no project "+t.Repository+".")
 	}
 	conv, err := c.cfg.Chat.CurrentConversation(ctx, p.Repository, a.s.user)
-	var th factoryd.ChatConversation
-	if err == nil {
-		th, _, err = c.cfg.Chat.Conversation(ctx, p.Repository, a.s.user, conv)
-	}
 	if err != nil {
 		log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
 		return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
-	}
-	if th.Inbox {
-		if conv, err = c.cfg.Chat.NewConversation(ctx, p.Repository, a.s.user); err != nil {
-			log.Printf("console: the chat of %s on %s: %v", a.s.user, p.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "cannot open a thread of your own")
-		}
 	}
 	tu := c.sessionTurn(context.WithoutCancel(ctx), p, a.s, conv)
 	text, github, chat := scrubTokens(text)

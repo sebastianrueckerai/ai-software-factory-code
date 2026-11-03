@@ -3,7 +3,6 @@ package console
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -349,22 +348,6 @@ func TestChatInboxBadge(t *testing.T) {
 	equal(t, "the unread turns after the inbox was read", unread(list()), map[int64]int64{1: 0, 2: 0})
 }
 
-// readChat answers sebastian's GET of the chat at query, "" for his
-// current thread, and his current thread after it.
-func readChat(t *testing.T, r *rig, chat *fakeChat, ck *http.Cookie, query string) (chatGetAnswer, int64) {
-	t.Helper()
-	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+query, nil), ck)
-	var answer chatGetAnswer
-	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &answer) != nil {
-		t.Fatalf("GET %s = %d %s", chatPath+query, rec.Code, rec.Body)
-	}
-	cur, err := chat.CurrentConversation(t.Context(), "sf/code", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	return answer, cur
-}
-
 // Reading the inbox, its rows and all, never makes it the human's current
 // thread: their own thread 1 stays current, and the answer says the inbox
 // is not.
@@ -382,45 +365,17 @@ func TestChatGetOfTheInboxLeavesTheCurrentThread(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	answer, cur := readChat(t, r, chat, ck, "?conversation="+strconv.FormatInt(inbox, 10))
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+	var answer chatGetAnswer
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &answer) != nil {
+		t.Fatalf("GET the inbox = %d %s", rec.Code, rec.Body)
+	}
 	equal(t, "the inbox read", []any{answer.Conversation, answer.Thread.Inbox, answer.Thread.Current, len(answer.Messages)}, []any{int64(2), true, false, 1})
-	equal(t, "the current thread", cur, int64(1))
-}
-
-// A human whose inbox is current, as a read of it once made it, lands on
-// a thread of their own: a GET naming no thread answers a new thread 3,
-// past their thread 1 and the inbox 2, which is current afterwards, and
-// the next GET answers the same thread 3, no second empty one. A store
-// that cannot open the thread refuses the GET, the inbox still current.
-func TestChatLandsOffAnInboxThatIsCurrent(t *testing.T) {
-	r, chat, _ := newChatRig(t)
-	ck, _ := r.loggedIn(t)
-	ctx := t.Context()
-	inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	cur, err := chat.CurrentConversation(ctx, "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, m := range []factoryd.ChatMessage{{Role: "user", Content: "hello", Conversation: 1},
-		{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#7 failed: Feed page.", Conversation: inbox}} {
-		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
-			t.Fatal(err)
-		}
-	}
-	chat.mu.Lock()
-	chat.started["sf/code sebastian"], chat.newErr = inbox, errors.New("the disk is full")
-	chat.mu.Unlock()
-	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
-	equal(t, "the GET with no thread to open", []any{rec.Code, rec.Body.String()},
-		[]any{http.StatusInternalServerError, "cannot open a thread of your own\n"})
-	chat.mu.Lock()
-	cur := chat.current("sf/code", "sebastian")
-	chat.newErr = nil
-	chat.mu.Unlock()
-	equal(t, "the current thread after the refusal", cur, inbox)
-	for _, read := range []string{"first", "second"} {
-		answer, cur := readChat(t, r, chat, ck, "")
-		equal(t, "the "+read+" read", []any{answer.Conversation, answer.Thread.Inbox, len(answer.Messages), cur}, []any{int64(3), false, 0, int64(3)})
-	}
+	equal(t, "the current thread", cur, int64(1))
 }
 
 // The conversations JSON carries each thread's waits_you, the tab
