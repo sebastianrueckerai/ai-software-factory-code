@@ -711,10 +711,13 @@ function showDrawer() {
   }
   var id;
   try { id = decodeURIComponent(m[1]); } catch (err) { closeDrawer(); return; }
+  var url = "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : "");
   // htmx wires the swapped nodes at the settle, after the swap's promise:
-  // a fold opened before it fires its toggle to no listener
+  // a fold opened before it fires its toggle to no listener. Only this
+  // request's settle counts, not a tab's or an earlier card's.
   drawerSettled = function (e) {
-    if (e.target !== d) return;
+    var rc = e.detail && e.detail.requestConfig;
+    if (e.target !== d || !rc || rc.path !== url || rc.elt !== document.body) return;
     document.removeEventListener("htmx:afterSettle", drawerSettled);
     var sec = m[2] && d.querySelector('details[data-sec="' + m[2] + '"]');
     if (sec) { sec.open = true; sec.querySelector("summary").focus(); return; }
@@ -722,7 +725,7 @@ function showDrawer() {
     if (h) h.focus();
   };
   document.addEventListener("htmx:afterSettle", drawerSettled);
-  htmx.ajax("GET", "/cards/" + encodeURIComponent(id) + "/drawer" + (m[2] ? "?tab=overview" : ""), {target: "#drawer", swap: "innerHTML"});
+  htmx.ajax("GET", url, {target: "#drawer", swap: "innerHTML"});
 }
 function closeDrawer() {
   if (location.hash.indexOf("#card=") !== 0 && location.hash.indexOf("#routine=") !== 0) return;

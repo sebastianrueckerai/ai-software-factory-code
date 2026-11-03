@@ -125,13 +125,16 @@ console.log(JSON.stringify([refused.line.textContent, unsent.line.textContent, o
 // A link to #card=<id>:life opens the fold once the drawer has settled:
 // htmx wires the swapped nodes there, after the swap's promise, and a fold
 // opened before it fires its toggle to no listener and stays on its
-// loading line. console.js under node, which the test needs.
+// loading line. Only the settle of the link's own request opens it, once:
+// a settle of another path or from another element is passed over, and
+// the listener leaves after its settle. console.js under node, which the
+// test needs.
 func TestCardLifeLinkOpensTheFoldOnceTheDrawerSettles(t *testing.T) {
 	node, err := exec.LookPath("node")
 	if err != nil {
 		t.Skip("no node")
 	}
-	const driver = `var listeners = {}, focused = [], read = false;
+	const driver = `var listeners = {}, focused = [], read = false, opens = 0, asked = [];
 function el(props) {
   return Object.assign({dataset: {}, textContent: "", querySelector: function () { return null; }, querySelectorAll: function () { return []; },
     addEventListener: function () {}, setAttribute: function () {}, getAttribute: function () { return null; }}, props);
@@ -139,13 +142,13 @@ function el(props) {
 var summary = el({focus: function () { focused.push("summary"); }}), h2 = el({focus: function () { focused.push("h2"); }}),
   life = el({wired: false, querySelector: function () { return summary; }}),
   drawer = el({id: "drawer", hidden: true, querySelector: function (sel) { return sel === 'details[data-sec="life"]' ? life : sel === "h2" ? h2 : null; }});
-Object.defineProperty(life, "open", {set: function (v) { if (v && life.wired) read = true; }});
+Object.defineProperty(life, "open", {set: function (v) { opens++; if (v && life.wired) read = true; }});
 var sandbox = {URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }},
   location: {href: "http://lab/#card=t-9:life", pathname: "/", search: "", hash: "#card=t-9:life"}, history: {state: null, replaceState: function () {}, pushState: function () {}},
   localStorage: {getItem: function () { return null; }, setItem: function () {}},
   setTimeout: function () {}, setInterval: function () {}, clearTimeout: function () {},
   Event: function (type) { this.type = type; }, CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
-  htmx: {ajax: function () { return Promise.resolve(); }, swap: function () {}, process: function () {}},
+  htmx: {ajax: function (verb, url) { asked.push(url); return Promise.resolve(); }, swap: function () {}, process: function () {}},
   window: {addEventListener: function () {}},
   document: {body: {classList: {toggle: function () {}}}, documentElement: {getAttribute: function () { return "dark"; }},
     getElementById: function (id) { return id === "drawer" ? drawer : null; }, querySelectorAll: function () { return []; }, querySelector: function () { return null; },
@@ -154,17 +157,26 @@ var sandbox = {URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: functio
     addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); }}};
 require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8"), sandbox);
 (listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });
+function settle(path, elt) {
+  (listeners["htmx:afterSettle"] || []).slice().forEach(function (fn) {
+    fn({type: "htmx:afterSettle", target: drawer, detail: {target: drawer, requestConfig: {path: path, elt: elt}}});
+  });
+}
 setTimeout(function () {
   life.wired = true;
-  (listeners["htmx:afterSettle"] || []).slice().forEach(function (fn) { fn({type: "htmx:afterSettle", target: drawer}); });
-  console.log(JSON.stringify([read, focused]));
+  settle("/cards/t-8/drawer?tab=overview", sandbox.document.body);
+  settle(asked[0], el());
+  var passed = [opens, focused.slice()];
+  settle(asked[0], sandbox.document.body);
+  settle(asked[0], sandbox.document.body);
+  console.log(JSON.stringify([asked, passed, read, opens, focused]));
 }, 20);`
 	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/console.js")
 	got, err := cmd.Output()
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	if want := `[true,["summary"]]`; strings.TrimSpace(string(got)) != want {
+	if want := `[["/cards/t-9/drawer?tab=overview"],[0,[]],true,1,["summary"]]`; strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}
 }
