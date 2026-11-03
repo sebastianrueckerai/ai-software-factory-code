@@ -336,6 +336,13 @@ func TestPoolConfirmationAccess(t *testing.T) {
 	held, _, _ := poolOffer(t, r, path, ck, csrf, args)
 	equal(t, "the writes the custom-confirm offer made", poolWrites(r), 0)
 
+	// full autonomy under that same custom list still only proposes: the
+	// one combination that could most plausibly skip the human's press
+	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
+	r.SetLoadedMergeRule(policy.MergeAuto)
+	_, _, _ = poolOffer(t, r, path, ck, csrf, args)
+	equal(t, "the writes the full-auto custom-confirm offer made", poolWrites(r), 0)
+
 	// the wrong member's press refuses and spends nothing: the owner's
 	// token survives it
 	ak, acsrf := r.LoginAs(t, "anna")
