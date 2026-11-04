@@ -279,7 +279,7 @@ func TestFileProofsKeepsTheFilingAndCountsThree(t *testing.T) {
 	}
 	r = &Runner{store: store, cfg: r.cfg, timeline: &Timeline{Objects: objects, Events: store, Store: store}}
 	check(4, []FiledProof{filedEntry("size_bound", "TestSizeBound")}, ProofsFiled{Filing: 3, Left: 0,
-		Findings: []string{"file_proofs: three filings are this session's limit, and the last one that passed stands: end the session"}})
+		Findings: []string{"file_proofs: three filings are this session's limit, and filing 3, the last one that passed, stands: end the session"}})
 	if rows, _ := store.PlanProofs(ctx, "t-plan"); !slices.Equal(rows, []PlanProof{row}) {
 		t.Fatalf("rows after the cap = %+v, want them as they were", rows)
 	}
@@ -339,10 +339,12 @@ func TestFileProofsNamesAHoldoutByItsEntryAlone(t *testing.T) {
 	ctx := context.Background()
 	r, _, store := newProverRunner(t, proverTask(), newFakeKube(), &fakeObjectStore{})
 	seedProver(t, store, Plan{Summary: "s", Criteria: proverPlan().Criteria[:1]}, keyLog())
-	refused := []FiledProof{filedEntry("key_log", ""), filedEntry("size_bound", "TestSizeBound")}
+	refused := []FiledProof{filedEntry("key_log", ""), filedEntry("size_bound", "TestSizeBound"), filedEntry("key_lg", "TestKeyLg")}
 	refused[1].Path, refused[1].Suite = refused[0].Path, "-proofs/key_log"
-	if got, err := r.FileProofs(ctx, "t-prove", refused); err != nil || len(got.Findings) != 3 {
-		t.Fatalf("the refused filing = %+v, %v; want three findings", got, err)
+	refused[2].Outcome = "red, key_log in proofs/key_log"
+	if got, err := r.FileProofs(ctx, "t-prove", refused); err != nil || len(got.Findings) != 4 ||
+		got.Findings[3] != "file_proofs: key_lg is no criterion or hold-out of this plan" {
+		t.Fatalf("the refused filing = %+v, %v; want four findings, the prover told the id it filed", got, err)
 	}
 	filing := []FiledProof{filedEntry("size_bound", "TestSizeBound"), filedEntry("key_log", "TestKeyLog")}
 	if got, err := r.FileProofs(ctx, "t-prove", filing); err != nil || len(got.Findings) != 0 {
@@ -354,10 +356,10 @@ func TestFileProofsNamesAHoldoutByItsEntryAlone(t *testing.T) {
 	}
 	if got, want := string(mustJSON(events[0].Detail["refusals"])),
 		`["file_proofs: holdout-4: name is empty","file_proofs: size_bound: path is holdout-4's too",`+
-			`"file_proofs: size_bound: suite: a package path inside the repository"]`; got != want {
+			`"file_proofs: size_bound: suite: a package path inside the repository","file_proofs: an entry names no criterion or hold-out of this plan"]`; got != want {
 		t.Fatalf("the refusals = %s, want %s", got, want)
 	}
-	if got, want := string(mustJSON(events[0].Detail["proofs"])), `[{"criterion":"holdout-4","outcome":"red"},{"criterion":"size_bound","outcome":"red"}]`; got != want {
+	if got, want := string(mustJSON(events[0].Detail["proofs"])), `[{"criterion":"holdout-4","outcome":"red"},{"criterion":"size_bound","outcome":"red"},{"outcome":"invalid"}]`; got != want {
 		t.Fatalf("the refused entries = %s, want %s: the criterion on the hold-out's path by its id alone", got, want)
 	}
 	entries := events[1].Detail["proofs"].([]map[string]any)
@@ -366,7 +368,7 @@ func TestFileProofsNamesAHoldoutByItsEntryAlone(t *testing.T) {
 	}
 	for _, e := range events {
 		detail := string(mustJSON(e.Detail))
-		for _, leak := range []string{"key_log", "TestKeyLog", "proofs/key_log", "Every key turn"} {
+		for _, leak := range []string{"key_log", "key_lg", "TestKeyLog", "proofs/key_log", "Every key turn"} {
 			if strings.Contains(detail, leak) {
 				t.Fatalf("the detail holds %q: %s", leak, detail)
 			}
@@ -491,9 +493,20 @@ func dryRunLines(t *testing.T) string {
 	)
 }
 
+// withoutDryRunShare runs a test's prover sessions with no time kept for
+// the dry run: the test activity's 10 minutes hold no 50 to keep.
+func withoutDryRunShare(t *testing.T) {
+	t.Helper()
+	keep := proverDryRun
+	proverDryRun = 0
+	t.Cleanup(func() { proverDryRun = keep })
+}
+
 // The prover's report session gets its guide and writes its role on its
-// lines; its filing is the proofs the dry run then runs on main.
+// lines; its filing is the proofs the dry run then runs on main. Its
+// summary is factoryd's words, never the model's last message.
 func TestRunReportOfTheProverHandsTheSessionItsGuideAndRole(t *testing.T) {
+	withoutDryRunShare(t)
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, _, store := newProverRunner(t, proverTask(), kube, objects)
@@ -513,8 +526,9 @@ func TestRunReportOfTheProverHandsTheSessionItsGuideAndRole(t *testing.T) {
 	if got, err := r.FileProofs(ctx, "t-prove", validFiling()); err != nil || len(got.Findings) != 0 {
 		t.Fatalf("the filing = %+v, %v", got, err)
 	}
-	session := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": "filed four proofs"}}) +
-		"\n" + resultLine(true, "filed four proofs")
+	const last = "filed four proofs: key_log in proofs/key_log, package key_log"
+	session := envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": last}}) +
+		"\n" + resultLine(true, last)
 	scriptReproPods(kube, session, dryRunLines(t))
 	if err := <-done; err != nil {
 		t.Fatalf("RunReport: %v", err)
@@ -530,11 +544,16 @@ func TestRunReportOfTheProverHandsTheSessionItsGuideAndRole(t *testing.T) {
 			t.Errorf("%s role = %v, want prover", step, role)
 		}
 	}
-	if got, _, _ := store.Task(ctx, "t-prove"); got.AgentSummary != "filed four proofs" {
-		t.Fatalf("AgentSummary = %q", got.AgentSummary)
+	const summary = "filed 4 proofs, filing 1"
+	if got, _, _ := store.Task(ctx, "t-prove"); got.AgentSummary != summary {
+		t.Fatalf("AgentSummary = %q, want %q", got.AgentSummary, summary)
 	}
-	if b, _ := objects.Get(ctx, "sessions/t-prove/timeline.jsonl"); strings.Contains(string(b), `"step":"report"`) {
-		t.Fatalf("the prover's timeline holds a report line: %s", b)
+	if got := timelineStep(t, objects, "t-prove", "session_end")["summary"]; got != summary {
+		t.Fatalf("session_end summary = %v, want %q", got, summary)
+	}
+	b, _ := objects.Get(ctx, "sessions/t-prove/timeline.jsonl")
+	if strings.Contains(string(b), `"step":"report"`) || strings.Contains(string(b), "key_log") || strings.Contains(string(b), "four proofs") {
+		t.Fatalf("the prover's timeline holds a report line or the model's words: %s", b)
 	}
 	if n := len(planEvents(store, EventProofsStored)); n != 1 {
 		t.Fatalf("proofs_stored events = %d, want 1", n)
@@ -549,7 +568,7 @@ func TestRunReportOfTheProverDryRunsTheFilingOnMain(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	task := proverTask()
-	task.AgentSummary = "filed four proofs"
+	task.AgentSummary = "filed 4 proofs, filing 1"
 	r, hub, store := newProverRunner(t, task, kube, objects)
 	hub.mainHead = "m1"
 	worker := proofsWorker(t, r)
@@ -624,18 +643,85 @@ func TestRunReportOfTheProverKeepsAStoreWhoseEventDidNotLand(t *testing.T) {
 	}
 }
 
+// A prover that filed nothing fails in factoryd's words; one whose run
+// has too little time left for a session once the dry run's share is
+// kept, and no filing, fails before any pod, naming the times.
 func TestRunReportOfTheProverWithoutAFilingFails(t *testing.T) {
 	kube := newFakeKube()
 	task := proverTask()
-	task.AgentSummary = "I could not write the tests"
+	task.AgentSummary = "the prover filed no proofs"
 	r, _, store := newProverRunner(t, task, kube, &fakeObjectStore{})
 	seedProver(t, store, proverPlan(), keyLog())
 	_, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small")
-	if err == nil || !isTerminal(err) || !strings.Contains(err.Error(), "the prover filed no proofs: I could not write the tests") {
-		t.Fatalf("err = %v, want the terminal error with the prover's words", err)
+	if err == nil || !isTerminal(err) || errMessage(err) != "the prover filed no proofs" {
+		t.Fatalf("err = %v, want the terminal error in factoryd's words", err)
+	}
+	fresh := proverTask()
+	fresh.ID = "t-prove-2"
+	if err := store.CreateTask(context.Background(), fresh); err != nil {
+		t.Fatal(err)
+	}
+	_, err = execActivity(t, r, ActivityRunReport, "t-prove-2", "factory/small")
+	if err == nil || !isTerminal(err) || !strings.HasPrefix(errMessage(err), "the prover's run has 0s left once the dry run's 50m0s are kept, under the 10m0s a session needs") {
+		t.Fatalf("err = %v, want the terminal error that names the times", err)
 	}
 	if len(kube.podOrder) != 0 {
 		t.Fatalf("pods = %d, want none", len(kube.podOrder))
+	}
+}
+
+// A retry with too little time left for a session and a filing that
+// stands goes to the dry run at once, its summary factoryd's.
+func TestRunReportOfTheProverWithNoTimeLeftDryRunsWhatStands(t *testing.T) {
+	kube := newFakeKube()
+	r, _, store := newProverRunner(t, proverTask(), kube, &fakeObjectStore{})
+	proofsWorker(t, r)
+	f := validFiling()
+	rows := make([]PlanProof, 0, len(f))
+	for i, e := range f[:3] {
+		rows = append(rows, PlanProof{Idx: i + 1, Round: 1, ID: e.Criterion, Origin: ProofOriginCriterion, Criterion: e.Criterion, State: ProofFiled,
+			Path: e.Path, Suite: e.Suite, Name: e.Name, Code: e.Code, Artifact: e.Artifact})
+	}
+	hold := keyLog()
+	hold.State, hold.Path, hold.Suite, hold.Name, hold.Code = ProofFiled, f[3].Path, f[3].Suite, f[3].Name, f[3].Code
+	seedProver(t, store, proverPlan(), append(rows, hold)...)
+	if _, err := store.Record(context.Background(), Event{TaskID: "t-plan", Kind: EventProofsFiled,
+		Detail: map[string]any{"prover": "t-prove", "filing": 2, "refusals": []string{}}}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small")
+		done <- err
+	}()
+	scriptReproPods(kube, dryRunLines(t))
+	if err := <-done; err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	if len(kube.podOrder) != 1 || podEnv(kube.podAt(0))["MODE"] != "proofs" {
+		t.Fatalf("pods = %d, want the proofs pod alone", len(kube.podOrder))
+	}
+	if got, _, _ := store.Task(context.Background(), "t-prove"); got.AgentSummary != "filed 4 proofs, filing 2" {
+		t.Fatalf("AgentSummary = %q", got.AgentSummary)
+	}
+	if n := len(planEvents(store, EventProofsStored)); n != 1 {
+		t.Fatalf("proofs_stored events = %d, want 1", n)
+	}
+}
+
+// A session's deadline keeps the reserve before the activity's: a retry
+// 30 minutes into the prover's 92-minute run gets 10 minutes, not 40, so
+// the dry run's 50 stand.
+func TestReportDeadlineKeepsTheReserve(t *testing.T) {
+	now := time.Now()
+	for _, tc := range []struct {
+		activity time.Time
+		want     time.Duration
+	}{{now.Add(92 * time.Minute), 40 * time.Minute}, {now.Add(62 * time.Minute), 10 * time.Minute}} {
+		got := reportDeadline(tc.activity, 40*time.Minute, 50*time.Minute)
+		if d := got.Sub(now) - tc.want; d < -time.Second || d > time.Second {
+			t.Errorf("deadline for an activity ending in %s = %s from now, want %s", tc.activity.Sub(now), got.Sub(now), tc.want)
+		}
 	}
 }
 
@@ -717,5 +803,116 @@ func TestProverPassLeavesAPlanItCannotServe(t *testing.T) {
 	}
 	if why := proverUnfit(short, "sf/r"); !strings.Contains(why, "raise the class's agent_time to at least 1h0m0s") {
 		t.Fatalf("unfit = %q", why)
+	}
+}
+
+// Three refused filings are the limit too, and the refusal says none
+// passed.
+func TestFileProofsCapNamesNoFilingThatPassed(t *testing.T) {
+	r, _, store := newProverRunner(t, proverTask(), newFakeKube(), &fakeObjectStore{})
+	seedProver(t, store, proverPlan(), keyLog())
+	for range 3 {
+		if got, err := r.FileProofs(context.Background(), "t-prove", nil); err != nil || len(got.Findings) == 0 {
+			t.Fatalf("a refused filing = %+v, %v", got, err)
+		}
+	}
+	got, err := r.FileProofs(context.Background(), "t-prove", validFiling())
+	if want := (ProofsFiled{Filing: 3, Findings: []string{"file_proofs: three filings are this session's limit, and none of them passed: end the session"}}); err != nil ||
+		!reflect.DeepEqual(got, want) {
+		t.Fatalf("the fourth = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+// A hold-out whose id a later criterion holds is its entry id in the
+// prover's brief and filing: the criterion's test never stands for it.
+func TestProofsDueNamesAHoldoutACriterionShadowsByItsEntry(t *testing.T) {
+	r, _, store := newProverRunner(t, proverTask(), newFakeKube(), &fakeObjectStore{})
+	p := Plan{Summary: "s", Criteria: []PlanCriterion{{ID: "key_log", Kind: CriterionTest, Claim: "A key turn is logged", Inputs: "one turn", Expected: "one row"}}}
+	seedProver(t, store, p, keyLog())
+	rows, _ := store.PlanProofs(context.Background(), "t-plan")
+	if due := proofsDue(p, rows); !reflect.DeepEqual(due, []proofDue{{"key_log", CriterionTest, 0}, {"holdout-4", CriterionTest, 4}}) {
+		t.Fatalf("due = %+v", due)
+	}
+	if g := proverGuide(p, rows, nil); !strings.Contains(g, "- holdout-4 (hold-out, kind test): Every key turn lands in the log.") {
+		t.Fatalf("guide = %s", g)
+	}
+	if got, _ := r.FileProofs(context.Background(), "t-prove", []FiledProof{filedEntry("key_log", "TestKeyLog")}); !slices.Equal(got.Findings, []string{"file_proofs: no proof for holdout-4"}) {
+		t.Fatalf("the criterion's test alone = %+v, want the hold-out missing", got)
+	}
+	hold := filedEntry("holdout-4", "TestHoldout4")
+	hold.Path, hold.Suite = "proofs/holdout4/holdout4_test.go", "./proofs/holdout4"
+	if got, _ := r.FileProofs(context.Background(), "t-prove", []FiledProof{filedEntry("key_log", "TestKeyLog"), hold}); len(got.Findings) != 0 {
+		t.Fatalf("both = %+v", got)
+	}
+	rows, _ = store.PlanProofs(context.Background(), "t-plan")
+	i := slices.IndexFunc(rows, func(pp PlanProof) bool { return pp.Idx == 4 })
+	if i < 0 || rows[i].ID != "key_log" || rows[i].Name != "TestHoldout4" || rows[i].State != ProofFiled {
+		t.Fatalf("rows = %+v, want the hold-out's own test on idx 4", rows)
+	}
+}
+
+// A closed plan takes no filing and no store: the prover is told why, and
+// the store leaves a line that says so, with no pod.
+func TestProverStopsAtAClosedPlan(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	task := proverTask()
+	task.AgentSummary = "filed 1 proof, filing 1"
+	r, _, store := newProverRunner(t, task, kube, objects)
+	seedProver(t, store, Plan{Summary: "s", Criteria: proverPlan().Criteria[:1]}, PlanProof{Idx: 1, Round: 1, ID: "size_bound", Origin: ProofOriginCriterion,
+		Criterion: "size_bound", State: ProofFiled, Path: "proofs/size_bound/size_bound_test.go", Suite: "./proofs/size_bound", Name: "TestSizeBound", Code: "package size_bound"})
+	for name, close := range map[string]func(){
+		"plan_closed":      func() { store.closed["t-plan"] = time.Now() },
+		"a person's close": func() { plan := store.tasks["t-plan"]; plan.Status = "closed"; store.tasks["t-plan"] = plan },
+	} {
+		delete(store.closed, "t-plan")
+		plan := store.tasks["t-plan"]
+		plan.Status = "done"
+		store.tasks["t-plan"] = plan
+		close()
+		if got, err := r.FileProofs(ctx, "t-prove", []FiledProof{filedEntry("size_bound", "TestSizeBound")}); err != nil ||
+			!slices.Equal(got.Findings, []string{"file_proofs: plan t-plan is closed, so no proof of it is filed: end the session"}) {
+			t.Fatalf("%s: the filing = %+v, %v", name, got, err)
+		}
+		if _, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small"); err != nil {
+			t.Fatalf("%s: RunReport: %v", name, err)
+		}
+		if line := timelineStep(t, objects, "t-prove", "proofs_not_stored"); line["reason"] != "plan t-plan is closed" {
+			t.Fatalf("%s: line = %v", name, line)
+		}
+	}
+	if len(kube.podOrder) != 0 || len(planEvents(store, EventProofsFiled)) != 0 || len(planEvents(store, EventProofsStored)) != 0 {
+		t.Fatalf("pods %d, events %+v; want none", len(kube.podOrder), store.events)
+	}
+	if rows, _ := store.PlanProofs(ctx, "t-plan"); rows[0].State != ProofFiled {
+		t.Fatalf("rows = %+v, want the filing as it was", rows)
+	}
+}
+
+// The prover is a report task no work slot bounds: it starts through the
+// work bound with every slot of its project taken, and it files no issue.
+func TestProverPassStartsTheProverPastTheWorkBound(t *testing.T) {
+	ctx := context.Background()
+	r, _, store := newProverRunner(t, planTask(), newFakeKube(), &fakeObjectStore{})
+	p := proverPlan()
+	p.Cards = p.Cards[1:]
+	seedProver(t, store, p)
+	seedProverCards(t, store, "", "sizes", "integration")
+	if err := store.CreateTask(ctx, Task{ID: "t-busy", Status: "running", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: policy.TrackDirect,
+		IssueNumber: 9}); err != nil {
+		t.Fatal(err)
+	}
+	rec := &recordingWorkflows{}
+	r.cfg.Workflows = BoundedWorkflows{Workflows: rec, Store: store, Policy: func() policy.Tree {
+		return policy.Tree{Projects: map[string]policy.ProjectConfig{"r": {Repository: "sf/r", WorkInProgress: 1}}}
+	}}
+	r.proverPass(ctx)
+	got, ok, _ := store.ReportOf(ctx, "t-plan", SourceProver)
+	if !ok || got.IssueNumber != 0 || !slices.Equal(rec.starts, []string{got.ID}) {
+		t.Fatalf("prover %+v (%v), starts %v; want it started with no issue", got, ok, rec.starts)
+	}
+	if n, _ := store.CountAdmitted(ctx, "sf/r"); n != 1 {
+		t.Fatalf("admitted = %d, want the running card's slot alone", n)
 	}
 }

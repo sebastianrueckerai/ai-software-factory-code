@@ -3483,12 +3483,14 @@ func TestPGStoreProverRows(t *testing.T) {
 	if err := s.FilePlanProofs(ctx, "t-plan", filing("package a")); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.FilePlanProofs(ctx, "t-plan", filing("package a // v2")); err != nil {
+	again := filing("package a // v2")
+	again[0].Round, again[0].Claim, again[0].Inputs, again[0].Expected = 2, "c2", "i2", "e2"
+	if err := s.FilePlanProofs(ctx, "t-plan", again); err != nil {
 		t.Fatal(err)
 	}
 	hold := PlanProof{Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log", Inputs: "three turns of key 7",
 		Expected: "three log rows", State: ProofFiled, Path: "proofs/key_log/key_log_test.go", Suite: "./proofs/key_log", Name: "TestKeyLog", Code: "package key_log"}
-	crit := filing("package a // v2")[0]
+	crit := again[0]
 	crit.Idx = 3
 	if rows, err := s.PlanProofs(ctx, "t-plan"); err != nil || !slices.Equal(rows, []PlanProof{hold, crit}) {
 		t.Fatalf("rows = %+v, %v; want\n%+v", rows, err, []PlanProof{hold, crit})
@@ -4504,9 +4506,12 @@ func (s *fakeStore) FilePlanProofs(ctx context.Context, id string, filed []PlanP
 				pp.Idx = max(pp.Idx, h.Idx+1)
 			}
 			rows = append(rows, pp)
-		default:
+		case pp.Origin == ProofOriginHoldout:
 			h := &rows[i]
 			h.State, h.Path, h.Suite, h.Name, h.Code, h.Artifact = ProofFiled, pp.Path, pp.Suite, pp.Name, pp.Code, pp.Artifact
+		default:
+			pp.Idx, pp.Flag = rows[i].Idx, rows[i].Flag
+			rows[i] = pp
 		}
 	}
 	if s.proofs == nil {

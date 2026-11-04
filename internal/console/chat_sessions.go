@@ -155,11 +155,15 @@ func startedBecause(all []sessionRef, s sessionRef, steps []map[string]any, even
 }
 
 // sessions are card in's timeline and sessions, refused when in.N
-// numbers none of them.
+// numbers none of them, and for a prover, whose transcripts hold its
+// tests.
 func (t *turn) sessions(in toolInput) (factoryd.Task, []map[string]any, []sessionRef, error) {
 	k, err := t.card(in)
 	if err != nil {
 		return k, nil, nil, err
+	}
+	if k.Source == factoryd.SourceProver {
+		return k, nil, nil, refuse(http.StatusForbidden, fmt.Sprintf("Task %s is plan %s's prover: its sessions hold the plan's blind proofs, which no read outside the prover shows.", k.ID, k.Parent))
 	}
 	steps, err := t.c.readTimeline(t.r.Context(), k.ID)
 	if err != nil {

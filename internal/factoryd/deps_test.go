@@ -797,7 +797,8 @@ func TestRetryRefusedTwice(t *testing.T) {
 	plan := store.tasks["t-plan"]
 	plan.Status = "failed"
 	store.tasks["t-plan"] = plan
-	for _, c := range []Task{{ID: "t-size", Source: SourceSizing, Parent: "t-b"}, {ID: "t-fix", Source: SourceMainFix, IssueNumber: 7}} {
+	for _, c := range []Task{{ID: "t-size", Source: SourceSizing, Parent: "t-b"}, {ID: "t-prove", Source: SourceProver, Parent: "t-plan"},
+		{ID: "t-fix", Source: SourceMainFix, IssueNumber: 7}} {
 		c.Kind, c.Status, c.Track, c.Repository = "agent", "failed", policy.TrackDirect, "linkshort/linkshort"
 		if err := store.CreateTask(ctx, c); err != nil {
 			t.Fatal(err)
@@ -806,11 +807,12 @@ func TestRetryRefusedTwice(t *testing.T) {
 	fj.calls = nil
 	tasks := len(store.tasks)
 	for id, want := range map[string]string{
-		"t-a":    "Card #5 was already retried.",
-		"t-b":    "Card #6 did not fail: it is waiting-deps.",
-		"t-plan": "Card #1 is a plan: ask for changes to it, or replan it.",
-		"t-size": "Task t-size is the sizing report of task t-b, not a work card: retry that card if it failed.",
-		"t-fix":  "Card #7 is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.",
+		"t-a":     "Card #5 was already retried.",
+		"t-b":     "Card #6 did not fail: it is waiting-deps.",
+		"t-plan":  "Card #1 is a plan: ask for changes to it, or replan it.",
+		"t-size":  "Task t-size is the sizing report of task t-b, not a work card: retry that card if it failed.",
+		"t-prove": "Task t-prove is the prover report of task t-plan, not a work card: retry that card if it failed.",
+		"t-fix":   "Card #7 is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.",
 	} {
 		_, err := r.RetryCard(ctx, id, "alice")
 		var no ErrNoRetry

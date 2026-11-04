@@ -82,9 +82,10 @@ const (
 	EventPoolChanged = "pool_changed"
 	// EventProofsFiled records one file_proofs call of a plan's prover, on
 	// the plan task: detail {"prover", "filing", "proofs": [{"criterion",
-	// "path", "suite", "name", "outcome"}], "refusals"}; a hold-out's entry
-	// is {"criterion": "holdout-<idx>", "outcome"} alone, and a refusal
-	// names it so. Never a test's code.
+	// "path", "suite", "name", "outcome"}], "refusals"}, the outcome red,
+	// green, unrunnable or invalid; a hold-out's entry is {"criterion":
+	// "holdout-<idx>", "outcome"} alone, and a refusal names it so; an entry
+	// that names no criterion is {"outcome"} alone. Never a test's code.
 	EventProofsFiled = "proofs_filed"
 	// EventProofsStored records the dry run of the last filing on main and
 	// the rows it stored, on the plan task: detail {"prover", "commit",

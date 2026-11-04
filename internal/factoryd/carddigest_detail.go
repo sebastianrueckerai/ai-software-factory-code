@@ -52,6 +52,9 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead st
 		filedDetail(&b, s.Actor, rows.task, d.Head, rows.deps)
 	case s.Kind == "criteria":
 		criteriaDetail(&b, s, rows.verdicts)
+	case s.Kind == "session" && rows.task.Source == SourceProver:
+		// a prover's transcript holds its tests: no read points at it
+		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At, func(string, int) string { return "" })
 	case s.Kind == "session":
 		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At, transcript)
 	case s.Kind == "ask":

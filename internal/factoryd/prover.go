@@ -7,10 +7,14 @@ import (
 	"log"
 	"net/http"
 	"path"
+	"reflect"
 	"regexp"
 	"slices"
 	"strconv"
 	"strings"
+	"time"
+
+	"go.temporal.io/sdk/activity"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -29,10 +33,13 @@ import (
 // and the runner's memory alone.
 
 const (
-	proverDryRun = reproActivityTimeout // the dry run's share of the prover's agent time
 	maxProofCode = 16 << 10
 	maxFilings   = 3
 )
+
+// proverDryRun is the dry run's share of the prover's agent time; a var
+// for tests, whose activities end after 10 minutes.
+var proverDryRun = reproActivityTimeout
 
 // proofFile is a test file name the project's tools run.
 var proofFile = regexp.MustCompile(`(_test\.go|\.(test|spec)\.(ts|tsx|js|mjs))$`)
@@ -84,7 +91,8 @@ func (d proofDue) logged() string {
 }
 
 // proofsDue: p's criteria of kind test, judgement and human in plan order,
-// then the hold-out rows okayed, filed, stored or opened, in idx order.
+// then the hold-out rows okayed, filed, stored or opened, in idx order,
+// each by its id in the prover's brief (briefID).
 func proofsDue(p Plan, rows []PlanProof) []proofDue {
 	var due []proofDue
 	for _, c := range p.Criteria {
@@ -94,10 +102,20 @@ func proofsDue(p Plan, rows []PlanProof) []proofDue {
 	}
 	for _, pp := range rows {
 		if pp.Origin == ProofOriginHoldout && slices.Contains([]string{ProofOkayed, ProofFiled, ProofStored, ProofOpened}, pp.State) {
-			due = append(due, proofDue{id: pp.ID, kind: CriterionTest, holdout: pp.Idx})
+			due = append(due, proofDue{id: briefID(p, pp), kind: CriterionTest, holdout: pp.Idx})
 		}
 	}
 	return due
+}
+
+// briefID is hold-out h's id in the prover's brief and filing: its own,
+// or its entry id once a criterion of p holds the same, since the planner,
+// blind to the hold-outs, may give a later criterion that id.
+func briefID(p Plan, h PlanProof) string {
+	if slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool { return c.ID == h.ID }) {
+		return holdoutEntry(h.Idx)
+	}
+	return h.ID
 }
 
 // proofFinding is one refusal of a filing: text the prover reads, and
@@ -145,8 +163,8 @@ func checkProofs(due []proofDue, proofs []FiledProof) []proofFinding {
 	for _, e := range proofs {
 		d, ok := owed[e.Criterion]
 		if !ok {
-			text := fmt.Sprintf("file_proofs: %s is no criterion or hold-out of this plan", textutil.Truncate(e.Criterion, 64))
-			out = append(out, proofFinding{text, text})
+			out = append(out, proofFinding{fmt.Sprintf("file_proofs: %s is no criterion or hold-out of this plan", textutil.Truncate(e.Criterion, 64)),
+				"file_proofs: an entry names no criterion or hold-out of this plan"})
 			continue
 		}
 		if filed[d.id] {
@@ -266,6 +284,12 @@ func (r *Runner) FileProofs(ctx context.Context, taskID string, proofs []FiledPr
 	case t.Status != "running":
 		return ProofsFiled{Findings: []string{"file_proofs: the task is " + t.Status + ", not running"}}, nil
 	}
+	if ended, err := r.planEnded(ctx, t.Parent); err != nil || ended != "" {
+		if ended != "" {
+			return ProofsFiled{Findings: []string{"file_proofs: " + ended + ", so no proof of it is filed: end the session"}}, err
+		}
+		return ProofsFiled{}, err
+	}
 	p, revision, err := planOfStore(ctx, r.store, t.Parent, t.ID)
 	if err != nil {
 		return ProofsFiled{}, err
@@ -274,13 +298,16 @@ func (r *Runner) FileProofs(ctx context.Context, taskID string, proofs []FiledPr
 	if err != nil {
 		return ProofsFiled{}, err
 	}
-	filings, err := r.filings(ctx, t)
+	filings, passed, err := r.filings(ctx, t)
 	if err != nil {
 		return ProofsFiled{}, err
 	}
 	if filings >= maxFilings {
-		return ProofsFiled{Filing: filings, Findings: []string{
-			"file_proofs: three filings are this session's limit, and the last one that passed stands: end the session"}}, nil
+		limit := "file_proofs: three filings are this session's limit, and none of them passed: end the session"
+		if passed > 0 {
+			limit = fmt.Sprintf("file_proofs: three filings are this session's limit, and filing %d, the last one that passed, stands: end the session", passed)
+		}
+		return ProofsFiled{Filing: filings, Findings: []string{limit}}, nil
 	}
 	due := proofsDue(p, rows)
 	found := checkProofs(due, proofs)
@@ -303,19 +330,99 @@ func (r *Runner) FileProofs(ctx context.Context, taskID string, proofs []FiledPr
 const proverEvents = 1000
 
 // filings is how many file_proofs calls of prover t its plan's
-// proofs_filed events count.
-func (r *Runner) filings(ctx context.Context, t Task) (int, error) {
+// proofs_filed events count, and passed the number of the last one that
+// passed, 0 for none.
+func (r *Runner) filings(ctx context.Context, t Task) (n, passed int, err error) {
 	events, err := r.store.TaskEvents(ctx, t.Parent, proverEvents)
 	if err != nil {
-		return 0, err
+		return 0, 0, err
+	}
+	for _, e := range events {
+		if e.Kind != EventProofsFiled || e.Detail["prover"] != t.ID {
+			continue
+		}
+		n++
+		if refusals := reflect.ValueOf(e.Detail["refusals"]); refusals.Kind() == reflect.Slice && refusals.Len() == 0 {
+			passed = max(passed, detailNumber(e.Detail["filing"]))
+		}
+	}
+	return n, passed, nil
+}
+
+// detailNumber is an event detail's number: an int as recorded, a
+// float64 as read back from the row's JSON.
+func detailNumber(v any) int {
+	switch n := v.(type) {
+	case int:
+		return n
+	case float64:
+		return int(n)
+	}
+	return 0
+}
+
+// planEnded is why plan id takes no proof any more, "" while it does: its
+// close (plan_closed) or a person's close of it.
+func (r *Runner) planEnded(ctx context.Context, id string) (string, error) {
+	plan, _, err := r.task(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if _, closed, err := r.store.PlanClosed(ctx, id); err != nil || closed || plan.Status == "closed" {
+		if closed || plan.Status == "closed" {
+			return "plan " + id + " is closed", err
+		}
+		return "", err
+	}
+	return "", nil
+}
+
+// proverSummary is prover t's summary in factoryd's own words, never the
+// model's: how many proofs its last accepted filing holds and that
+// filing's number, or that it filed none.
+func (r *Runner) proverSummary(ctx context.Context, t Task) (string, error) {
+	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return "", err
 	}
 	n := 0
-	for _, e := range events {
-		if e.Kind == EventProofsFiled && e.Detail["prover"] == t.ID {
+	for _, pp := range rows {
+		if pp.State == ProofFiled {
 			n++
 		}
 	}
-	return n, nil
+	if n == 0 {
+		return "the prover filed no proofs", nil
+	}
+	_, passed, err := r.filings(ctx, t)
+	if err != nil {
+		return "", err
+	}
+	summary := "filed " + textutil.Plural(n, "proof", "proofs")
+	if passed > 0 {
+		summary += fmt.Sprintf(", filing %d", passed)
+	}
+	return summary, nil
+}
+
+// proverSessionDue tells whether prover t's run still has time for a
+// session once the dry run's share is kept: under minReportTime left, a
+// filing that stands goes to the dry run without a session, and none is a
+// terminal error that names the times.
+func (r *Runner) proverSessionDue(ctx context.Context, t Task) (bool, error) {
+	left := time.Until(activity.GetInfo(ctx).Deadline) - sessionGrace - proverDryRun
+	if proverDryRun == 0 || left >= minReportTime {
+		return true, nil
+	}
+	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return false, err
+	}
+	if slices.ContainsFunc(rows, func(pp PlanProof) bool { return pp.State == ProofFiled }) {
+		return false, nil
+	}
+	return false, terminalError("the prover's run has %s left once the dry run's %s are kept, under the %s a session needs, and no filing stands",
+		max(left, 0).Round(time.Second), proverDryRun, minReportTime)
 }
 
 // filedRows are an accepted filing's rows in due order: a criterion's
@@ -345,24 +452,29 @@ func filedRows(p Plan, revision int, due []proofDue, proofs []FiledProof) []Plan
 
 // filingDetail is a filing's proofs_filed detail: each entry of a due
 // criterion with its test's path, suite, name and the prover's outcome on
-// main; a hold-out's, an entry that is no criterion of the plan, and a
+// main, one of its three words or invalid; a hold-out's, and a
 // criterion's that shares a hold-out's path, suite or name, by its id and
-// outcome alone, a hold-out by its entry id; the refusals as the timeline
-// names them. Never a test's code.
+// outcome alone, a hold-out by its entry id; an entry that names no
+// criterion by its outcome alone; the refusals as the timeline names
+// them. Never a test's code, and no word of the prover's but these.
 func filingDetail(prover string, filing int, due []proofDue, proofs []FiledProof, found []proofFinding) map[string]any {
 	short := func(s string) string { return textutil.Truncate(s, 200) }
 	shares := holdoutWords(due, proofs)
 	entries := make([]map[string]any, 0, len(proofs))
 	for _, e := range proofs {
+		outcome := "invalid"
+		if slices.Contains([]string{onMainRed, onMainGreen, onMainUnrunnable}, e.Outcome) {
+			outcome = e.Outcome
+		}
 		i := slices.IndexFunc(due, func(d proofDue) bool { return d.id == e.Criterion })
 		switch {
-		case i >= 0 && due[i].holdout > 0:
-			entries = append(entries, map[string]any{"criterion": due[i].logged(), "outcome": short(e.Outcome)})
-		case i < 0 || shares(e):
-			entries = append(entries, map[string]any{"criterion": short(e.Criterion), "outcome": short(e.Outcome)})
+		case i < 0:
+			entries = append(entries, map[string]any{"outcome": outcome})
+		case due[i].holdout > 0 || shares(e):
+			entries = append(entries, map[string]any{"criterion": due[i].logged(), "outcome": outcome})
 		default:
 			entries = append(entries, map[string]any{"criterion": e.Criterion, "path": short(e.Path), "suite": short(e.Suite),
-				"name": short(e.Name), "outcome": short(e.Outcome)})
+				"name": short(e.Name), "outcome": outcome})
 		}
 	}
 	refusals := make([]string, 0, len(found))
@@ -448,7 +560,7 @@ func proverGuide(p Plan, holdouts []PlanProof, foundation *PlanCard) string {
 		}
 	}
 	for _, h := range holdouts {
-		fmt.Fprintf(&b, "- %s (hold-out, kind test): %s Inputs: %s Expected: %s\n", h.ID, sentence(h.Claim), sentence(h.Inputs), sentence(h.Expected))
+		fmt.Fprintf(&b, "- %s (hold-out, kind test): %s Inputs: %s Expected: %s\n", briefID(p, h), sentence(h.Claim), sentence(h.Inputs), sentence(h.Expected))
 	}
 	b.WriteString("\n" + proverSurface + "\n")
 	if foundation != nil {
@@ -487,10 +599,17 @@ func (r *Runner) proverBrief(ctx context.Context, plan Task) (string, error) {
 // The pod fetches main's branch at its head and checks out t.SHA, the
 // commit the prover's session read. The rows say whether the store ran: a
 // plan with stored rows and none filed stores nothing again, whether or
-// not its event landed; no row filed or stored is a terminal error that
-// quotes the prover's last message. A pod that cannot start or ends early
+// not its event landed; no row filed or stored is a terminal error in
+// factoryd's words. A plan closed meanwhile stores nothing, its line on
+// the prover's timeline saying so. A pod that cannot start or ends early
 // returns its error, and the activity runs again.
-func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task, last string) error {
+func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) error {
+	if ended, err := r.planEnded(ctx, plan.ID); err != nil || ended != "" {
+		if ended != "" {
+			r.record(ctx, t.ID, "proofs_not_stored", map[string]any{"reason": ended})
+		}
+		return err
+	}
 	rows, err := r.store.PlanProofs(ctx, plan.ID)
 	if err != nil {
 		return err
@@ -509,7 +628,7 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task, 
 	case len(filed) == 0 && stored:
 		return nil
 	case len(filed) == 0:
-		return terminalError("the prover filed no proofs: %s", last)
+		return terminalError("the prover filed no proofs")
 	}
 	defer beatUntilDone(ctx, "prover")()
 	p, _, err := planOfStore(ctx, r.store, plan.ID, t.ID)
@@ -626,6 +745,9 @@ func (r *Runner) proverPass(ctx context.Context) {
 // proverDue tells whether plan owes proofs and its foundation card, when
 // it has one, has merged.
 func (r *Runner) proverDue(ctx context.Context, plan Task) (bool, error) {
+	if plan.Status == "closed" {
+		return false, nil
+	}
 	p, _, err := planOfStore(ctx, r.store, plan.ID, plan.ID)
 	if err != nil {
 		return false, err

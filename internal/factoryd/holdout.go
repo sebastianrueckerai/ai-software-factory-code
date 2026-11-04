@@ -403,8 +403,9 @@ func (s *PGStore) SweepPlanProofs(ctx context.Context, id string) error {
 
 // FilePlanProofs stores the prover's filing of plan id in one
 // transaction, every row it writes in state filed: a criterion's row in
-// place by its criterion, or inserted with the next idx; a hold-out's,
-// found by its idx, takes the test's path, suite, name, code and artifact.
+// place by its criterion, its round, claim, inputs and expected numbers
+// the filing's, or inserted with the next idx; a hold-out's, found by its
+// idx, takes the test's path, suite, name, code and artifact.
 func (s *PGStore) FilePlanProofs(ctx context.Context, id string, filed []PlanProof) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
@@ -424,7 +425,8 @@ func (s *PGStore) FilePlanProofs(ctx context.Context, id string, filed []PlanPro
 				state, path, suite, name, code, artifact)
 			VALUES ($1, (SELECT COALESCE(MAX(idx), 0) + 1 FROM plan_proofs WHERE task_id = $1), $2, $3, 'criterion', $3, $4, $5, $6,
 				'filed', $7, $8, $9, $10, $11)
-			ON CONFLICT (task_id, criterion) WHERE criterion <> '' DO UPDATE SET state = 'filed',
+			ON CONFLICT (task_id, criterion) WHERE criterion <> '' DO UPDATE SET state = 'filed', round = EXCLUDED.round,
+				claim = EXCLUDED.claim, inputs = EXCLUDED.inputs, expected = EXCLUDED.expected,
 				path = EXCLUDED.path, suite = EXCLUDED.suite, name = EXCLUDED.name, code = EXCLUDED.code, artifact = EXCLUDED.artifact`,
 			id, pp.Round, pp.Criterion, pp.Claim, pp.Inputs, pp.Expected, pp.Path, pp.Suite, pp.Name, pp.Code, pp.Artifact); err != nil {
 			return err

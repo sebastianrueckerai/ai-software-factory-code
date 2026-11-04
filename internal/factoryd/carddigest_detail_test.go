@@ -42,6 +42,20 @@ func TestCardStepReturnsASessionsStepsForASessionLine(t *testing.T) {
 	}
 }
 
+// A prover's session step points at no transcript: it holds the plan's
+// blind proofs.
+func TestCardStepPointsAtNoTranscriptOfAProver(t *testing.T) {
+	g := newDigestRig(func(t *Task) { t.Source, t.Parent, t.IssueNumber = SourceProver, "t-plan", 0 })
+	id := g.session(t, 1, 5, 1, "reported")
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if !strings.Contains(got, "session "+id+", 2 timeline lines:") || strings.Contains(got, "transcript:") {
+		t.Fatalf("CardStep =\n%s\nwant the session's lines and no transcript line", got)
+	}
+}
+
 func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 	ctx := context.Background()
 	g := newDigestRig(nil)

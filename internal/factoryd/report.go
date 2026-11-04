@@ -60,7 +60,9 @@ func openReport(ctx context.Context, store Store, workflows Workflows, budget po
 // the parent's issue. A retry after the session posts the kept report. A
 // prover's session ends in the dry run of its filing on main and the
 // store of its rows (storeProofs), which a retry after the session runs
-// alone.
+// alone, as does a retry with too little time left for a session and a
+// filing that stands. A prover's summary is factoryd's, never the model's
+// words.
 func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64) (ReportResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -76,7 +78,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 	text := t.AgentSummary
 	if text == "" {
 		began := time.Now()
-		guide, extra := r.reportGuide(), reportExtra{}
+		guide, extra, session := r.reportGuide(), reportExtra{}, true
 		switch t.Source {
 		case SourceSizing:
 			doc, err := r.pinned(ctx, pin)
@@ -85,31 +87,47 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 			}
 			guide = sizingGuide(sizeLines(doc.Risk.LargeLines))
 		case SourceProver:
-			if guide, err = r.proverBrief(ctx, parent); err != nil {
+			if session, err = r.proverSessionDue(ctx, t); err != nil {
 				return ReportResult{}, err
 			}
-			extra = reportExtra{role: "prover", reserve: proverDryRun}
+			if session {
+				if guide, err = r.proverBrief(ctx, parent); err != nil {
+					return ReportResult{}, err
+				}
+			}
+			extra = reportExtra{role: "prover", reserve: proverDryRun, summary: func() string {
+				if summary, err := r.proverSummary(ctx, t); err == nil {
+					return summary
+				}
+				return "the prover's session ended; its filing could not be read"
+			}}
 		}
-		end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil, extra)
-		if err != nil {
-			return ReportResult{}, err
+		if session {
+			end, err := r.reportSession(ctx, t, repo, model, parent.Standing(), false, pin, guide, nil, nil, extra)
+			if err != nil {
+				return ReportResult{}, err
+			}
+			if text = end.report; text == "" {
+				if end.pending != nil {
+					return ReportResult{NotStarted: end.why}, nil
+				}
+				if end.capped != nil {
+					return ReportResult{Capped: end.capped}, nil
+				}
+				if refused, err := r.providerRefusal(ctx, t.ID, began, end.why); err != nil || refused.Status != 0 {
+					return ReportResult{Refused: refused}, err
+				}
+				if t.Source != SourceProver {
+					return ReportResult{}, terminalError("the report session ended without a report: %s", end.why)
+				}
+			}
 		}
-		if text = end.report; text == "" {
-			if end.pending != nil {
-				return ReportResult{NotStarted: end.why}, nil
+		// the prover's answer is its filing, which outlives a session that
+		// ended without a last message
+		if t.Source == SourceProver {
+			if text, err = r.proverSummary(ctx, t); err != nil {
+				return ReportResult{}, err
 			}
-			if end.capped != nil {
-				return ReportResult{Capped: end.capped}, nil
-			}
-			if refused, err := r.providerRefusal(ctx, t.ID, began, end.why); err != nil || refused.Status != 0 {
-				return ReportResult{Refused: refused}, err
-			}
-			if t.Source != SourceProver {
-				return ReportResult{}, terminalError("the report session ended without a report: %s", end.why)
-			}
-			// the prover's answer is its filing, which outlives a session
-			// that ended without a last message
-			text = cmp.Or(end.why, "no last message")
 		}
 		text = textutil.Truncate(text, maxReport)
 		if err := r.store.SetAgentSummary(ctx, t.ID, text); err != nil {
@@ -117,7 +135,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 		}
 	}
 	if t.Source == SourceProver {
-		return ReportResult{}, r.storeProofs(ctx, t, repo, parent, text)
+		return ReportResult{}, r.storeProofs(ctx, t, repo, parent)
 	}
 	// the verdict and its reasons go to the card and the timeline only
 	r.record(ctx, t.ID, "report", map[string]any{"parent": parent.ID})
@@ -140,13 +158,15 @@ type reportEnd struct {
 
 // reportExtra is what a session gets beyond a report session's: a
 // replan's planner the fork's branches its clone fetches and the record
-// its brief carries, the prover its role on its timeline lines and the
-// time its activity keeps for the dry run after it.
+// its brief carries, the prover its role on its timeline lines, the time
+// its activity keeps for the dry run after it, and its session_end
+// summary in factoryd's words.
 type reportExtra struct {
 	branches []string
 	record   *carryState
 	role     string        // the session's role on its timeline lines; "" for none
-	reserve  time.Duration // what the activity keeps after the session, taken off its agent time
+	reserve  time.Duration // what the activity keeps after the session, taken off its agent time and its deadline
+	summary  func() string // the session_end summary in factoryd's words; nil keeps the agent's
 }
 
 // minReportTime is the least agent time a session keeps once its
@@ -164,6 +184,13 @@ func reportTime(agentTime, reserve time.Duration) (time.Duration, error) {
 			agentTime, left, reserve, reserve+minReportTime)
 	}
 	return agentTime - reserve, nil
+}
+
+// reportDeadline is a report session's deadline: its agent time from now,
+// cut to the activity's deadline less the reserve the work after the
+// session keeps, so a retry late in a run still leaves that work its time.
+func reportDeadline(activityDeadline time.Time, agentTime, reserve time.Duration) time.Time {
+	return sessionDeadline(activityDeadline.Add(-reserve), agentTime)
 }
 
 // reportSession runs one worker in report mode, with guide, findings, a
@@ -219,7 +246,7 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if s.cache, s.image, err = r.setupNamespace(ctx, &t, base); err != nil {
 		return reportEnd{}, err
 	}
-	deadline, startedAt := sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
+	deadline, startedAt := reportDeadline(activity.GetInfo(ctx).Deadline, s.agentTime, extra.reserve), time.Now()
 	began := rfc3339(startedAt)
 	line := func(detail map[string]any) map[string]any {
 		if extra.role != "" {
@@ -266,8 +293,12 @@ func (r *Runner) reportSession(ctx context.Context, t Task, repo Repo, model, st
 	if end.report == "" {
 		outcome = "no_report"
 	}
+	summary := textutil.Truncate(cmp.Or(end.report, end.why), 2000)
+	if extra.summary != nil {
+		summary = extra.summary()
+	}
 	r.record(ctx, t.ID, "session_end", line(map[string]any{"session": s.id, "model": s.model, "mode": "report",
-		"outcome": outcome, "summary": textutil.Truncate(cmp.Or(end.report, end.why), 2000), "started": began}))
+		"outcome": outcome, "summary": summary, "started": began}))
 	return end, nil
 }
 

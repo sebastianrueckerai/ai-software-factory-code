@@ -151,6 +151,23 @@ func TestChatSessionRead(t *testing.T) {
 	equal(t, "the steps of a session without a transcript", []any{status, msg}, []any{http.StatusNotFound, "no transcript for session 3"})
 }
 
+// A prover's sessions hold the plan's blind proofs: the session, steps
+// and search reads refuse its task and say why, and read no transcript.
+func TestChatSessionReadsRefuseAProver(t *testing.T) {
+	r, _ := newSessionsRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-prove", Kind: "agent", Status: "running",
+		Source: factoryd.SourceProver, Parent: "t-plan", Track: policy.TrackDirect, Repository: "sf/code"}})
+	r.tasks.mu.Unlock()
+	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(sessionsTimeline)
+	r.objects["sessions/t-prove/s1.jsonl"] = []byte(s1Transcript)
+	for _, tool := range []string{"session", "session_steps", "session_search"} {
+		status, msg := refused(t, r, tool, toolInput{TaskID: "t-prove", Query: "go test"})
+		equal(t, tool+" of a prover", []any{status, msg}, []any{http.StatusForbidden,
+			"Task t-prove is plan t-plan's prover: its sessions hold the plan's blind proofs, which no read outside the prover shows."})
+	}
+}
+
 // The steps read lists a session's transcript one line a step: its
 // number, the time since the session's start, its kind or tool, its
 // duration and a one-line summary, no content; the first 100 unless from
