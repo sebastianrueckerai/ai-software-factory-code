@@ -212,3 +212,20 @@ func TestBoardDigestNamesEachQueueReason(t *testing.T) {
 		})
 	}
 }
+
+func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	g.card("t1440", 1440, "done", "", 1, child("k1440"))
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(proverPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	g.store.proofs = map[string][]PlanProof{"t1344": {proofRow(1, "size_bound", ProofStored), keyLog()}}
+	b := g.digest(t)
+	if len(b.Plans) != 1 || b.Plans[0].ProofsStored != 1 || b.Plans[0].ProofsWanted != 4 {
+		t.Fatalf("Plans = %+v, want one plan with proofs 1 of 4", b.Plans)
+	}
+	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 1 of 4 stored\ncaps:\n"; !strings.Contains(b.Render(), want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+}

@@ -6,8 +6,10 @@ import (
 	"fmt"
 	"slices"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // sessionNoPushBound is how many sessions in a row may end without a push
@@ -59,8 +61,9 @@ func copiesBudget(t Task, events []Event) bool {
 }
 
 // digestFlags are the patterns the card's life shows, by name: one pass
-// over the steps, then the cases, the row and the dependencies.
-func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, budget float64) []DigestFlag {
+// over the steps, then the cases, the row, the dependencies and a plan's
+// proofs, whose foundation card merged at foundationMerged, zero for none.
+func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, budget float64, foundationMerged, now time.Time) []DigestFlag {
 	var flags []DigestFlag
 	add := func(name, detail string) { flags = append(flags, DigestFlag{name, detail}) }
 	confirmed := map[string]int{}
@@ -69,8 +72,17 @@ func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, bu
 	// session after it that ended without a push
 	granted, afterNoPush := false, ""
 	run, runFirst := 0, ""
+	stored := false
 	for _, s := range steps {
 		switch s.Kind {
+		case "proofs":
+			if s.Actor != FactoryDecider {
+				continue
+			}
+			stored = true
+			for _, id := range strings.Fields(s.state) {
+				add("prover_refused_thrice", id)
+			}
 		case "answer", "granted", "funded", "extended":
 			if granted && afterNoPush != "" {
 				add("grant_bought_nothing", afterNoPush)
@@ -140,6 +152,9 @@ func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, bu
 		if d.Status == "failed" {
 			add("dependency_failed", fmt.Sprintf("#%d", d.Issue))
 		}
+	}
+	if since := now.Sub(foundationMerged); !foundationMerged.IsZero() && !stored && since > time.Hour {
+		add("proofs_missing", textutil.Plural(int(since/time.Hour), "hour", "hours"))
 	}
 	if defaultKind(t.Kind) == "agent" && Cents(t.BudgetEUR) != Cents(budget) {
 		add("budget_moved_no_event", fmt.Sprintf("%.2f EUR not %.2f EUR", t.BudgetEUR, budget))

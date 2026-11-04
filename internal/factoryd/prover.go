@@ -775,15 +775,58 @@ func (r *Runner) proverDue(ctx context.Context, plan Task) (bool, error) {
 	if err != nil || len(proofsDue(p, rows)) == 0 {
 		return false, err
 	}
+	card, named, err := r.foundationCard(ctx, plan.ID, p)
+	return !named || card.MergeCommit != "", err
+}
+
+// foundationCard is plan id's first foundation card by p; named tells
+// whether p names one, and a card not filed yet is the zero Task.
+func (r *Runner) foundationCard(ctx context.Context, id string, p Plan) (card Task, named bool, err error) {
 	keys := cardsOf(p.Cards, RoleFoundation)
 	if len(keys) == 0 {
-		return true, nil
+		return Task{}, false, nil
 	}
-	cards, err := r.store.PlanCards(ctx, plan.ID)
+	cards, err := r.store.PlanCards(ctx, id)
+	if i := slices.IndexFunc(cards, func(c Task) bool { return c.PlanKey == keys[0] }); i >= 0 {
+		card = cards[i]
+	}
+	return card, true, err
+}
+
+// planProofCounts: wanted is len(proofsDue(p, rows)), stored the due
+// proofs whose row is stored or opened.
+func planProofCounts(p Plan, rows []PlanProof) (stored, wanted int) {
+	due := proofsDue(p, rows)
+	for _, d := range due {
+		if slices.ContainsFunc(rows, func(pp PlanProof) bool {
+			of := pp.Origin == ProofOriginCriterion && pp.Criterion == d.id
+			if d.holdout > 0 {
+				of = pp.Origin == ProofOriginHoldout && pp.Idx == d.holdout
+			}
+			return of && (pp.State == ProofStored || pp.State == ProofOpened)
+		}) {
+			stored++
+		}
+	}
+	return stored, len(due)
+}
+
+// planProofState is plan task id's newest revision and its proofs by it
+// (planProofCounts); a plan with no revision owes none.
+func (r *Runner) planProofState(ctx context.Context, id string) (p Plan, stored, wanted int, err error) {
+	rev, ok, err := r.store.PlanRevision(ctx, id, 0)
+	if err != nil || !ok {
+		return Plan{}, 0, 0, err
+	}
+	if err := json.Unmarshal(rev.Plan, &p); err != nil {
+		return Plan{}, 0, 0, fmt.Errorf("plan %s revision %d: %w", id, rev.Revision, err)
+	}
+	rows, err := r.store.PlanProofs(ctx, id)
 	if err != nil {
-		return false, err
+		return Plan{}, 0, 0, err
 	}
-	return slices.ContainsFunc(cards, func(c Task) bool { return c.PlanKey == keys[0] && c.MergeCommit != "" }), nil
+	stored, wanted = planProofCounts(p, rows)
+	return p, stored, wanted, nil
 }
 
 // proverUnfit is why v cannot run a prover on repository: no prover class

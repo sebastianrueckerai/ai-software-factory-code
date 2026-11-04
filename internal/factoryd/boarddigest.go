@@ -48,12 +48,13 @@ type BoardDigestQueued struct {
 // work_in_progress.
 type BoardDigestSlots struct{ Held, Bound int }
 
-// BoardDigestPlan is an open plan: its issue, its name and its cards by
-// status.
+// BoardDigestPlan is an open plan: its issue, its name, its cards by
+// status, and its proofs stored or opened of those its prover owes.
 type BoardDigestPlan struct {
-	Issue    int
-	Name     string
-	Children map[string]int
+	Issue                      int
+	Name                       string
+	Children                   map[string]int
+	ProofsStored, ProofsWanted int
 }
 
 // BoardDigestCap is a cap by name, the spend it counts and its size.
@@ -143,7 +144,7 @@ func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (B
 }
 
 // boardPlans are repository's open plans, each with its cards counted by
-// status.
+// status and its proofs by its newest revision.
 func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDigestPlan, error) {
 	plans, err := r.store.OpenPlans(ctx, repository)
 	if err != nil {
@@ -156,6 +157,9 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 			return nil, err
 		}
 		out[i] = BoardDigestPlan{Issue: int(p.IssueNumber), Name: p.PlanName, Children: map[string]int{}}
+		if _, out[i].ProofsStored, out[i].ProofsWanted, err = r.planProofState(ctx, p.ID); err != nil {
+			return nil, err
+		}
 		for _, c := range cards {
 			out[i].Children[c.Status]++
 		}
@@ -173,7 +177,8 @@ var planStatusOrder = func() []string {
 }()
 
 // Render is the board digest as text: a head line, one line per live
-// card, then the queue, the open plans and the caps.
+// card, then the queue, the open plans with the proofs they owe, and the
+// caps.
 func (b BoardDigest) Render() string {
 	var s strings.Builder
 	fmt.Fprintf(&s, "cards %d live · slots %d of %d · queue %d\n", len(b.Cards)+len(b.Queue), b.Slots.Held, b.Slots.Bound, len(b.Queue))
@@ -213,7 +218,11 @@ func (b BoardDigest) Render() string {
 				counts = append(counts, fmt.Sprintf("%s %d", status, n))
 			}
 		}
-		fmt.Fprintf(&s, "%s  %s\n", strings.TrimSpace(fmt.Sprintf("#%d %s", p.Issue, p.Name)), cmp.Or(strings.Join(counts, " · "), "no cards"))
+		line := cmp.Or(strings.Join(counts, " · "), "no cards")
+		if p.ProofsWanted > 0 {
+			line += fmt.Sprintf(" · proofs %d of %d stored", p.ProofsStored, p.ProofsWanted)
+		}
+		fmt.Fprintf(&s, "%s  %s\n", strings.TrimSpace(fmt.Sprintf("#%d %s", p.Issue, p.Name)), line)
 	}
 	caps := make([]string, len(b.Caps))
 	for i, c := range b.Caps {

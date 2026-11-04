@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"math"
 	"slices"
@@ -28,11 +29,13 @@ type CardDigest struct {
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
-// name, its money, whether it holds a work slot, and its status and gate
-// since Since.
+// name, a plan task's proofs (its rows stored or opened, and what its
+// prover owes), its money, whether it holds a work slot, and its status
+// and gate since Since.
 type DigestHead struct {
 	Issue, Plan                   int
 	PlanName                      string
+	ProofsStored, ProofsWanted    int
 	BudgetEUR, SpentEUR, HoldsEUR float64
 	SlotHeld                      bool
 	Status, Gate                  string
@@ -40,7 +43,8 @@ type DigestHead struct {
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
-// session it is the attempt and the model, for a check-in its moment.
+// session it is the attempt, or its role, and the model, for a check-in
+// its moment.
 // A session's Outcome leaves out its cost and calls, which Render adds.
 // Findings are the ids (findingID) of the findings a review, checks or an
 // audit raised, or a check-in confirmed. Count is how many identical steps
@@ -55,7 +59,8 @@ type DigestStep struct {
 	Ref                  DigestRef
 	Count                int
 	// state is the word the flags read: a session's outcome, "" while it
-	// runs; a review's verdict; a check-in's decision, "" when it was cut
+	// runs; a review's verdict; a check-in's decision, "" when it was cut;
+	// a proofs store's flagged ids, space-joined
 	state string
 	// calls are a session's model calls, by the audit rows
 	calls int
@@ -88,14 +93,19 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 
 // cardRows are the rows a card's digest is read from: the task, its
 // events oldest first, its dependencies, its cases, its criteria verdicts
-// and its timeline object, nil when it has none.
+// and its timeline object, nil when it has none; a plan task's proofs
+// (planProofCounts) and its foundation card's merge, the card's finish,
+// zero when the plan has none, it has not merged or the plan owes no
+// proof.
 type cardRows struct {
-	task     Task
-	events   []Event
-	deps     []Dependency
-	cases    []Case
-	verdicts []CriterionVerdict
-	timeline []byte
+	task                       Task
+	events                     []Event
+	deps                       []Dependency
+	cases                      []Case
+	verdicts                   []CriterionVerdict
+	timeline                   []byte
+	proofsStored, proofsWanted int
+	foundationMerged           time.Time
 }
 
 // readCard reads task taskID's rows; ErrNotFound when there is no such
@@ -125,7 +135,19 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
 	}
-	return rows, nil
+	if t.Track != policy.TrackPlan {
+		return rows, nil
+	}
+	p, stored, wanted, err := r.planProofState(ctx, taskID)
+	if err != nil || wanted == 0 {
+		return rows, err
+	}
+	rows.proofsStored, rows.proofsWanted = stored, wanted
+	card, _, err := r.foundationCard(ctx, taskID, p)
+	if card.MergeCommit != "" && card.FinishedAt != nil {
+		rows.foundationMerged = *card.FinishedAt
+	}
+	return rows, err
 }
 
 // cardDigest builds the digest of the card rows hold.
@@ -135,6 +157,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	if err != nil {
 		return CardDigest{}, err
 	}
+	head.ProofsStored, head.ProofsWanted = rows.proofsStored, rows.proofsWanted
 	lines, err := r.timelineSteps(ctx, t.ID, rows.timeline)
 	if err != nil {
 		return CardDigest{}, err
@@ -150,7 +173,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	return CardDigest{Head: head, Steps: steps, Flags: digestFlags(t, steps, rows.cases, rows.deps, budget)}, nil
+	flags := digestFlags(t, steps, rows.cases, rows.deps, budget, rows.foundationMerged, r.clock())
+	return CardDigest{Head: head, Steps: steps, Flags: flags}, nil
 }
 
 func (r *Runner) digestHead(ctx context.Context, t Task) (DigestHead, error) {
@@ -270,6 +294,8 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 				issues[i] = fmt.Sprintf("#%d", v)
 			}
 			s.Kind, s.Outcome = "cut", fmt.Sprintf("revision %d into %s at session %d", number("revision"), strings.Join(issues, ", "), number("session"))
+		case EventProofsFiled, EventProofsStored:
+			s = proofsEventStep(s, e)
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {
@@ -310,6 +336,63 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 		out = append(out, s)
 	}
 	return out
+}
+
+// proofsEvent is a proofs_filed or proofs_stored event's detail.
+type proofsEvent struct {
+	Prover, Commit string
+	Filing         int
+	Proofs         []struct{ Criterion, Path, Suite, Name, Outcome string }
+	Refusals       []string
+	Stored         []string
+	Flagged        []struct{ Criterion, Flag string }
+}
+
+// readProofsEvent is e's detail as a proofsEvent, as written or as its row
+// reads back.
+func readProofsEvent(e Event) proofsEvent {
+	var d proofsEvent
+	b, _ := json.Marshal(e.Detail)
+	_ = json.Unmarshal(b, &d)
+	return d
+}
+
+// proofsEventStep is a proofs_filed or proofs_stored event's step: a
+// filing's outcomes on main and its refusals, by the prover; the store's
+// count and its flags, by factoryd, the flagged ids its state.
+func proofsEventStep(s DigestStep, e Event) DigestStep {
+	d := readProofsEvent(e)
+	s.Kind = "proofs"
+	var parts []string
+	counted := func(n int, what string) {
+		if n > 0 {
+			parts = append(parts, fmt.Sprintf("%d %s", n, what))
+		}
+	}
+	if e.Kind == EventProofsFiled {
+		on := map[string]int{}
+		for _, p := range d.Proofs {
+			on[p.Outcome]++
+		}
+		for _, o := range []string{onMainRed, onMainGreen, onMainUnrunnable} {
+			counted(on[o], o+" on main")
+		}
+		counted(len(d.Refusals), "refused")
+		s.Actor, s.Outcome = "prover", fmt.Sprintf("filing %d: %s", d.Filing, cmp.Or(strings.Join(parts, ", "), "no entry"))
+		return s
+	}
+	flags := map[string]int{}
+	ids := make([]string, len(d.Flagged))
+	for i, f := range d.Flagged {
+		flags[f.Flag]++
+		ids[i] = f.Criterion
+	}
+	parts = []string{fmt.Sprintf("%d stored", len(d.Stored))}
+	for _, f := range []string{ProofFlagGreen, ProofFlagUnrunnable} {
+		counted(flags[f], "flagged "+f)
+	}
+	s.Actor, s.Outcome, s.state = FactoryDecider, strings.Join(parts, ", "), strings.Join(ids, " ")
+	return s
 }
 
 // askOutcome is an ask's case kind and words, as the events writer files
