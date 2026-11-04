@@ -186,6 +186,32 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 }
 
+// The criteria gate's run on the head is read with its review and its
+// audit: its unmet criterion is one of the findings, its met one none.
+func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	unmet := "TestDoorOpens in ./door failed"
+	g.tl.now = func() time.Time { return factsAt(9, 47) }
+	if err := g.tl.Append(context.Background(), "t1", "gate_criteria", map[string]any{"commit": "h2", "findings": []string{unmet},
+		"proofs": []gateProof{
+			{ID: "c1", Kind: CriterionTest, Outcome: proofFailed, Line: unmet},
+			{ID: "c2", Kind: CriterionTest, Outcome: proofPassed, Met: true, Line: "TestDoorShuts in ./door passed"},
+		}}); err != nil {
+		t.Fatal(err)
+	}
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []string{idA, idB, findingID(unmet)}
+	slices.Sort(want)
+	if !slices.Equal(got.Findings, want) {
+		t.Fatalf("findings = %v, want the review's, the audit's and the gate's unmet criterion %v", got.Findings, want)
+	}
+}
+
 // A card with no timeline object has no findings, and no reader failed.
 func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)

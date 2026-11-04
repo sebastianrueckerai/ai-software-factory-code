@@ -230,8 +230,8 @@ func (f *CaseFacts) eventFacts(events []Event) {
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its
-// newest review and its newest audit raised, of the timeline's steps in
-// line order.
+// newest criteria gate run, its newest review and its newest audit
+// raised, of the timeline's steps in line order.
 func headFindings(steps []DigestStep, head string) []string {
 	if head == "" {
 		return nil
@@ -239,7 +239,7 @@ func headFindings(steps []DigestStep, head string) []string {
 	var ids []string
 	seen := map[string]bool{}
 	for _, s := range slices.Backward(steps) {
-		if s.commit != head || seen[s.Kind] || !slices.Contains([]string{"checks", "review", "audit"}, s.Kind) {
+		if s.commit != head || seen[s.Kind] || !slices.Contains([]string{"checks", "proofs", "review", "audit"}, s.Kind) {
 			continue
 		}
 		seen[s.Kind] = true
