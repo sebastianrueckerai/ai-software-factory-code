@@ -92,12 +92,14 @@ const (
 	// "stored": [ids], "flagged": [{"criterion", "flag"}]}, a hold-out by
 	// holdoutEntry.
 	EventProofsStored = "proofs_stored"
-	// EventProofOpened records a stored proof that the gate's blind try did
-	// not pass, on the gated card and on the plan task: detail {"criterion",
-	// "head", "outcome" (a proof* word, "no artifact", or "flagged"),
-	// "message" (the output the builder got, or the flag), "path", "suite",
-	// "name", "code", and "holdout", the claim with its inputs and expected
-	// numbers, for a hold-out}. The test is public from here on.
+	// EventProofOpened records a stored proof the gate opened, on the gated
+	// card and on the plan task: its blind try did not pass, or wrote no
+	// artifact even where its test passed, or its dry run flagged it and it
+	// had no try. Detail {"criterion", "head", "outcome" (a proof* word,
+	// "no artifact", or "flagged"), "message" (the output the builder got,
+	// or the flag), "path", "suite", "name", "code", and "holdout", the
+	// claim with its inputs and expected numbers, for a hold-out}. The test
+	// is public from here on.
 	EventProofOpened = "proof_opened"
 )
 

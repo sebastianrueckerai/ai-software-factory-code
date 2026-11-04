@@ -16,11 +16,14 @@ import (
 )
 
 // The spec's verdict as data (the spec-intake concept, pieces 7 and 8,
-// roadmap 290): every criterion of a plan carries a verdict row on the
-// task that holds the plan's criteria, the integration card. The criteria
-// gate writes its rows and the judgement's on every run; an approver's
-// recorded decision — a human criterion's met at the merge approval, a
-// waiver — writes the approver's row, which is the verdict that stands.
+// roadmap 290): a judged criterion of a plan carries a verdict row on the
+// task that holds the plan's criteria, the integration card. On each run
+// the criteria gate writes its own rows for the test and invariant
+// criteria, and a judgement row for each judgement criterion whose proof
+// ran: met, unmet, or unmet with no verdict, so a judgement row is the
+// newest head's. An approver's recorded decision — a human criterion's
+// met at the merge approval, a waiver — writes the approver's row, which
+// is the verdict that stands.
 const (
 	CatchDelta        = "delta"
 	CatchDeltaFiled   = "delta_filed"
@@ -418,9 +421,9 @@ func gateLeft(p Plan, key string) *GateLeft {
 	return &GateLeft{IDs: ids, Integration: roleOf(p, key) == RoleIntegration}
 }
 
-// byJudge splits cs into the criteria gate's ids and the review's, each
-// joined for a sentence.
-func byJudge(cs []PlanCriterion) (gate, review string) {
+// byJudge splits cs into the criteria gate's ids (gateJudged) and the
+// human ones, each joined for a sentence.
+func byJudge(cs []PlanCriterion) (gate, human string) {
 	var g, r []string
 	for _, c := range cs {
 		if gateJudged(c.Kind) {
@@ -1011,24 +1014,20 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCrit
 
 // askRerun opens the plan's criteria_rerun approval once per shape, while
 // the plan is at rest: never are criteria no row holds, the gate's named
-// as the criteria gate's, which never ran for them, the others as the
-// integration card's review's, named with its last note, or "the review
-// never ran" when it has none; unmet those whose rows say not met, named
-// beside them.
+// as the criteria gate's to settle, the human ones as the human's; unmet
+// those whose rows say not met, named beside them.
 func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task) {
-	gate, review := byJudge(never)
+	gate, human := byJudge(never)
 	var parts []string
 	if gate != "" {
-		parts = append(parts, fmt.Sprintf("the criteria gate of card #%d never ran: %s", integration.IssueNumber, gate))
+		parts = append(parts, "the criteria gate has not settled "+gate)
 	}
-	if review != "" {
-		why := "did not run (the review never ran)"
-		if note, ok := r.lastReviewNote(ctx, integration.ID); ok && note != "" {
-			why = "did not run (" + note + ")"
-		} else if ok {
-			why = "wrote no verdict for them"
+	if human != "" {
+		verb := "is"
+		if strings.Contains(human, ", ") {
+			verb = "are"
 		}
-		parts = append(parts, fmt.Sprintf("the review of card #%d %s: %s", integration.IssueNumber, why, review))
+		parts = append(parts, human+" "+verb+" yours to settle on this card")
 	}
 	why := strings.Join(parts, "; ")
 	ids, lines := criteriaLines(never, " — never judged")

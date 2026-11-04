@@ -120,6 +120,7 @@ type fakeStore struct {
 	openErr          error                         // answered once by OpenPlanProof
 	spendSince       float64                       // TaskSpendSince's answer
 	spendFrom        time.Time                     // TaskSpendSince's last since
+	spendErr         error                         // TaskSpendSince's error
 	queue            []queueEntry                  // the merge queues, oldest first
 	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
@@ -4599,7 +4600,7 @@ func (s *fakeStore) StorePlanProofs(ctx context.Context, id string, flags map[in
 
 func (s *fakeStore) TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error) {
 	s.spendFrom = since
-	return s.spendSince, nil
+	return s.spendSince, s.spendErr
 }
 
 func (s *fakeStore) OpenPlanProof(ctx context.Context, id string, idx int) (bool, error) {

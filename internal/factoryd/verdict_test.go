@@ -837,10 +837,10 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 
 // The close tells a judgement that never happened from one that failed:
 // with the cards final, criteria without a row file one criteria_rerun
-// ask naming the criteria gate for its own and the integration card's
-// review and its note for the others, the unmet ones named beside them;
-// unmet rows alone file today's gap ask. A pending ask
-// of either kind stops the other, and the close resolves both.
+// ask naming the criteria gate for its own and the human for the human
+// ones, whatever the review's note, the unmet ones named beside them;
+// unmet rows alone file today's gap ask. A pending ask of either kind
+// stops the other, and the close resolves both.
 func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 	ctx := context.Background()
 	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
@@ -849,17 +849,17 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		rows                     []CriterionVerdict
 	}{
 		{"an empty table, no review", "", ApprovalCriteriaRerun,
-			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; the review of card #1380 did not run (the review never ran): c2", nil},
+			"criteria never judged: the criteria gate has not settled c1, c3; c2 is yours to settle on this card", nil},
 		{"an empty table, a refused review", note, ApprovalCriteriaRerun,
-			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; the review of card #1380 did not run (" + note + "): c2", nil},
+			"criteria never judged: the criteria gate has not settled c1, c3; c2 is yours to settle on this card", nil},
 		{"mixed", note, ApprovalCriteriaRerun,
-			"criteria never judged: the criteria gate of card #1380 never ran: c3; the review of card #1380 did not run (" + note + "): c2; not met: c1",
+			"criteria never judged: the criteria gate has not settled c3; c2 is yours to settle on this card; not met: c1",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "times out", Kind: CriterionTest}}},
 		{"the gate never ran", note, ApprovalCriteriaRerun,
-			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; not met: c2",
+			"criteria never judged: the criteria gate has not settled c1, c3; not met: c2",
 			[]CriterionVerdict{{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}}},
-		{"the review's alone", note, ApprovalCriteriaRerun,
-			"criteria never judged: the review of card #1380 did not run (" + note + "): c2; not met: c1, c3",
+		{"the human's alone", note, ApprovalCriteriaRerun,
+			"criteria never judged: c2 is yours to settle on this card; not met: c1, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
 		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},

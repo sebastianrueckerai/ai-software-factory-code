@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -603,9 +604,26 @@ echo x >"$CHECK_ARTIFACTS/sub/x"
 	}
 }
 
+// A text cut at 256 KiB through a character keeps no part of it: the
+// artifact stays valid text. One that ends at the cap is kept whole.
+func TestProofsCutAnArtifactOnACharacterBoundary(t *testing.T) {
+	ws, _ := proofsWorkspace(t, `head -c 262143 /dev/zero | tr '\0' a >"$CHECK_ARTIFACTS/cut.txt"
+printf '\303\251b' >>"$CHECK_ARTIFACTS/cut.txt"
+head -c 262142 /dev/zero | tr '\0' a >"$CHECK_ARTIFACTS/whole.txt"
+printf '\303\251' >>"$CHECK_ARTIFACTS/whole.txt"
+`)
+	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a"})[0]
+	if cut := r.Artifacts["cut.txt"]; len(cut) != 262143 || !utf8.Valid(cut) {
+		t.Fatalf("cut.txt: %d bytes, valid %v; want the 262143 bytes before the cut character", len(cut), utf8.Valid(cut))
+	}
+	if whole := r.Artifacts["whole.txt"]; len(whole) != 262144 || !utf8.Valid(whole) {
+		t.Fatalf("whole.txt: %d bytes, valid %v; want all 262144", len(whole), utf8.Valid(whole))
+	}
+}
+
 // Three artifacts at their cap would pass the 1 MiB that factoryd reads
 // of one log line, which would lose the report with them: those past the
-// line's room are left out and named.
+// line's room are left out and named in Dropped.
 func TestProofsLeaveOutArtifactsPastTheLine(t *testing.T) {
 	ws, _ := proofsWorkspace(t, `for f in a b c; do head -c 300000 /dev/zero >"$CHECK_ARTIFACTS/$f.bin"; done
 printf '<testsuites></testsuites>' >"$CHECK_REPORT"
@@ -616,8 +634,8 @@ printf '<testsuites></testsuites>' >"$CHECK_REPORT"
 	if len(r.Artifacts) != 2 || len(r.Artifacts["a.bin"]) != 262144 || len(r.Artifacts["b.bin"]) != 262144 {
 		t.Fatalf("artifacts: %d keys, a.bin %d bytes, b.bin %d bytes", len(r.Artifacts), len(r.Artifacts["a.bin"]), len(r.Artifacts["b.bin"]))
 	}
-	if r.Exit != 0 || r.Report == nil || !strings.HasSuffix(r.Output, "\nproofs mode: one log line has no room for these artifacts: c.bin") {
-		t.Fatalf("exit %d, a report: %v, output %q", r.Exit, r.Report != nil, r.Output)
+	if r.Exit != 0 || r.Report == nil || !slices.Equal(r.Dropped, []string{"c.bin"}) {
+		t.Fatalf("exit %d, a report: %v, dropped %q", r.Exit, r.Report != nil, r.Dropped)
 	}
 	if line, err := json.Marshal(got[0]); err != nil || len(line) >= 1<<20 {
 		t.Fatalf("line of %d bytes, %v", len(line), err)

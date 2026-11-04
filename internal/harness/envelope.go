@@ -50,8 +50,9 @@ type ProofFile struct {
 // it up), check test's exit (-1: it could not run or ran out of time),
 // its output tail, its report gzipped (nil when it wrote none or one too
 // large for the line), and the regular files it wrote under
-// CHECK_ARTIFACTS, each cut at 256 KiB, as many as the line holds. Output
-// names what was left out.
+// CHECK_ARTIFACTS, each cut at 256 KiB on a character boundary, as many
+// as the line holds. Output names a report left out; Dropped names the
+// artifacts the line had no room for.
 type ProofRun struct {
 	ID        string            `json:"id"`
 	Started   bool              `json:"started,omitempty"`
@@ -59,6 +60,7 @@ type ProofRun struct {
 	Output    string            `json:"output"`
 	Report    []byte            `json:"report,omitempty"`
 	Artifacts map[string][]byte `json:"artifacts,omitempty"`
+	Dropped   []string          `json:"dropped,omitempty"`
 }
 
 // Proofs ends the proofs mode's report: Error says why no entry ran.

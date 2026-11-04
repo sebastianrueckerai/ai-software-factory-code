@@ -3,11 +3,15 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -36,20 +40,50 @@ func artifactRows() []PlanProof {
 
 const sizesPage = "<main><h1>Sizes</h1></main>"
 
+// judgementLines are t1's judgement lines, in order.
+func judgementLines(t *testing.T, objects *fakeObjectStore) []map[string]any {
+	t.Helper()
+	var out []map[string]any
+	for _, line := range strings.Split(strings.TrimSpace(timelineText(t, objects)), "\n") {
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil && m["step"] == "judgement" {
+			delete(m, "step")
+			delete(m, "time")
+			out = append(out, m)
+		}
+	}
+	return out
+}
+
+// calmPage is readsCalm's artifact at head.
+func calmPage(head string) GateArtifact {
+	return GateArtifact{Criterion: "reads_calm", Name: "reads_calm.html", Head: head, Content: sizesPage}
+}
+
+// withSupervisorTimeout is the test policy with the supervisor timeout d.
+func withSupervisorTimeout(d time.Duration) func() policy.Version {
+	return func() policy.Version {
+		v := testPolicyVersion()
+		v.Document.Limits.SupervisorTimeout = d
+		return v
+	}
+}
+
 // The judgement is one call of the review model: the criterion's pinned
 // prompt with the answer's form as the system prompt, the artifact's name
 // and content alone as the input, no tool. Its row names the model and the
 // prompt's hash; its line adds the verdict, the reason and the task's
 // spend booked since the call began.
 func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
-	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
 	store.spendSince = 0.04
 	ll := &fakeLiteLLM{content: "```json\n{\"verdict\":\"met\",\"reason\":\"the page names every size\"}\n```"}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	before := time.Now()
-	row, detail, err := r.judge(context.Background(), gateTask, readsCalm, GateArtifact{Criterion: "reads_calm", Name: "reads_calm.html", Head: "c1", Content: sizesPage})
-	if err != nil {
-		t.Fatal(err)
+	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
+	if err != nil || len(findings) != 0 || met != 1 {
+		t.Fatalf("judgeArtifacts = %q, %d, %v; want one met and no finding", findings, met, err)
 	}
 	if len(ll.chats) != 1 || !slices.Equal(ll.purposes, []string{policy.PurposeReview}) || ll.chats[0]["model"] != "big" || ll.chats[0]["tools"] != nil {
 		t.Fatalf("chats %v, purposes %v: want one review call on big with no tools", ll.chats, ll.purposes)
@@ -64,13 +98,14 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 	if want := map[string]string{"artifact": "reads_calm.html", "content": sizesPage}; !maps.Equal(in, want) {
 		t.Fatalf("input = %v, want %v", in, want)
 	}
-	if want := (CriterionVerdict{Criterion: "reads_calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)", Kind: CriterionJudgement}); row == nil || *row != want {
-		t.Fatalf("row = %+v, want %+v", row, want)
+	if got, want := rowsOf(store, "reads_calm"), []CriterionVerdict{{Criterion: "reads_calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)",
+		Kind: CriterionJudgement, Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}; !slices.Equal(got, want) {
+		t.Fatalf("rows = %+v, want %+v", got, want)
 	}
-	want := map[string]any{"criterion": "reads_calm", "artifact": "reads_calm.html", "model": "big", "prompt_hash": "6b2355d78a19",
-		"verdict": "met", "reason": "the page names every size", "cost": 0.04}
-	if !reflect.DeepEqual(detail, want) {
-		t.Fatalf("detail = %v, want %v", detail, want)
+	want := []map[string]any{{"criterion": "reads_calm", "artifact": "reads_calm.html", "model": "big", "prompt_hash": "6b2355d78a19",
+		"verdict": "met", "reason": "the page names every size", "cost": 0.04}}
+	if got := judgementLines(t, objects); !reflect.DeepEqual(got, want) {
+		t.Fatalf("lines = %v, want %v", got, want)
 	}
 	if store.spendFrom.Before(before) || store.spendFrom.After(time.Now()) {
 		t.Fatalf("the spend is read from %v, want the call's start", store.spendFrom)
@@ -81,9 +116,10 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 }
 
 // An answer that is not the verdict, a verdict that is neither met nor
-// unmet, and a gateway that refuses: no row, the line says why, and the
-// gate goes on.
-func TestJudgeWithoutAVerdictWritesNoRow(t *testing.T) {
+// unmet, a gateway that refuses and a call cut at the supervisor timeout
+// give no verdict: the row is unmet and says why, so no earlier head's
+// row stands, and a finding names the criterion and the reason.
+func TestJudgeWithoutAVerdictIsUnmet(t *testing.T) {
 	for name, tc := range map[string]struct {
 		ll     *fakeLiteLLM
 		reason string
@@ -92,19 +128,130 @@ func TestJudgeWithoutAVerdictWritesNoRow(t *testing.T) {
 		"prose":      {&fakeLiteLLM{content: "it reads calm"}, "the answer is not the verdict json: ", true},
 		"partly":     {&fakeLiteLLM{content: `{"verdict": "partly"}`}, `the verdict "partly" is neither met nor unmet`, false},
 		"no gateway": {&fakeLiteLLM{status: http.StatusInternalServerError}, `status 500: {"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`, false},
+		"timed out":  {&fakeLiteLLM{content: `{"verdict":"met","reason":"late"}`, delay: 5 * time.Second}, "timed out", false},
 	} {
 		t.Run(name, func(t *testing.T) {
-			r, _, _ := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+			objects := &fakeObjectStore{}
+			r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
+			r.cfg.Policy = withSupervisorTimeout(300 * time.Millisecond)
 			r.supervisor = testSupervisorModel(tc.ll.srv(t).URL)
-			row, detail, err := r.judge(context.Background(), gateTask, readsCalm, GateArtifact{Criterion: "reads_calm", Name: "reads_calm.html", Head: "c1", Content: sizesPage})
-			if err != nil || row != nil || detail["verdict"] != "" {
-				t.Fatalf("judge = %+v, %v, %v; want no row, no verdict, no error", row, detail, err)
+			findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
+			if err != nil || met != 0 {
+				t.Fatalf("judgeArtifacts = %q, %d, %v", findings, met, err)
 			}
-			reason, _ := detail["reason"].(string)
+			lines := judgementLines(t, objects)
+			if len(lines) != 1 || lines[0]["verdict"] != "" {
+				t.Fatalf("lines = %v, want one with no verdict", lines)
+			}
+			reason, _ := lines[0]["reason"].(string)
 			if (tc.prefix && !strings.HasPrefix(reason, tc.reason)) || (!tc.prefix && reason != tc.reason) {
 				t.Fatalf("reason = %q, want %q", reason, tc.reason)
 			}
+			if got, want := rowsOf(store, "reads_calm"), []CriterionVerdict{{Criterion: "reads_calm", Verdict: "unmet", Evidence: "no verdict: " + reason,
+				Kind: CriterionJudgement, Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}; !slices.Equal(got, want) {
+				t.Fatalf("rows = %+v, want %+v", got, want)
+			}
+			if want := "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: " + reason; !slices.Equal(findings, []string{want}) {
+				t.Fatalf("findings = %q, want %q", findings, want)
+			}
 		})
+	}
+}
+
+// A call that gives no verdict at a later head leaves no earlier head's
+// met standing: the criterion is unmet, and says why.
+func TestJudgementWithoutAVerdictReplacesAnEarlierHeadsMet(t *testing.T) {
+	ctx := context.Background()
+	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+	p := Plan{Criteria: []PlanCriterion{readsCalm}}
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
+	if _, met, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
+		t.Fatalf("at c1: met %d, %v", met, err)
+	}
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{status: http.StatusInternalServerError}).srv(t).URL)
+	findings, _, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c2")})
+	if err != nil {
+		t.Fatal(err)
+	}
+	const reason = `status 500: {"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`
+	rows, _ := store.CriteriaVerdicts(ctx, "t1")
+	if v, ok := StandingRow(rows, readsCalm); !ok || v.Verdict != "unmet" || v.Evidence != "no verdict: "+reason {
+		t.Fatalf("standing row = %+v, %v; want unmet, no verdict: %s", v, ok, reason)
+	}
+	if want := "criterion reads_calm: the judgement over reads_calm.html at c2 gave no verdict: " + reason; !slices.Equal(findings, []string{want}) {
+		t.Fatalf("findings = %q, want %q", findings, want)
+	}
+}
+
+// The judgement criteria's calls run at once, each cut at the supervisor
+// timeout: a call the cut ends gives no verdict, timed out.
+func TestJudgeArtifactsCallsAtOnce(t *testing.T) {
+	var mu sync.Mutex
+	inFlight, peak := 0, 0
+	bArrived := make(chan struct{})
+	var once sync.Once
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
+		body, _ := io.ReadAll(req.Body)
+		mu.Lock()
+		inFlight++
+		peak = max(peak, inFlight)
+		mu.Unlock()
+		defer func() {
+			mu.Lock()
+			inFlight--
+			mu.Unlock()
+		}()
+		if strings.Contains(string(body), "b.html") {
+			once.Do(func() { close(bArrived) })
+			<-req.Context().Done()
+			return
+		}
+		select {
+		case <-bArrived:
+		case <-req.Context().Done():
+			return
+		}
+		io.WriteString(w, `{"choices":[{"message":{"content":"{\"verdict\":\"met\",\"reason\":\"calm\"}"}}]}`)
+	}))
+	t.Cleanup(srv.Close)
+	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+	r.cfg.Policy = withSupervisorTimeout(time.Second)
+	r.supervisor = testSupervisorModel(srv.URL)
+	a, b := readsCalm, readsCalm
+	a.ID, b.ID = "a", "b"
+	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
+		{Criterion: "a", Name: "a.html", Head: "c1", Content: "<p>a</p>"}, {Criterion: "b", Name: "b.html", Head: "c1", Content: "<p>b</p>"}})
+	if err != nil || met != 1 {
+		t.Fatalf("judgeArtifacts = %q, %d, %v; want a met", findings, met, err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if peak != 2 {
+		t.Fatalf("at most %d calls at once, want 2", peak)
+	}
+	if got := rowsOf(store, "b"); len(got) != 1 || got[0].Verdict != "unmet" || got[0].Evidence != "no verdict: timed out" {
+		t.Fatalf("b's rows = %+v, want unmet, no verdict: timed out", got)
+	}
+	if want := "criterion b: the judgement over b.html at c1 gave no verdict: timed out"; !slices.Equal(findings, []string{want}) {
+		t.Fatalf("findings = %q, want %q", findings, want)
+	}
+}
+
+// A ledger read that fails loses the cost, never the verdict: the line
+// says the cost is unknown, and the row stands.
+func TestJudgeArtifactsKeepsTheVerdictWithoutItsCost(t *testing.T) {
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
+	store.spendErr = errors.New("the ledger is down")
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
+	if _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
+		t.Fatalf("met %d, %v; want the verdict", met, err)
+	}
+	if lines := judgementLines(t, objects); len(lines) != 1 || lines[0]["cost"] != nil || lines[0]["verdict"] != "met" {
+		t.Fatalf("lines = %v, want the met line with no cost", lines)
+	}
+	if got := rowsOf(store, "reads_calm"); len(got) != 1 || got[0].Verdict != "met" {
+		t.Fatalf("rows = %+v, want the met row", got)
 	}
 }
 
@@ -262,7 +409,8 @@ func timelineText(t *testing.T, objects *fakeObjectStore) string {
 // A blind proof that wrote no artifact has no verdict: it opens, as a red
 // test does, and its finding hands the builder the code and the output.
 // An artifact that is not text is no verdict either, and the proof stays
-// stored. Neither makes a call or a row.
+// stored. Neither makes a call, and each is an unmet row that says why,
+// so no earlier head's row stands.
 func TestGateCriteriaOpensAProofThatWroteNoArtifact(t *testing.T) {
 	ctx := context.Background()
 	res, store, objects, _, _, ll := judgedGate(t, "", harness.ProofRun{ID: "reads_calm", Started: true, Exit: 1, Output: "panic: no page\n",
@@ -270,8 +418,12 @@ func TestGateCriteriaOpensAProofThatWroteNoArtifact(t *testing.T) {
 	if len(ll.chats) != 0 {
 		t.Fatalf("chats = %v, want none", ll.chats)
 	}
-	if got := rowsOf(store, "reads_calm"); len(got) != 0 {
-		t.Fatalf("reads_calm rows = %+v, want none", got)
+	noVerdict := func(evidence string) []CriterionVerdict {
+		return []CriterionVerdict{{Criterion: "reads_calm", Verdict: "unmet", Evidence: "no verdict: " + evidence, Kind: CriterionJudgement,
+			Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}
+	}
+	if got, want := rowsOf(store, "reads_calm"), noVerdict("its blind proof wrote no artifact reads_calm.html at c1"); !slices.Equal(got, want) {
+		t.Fatalf("reads_calm rows = %+v, want %+v", got, want)
 	}
 	after, _ := store.PlanProofs(ctx, "plan1")
 	if i := slices.IndexFunc(after, func(pp PlanProof) bool { return pp.Idx == 6 }); after[i].State != ProofOpened {
@@ -302,8 +454,8 @@ func TestGateCriteriaOpensAProofThatWroteNoArtifact(t *testing.T) {
 
 	res, store, objects, _, _, ll = judgedGate(t, "", harness.ProofRun{ID: "reads_calm", Started: true, Report: junitGz(t, wrap(`<testcase name="TestReadsCalm"></testcase>`)),
 		Artifacts: map[string][]byte{"reads_calm.html": []byte("<main>\x00</main>")}})
-	if len(ll.chats) != 0 || len(rowsOf(store, "reads_calm")) != 0 {
-		t.Fatalf("chats %v, rows %+v; want none", ll.chats, rowsOf(store, "reads_calm"))
+	if got, want := rowsOf(store, "reads_calm"), noVerdict("its artifact reads_calm.html is not text"); len(ll.chats) != 0 || !slices.Equal(got, want) {
+		t.Fatalf("chats %v, rows %+v; want none and %+v", ll.chats, got, want)
 	}
 	if want := "criterion reads_calm: its artifact reads_calm.html is not text: no verdict"; !slices.Contains(res.Findings, want) {
 		t.Fatalf("findings = %q, want %q", res.Findings, want)
@@ -317,5 +469,27 @@ func TestGateCriteriaOpensAProofThatWroteNoArtifact(t *testing.T) {
 	}
 	if strings.Contains(strings.Join(res.Findings, "\n"), "package reads_calm") {
 		t.Fatalf("the findings carry the stored proof's code: %q", res.Findings)
+	}
+}
+
+// An artifact the run's line had no room for is no verdict: a finding
+// names it, the row is unmet and says why, and the proof stays stored,
+// since the test ran and wrote it.
+func TestGateCriteriaFindsAnArtifactTooLargeForTheLine(t *testing.T) {
+	res, store, objects, _, _, ll := judgedGate(t, "", harness.ProofRun{ID: "reads_calm", Started: true, Report: junitGz(t, wrap(`<testcase name="TestReadsCalm"></testcase>`)),
+		Dropped: []string{"reads_calm.html"}})
+	const why = "artifact reads_calm.html was too large for the run's line"
+	if !slices.Contains(res.Findings, "criterion reads_calm: "+why) || len(ll.chats) != 0 {
+		t.Fatalf("findings %q, chats %v; want the finding and no call", res.Findings, ll.chats)
+	}
+	if got := rowsOf(store, "reads_calm"); len(got) != 1 || got[0].Verdict != "unmet" || got[0].Evidence != "no verdict: "+why || got[0].Source != CriteriaSourceJudgement {
+		t.Fatalf("rows = %+v, want the unmet judgement row", got)
+	}
+	after, _ := store.PlanProofs(context.Background(), "plan1")
+	if i := slices.IndexFunc(after, func(pp PlanProof) bool { return pp.Idx == 6 }); after[i].State != ProofStored {
+		t.Fatalf("row 6 is %s, want stored", after[i].State)
+	}
+	if got := string(mustJSON(timelineStep(t, objects, "t1", "gate_criteria")["opened"])); strings.Contains(got, "reads_calm") {
+		t.Fatalf("the line's opened = %s, want no reads_calm", got)
 	}
 }

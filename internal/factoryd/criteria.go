@@ -22,16 +22,17 @@ import (
 // proof's run is its one blind try: green meets its criterion and the
 // proof stays stored; any other outcome, or a flag from its dry run on
 // main, opens it, and its finding hands the builder its code and its
-// output. An opened proof runs from the repository. A test criterion
-// whose proof is not stored yet makes no run: its row is unmet and says
-// why, and no finding; while the plan's prover may still store any
-// criterion's proof, the gate asks the human to wait. A test criterion
-// the store left without a proof came after the prover filed: its unmet
-// row is a finding too, and it never opens. A judgement or human
-// criterion's proof runs as a test criterion's and writes an artifact,
-// which the gate stores for the console: one model call judges a
-// judgement criterion's, the human settles a human one. A proof that
-// wrote no artifact has no verdict and opens.
+// output. An opened proof runs from the repository. A test or judgement
+// criterion whose proof is not stored yet makes no run: a test one's row
+// is unmet and says why, and no finding; while the plan's prover may
+// still store any criterion's proof, the gate asks the human to wait. A
+// test or judgement criterion the store left without a proof came after
+// the prover filed: its line is a finding, a test one's unmet row too,
+// and it never opens. A judgement or human criterion's proof runs as a
+// test criterion's and writes an artifact, which the gate stores for the
+// console: one model call judges a judgement criterion's, the human
+// settles a human one. A proof that wrote no artifact has no verdict and
+// opens; a judgement criterion without a verdict is an unmet row.
 
 // CriteriaResult is GateCriteria's verdict: Skipped names why the gate did
 // not run (no plan filed, or a card of the plan that is neither its
@@ -52,7 +53,7 @@ type CriteriaResult struct {
 const maxProofMessage = 4 << 10
 
 // proofsNotStored is the gate's ask while the plan's prover may still
-// store a test criterion's proof.
+// store a criterion's proof.
 const proofsNotStored = "The plan's prover stored no proof yet. Once it does, answer to run the criteria gate again."
 
 // The states of a gate run of a proof.
@@ -112,8 +113,8 @@ func (c criterionRun) flagged() bool { return c.state() == proofBlind && c.store
 // an invariant runs its suite through goPackage; any other criterion and
 // a hold-out run their stored proof blind with its file (a flagged one
 // makes no run and opens), or their opened one by suite and name from the
-// tree. A test criterion without a stored or opened row is held, late
-// when the store happened without it; a judgement or human one makes no
+// tree. A test or judgement criterion without a stored or opened row is
+// held, late when the store happened without it; a human one makes no
 // run.
 func gateRuns(p Plan, proofs []PlanProof) []criterionRun {
 	runnable := func(pp PlanProof) bool { return pp.State == ProofStored || pp.State == ProofOpened }
@@ -134,7 +135,7 @@ func gateRuns(p Plan, proofs []PlanProof) []criterionRun {
 		switch {
 		case i >= 0:
 			runs = append(runs, proofRun(c.ID, c.Kind, proofs[i]))
-		case c.Kind != CriterionTest:
+		case c.Kind == CriterionHuman:
 		case stored:
 			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "Criterion " + c.ID + " has no stored proof: the prover filed before a later revision added it.", late: true})
 		default:
@@ -221,6 +222,7 @@ type gateResult struct {
 	absent    bool              // an opened proof whose path holds no file at the head: no run
 	changed   bool              // an opened proof whose file at the head is not its code
 	artifacts map[string][]byte // the run's files under CHECK_ARTIFACTS
+	dropped   []string          // the artifacts its line had no room for
 }
 
 // openedProof is a proof this run opens.
@@ -240,6 +242,9 @@ type gateReport struct {
 	opened    []openedProof
 	holdouts  []map[string]any // the blind hold-outs that stay stored, by entry id, each with its holdoutDryVerdict
 	artifacts []GateArtifact   // the judgement and human criteria's artifacts this run wrote, in plan order
+	// noVerdict are the unmet rows of the judgement criteria that ran and
+	// left the judgement nothing to read, each saying why
+	noVerdict []CriterionVerdict
 }
 
 // criteriaReport judges the runs of plan p at head by their results:
@@ -252,9 +257,12 @@ type gateReport struct {
 // its line; any other outcome, and a flag, opens it. A judgement or human
 // proof's run that wrote its artifact as text is an artifact for the
 // judgement or the human and keeps its output off every surface; one
-// that wrote no artifact opens, whatever its report says. A blind
-// hold-out that stays stored, green or never tried, is no line, no entry
-// and no finding: its verdict alone, on the hold-outs.
+// that wrote no artifact opens, whatever its report says, and one whose
+// artifact did not fit the run's line is a finding and stays stored. A
+// judgement criterion that ran and left the judgement nothing to read is
+// an unmet row, so no earlier head's row stands. A blind hold-out that
+// stays stored, green or never tried, is no line, no entry and no
+// finding: its verdict alone, on the hold-outs.
 func criteriaReport(p Plan, head string, runs []criterionRun, results map[string]gateResult) gateReport {
 	rep := gateReport{proofs: make([]gateProof, 0, len(runs)), holdouts: []map[string]any{}}
 	for _, c := range runs {
@@ -306,6 +314,9 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 				case wrote:
 					g.Message, g.Line, g.Artifact = "", c.label()+": "+c.name+" in "+c.suite+" wrote "+name, name
 					rep.artifacts = append(rep.artifacts, GateArtifact{Criterion: c.id, Name: name, Head: head, Content: string(content)})
+				case slices.Contains(res.dropped, name):
+					g.Message, g.Line = "", c.label()+": artifact "+name+" was too large for the run's line"
+					rep.findings = append(rep.findings, g.Line)
 				case !res.ran:
 					rep.findings = append(rep.findings, g.Line)
 				case blind:
@@ -326,6 +337,10 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 				rep.findings = append(rep.findings, g.Line)
 			}
 		}
+		if c.kind == CriterionJudgement && c.held == "" && g.Artifact == "" {
+			why := strings.TrimSuffix(strings.TrimPrefix(g.Line, c.label()+": "), ": no verdict")
+			rep.noVerdict = append(rep.noVerdict, CriterionVerdict{Criterion: c.id, Verdict: "unmet", Evidence: "no verdict: " + why, Kind: c.kind})
+		}
 		if g.Met && !g.Holdout {
 			rep.met++
 		}
@@ -344,11 +359,10 @@ func claimText(p Plan, c criterionRun) string {
 		what, claim, inputs, expected = "hold-out", c.stored.Claim, c.stored.Inputs, c.stored.Expected
 	} else if i := slices.IndexFunc(p.Criteria, func(pc PlanCriterion) bool { return pc.ID == c.id }); i >= 0 {
 		pc := p.Criteria[i]
-		switch pc.Kind {
-		case CriterionJudgement:
-			return fmt.Sprintf("The criterion: %s. The artifact shows: %s.", strings.TrimSuffix(pc.Claim, "."), strings.TrimSuffix(pc.Inputs, "."))
-		case CriterionHuman:
-			return fmt.Sprintf("The criterion: %s. The artifact shows: %s.", strings.TrimSuffix(pc.Claim, "."), strings.TrimSuffix(pc.Evidence, "."))
+		if pc.Kind == CriterionJudgement || pc.Kind == CriterionHuman {
+			// a judgement criterion names what its artifact shows in its
+			// inputs, a human one in its evidence
+			return fmt.Sprintf("The criterion: %s. The artifact shows: %s.", strings.TrimSuffix(pc.Claim, "."), strings.TrimSuffix(cmp.Or(pc.Inputs, pc.Evidence), "."))
 		}
 		claim, inputs, expected = pc.Claim, pc.Inputs, pc.Expected
 	}
@@ -586,7 +600,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		for _, e := range entries {
 			run, ok := ran[e.ID]
 			g := results[e.ID]
-			g.outcome, g.output, g.ran, g.artifacts = outcomes[e.ID], run.Output, ok && run.Started, run.Artifacts
+			g.outcome, g.output, g.ran, g.artifacts, g.dropped = outcomes[e.ID], run.Output, ok && run.Started, run.Artifacts, run.Dropped
 			results[e.ID] = g
 		}
 	}
@@ -599,6 +613,9 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		opened = append(opened, cmp.Or(o.run.stored.Criterion, o.run.stored.ID))
 	}
 	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+		return CriteriaResult{}, err
+	}
+	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
 		return CriteriaResult{}, err
 	}
 	for _, o := range rep.opened {

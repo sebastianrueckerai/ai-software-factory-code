@@ -294,10 +294,9 @@ func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *
 	c := PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "The sizes page reads calm", Inputs: "the sizes page with three sizes",
 		Prompt: "Does the page read calm? Answer met or unmet."}
 	a := GateArtifact{Criterion: c.ID, Name: "reads_calm.html", Head: "fixture-head-sha", Content: "<main><h1>Sizes</h1><p>S, M and L</p></main>"}
-	r := &Runner{cfg: RunnerConfig{Policy: func() policy.Version { return v }}, supervisor: m, store: agentDocSpend{}}
-	if _, _, err := r.judge(ctx, Task{ID: agentDocTask, RequiredCapabilities: agentDocClasses}, c, a); err != nil {
-		return nil, err
-	}
+	// the fixture answer is no verdict: the request on the wire is the capture
+	r := &Runner{cfg: RunnerConfig{Policy: func() policy.Version { return v }}, supervisor: m}
+	r.judge(ctx, Task{ID: agentDocTask, RequiredCapabilities: agentDocClasses}, c, a)
 	system := c.Prompt + "\n\n" + judgementAnswer
 	return []agentdoc.Span{
 		agentDocInputLead,
@@ -307,14 +306,6 @@ func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *
 		{Name: "the artifact", Symbol: "factoryd.GateArtifact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: marshalled(map[string]string{"artifact": a.Name, "content": a.Content})},
 	}, nil
-}
-
-// agentDocSpend answers the judgement's cost read: the capture books no
-// spend.
-type agentDocSpend struct{ Store }
-
-func (agentDocSpend) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
-	return 0, nil
 }
 
 // agentDocBehaviours drives the review's behaviours call.

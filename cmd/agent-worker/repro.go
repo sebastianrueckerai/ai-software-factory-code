@@ -18,13 +18,12 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
-	"strings"
 	"syscall"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The repro pod is factoryd's GateReproduction: an init container in
@@ -499,7 +498,8 @@ func runProof(p harness.Proof, repo, own string, timeout time.Duration, late str
 
 // collect reads into run the report and the artifacts the check left in
 // own, regular files only, within maxProofLine: the report first, then
-// the artifacts that fit. The output names what was left out.
+// the artifacts that fit, each cut at maxArtifact on a character
+// boundary. The output names a report left out, Dropped the artifacts.
 func collect(run *harness.ProofRun, own string) {
 	root, err := os.OpenRoot(own)
 	if err != nil {
@@ -524,20 +524,24 @@ func collect(run *harness.ProofRun, own string) {
 	}
 	room := maxProofLine - len(line)
 	entries, _ := fs.ReadDir(root.FS(), "artifacts")
-	var left []string
+	dropped := 0
 	for _, d := range entries {
 		if !d.Type().IsRegular() {
 			continue
 		}
-		b, err := readRegular(root, filepath.Join("artifacts", d.Name()), maxArtifact)
+		b, err := readRegular(root, filepath.Join("artifacts", d.Name()), maxArtifact+1)
 		if err != nil {
 			continue
 		}
+		b = cutArtifact(b)
 		// the name escaped, at most six bytes a byte, the content in
 		// base64, two pairs of quotes, a colon and a comma
 		size := 6*len(d.Name()) + base64.StdEncoding.EncodedLen(len(b)) + 6
 		if size > room {
-			left = append(left, d.Name())
+			// the names stay within the line's slack past maxProofLine
+			if dropped += len(d.Name()); dropped <= 4<<10 {
+				run.Dropped = append(run.Dropped, d.Name())
+			}
 			continue
 		}
 		room -= size
@@ -546,9 +550,24 @@ func collect(run *harness.ProofRun, own string) {
 		}
 		run.Artifacts[d.Name()] = b
 	}
-	if len(left) > 0 {
-		run.Output += textutil.Truncate("\nproofs mode: one log line has no room for these artifacts: "+strings.Join(left, ", "), 4<<10)
+}
+
+// cutArtifact cuts b at maxArtifact without the first bytes of a
+// character the cut runs through.
+func cutArtifact(b []byte) []byte {
+	if len(b) <= maxArtifact {
+		return b
 	}
+	b = b[:maxArtifact]
+	for i := len(b) - 1; i >= len(b)-utf8.UTFMax; i-- {
+		if utf8.RuneStart(b[i]) {
+			if !utf8.FullRune(b[i:]) {
+				return b[:i]
+			}
+			break
+		}
+	}
+	return b
 }
 
 // openRegular opens name in root with flag, a regular file: a FIFO there

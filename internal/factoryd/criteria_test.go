@@ -168,8 +168,8 @@ func seedBlindPlan(t *testing.T, store *fakeStore, p Plan, rows []PlanProof) {
 // flagged one too, which makes no entry and opens; an opened proof runs
 // by suite and name from the tree; a test criterion without a stored or
 // opened row is held, late when the store happened without it, and never
-// opens; a judgement and a human criterion run their proof as a test
-// criterion does, and make no run without one.
+// opens; a judgement criterion's proof runs and is held as a test
+// criterion's, and a human one's runs, and it makes no run without one.
 func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 	rows := blindRows()
 	runs := gateRuns(blindPlan(), rows)
@@ -181,6 +181,7 @@ func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 		{id: "door", kind: CriterionTest, suite: "./proofs/door", name: "TestDoor", file: file(rows[2]), stored: &rows[2]},
 		{id: "no_proof", kind: CriterionTest, held: "Criterion no_proof has no stored proof: the prover filed before a later revision added it.", late: true},
 		{id: "all_green", kind: CriterionInvariant, suite: "./..."},
+		{id: "judged", kind: CriterionJudgement, held: "Criterion judged has no stored proof: the prover filed before a later revision added it.", late: true},
 		{id: "holdout-4", kind: CriterionTest, suite: "./proofs/key_log", name: "TestKeyLog", file: file(rows[3]), stored: &rows[3]},
 		{id: "holdout-5", kind: CriterionTest, suite: "./proofs/lock_log", name: "TestLockLog", file: file(rows[4]), stored: &rows[4]},
 	}
@@ -191,23 +192,24 @@ func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 	for _, c := range runs {
 		states, labels = append(states, c.state()), append(labels, c.label())
 	}
-	if want := []string{proofBlind, proofOpen, proofBlind, "", "", proofBlind, proofBlind}; !slices.Equal(states, want) {
+	if want := []string{proofBlind, proofOpen, proofBlind, "", "", "", proofBlind, proofBlind}; !slices.Equal(states, want) {
 		t.Fatalf("states = %q, want %q", states, want)
 	}
 	if want := []string{"criterion size_bound", "criterion group_open", "criterion door", "criterion no_proof", "criterion all_green",
-		"hold-out key_log", "hold-out lock_log"}; !slices.Equal(labels, want) {
+		"criterion judged", "hold-out key_log", "hold-out lock_log"}; !slices.Equal(labels, want) {
 		t.Fatalf("labels = %q, want %q", labels, want)
 	}
 	bare := blindPlan()
 	bare.Criteria = append(bare.Criteria, PlanCriterion{ID: "bare_suite", Kind: CriterionInvariant, Suite: "internal/..."})
-	if runs := gateRuns(bare, nil); runs[len(runs)-1].suite != "./internal/..." || runs[0].held != "criterion size_bound: no stored proof yet" || runs[0].late {
-		t.Fatalf("runs = %+v, want a bare suite read as a directory and every test held", runs)
+	if runs := gateRuns(bare, nil); runs[len(runs)-1].suite != "./internal/..." || runs[0].held != "criterion size_bound: no stored proof yet" || runs[0].late ||
+		runs[5].held != "criterion judged: no stored proof yet" || runs[5].late {
+		t.Fatalf("runs = %+v, want a bare suite read as a directory and every test and judgement held", runs)
 	}
 	withArtifacts := blindPlan()
 	withArtifacts.Criteria = append(withArtifacts.Criteria, readsCalm, pagesOK)
 	rows = append(blindRows(), artifactRows()...)
 	runs = gateRuns(withArtifacts, rows)
-	want = slices.Insert(want, 5,
+	want = slices.Insert(want, 6,
 		criterionRun{id: "reads_calm", kind: CriterionJudgement, suite: "./proofs/reads_calm", name: "TestReadsCalm", file: file(rows[5]), stored: &rows[5]},
 		criterionRun{id: "pages_ok", kind: CriterionHuman, suite: "./proofs/pages_ok", name: "TestPagesOK", file: file(rows[6]), stored: &rows[6]})
 	if !reflect.DeepEqual(runs, want) {
@@ -246,7 +248,7 @@ func TestOpenedFindingCarriesTheCriterionTheCodeAndTheOutput(t *testing.T) {
 		"TestDoor in ./proofs/door:\n```\npackage door // flagged\n```"; got != want {
 		t.Errorf("the flagged finding =\n%s\nwant\n%s", got, want)
 	}
-	keyLog := openedProof{run: runs[5], outcome: proofFailed, output: "Failed\n--- FAIL: TestKeyLog (0.00s)",
+	keyLog := openedProof{run: runs[6], outcome: proofFailed, output: "Failed\n--- FAIL: TestKeyLog (0.00s)",
 		text: "The hold-out: Every key turn lands in the log. Inputs: three turns of key 7. Expected: three log rows."}
 	if got, want := openedFinding(keyLog, "8e3a1b0c9d"), "hold-out key_log: its blind proof ran red at 8e3a1b0. It is open now. "+
 		"Commit the test below at proofs/key_log/key_log_test.go and make it pass: "+
@@ -674,6 +676,38 @@ func TestGateCriteriaWaitingRunsNoPod(t *testing.T) {
 	}
 }
 
+// A judgement criterion a later revision added after the prover filed is
+// held as a test criterion is: its line and a finding say so, and the
+// gate writes it no row. A plan of such criteria alone runs nothing and
+// says so on the pull request.
+func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"late_calm","kind":"judgement","claim":"The list reads calm","inputs":"the list page","prompt":"Calm?"}`)
+	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{{Idx: 1, Origin: ProofOriginCriterion, Criterion: "dropped", ID: "dropped",
+		State: ProofStored, Suite: "proofs/dropped", Name: "TestDropped", Path: "proofs/dropped/dropped_test.go", Code: "package dropped"}}); err != nil {
+		t.Fatal(err)
+	}
+	res, err := runCriteria(t, r)
+	const late = "Criterion late_calm has no stored proof: the prover filed before a later revision added it."
+	if err != nil || !slices.Equal(res.Findings, []string{late}) {
+		t.Fatalf("result = %+v, %v; want the late finding alone", res, err)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(kube.podOrder) != 0 || len(rows) != 0 {
+		t.Fatalf("pods %d, rows %+v; want none", len(kube.podOrder), rows)
+	}
+	var proofs []gateProof
+	if err := json.Unmarshal(mustJSON(timelineStep(t, objects, "t1", "gate_criteria")["proofs"]), &proofs); err != nil ||
+		!slices.Equal(proofs, []gateProof{{ID: "late_calm", Kind: CriterionJudgement, Line: late}}) {
+		t.Fatalf("the line's proofs = %+v, %v; want late_calm's late line", proofs, err)
+	}
+	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "factoryd criteria gate on c1: no criterion ran.") || !strings.Contains(hub.comments[0], late) {
+		t.Fatalf("comments = %q, want the one saying no criterion ran, with the late line", hub.comments)
+	}
+}
+
 // A judgement or a human criterion's proof is the prover's too: a plan
 // with no test criterion waits for it as well, runs nothing and writes
 // no row.
@@ -785,13 +819,14 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 		"criterion door: its proof was flagged green on main by its dry run, so it had no blind try",
 		"Criterion no_proof has no stored proof: the prover filed before a later revision added it.",
 		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
+		"Criterion judged has no stored proof: the prover filed before a later revision added it.",
 		"hold-out never_red: its proof was flagged unrunnable by its dry run, so it had no blind try",
 	}
-	if len(res.Findings) != 4 || res.Findings[0] != lines[1] || !strings.HasPrefix(res.Findings[1], lines[2]+". It is open now.") ||
-		res.Findings[2] != lines[3] || !strings.HasPrefix(res.Findings[3], lines[5]+". It is open now.") ||
-		!strings.Contains(res.Findings[3], "\nThe hold-out: A lock turn is never lost. Inputs: one turn of key 9. Expected: one log row.\n") ||
+	if len(res.Findings) != 5 || res.Findings[0] != lines[1] || !strings.HasPrefix(res.Findings[1], lines[2]+". It is open now.") ||
+		res.Findings[2] != lines[3] || res.Findings[3] != lines[5] || !strings.HasPrefix(res.Findings[4], lines[6]+". It is open now.") ||
+		!strings.Contains(res.Findings[4], "\nThe hold-out: A lock turn is never lost. Inputs: one turn of key 9. Expected: one log row.\n") ||
 		res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
-		t.Fatalf("result = %+v, want group_open's line, door's opening, no_proof's line and never_red's opening", res)
+		t.Fatalf("result = %+v, want group_open's line, door's opening, no_proof's and judged's lines and never_red's opening", res)
 	}
 	gate := func(id, verdict, line string) CriterionVerdict {
 		return CriterionVerdict{Criterion: id, Verdict: verdict, Evidence: line, Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}
@@ -817,7 +852,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	if got := string(mustJSON(step["holdouts"])); got != `[{"id":"holdout-4","verdict":"green"}]` {
 		t.Fatalf("timeline holdouts = %s, want holdout-4 green alone", got)
 	}
-	if proofs, _ := step["proofs"].([]any); len(proofs) != 6 {
+	if proofs, _ := step["proofs"].([]any); len(proofs) != 7 {
 		t.Fatalf("timeline proofs = %v, want one per gate criterion and never_red's", step["proofs"])
 	}
 	if got := string(mustJSON(step["opened"])); got != `["door","never_red"]` {
@@ -907,10 +942,11 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 	sizeBound := openedProof{run: runs[0], outcome: proofFailed, output: sizeBoundMsg,
 		text: "The criterion: A size over the bound is refused. Inputs: POST /api/sizes with 3.75 against a bound of 3.5. Expected: 400 and no row in the store."}
 	door := openedProof{run: runs[2], outcome: proofFlagged, text: "The criterion: A door opens for its key. Inputs: POST /doors/1/open with key 7. Expected: 200."}
-	keyLog := openedProof{run: runs[5], outcome: proofFailed, output: "Failed\n--- FAIL: TestKeyLog (0.00s)",
+	keyLog := openedProof{run: runs[6], outcome: proofFailed, output: "Failed\n--- FAIL: TestKeyLog (0.00s)",
 		text: "The hold-out: Every key turn lands in the log. Inputs: three turns of key 7. Expected: three log rows."}
 	const late = "Criterion no_proof has no stored proof: the prover filed before a later revision added it."
-	wantFindings := []string{openedFinding(sizeBound, "c1"), openedFinding(door, "c1"), late, openedFinding(keyLog, "c1")}
+	const lateJudged = "Criterion judged has no stored proof: the prover filed before a later revision added it."
+	wantFindings := []string{openedFinding(sizeBound, "c1"), openedFinding(door, "c1"), late, lateJudged, openedFinding(keyLog, "c1")}
 	if !slices.Equal(res.Findings, wantFindings) || res.Escalate != "" || res.Skipped != "" {
 		t.Fatalf("findings =\n%s\nwant\n%s", strings.Join(res.Findings, "\n--\n"), strings.Join(wantFindings, "\n--\n"))
 	}
@@ -921,6 +957,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 		"criterion door: its proof was flagged green on main by its dry run, so it had no blind try",
 		late,
 		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
+		lateJudged,
 		"hold-out key_log: TestKeyLog in ./proofs/key_log failed: Failed --- FAIL: TestKeyLog (0.00s)",
 	}
 	gate := func(id, verdict, evidence, kind string) CriterionVerdict {
@@ -978,7 +1015,8 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 		{ID: "door", Kind: CriterionTest, Suite: "./proofs/door", Name: "TestDoor", Line: lines[2], State: proofBlind, Path: "proofs/door/door_test.go"},
 		{ID: "no_proof", Kind: CriterionTest, Line: late},
 		{ID: "all_green", Kind: CriterionInvariant, Suite: "./...", Outcome: proofPassed, Met: true, Line: lines[4], Message: "1 passed, 0 skipped"},
-		{ID: "key_log", Kind: CriterionTest, Suite: "./proofs/key_log", Name: "TestKeyLog", Outcome: proofFailed, Line: lines[5],
+		{ID: "judged", Kind: CriterionJudgement, Line: lateJudged},
+		{ID: "key_log", Kind: CriterionTest, Suite: "./proofs/key_log", Name: "TestKeyLog", Outcome: proofFailed, Line: lines[6],
 			Message: "Failed\n--- FAIL: TestKeyLog (0.00s)", State: proofBlind, Path: "proofs/key_log/key_log_test.go", Holdout: true},
 	}
 	if !slices.Equal(proofs, wantProofs) {

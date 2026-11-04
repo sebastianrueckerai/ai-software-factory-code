@@ -10,7 +10,7 @@ changes.
 - message-responder: Answers a writer's message pushed into a running session. The message becomes the loop's next turn.
 - opencode-subagents: opencode's own general and explore subagents, set by the agent block in our session config. Their prompts live inside the pinned binary; the config sets their model and step cap.
 - checkin: Reads a session that stopped at a checkpoint short of done and answers one of continue, message, handover, human or replan.
-- model-review: Judges the change against one review criterion or behaviour, the texts the criteria and behaviours agents draft.
+- model-review: Reads the change's diff with the card's objective and the opened proofs' original code, and answers a verdict with findings.
 - security-audit: Checks the change against the security checklist. No other agent makes this reading.
 - gate-supervisor: Reads the verdicts and answers approve or escalate. Nothing merges past this agent unjudged.
 - judgement: Reads the artifact a blind test wrote and answers met or unmet with the criterion's pinned prompt. It never sees the diff.
