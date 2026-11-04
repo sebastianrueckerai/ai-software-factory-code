@@ -1156,9 +1156,9 @@ const (
 	versionApprovalPending workflow.Version = 1
 	// versionCriteriaGate (change id "criteria-gate", roadmap 287): the
 	// approval stage runs the criteria gate once before its request, on the
-	// plan's integration card alone (the activity decides which card
-	// is one); the criteria's findings go on the approval card, for the
-	// human. A run from before asks its approval without the gate.
+	// plan's integration card and its delta cards (the activity decides
+	// which card is one); the criteria's findings go on the approval card,
+	// for the human. A run from before asks its approval without the gate.
 	versionCriteriaGate workflow.Version = 1
 	// versionCheckinRaise (change id "checkin-raise"): an answer to a
 	// check-in stopped at its call cap buys the session, whose check-in

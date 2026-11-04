@@ -1010,7 +1010,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			return
 		}
 		comment := "factoryd: every card of this plan is done or closed; the plan is closed."
-		if r.timeline.hasEvent(ctx, parent, EventAllChildrenDone) {
+		if r.timeline.hasEvent(ctx, parent, EventAllChildrenDone, nil) {
 			comment = ""
 		}
 		r.closePlan(ctx, t, repo, 0, comment)

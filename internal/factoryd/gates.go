@@ -198,7 +198,7 @@ type Review struct {
 
 // GateLeft are the ids of a plan's criteria of kind test and invariant, as
 // the review of one of its cards names them; Integration: the card is the
-// plan's integration card, the one card the criteria gate runs on.
+// plan's integration card.
 type GateLeft struct {
 	IDs         []string `json:"ids"`
 	Integration bool     `json:"integration,omitempty"`
@@ -312,9 +312,8 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 
 // criteriaUnmet is why the plan's criteria do not prove the change: the
 // review's are not all met; or they are the criteria gate's, whose
-// verdicts the auto merge does not read on the integration card and which
-// the gate never runs on a delta card; "" for a card the plan's criteria
-// do not judge.
+// verdicts the auto merge does not read on the integration card or on a
+// delta card; "" for a card the plan's criteria do not judge.
 func criteriaUnmet(rv Review) string {
 	switch {
 	case len(rv.Criteria) > 0:
@@ -322,7 +321,7 @@ func criteriaUnmet(rv Review) string {
 	case rv.GateCriteria != nil && rv.GateCriteria.Integration:
 		return "the auto merge does not read the criteria gate's verdicts on " + strings.Join(rv.GateCriteria.IDs, ", ")
 	case rv.GateCriteria != nil:
-		return "the criteria gate runs on the plan's integration card alone, and a person decides this merge"
+		return "the auto merge does not read the criteria gate's verdicts on a delta card, and a person decides this merge"
 	}
 	return ""
 }
@@ -941,15 +940,15 @@ func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, 
 	return runs, runErr, err
 }
 
-// runProofs runs entries through proofRuns and reads each one's outcome
-// by its id. A pod that ended before it reported every entry returns the
-// outcomes with a *proofsEnded: the entries it reached keep theirs, the
-// rest are no report.
-func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
+// runProofs runs entries through proofRuns and answers the runs it read
+// beside each entry's outcome, by its id. A pod that ended before it
+// reported every entry returns them with a *proofsEnded: the entries it
+// reached keep theirs, the rest are no report.
+func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (runs map[string]harness.ProofRun, outcomes map[string]proofOutcome, err error) {
 	runs, runErr, err := r.proofRuns(ctx, t, repo, ref, commit, at, entries, proofsBudget)
 	ended := errors.Is(err, errLogEnded)
 	if err != nil && !ended {
-		return nil, err
+		return nil, nil, err
 	}
 	if ended {
 		runErr = proofsEndedEarly
@@ -964,9 +963,9 @@ func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, 
 		out[e.ID] = proofResult(run, ok, runErr, e.Name)
 	}
 	if len(unreached) > 0 {
-		return out, &proofsEnded{unreached: unreached, of: len(entries)}
+		return runs, out, &proofsEnded{unreached: unreached, of: len(entries)}
 	}
-	return out, nil
+	return runs, out, nil
 }
 
 // proofsEnded is a proofs pod that ended before it reported unreached,

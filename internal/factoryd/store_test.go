@@ -117,6 +117,7 @@ type fakeStore struct {
 	catches          map[string][]string           // the recording rule's ledger, by "task revision kind finder"
 	criteriaVerdicts map[string][]CriterionVerdict // rows by task, every source's
 	proofs           map[string][]PlanProof        // the plan proof rows, idx order, by task
+	openErr          error                         // answered once by OpenPlanProof
 	queue            []queueEntry                  // the merge queues, oldest first
 	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
@@ -3407,6 +3408,31 @@ func TestPGStoreProofs(t *testing.T) {
 		t.Fatalf("round 3 put beside a criterion's proof: %v %v, want true", ok, err)
 	}
 
+	// A stored row opens once; a row in any other state does not open.
+	if _, err := s.db.ExecContext(ctx, `UPDATE plan_proofs SET state = 'stored', path = 'proofs/door_state/door_state_test.go',
+		suite = './proofs/door_state', name = 'TestDoorState', code = 'package door_state' WHERE task_id = 't-ho' AND idx = 1`); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []bool{true, false} {
+		if ok, err := s.OpenPlanProof(ctx, "t-ho", 1); err != nil || ok != want {
+			t.Fatalf("open %d of a stored row = %v, %v; want %v", i+1, ok, err, want)
+		}
+	}
+	before, err := s.PlanProofs(ctx, "t-ho")
+	if err != nil || before[0].Idx != 1 || before[0].State != ProofOpened {
+		t.Fatalf("rows after the open = %+v, %v; want idx 1 opened", before, err)
+	}
+	filed := slices.IndexFunc(before, func(pp PlanProof) bool { return pp.State == ProofFiled })
+	if filed < 0 {
+		t.Fatalf("rows = %+v, want a filed one", before)
+	}
+	if ok, err := s.OpenPlanProof(ctx, "t-ho", before[filed].Idx); err != nil || ok {
+		t.Fatalf("open of a filed row = %v, %v; want false", ok, err)
+	}
+	if after, err := s.PlanProofs(ctx, "t-ho"); err != nil || !slices.Equal(after, before) {
+		t.Fatalf("rows after the open of a filed row = %+v, %v; want them as they were", after, err)
+	}
+
 	// A stored proof holds its test; a criterion's proof names its criterion.
 	for constraint, insert := range map[string]string{
 		"plan_proofs_file_check": `INSERT INTO plan_proofs (task_id, idx, round, id, origin, claim, state, suite, name, code)
@@ -4540,6 +4566,20 @@ func (s *fakeStore) StorePlanProofs(ctx context.Context, id string, flags map[in
 		}
 	}
 	return nil
+}
+
+func (s *fakeStore) OpenPlanProof(ctx context.Context, id string, idx int) (bool, error) {
+	if err := s.openErr; err != nil {
+		s.openErr = nil
+		return false, err
+	}
+	for i, pp := range s.proofs[id] {
+		if pp.Idx == idx && pp.State == ProofStored {
+			s.proofs[id][i].State = ProofOpened
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *fakeStore) PlansWithoutProver(ctx context.Context) ([]string, error) {

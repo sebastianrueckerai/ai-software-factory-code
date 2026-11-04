@@ -92,6 +92,13 @@ const (
 	// "stored": [ids], "flagged": [{"criterion", "flag"}]}, a hold-out by
 	// holdoutEntry.
 	EventProofsStored = "proofs_stored"
+	// EventProofOpened records a stored proof that the gate's blind try did
+	// not pass, on the gated card and on the plan task: detail {"criterion",
+	// "head", "outcome" (a proof* word, or "flagged"), "message" (the output
+	// the builder got, or the flag), "path", "suite", "name", "code", and
+	// "holdout", the claim with its inputs and expected numbers, for a
+	// hold-out}. The test is public from here on.
+	EventProofOpened = "proof_opened"
 )
 
 // StepEvent is the timeline step every event is recorded under.
@@ -113,16 +120,24 @@ func (tl *Timeline) recordEvent(ctx context.Context, taskID, event string, detai
 	tl.RecordRow(ctx, taskID, event, FactoryDecider, ViaFactoryd, detail)
 }
 
-// hasEvent tells whether taskID's timeline holds event. An unreadable
-// timeline reads as no.
-func (tl *Timeline) hasEvent(ctx context.Context, taskID, event string) bool {
+// hasEvent tells whether taskID's timeline holds event on a line that
+// holds every value of match; a nil match takes any line of the event. An
+// unreadable timeline reads as no.
+func (tl *Timeline) hasEvent(ctx context.Context, taskID, event string, match map[string]string) bool {
 	body, err := tl.Objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
 		return false
 	}
 	for _, line := range bytes.Split(body, []byte("\n")) {
 		var e map[string]any
-		if json.Unmarshal(line, &e) == nil && e["step"] == StepEvent && e["event"] == event {
+		if json.Unmarshal(line, &e) != nil || e["step"] != StepEvent || e["event"] != event {
+			continue
+		}
+		held := true
+		for k, v := range match {
+			held = held && e[k] == v
+		}
+		if held {
 			return true
 		}
 	}

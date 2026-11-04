@@ -3200,8 +3200,8 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 
 // A card whose plan's criteria are all the gate's carries no review rows:
 // its why line names the criteria the auto merge does not read from the
-// gate, never a missing reproduction. A delta card's says the gate runs
-// on the integration card alone.
+// gate, never a missing reproduction. A delta card's says a person
+// decides the merge.
 func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 	g, rv := fullAutoGates("api")
 	g.Reproduction = ReproResult{}
@@ -3210,7 +3210,7 @@ func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{gate}) {
 		t.Fatalf("ok %v, unmet %q; want %q", ok, unmet, gate)
 	}
-	delta := "the criteria gate runs on the plan's integration card alone, and a person decides this merge"
+	delta := "the auto merge does not read the criteria gate's verdicts on a delta card, and a person decides this merge"
 	rv.GateCriteria.Integration = false
 	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{delta}) {
 		t.Fatalf("a delta card: ok %v, unmet %q; want %q", ok, unmet, delta)

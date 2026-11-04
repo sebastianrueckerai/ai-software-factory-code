@@ -494,6 +494,8 @@ func (s *accBatchStore) FilePlanProofs(context.Context, string, []factoryd.PlanP
 
 func (s *accBatchStore) StorePlanProofs(context.Context, string, map[int]string) error { return nil }
 
+func (s *accBatchStore) OpenPlanProof(context.Context, string, int) (bool, error) { return false, nil }
+
 func (s *accBatchStore) PlansWithoutProver(context.Context) ([]string, error) { return nil, nil }
 
 func (s *accBatchStore) PastReverts(context.Context, string) ([]string, error) {

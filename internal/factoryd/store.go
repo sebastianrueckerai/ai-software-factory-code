@@ -749,8 +749,9 @@ type Store interface {
 	// The plan's blind proofs (the spec-intake concept, piece 6): a round's
 	// hold-out proposals, every row, the undecided count of one round, the
 	// human's okay or drop, the sweep of a closing round, the prover's
-	// filing and its store after the dry run on main, the open plans with
-	// filed cards and no prover, and the project's past reverts.
+	// filing and its store after the dry run on main, the gate's opening
+	// of a stored proof, the open plans with filed cards and no prover,
+	// and the project's past reverts.
 	PutPlanProofs(ctx context.Context, id string, round int, proposals []PlanProof) (bool, error)
 	PlanProofs(ctx context.Context, id string) ([]PlanProof, error)
 	UndecidedProofs(ctx context.Context, id string, round int) (int, error)
@@ -758,6 +759,7 @@ type Store interface {
 	SweepPlanProofs(ctx context.Context, id string) error
 	FilePlanProofs(ctx context.Context, id string, filed []PlanProof) error
 	StorePlanProofs(ctx context.Context, id string, flags map[int]string) error
+	OpenPlanProof(ctx context.Context, id string, idx int) (bool, error)
 	PlansWithoutProver(ctx context.Context) ([]string, error)
 	PastReverts(ctx context.Context, repository string) ([]string, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its

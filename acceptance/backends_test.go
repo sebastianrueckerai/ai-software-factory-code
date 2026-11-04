@@ -1196,6 +1196,10 @@ func (s *acceptanceStore) FilePlanProofs(context.Context, string, []factoryd.Pla
 
 func (s *acceptanceStore) StorePlanProofs(context.Context, string, map[int]string) error { return nil }
 
+func (s *acceptanceStore) OpenPlanProof(context.Context, string, int) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) PlansWithoutProver(context.Context) ([]string, error) { return nil, nil }
 
 func (s *acceptanceStore) PastReverts(context.Context, string) ([]string, error) {
