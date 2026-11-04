@@ -181,7 +181,15 @@ decimals: a task's model calls cost fractions of a cent.
   request shows its type, purpose, lease, monthly cost, project and task;
   approve for the task or the project, or deny with a reason (`decided_by`,
   `decided_at`, `decision_note`). A merge request shows the pull request,
-  the risk class, the migration flag and the model review. Approve submits
+  the risk class, the migration flag and the model review. A merge card
+  of a plan's integration or delta card holds a row per criterion under
+  them, its legend `<id> (<kind>): <verdict>`, and on a gate row blind or
+  open beside the verdict. A human row shows its artifact, or its
+  evidence, and the buttons Met, Not met and Waive (`POST
+  /approvals/{id}/criterion`, verbs `met`, `not_met`, `waived`), a gate
+  row Waive alone. Not met sends the card back with the human's words.
+  Approve stays off until every human row stands. The drawer shows an
+  opened proof's original beside the pull request's version. Approve submits
   an APPROVED review at the gated head as the human, and only once Forgejo
   took it calls `factoryd.ApproveMerge`; deny with a reason submits a
   REQUEST_CHANGES review (the changes-requested path sends the task back)

@@ -82,16 +82,17 @@ activities, each with a timeline step and a comment on the pull request:
    bound follows the waves of four calls, plus one for each retried call,
    and stays ten minutes under the six hours of its attempt. The parts'
    findings keep the first 50 and a line that counts the rest; their
-   summaries keep 8 KiB. The review of an integration card, one that answers the
-   plan's criteria, adds one call per criterion (more for a criterion
-   whose diff needs several parts) over the diff of the cards that cite
-   it, every delta card and the card itself, and one call for the
-   feature's behaviours. The behaviours call reads the cards' briefs, their
-   file lists and the names they add, and no diff. A criterion over several
-   parts takes the worst part's verdict. A part may answer `absent`, and
-   a criterion absent from every part is `unmet`. Its evidence and fix come
-   only from the parts at the verdict's level. A plain review answer that
-   carries `criteria` or `behaviours` is refused. When the agent fixed
+   summaries keep 8 KiB. The review of an integration card or a delta
+   card adds one call, for the feature's behaviours: it reads the cards'
+   briefs, their file lists and the names they add, and no diff. It
+   judges no criterion, since `GateCriteria` settles the test, invariant
+   and judgement criteria and the approver the human ones. The first
+   call reads each opened proof's original code and the agent's summary
+   beside the diff, and a change that weakens what an opened proof
+   checks, or removes it, is a finding unless the summary says why the
+   test was wrong. A plain review answer that carries `note`,
+   `adjudicated`, `dropped`, `criteria`, `behaviours` or `gate_criteria`
+   is refused. When the agent fixed
    a fault it did not reproduce exactly (a `not_reproduced:` line in its
    last message, which the brief asks for; `GateReproduction` comments it
    and records "not reproduced" instead of "skipped"), the answer must
@@ -130,7 +131,68 @@ activities, each with a timeline step and a comment on the pull request:
    `auto` never merges past it; a roll's review (no model call) is no
    finding, and the review stage takes no `when`: `enabled: false` is its
    only skip.
-5. From change id `auto-merge` on, `AutoMerge` decides:
+5. `GateCriteria`, from change id `criteria-gate` on, at the approval of a
+   plan's integration card or delta card. Every other card of the plan
+   skips it, named why on the timeline. It runs once, before the approval
+   request opens, on the head the request will name, and again when a
+   press finds criteria it never judged. One runner pod, with no agent,
+   runs every entry in the reproduction's sandbox: the fetch init
+   container alone holds the read token, on the factory's image, the
+   worker container (`MODE=proofs`) holds none, and the list of entries
+   reaches it over the message port under a bearer of which it holds the
+   hash alone. Each entry is bounded by `REPRO_TIMEOUT`, the whole run by
+   `PROOFS_BUDGET` (35 minutes), and neither mounts the project's shared
+   cache: Go and npm build cold under `/build`.
+   Per entry the worker writes the proof's file into the tree and runs
+   `bash check test <suite> [<name>]` there by exec, with `CHECK_REPORT`
+   and `CHECK_ARTIFACTS` bound, and one stdout line answers the exit, the
+   output's tail, the gzipped JUnit report and the artifacts.
+   `readReport` reads that report: a suite passes when no case failed and
+   one ran, a named test is read by its own case (a case of its name that
+   failed fails, no case of its name is missing, every one skipped
+   skips), a report that is absent, empty or does not parse is "no
+   report", and a build failure reads as missing with the build's errors
+   in the evidence. The entries are every stored proof (blind), every
+   opened proof by its suite and name from the tree (open), every
+   invariant criterion by its suite, and each judgement or human
+   criterion's proof for its artifact. The hold-outs run last, so no
+   criterion's run sees a hold-out's file. A criterion whose proof is not
+   stored yet runs nothing: its row is unmet with why, and while the
+   plan's prover may still store it the gate asks the human to wait.
+   The rows land in `criteria_verdicts` on the plan's integration card,
+   source `gate`, one per test and invariant criterion: met for a passed
+   run, unmet for any other, the run's line the evidence, opening
+   `blind: ` or `open: ` when the proof has a state. A green stored proof
+   is met, blind, and stays stored. Any other outcome opens it:
+   `OpenPlanProof` turns its row opened, the event `proof_opened` lands
+   on the card and the plan once per head, and a finding hands the
+   builder the criterion, the proof's code and the run's output. A proof
+   its dry run on main flagged opens without a blind try. An opened proof
+   that runs red, or whose file is gone or not at its path in the head,
+   is a finding.
+   A judgement or human criterion's proof writes an artifact, which the
+   gate stores on the integration card. `judgeArtifacts` keeps each at
+   `ArtifactKey` and calls the model once per judgement criterion, with
+   the criterion's pinned prompt and `judgementAnswer`, the artifact
+   alone as the input, no tool and no diff. The row's source is
+   `judgement`, its evidence the model's reason with the model's alias
+   and the prompt's hash, and the `judgement` line goes on the timeline.
+   A human criterion gets no row from the gate: the human settles it on
+   the merge card (`console.md`).
+   The comment on the pull request reads "factoryd criteria gate on
+   <head>: <k> of <n> criteria met (human criteria ride the approval)",
+   each criterion's line under it.
+   From change id `blind-proofs` on, the gate's findings go back to the
+   agent as the criteria stage's do, and to the card at the session cap.
+   The plan's standing rows ride `GateResults.Criteria` to `AutoMerge`. A
+   press whose never-judged criteria are the gate's runs it again
+   (`Unjudged`, `regate`), a press that waits on a human's row holds the
+   merge. After a plan card's session that ended without a push,
+   `ProofsAtMain` runs the proofs of the criteria the card cites at
+   main's head: every one passed ends the card done with "proofs met at
+   <head>: <ids>", anything else is the next session's finding, naming
+   the criteria not met by id alone. It opens nothing and writes no row.
+6. From change id `auto-merge` on, `AutoMerge` decides:
    the project's merge rule is `auto` (`projects.merge_rule`, read by
    `GatePolicy`; the factory's own repositories are `human`), the risk
    class's outcome is `auto` (allowed on class `normal` only; the policy
@@ -138,9 +200,12 @@ activities, each with a timeline step and a comment on the pull request:
    most), the review's verdict is `approve`
    with `strict_improvement: true` (the review answers it on
    every pull request; false or missing sends it to the card), and the
-   fix is proven one of two ways: the reproduction failed at
-   the base and passes at the head, or the agent recorded the fault it
-   fixed (`not_reproduced`), with or without a reproduction command.
+   fix is proven one of three ways: the reproduction failed at
+   the base and passes at the head, the agent recorded the fault it
+   fixed (`not_reproduced`, with or without a reproduction command), or,
+   from change id `blind-proofs` on, a plan's integration or delta card
+   whose criteria all stand met or waived on `GateResults.Criteria` (an
+   open criterion holds the merge).
    Then `AutoMergeNote` records the auto merge on the timeline, and
    `Merge` first approves the head as the merge gate's user `factory-gate`
    (an APPROVED review whose body lists every condition
@@ -151,7 +216,7 @@ activities, each with a timeline step and a comment on the pull request:
    gate token or a refused approval is a refusal like Forgejo's, and the
    first two post no review. Anything else,
    or an auto merge Forgejo refuses or that fails, goes on to:
-6. `RequestApproval` opens an `approval_requests` row (kind `merge`,
+7. `RequestApproval` opens an `approval_requests` row (kind `merge`,
    status `pending`, the task, project, pull request, and in `spec` the
    risk class, the migration flag and paths, the review's verdict and
    summary, the reproduction, the head, the agent's recommendation (its
@@ -169,10 +234,9 @@ signal-with-start like the webhook path. An approval the project agent
 decides (in a wake, or unconfirmed in a human's turn at full auto) is the
 factory's own, whoever is online: the console posts no review, and every
 approval request, plan answer and signal it decides names `factory-chat`.
-A plan's integration or delta card merges only once every human
-criterion has a verdict: the human settles each one on the card with Met
-or Not met, and Not met sends the card back to its agent with their
-words. `Merge` treats approver `factory-chat` as the merge gate's own
+A merge card of a plan's integration or delta card holds a row per
+criterion, and Approve opens once every human row stands (`console.md`).
+`Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
 with `factoryd: the project agent approved <head> on the project's merge
 rule auto`; on any other rule, or without a gate token, it refuses as
@@ -574,5 +638,22 @@ its last message on with the findings. Every session counts against
 writer's comment buys one more. A card's sessions
 get the section "The spec and the plan" (the plan's issue and summary,
 the pod's `SPEC`) and the feature guide instead of the work guide
-(`CARD_ROLE`; the integration card's adds the `acceptance/` tests).
+(`CARD_ROLE`): build what this card's brief asks and only that, since
+other agents build the plan's other cards, with a test per acceptance
+item on the inputs and numbers it gives and no probe tests, and the
+integration card's turns the spec's acceptance tests into Go tests under
+`acceptance/` and makes them pass.
+
+The criteria sweep opens one prover for an open plan that owes proofs,
+once its foundation card is done, or at once for a plan without one: a
+report task of source `prover` and class `prover` at main's head. Its
+session writes one test per criterion of kind test, judgement and human
+and per okayed hold-out on main, runs each itself and files the set
+through `file_proofs`, three filings at most, the last that passed
+standing. After
+the session factoryd dry-runs the last filing on main and stores the
+rows in `plan_proofs`, flagged when a test was green or unrunnable
+there, and a flagged proof opens at the gate without a blind try. A
+hold-out is a claim with its inputs and expected numbers and no code,
+shown as `holdout-<idx>` outside the prover's brief.
 
