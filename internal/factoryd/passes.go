@@ -38,9 +38,10 @@ func (p *Passes) Ages(now time.Time) map[string]time.Duration {
 // passLoop runs fn at once, then every `every`, each run under a context
 // bounded by bound. A run past its bound is logged with its name and the
 // time over, sets the gauge factory.pass.late{pass} to 1 until a run ends
-// within the bound, and is cancelled by the context. A run never overlaps
-// the one before it: one that ignores its context holds its own loop, and
-// the watchdog shows it late at the bound.
+// within the bound, and is cancelled by the context. Its error is then
+// the deadline the bound lines already say, so it is not logged. A run
+// never overlaps the one before it: one that ignores its context holds its
+// own loop, and the watchdog shows it late at the bound.
 func (p *Passes) passLoop(ctx context.Context, name string, every, bound time.Duration, fn func(context.Context) error) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
@@ -71,7 +72,7 @@ func (p *Passes) once(ctx context.Context, name string, bound time.Duration, fn 
 		err = <-done
 	}
 	end := time.Now()
-	if err != nil && ctx.Err() == nil {
+	if err != nil && ctx.Err() == nil && run.Err() != context.DeadlineExceeded {
 		log.Printf("pass %s: %v", name, err)
 	}
 	took := end.Sub(start)

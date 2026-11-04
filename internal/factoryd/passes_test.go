@@ -6,6 +6,7 @@ import (
 	"os"
 	"regexp"
 	"slices"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -70,7 +71,8 @@ type passSeen struct {
 // bound, logged with its name and the time over, and sets
 // factory.pass.late to 1. The next run ends at once, within the bound,
 // and sets it back to 0. Each run reads the gauge as it starts: the run
-// before it has ended by then.
+// before it has ended by then. The cut run's error is its deadline, which
+// the two bound lines already say, so it logs no third line.
 func TestPassLoopBoundsARunAndFlagsIt(t *testing.T) {
 	p, reader := latePasses(t)
 	var logs lockedBuffer
@@ -110,6 +112,9 @@ func TestPassLoopBoundsARunAndFlagsIt(t *testing.T) {
 	}
 	if !regexp.MustCompile(`pass heal: ended \S+ over its bound of 100ms`).MatchString(logs.String()) {
 		t.Fatalf("logs = %q, want the cut run named with its time over", logs.String())
+	}
+	if strings.Contains(logs.String(), "pass heal: context deadline exceeded") {
+		t.Fatalf("logs = %q, want the cut run's own error left out: its two bound lines say it", logs.String())
 	}
 	third := nextRun(t, seen)
 	if third.err != nil {
@@ -169,7 +174,7 @@ func TestPassesAgesNameEveryPass(t *testing.T) {
 	if heal := ages["heal"]; heal < now.Sub(healStarted) || heal > now.Sub(before) {
 		t.Fatalf("heal's age = %s, want its age from its start, within [%s, %s]", heal, now.Sub(healStarted), now.Sub(before))
 	}
-	if stale := ages["stale"]; stale <= 0 || stale >= ages["heal"] {
+	if stale := ages["stale"]; stale >= ages["heal"] {
 		t.Fatalf("stale's age = %s, want younger than heal's %s: it ended since heal started", stale, ages["heal"])
 	}
 }

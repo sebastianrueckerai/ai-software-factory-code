@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"log"
+	"maps"
 	"time"
 
 	enumspb "go.temporal.io/api/enums/v1"
@@ -358,22 +359,29 @@ type StaleCards interface {
 // never the queue, whose wait owes no work) quiet for the stale window,
 // whose workflow Temporal reports dead, is nudged: SignalWithStart starts
 // the workflow again. One still quiet a window after its nudge is nudged
-// again. The sweep asks no human: the monitor's run_quiet flag faces the
-// quiet card. A card whose workflow runs is never nudged, in any state,
-// since a quiet wait is by design. objects holds the timelines whose
-// newest step counts as the card's work. nudged is the sweep's memory of
-// its signals (task id to when), owned by the caller's pass. A card that
-// reports again is forgotten.
+// again. The sweep asks no human. The monitor faces a quiet running card
+// with its run_quiet flag and a waiting-deps card with its dependency
+// bound. A waiting-poster card has no wait the monitor owns: the poster's
+// reply reaches its run by SignalWithStart, this sweep's restart heals a
+// dead run, and the board's stale ring shows it. A card whose workflow
+// runs is never nudged, in any state, since a quiet wait is by design.
+// objects holds the timelines whose newest step counts as the card's
+// work. nudged is the sweep's memory of its signals (task id to when),
+// owned by the caller's pass. A card that reports again is forgotten, and
+// so is one the sweep no longer lists, once every list was read.
 func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects ObjectStore, alive func(ctx context.Context, taskID string) (bool, error), nudged map[string]time.Time) {
+	listed, complete := map[string]bool{}, true
 	for _, status := range []string{"running", "waiting-deps", "waiting-poster"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
 			log.Printf("stale sweep: list %s: %v", status, err)
+			complete = false
 			continue
 		}
 		ids := make([]string, 0, len(tasks))
 		for _, t := range tasks {
 			ids = append(ids, t.ID)
+			listed[t.ID] = true
 		}
 		newest, err := store.NewestTaskEvents(ctx, ids)
 		if err != nil {
@@ -419,6 +427,9 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects Obj
 				nudged[t.ID] = time.Now()
 			}
 		}
+	}
+	if complete {
+		maps.DeleteFunc(nudged, func(id string, _ time.Time) bool { return !listed[id] })
 	}
 }
 

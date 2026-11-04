@@ -395,11 +395,13 @@ func main() {
 		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
 		return nil
 	})
-	nudged := map[string]time.Time{} // the stale sweep's memory of its signals, task id to when
-	passes.Run(ctx, "stale", time.Minute, 2*time.Minute, func(ctx context.Context) error {
-		factoryd.StaleSweep(ctx, store, workflows, objects, inner.Alive, nudged)
-		return nil
-	})
+	{
+		nudged := map[string]time.Time{} // the stale sweep's memory of its signals, task id to when
+		passes.Run(ctx, "stale", time.Minute, 2*time.Minute, func(ctx context.Context) error {
+			factoryd.StaleSweep(ctx, store, workflows, objects, inner.Alive, nudged)
+			return nil
+		})
+	}
 	passes.Run(ctx, "criteria", time.Minute, 4*time.Minute, func(ctx context.Context) error {
 		runner.CriteriaPass(ctx)
 		return nil

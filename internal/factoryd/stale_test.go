@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -96,8 +97,10 @@ func TestStaleSweepLeavesALiveWorkflowAlone(t *testing.T) {
 
 // A dead card still quiet a window after its nudge is nudged again, and
 // the sweep asks no human: each card keeps its status, and no ask or
-// alert is written. The monitor's run_quiet flag faces the quiet card.
-// The next pass, within the new nudges' grace, sends nothing.
+// alert is written. The monitor's run_quiet flag faces the quiet running
+// card and its dependency bound the waiting-deps card. The waiting-poster
+// card has no wait the monitor owns: its nudge and the board's stale ring
+// face it. The next pass, within the new nudges' grace, sends nothing.
 func TestStaleSweepNudgesAndAsksNothing(t *testing.T) {
 	ctx := context.Background()
 	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-wait": 70 * time.Minute, "t-deps": 5 * time.Hour})
@@ -126,5 +129,40 @@ func TestStaleSweepNudgesAndAsksNothing(t *testing.T) {
 	StaleSweep(ctx, rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
 	if len(rig.wf.signals) != 3 {
 		t.Fatalf("signals = %q, want no nudge within the grace", rig.wf.signals)
+	}
+}
+
+// failingList is a sweep's store whose list of one status fails.
+type failingList struct {
+	*fakeStore
+	status string
+}
+
+func (f failingList) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	if status == f.status {
+		return nil, errors.New("list down")
+	}
+	return f.fakeStore.ListTasksByStatus(ctx, status)
+}
+
+// The nudge memory keeps only the cards the sweep lists: t-queued left
+// the swept statuses and t-gone is no card at all, so both are forgotten,
+// while t-run, nudged within its grace, is kept. A sweep whose list fails
+// forgets nobody, since a card it could not read may still be listed.
+func TestStaleSweepForgetsACardItNoLongerLists(t *testing.T) {
+	ctx := context.Background()
+	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-queued": 70 * time.Minute})
+	recent := time.Now().Add(-time.Minute)
+	nudged := map[string]time.Time{"t-run": recent, "t-queued": recent, "t-gone": recent}
+	StaleSweep(ctx, failingList{rig.store, "waiting-poster"}, rig.wf, rig.objects, workflowsRunning(), nudged)
+	if got := slices.Sorted(maps.Keys(nudged)); !slices.Equal(got, []string{"t-gone", "t-queued", "t-run"}) {
+		t.Fatalf("nudged after a failed list = %q, want every key kept", got)
+	}
+	StaleSweep(ctx, rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
+	if got := slices.Sorted(maps.Keys(nudged)); !slices.Equal(got, []string{"t-run"}) {
+		t.Fatalf("nudged = %q, want only the listed t-run", got)
+	}
+	if !nudged["t-run"].Equal(recent) || len(rig.wf.signals) != 0 {
+		t.Fatalf("t-run's nudge = %v, signals %q: within its grace it is kept and not sent again", nudged["t-run"], rig.wf.signals)
 	}
 }
