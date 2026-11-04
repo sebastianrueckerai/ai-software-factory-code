@@ -931,24 +931,27 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	}
 	if t.AdmittedAt == nil {
 		now := time.Now()
-		t.AdmittedAt = &now
+		t.AdmittedAt, t.QueueReason, t.QueueSince = &now, "", nil
 		s.tasks[id] = t
 	}
 	return nil
 }
 
-// SetQueueReason mirrors Postgres: a new reason restarts queue_since at
-// now, the same one keeps it, "" clears both, and an admitted card takes
-// none.
+// SetQueueReason mirrors Postgres: a reason of a new kind restarts
+// queue_since at now, the same one or the count's at new numbers keeps
+// it, "" clears both, and an admitted card takes none.
 func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
 	t, ok := s.tasks[id]
 	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
 		return nil
 	}
-	t.QueueReason, t.QueueSince = reason, &now
-	if reason == "" {
+	switch {
+	case reason == "":
 		t.QueueSince = nil
+	case !strings.HasPrefix(t.QueueReason, WorkBoundReason) || !strings.HasPrefix(reason, WorkBoundReason):
+		t.QueueSince = &now
 	}
+	t.QueueReason = reason
 	s.tasks[id] = t
 	return nil
 }

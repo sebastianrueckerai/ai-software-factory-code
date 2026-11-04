@@ -201,8 +201,8 @@ func (b BoardDigest) Render() string {
 			card += " " + q.TaskID
 		}
 		why := q.Reason
-		if q.Age > 0 {
-			why += " for " + durationText(q.Age.Truncate(time.Minute))
+		if age := q.Age.Truncate(time.Minute); age > 0 {
+			why += " for " + durationText(age)
 		}
 		fmt.Fprintf(&s, "%-5s  %s\n", card, why)
 	}

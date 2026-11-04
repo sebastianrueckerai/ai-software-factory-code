@@ -25,9 +25,10 @@ var queueReasonStores = map[string]func(*testing.T) Store{
 	"fake": func(*testing.T) Store { return newFakeStore() },
 }
 
-// A refusal that repeats the stored reason keeps the time of the first, a
-// new reason restarts it, and "" clears both. An admitted card takes no
-// reason, though a refusal read before its admission writes one. The
+// A refusal that repeats the stored reason keeps the time of the first, as
+// does the count's at new numbers, a new reason restarts it, and "" clears
+// both. The admission's stamp clears both too, and an admitted card takes
+// no reason, though a refusal read before its admission writes one. The
 // board's read carries what the card's read does.
 func TestSetQueueReasonKeepsTheFirstRefusalTime(t *testing.T) {
 	for name, open := range queueReasonStores {
@@ -69,14 +70,16 @@ func TestSetQueueReasonKeepsTheFirstRefusalTime(t *testing.T) {
 			read("the same reason again", "waits on #7", at(0))
 			set("work bound 2 of 2", 2*time.Hour)
 			read("a new reason", "work bound 2 of 2", at(2*time.Hour))
+			set("work bound 3 of 2", 2*time.Hour+30*time.Minute)
+			read("the count's reason at new numbers", "work bound 3 of 2", at(2*time.Hour))
 			set("", 3*time.Hour)
 			read("the admission", "", nil)
 			set("no issue", 4*time.Hour)
 			read("a refusal after the clear", "no issue", at(4*time.Hour))
-			set("", 5*time.Hour)
 			if err := s.SetAdmitted(ctx, "t-q"); err != nil {
 				t.Fatal(err)
 			}
+			read("the admission's stamp", "", nil)
 			set("work bound 2 of 2", 6*time.Hour)
 			read("a refusal read before the card's admission", "", nil)
 		})

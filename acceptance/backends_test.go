@@ -225,7 +225,7 @@ func (s *acceptanceStore) SetAdmitted(_ context.Context, id string) error {
 	}
 	if t.AdmittedAt == nil {
 		now := time.Now()
-		t.AdmittedAt = &now
+		t.AdmittedAt, t.QueueReason, t.QueueSince = &now, "", nil
 		s.tasks[id] = t
 	}
 	return nil
@@ -238,10 +238,13 @@ func (s *acceptanceStore) SetQueueReason(_ context.Context, id, reason string, n
 	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
 		return nil
 	}
-	t.QueueReason, t.QueueSince = reason, &now
-	if reason == "" {
+	switch {
+	case reason == "":
 		t.QueueSince = nil
+	case !strings.HasPrefix(t.QueueReason, factoryd.WorkBoundReason) || !strings.HasPrefix(reason, factoryd.WorkBoundReason):
+		t.QueueSince = &now
 	}
+	t.QueueReason = reason
 	s.tasks[id] = t
 	return nil
 }

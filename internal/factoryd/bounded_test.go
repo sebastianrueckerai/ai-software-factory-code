@@ -178,8 +178,8 @@ func TestPullQueuedAdmitsInFilingOrder(t *testing.T) {
 	if !slices.Equal(rec.starts, []string{"t-q1", "t-q2"}) {
 		t.Fatalf("starts = %v, want the two oldest, the third over the bound", rec.starts)
 	}
-	if q3, _, _ := store.Task(ctx, "t-q3"); q3.AdmittedAt != nil {
-		t.Fatal("the third card was stamped over the bound")
+	if q3, _, _ := store.Task(ctx, "t-q3"); q3.AdmittedAt != nil || q3.QueueReason != "work bound 3 of 3" {
+		t.Fatalf("the third card: admitted at %v, queue reason %q; want it unstamped at \"work bound 3 of 3\", the running card and the two the pull admitted", q3.AdmittedAt, q3.QueueReason)
 	}
 }
 
@@ -499,10 +499,16 @@ func TestAdmitRecordsTheRefusalAndClearsItOnAdmission(t *testing.T) {
 	store.projectSpend["demo/app"] = 9.99
 	start(3*time.Hour, "work bound 1 of 1", at(3*time.Hour))
 	start(4*time.Hour, "work bound 1 of 1", at(3*time.Hour))
+	store.tasks["t-run2"] = Task{ID: "t-run2", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", IssueNumber: 2}
+	start(4*time.Hour+30*time.Minute, "work bound 2 of 1", at(3*time.Hour))
 	if len(rec.starts) != 0 {
 		t.Fatalf("starts = %v, want none while a reason holds the card", rec.starts)
 	}
-	store.tasks["t-run"] = Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "done", IssueNumber: 1}
+	for _, id := range []string{"t-run", "t-run2"} {
+		run := store.tasks[id]
+		run.Status = "done"
+		store.tasks[id] = run
+	}
 	start(5*time.Hour, "", nil)
 	if q, _, _ := store.Task(ctx, "t-q"); !slices.Equal(rec.starts, []string{"t-q"}) || q.AdmittedAt == nil {
 		t.Fatalf("starts %v, admitted at %v: want the card started once nothing holds it", rec.starts, q.AdmittedAt)

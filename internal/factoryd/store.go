@@ -79,8 +79,9 @@ type Task struct {
 	AdmittedAt *time.Time
 	// QueueReason is why admit last refused the queued card a work slot:
 	// admissionWait's reason, or "work bound N of M" when the count
-	// refused it. QueueSince is the first refusal with that reason. ""
-	// and nil before any refusal and once the card is admitted.
+	// refused it. QueueSince is the first refusal with a reason of that
+	// kind, the count's at any numbers. "" and nil before any refusal and
+	// once the card is admitted.
 	QueueReason string
 	QueueSince  *time.Time
 	// Gate is the gate the task is in (Gate* constants) since GateSince;
@@ -330,10 +331,12 @@ type Store interface {
 	// waiting-human, waiting-poster or waiting-image task to running.
 	MarkStarted(ctx context.Context, id string) error
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
-	// moment it took one of its project's work_in_progress slots.
+	// moment it took one of its project's work_in_progress slots. The
+	// same write clears its queue reason and queue_since.
 	SetAdmitted(ctx context.Context, id string) error
 	// SetQueueReason records why card id was refused a slot at now, keeping
-	// queue_since from the first refusal with that reason; "" clears both.
+	// queue_since from the first refusal with a reason of that kind, the
+	// count's at any numbers; "" clears both.
 	SetQueueReason(ctx context.Context, id, reason string, now time.Time) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -2111,21 +2114,25 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 }
 
 // SetAdmitted stamps the card admitted at now, once — a card already
-// stamped keeps its first stamp. admit, the bound's admission pass, is
-// its sole caller.
+// stamped keeps its first stamp — and clears its queue reason in the same
+// write, so no refusal lands between the two. admit, the bound's
+// admission pass, is its sole caller.
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now() WHERE id = $1 AND admitted_at IS NULL`, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL`, id)
 	return err
 }
 
 // SetQueueReason writes reason on card id, with now as queue_since when
-// the reason changed; "" clears both. A refusal that repeats the stored
-// reason writes nothing, so the minute's admissions keep the first time.
-// An admitted card takes none: a refusal read before another admission
-// took the card must not mark it, since nothing clears it after.
+// the reason is of a new kind: the count's at new numbers keeps the time
+// of its first refusal with a reason of that kind, the count's at any
+// numbers. "" clears both. A refusal that repeats the stored reason
+// writes nothing, so the minute's admissions keep the first time. An
+// admitted card takes none: a refusal read before another admission took
+// the card must not mark it, since nothing clears it after.
 func (s *PGStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET queue_reason = $2, queue_since = CASE WHEN $2 = '' THEN NULL ELSE $3::timestamptz END
-		WHERE id = $1 AND queue_reason <> $2 AND admitted_at IS NULL`, id, reason, now)
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET queue_reason = $2, queue_since = CASE WHEN $2 = '' THEN NULL
+		WHEN starts_with(queue_reason, $4) AND starts_with($2, $4) THEN queue_since ELSE $3::timestamptz END
+		WHERE id = $1 AND queue_reason <> $2 AND admitted_at IS NULL`, id, reason, now, WorkBoundReason)
 	return err
 }
 

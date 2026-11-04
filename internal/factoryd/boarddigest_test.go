@@ -176,7 +176,8 @@ func TestBoardDigestNamesAQueuedCardWithoutAnIssue(t *testing.T) {
 // The queue reads what admit stored, each card's reason and how long it
 // has held, and works out none of its own: #1500's dependency is open and
 // the project's cap has room, and a slot is free for #1501. A card admit
-// never refused is next, or has no issue.
+// never refused is next, or has no issue. An age under a minute shows
+// none.
 func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3, Budget: &policy.ProjectBudget{MonthEUR: 10}})
 	g.card("t9", 9, "running", GateSession, 0, nil)
@@ -184,12 +185,14 @@ func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
 	g.card("t1501", 1501, "queued", GateIntake, 2, queuedFor("work bound 3 of 3", 90*time.Minute+40*time.Second))
 	g.card("t1502", 1502, "queued", GateIntake, 3, nil)
 	g.card("t-noissue", 0, "queued", "", 4, child("k1"))
+	g.card("t1503", 1503, "queued", GateIntake, 5, queuedFor("waits on #9", 40*time.Second))
 	g.store.deps = map[string][]string{"t1500": {"t9"}}
 	g.store.projectSpend = map[string]float64{"sf/app": 4}
 	b := g.digest(t)
 	want := []BoardDigestQueued{{Issue: 1500, TaskID: "t1500", Reason: "project month cap", Age: 2 * time.Hour},
 		{Issue: 1501, TaskID: "t1501", Reason: "work bound 3 of 3", Age: 90*time.Minute + 40*time.Second},
-		{Issue: 1502, TaskID: "t1502", Reason: "next"}, {TaskID: "t-noissue", Reason: "no issue"}}
+		{Issue: 1502, TaskID: "t1502", Reason: "next"}, {TaskID: "t-noissue", Reason: "no issue"},
+		{Issue: 1503, TaskID: "t1503", Reason: "waits on #9", Age: 40 * time.Second}}
 	if !slices.Equal(b.Queue, want) {
 		t.Fatalf("Queue = %+v, want %+v", b.Queue, want)
 	}
@@ -198,6 +201,7 @@ func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
 		"#1501  work bound 3 of 3 for 1h30m\n"+
 		"#1502  next\n"+
 		"#0 t-noissue  no issue\n"+
+		"#1503  waits on #9\n"+
 		"caps:\n"+
 		"month 0.00 of 600.00 EUR · day 0.00 of 150.00 EUR · project 4.00 of 10.00 EUR\n"; !strings.HasSuffix(got, want) {
 		t.Fatalf("Render =\n%s\nwant it to end\n%s", got, want)

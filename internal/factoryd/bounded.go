@@ -39,6 +39,11 @@ type BoundedWorkflows struct {
 	Now func() time.Time
 }
 
+// WorkBoundReason starts the reason of a card the count refused, "work
+// bound N of M" with N the slots held and M the bound: one kind of
+// reason whatever its numbers, so its first refusal's time holds.
+const WorkBoundReason = "work bound "
+
 // admitMu holds the count-and-stamp of an admission together: with one
 // factoryd, two admissions can never take one slot (allDoneMu's pattern).
 var admitMu sync.Mutex
@@ -72,7 +77,7 @@ func (w BoundedWorkflows) Signal(ctx context.Context, taskID, name string, sig T
 // whose dependencies and project budget let it start under the bound,
 // whose admission it stamps before the start, so the slot is held the
 // moment it is taken. A refused card carries why on its row
-// (SetQueueReason), which the admission clears.
+// (SetQueueReason), which the admission's stamp clears.
 func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error) {
 	t, ok, err := w.Store.Task(ctx, taskID)
 	if err != nil || !ok {
@@ -100,10 +105,7 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 		return false, err
 	}
 	if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound {
-		return false, w.Store.SetQueueReason(ctx, taskID, fmt.Sprintf("work bound %d of %d", n, bound), at)
-	}
-	if err := w.Store.SetQueueReason(ctx, taskID, "", at); err != nil {
-		return false, err
+		return false, w.Store.SetQueueReason(ctx, taskID, fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound), at)
 	}
 	if err := w.Store.SetAdmitted(ctx, taskID); err != nil {
 		return false, err

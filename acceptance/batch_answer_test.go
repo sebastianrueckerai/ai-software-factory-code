@@ -114,7 +114,7 @@ func (s *accBatchTasks) SetAdmitted(_ context.Context, id string) error {
 		if bt.ID == id {
 			if bt.AdmittedAt == nil {
 				now := time.Now()
-				bt.AdmittedAt = &now
+				bt.AdmittedAt, bt.QueueReason, bt.QueueSince = &now, "", nil
 				s.tasks[i] = bt
 			}
 			return nil
