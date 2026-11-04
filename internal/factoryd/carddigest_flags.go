@@ -11,10 +11,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// sessionNoPushBound is how many sessions in a row may end without a push
-// before the digest flags them.
-const sessionNoPushBound = 2
-
 // expectedBudget is the budget card t holds when nothing moved it but its
 // events: its filing's budget plus every card_funded and card_extended
 // amount. The filing's budget is the one its card_created row records.
@@ -69,15 +65,18 @@ type ownedWait struct {
 
 // ownedWait is the card's one wait the AI owns at d.at, the first row
 // that holds. A failed merge waits for its retry in the merge gate, so
-// its row comes before the gate's. A run is quiet when it neither moves,
-// by a timeline line or a status move, nor answers, by a model call: a
-// session writes no line between its check-ins. A wait at the human has
-// no row.
+// its row comes before the gate's. A provider backoff ages from the time
+// its retry is due. A run is quiet since it last moved, by a timeline
+// line or a status move, or answered, by a model call: a session writes
+// no line between its check-ins. A wait at the human, a step at rung 3
+// among them, has no row.
 func (d CardDigest) ownedWait() (ownedWait, bool) {
 	h := d.Head
 	quiet := h.StatusSince
-	if d.LastStepAt.After(quiet) {
-		quiet = d.LastStepAt
+	for _, at := range []time.Time{d.LastStepAt, d.lastCallAt} {
+		if at.After(quiet) {
+			quiet = at
+		}
 	}
 	switch {
 	case h.Status == "queued" && h.QueueReason != "" && h.QueueSince != nil:
@@ -87,15 +86,15 @@ func (d CardDigest) ownedWait() (ownedWait, bool) {
 	case h.Status == "in-review" && d.lastStep == "merge_failed":
 		return ownedWait{"merge_retry", 0, d.LastStepAt}, true
 	case h.Status == "in-review" && h.Gate != GateApproval:
-		return ownedWait{"gate", 0, h.StatusSince}, true
+		return ownedWait{"gate", 0, cmp.Or(h.Since, h.StatusSince)}, true
 	case h.Status == "running" && d.providerRefused():
-		return ownedWait{"provider_backoff", 0, d.LastStepAt}, true
-	case h.Status == "running" && !d.answered && d.at.Sub(quiet) > d.Waits.RunQuiet:
+		return ownedWait{"provider_backoff", 0, cmp.Or(d.retryDue, d.LastStepAt)}, true
+	case h.Status == "running" && d.at.Sub(quiet) > d.Waits.RunQuiet:
 		return ownedWait{"run_quiet", 0, quiet}, true
 	}
 	var oldest *CaseStep
 	for i, s := range d.caseSteps {
-		if s.Outcome == StepInProgress && s.DueAt != nil && d.at.After(*s.DueAt) && (oldest == nil || s.StartedAt.Before(oldest.StartedAt)) {
+		if s.Rung < 3 && s.Outcome == StepInProgress && s.DueAt != nil && d.at.After(*s.DueAt) && (oldest == nil || s.StartedAt.Before(oldest.StartedAt)) {
 			oldest = &d.caseSteps[i]
 		}
 	}
@@ -154,7 +153,7 @@ func digestFlags(d CardDigest, t Task, events []Event, cases []Case, deps []Depe
 			if run++; run == 1 {
 				runFirst = name
 			}
-			if run == sessionNoPushBound {
+			if run == d.Waits.NoPushSessions {
 				add("session_no_push", runFirst)
 			}
 		case "review":
@@ -196,15 +195,17 @@ func digestFlags(d CardDigest, t Task, events []Event, cases []Case, deps []Depe
 	case t.Status == "in-review" && t.Gate == GateApproval:
 		add("slot_held_by_wait", t.Gate)
 	}
-	for _, d := range deps {
-		if d.Status == "failed" {
-			add("dependency_failed", fmt.Sprintf("#%d", d.Issue))
+	for _, dep := range deps {
+		if dep.Status == "failed" {
+			add("dependency_failed", fmt.Sprintf("#%d", dep.Issue))
 		}
 	}
 	if defaultKind(t.Kind) == "agent" && Cents(t.BudgetEUR) != Cents(budget) {
 		add("budget_moved_no_event", fmt.Sprintf("%.2f EUR not %.2f EUR", t.BudgetEUR, budget))
 	}
-	if w, ok := d.ownedWait(); ok && d.at.Sub(w.Since) > d.Waits.Bound(w.Kind) {
+	// a rung's step is past its bound once its wait holds: it carries its
+	// own due_at
+	if w, ok := d.ownedWait(); ok && (w.Kind == "rung_answer" || d.at.Sub(w.Since) > d.Waits.Bound(w.Kind)) {
 		since := " since " + offsetText(w.Since.Sub(steps[0].At))
 		add("wait_over_bound", w.Kind+since)
 		if w.Kind == "queued" {

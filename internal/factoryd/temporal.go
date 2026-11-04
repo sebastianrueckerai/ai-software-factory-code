@@ -566,6 +566,5 @@ func newestStepAt(ctx context.Context, objects ObjectStore, taskID string) time.
 		log.Printf("stale sweep: timeline of %s: %v", taskID, err)
 		return time.Time{}
 	}
-	_, at := newestLine(body)
-	return at
+	return newestLine(body, "").Time
 }

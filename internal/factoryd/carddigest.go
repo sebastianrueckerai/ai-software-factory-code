@@ -31,13 +31,15 @@ type CardDigest struct {
 	// Waits are the bounds of the card's project.
 	Waits policy.Waits
 	// lastStep is the step of the timeline's newest line, caseSteps are
-	// the steps of the card's live cases, at is when the digest was built,
-	// the time its waits are aged to, and answered says a running card
-	// made a model call within Waits.RunQuiet before at.
-	lastStep  string
-	caseSteps []CaseStep
-	at        time.Time
-	answered  bool
+	// the steps of the card's live cases, and at is when the digest was
+	// built, the time its waits are aged to. A running card's lastCallAt
+	// is its newest model call's time, and its retryDue the time the
+	// newest provider_refused line's backoff ends.
+	lastStep   string
+	caseSteps  []CaseStep
+	at         time.Time
+	lastCallAt time.Time
+	retryDue   time.Time
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -180,20 +182,22 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
 	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock()}
-	d.lastStep, d.LastStepAt = newestLine(rows.timeline)
+	newest := newestLine(rows.timeline, "")
+	d.lastStep, d.LastStepAt = newest.Step, newest.Time
 	if t.Status == "running" {
-		_, calls, err := r.store.SpendAndCallsBetween(ctx, t.ID, d.at.Add(-d.Waits.RunQuiet), d.at)
-		if err != nil {
+		if d.lastCallAt, err = r.store.NewestCallAt(ctx, t.ID); err != nil {
 			return CardDigest{}, err
 		}
-		d.answered = calls > 0
+		if refused := newestLine(rows.timeline, StepProviderRefused); !refused.Time.IsZero() {
+			d.retryDue = refused.Time.Add(time.Duration(refused.BackoffS * float64(time.Second)))
+		}
 	}
 	d.Flags = digestFlags(d, t, rows.events, rows.cases, rows.deps, budget)
 	return d, nil
 }
 
-// digestHead is card t's head; events, oldest first, give its status's
-// since.
+// digestHead is card t's head. Its events, oldest first, give its
+// status's since.
 func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (DigestHead, error) {
 	h := DigestHead{Issue: int(t.IssueNumber), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, SlotHeld: holdsSlot(t),
 		Status: t.Status, Gate: t.Gate, StatusSince: t.CreatedAt, QueueReason: t.QueueReason, QueueSince: t.QueueSince}

@@ -1814,6 +1814,16 @@ func (s *fakeStore) SpendAndCallsBetween(ctx context.Context, taskID string, fro
 	return eur, n, nil
 }
 
+func (s *fakeStore) NewestCallAt(ctx context.Context, taskID string) (time.Time, error) {
+	var at time.Time
+	for _, sp := range s.spends {
+		if sp.task == taskID && sp.at.After(at) {
+			at = sp.at
+		}
+	}
+	return at, nil
+}
+
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
 	r, ok := s.providerRefusals[taskID]
 	return r, ok, nil
@@ -4060,6 +4070,31 @@ func TestPGStoreSpendAndCallsBetweenReadsTheWindow(t *testing.T) {
 	}
 	if eur, n, err := s.SpendAndCallsBetween(ctx, "t3", from, to); err != nil || eur != 0 || n != 0 {
 		t.Fatalf("SpendAndCallsBetween of a task with no row = %v, %d, %v; want 0 over 0 rows", eur, n, err)
+	}
+}
+
+// NewestCallAt is the time of a task's newest audit row, whatever its
+// kind: t1's at 00:55, and the zero time for t3, which has none.
+func TestPGStoreNewestCallAtReadsTheNewestRow(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "newest_call"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, tool, call_cost_eur, ts) VALUES
+		('t1', 'allowed', '', 'agent', '', 0.40, '2026-11-01 00:40:59Z'),
+		('t1', 'refused_budget', '', 'agent', '', NULL, '2026-11-01 00:55:00Z'),
+		('t1', 'allowed', '', 'checkin', '', 0.10, '2026-11-01 00:50:00Z'),
+		('t2', 'allowed', '', 'agent', '', 1.00, '2026-11-01 01:45:00Z')`); err != nil {
+		t.Fatalf("seed the audit rows: %v", err)
+	}
+	if at, err := s.NewestCallAt(ctx, "t1"); err != nil || !at.Equal(time.Date(2026, 11, 1, 0, 55, 0, 0, time.UTC)) {
+		t.Fatalf("NewestCallAt t1 = %s, %v; want 2026-11-01 00:55 UTC", at, err)
+	}
+	if at, err := s.NewestCallAt(ctx, "t3"); err != nil || !at.IsZero() {
+		t.Fatalf("NewestCallAt of a task with no row = %s, %v; want the zero time", at, err)
 	}
 }
 

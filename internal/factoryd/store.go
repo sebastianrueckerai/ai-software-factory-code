@@ -457,6 +457,10 @@ type Store interface {
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
 	SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error)
+	// NewestCallAt is the time of the task's newest audit row, whatever
+	// its kind, zero when it has none: when a running card last answered,
+	// in the card digest.
+	NewestCallAt(ctx context.Context, taskID string) (time.Time, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).
@@ -1687,6 +1691,14 @@ func (s *PGStore) SpendAndCallsBetween(ctx context.Context, taskID string, from,
 		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8, count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
 		taskID, from, to).Scan(&eur, &n)
 	return eur, n, err
+}
+
+// NewestCallAt is the time of the task's newest audit row, zero when it
+// has none.
+func (s *PGStore) NewestCallAt(ctx context.Context, taskID string) (time.Time, error) {
+	var at sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT max(ts) FROM audit WHERE task_id = $1`, taskID).Scan(&at)
+	return at.Time, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing

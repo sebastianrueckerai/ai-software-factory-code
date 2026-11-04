@@ -526,6 +526,10 @@ func (s *acceptanceStore) SpendAndCallsBetween(context.Context, string, time.Tim
 	return 0, 0, nil
 }
 
+func (s *acceptanceStore) NewestCallAt(context.Context, string) (time.Time, error) {
+	return time.Time{}, nil
+}
+
 // BoardTasks, OpenPlans and Enforced: the acceptance store reads no board.
 func (s *acceptanceStore) BoardTasks(context.Context, string) ([]factoryd.BoardTask, error) {
 	return nil, nil

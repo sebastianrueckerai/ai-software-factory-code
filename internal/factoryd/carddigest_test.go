@@ -93,11 +93,15 @@ func (g digestRig) digest(t *testing.T) CardDigest {
 // pushed once, reviewed with two findings the check-in confirmed, stopped
 // at its session cap, granted one more session by sebastian that pushed
 // nothing twice, now at the merge approval with a budget floor ask open.
+// Its project flags two sessions in a row without a push.
 func skeletonRig(t *testing.T) digestRig {
 	g := newDigestRig(func(c *Task) {
 		c.Source, c.Parent, c.PlanRevision = SourcePlan, "t1344", 2
 		c.Status, c.Gate, c.SpentEUR = "in-review", GateApproval, 4.92
 	})
+	v := testPolicyVersion()
+	v.Projects["app"] = policy.ProjectConfig{Repository: "sf/app", Waits: &policy.Waits{NoPushSessions: 2}}
+	g.r.cfg.Policy = func() policy.Version { return v }
 	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics"}
 	g.store.tasks["t1402"] = Task{ID: "t1402", Kind: "agent", Repository: "sf/app", IssueNumber: 1402, Status: "done"}
 	g.store.deps = map[string][]string{"t1410": {"t1402"}}
@@ -304,14 +308,11 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 		{"a check-in cut before its decision", nil, func(t *testing.T, g digestRig) {
 			g.line(t, 10, "checkin", map[string]any{"round": 1, "record": CheckInRecord{Moment: CheckInGate, ToolCalls: 3}})
 		}, []DigestFlag{{"checkin_cut", "+0:10"}}},
-		{"two sessions in a row without a push", nil, func(t *testing.T, g digestRig) {
-			g.session(t, 5, 10, 1, "no_push")
-			g.session(t, 15, 20, 2, "no_push")
-		}, []DigestFlag{{"session_no_push", "session 1"}}},
 		{"a push between them", nil, func(t *testing.T, g digestRig) {
 			g.session(t, 5, 10, 1, "no_push")
 			g.session(t, 15, 20, 2, "pushed")
 			g.session(t, 25, 30, 3, "no_push")
+			g.session(t, 35, 40, 4, "no_push")
 		}, nil},
 		{"waiting on dependencies with its slot", func(c *Task) {
 			c.Status, c.AdmittedAt = "waiting-deps", &digestStart
@@ -634,6 +635,10 @@ func TestWaitOverBoundOnAQuietRun(t *testing.T) {
 	}
 }
 
+// auditRefused is the reason the audit's row records when the gateway
+// refused its call.
+const auditRefused = "the audit call was refused by the gateway (refused_budget): the card's budget is spent"
+
 // The newest model_review and gate_audit rows since the newest push each
 // flag the in-review card when they did not run, by their stage and their
 // reason. A later row that ran clears its stage's, a push clears both,
@@ -644,8 +649,8 @@ func TestReviewRefusedNotRunReadsBothRows(t *testing.T) {
 	g.event(20, EventModelReview, FactoryDecider, map[string]any{"commit": "c1", "round": 1, "verdict": "", "reviewed": false,
 		"reason": "model review not run: the gateway refused the call"})
 	g.event(21, EventGateAudit, FactoryDecider, map[string]any{"commit": "c1", "ran": false, "verdict": "",
-		"reason": "the audit failed: deadline exceeded"})
-	both := []DigestFlag{{"review_refused_not_run", "audit: the audit failed: deadline exceeded"},
+		"reason": auditRefused})
+	both := []DigestFlag{{"review_refused_not_run", "audit: " + auditRefused},
 		{"review_refused_not_run", "review: the gateway refused the call"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, both) {
 		t.Fatalf("Flags = %v, want %v", got, both)
@@ -663,8 +668,7 @@ func TestReviewRefusedNotRunReadsBothRows(t *testing.T) {
 	if got := g.digest(t).Flags; len(got) != 0 {
 		t.Fatalf("Flags after an audit that ran = %v, want none", got)
 	}
-	g.event(32, EventGateAudit, FactoryDecider, map[string]any{"commit": "c1", "ran": false, "verdict": "",
-		"reason": "the audit failed: deadline exceeded"})
+	g.event(32, EventGateAudit, FactoryDecider, map[string]any{"commit": "c1", "ran": false, "verdict": "", "reason": auditRefused})
 	if got, want := g.digest(t).Flags, both[:1]; !slices.Equal(got, want) {
 		t.Fatalf("Flags after a second audit that did not run = %v, want %v", got, want)
 	}
@@ -709,19 +713,19 @@ func TestNoFlagInsideTheBound(t *testing.T) {
 // the gate it sits in, and a rung's step only on a card no earlier row
 // holds.
 func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
-	queued := digestAt(60)
+	queued, gateStart := digestAt(60), digestAt(40)
 	inReview := func(gate string) func(*Task) { return func(c *Task) { c.Status, c.Gate = "in-review", gate } }
 	moved := func(m int, status, gate string) func(t *testing.T, g digestRig) {
 		return func(t *testing.T, g digestRig) {
 			g.event(m, EventTaskStatus, FactoryDecider, map[string]any{"status": status, "gate": gate})
 		}
 	}
-	rungStep := func(status string, due int) func(t *testing.T, g digestRig) {
+	rungStep := func(status string, rung, due int) func(t *testing.T, g digestRig) {
 		return func(t *testing.T, g digestRig) {
 			at := digestAt(due)
 			g.line(t, 40, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
 			g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseMonitorFlag, StateKey: "k1", Status: status}}
-			g.store.caseSteps = map[int64][]CaseStep{1: {{ID: 1, CaseID: 1, Rung: 1, StartedAt: digestAt(10), Outcome: StepInProgress, DueAt: &at}}}
+			g.store.caseSteps = map[int64][]CaseStep{1: {{ID: 1, CaseID: 1, Rung: rung, StartedAt: digestAt(10), Outcome: StepInProgress, DueAt: &at}}}
 		}
 	}
 	for _, tc := range []struct {
@@ -740,6 +744,10 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 			ownedWait{"dependency", 0, digestAt(10)}, true, []DigestFlag{{"wait_over_bound", "dependency since +0:10"}}},
 		{"in a gate", inReview(GateReview), moved(30, "in-review", GateReview), 6*60 + 31,
 			ownedWait{"gate", 0, digestAt(30)}, true, []DigestFlag{{"wait_over_bound", "gate since +0:30"}}},
+		{"in a gate since its own start", func(c *Task) {
+			c.Status, c.Gate, c.GateSince = "in-review", GateReview, &gateStart
+		}, moved(30, "in-review", GateChecks), 6*60 + 41,
+			ownedWait{"gate", 0, gateStart}, true, []DigestFlag{{"wait_over_bound", "gate since +0:40"}}},
 		{"at the approval", inReview(GateApproval), moved(30, "in-review", GateApproval), 6*60 + 31, ownedWait{}, false,
 			[]DigestFlag{{"slot_held_by_wait", GateApproval}}},
 		{"a failed merge with its retry pending", inReview(GateMerge), func(t *testing.T, g digestRig) {
@@ -754,7 +762,7 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 		{"a provider refusal", nil, func(t *testing.T, g digestRig) {
 			g.session(t, 10, 12, 1, string(OutcomeProviderRefused))
 			g.line(t, 12, StepProviderRefused, map[string]any{"status": 529, "reason": "overloaded", "backoff_s": 120})
-		}, 43, ownedWait{"provider_backoff", 0, digestAt(12)}, true, []DigestFlag{{"wait_over_bound", "provider_backoff since +0:12"}}},
+		}, 45, ownedWait{"provider_backoff", 0, digestAt(14)}, true, []DigestFlag{{"wait_over_bound", "provider_backoff since +0:14"}}},
 		{"a quiet run", nil, func(t *testing.T, g digestRig) {
 			g.line(t, 20, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
 		}, 51, ownedWait{"run_quiet", 0, digestAt(20)}, true, []DigestFlag{{"wait_over_bound", "run_quiet since +0:20"}}},
@@ -766,15 +774,19 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 			g.spend(digestAt(45), 0.01)
 		}, 51, ownedWait{}, false, nil},
 		{"a run whose last answer is older than the bound", nil, func(t *testing.T, g digestRig) {
+			moved(5, "running", GateSession)(t, g)
 			g.line(t, 10, "session_start", map[string]any{"session": "s-1", "model": "factory/small", "attempt": 1})
-			g.spend(digestAt(20), 0.01)
-		}, 51, ownedWait{"run_quiet", 0, digestAt(10)}, true, []DigestFlag{{"wait_over_bound", "run_quiet since +0:10"}}},
-		{"a rung's step past its due", nil, rungStep(CaseOpen, 45), 46,
+			g.spend(digestAt(4*60+29), 0.01)
+		}, 5 * 60, ownedWait{"run_quiet", 0, digestAt(4*60 + 29)}, true, []DigestFlag{{"wait_over_bound", "run_quiet since +4:29"}}},
+		{"a rung's step past its due", nil, rungStep(CaseOpen, 1, 45), 46,
 			ownedWait{"rung_answer", 1, digestAt(10)}, true, []DigestFlag{{"wait_over_bound", "rung_answer since +0:10"}}},
-		{"a rung's step not yet due", nil, rungStep(CaseOpen, 50), 46, ownedWait{}, false, nil},
-		{"a rung's step on a case that ended", nil, rungStep(CaseResolved, 45), 46, ownedWait{}, false, nil},
+		{"a rung's step past a due inside the bound", nil, rungStep(CaseOpen, 1, 20), 21,
+			ownedWait{"rung_answer", 1, digestAt(10)}, true, []DigestFlag{{"wait_over_bound", "rung_answer since +0:10"}}},
+		{"a rung's step not yet due", nil, rungStep(CaseOpen, 1, 50), 46, ownedWait{}, false, nil},
+		{"a rung's step on a case that ended", nil, rungStep(CaseResolved, 1, 45), 46, ownedWait{}, false, nil},
+		{"the human's step past its due", nil, rungStep(CaseAtHuman, 3, 45), 46, ownedWait{}, false, nil},
 		{"a rung's step past its due on a queued card", func(c *Task) { c.Status, c.QueueReason, c.QueueSince = "queued", "waits on #7", &queued },
-			rungStep(CaseAtHuman, 45), 46, ownedWait{"queued", 0, queued}, true, nil},
+			rungStep(CaseAtHuman, 1, 45), 46, ownedWait{"queued", 0, queued}, true, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newDigestRig(tc.change)
@@ -790,5 +802,43 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 				t.Fatalf("Flags = %v, want %v", d.Flags, tc.flags)
 			}
 		})
+	}
+}
+
+// The policy's default bound is three sessions in a row without a push:
+// two do not flag, three flag at the run's first.
+func TestSessionNoPushReadsThePolicyBound(t *testing.T) {
+	g := newDigestRig(nil)
+	g.session(t, 5, 10, 1, "no_push")
+	g.session(t, 15, 20, 2, "no_push")
+	if got := g.digest(t).Flags; len(got) != 0 {
+		t.Fatalf("Flags after two sessions without a push = %v, want none", got)
+	}
+	g.session(t, 25, 30, 3, "no_push")
+	if got, want := g.digest(t).Flags, []DigestFlag{{"session_no_push", "session 1"}}; !slices.Equal(got, want) {
+		t.Fatalf("Flags after three = %v, want %v", got, want)
+	}
+}
+
+// A fifth refusal backs off 30 m. The wait ages from the retry's due time,
+// the refusal's line at +0:12 plus its 1800 s: 31 m after the line it is
+// 1 m past due, inside the 30 m bound. 61 m after, it is 31 m past.
+func TestProviderBackoffAgesFromTheDueRetry(t *testing.T) {
+	g := newDigestRig(nil)
+	g.session(t, 10, 12, 5, string(OutcomeProviderRefused))
+	g.line(t, 12, StepProviderRefused, map[string]any{"status": 529, "reason": "overloaded", "backoff_s": 1800})
+	due := ownedWait{"provider_backoff", 0, digestAt(42)}
+	g.at(43)
+	d := g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != due || len(d.Flags) != 0 {
+		t.Fatalf("at +0:43: ownedWait = %+v, %t, Flags = %v; want %+v and none", w, ok, d.Flags, due)
+	}
+	g.at(73)
+	d = g.digest(t)
+	if w, ok := d.ownedWait(); !ok || w != due {
+		t.Fatalf("at +1:13: ownedWait = %+v, %t; want %+v", w, ok, due)
+	}
+	if want := []DigestFlag{{"wait_over_bound", "provider_backoff since +0:42"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("at +1:13: Flags = %v, want %v", d.Flags, want)
 	}
 }

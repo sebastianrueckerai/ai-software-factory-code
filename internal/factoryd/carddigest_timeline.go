@@ -136,20 +136,25 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 	return out, sessions
 }
 
-// newestLine is the step and the time of timeline tl's newest line that
-// has a time, "" and zero when no line has one.
-func newestLine(tl []byte) (string, time.Time) {
+// lineMark is a timeline line as the waits read it: its step, its time
+// and a provider_refused line's backoff in seconds.
+type lineMark struct {
+	Step     string    `json:"step"`
+	Time     time.Time `json:"time"`
+	BackoffS float64   `json:"backoff_s"`
+}
+
+// newestLine is timeline tl's newest line that has a time and, when step
+// is not "", that step. It is the zero mark when no line is.
+func newestLine(tl []byte, step string) lineMark {
 	lines := bytes.Split(tl, []byte("\n"))
 	for i := len(lines) - 1; i >= 0; i-- {
-		var l struct {
-			Step string    `json:"step"`
-			Time time.Time `json:"time"`
-		}
-		if json.Unmarshal(lines[i], &l) == nil && !l.Time.IsZero() {
-			return l.Step, l.Time
+		var l lineMark
+		if json.Unmarshal(lines[i], &l) == nil && !l.Time.IsZero() && (step == "" || l.Step == step) {
+			return l
 		}
 	}
-	return "", time.Time{}
+	return lineMark{}
 }
 
 // sessionStep is session s's step: its outcome, with the head it pushed,
