@@ -2265,22 +2265,27 @@ func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit,
 }
 
 // holdMerge refuses the merge of a plan's integration card while criteria
-// have no verdict row (never), naming the criteria gate when they are all
-// its own, else the last review's note, and puts the merge ask on the
-// human's surface again: the workflow answers a plain refusal with a new
-// approval wait and no retry, so without the ask the card would stall
-// unseen. Approving it runs the review again (versionReviewHoldsMerge).
-// An auto merge's hold files no ask: the workflow's request follows it.
+// have no verdict row (never), naming the criteria gate for its own and
+// the last review's note for the others, each by id when both hold some,
+// and puts the merge ask on the human's surface again: the workflow
+// answers a plain refusal with a new approval wait and no retry, so
+// without the ask the card would stall unseen. Approving it runs the
+// review again (versionReviewHoldsMerge). An auto merge's hold files no
+// ask: the workflow's request follows it.
 func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, never []PlanCriterion) MergeResult {
 	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(len(never), "criterion was", "criteria were"))
-	gate := allGateJudged(never)
+	gate, review := byJudge(never)
 	var note string
-	if !gate {
+	if review != "" {
 		note, _ = r.lastReviewNote(ctx, t.ID)
 	}
 	switch {
-	case gate:
+	case review == "":
 		why += ", the criteria gate never ran"
+	case gate != "" && note != "":
+		why += ", the criteria gate never ran for " + gate + ", and the model review did not run (" + note + ") for " + review
+	case gate != "":
+		why += ", the criteria gate never ran for " + gate + ", and no model review judged " + review
 	case note != "":
 		why += ", the model review did not run (" + note + ")"
 	default:
@@ -2288,7 +2293,7 @@ func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, com
 	}
 	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
 	body := "factoryd: " + res.Refusal
-	if !gate {
+	if review != "" {
 		body += fmt.Sprintf("\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", commit)
 	}
 	r.comment(ctx, t, repo, pr, body)

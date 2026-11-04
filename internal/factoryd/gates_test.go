@@ -1462,7 +1462,8 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 // surface again with the refused review named — filed anew from the
 // pressed request's spec, or re-opened when it names the note already.
 // When the criteria without a row are all the gate's, the refusal names
-// the gate and no model review. A row for every criterion, whatever its
+// the gate and no model review; when some are the gate's and some the
+// review's, it names each by id. A row for every criterion, whatever its
 // verdict, merges.
 func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
@@ -1477,9 +1478,11 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		asks    int // merge requests filed in all
 		ask     string
 	}{
-		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 2, named},
-		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 1, named},
-		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged by a model review", 1, base},
+		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run (" + note + ") for c3", 2, named},
+		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run (" + note + ") for c3", 1, named},
+		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and no model review judged c3", 1, base},
+		{"the review's alone", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}}, "the merge is held: 1 criterion was never judged, the model review did not run (" + note + ")", 2, named},
+		{"the review's alone, judged", "", base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}}, "the merge is held: 1 criterion was never judged by a model review", 1, base},
 		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met"}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
 		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "met"}}, "", 1, base},
 	} {
@@ -1586,7 +1589,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 	pending, _ := store.ApprovalRequests(ctx, "pending")
 	if len(fj.merges) != 0 || len(pending) != 1 || !strings.HasSuffix(pending[0].Reason, ". The model review did not run: "+note) ||
-		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the model review did not run ("+note+")" {
+		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run ("+note+") for c3" {
 		t.Fatalf("merges %d, pending %+v: want no merge and the ask naming the note", len(fj.merges), pending)
 	}
 	// rows that landed between the read and the hold leave nothing held:

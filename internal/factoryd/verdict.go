@@ -414,9 +414,18 @@ func gateLeft(p Plan, key string) *GateLeft {
 	return &GateLeft{IDs: ids, Integration: roleOf(p, key) == RoleIntegration}
 }
 
-// allGateJudged: every criterion of cs is the criteria gate's.
-func allGateJudged(cs []PlanCriterion) bool {
-	return !slices.ContainsFunc(cs, func(c PlanCriterion) bool { return !gateJudged(c.Kind) })
+// byJudge splits cs into the criteria gate's ids and the review's, each
+// joined for a sentence.
+func byJudge(cs []PlanCriterion) (gate, review string) {
+	var g, r []string
+	for _, c := range cs {
+		if gateJudged(c.Kind) {
+			g = append(g, c.ID)
+		} else {
+			r = append(r, c.ID)
+		}
+	}
+	return strings.Join(g, ", "), strings.Join(r, ", ")
 }
 
 // effectiveVerdict is a criterion's standing verdict (StandingRow); ""
@@ -1124,23 +1133,29 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCrit
 }
 
 // askRerun opens the plan's criteria_rerun approval once per shape, while
-// the plan is at rest: never are criteria no row holds, which the
-// integration card's review never judged, named with its last note, or
-// "the review never ran" when it has none, or which the criteria gate
-// never ran for when they are all its own; unmet those whose rows say not
-// met, named beside them.
+// the plan is at rest: never are criteria no row holds, the gate's named
+// as the criteria gate's, which never ran for them, the others as the
+// integration card's review's, named with its last note, or "the review
+// never ran" when it has none; unmet those whose rows say not met, named
+// beside them.
 func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task) {
-	who, why := "review", "did not run (the review never ran)"
-	if allGateJudged(never) {
-		who, why = "criteria gate", "never ran"
-	} else if note, ok := r.lastReviewNote(ctx, integration.ID); ok && note != "" {
-		why = "did not run (" + note + ")"
-	} else if ok {
-		why = "wrote no verdict for them"
+	gate, review := byJudge(never)
+	var parts []string
+	if gate != "" {
+		parts = append(parts, fmt.Sprintf("the criteria gate of card #%d never ran: %s", integration.IssueNumber, gate))
 	}
-	why = fmt.Sprintf("the %s of card #%d %s", who, integration.IssueNumber, why)
+	if review != "" {
+		why := "did not run (the review never ran)"
+		if note, ok := r.lastReviewNote(ctx, integration.ID); ok && note != "" {
+			why = "did not run (" + note + ")"
+		} else if ok {
+			why = "wrote no verdict for them"
+		}
+		parts = append(parts, fmt.Sprintf("the review of card #%d %s: %s", integration.IssueNumber, why, review))
+	}
+	why := strings.Join(parts, "; ")
 	ids, lines := criteriaLines(never, " — never judged")
-	reason := fmt.Sprintf("criteria never judged: %s: %s", why, strings.Join(ids, ", "))
+	reason := "criteria never judged: " + why
 	if len(unmet) > 0 {
 		more, unmetLines := criteriaLines(unmet, " — not met")
 		reason += "; not met: " + strings.Join(more, ", ")
