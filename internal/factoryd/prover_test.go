@@ -643,9 +643,7 @@ func TestRunReportOfTheProverKeepsAStoreWhoseEventDidNotLand(t *testing.T) {
 	}
 }
 
-// A prover that filed nothing fails in factoryd's words; one whose run
-// has too little time left for a session once the dry run's share is
-// kept, and no filing, fails before any pod, naming the times.
+// A prover that filed nothing fails in factoryd's words, with no pod.
 func TestRunReportOfTheProverWithoutAFilingFails(t *testing.T) {
 	kube := newFakeKube()
 	task := proverTask()
@@ -656,56 +654,46 @@ func TestRunReportOfTheProverWithoutAFilingFails(t *testing.T) {
 	if err == nil || !isTerminal(err) || errMessage(err) != "the prover filed no proofs" {
 		t.Fatalf("err = %v, want the terminal error in factoryd's words", err)
 	}
-	fresh := proverTask()
-	fresh.ID = "t-prove-2"
-	if err := store.CreateTask(context.Background(), fresh); err != nil {
-		t.Fatal(err)
-	}
-	_, err = execActivity(t, r, ActivityRunReport, "t-prove-2", "factory/small")
-	if err == nil || !isTerminal(err) || !strings.HasPrefix(errMessage(err), "the prover's run has 0s left once the dry run's 50m0s are kept, under the 10m0s a session needs") {
-		t.Fatalf("err = %v, want the terminal error that names the times", err)
-	}
 	if len(kube.podOrder) != 0 {
 		t.Fatalf("pods = %d, want none", len(kube.podOrder))
 	}
 }
 
-// A retry with too little time left for a session and a filing that
-// stands goes to the dry run at once, its summary factoryd's.
-func TestRunReportOfTheProverWithNoTimeLeftDryRunsWhatStands(t *testing.T) {
-	kube := newFakeKube()
-	r, _, store := newProverRunner(t, proverTask(), kube, &fakeObjectStore{})
-	proofsWorker(t, r)
-	f := validFiling()
-	rows := make([]PlanProof, 0, len(f))
-	for i, e := range f[:3] {
-		rows = append(rows, PlanProof{Idx: i + 1, Round: 1, ID: e.Criterion, Origin: ProofOriginCriterion, Criterion: e.Criterion, State: ProofFiled,
-			Path: e.Path, Suite: e.Suite, Name: e.Name, Code: e.Code, Artifact: e.Artifact})
+// A first attempt runs its session, whose time reportTime checked: a
+// class of 60 minutes leaves it 10 once the dry run's 50 are kept, and the
+// policy calls that enough. A retry with too little time left goes to the
+// dry run with a filing that stands, and with none fails, naming the
+// times; a retry with time enough runs its session.
+func TestProverSessionDueOnAFirstAttemptAndARetry(t *testing.T) {
+	ctx := context.Background()
+	r, _, store := newProverRunner(t, proverTask(), newFakeKube(), &fakeObjectStore{})
+	seedProver(t, store, proverPlan(), keyLog())
+	hour := proverPolicy()
+	hour.Document.Classes[policy.ClassProver].Time.AgentTime = time.Hour
+	if why := proverUnfit(hour, "sf/r"); why != "" {
+		t.Fatalf("unfit at 60m = %q", why)
 	}
-	hold := keyLog()
-	hold.State, hold.Path, hold.Suite, hold.Name, hold.Code = ProofFiled, f[3].Path, f[3].Suite, f[3].Name, f[3].Code
-	seedProver(t, store, proverPlan(), append(rows, hold)...)
-	if _, err := store.Record(context.Background(), Event{TaskID: "t-plan", Kind: EventProofsFiled,
-		Detail: map[string]any{"prover": "t-prove", "filing": 2, "refusals": []string{}}}); err != nil {
+	if got, err := reportTime(time.Hour, proverDryRun); err != nil || got != 10*time.Minute {
+		t.Fatalf("reportTime(1h) = %s, %v", got, err)
+	}
+	// the activity's bound is the agent time and the grace
+	bound := time.Now().Add(time.Hour + sessionGrace)
+	if due, err := r.sessionDue(ctx, proverTask(), 1, bound); err != nil || !due {
+		t.Fatalf("the first attempt at 60m = %v, %v; want its session", due, err)
+	}
+	_, err := r.sessionDue(ctx, proverTask(), 2, bound)
+	if err == nil || !isTerminal(err) || !strings.Contains(errMessage(err), "once the dry run's 50m0s are kept, under the 10m0s a session needs, and no filing stands") {
+		t.Fatalf("a retry with no filing = %v", err)
+	}
+	if due, err := r.sessionDue(ctx, proverTask(), 2, time.Now().Add(92*time.Minute)); err != nil || !due {
+		t.Fatalf("a retry with 40 minutes left = %v, %v; want its session", due, err)
+	}
+	if err := store.FilePlanProofs(ctx, "t-plan", []PlanProof{{Round: 1, ID: "size_bound", Origin: ProofOriginCriterion, Criterion: "size_bound",
+		Path: "proofs/size_bound/size_bound_test.go", Suite: "./proofs/size_bound", Name: "TestSizeBound", Code: "package size_bound"}}); err != nil {
 		t.Fatal(err)
 	}
-	done := make(chan error)
-	go func() {
-		_, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small")
-		done <- err
-	}()
-	scriptReproPods(kube, dryRunLines(t))
-	if err := <-done; err != nil {
-		t.Fatalf("RunReport: %v", err)
-	}
-	if len(kube.podOrder) != 1 || podEnv(kube.podAt(0))["MODE"] != "proofs" {
-		t.Fatalf("pods = %d, want the proofs pod alone", len(kube.podOrder))
-	}
-	if got, _, _ := store.Task(context.Background(), "t-prove"); got.AgentSummary != "filed 4 proofs, filing 2" {
-		t.Fatalf("AgentSummary = %q", got.AgentSummary)
-	}
-	if n := len(planEvents(store, EventProofsStored)); n != 1 {
-		t.Fatalf("proofs_stored events = %d, want 1", n)
+	if due, err := r.sessionDue(ctx, proverTask(), 2, bound); err != nil || due {
+		t.Fatalf("a retry with a filing = %v, %v; want the dry run alone", due, err)
 	}
 }
 
@@ -887,6 +875,53 @@ func TestProverStopsAtAClosedPlan(t *testing.T) {
 	}
 	if rows, _ := store.PlanProofs(ctx, "t-plan"); rows[0].State != ProofFiled {
 		t.Fatalf("rows = %+v, want the filing as it was", rows)
+	}
+}
+
+// A prover whose plan closed before its session runs none: it ends in
+// factoryd's words with no pod and a line that says why. A retry of a
+// prover that stored its proofs before the plan closed writes no such
+// line: the store ran.
+func TestProverRunsNoSessionForAClosedPlan(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newProverRunner(t, proverTask(), kube, objects)
+	seedProver(t, store, proverPlan(), keyLog())
+	store.closed["t-plan"] = time.Now()
+	if _, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small"); err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	if got, _, _ := store.Task(ctx, "t-prove"); got.AgentSummary != "plan t-plan is closed: no proof of it is stored" || len(kube.podOrder) != 0 {
+		t.Fatalf("AgentSummary %q, pods %d; want factoryd's words and no pod", got.AgentSummary, len(kube.podOrder))
+	}
+	if line := timelineStep(t, objects, "t-prove", "proofs_not_stored"); line["reason"] != "plan t-plan is closed" {
+		t.Fatalf("line = %v", line)
+	}
+
+	task := proverTask()
+	task.ID, task.Parent, task.AgentSummary = "t-prove-s", "t-plan-s", "filed 1 proof, filing 1"
+	if err := store.CreateTask(ctx, task); err != nil {
+		t.Fatal(err)
+	}
+	plan := planTask()
+	plan.ID = "t-plan-s"
+	if err := store.CreateTask(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.AddPlanRevision(ctx, "t-plan-s", mustJSON(proverPlan()), "sha-s"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutPlanProofs(ctx, "t-plan-s", 1, []PlanProof{{Idx: 1, ID: "size_bound", Origin: ProofOriginCriterion, Criterion: "size_bound",
+		State: ProofStored, Path: "proofs/size_bound/size_bound_test.go", Suite: "./proofs/size_bound", Name: "TestSizeBound", Code: "package size_bound"}}); err != nil {
+		t.Fatal(err)
+	}
+	store.closed["t-plan-s"] = time.Now()
+	if _, err := execActivity(t, r, ActivityRunReport, "t-prove-s", "factory/small"); err != nil {
+		t.Fatalf("the retry: %v", err)
+	}
+	if b, _ := objects.Get(ctx, "sessions/t-prove-s/timeline.jsonl"); strings.Contains(string(b), "proofs_not_stored") {
+		t.Fatalf("a stored plan's retry wrote that nothing was stored: %s", b)
 	}
 }
 

@@ -379,8 +379,14 @@ func (r *Runner) planEnded(ctx context.Context, id string) (string, error) {
 
 // proverSummary is prover t's summary in factoryd's own words, never the
 // model's: how many proofs its last accepted filing holds and that
-// filing's number, or that it filed none.
+// filing's number, that it filed none, or that its plan ended.
 func (r *Runner) proverSummary(ctx context.Context, t Task) (string, error) {
+	if ended, err := r.planEnded(ctx, t.Parent); err != nil || ended != "" {
+		if ended != "" {
+			return ended + ": no proof of it is stored", nil
+		}
+		return "", err
+	}
 	rows, err := r.store.PlanProofs(ctx, t.Parent)
 	if err != nil {
 		return "", err
@@ -405,13 +411,26 @@ func (r *Runner) proverSummary(ctx context.Context, t Task) (string, error) {
 	return summary, nil
 }
 
-// proverSessionDue tells whether prover t's run still has time for a
-// session once the dry run's share is kept: under minReportTime left, a
-// filing that stands goes to the dry run without a session, and none is a
-// terminal error that names the times.
+// proverSessionDue tells whether prover t runs a session in this attempt
+// of its activity: none for a plan that ended (planEnded), whose prover
+// ends in factoryd's words, nor on a retry the time no longer holds
+// (sessionDue).
 func (r *Runner) proverSessionDue(ctx context.Context, t Task) (bool, error) {
-	left := time.Until(activity.GetInfo(ctx).Deadline) - sessionGrace - proverDryRun
-	if proverDryRun == 0 || left >= minReportTime {
+	if ended, err := r.planEnded(ctx, t.Parent); err != nil || ended != "" {
+		return false, err
+	}
+	info := activity.GetInfo(ctx)
+	return r.sessionDue(ctx, t, info.Attempt, info.Deadline)
+}
+
+// sessionDue: a first attempt runs its session, whose time reportTime
+// checks against the class's agent time; a retry with under minReportTime
+// left before deadline once the grace and the dry run's share are kept
+// goes to the dry run with a filing that stands, and with none is a
+// terminal error that names the times.
+func (r *Runner) sessionDue(ctx context.Context, t Task, attempt int32, deadline time.Time) (bool, error) {
+	left := time.Until(deadline) - sessionGrace - proverDryRun
+	if attempt <= 1 || left >= minReportTime {
 		return true, nil
 	}
 	rows, err := r.store.PlanProofs(ctx, t.Parent)
@@ -599,17 +618,11 @@ func (r *Runner) proverBrief(ctx context.Context, plan Task) (string, error) {
 // The pod fetches main's branch at its head and checks out t.SHA, the
 // commit the prover's session read. The rows say whether the store ran: a
 // plan with stored rows and none filed stores nothing again, whether or
-// not its event landed; no row filed or stored is a terminal error in
-// factoryd's words. A plan closed meanwhile stores nothing, its line on
-// the prover's timeline saying so. A pod that cannot start or ends early
-// returns its error, and the activity runs again.
+// not its event landed. Else a plan closed meanwhile stores nothing, its
+// line on the prover's timeline saying so, and no row filed is a terminal
+// error in factoryd's words. A pod that cannot start or ends early returns
+// its error, and the activity runs again.
 func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) error {
-	if ended, err := r.planEnded(ctx, plan.ID); err != nil || ended != "" {
-		if ended != "" {
-			r.record(ctx, t.ID, "proofs_not_stored", map[string]any{"reason": ended})
-		}
-		return err
-	}
 	rows, err := r.store.PlanProofs(ctx, plan.ID)
 	if err != nil {
 		return err
@@ -624,10 +637,16 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 			stored = true
 		}
 	}
-	switch {
-	case len(filed) == 0 && stored:
+	if len(filed) == 0 && stored {
 		return nil
-	case len(filed) == 0:
+	}
+	if ended, err := r.planEnded(ctx, plan.ID); err != nil || ended != "" {
+		if ended != "" {
+			r.record(ctx, t.ID, "proofs_not_stored", map[string]any{"reason": ended})
+		}
+		return err
+	}
+	if len(filed) == 0 {
 		return terminalError("the prover filed no proofs")
 	}
 	defer beatUntilDone(ctx, "prover")()

@@ -151,20 +151,29 @@ func TestChatSessionRead(t *testing.T) {
 	equal(t, "the steps of a session without a transcript", []any{status, msg}, []any{http.StatusNotFound, "no transcript for session 3"})
 }
 
-// A prover's sessions hold the plan's blind proofs: the session, steps
-// and search reads refuse its task and say why, and read no transcript.
+// A prover's transcripts hold the plan's blind proofs: every read that
+// would open one is refused unread and says why; the session read keeps
+// its timeline lines, which carry factoryd's words alone.
 func TestChatSessionReadsRefuseAProver(t *testing.T) {
-	r, _ := newSessionsRig(t)
+	r, g := newSessionsRig(t)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-prove", Kind: "agent", Status: "running",
 		Source: factoryd.SourceProver, Parent: "t-plan", Track: policy.TrackDirect, Repository: "sf/code"}})
 	r.tasks.mu.Unlock()
 	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(sessionsTimeline)
-	r.objects["sessions/t-prove/s1.jsonl"] = []byte(s1Transcript)
-	for _, tool := range []string{"session", "session_steps", "session_search"} {
-		status, msg := refused(t, r, tool, toolInput{TaskID: "t-prove", Query: "go test"})
-		equal(t, tool+" of a prover", []any{status, msg}, []any{http.StatusForbidden,
-			"Task t-prove is plan t-plan's prover: its sessions hold the plan's blind proofs, which no read outside the prover shows."})
+	r.objects["sessions/t-prove/s1.jsonl"] = []byte(strings.ReplaceAll(s1Transcript, "a.go", "proofs/key_log/key_log_test.go"))
+	r.objects["sessions/t-prove/s2.jsonl"] = []byte(strings.ReplaceAll(s2Transcript, "stats.go", "proofs/key_log/key_log_test.go"))
+	const why = "Task t-prove is plan t-plan's prover: its sessions hold the plan's blind proofs, which no read outside the prover shows."
+	status, msg := refused(t, r, "session_steps", toolInput{TaskID: "t-prove"})
+	equal(t, "the steps of a prover", []any{status, msg}, []any{http.StatusForbidden, why})
+	got := reads(t, r, g, "session", `{"task_id":"t-prove"}`, "session_search", `{"task_id":"t-prove","query":"key_log"}`)
+	if !strings.HasSuffix(got[0], "\n"+why) || !strings.HasPrefix(got[1], `no hit for "key_log"`) || !strings.Contains(got[1], why) {
+		t.Fatalf("the reads = %q, want each to end on the refusal", got)
+	}
+	for _, text := range got {
+		if strings.Contains(text, "key_log_test.go") || strings.Contains(text, "files changed") {
+			t.Fatalf("a read holds the transcript: %q", text)
+		}
 	}
 }
 

@@ -155,15 +155,11 @@ func startedBecause(all []sessionRef, s sessionRef, steps []map[string]any, even
 }
 
 // sessions are card in's timeline and sessions, refused when in.N
-// numbers none of them, and for a prover, whose transcripts hold its
-// tests.
+// numbers none of them.
 func (t *turn) sessions(in toolInput) (factoryd.Task, []map[string]any, []sessionRef, error) {
 	k, err := t.card(in)
 	if err != nil {
 		return k, nil, nil, err
-	}
-	if k.Source == factoryd.SourceProver {
-		return k, nil, nil, refuse(http.StatusForbidden, fmt.Sprintf("Task %s is plan %s's prover: its sessions hold the plan's blind proofs, which no read outside the prover shows.", k.ID, k.Parent))
 	}
 	steps, err := t.c.readTimeline(t.r.Context(), k.ID)
 	if err != nil {
@@ -188,10 +184,15 @@ func sessionAt(all []sessionRef, n int) sessionRef {
 	return all[n-1]
 }
 
-// transcript is session s's transcript of card taskID; a refusal when it
-// has none, and one with the body when it is too large to parse.
-func (t *turn) transcript(taskID string, s sessionRef) ([]byte, error) {
-	body, err := t.c.cfg.Timelines.Get(t.r.Context(), "sessions/"+taskID+"/"+s.ID+".jsonl")
+// transcript is session s's transcript of card k; a refusal when it has
+// none, and one with the body when it is too large to parse. A prover's
+// is refused unread: it holds the plan's blind proofs, and every
+// transcript read of the console comes here.
+func (t *turn) transcript(k factoryd.Task, s sessionRef) ([]byte, error) {
+	if k.Source == factoryd.SourceProver {
+		return nil, refuse(http.StatusForbidden, fmt.Sprintf("Task %s is plan %s's prover: its sessions hold the plan's blind proofs, which no read outside the prover shows.", k.ID, k.Parent))
+	}
+	body, err := t.c.cfg.Timelines.Get(t.r.Context(), "sessions/"+k.ID+"/"+s.ID+".jsonl")
 	switch {
 	case err != nil:
 		return nil, err
@@ -231,7 +232,7 @@ func (t *turn) sessionSteps(in toolInput) (sessionRef, []harness.Event, error) {
 		return sessionRef{}, nil, err
 	}
 	s := sessionAt(all, in.N)
-	body, err := t.transcript(k.ID, s)
+	body, err := t.transcript(k, s)
 	if err != nil {
 		return s, nil, err
 	}
@@ -470,7 +471,7 @@ func (t *turn) sessionText(in toolInput) (string, error) {
 	} else if line := callsLine(totals[k.ID]); line != "" {
 		b.WriteString("\n" + line + " to date")
 	}
-	body, err := t.transcript(k.ID, s)
+	body, err := t.transcript(k, s)
 	if no := (*refusal)(nil); errors.As(err, &no) {
 		return b.String() + "\n" + no.msg, nil
 	}
@@ -710,7 +711,7 @@ func (t *turn) searchText(in toolInput) (string, error) {
 	var hits, notes []string
 	total := 0
 	for _, s := range all {
-		body, err := t.transcript(k.ID, s)
+		body, err := t.transcript(k, s)
 		if body == nil {
 			if no := (*refusal)(nil); errors.As(err, &no) {
 				notes = append(notes, no.msg)
