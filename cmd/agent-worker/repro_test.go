@@ -744,24 +744,26 @@ printf '</testsuites>\n'
 }
 
 // Each entry has its timeout, and all share the run's budget: an entry
-// the budget cuts short says so, and one it does not reach does not
-// start, whose run says so.
+// its own timeout ends had its try; one the budget cuts short says so and
+// had none, as one it does not reach, which does not start. An entry the
+// budget shortens that ends before the deadline had its try.
 func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 	list := []harness.Proof{{ID: "slow", Suite: "./slow"}, {ID: "fast", Suite: "./a", Name: "TestA"}}
 	for _, tc := range []struct {
 		timeout, budget time.Duration
 		slow            string
+		slowStarted     bool
 		fast            harness.ProofRun
 	}{
-		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", harness.ProofRun{ID: "fast", Exit: 0, Started: true}},
-		{time.Minute, 300 * time.Millisecond, "\n(the run's 300ms ran out)", harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
+		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", true, harness.ProofRun{ID: "fast", Exit: 0, Started: true}},
+		{time.Minute, 300 * time.Millisecond, "\n(the run's 300ms ran out)", false, harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
 	} {
 		ws, _ := proofsWorkspace(t, "if [ \"$2\" = ./slow ]; then sleep 30; fi\n")
 		began := time.Now()
 		var got emitted
 		runProofList(proofsEnv{proofs: list, timeout: tc.timeout, budget: tc.budget}, ws, time.Now(), got.emit)
 		runs := got.runs(t)
-		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !runs[0].Started || !strings.HasSuffix(runs[0].Output, tc.slow) {
+		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || runs[0].Started != tc.slowStarted || !strings.HasSuffix(runs[0].Output, tc.slow) {
 			t.Fatalf("timeout %s, budget %s: runs = %+v", tc.timeout, tc.budget, runs)
 		}
 		if !reflect.DeepEqual(runs[1], tc.fast) {
@@ -770,6 +772,12 @@ func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 		if took := time.Since(began); took > 10*time.Second {
 			t.Errorf("timeout %s, budget %s: took %s", tc.timeout, tc.budget, took)
 		}
+	}
+	ws, _ := proofsWorkspace(t, "exit 1\n")
+	var got emitted
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "short", Suite: "./a"}}, timeout: time.Minute, budget: 30 * time.Second}, ws, time.Now(), got.emit)
+	if r := got.runs(t)[0]; r.Exit != 1 || !r.Started {
+		t.Errorf("an entry the budget shortens, ended before the deadline = %+v, want exit 1 and started", r)
 	}
 }
 

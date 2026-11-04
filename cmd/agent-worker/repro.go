@@ -436,17 +436,23 @@ func proofs(ws string, list []harness.Proof, began time.Time, emit func(harness.
 }
 
 // runProofList runs e's entries in ws/repo in order, within the budget
-// from began, emitting one "proof" envelope per entry as it ends.
+// from began, emitting one "proof" envelope per entry as it ends. An
+// entry the budget cut short at the deadline had no try: it is not
+// started, as the entries after it.
 func runProofList(e proofsEnv, ws string, began time.Time, emit func(harness.WorkerEnvelope)) {
 	deadline := began.Add(e.budget)
 	for i, p := range e.proofs {
 		run := harness.ProofRun{ID: p.ID, Exit: -1, Output: fmt.Sprintf("proofs mode: the run's %s ran out before this entry", e.budget)}
 		if left := time.Until(deadline); left > 0 {
 			timeout, late := e.timeout, fmt.Sprintf("timed out after %s", e.timeout)
-			if left < timeout {
+			shortened := left < timeout
+			if shortened {
 				timeout, late = left, fmt.Sprintf("the run's %s ran out", e.budget)
 			}
 			run = runProof(p, filepath.Join(ws, "repo"), filepath.Join(ws, "proofs", strconv.Itoa(i)), timeout, late)
+			if shortened && run.Exit == -1 && !time.Now().Before(deadline) {
+				run.Started = false
+			}
 		}
 		emit(harness.WorkerEnvelope{Type: "proof", Proof: &run})
 	}
