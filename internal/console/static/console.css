@@ -727,6 +727,8 @@ a.cell.needs.on:hover { background: color-mix(in srgb, var(--need) 16%, transpar
 .spend.over .gauge { --fill: var(--st-failed); }
 .spend.over .n, .spend.over .pct { color: var(--st-failed); }
 .pct { font: 12px var(--font-mono); color: var(--text-muted); min-width: 4ch; }
+/* the pool's sentence wraps where the strip is narrower than it */
+.cell.pool { white-space: normal; padding-block: 6px; }
 .cell.routine, .cell.gh { margin-left: auto; }
 .cell.routine + .cell.gh { margin-left: 0; }
 /* the status in detail: two quiet columns split by a hairline */

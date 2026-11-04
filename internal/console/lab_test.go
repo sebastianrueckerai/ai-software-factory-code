@@ -80,14 +80,25 @@ func TestLab(t *testing.T) {
 	t.Cleanup(model.Close)
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
-	// a waiver stands as the approver's row on the plan's integration card
+	// a waiver stands as the approver's row on the plan's integration card,
+	// of the criterion's kind in the plan, as factoryd.DecideCriterion writes it
 	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
 		r.tasks.mu.Lock()
 		defer r.tasks.mu.Unlock()
+		var p factoryd.Plan
+		if revs := r.tasks.plans[id]; len(revs) > 0 {
+			if err := json.Unmarshal(revs[len(revs)-1].Plan, &p); err != nil {
+				return err
+			}
+		}
+		i := slices.IndexFunc(p.Criteria, func(c factoryd.PlanCriterion) bool { return c.ID == cid })
+		if i < 0 {
+			return factoryd.ErrNoCriterion
+		}
 		for _, t := range r.tasks.tasks {
 			if t.Parent == id && t.PlanKey == "integration" {
 				r.tasks.criteria[t.ID] = append(r.tasks.criteria[t.ID], factoryd.CriterionVerdict{
-					Criterion: cid, Verdict: verdict, Evidence: reason, Source: "approver", DecidedBy: by})
+					Criterion: cid, Verdict: verdict, Evidence: reason, Kind: p.Criteria[i].Kind, Source: "approver", DecidedBy: by})
 				return nil
 			}
 		}
