@@ -797,6 +797,9 @@ func TestReviewCriteriaStepFilesDuesAndFindings(t *testing.T) {
 	if len(rows) != 2 || rows[0].Criterion != "c2" || rows[1].Criterion != "c3" {
 		t.Fatalf("rows = %v, want c2 and c3", rows)
 	}
+	if !slices.Equal(rv.GateCriteria, []string{"c1"}) {
+		t.Errorf("gate criteria = %v, want c1", rv.GateCriteria)
+	}
 	catches, _ := s.PlanCatches(ctx, "t-plan")
 	var deltas []PlanCatch
 	behaviours := 0
@@ -950,8 +953,9 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 
 // The close tells a judgement that never happened from one that failed:
 // with the cards final, criteria without a row file one criteria_rerun
-// ask naming the integration card's review and its note, the unmet ones
-// named beside them; unmet rows alone file today's gap ask. A pending ask
+// ask naming the integration card's review and its note, or the criteria
+// gate when they are all its own, the unmet ones named beside them;
+// unmet rows alone file today's gap ask. A pending ask
 // of either kind stops the other, and the close resolves both.
 func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 	ctx := context.Background()
@@ -967,6 +971,9 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		{"mixed", note, ApprovalCriteriaRerun,
 			"criteria never judged: the review of card #1380 did not run (" + note + "): c2, c3; not met: c1",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "times out"}}},
+		{"the gate never ran", note, ApprovalCriteriaRerun,
+			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; not met: c2",
+			[]CriterionVerdict{{Criterion: "c2", Evidence: "read it"}}},
 		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}},
 	} {

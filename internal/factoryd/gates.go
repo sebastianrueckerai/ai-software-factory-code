@@ -189,6 +189,9 @@ type Review struct {
 	// review's own calls (planCalls), never from a review answer.
 	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
 	Behaviours []string           `json:"behaviours,omitempty"`
+	// GateCriteria are the ids of the plan's criteria the same review
+	// leaves to the criteria gate (gateJudged).
+	GateCriteria []string `json:"gate_criteria,omitempty"`
 }
 
 // AutoMerge decides the merge outcome auto by who wrote the change (spec
@@ -271,9 +274,13 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	case criteriaProve(rv.Criteria):
 		met = append(met, "the review's criteria are all met or waived")
 	case rp.Ran:
-		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)+unmetCriteria(rv.Criteria))
+		line := fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)
+		if c := criteriaUnmet(rv); c != "" {
+			line += ", and " + c
+		}
+		unmet = append(unmet, line)
 	default:
-		unmet = append(unmet, "no reproduction command and no fault the agent recorded"+unmetCriteria(rv.Criteria))
+		unmet = append(unmet, cmp.Or(criteriaUnmet(rv), "no reproduction command and no fault the agent recorded"))
 	}
 	// On both routes the review must find no drawback
 	strict := rv.StrictImprovement != nil && *rv.StrictImprovement
@@ -293,11 +300,16 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	return len(unmet) == 0, met, unmet
 }
 
-// unmetCriteria is the tail of an unmet line when the review's criteria
-// are there and do not prove the change.
-func unmetCriteria(cs []CriterionVerdict) string {
-	if len(cs) > 0 {
-		return ", and the review's criteria are not all met"
+// criteriaUnmet is why the plan's criteria do not prove the change: the
+// review's are not all met, or they are the criteria gate's, whose
+// verdicts the auto merge does not read; "" for a card the plan's
+// criteria do not judge.
+func criteriaUnmet(rv Review) string {
+	switch {
+	case len(rv.Criteria) > 0:
+		return "the review's criteria are not all met"
+	case len(rv.GateCriteria) > 0:
+		return "the auto merge does not read the criteria gate's verdicts on " + strings.Join(rv.GateCriteria, ", ")
 	}
 	return ""
 }
@@ -2013,7 +2025,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if never, err := r.unjudgedCriteria(ctx, t); err != nil {
 		return MergeResult{}, err
 	} else if len(never) > 0 {
-		return r.holdMerge(ctx, t, repo, pr, commit, approver, len(never)), nil
+		return r.holdMerge(ctx, t, repo, pr, commit, approver, never), nil
 	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
@@ -2191,27 +2203,38 @@ func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit,
 		r.note(ctx, t, "waiting: every criterion has a verdict row now: approve again to merge")
 		return nil
 	}
-	r.holdMerge(ctx, t, repo, pr, commit, approver, len(never))
+	r.holdMerge(ctx, t, repo, pr, commit, approver, never)
 	return nil
 }
 
-// holdMerge refuses the merge of a plan's integration card while n of its
-// criteria have no verdict row, naming the last review's note, and puts
-// the merge ask on the human's surface again: the workflow answers a
-// plain refusal with a new approval wait and no retry, so without the ask
-// the card would stall unseen. Approving it runs the review again
-// (versionReviewHoldsMerge). An auto merge's hold files no ask: the
-// workflow's request follows it.
-func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, n int) MergeResult {
-	note, _ := r.lastReviewNote(ctx, t.ID)
-	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(n, "criterion was", "criteria were"))
-	if note != "" {
+// holdMerge refuses the merge of a plan's integration card while criteria
+// have no verdict row (never), naming the criteria gate when they are all
+// its own, else the last review's note, and puts the merge ask on the
+// human's surface again: the workflow answers a plain refusal with a new
+// approval wait and no retry, so without the ask the card would stall
+// unseen. Approving it runs the review again (versionReviewHoldsMerge).
+// An auto merge's hold files no ask: the workflow's request follows it.
+func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, never []PlanCriterion) MergeResult {
+	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(len(never), "criterion was", "criteria were"))
+	gate := allGateJudged(never)
+	var note string
+	if !gate {
+		note, _ = r.lastReviewNote(ctx, t.ID)
+	}
+	switch {
+	case gate:
+		why += ", the criteria gate never ran"
+	case note != "":
 		why += ", the model review did not run (" + note + ")"
-	} else {
+	default:
 		why += " by a model review"
 	}
 	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
-	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: %s\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", res.Refusal, commit))
+	body := "factoryd: " + res.Refusal
+	if !gate {
+		body += fmt.Sprintf("\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", commit)
+	}
+	r.comment(ctx, t, repo, pr, body)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
 	if approver != AutoApprover {

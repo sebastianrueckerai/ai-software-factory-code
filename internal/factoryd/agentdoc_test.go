@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"strings"
 	"testing"
 	"time"
@@ -122,6 +123,33 @@ func TestAgentDocDirectEnvelope(t *testing.T) {
 				t.Fatalf("the supervisor family calls in JSON mode on the class's alias, got %+v", b)
 			}
 		})
+	}
+}
+
+// The criterion capture sends a criterion the review judges, in its input
+// and its span: one of kind test or invariant never reaches the call.
+func TestAgentDocCriterionIsTheReviewsKind(t *testing.T) {
+	g := agentdoc.NewGateway(`{"decision":"continue"}`)
+	defer g.Close()
+	spans, err := AgentDocDirect(context.Background(), "review-criteria", g.URL, agentDocPolicy(), nil)
+	if err != nil {
+		t.Fatalf("capture: %v", err)
+	}
+	var in criterionInput
+	var c PlanCriterion
+	for _, s := range spans {
+		switch s.Name {
+		case "the criterion call's facts":
+			err = json.Unmarshal([]byte(s.Text), &in)
+		case "the criterion":
+			err = json.Unmarshal([]byte(s.Text), &c)
+		}
+		if err != nil {
+			t.Fatalf("span %s: %v", s.Name, err)
+		}
+	}
+	if c.ID == "" || gateJudged(c.Kind) || in.Criterion.ID != c.ID || in.Criterion.Kind != c.Kind {
+		t.Fatalf("the criterion span %+v, the input's %+v: want one criterion the review judges in both", c, in.Criterion)
 	}
 }
 

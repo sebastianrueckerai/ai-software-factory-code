@@ -399,6 +399,11 @@ func gateJudged(kind string) bool {
 	return kind == CriterionTest || kind == CriterionInvariant
 }
 
+// allGateJudged: every criterion of cs is the criteria gate's.
+func allGateJudged(cs []PlanCriterion) bool {
+	return !slices.ContainsFunc(cs, func(c PlanCriterion) bool { return !gateJudged(c.Kind) })
+}
+
 // effectiveVerdict is a criterion's standing verdict (StandingRow); ""
 // when no row holds one.
 func effectiveVerdict(rows []CriterionVerdict, criterion string) string {
@@ -632,10 +637,11 @@ func normalizeCriteria(p Plan, answer []CriterionVerdict, behaviours []string) (
 }
 
 // reviewCriteriaStep is the review's criteria half (piece 7), run when the
-// reviewed task is the plan's integration card: it stores the verdict rows,
-// turns an unmet criterion that belongs to this card into a finding, hands
-// one too large for it to the planner as a delta due, and notes the
-// feature's behaviours as records that notify no one.
+// reviewed task is the plan's integration card: it names the criteria it
+// leaves to the gate, stores the verdict rows, turns an unmet criterion
+// that belongs to this card into a finding, hands one too large for it to
+// the planner as a delta due, and notes the feature's behaviours as
+// records that notify no one.
 func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Plan, revision, round int, rv *Review) {
 	planned := map[string]bool{}
 	for _, c := range p.Cards {
@@ -644,6 +650,11 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 	if len(p.Criteria) == 0 || t.Parent == "" || (roleOf(p, t.PlanKey) != RoleIntegration && planned[t.PlanKey]) {
 		rv.Criteria, rv.Behaviours = nil, nil
 		return
+	}
+	for _, c := range p.Criteria {
+		if gateJudged(c.Kind) {
+			rv.GateCriteria = append(rv.GateCriteria, c.ID)
+		}
 	}
 	integration, err := integrationCard(ctx, r.store, t.Parent, p)
 	if err != nil {
@@ -1106,24 +1117,28 @@ func (r *Runner) openGap(ctx context.Context, t Task, repo Repo, open []PlanCrit
 // askRerun opens the plan's criteria_rerun approval once per shape, while
 // the plan is at rest: never are criteria no row holds, which the
 // integration card's review never judged, named with its last note, or
-// "the review never ran" when it has none; unmet those whose rows say not
+// "the review never ran" when it has none, or which the criteria gate
+// never ran for when they are all its own; unmet those whose rows say not
 // met, named beside them.
 func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet []PlanCriterion, integration Task) {
-	why := "did not run (the review never ran)"
-	if note, ok := r.lastReviewNote(ctx, integration.ID); ok && note != "" {
+	who, why := "review", "did not run (the review never ran)"
+	if allGateJudged(never) {
+		who, why = "criteria gate", "never ran"
+	} else if note, ok := r.lastReviewNote(ctx, integration.ID); ok && note != "" {
 		why = "did not run (" + note + ")"
 	} else if ok {
 		why = "wrote no verdict for them"
 	}
+	why = fmt.Sprintf("the %s of card #%d %s", who, integration.IssueNumber, why)
 	ids, lines := criteriaLines(never, " — never judged")
-	reason := fmt.Sprintf("criteria never judged: the review of card #%d %s: %s", integration.IssueNumber, why, strings.Join(ids, ", "))
+	reason := fmt.Sprintf("criteria never judged: %s: %s", why, strings.Join(ids, ", "))
 	if len(unmet) > 0 {
 		more, unmetLines := criteriaLines(unmet, " — not met")
 		reason += "; not met: " + strings.Join(more, ", ")
 		ids, lines = append(ids, more...), append(lines, unmetLines...)
 	}
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,
-		fmt.Sprintf("factoryd: the plan's cards are done, and criteria were never judged: the review of card #%d %s.\n\n", integration.IssueNumber, why)+
+		"factoryd: the plan's cards are done, and criteria were never judged: "+why+".\n\n"+
 			strings.Join(lines, "\n")+"\n\nWaive a criterion with your reason, or confirm the delivered cards meet them.", ids, integration)
 }
 

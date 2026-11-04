@@ -286,17 +286,19 @@ func agentDocPlan() Plan {
 	}
 }
 
-// agentDocCriterion drives the review's criterion call on the fixture
-// plan's one criterion.
+// agentDocCriterion drives the review's criterion call on a judgement
+// criterion of its own: the fixture plan's one criterion is of kind test,
+// which the review leaves to the criteria gate.
 func agentDocCriterion(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
 	m, alias, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
 	if err != nil {
 		return nil, err
 	}
-	p := agentDocPlan()
+	c := PlanCriterion{ID: "c2", Kind: CriterionJudgement, Claim: "the counter's name says it counts the skipped rows too",
+		Inputs: "the diff of internal/foo/bar.go", Prompt: "Does the name of the new counter say it counts skipped rows?"}
 	files := agentDocFiles()
 	diff := joinFiles(files)
-	in := criterionInput{Objective: agentDocObjective().Objective, Criterion: p.Criteria[0], Cards: []string{"f1"}, Diff: diff}
+	in := criterionInput{Objective: agentDocObjective().Objective, Criterion: c, Cards: []string{"f1"}, Diff: diff}
 	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout,
 		reviewCriterionPrompt, in); err != nil {
 		return nil, err
@@ -310,7 +312,7 @@ func agentDocCriterion(ctx context.Context, gwURL string, v policy.Version, hc *
 		{Name: "the objective", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
 			Text: agentDocJSON(in.Objective)},
 		{Name: "the criterion", Symbol: "factoryd.PlanCriterion", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: marshalled(p.Criteria[0])},
+			Text: marshalled(c)},
 		{Name: "the diff", Symbol: "factoryd.joinFiles", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(diff)},
 	}, nil
 }

@@ -1799,7 +1799,11 @@ func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeK
 			t.Fatal(err)
 		}
 	}
-	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "review", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "unmet", Evidence: "POST /api/links answers 500"}}); err != nil {
+	// an old review row under the gate's: the gate's stands
+	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "review", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "met", Evidence: "the diff adds the handler"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "gate", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "unmet", Evidence: "POST /api/links answers 500"}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []struct {

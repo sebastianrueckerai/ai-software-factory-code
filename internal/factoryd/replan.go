@@ -1478,10 +1478,10 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 
 // oldCardText is old card k's record file under title: its state line,
 // then each section that has lines: the reviews' findings and the stages'
-// from its timeline tl, an integration card's criteria verdicts, the
-// check-in's notes, and the working state of its newest session created
-// before before that left one, at branch head commit, with how that
-// session ended.
+// from its timeline tl, an integration card's standing criteria verdicts
+// (StandingRow), the check-in's notes, and the working state of its
+// newest session created before before that left one, at branch head
+// commit, with how that session ended.
 func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, state, role, commit string, before time.Time) (string, error) {
 	parts := []string{title, state}
 	section := func(heading string, lines []string) {
@@ -1509,7 +1509,13 @@ func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, stat
 			return "", err
 		}
 		lines = nil
-		for _, v := range rows {
+		seen := map[string]bool{}
+		for _, row := range rows {
+			if seen[row.Criterion] {
+				continue
+			}
+			seen[row.Criterion] = true
+			v, _ := StandingRow(rows, row.Criterion)
 			line := "- " + v.Criterion
 			for _, s := range []string{v.Verdict, v.Evidence} {
 				if s != "" {

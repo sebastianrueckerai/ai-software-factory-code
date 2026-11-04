@@ -1460,7 +1460,9 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 // count and the last review's note, and the merge ask is on the human's
 // surface again with the refused review named — filed anew from the
 // pressed request's spec, or re-opened when it names the note already.
-// A row for every criterion, whatever its verdict, merges.
+// When the criteria without a row are all the gate's, the refusal names
+// the gate and no model review. A row for every criterion, whatever its
+// verdict, merges.
 func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
 	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
@@ -1477,6 +1479,7 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 2, named},
 		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 1, named},
 		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged by a model review", 1, base},
+		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met"}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
 		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "met"}}, "", 1, base},
 	} {
 		task := gateTask
@@ -1484,7 +1487,10 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 		r, store, _ := newGateRunner(t, task, fj)
 		ctx := context.Background()
-		b, _ := json.Marshal(criteriaPlan())
+		// c1 is the gate's, c3 the review's
+		p := criteriaPlan()
+		p.Criteria[2].Kind = CriterionJudgement
+		b, _ := json.Marshal(p)
 		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 			t.Fatal(err)
 		}
@@ -1512,6 +1518,8 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		}
 		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], c.refusal) {
 			t.Errorf("%s: comments %q, want one naming the hold", c.name, fj.comments)
+		} else if strings.Contains(fj.comments[0], "model review") == (c.name == "the gate never ran") {
+			t.Errorf("%s: comment %q names the model review only when a criterion is the review's", c.name, fj.comments[0])
 		}
 		if len(store.approvals) != c.asks {
 			t.Errorf("%s: %d merge requests, want %d", c.name, len(store.approvals), c.asks)
@@ -1544,7 +1552,10 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 	r, store, _ := newGateRunner(t, task, fj)
-	b, _ := json.Marshal(criteriaPlan())
+	// c3 is the review's, so the hold names its note
+	p := criteriaPlan()
+	p.Criteria[2].Kind = CriterionJudgement
+	b, _ := json.Marshal(p)
 	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 		t.Fatal(err)
 	}
@@ -3129,9 +3140,27 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 		t.Fatalf("unmet = %q", unmet)
 	}
 	rv.Criteria[1].Verdict = "unmet"
-	want := []string{"no reproduction command and no fault the agent recorded, and the review's criteria are not all met"}
+	want := []string{"the review's criteria are not all met"}
 	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
 		t.Fatalf("ok %v, unmet %q", ok, unmet)
+	}
+}
+
+// A card whose plan's criteria are all the gate's carries no review rows:
+// its why line names the criteria the auto merge does not read from the
+// gate, never a missing reproduction.
+func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	g.Reproduction = ReproResult{}
+	rv.GateCriteria = []string{"c1", "c3"}
+	gate := "the auto merge does not read the criteria gate's verdicts on c1, c3"
+	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{gate}) {
+		t.Fatalf("ok %v, unmet %q; want %q", ok, unmet, gate)
+	}
+	g.Reproduction = ReproResult{Ran: true, Exit: 0, BaseExit: 0}
+	want := "not reproduced at base: the reproduction exited 0 before the fix, and the agent recorded no fault it fixed, and " + gate
+	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{want}) {
+		t.Fatalf("ok %v, unmet %q; want %q", ok, unmet, want)
 	}
 }
 
