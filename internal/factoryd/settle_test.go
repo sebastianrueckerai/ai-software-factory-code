@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"reflect"
+	"slices"
 	"testing"
 	"time"
 )
@@ -95,10 +96,13 @@ func TestSettleOf(t *testing.T) {
 // An ask row settles on what ends its case, as the events writer routes
 // it: its birth, the question_asked row the Poker wrote it from, names the
 // case. The card's own ask settles on a row naming its case or none, and
-// one that names no case on any row but a monitor case's. A newer ask of
-// the card's own moves it on. A monitor's ask settles on a row naming its
-// case alone and stays open while the case lives, until its card ends.
-// Two asks written in one pass each find their own birth by their words.
+// one that names no case on any row but a monitor case's. Its next ask
+// moves it on, as askAnswer reads it: a plan question's a later
+// revision's, any other a newer ask of the card's own. A monitor's ask
+// settles on a row naming its case alone and stays open while the case
+// lives, until its card ends, except the one that asks the ended card's
+// issue closed. Two asks written in one pass each find their own birth by
+// their words.
 func TestSettleOfByCase(t *testing.T) {
 	at := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	ev := func(id int64, sec int, kind, actor string, detail map[string]any) Event {
@@ -122,6 +126,24 @@ func TestSettleOfByCase(t *testing.T) {
 	closed := ev(35, 360, EventCardClosed, "sebastian", nil)
 	const waiting, running = "waiting-human", "running"
 	newer := ev(36, 150, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which port?"})
+	// a plan revision's two questions and its confirmation, asked in one
+	// pass, and a later revision's question
+	plan := func(id int64, sec int, question string, revision, index int) Event {
+		return ev(id, sec, EventQuestionAsked, FactoryDecider, map[string]any{"question": question, "revision": float64(revision), "index": float64(index)})
+	}
+	confirm := plan(42, 400, "Confirm the plan?", 2, 3)
+	confirm.Detail["kind"] = QuestionConfirmation
+	revision := []Event{confirm, plan(41, 400, "Which cache?", 2, 2), plan(40, 400, "Which DB?", 2, 1)}
+	later := plan(43, 500, "Which DB now?", 3, 1)
+	planRow := func(question string) ChatMessage {
+		return ChatMessage{ID: 41, At: at.Add(405 * time.Second), Kind: MessageEscalation, BirthKind: EventQuestionAsked, TaskID: "t-e",
+			Content: "#13 needs you: " + question}
+	}
+	// the monitor's ask on an ended card whose issue is open
+	issueAsk := ev(44, 600, EventQuestionAsked, FactoryDecider, map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 14 in the project chat.",
+		"case_id": float64(14), "case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"})
+	issueRow := ChatMessage{At: issueAsk.At, Kind: MessageEscalation, BirthKind: EventQuestionAsked}
+	issueClosed := ev(45, 700, EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(14), "reason": "the issue is closed"})
 	open := PokeSettle{Open: true}
 	by := func(e Event, word string) PokeSettle { return PokeSettle{Word: word, By: e.Actor, At: e.At, Event: e} }
 	for _, tt := range []struct {
@@ -148,6 +170,15 @@ func TestSettleOfByCase(t *testing.T) {
 		{"an answer before the newer ask settles it first", own, []Event{newer, answered, monAsk, ownAsk}, waiting, by(answered, "answered")},
 		{"a newer ask of the card's own leaves the monitor's open", mon, []Event{newer, monAsk, ownAsk}, waiting, open},
 		{"a monitor's ask moves on when its card ended", mon, []Event{monAsk, ownAsk}, "done", PokeSettle{Word: "moved on", At: mon.At}},
+		{"a plan's first question stays open past its revision's other asks", planRow("Which DB?"), revision, waiting, open},
+		{"and its second", planRow("Which cache?"), revision, waiting, open},
+		{"and its confirmation", planRow("Confirm the plan?"), revision, waiting, open},
+		{"a later revision moves its first question on", planRow("Which DB?"), append([]Event{later}, revision...), waiting,
+			PokeSettle{Word: "moved on", At: later.At}},
+		{"and its confirmation", planRow("Confirm the plan?"), append([]Event{later}, revision...), waiting, PokeSettle{Word: "moved on", At: later.At}},
+		{"a plan question leaves the card's own ask open", own, append(slices.Clone(revision), ownAsk), waiting, open},
+		{"the ask of an ended card's open issue stays open", issueRow, []Event{issueAsk}, "done", open},
+		{"until a row names its case", issueRow, []Event{issueClosed, issueAsk}, "done", by(issueClosed, "withdrawn")},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
 			if got := SettleOf(tt.m, tt.events, tt.status, false); !reflect.DeepEqual(got, tt.want) {

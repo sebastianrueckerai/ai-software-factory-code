@@ -192,30 +192,24 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 	return nil
 }
 
-// askAnswer is ask's answer among events, those after it. A plan
-// question's is the plan answer of its revision and index, past the
-// questions asked with it, until a later revision asks again; any other
-// ask's is the answer or grant before the next such ask, among the rows
-// that end its case (caseEnds over all of the card's rows, a monitor's
-// ask before it among them). A monitor's ask and the card's own pass each
-// other: the next ask of a monitor's is one on its case, of the card's
-// own any but a monitor's.
+// askAnswer is the answer of ask rows[i] among the rows after it, until
+// its next ask moves it on (movesOn). A plan question's is the plan
+// answer of its revision and index; any other ask's is the answer, grant
+// or withdrawal among the rows that end its case (caseEnds over all of
+// the card's rows, a monitor's ask before it among them).
 func askAnswer(rows []Event, i int) string {
 	ask, events := rows[i], rows[i+1:]
 	revision, _ := toInt(ask.Detail["revision"])
 	index, _ := toInt(ask.Detail["index"])
 	ends := caseEnds(ask, rows)
-	own, _ := toInt(ask.Detail["case_id"])
-	beside := func(e Event) bool { return e.Detail["case_kind"] == string(CaseMonitorFlag) }
-	mine := func(e Event) bool {
-		if e.Kind != EventQuestionAsked {
-			return ends(e)
-		}
-		named, _ := toInt(e.Detail["case_id"])
-		return beside(ask) && named == own || !beside(ask) && !beside(e)
-	}
 	for _, e := range events {
-		if revision == 0 && !mine(e) {
+		if e.Kind == EventQuestionAsked {
+			if movesOn(ask, e) {
+				return "Answer: none"
+			}
+			continue
+		}
+		if revision == 0 && !ends(e) {
 			continue
 		}
 		word := func(k string) string { v, _ := e.Detail[k].(string); return v }
@@ -225,13 +219,9 @@ func askAnswer(rows []Event, i int) string {
 		rev, _ := toInt(e.Detail["revision"])
 		idx, _ := toInt(e.Detail["index"])
 		switch {
-		case revision > 0 && e.Kind == EventQuestionAsked && rev > revision:
-			return "Answer: none"
 		case revision > 0 && e.Kind == EventPlanQuestionAnswered && rev == revision && idx == index:
 			return answer()
 		case revision > 0:
-		case e.Kind == EventQuestionAsked && rev == 0:
-			return "Answer: none"
 		case e.Kind == EventQuestionAnswered:
 			return answer()
 		case e.Kind == EventSessionGranted:

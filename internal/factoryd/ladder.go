@@ -643,8 +643,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		asked["case_id"] = c.ID
 	}
 	if beside {
-		// the card's own ask stays the card's: its thread seeds from that
-		asked["case_kind"] = string(c.Kind)
+		// the card's own ask stays the card's: its thread seeds from that.
+		// The flag tells the settle the ask of an ended card's open issue
+		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
 	}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info

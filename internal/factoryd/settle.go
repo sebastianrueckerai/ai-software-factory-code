@@ -76,12 +76,13 @@ var settleWords = map[string]string{
 // Needs you, an approval's pending request, a poke's card in Needs you.
 // The first settling event at or after the row's birth, the ask that
 // wrote it, settles it with the event's word, actor and time, when it
-// ends the birth's case (caseEnds); a newer ask of the card's own before
-// any moves the row on, as askAnswer reads it; none, and the fact gone,
-// settles it as moved on; the fact still there, the row is open. A
+// ends the birth's case (caseEnds); the birth's next ask before any
+// moves the row on (movesOn, as askAnswer stops); none, and the fact
+// gone, settles it as moved on; the fact still there, the row is open. A
 // monitor's ask waits on its case alone, which only a row naming it ends,
-// until its card ends. A row's repeats move its time, so a bumped row
-// asks again after an answer that preceded it.
+// until its card ends, and the ask of an ended card's open issue past
+// that, until the issue closes. A row's repeats move its time, so a
+// bumped row asks again after an answer that preceded it.
 func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) PokeSettle {
 	family := AskFamily(m)
 	cardWaits := status == "waiting-human"
@@ -100,7 +101,7 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 		if last.ID == 0 || e.ID > last.ID {
 			last = e
 		}
-		next := birth.ID != 0 && !monitor && e.Kind == EventQuestionAsked && e.ID > birth.ID && e.Detail["case_kind"] != string(CaseMonitorFlag)
+		next := birth.ID != 0 && e.ID > birth.ID && movesOn(birth, e)
 		if !next && (!settles(e.Kind, family) || !ends(e)) {
 			continue
 		}
@@ -114,7 +115,7 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 	if first.ID != 0 {
 		return PokeSettle{Word: settleWords[first.Kind], By: first.Actor, At: first.At, Event: first}
 	}
-	if monitor && !Final(status) {
+	if monitor && (!Final(status) || birth.Detail["flag"] == "issue_open_after_end") {
 		return PokeSettle{Open: true}
 	}
 	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {
@@ -144,6 +145,29 @@ func birthOf(m ChatMessage, events []Event) Event {
 		}
 	}
 	return birth
+}
+
+// movesOn reports whether question_asked e, newer than ask, is ask's next
+// ask, which moves it on: for a plan question a later revision's
+// question, for a monitor's ask one on its case, for any other ask of the
+// card's own a newer one that is neither a plan question nor a monitor's.
+// askAnswer and SettleOf both stop there.
+func movesOn(ask, e Event) bool {
+	if e.Kind != EventQuestionAsked {
+		return false
+	}
+	revision, _ := toInt(ask.Detail["revision"])
+	rev, _ := toInt(e.Detail["revision"])
+	own, _ := toInt(ask.Detail["case_id"])
+	named, _ := toInt(e.Detail["case_id"])
+	beside := func(x Event) bool { return x.Detail["case_kind"] == string(CaseMonitorFlag) }
+	switch {
+	case revision > 0:
+		return rev > revision
+	case beside(ask):
+		return named == own
+	}
+	return rev == 0 && !beside(e)
 }
 
 // caseEnds reports which of events end ask's case, as the events writer

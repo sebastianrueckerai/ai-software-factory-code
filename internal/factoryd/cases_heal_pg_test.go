@@ -79,7 +79,8 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 
 // A monitor case on an ended card is the monitor's to withdraw: the heal
 // withdraws the card's own ask and leaves the issue_open_after_end case at
-// the human, which asks the issue closed.
+// the human, which asks the issue closed until the issue's close
+// withdraws it.
 func TestReconcileCasesLeavesAnEndedCardsMonitorCase(t *testing.T) {
 	s := cardCaseStore(t, "cases_heal")
 	askCap(t, s, 27001)

@@ -31,7 +31,7 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 		return r, err
 	}
 	// a monitor flag's case on an ended card asks its issue closed: the
-	// monitor withdraws it once the flag no longer holds
+	// monitor withdraws it once the issue closes or the flag no longer holds
 	ended, err := s.withdrawCases(ctx, `SELECT c.id, 'card ended ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND t.status IN ('done', 'failed', 'closed') AND c.kind <> $2`,
 		repository, CaseMonitorFlag)

@@ -35,8 +35,9 @@ type CardDigest struct {
 	// built, the time its waits are aged to. A running card's lastCallAt
 	// is its newest model call's time, and its retryDue the time the
 	// newest provider_refused line's backoff ends. cases are the card's
-	// cases, and issueCloses whether Finish closes the issue of the card's
-	// end (finishClosesIssue).
+	// cases, issueCloses whether Finish closes the issue of the card's end
+	// (finishClosesIssue), and issueClosed whether its events hold its
+	// issue's close, which the webhook records on an ended card.
 	lastStep    string
 	caseSteps   []CaseStep
 	at          time.Time
@@ -44,6 +45,7 @@ type CardDigest struct {
 	retryDue    time.Time
 	cases       []Case
 	issueCloses bool
+	issueClosed bool
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -186,7 +188,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
 	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases,
-		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events))}
+		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events)),
+		issueClosed: slices.ContainsFunc(rows.events, func(e Event) bool { return e.Kind == EventIssueClosed })}
 	newest := newestLine(rows.timeline, "")
 	d.lastStep, d.LastStepAt = newest.Step, newest.Time
 	if t.Status == "running" {

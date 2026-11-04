@@ -58,8 +58,10 @@ type monitorForge struct {
 	posted   int
 	closed   map[int64]bool
 	closes   []int64
-	// failComments fails that many comment posts
+	// failComments fails that many comment posts, and failClose every
+	// close
 	failComments int
+	failClose    bool
 }
 
 func (f *monitorForge) serve(t *testing.T) *httptest.Server {
@@ -91,6 +93,8 @@ func (f *monitorForge) serve(t *testing.T) *httptest.Server {
 				state = "closed"
 			}
 			fmt.Fprintf(w, `{"number": %d, "state": %q}`, n, state)
+		case r.Method == http.MethodPatch && sub == "" && f.failClose:
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPatch && sub == "":
 			f.closed[n] = true
 			f.closes = append(f.closes, n)
@@ -297,8 +301,8 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	}
 	ask := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", n)
 	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != ask || asks[0].Detail["case_id"] != float64(n) ||
-		asks[0].Detail["case_kind"] != string(CaseMonitorFlag) || len(asks[0].Detail["choices"].([]any)) != 0 {
-		t.Fatalf("asks = %+v, want one on case %d of kind monitor_flag asking %q with no choices", asks, n, ask)
+		asks[0].Detail["case_kind"] != string(CaseMonitorFlag) || asks[0].Detail["flag"] != "queued_over_bound" || len(asks[0].Detail["choices"].([]any)) != 0 {
+		t.Fatalf("asks = %+v, want one on case %d of kind monitor_flag and flag queued_over_bound asking %q with no choices", asks, n, ask)
 	}
 	if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
 		t.Fatal(err)
@@ -525,6 +529,61 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	g.pass(t)
 	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.closes) != 1 {
 		t.Fatalf("t1's flag cases = %v, closes %v; want the one case and the one close", cases, g.forge.closes)
+	}
+}
+
+// An ended card's issue that rung 0 failed to close: its
+// issue_open_after_end case sits at the human, and its ask stays open on
+// the ended card, until the issue's close is a row on the card. The next
+// pass withdraws the case as the issue is closed, by a row that names it,
+// so the ask reads withdrawn, and opens none again.
+func TestMonitorWithdrawsTheIssueCaseOnceTheIssueCloses(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.card(t, "t1", 13, "done")
+	if _, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+		Status: CaseAtHuman, Problem: "Card used its sessions"}); err != nil {
+		t.Fatal(err)
+	}
+	g.forge.failClose = true
+	g.pass(t)
+	g.event(t, "t1", 13, EventTaskEnded, map[string]any{"state": "done"}, monitorAt.Add(-time.Minute))
+	g.pass(t)
+	c, ok := g.flagCases(t, "t1")["issue_open_after_end|"]
+	asks := (actRig{s: g.s}).rows(t, EventQuestionAsked)
+	if !ok || c.Status != CaseAtHuman || len(asks) != 1 || asks[0].Detail["case_id"] != float64(c.ID) || asks[0].Detail["flag"] != "issue_open_after_end" {
+		t.Fatalf("t1's flag case = %+v (found %v), asks %+v; want issue_open_after_end at the human with its ask", c, ok, asks)
+	}
+	settled := func() PokeSettle {
+		t.Helper()
+		events, err := g.s.TaskEvents(ctx, "t1", 100)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: asks[0].At}, events, "done", false)
+	}
+	if s := settled(); !s.Open {
+		t.Fatalf("the ask on the ended card settles as %+v, want it open", s)
+	}
+	// the pass reads the face's own row, so only the close is left to read
+	g.pass(t)
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman {
+		t.Fatalf("the case = %s before the issue closed, want it at the human", got.Status)
+	}
+	g.event(t, "t1", 13, EventIssueClosed, map[string]any{"issue": 13}, monitorAt)
+	g.pass(t)
+	got := caseByID(t, g.s, c.ID)
+	if got.Status != CaseWithdrawn || !reflect.DeepEqual(got.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: "the issue is closed"}) {
+		t.Fatalf("the case = %s, %+v; want withdrawn by factoryd as the issue is closed", got.Status, got.Resolution)
+	}
+	if rows := (actRig{s: g.s}).rows(t, EventQuestionWithdrawn); len(rows) != 1 || rows[0].Detail["case_id"] != float64(c.ID) || rows[0].Detail["reason"] != "the issue is closed" {
+		t.Fatalf("withdrawal rows = %+v, want one naming case %d as the issue is closed", rows, c.ID)
+	}
+	if s := settled(); s.Word != "withdrawn" {
+		t.Fatalf("the ask settles as %+v, want withdrawn", s)
+	}
+	if cases := g.flagCases(t, "t1"); len(cases) != 1 {
+		t.Fatalf("t1's flag cases = %v, want the one withdrawn", cases)
 	}
 }
 

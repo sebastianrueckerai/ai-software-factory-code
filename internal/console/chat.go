@@ -9,6 +9,7 @@ import (
 	"fmt"
 	"io"
 	"log"
+	"maps"
 	"mime"
 	"mime/multipart"
 	"net/http"
@@ -464,26 +465,40 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+// endedEvents are the newest rows read of an ended card: its end, the
+// monitor's ask that asks its issue closed and the rows that answer it.
+const endedEvents = 20
+
 // askFacts reads the settle rule's facts for the cards named: the card's
 // status, which tells the board's Needs-you fact, with its events. A card
-// in a final state settled its asks already, so its events are not read.
-// One query per fact, whatever the cards' number.
+// in a final state settled its asks at its end but the monitor's that
+// asks its issue closed, which comes after the end, so only its newest
+// endedEvents rows are read. One query per fact and state, whatever the
+// cards' number.
 func askFacts(ctx context.Context, c *Console, ids []string) (map[string]string, map[string][]factoryd.Event) {
 	events := map[string][]factoryd.Event{}
 	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
 	if err != nil {
 		log.Printf("console: the cards' statuses: %v", err)
 	}
-	var live []string
+	var live, ended []string
 	for _, id := range ids {
-		if statuses[id] != "" && !factoryd.Final(statuses[id]) {
+		switch {
+		case factoryd.Final(statuses[id]):
+			ended = append(ended, id)
+		case statuses[id] != "":
 			live = append(live, id)
 		}
 	}
-	if evs, err := c.cfg.Events.TaskEventsFor(ctx, live, startEvents); err != nil {
-		log.Printf("console: the cards' events: %v", err)
-	} else {
-		events = evs
+	for _, read := range []struct {
+		ids   []string
+		limit int
+	}{{live, startEvents}, {ended, endedEvents}} {
+		evs, err := c.cfg.Events.TaskEventsFor(ctx, read.ids, read.limit)
+		if err != nil {
+			log.Printf("console: the cards' events: %v", err)
+		}
+		maps.Copy(events, evs)
 	}
 	return statuses, events
 }

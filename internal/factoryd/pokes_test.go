@@ -472,8 +472,9 @@ func TestPGStorePokeLevelChangeTellsTheOthers(t *testing.T) {
 // The card's own ask and a monitor's reach the inbox in one pass, both
 // rows written after both asks: the monitor's withdrawal names its case,
 // so it settles that row alone, read through either inbox read and the
-// messenger's copy, and its own row names the case. A monitor's ask on a
-// card that ends moves on.
+// messenger's copy, and its own row names the case. On the card once it
+// ended, the monitor's ask that asks its issue closed stays open until a
+// row names its case, and another monitor's ask moves on.
 func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_poke_cases"))
 	if err != nil {
@@ -555,33 +556,45 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 		t.Fatalf("the messenger's copies settle as %q, want the card's own open and the monitor's withdrawn", copies)
 	}
 
-	// a monitor's ask on a card that ends moves on, though no row names its case
-	ended, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
-		Problem: "Monitor flag: issue_open_after_end"})
-	if err != nil {
+	// on the card once it ended, the monitor's ask that asks its issue
+	// closed stays open until a row names its case, and another monitor's
+	// ask moves on
+	if _, err := s.db.Exec(`UPDATE tasks SET status = 'done', finished_at = now() WHERE id = 't-1'`); err != nil {
 		t.Fatal(err)
 	}
-	record(EventQuestionAsked, map[string]any{"question": fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", ended.ID),
-		"case_id": ended.ID, "case_kind": string(CaseMonitorFlag)})
-	if err := p.Pass(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if rows, err = s.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10); err != nil || len(rows) != 4 {
-		t.Fatalf("the inbox = %+v, %v; want the new ask as its fourth row", rows, err)
-	}
-	var words []string
-	for _, status := range []string{"running", "done"} {
-		if _, err := s.db.Exec(`UPDATE tasks SET status = $1, finished_at = CASE WHEN $1 = 'done' THEN now() END WHERE id = 't-1'`, status); err != nil {
-			t.Fatal(err)
-		}
-		m := rows[3]
-		st, err := (&Sender{Store: s}).settleState(ctx, Delivery{Kind: m.Kind, BirthKind: m.BirthKind, TaskID: m.TaskID, At: m.At, Content: m.Content})
+	var faced []int64
+	for _, flag := range []string{"issue_open_after_end", "checkin_cut"} {
+		c, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: flag + "|x", Problem: "Monitor flag: " + flag})
 		if err != nil {
 			t.Fatal(err)
 		}
-		words = append(words, st.Word)
+		faced = append(faced, c.ID)
+		record(EventQuestionAsked, map[string]any{"question": fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", c.ID),
+			"case_id": c.ID, "case_kind": string(CaseMonitorFlag), "flag": flag})
 	}
-	if !slices.Equal(words, []string{"", "moved on"}) {
-		t.Fatalf("the messenger's copy of the ended card's monitor ask settles as %q, want open while it runs and moved on once done", words)
+	copyWords := func() []string {
+		t.Helper()
+		if err := p.Pass(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if rows, err = s.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10); err != nil || len(rows) < 5 {
+			t.Fatalf("the inbox = %+v, %v; want the two asks as its fourth and fifth rows", rows, err)
+		}
+		var words []string
+		for _, m := range rows[3:5] {
+			st, err := (&Sender{Store: s}).settleState(ctx, Delivery{Kind: m.Kind, BirthKind: m.BirthKind, TaskID: m.TaskID, At: m.At, Content: m.Content})
+			if err != nil {
+				t.Fatal(err)
+			}
+			words = append(words, st.Word)
+		}
+		return words
+	}
+	if words := copyWords(); !slices.Equal(words, []string{"", "moved on"}) {
+		t.Fatalf("the messenger's copies of the ended card's monitor asks settle as %q, want the issue's open and the other moved on", words)
+	}
+	record(EventQuestionWithdrawn, map[string]any{"case_id": faced[0], "reason": "the issue is closed"})
+	if words := copyWords(); !slices.Equal(words, []string{"withdrawn", "moved on"}) {
+		t.Fatalf("after the issue's withdrawal the copies settle as %q, want the issue's withdrawn", words)
 	}
 }
