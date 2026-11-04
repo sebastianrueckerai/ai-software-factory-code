@@ -400,9 +400,6 @@ type fakeTasks struct {
 	roadmap map[string]string
 	chain   map[string]factoryd.ChainFacts
 	read    func(s *fakeTasks, id string)
-	// events is the ledger FundCard's card_funded row goes to and the
-	// pool its guard reads (fakeEvents)
-	events *fakeEvents
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -418,60 +415,6 @@ func (s *fakeTasks) ProjectImageParks(_ context.Context, project string) ([]fact
 		}
 	}
 	return out, nil
-}
-
-// FundCard raises task id's budget and records e, both or neither, as the
-// store's one transaction does.
-func (s *fakeTasks) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
-	if bounds != nil {
-		funded, err := s.events.AgentFundedEUR(ctx, e.Repository, time.Now())
-		if err != nil {
-			return 0, 0, err
-		}
-		if factoryd.Cents(funded)+factoryd.Cents(eur) > factoryd.Cents(bounds.PoolEUR) {
-			return 0, 0, &factoryd.PoolSpentError{Funded: funded}
-		}
-		for _, k := range s.tasks {
-			if k.ID == id && factoryd.Cents(k.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bounds.CardCapEUR) {
-				return 0, 0, &factoryd.CardCapError{Budget: k.BudgetEUR}
-			}
-		}
-		e.Detail["decider"] = "agent"
-	}
-	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
-	if err != nil {
-		return 0, 0, err
-	}
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	if _, err := s.events.Record(ctx, e); err != nil {
-		s.RaiseTaskBudget(ctx, id, -eur)
-		return 0, 0, err
-	}
-	return from, to, nil
-}
-
-// ExtendCard raises task id's caps and records e, both or neither, as the
-// store's one transaction does.
-func (s *fakeTasks) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
-	from, to, err := s.RaiseTaskBudget(ctx, id, eur)
-	if err != nil {
-		return 0, 0, err
-	}
-	s.mu.Lock()
-	for i := range s.tasks {
-		if s.tasks[i].ID == id {
-			s.tasks[i].Usage.RaisedSessions += sessions
-			s.tasks[i].Usage.ExtraLines += lines
-		}
-	}
-	s.mu.Unlock()
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, to, eur
-	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
-	if _, err := s.events.Record(ctx, e); err != nil {
-		s.RaiseTaskBudget(ctx, id, -eur)
-		return 0, 0, err
-	}
-	return from, to, nil
 }
 
 // Dependencies are the tasks task id depends on, those not done first.
@@ -1192,7 +1135,7 @@ type rig struct {
 	// writer lists' map (writers.by)
 	repoWriters map[string][]string
 	signalErr   error
-	retried     []string // "task by user" per RetryPlanCard
+	retried     []string // "task by user" per RetryCard
 	retryErr    error
 	handed      []string // "task by user" per GoCard
 	goErr       error
@@ -1215,6 +1158,17 @@ type rig struct {
 	imageAsks []string
 	imageAsk  factoryd.ImageAsk
 	imageErr  error
+	// acted are the answers Act took, actErr its refusal, actErrs the
+	// refusal of the nth answer; the fake has a case-resolving answer's
+	// Post post its comment, as Act does, and actDid says what an answer
+	// ran
+	acted   []factoryd.ActInput
+	actErr  error
+	actErrs map[int]error
+	actDid  func(factoryd.ActInput) []factoryd.CaseAction
+	// drawn is PoolDrawn's answer, drawnErr its failure
+	drawn    policy.Draw
+	drawnErr error
 }
 
 var monthly = 8.99
@@ -1278,7 +1232,6 @@ func newRig(t *testing.T) *rig {
 		deps:        &fakeDeps{},
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
-	r.tasks.events = r.events
 	r.chatTokens = &fakeChatTokens{}
 	r.chat = &fakeChat{tasks: r.tasks, chatTokens: r.chatTokens}
 	r.sessions = newFakeSessions()
@@ -1287,7 +1240,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Pools: r.events,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
@@ -1313,9 +1266,78 @@ func newRig(t *testing.T) *rig {
 		BoardDigest: func(_ context.Context, repository string) (factoryd.BoardDigest, error) {
 			return r.boardDigests[repository], nil
 		},
-		OpenCasesOf: func(_ context.Context, taskID string) ([]factoryd.Case, error) { return r.openCases[taskID], nil },
-		CaseSteps:   func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
-		ChatToken:   func(factoryd.Project) string { return r.chatToken },
+		OpenCasesOf: func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+			if r.openCases != nil {
+				return r.openCases[taskID], nil
+			}
+			// a card waiting on a human has its live case, as after the
+			// cases' heal, unless the test seats cases of its own
+			k, ok, _ := r.tasks.Task(ctx, taskID)
+			switch {
+			case !ok || k.Status != "waiting-human":
+				return nil, nil
+			case k.Kind == "human":
+				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
+			}
+			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+		},
+		// the newest of the cases OpenCasesOf answers that an answer on
+		// the card ends, as the store reads it
+		NewestAskCase: func(ctx context.Context, taskID string) (factoryd.Case, error) {
+			open, err := r.c.cfg.OpenCasesOf(ctx, taskID)
+			var newest factoryd.Case
+			for _, k := range open {
+				if factoryd.AnsweredOnCard(k.Kind) && k.ID > newest.ID {
+					newest = k
+				}
+			}
+			return newest, err
+		},
+		Act: func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
+			r.acted = append(r.acted, in)
+			out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
+			if r.actDid != nil {
+				out.Did = r.actDid(in)
+			}
+			if err := cmp.Or(r.actErrs[len(r.acted)], r.actErr); err != nil {
+				return factoryd.ActResult{Did: out.Did}, err // what ran before the failure, as Act answers it
+			}
+			if in.CaseID == 0 || in.Res.Action == factoryd.ActNote || in.Res.Action == factoryd.ActWithdraw {
+				return out, nil
+			}
+			if in.Post != nil {
+				id, err := in.Post(ctx)
+				if err != nil {
+					return out, err
+				}
+				out.Comment = id
+			}
+			// the answer's row, as Act records it: a grant of sessions is
+			// session_granted, a human card's choice names its value
+			k, _, _ := r.tasks.Task(ctx, in.TaskID)
+			detail := map[string]any{"action": in.Res.Action, "case_id": in.CaseID, "answer": cmp.Or(in.Res.Note, in.Res.Action)}
+			if out.Comment != 0 {
+				detail["comment"] = out.Comment
+			}
+			if k.Kind == "human" {
+				detail["value"] = in.Res.Action
+			}
+			for k, v := range in.Detail {
+				if _, set := detail[k]; !set {
+					detail[k] = v
+				}
+			}
+			kind := factoryd.EventQuestionAnswered
+			if n, _ := in.Res.Args["sessions"].(int); in.Res.Action == factoryd.ActExtend && n > 0 {
+				kind = factoryd.EventSessionGranted
+			}
+			_, err := r.events.Record(ctx, factoryd.Event{Repository: k.Repository, TaskID: in.TaskID, IssueNumber: k.IssueNumber,
+				Kind: kind, Actor: in.By, Via: in.Via, Detail: detail})
+			return out, err
+		},
+		PoolDrawn: func(context.Context, string, time.Time) (policy.Draw, error) { return r.drawn, r.drawnErr },
+		CaseSteps: func(_ context.Context, caseID int64) ([]factoryd.CaseStep, error) { return r.caseSteps[caseID], nil },
+		ChatToken: func(factoryd.Project) string { return r.chatToken },
 		GitHubSync: func(_ context.Context, project, by string) (string, error) {
 			if r.syncGate != nil {
 				<-r.syncGate
@@ -1396,7 +1418,7 @@ func newRig(t *testing.T) *rig {
 			r.dismissed = append(r.dismissed, repository+"@"+sha+" by "+by)
 			return r.dismissErr
 		},
-		RetryPlanCard: func(_ context.Context, taskID, by string) (int64, error) {
+		RetryCard: func(_ context.Context, taskID, by string) (int64, error) {
 			r.retried = append(r.retried, taskID+" by "+by)
 			return 9, r.retryErr
 		},
@@ -1653,11 +1675,12 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 func TestNewRefusesAMissingCardRead(t *testing.T) {
 	r := newRig(t)
 	for name, drop := range map[string]func(*Config){
-		"CardDigest":  func(c *Config) { c.CardDigest = nil },
-		"CardStep":    func(c *Config) { c.CardStep = nil },
-		"BoardDigest": func(c *Config) { c.BoardDigest = nil },
-		"OpenCasesOf": func(c *Config) { c.OpenCasesOf = nil },
-		"CaseSteps":   func(c *Config) { c.CaseSteps = nil },
+		"CardDigest":    func(c *Config) { c.CardDigest = nil },
+		"CardStep":      func(c *Config) { c.CardStep = nil },
+		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
+		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
+		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)
@@ -2194,28 +2217,6 @@ func TestAnswerPostsAnAgentChoiceAsTheMembersWords(t *testing.T) {
 	}
 }
 
-// Roadmap 237: the answer box posts one comment, a whole answer, and
-// names it to the card's workflow (AnswerWhole), which resumes without
-// the quiet window an answer in parts waits out. A failed signal still
-// answers: the comment is on the issue, and the window resumes the card.
-func TestAnswerNamesItsCommentWhole(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.tasks.set("cannot reach the database", factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13})
-	var whole []string
-	r.c.cfg.AnswerWhole = func(ctx context.Context, taskID string, comment int64, by string) error {
-		whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
-		return errors.New("temporal: unavailable")
-	}
-	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"use the replica"}}), ck)
-	if rec.Code != http.StatusSeeOther {
-		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
-	}
-	if !slices.Equal(whole, []string{"t-e 1 sebastian"}) {
-		t.Fatalf("whole signals %q, want the posted comment 1 by sebastian", whole)
-	}
-}
-
 // Roadmap 237: an answer reaches the sessions as at most
 // factoryd.MaxAnswer bytes, so the answer box refuses a longer one, naming
 // the bound and the answer's length, and posts nothing: 2000 two-byte "ä"
@@ -2236,46 +2237,6 @@ func TestAnswerRefusedOverMaxAnswer(t *testing.T) {
 	}
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != strings.Repeat("ä", 2000) {
 		t.Fatalf("comment = %d bytes, want the 4000-byte answer whole", len(got))
-	}
-}
-
-// The unfunded answer is refused before it is posted
-// when the task's remaining budget cannot fund a call. No comment goes
-// to the issue, and the refusal carries the message the card will carry:
-// the outstanding holds and the two actions that fit (roadmap 243).
-func TestAnswerRefusedWhenTheBudgetCannotFundACall(t *testing.T) {
-	r := newRig(t)
-	ck, s := r.loggedIn(t)
-	r.tasks.set("cannot reach the database", []factoryd.Task{
-		{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, ModelAlias: "factory/small"},
-	}...)
-	refusal := "the remaining budget cannot fund a call: 0.000 EUR of the 5.000 EUR budget remains after outstanding holds of 0.170 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), and the cheapest call needs more. " +
-		"Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
-	var asked string
-	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
-		asked = taskID + " " + model
-		return refusal, nil
-	}
-	rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck)
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), refusal) {
-		t.Fatalf("answer = %d: %s", rec.Code, rec.Body)
-	}
-	if asked != "t-e factory/small" {
-		t.Fatalf("the floor read %q", asked)
-	}
-	if len(r.fg.comments) != 0 {
-		t.Fatal("the refusal was commented to the issue: no answer reaches the card")
-	}
-	// a failed read refuses the answer with its own verdict: the answer
-	// never dies mid-request, and nothing reaches the card
-	r.c.cfg.SessionFunded = func(ctx context.Context, taskID, model string) (string, error) {
-		return "", errors.New("the price book is down")
-	}
-	if rec := r.do(post("/tasks/t-e/answer", url.Values{"csrf": {s.csrf}, "answer": {"go on"}}), ck); rec.Code != http.StatusServiceUnavailable || !strings.Contains(rec.Body.String(), "The card's budget could not be read; the answer was not posted. Try again.") {
-		t.Fatalf("answer on a failed read = %d: %s", rec.Code, rec.Body)
-	}
-	if len(r.fg.comments) != 0 {
-		t.Fatal("the refused answer was posted")
 	}
 }
 
@@ -3452,10 +3413,11 @@ func TestAlertVerdictAction(t *testing.T) {
 }
 
 // same_cause names the card the same cause raised first: the verdict
-// carries the link, the alert's own card closes with a comment naming the
-// first, and the alert_verdict row carries the link before card_closed's
-// row. A close Forgejo fails after the verdict leaves the verdict and
-// names the failure; the agent's own verdict counts no intervention.
+// carries the link, the alert's own card, waiting on its case, closes
+// through Act with a comment naming the first, and the alert_verdict row
+// carries the link before Act's answer row. A card with no case closes on
+// Forgejo, and a close Forgejo fails after the verdict leaves the verdict
+// and names the failure; the agent's own verdict counts no intervention.
 func TestAlertVerdictSameCauseClosesTheSecondCard(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
@@ -3467,13 +3429,17 @@ func TestAlertVerdictSameCauseClosesTheSecondCard(t *testing.T) {
 	ctx := context.Background()
 	before := r.events.count()
 	note, err := r.c.doAlertVerdict(ctx, a, 8, factoryd.VerdictSameCause, "t-m")
-	equal(t, "the answer", []any{note, err}, []any{"Alert 8 is judged same_cause, the same cause as #5. Closed #13; factoryd ends the card.", nil})
+	equal(t, "the answer", []any{note, err}, []any{"Alert 8 is judged same_cause, the same cause as #5. Case 1 took close.", nil})
 	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]"})
-	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/13/comments", "PATCH /api/v1/repos/sf/code/issues/13"})
+	got, posts := actedOnce(t, r)
+	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActClose, Note: "Same cause as #5."}}, true})
+	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/13/comments"})
 	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "Same cause as #5.")
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 8, "same_as": "t-m", "verdict": "same_cause"}},
-		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "Same cause as #5."}})
+		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered,
+			Detail: map[string]any{"action": factoryd.ActClose, "answer": "Same cause as #5.", "case_id": int64(1), "comment": int64(1)}})
 
 	r.fg.failEdit = true
 	a.decider = "agent"
@@ -3483,7 +3449,7 @@ func TestAlertVerdictSameCauseClosesTheSecondCard(t *testing.T) {
 		[]any{"Alert 9 is judged same_cause, the same cause as #5, but its card #11 stays open: Forgejo refused to close the issue: edit refused; close it with close once that is fixed", nil})
 	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]", "9 same_cause agent map[same_as:t-m]"})
 	equal(t, "the note on #11", r.fg.comments["/api/v1/repos/sf/code/issues/11/comments"], "Same cause as #5.")
-	equal(t, "the patches", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/13 {"state":"closed"}`})
+	equal(t, "the patches", r.fg.patched, []string(nil))
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 9, "same_as": "t-m", "verdict": "same_cause"}})
 	equal(t, "the interventions", r.interventions(t), map[string]int64{"alert_verdict_click none none": 1})
@@ -3769,23 +3735,12 @@ func TestConsoleCountsInterventions(t *testing.T) {
 }
 
 // TestPoolReadContract constructs the console via console.New, drives an
-// authenticated HTTP board read with configured EUR 10 and aggregate EUR 3,
-// and asserts HTML and the chat snapshot show EUR 7 remaining through the
-// same projection (poolOf).
+// authenticated HTTP board read with 2 sessions, 30 minutes and EUR 3
+// drawn of the default pool, and asserts the HTML and the chat snapshot
+// show the same projection's words.
 func TestPoolReadContract(t *testing.T) {
 	r := newRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
-	from := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	record := func(amount float64) {
-		t.Helper()
-		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: from.Add(time.Hour),
-			Detail: map[string]any{"decider": "agent", "amount_eur": amount}}); err != nil {
-			t.Fatalf("record: %v", err)
-		}
-	}
-	record(1.5)
-	record(1.5)
+	r.drawn = policy.Draw{Sessions: 2, AgentTime: 30 * time.Minute, EUR: 3}
 	c, err := New(r.c.cfg)
 	if err != nil {
 		t.Fatalf("console.New: %v", err)
@@ -3798,13 +3753,10 @@ func TestPoolReadContract(t *testing.T) {
 	if rec.Code != http.StatusOK {
 		t.Fatalf("board = %d", rec.Code)
 	}
-	body := rec.Body.String()
-	for _, want := range []string{"pool €3.00", "/ €10.00", "€7.00 left"} {
-		if !strings.Contains(body, want) {
-			t.Errorf("board HTML lacks %q", want)
-		}
+	const words = "2 of 30 sessions, 30 min of 30 h agent time and €3.00 of €60.00 drawn this UTC month"
+	if body := rec.Body.String(); !strings.Contains(body, "pool: "+words) {
+		t.Errorf("board HTML lacks %q", words)
 	}
-	// The chat's own snapshot carries the same projection's figures.
 	preq := httptest.NewRequest(http.MethodGet, "/chat/ai-software-factory-code", nil).WithContext(context.WithValue(t.Context(), ctxKey{}, s))
 	tn := &turn{c: c, r: preq,
 		a: actor{s: &session{user: "sebastian"}, repository: "sf/code", via: factoryd.ViaChat},
@@ -3813,46 +3765,35 @@ func TestPoolReadContract(t *testing.T) {
 	if err != nil {
 		t.Fatalf("snapshot: %v", err)
 	}
-	if want := "pool this month €3.00 of €10.00, €7.00 left"; !strings.Contains(snap, want) {
-		t.Errorf("chat snapshot = %q; want it to contain %q", snap, want)
+	if !strings.Contains(snap, "; pool: "+words) {
+		t.Errorf("chat snapshot = %q; want it to contain %q", snap, words)
 	}
 }
 
-// TestPoolReadMonth gives the shared helper explicit November and December
-// 2026 UTC instants: EUR 3 November use and zero December use yield EUR 7
-// and EUR 10 remaining without changing the EUR 10 ceiling. Aggregate
-// errors answer unavailable, never zero.
+// TestPoolReadMonth hands the projection an explicit November instant:
+// PoolDrawn reads that month, the line names it, and a read that fails
+// answers unreadable words, never a zero draw.
 func TestPoolReadMonth(t *testing.T) {
 	r := newRig(t)
-	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder",
-		Budget: &policy.ProjectBudget{DiscretionaryEUR: 10}}
 	nov := time.Date(2026, 11, 15, 12, 0, 0, 0, time.UTC)
-	dec := time.Date(2026, 12, 15, 12, 0, 0, 0, time.UTC)
-	novFrom := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
-	record := func(at time.Time, amount float64) {
-		t.Helper()
-		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", Kind: factoryd.EventCardFunded, Via: factoryd.ViaChat, At: at,
-			Detail: map[string]any{"decider": "agent", "amount_eur": amount}}); err != nil {
-			t.Fatalf("record: %v", err)
-		}
+	var asked []string
+	r.c.cfg.PoolDrawn = func(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
+		asked = append(asked, repository+" "+month.Format(time.RFC3339))
+		return policy.Draw{Sessions: 1}, r.drawnErr
 	}
-	record(novFrom.Add(time.Hour), 1.5)
-	record(novFrom.Add(2*time.Hour), 1.5)
 	v, ok, err := r.ledger.CurrentPolicy(t.Context())
 	if err != nil || !ok {
 		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
 	}
-	plNov, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
-	if err != nil || plNov.Configured != 10 || plNov.Used != 3 || plNov.Remaining != 7 || !plNov.Ready {
-		t.Errorf("November poolOf = %+v, %v; want configured 10, used 3, remaining 7, ready", plNov, err)
+	p := factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}
+	pl := r.c.ProjectPool(t.Context(), v, p, nov)
+	if !pl.Readable || pl.Month != "2026-11" || pl.Drawn != (policy.Draw{Sessions: 1}) || pl.Pool != policy.DefaultEscalation.Pool ||
+		!slices.Equal(asked, []string{"sf/code 2026-11-15T12:00:00Z"}) {
+		t.Errorf("November = %+v, asked %q; want 1 session of the default pool read for November", pl, asked)
 	}
-	plDec, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, dec)
-	if err != nil || plDec.Configured != 10 || plDec.Used != 0 || plDec.Remaining != 10 || !plDec.Ready {
-		t.Errorf("December poolOf = %+v, %v; want configured 10, used 0, remaining 10, ready", plDec, err)
-	}
-	r.events.poolErr = errors.New("aggregate unavailable")
-	plErr, err := r.c.poolOf(t.Context(), v, factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, nov)
-	if err == nil || !plErr.Unavailable || plErr.Ready || plErr.Used != 0 {
-		t.Errorf("error poolOf = %+v, %v; want unavailable, not ready, not zero-use", plErr, err)
+	r.drawnErr = errors.New("the store is down")
+	pl = r.c.ProjectPool(t.Context(), v, p, nov)
+	if want := "the pool is 30 sessions, 30 h of agent time and €60.00 this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
+		t.Errorf("unreadable = %+v; want %q", pl, want)
 	}
 }

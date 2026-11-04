@@ -280,6 +280,7 @@ func TestSandboxRunsOnTheCardsImage(t *testing.T) {
 	pods := map[string]map[string]any{
 		"session": r.workerPodSpec(task, sessionSpec{id: "s-1", cache: cache, image: m}),
 		"repro":   r.reproPodSpec(task, Repo{Owner: "demo-app", Name: "demo-app"}, pullRef(1), "c1", ""),
+		"proofs":  r.proofsPodSpec(task, Repo{Owner: "demo-app", Name: "demo-app"}, pullRef(1), "c1", "", []byte("[]")),
 	}
 	for name, pod := range pods {
 		spec := pod["spec"].(map[string]any)

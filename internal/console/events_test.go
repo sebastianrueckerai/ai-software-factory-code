@@ -37,8 +37,6 @@ type fakeEvents struct {
 	bus  *factoryd.EventBus
 	// fail, when set, is every Record's answer
 	fail error
-	// poolErr, when set, is AgentFundedEUR's answer
-	poolErr error
 }
 
 func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
@@ -69,30 +67,6 @@ func (f *fakeEvents) Record(_ context.Context, e factoryd.Event) (int64, error) 
 	f.rows = append(f.rows, e)
 	f.bus.Publish(e)
 	return e.ID, nil
-}
-
-// AgentFundedEUR mirrors PGStore.AgentFundedEUR: the card_funded rows of
-// repository the agent decided via the chat in the UTC calendar month of
-// month, summed.
-func (f *fakeEvents) AgentFundedEUR(_ context.Context, repository string, month time.Time) (float64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	if f.poolErr != nil {
-		return 0, f.poolErr
-	}
-	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
-	until := from.AddDate(0, 1, 0)
-	var eur float64
-	for _, e := range f.rows {
-		if e.Repository != repository || e.Kind != factoryd.EventCardFunded || e.Via != factoryd.ViaChat ||
-			e.Detail["decider"] != "agent" || e.At.Before(from) || !e.At.Before(until) {
-			continue
-		}
-		if amount, ok := e.Detail["amount_eur"].(float64); ok {
-			eur += amount
-		}
-	}
-	return eur, nil
 }
 
 func (f *fakeEvents) FiledPR(_ context.Context, name string) (int64, bool, error) {
@@ -259,7 +233,7 @@ var actions = []action{
 		map[string]any{"track": "direct", "title": "Fix the cache"}, nil,
 		url.Values{"project": {"ai-software-factory-code"}, "title": {"Fix the cache"}, "body": {"details"}, "track": {"direct"}}),
 	boardAction("answer", "/tasks/t-e/answer", factoryd.EventQuestionAnswered, "sf/code", "t-e",
-		postedDetail(1), escalatedCard,
+		map[string]any{"action": factoryd.ActContinue, "answer": "use the replica", "case_id": int64(1), "comment": int64(1)}, escalatedCard,
 		url.Values{"answer": {"use the replica"}}),
 	boardAction("planAnswer", "/tasks/t-plan/plan/answer", factoryd.EventPlanQuestionAnswered, "linkshort/linkshort", "t-plan",
 		map[string]any{"answer": "60 seconds", "index": 1, "revision": 2}, questionsRig,
@@ -378,9 +352,9 @@ func TestDenyBadActionLeavesNoRow(t *testing.T) {
 	}
 }
 
-// One action, one row: the Answer button posts its own issue comment and
-// names its id in the event's detail, so intake can stay silent for that
-// comment when the webhook delivers it.
+// One action, one row: the Answer button has Act post the answer as the
+// human's issue comment, and Act's row names its id in its detail, so
+// intake can stay silent for that comment when the webhook delivers it.
 func TestAnswerEventNamesTheCommentItPosted(t *testing.T) {
 	r, ev := newRigWithEvents(t)
 	escalatedCard(r)

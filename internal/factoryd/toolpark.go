@@ -795,6 +795,8 @@ type imageReady struct {
 
 func (r *imageReady) start(t *taskRun) { r.ctx = t.ctx }
 
+func (r *imageReady) name() string { return "the imager answered the park on image " + r.park.Target }
+
 func (r *imageReady) add(sel workflow.Selector) {
 	if r.sig != nil {
 		return

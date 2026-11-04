@@ -161,6 +161,9 @@ type Runner struct {
 	// revertLocks holds a *sync.Mutex by project, so RevertGroup runs
 	// once at a time per project
 	revertLocks sync.Map
+	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
+	// once at a time (one factoryd replica)
+	caseLocks sync.Map
 	// audits is the hold-out an audit session audits, by task: only it
 	// may file that hold-out's verdict (the file_verdict tool)
 	audits map[string]int

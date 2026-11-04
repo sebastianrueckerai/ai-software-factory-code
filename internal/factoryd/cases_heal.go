@@ -44,11 +44,16 @@ func (s *PGStore) ReconcileCases(ctx context.Context, repository string) (CaseHe
 	}
 	r.Withdrawn += ended + replaced
 	// a merge waits while its card is in review and a plan question is
-	// asked while its planner runs: each has its own end
+	// asked while its planner runs: each has its own end. A trip opens its
+	// case while the card still runs and moves the card only with its
+	// face, so a case goes once it has its face (at the human with its
+	// comment, or with none on a card with no issue) or once it sat past
+	// the ten minutes a face takes at most
 	if r.Moved, err = s.withdrawCases(ctx, `SELECT c.id, 'the card moved on to ' || t.status FROM cases c JOIN tasks t ON t.id = c.task_id
 		WHERE c.repository = $1 AND c.status IN `+caseLiveStatuses+` AND c.kind NOT IN ($2, $3, $4)
-		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')`,
-		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation); err != nil {
+		AND t.status IN ('running', 'in-review', 'queued', 'waiting-deps', 'waiting-image', 'merged')
+		AND (c.status = $5 AND (c.comment_id <> 0 OR t.issue_number = 0) OR c.opened_at < now() - interval '10 minutes')`,
+		repository, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseAtHuman); err != nil {
 		return r, err
 	}
 	if r.Opened, err = s.openMissedAsks(ctx, repository); err != nil {
@@ -120,16 +125,19 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 // an ask (white space alone is none), as that ask's question_asked would
 // have, and counts the cases it opened. An ask younger than a
 // minute is left to its writer, which records the event after it moves
-// the card. A card with a live case, or with a case opened since that
-// row, has its case; a card that left waiting-human since that row waits
-// on something else, as a planner on its plan's questions.
+// the card. A card with a live case, or with a case opened or ended since
+// that row, has its case: a trip opens its case before its ask, and an
+// answer ends it before the run moves the card on. A card that left
+// waiting-human since that row waits on something else, as a planner on
+// its plan's questions.
 func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, error) {
 	asks, err := queryAll(ctx, s.db, `SELECT t.id, t.kind, t.source, esc.body, esc.comment_id, esc.question FROM tasks t
 		JOIN LATERAL (SELECT e.body, e.comment_id, e.question, e.created_at FROM intake_events e
 		    WHERE e.task_id = t.id AND e.kind = $2 AND e.question IS NOT NULL ORDER BY e.id DESC LIMIT 1) esc ON true
 		WHERE t.repository = $1 AND t.status = 'waiting-human' AND esc.question->>'ask' ~ '\S'
 		AND esc.created_at < now() - interval '1 minute'
-		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id AND (c.status IN `+caseLiveStatuses+` OR c.opened_at >= esc.created_at))
+		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id
+		    AND (c.status IN `+caseLiveStatuses+` OR c.opened_at >= esc.created_at OR c.resolved_at >= esc.created_at))
 		AND NOT EXISTS (SELECT 1 FROM events v WHERE v.task_id = t.id AND v.kind = $3 AND v.at > esc.created_at
 		    AND v.detail->>'status' <> 'waiting-human')`,
 		[]any{repository, IntakeEscalation, EventTaskStatus}, func(row rowScanner) (Event, error) {

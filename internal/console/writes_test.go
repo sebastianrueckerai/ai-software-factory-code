@@ -208,32 +208,27 @@ func TestEditBody(t *testing.T) {
 	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardEdited, repo: "sf/code", taskID: "t-m", detail: map[string]any{"body_bytes": 26}})
 }
 
-// grant_session proposes on the card at its session cap; Do it posts the
-// member's answer on its issue, the comment that grants the session, with
-// one session_granted row via chat naming it. A card with a question is
-// no card at its cap: the refusal names the answer tool.
+// grant_session proposes on the card at its session cap; Do it extends
+// its live case by one session through Act on the human's rung, the
+// human's answer the note posted on its issue, and Act's grant row names
+// the comment.
 func TestChatGrantSession(t *testing.T) {
 	r, g := newWritesRig(t)
-	var whole []string
-	r.c.cfg.AnswerWhole = func(ctx context.Context, taskID string, comment int64, by string) error {
-		whole = append(whole, fmt.Sprintf("%s %d %s", taskID, comment, by))
-		return nil
-	}
+	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	before := r.events.count()
 	args := `{"task_id":"t-cap","text":"Trim to 1 MB first."}`
 	proposed, done, _ := proposeAndDo(t, r, g, "grant_session", args)
 	equal(t, "proposal", proposed, []string{
-		`proposal {"arguments":` + args + `,"description":"Grant a session, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"grant_session"}`,
+		`proposal {"arguments":` + args + `,"description":"Grant what the stop asks for, #14 t-cap \"Trim the logs.\", text Trim to 1 MB first.","expires":"EXPIRES","id":"TOKEN","tool":"grant_session"}`,
 		`done {}`})
-	equal(t, "Do it", done, ran("grant_session", args, "Your answer is on #14; it grants the card one session."))
+	equal(t, "Do it", done, ran("grant_session", args, "Case 1 took extend."))
+	got, posts := actedOnce(t, r)
+	equal(t, "the grant", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-cap", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1}, Note: "Trim to 1 MB first."}}, true})
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-cap", IssueNumber: 14, Kind: factoryd.EventSessionGranted, Detail: postedDetail(1)})
-	equal(t, "the whole signal", whole, []string{"t-cap 1 sebastian"})
-
-	code, msg := refused(t, r, "grant_session", toolInput{TaskID: "t-e", Text: "yes"})
-	equal(t, "grant to a question", []any{code, msg}, []any{http.StatusConflict,
-		"Card #13 waits on a human: an answer, an approval or a decision, not a card at its session cap: answer it (answer)."})
+		factoryd.Event{Repository: "sf/code", TaskID: "t-cap", IssueNumber: 14, Kind: factoryd.EventSessionGranted,
+			Detail: map[string]any{"action": factoryd.ActExtend, "case_id": int64(1), "answer": "Trim to 1 MB first.", "comment": int64(1)}})
 }
 
 // Roadmap 237: grant_session, answer and a comment on a card waiting for
@@ -554,27 +549,28 @@ func TestChatSetAutonomyKeepsTheCap(t *testing.T) {
 		`done {}`})
 }
 
-// set_pool, always confirmed, changes the project file's pool as the
-// approver's merged pull request and records one pool_changed row naming
-// the member; a top-up grows the standing pool, and a file without the
-// bounds the pool needs refuses at the proposal, before a write.
+// set_pool, always confirmed, changes the project file's escalation pool
+// money as the approver's merged pull request and records one
+// pool_changed row naming the human; a top-up grows the money the file
+// sets, and a top-up of money the file does not set refuses at the
+// proposal, before a write.
 func TestChatSetPool(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human"}}
 	infra := withInfra(t, r)
-	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 20\n"
+	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\nescalation:\n  pool:\n    eur: 20\n"
 	infra.files = map[string]string{"factory/projects/ai-software-factory-code.yaml": head}
 	next := 25.0
 	r.c.cfg.PolicyReload = func(context.Context) error {
 		r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: "human",
-			Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: next}}
+			Budget: &policy.ProjectBudget{MonthEUR: 10}, Escalation: &policy.Escalation{Pool: policy.Draw{EUR: next}}}
 		return nil
 	}
 	args := `{"action":"set","eur":25,"reason":"the findings cost money"}`
 	_, done, _ := proposeAndDo(t, r, g, "set_pool", args)
 	equal(t, "set", done, ran("set_pool", args,
 		"The pool of ai-software-factory-code is €25.00 now, was €20.00: sf/infra#12 carries the change and the policy in force holds it."))
-	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool 25.00 EUR\n") || !strings.Contains(got, "Factory-Role: chat\n") {
+	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool 25.00 EUR\n") || !strings.Contains(got, "Factory-Role: chat\n") {
 		t.Errorf("the commit's message = %q", got)
 	}
 	rows := r.events.all()
@@ -584,29 +580,30 @@ func TestChatSetPool(t *testing.T) {
 		"reason": "the findings cost money", "pr": "sf/infra#12"})
 
 	// a top-up grows the standing pool and keeps the file's other caps
-	infra.files["factory/projects/ai-software-factory-code.yaml"] = strings.Replace(head, "discretionary_eur: 20", "discretionary_eur: 25", 1)
+	infra.files["factory/projects/ai-software-factory-code.yaml"] = strings.Replace(head, "eur: 20", "eur: 25", 1)
 	next = 30.0
 	args = `{"action":"top_up","eur":5,"reason":"a second finding"}`
 	_, done, _ = proposeAndDo(t, r, g, "set_pool", args)
 	equal(t, "top up", done, ran("set_pool", args,
 		"The pool of ai-software-factory-code is €30.00 now, was €25.00: sf/infra#12 carries the change and the policy in force holds it."))
-	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool +5.00 EUR\n") {
+	if got, _ := infra.contents[len(infra.contents)-1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool +5.00 EUR\n") {
 		t.Errorf("the top-up's message = %q", got)
 	}
 	rows = r.events.all()
 	equal(t, "the top-up's detail", rows[len(rows)-1].Detail, map[string]any{"action": "top_up", "from_eur": 25.0, "confirmed_eur": 5.0, "to_eur": 30.0,
 		"reason": "a second finding", "pr": "sf/infra#12"})
 
-	// a file without the month cap the pool needs refuses at the proposal,
-	// before anything writes
-	infra.files["factory/projects/ai-software-factory-code.yaml"] = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  raise_max_eur: 5\n  discretionary_eur: 20\n"
-	args = `{"action":"set","eur":25,"reason":"no bounds"}`
+	// a top-up of money the file does not set refuses at the proposal,
+	// before anything writes: the pool's money is the policy's
+	infra.files["factory/projects/ai-software-factory-code.yaml"] = "# the code project\nrepository: sf/code\nmerge_rule: human\n"
+	args = `{"action":"top_up","eur":5,"reason":"no money of its own"}`
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, "set_pool", args)}, {say("Refused.")}}
-	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set the pool"}})
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"top the pool up"}})
 	equal(t, "the refusal", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)"}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: projects/ai-software-factory-code.yaml sets no escalation.pool.eur, so the pool's money is the policy's: set the pool instead of a top-up"}`,
 		`text {"text":"Refused."}`, `done {}`})
+	args = `{"action":"set","eur":25,"reason":"no bounds"}`
 
 	// a project file of no YAML — an empty one, or one of whitespace
 	// alone — refuses at the proposal too, not a panic
@@ -633,31 +630,40 @@ func TestChatSetPoolNeedsAnApprover(t *testing.T) {
 	g.replies = [][]string{{call(1, "set_pool", args)}, {say("Refused.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"set a pool"}})
 	equal(t, "the refusal", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ai-software-factory-code may change the discretionary pool."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ai-software-factory-code may change the escalation pool."}`,
 		`text {"text":"Refused."}`, `done {}`})
 }
 
 // poolChatRig is the writes rig with the project's file on infra's main
-// holding a pool of standing EUR under the bounds the pool needs, the
-// loaded policy's pool at standing and the reload that lands it, and a
-// month's agent-funded usage of used EUR.
+// holding an escalation pool of standing EUR, the loaded policy's pool at
+// standing and the reload that lands it, and a month's draws of used EUR.
 func poolChatRig(t *testing.T, standing, used float64) (*rig, *chatGateway, *infraFake) {
 	t.Helper()
 	r, g := newWritesRig(t)
-	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: " +
+	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\nescalation:\n  pool:\n    eur: " +
 		strings.Replace(fmt.Sprintf("%.2f", standing), ".00", "", 1) + "\n"
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human",
-		Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: standing, RaiseMaxEUR: 5}}}
-	r.chat.funded = map[string]float64{"sf/code": used}
+		Budget: &policy.ProjectBudget{MonthEUR: 10}, Escalation: &policy.Escalation{Pool: policy.Draw{EUR: standing}}}}
+	r.drawn = policy.Draw{EUR: used}
 	infra := withInfra(t, r)
 	infra.files = map[string]string{"factory/projects/ai-software-factory-code.yaml": head}
 	return r, g, infra
 }
 
+// mustPolicy is the rig's policy in force.
+func mustPolicy(t *testing.T, r *rig) policy.Version {
+	t.Helper()
+	v, ok, err := r.ledger.CurrentPolicy(t.Context())
+	if err != nil || !ok {
+		t.Fatalf("CurrentPolicy = %v, %v", ok, err)
+	}
+	return v
+}
+
 // poolReload lands EUR e as the loaded policy's pool.
 func poolChatReload(r *rig, e float64) {
 	r.c.cfg.PolicyReload = func(context.Context) error {
-		r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = e
+		r.ledger.files["ai-software-factory-code"].Escalation.Pool.EUR = e
 		return nil
 	}
 }
@@ -689,7 +695,7 @@ func TestPoolProposal(t *testing.T) {
 	_, done, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":12}}`)
 	equal(t, "the corrected Do it", done, ran("set_pool", `{"action":"set","eur":12,"reason":"Allow two small verified follow-ups"}`,
 		"The pool of ai-software-factory-code is €12.00 now, was €8.00: sf/infra#12 carries the change and the policy in force holds it."))
-	if got, _ := infra.contents[0].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool 12.00 EUR\n") {
+	if got, _ := infra.contents[0].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool 12.00 EUR\n") {
 		t.Errorf("the commit's message = %q", got)
 	}
 	var content string
@@ -698,7 +704,7 @@ func TestPoolProposal(t *testing.T) {
 			content, _ = f["content"].(string)
 		}
 	}
-	if raw, err := base64.StdEncoding.DecodeString(content); err != nil || !strings.Contains(string(raw), "\n  discretionary_eur: 12\n") {
+	if raw, err := base64.StdEncoding.DecodeString(content); err != nil || !strings.Contains(string(raw), "\n    eur: 12\n") {
 		t.Errorf("the project file the guarded writer committed holds %q (err %v)", content, err)
 	}
 	rows := r.events.all()
@@ -712,13 +718,13 @@ func TestPoolProposal(t *testing.T) {
 	// consumes the token and its replay is 404; pending 503 and repair 500
 	// identify the already-merged PR, consume once and replay 404 with no
 	// second PR
-	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 12\n"
-	tableHead := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 8\n"
+	head := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\nescalation:\n  pool:\n    eur: 12\n"
+	tableHead := "# the code project\nrepository: sf/code\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  task_max_eur: 4\nescalation:\n  pool:\n    eur: 8\n"
 	infra.mu.Lock()
 	infra.files["factory/projects/ai-software-factory-code.yaml"] = head
 	infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob1"}
 	infra.mu.Unlock()
-	r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 12
+	r.ledger.files["ai-software-factory-code"].Escalation.Pool.EUR = 12
 	poolChatReload(r, 12)
 	for _, row := range []struct {
 		name   string
@@ -739,27 +745,27 @@ func TestPoolProposal(t *testing.T) {
 			infra.shas["factory/projects/ai-software-factory-code.yaml"] = "blob1"
 			infra.mu.Unlock()
 			r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) {
-				return []string{"discretionary_eur exceeds the policy's bound"}, nil
+				return []string{"escalation: card_draw.eur 4 is above pool.eur 3"}, nil
 			}
 		}, http.StatusUnprocessableEntity,
-			"The project file would not load: discretionary_eur exceeds the policy's bound",
+			"The project file would not load: escalation: card_draw.eur 4 is above pool.eur 3",
 			0},
-		{"missing prerequisite 409", func(t *testing.T) {
+		{"unreadable block 409", func(t *testing.T) {
 			r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) { return nil, nil }
 			infra.mu.Lock()
-			infra.files["factory/projects/ai-software-factory-code.yaml"] = "# empty budget\nbudget:\n  discretionary_eur: 12\n"
+			infra.files["factory/projects/ai-software-factory-code.yaml"] = "# a broken block\nescalation: always\n"
 			infra.mu.Unlock()
 		}, http.StatusConflict,
-			"projects/ai-software-factory-code.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)",
+			"projects/ai-software-factory-code.yaml holds an escalation block the pool cannot read: a policy PR corrects it",
 			0},
 		{"pending 503", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error { return nil }
 		}, http.StatusServiceUnavailable,
-			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it.",
+			"The pool change is merged as sf/infra#12, but the policy in force still holds the pool of ai-software-factory-code at EUR 8.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 8.00 until the policy holds EUR 12.00.",
 			1},
 		{"repair 500", func(t *testing.T) {
 			r.c.cfg.PolicyReload = func(context.Context) error {
-				r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 12
+				r.ledger.files["ai-software-factory-code"].Escalation.Pool.EUR = 12
 				return nil
 			}
 			r.events.fail = errors.New("the events store is down")
@@ -772,7 +778,7 @@ func TestPoolProposal(t *testing.T) {
 			infra.files["factory/projects/ai-software-factory-code.yaml"] = tableHead
 			infra.shas = map[string]string{"factory/projects/ai-software-factory-code.yaml": "blob1"}
 			infra.mu.Unlock()
-			r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 8
+			r.ledger.files["ai-software-factory-code"].Escalation.Pool.EUR = 8
 			r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) { return nil, nil }
 			g.replies = [][]string{{call(1, "set_pool", `{"action":"set","eur":10,"reason":"Allow two small verified follow-ups"}`)}}
 			_, _, tokens := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool for the findings"}})
@@ -821,7 +827,7 @@ func TestPoolProposalAccess(t *testing.T) {
 	r, g, infra := poolChatRig(t, 10, 3)
 	members(r)
 	r.ledger.files["ai-software-factory-code"] = policy.ProjectConfig{Repository: "sf/code", MergeRule: policy.MergeAuto,
-		Autonomy: policy.AutonomyAutonomous, Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: 10, RaiseMaxEUR: 5}}
+		Autonomy: policy.AutonomyAutonomous, Budget: &policy.ProjectBudget{MonthEUR: 10}, Escalation: &policy.Escalation{Pool: policy.Draw{EUR: 10}}}
 	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
 	r.forgetWriters()
 	poolChatReload(r, 11)
@@ -905,7 +911,7 @@ func TestPoolProposalAccess(t *testing.T) {
 		{`{"eur":12}`, `The correction is one JSON object {"correction":{"eur":12}} and nothing else.`},
 		{`{"correction":{"eur":1e999}}`, "a pool change's amount is a finite number in EUR"},
 		{`{"correction":{"eur":12.005}}`, "a pool change's amount is whole cents"},
-		{`{"correction":{"eur":-3}}`, "a set takes a non-negative amount in EUR"},
+		{`{"correction":{"eur":-3}}`, "a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure"},
 		{`{"correction":{"eur":900000000001}}`, "a pool change's amount is too large"},
 		{strings.Repeat(" ", 8<<10) + `{"correction":{"eur":12}}`, "The correction's body is over 8192 bytes; press the proposal again."},
 	}
@@ -939,7 +945,7 @@ func TestPoolProposalAccess(t *testing.T) {
 	_, _, tokens = chatPost(t, r, ck, s, chatPath, url.Values{"message": {"a pool once more"}})
 	r.ledger.approvers = nil
 	if code, body, _ := chatPostRaw(t, r, ck, s, chatPath+"/proposals/"+tokens[0], `{"correction":{"eur":11}}`); code != http.StatusForbidden ||
-		body[0] != "Only the approvers of project ai-software-factory-code may change the discretionary pool." {
+		body[0] != "Only the approvers of project ai-software-factory-code may change the escalation pool." {
 		t.Fatalf("the revoked approver's press = %d %q, want 403", code, body)
 	}
 
@@ -973,7 +979,7 @@ func TestPoolProposalAccess(t *testing.T) {
 }
 
 // A corrected top-up grows the standing pool by the corrected amount
-// alone and the month's usage stands; a project file that moved since the
+// alone and the month's draws stand; a project file that moved since the
 // proposal answers 409 without a write — the attempt was valid, its token
 // is spent — and the replay is 404. An ask's bound pool choice runs the
 // same captured change on one press: the binding stores the offer's
@@ -1001,8 +1007,8 @@ func TestPoolProposalTopUp(t *testing.T) {
 	e := rows[len(rows)-1]
 	equal(t, "the event's detail", e.Detail, map[string]any{"action": "top_up", "from_eur": 10.0, "confirmed_eur": 4.0, "to_eur": 14.0,
 		"reason": "a second finding", "pr": "sf/infra#12"})
-	if used, err := r.chat.AgentFundedEUR(t.Context(), "sf/code", time.Now()); err != nil || used != 3 {
-		t.Errorf("the month's usage after the top-up = %.2f (err %v), want 3.00", used, err)
+	if pl := r.c.ProjectPool(t.Context(), mustPolicy(t, r), factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, time.Now()); pl.Drawn != (policy.Draw{EUR: 3}) || pl.Pool.EUR != 14 {
+		t.Errorf("the pool after the top-up = %+v, want 3 EUR drawn of 14", pl)
 	}
 
 	// a project file that moved since the proposal refuses without a
@@ -1024,7 +1030,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 	// the ask-bound pool choice carries the offer's capture: one press
 	// of it confirms the change in the original conversation, as the
 	// member's own session, and the row names them
-	bound := `{"ask":"Top the month pool up by 4 EUR?","choices":["top it up by 4 EUR","hold"],"tool":"set_pool","args":{"action":"top_up","eur":4,"reason":"a second finding"},"choice":"top it up by 4 EUR"}`
+	bound := `{"ask":"Top the escalation pool up by 4 EUR?","choices":["top it up by 4 EUR","hold"],"tool":"set_pool","args":{"action":"top_up","eur":4,"reason":"a second finding"},"choice":"top it up by 4 EUR"}`
 	askRow := func() (id int64, token string) {
 		t.Helper()
 		rows, err := r.chat.ChatMessages(t.Context(), "sf/code", "sebastian", 1, 10)
@@ -1064,7 +1070,7 @@ func TestPoolProposalTopUp(t *testing.T) {
 	if n := len(g.calls()); n != 3 {
 		t.Fatalf("%d model calls, want the offers' alone: the press confirmed the change in code", n)
 	}
-	if got, _ := infra.contents[1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: month pool +4.00 EUR\n") {
+	if got, _ := infra.contents[1].body["message"].(string); !strings.HasPrefix(got, "Project ai-software-factory-code: escalation pool +4.00 EUR\n") {
 		t.Errorf("the press's commit message = %q", got)
 	}
 	rows = r.events.all()
@@ -1212,10 +1218,12 @@ func TestCardFaceCloseAndGrant(t *testing.T) {
 		t.Errorf("the question's answer form =\n%s\nwant Answer", esc)
 	}
 	before := r.events.count()
+	r.openCases = map[string][]factoryd.Case{"t-cap": {{ID: 1, TaskID: "t-cap", Kind: factoryd.CaseSessionCap, Status: factoryd.CaseAtHuman}}}
 	rec := r.do(post("/tasks/t-cap/answer", url.Values{"csrf": {s.csrf}, "answer": {"Trim to 1 MB first."}}), ck)
 	equal(t, "the grant", rec.Code, http.StatusSeeOther)
 	equal(t, "the comment", r.fg.comments["/api/v1/repos/sf/code/issues/14/comments"], "Trim to 1 MB first.")
-	checkRows(t, r.events, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-cap", detail: postedDetail(1)})
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventSessionGranted, repo: "sf/code", taskID: "t-cap",
+		detail: map[string]any{"action": factoryd.ActExtend, "case_id": int64(1), "answer": "Trim to 1 MB first.", "comment": int64(1)}})
 }
 
 // A card without an issue closes through factoryd's CloseCard alone

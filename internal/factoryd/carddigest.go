@@ -59,6 +59,8 @@ type DigestStep struct {
 	state string
 	// calls are a session's model calls, by the audit rows
 	calls int
+	// commit is the head a checks, proofs, review or audit line judged
+	commit string
 }
 
 // DigestRef names the rows a step was read from, whichever apply: its
@@ -244,9 +246,18 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 			s.Kind, s.Outcome = "granted", "one more session"
 		case EventCardFunded:
 			s.Kind, s.Outcome = "funded", fmt.Sprintf("%.2f EUR", amount)
+			if ceiling, ok := e.Detail["ceiling_eur"].(float64); ok {
+				s.Kind, s.Outcome = "ceiling", fmt.Sprintf("raised to %.2f EUR", ceiling)
+			}
 		case EventCardExtended:
-			s.Kind, s.Outcome = "extended", fmt.Sprintf("%s, %s, %.2f EUR",
-				textutil.Plural(number("sessions"), "session", "sessions"), textutil.Plural(number("lines"), "line", "lines"), amount)
+			parts := []string{textutil.Plural(number("sessions"), "session", "sessions")}
+			if seconds := number("agent_time_s"); seconds > 0 {
+				parts = append(parts, minutesWord(time.Duration(seconds)*time.Second)+" of agent time")
+			}
+			if shares := number("checkin_shares"); shares > 0 {
+				parts = append(parts, textutil.Plural(shares, "check-in share", "check-in shares"))
+			}
+			s.Kind, s.Outcome = "extended", strings.Join(append(parts, textutil.Plural(number("lines"), "line", "lines"), fmt.Sprintf("%.2f EUR", amount)), ", ")
 		case EventCardRetried:
 			s.Kind, s.Outcome = "retried", fmt.Sprintf("as #%d", number("replacement"))
 		case EventCardReplanned:
@@ -312,10 +323,14 @@ func askOutcome(t Task, e Event) string {
 }
 
 // askCaseIndex is the index among cases of the case ask e opened or
-// asked again, -1 for none: the case of its comment when it has one, else
-// the newest of its kind and words opened by the time it was asked, as a
-// plan question's or a human card's ask, which have no comment.
+// asked again, -1 for none: the case it names, else the case of its
+// comment when it has one, else the newest of its kind and words opened by
+// the time it was asked, as a plan question's or a human card's ask, which
+// have no comment.
 func askCaseIndex(t Task, e Event, cases []Case) int {
+	if id, _ := toInt(e.Detail["case_id"]); id > 0 {
+		return slices.IndexFunc(cases, func(c Case) bool { return c.ID == int64(id) })
+	}
 	if comment, _ := toInt(e.Detail["comment"]); comment > 0 {
 		return slices.IndexFunc(cases, func(c Case) bool { return c.CommentID == int64(comment) })
 	}
@@ -345,13 +360,22 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 		i, ok := at[w]
 		if !ok {
 			i, at[w] = len(out), len(out)
-			out = append(out, DigestStep{At: v.CreatedAt, Kind: "criteria", Actor: v.DecidedBy})
+			out = append(out, DigestStep{At: v.CreatedAt, Kind: "criteria", Actor: criteriaActor(v)})
 		} else {
 			out[i].Outcome += ", "
 		}
 		out[i].Outcome += v.Criterion + " " + cmp.Or(v.Verdict, "undecided")
 	}
 	return out
+}
+
+// criteriaActor is who wrote a verdict row as the digest names it: the
+// source for the factory's rows, else the human.
+func criteriaActor(v CriterionVerdict) string {
+	if v.DecidedBy == FactoryDecider || v.DecidedBy == "" {
+		return v.Source
+	}
+	return v.DecidedBy
 }
 
 // digestText is the first line of s, cut to fit a digest line.

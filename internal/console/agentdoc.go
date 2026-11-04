@@ -191,6 +191,7 @@ func agentDocConsole(op *factoryd.OperatorModel, chat Chat, v policy.Version) *C
 		Events:    agentDocEvents{},
 		Costs:     agentDocCosts{},
 		Approvals: agentDocApprovals{},
+		PoolDrawn: func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil },
 	}}
 }
 

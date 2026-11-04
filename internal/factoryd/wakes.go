@@ -233,6 +233,9 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && source == SourceMonthCap {
 			continue // the month cap refuses the agent's own calls: its ask wakes nobody
 		}
+		if settled, _ := e.Detail["settled"].(string); e.Kind == EventQuestionAsked && settled != "" {
+			continue // the factory answered the ask as it asked it: it wakes nobody
+		}
 		if (e.Kind == EventQuestionAsked || isMergeRow(e)) && p.Autonomy == policy.AutonomyAutonomous {
 			key := askKey(e)
 			if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {

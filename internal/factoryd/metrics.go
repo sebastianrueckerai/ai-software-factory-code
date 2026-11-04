@@ -293,9 +293,19 @@ func (f ReviewAttemptFact) identity() map[string]any {
 // the row the divide-and-conquer panels read. Detail {"pr", "commit",
 // "round", "model", "verdict", "reviewed"} — reviewed false carries
 // "reason", the bounded note of the answer that never judged the head;
-// no summary, which the timeline line alone keeps. Identity: the commit
-// and the round, so two genuine reviews of one head stay two.
+// no summary, which the timeline line alone keeps. Identity: the card,
+// the commit and the round, so two genuine reviews of one head stay two,
+// and so do two cards' reviews of one head (a successor carries its
+// card's pull request).
 const EventModelReview = "model_review"
+
+// EventGateAudit is one audit attempt on a head, the row beside the
+// audit's timeline line. Detail {"pr", "commit", "model", "ran",
+// "verdict"}: ran false when the audit gave no verdict, with "reason",
+// the bounded why of its first such finding, and no verdict. Identity:
+// the card, the commit and the stages' round, so a retried attempt writes
+// once.
+const EventGateAudit = "gate_audit"
 
 // maxFactReason bounds a fact row's reason; the notes it carries are
 // bounded again where they were written.
@@ -313,7 +323,7 @@ func (f ReviewAttemptFact) Event(task, repository string, issue int64) Event {
 		Actor:       FactoryDecider,
 		Via:         ViaFactoryd,
 		Detail:      detail,
-		IdentityKey: identityKey(EventModelReview, f.Commit, fmt.Sprintf("%d", f.Round))}
+		IdentityKey: identityKey(EventModelReview, task, f.Commit, fmt.Sprintf("%d", f.Round))}
 }
 
 // EventGateHead is one card's reading at one head — its gate decision,

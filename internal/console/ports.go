@@ -79,15 +79,6 @@ type Dependencies interface {
 	DependencyStates(ctx context.Context) ([]factoryd.DependencyState, error)
 }
 
-// Pools answers what a project's month pool has funded already
-// (factoryd.PGStore.AgentFundedEUR): the agent's own raises of the month,
-// the figure the status line's pool words carry. Nil shows no pool line.
-type Pools interface {
-	// AgentFundedEUR sums the card_funded rows the agent decided via the
-	// chat of repository in the UTC calendar month of month.
-	AgentFundedEUR(ctx context.Context, repository string, month time.Time) (float64, error)
-}
-
 // Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
 // the machine, human escalations judged by an approver.
 type Alerts interface {
@@ -172,11 +163,6 @@ type Chat interface {
 	ProjectConversations(ctx context.Context, repository string) ([]factoryd.ChatConversation, error)
 	ProposalStates(ctx context.Context, repository, login string, tokens []string, now time.Time) ([]factoryd.ProposalState, error)
 	ProjectMonthSpend(ctx context.Context, repository string, at time.Time) (factoryd.ProjectSpend, error)
-	// AgentFundedEUR is the EUR the agent funded cards with in repository
-	// in the UTC month of at — the projection FundCard guards the pool
-	// with, the sole figure the pool read-outs read, never a second
-	// aggregate; a member's raise is not the pool's.
-	AgentFundedEUR(ctx context.Context, repository string, at time.Time) (float64, error)
 	// TaskSpendSince is a task's ledger spend from a time on: the chat
 	// task's, which the fund its stop offers carries to the month's end
 	TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error)

@@ -64,6 +64,8 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead st
 		}
 	case s.Kind == "checkin":
 		checkinDetail(&b, lines[line-1])
+	case s.Kind == "proofs":
+		proofsDetail(&b, lines[line-1])
 	default:
 		writeFields(&b, lineFields(lines[line-1]))
 	}
@@ -263,11 +265,44 @@ func checkinDetail(b *strings.Builder, raw []byte) {
 	}
 }
 
+// proofsDetail is a gate_criteria line in full: the pull request and the
+// head, every criterion's line with its message, the findings no line
+// holds, the start failure. Never the hold-outs.
+func proofsDetail(b *strings.Builder, raw []byte) {
+	var l struct {
+		PR          int64       `json:"pr"`
+		Commit      string      `json:"commit"`
+		Proofs      []gateProof `json:"proofs"`
+		Findings    []string    `json:"findings"`
+		StartFailed string      `json:"start_failed"`
+	}
+	_ = json.Unmarshal(raw, &l)
+	fmt.Fprintf(b, "pull request #%d at %s\n", l.PR, l.Commit)
+	for _, p := range l.Proofs {
+		verdict := "unmet"
+		if p.Met {
+			verdict = "met"
+		}
+		fmt.Fprintf(b, "%s %s: %s\n", p.ID, verdict, p.Line)
+		for line := range strings.Lines(p.Message) {
+			b.WriteString("  " + strings.TrimSuffix(line, "\n") + "\n")
+		}
+	}
+	for _, f := range l.Findings {
+		if !slices.ContainsFunc(l.Proofs, func(p gateProof) bool { return p.Line == f }) {
+			fmt.Fprintf(b, "- %s %s\n", findingID(f), f)
+		}
+	}
+	if l.StartFailed != "" {
+		b.WriteString("start failed: " + l.StartFailed + "\n")
+	}
+}
+
 // criteriaDetail is the criteria verdicts of step s's write: each
 // criterion's verdict, evidence and fix.
 func criteriaDetail(b *strings.Builder, s DigestStep, verdicts []CriterionVerdict) {
 	for _, v := range verdicts {
-		if !v.CreatedAt.Equal(s.At) || v.DecidedBy != s.Actor {
+		if !v.CreatedAt.Equal(s.At) || criteriaActor(v) != s.Actor {
 			continue
 		}
 		fmt.Fprintf(b, "%s %s, source %s\n", v.Criterion, cmp.Or(v.Verdict, "undecided"), v.Source)

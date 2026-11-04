@@ -127,6 +127,8 @@ func escalationSource(reason string) string {
 		return "image"
 	case strings.HasPrefix(reason, staleQuiet):
 		return "stale"
+	case strings.HasPrefix(reason, depFailed):
+		return SourceDependencyFailed
 	}
 	return "supervisor"
 }

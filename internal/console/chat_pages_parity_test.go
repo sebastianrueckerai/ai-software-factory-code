@@ -190,14 +190,14 @@ func TestPageReadToolsOverFixtures(t *testing.T) {
 			"4 escalation agent \"t-m\" since 2026-10-08 06:00 UTC, verdict same_cause by sebastian, same cause as t-n",
 		resources,
 		"Projects (2):\n" +
-			"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + noPoolRead() + "\n" +
-			"ready-app (ready/app): objects factory; process none; merge rule auto; ready since 2026-10-11 09:30 UTC; GitHub export acme/ready (mirror, mirrored); " + noPoolRead(),
+			"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + defaultPoolRead() + "\n" +
+			"ready-app (ready/app): objects factory; process none; merge rule auto; ready since 2026-10-11 09:30 UTC; GitHub export acme/ready (mirror, mirrored); " + defaultPoolRead(),
 		"Policy version 4 (commit c9d98bb0aa11).\nLimits and budgets:\n" +
 			"  task budget: €2.00 default, €5.00 maximum\n  sessions per card: 3\n  agent time: 20m0s\n  check-in: none\n" +
 			"  supervisor calls per session: 3\n  supervisor timeout: 6m0s\n  returns before the stronger model: 1\n  steps per session: 200\n" +
 			"  identical calls before a nudge: 3, nudges: 1\n  identical calls that trip the supervisor: 4\n" +
 			"  day cap: €20.00\n  month cap: €50.00\n  project demo-app month cap: €25.00\n  project infra month cap: €10.00\n" +
-			"  project demo-app " + noPoolRead() + "\n  project infra " + noPoolRead() + "\n  project linkshort " + noPoolRead() + "\n" +
+			"  project demo-app " + defaultPoolRead() + "\n  project infra " + defaultPoolRead() + "\n  project linkshort " + defaultPoolRead() + "\n" +
 			"Risk classes (most severe first, default normal):\n  high: requires_approval, migration\n  normal: auto\n" +
 			"  internal/factoryd/migrations/**, deploy/** -> high\n" +
 			"Approvers:\n  factory: sebastian\n  linkshort: alice",
@@ -256,9 +256,10 @@ func TestPageWriteToolsProduceProposals(t *testing.T) {
 			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 7, "verdict": "real"}}}},
 		{"alert_verdict", `{"id":8,"verdict":"same_cause","card":"t-m"}`,
 			`Judge an alert, verdict same_cause, alert 8 \"t-e\", same cause as #5 t-m \"Fix the cache. It drops entries.\", which closes #13`,
-			"Alert 8 is judged same_cause, the same cause as #5. Closed #13; factoryd ends the card.",
+			"Alert 8 is judged same_cause, the same cause as #5. Case 1 took close.",
 			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 8, "same_as": "t-m", "verdict": "same_cause"}},
-				{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "Same cause as #5."}}}},
+				{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered,
+					Detail: map[string]any{"action": factoryd.ActClose, "answer": "Same cause as #5.", "case_id": int64(1), "comment": int64(1)}}}},
 		{"alert_verdict", `{"id":9,"verdict":"same_cause","card":"t-n"}`,
 			`Judge an alert, verdict same_cause, alert 9 \"t-o\", same cause as t-n \"Tidy the docs.\", which closes t-o`,
 			"Alert 9 is judged same_cause, the same cause as t-n. Closed card t-o.",

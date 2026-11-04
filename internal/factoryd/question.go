@@ -177,6 +177,10 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 	return plainQuestion(reason, f, choices)
 }
 
+// plainAsk is plainQuestion's headline for a stop that is not an agent's
+// ask: it names the decision, not the stop.
+const plainAsk = "This card stopped and needs your decision: how should it go on?"
+
 // plainQuestion is the question an ask no template covers gets, so no
 // card puts words alone to a person: an agent's ask keeps its question
 // as the headline, every other stop gets one that names the decision.
@@ -191,7 +195,7 @@ func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuest
 		info = planStopInfo
 	}
 	q := &HumanQuestion{
-		Ask:     "This card stopped and needs your decision: how should it go on?",
+		Ask:     plainAsk,
 		Why:     first,
 		Info:    info,
 		Choices: continueChoices(),

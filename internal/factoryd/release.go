@@ -5,8 +5,9 @@ import (
 	"database/sql"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // Release is the stored state of a project's production hold, its row of
@@ -54,15 +55,7 @@ func HoldReason(groups []Group) string {
 	if len(plans) == 1 {
 		return "plan " + plans[0] + " is open on main"
 	}
-	return "plans " + andList(plans) + " are open on main"
-}
-
-// andList joins items as a person reads them: "a", "a and b", "a, b and c".
-func andList(items []string) string {
-	if len(items) < 2 {
-		return strings.Join(items, "")
-	}
-	return strings.Join(items[:len(items)-1], ", ") + " and " + items[len(items)-1]
+	return "plans " + textutil.AndList(plans) + " are open on main"
 }
 
 // fixSources are the sources of the cards that fix production: one merged

@@ -83,7 +83,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil {
 		t.Fatalf("AppendCaseStep: %v", err)
 	}
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}); err != nil {
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: "sebastian", Rung: 3, Action: "grant_session"}, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	next := capped
@@ -105,8 +105,13 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	if err != nil || len(steps) != 1 || steps[0].ID != step || steps[0].Outcome != StepResolved || steps[0].EndedAt == nil {
 		t.Fatalf("CaseSteps after resolve = %+v, %v; want step %d resolved and ended", steps, err, step)
 	}
-	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("ResolveCase of a resolved case = %v, want ErrNotFound", err)
+	var over ErrCaseEnded
+	if err := s.ResolveCase(ctx, a.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); !errors.As(err, &over) ||
+		over.Case.ID != a.ID || over.Case.Resolution.Action != "grant_session" {
+		t.Fatalf("ResolveCase of a resolved case = %v, want ErrCaseEnded naming its grant_session", err)
+	}
+	if err := s.ResolveCase(ctx, a.ID+1000, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("ResolveCase of no case = %v, want ErrNotFound", err)
 	}
 	if err := s.SetCaseStatus(ctx, a.ID, CaseOpen); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("SetCaseStatus of a resolved case = %v, want ErrNotFound", err)
@@ -222,7 +227,7 @@ func TestOpenCasesInListsOnlyTheRepositorysOpenCases(t *testing.T) {
 	}
 	a := open("t1", "sf/a", CaseDayCap)
 	r := open("t2", "sf/a", CaseDayCap)
-	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}); err != nil {
+	if err := s.ResolveCase(ctx, r.ID, CaseResolution{By: FactoryDecider, Rung: 1, Action: "wait"}, nil, nil); err != nil {
 		t.Fatalf("ResolveCase: %v", err)
 	}
 	b := open("t3", "sf/b", CaseMergeApproval)

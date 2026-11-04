@@ -76,6 +76,26 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 	}
 }
 
+// The gate's row stands over the review's: c1's failed test is its
+// verdict on the card, and the waiver answers it.
+func TestCriteriaCardStandsOnTheGatesRowOverTheReviews(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: "c1", Verdict: "unmet",
+		Evidence: "criterion c1: suite ./... failed: Failed boom", Kind: factoryd.CriterionTest, Source: factoryd.CriteriaSourceGate})
+	ck, _ := r.loggedIn(t)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	for _, want := range []string{
+		"<legend>c1 (test): unmet</legend>",
+		`<p class="reason">criterion c1: suite ./... failed: Failed boom</p>`,
+		`<input type="hidden" name="criterion" value="c1">`,
+	} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the criteria card lacks %q:\n%s", want, card)
+		}
+	}
+}
+
 // The waiver records the approver's decision on one criterion and the
 // board shows it standing; the grant approves the request and hands the
 // planner its dues. A waiver of an unknown criterion refuses.

@@ -251,6 +251,10 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 	m := ChatMessage{Role: "assistant", Kind: MessagePoke, TaskID: e.TaskID, BirthKind: e.Kind}
 	switch e.Kind {
 	case EventQuestionAsked:
+		if str("settled") != "" {
+			// the factory answered the ask as it asked it: no one is needed
+			return m, false
+		}
 		m.Kind = MessageEscalation
 		m.Content = TitledRef(ref, t) + " needs you: " + str("question")
 		m.Decider = str("decider_line")

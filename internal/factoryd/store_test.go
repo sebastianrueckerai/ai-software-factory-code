@@ -90,6 +90,8 @@ type fakeStore struct {
 	// cases are CasesOf's rows, oldest first; caseSteps CaseSteps' by case
 	cases     []Case
 	caseSteps map[int64][]CaseStep
+	// resolved are ResolveCase's calls, by case id
+	resolved []int64
 	// enforced is Enforced's answer
 	enforced policy.Enforced
 	// held are Free's outstanding holds by task (Held, Holds, Expires);
@@ -197,7 +199,7 @@ func (s *fakeStore) Dependents(ctx context.Context, id string) ([]Dependency, er
 
 func (s *fakeStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (bool, error) {
 	old := s.tasks[id]
-	if old.Status != "failed" || old.PlanKey == "" || old.PlanKey != t.PlanKey {
+	if _, exists := s.tasks[t.ID]; exists || old.Status != "failed" || old.PlanKey != t.PlanKey {
 		return false, nil
 	}
 	old.PlanKey = ""
@@ -231,11 +233,14 @@ func (s *fakeStore) MoveDependents(ctx context.Context, from, to string) ([]stri
 }
 
 // FundCard raises task id's budget by eur and records e with the raise in
-// its detail; bounds are the console's, which no factoryd caller passes.
-func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds *FundBounds, e Event) (from, to float64, err error) {
+// its detail; the card's ceiling, else ceiling, refuses a raise past it.
+func (s *fakeStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
+	}
+	if bound := cmp.Or(t.CeilingEUR, ceiling); bound > 0 && Cents(t.BudgetEUR)+Cents(eur) > Cents(bound) {
+		return 0, 0, &CardCapError{Budget: t.BudgetEUR}
 	}
 	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
 	s.tasks[id] = t
@@ -248,25 +253,116 @@ func (s *fakeStore) FundCard(ctx context.Context, id string, eur float64, bounds
 	return from, t.BudgetEUR, err
 }
 
-// ExtendCard raises task id's caps — its granted sessions, its line bound
-// and its budget — and records e with the raise in its detail.
-func (s *fakeStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e Event) (from, to float64, err error) {
+// extendCard raises task id's caps by d and lines and records e with the
+// raise in its detail, as PGStore's drawCase does: d's sessions and agent
+// time in the row alone when the run grants them (runGrants).
+func (s *fakeStore) extendCard(ctx context.Context, id string, d policy.Draw, lines, shares int, runGrants bool, e Event) (from, to float64, err error) {
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, ErrNotFound
 	}
-	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+eur
-	t.Usage.ExtraAttempts += sessions
+	from, t.BudgetEUR = t.BudgetEUR, t.BudgetEUR+d.EUR
+	if !runGrants {
+		t.Usage.RaisedSessions += d.Sessions
+		t.Usage.RaisedTime += d.AgentTime
+	}
 	t.Usage.ExtraLines += lines
+	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
 	e.Detail = maps.Clone(e.Detail)
 	if e.Detail == nil {
 		e.Detail = map[string]any{}
 	}
-	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, eur
-	e.Detail["sessions"], e.Detail["lines"] = sessions, lines
+	e.Detail["from_eur"], e.Detail["to_eur"], e.Detail["amount_eur"] = from, t.BudgetEUR, d.EUR
+	e.Detail["sessions"], e.Detail["agent_time_s"], e.Detail["lines"] = d.Sessions, int64(d.AgentTime/time.Second), lines
 	_, err = s.Record(ctx, e)
 	return from, t.BudgetEUR, err
+}
+
+// PoolDrawn sums repository's pool draws in the UTC month of month.
+func (s *fakeStore) PoolDrawn(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
+	from := time.Date(month.UTC().Year(), month.UTC().Month(), 1, 0, 0, 0, 0, time.UTC)
+	return s.drawn(func(e Event) bool {
+		at := cmp.Or(e.At, time.Now())
+		return e.Repository == repository && !at.Before(from) && at.Before(from.AddDate(0, 1, 0))
+	}), nil
+}
+
+// CardDrawn sums task taskID's pool draws of rungs 0 and 1.
+func (s *fakeStore) CardDrawn(_ context.Context, taskID string) (policy.Draw, error) {
+	return s.drawn(func(e Event) bool {
+		rung, ok := toInt(e.Detail["rung"])
+		return e.TaskID == taskID && ok && rung <= 1
+	}), nil
+}
+
+// drawn sums the recorded pool draws pick keeps.
+func (s *fakeStore) drawn(pick func(Event) bool) policy.Draw {
+	var d policy.Draw
+	for _, e := range s.events {
+		if (e.Kind != EventCardFunded && e.Kind != EventCardExtended) || e.Detail["pool"] != true || !pick(e) {
+			continue
+		}
+		sessions, _ := toInt(e.Detail["sessions"])
+		seconds, _ := toInt(e.Detail["agent_time_s"])
+		eur, _ := e.Detail["amount_eur"].(float64)
+		d = d.Plus(policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second, EUR: eur})
+	}
+	return d
+}
+
+// DrawCard writes d as PGStore.DrawCard does: the rung's bounds first,
+// then the raise of the ceiling, the extend and the fund, the card and its
+// rows as they were when a part fails.
+func (s *fakeStore) DrawCard(ctx context.Context, taskID string, d CaseDraw) (err error) {
+	ceiling, extend, fund := d.rows()
+	before, had := s.tasks[taskID]
+	rows := len(s.events)
+	defer func() {
+		if err != nil && had {
+			s.tasks[taskID], s.events = before, s.events[:rows]
+		}
+	}()
+	weighed := !d.amount().IsZero() // a draw of nothing is weighed against no bound, as PGStore's drawFits
+	if weighed && d.Rung <= 1 {
+		drawn, _ := s.CardDrawn(ctx, taskID)
+		if !fitsIn(drawn.Plus(d.amount()), d.CardBound) {
+			return &DrawBoundError{Card: true, Left: d.CardBound.Minus(drawn)}
+		}
+	}
+	if weighed && d.Rung <= 2 {
+		drawn, _ := s.PoolDrawn(ctx, d.Event.Repository, time.Now())
+		if !fitsIn(drawn.Plus(d.amount()), d.Pool) {
+			return &DrawBoundError{Left: d.Pool.Minus(drawn)}
+		}
+	}
+	if d.Raise != 0 {
+		t, ok := s.tasks[taskID]
+		if !ok {
+			return ErrNotFound
+		}
+		t.CeilingEUR = cmp.Or(t.CeilingEUR, d.PolicyCeiling) + d.Raise
+		s.tasks[taskID] = t
+		if ceiling.Detail == nil {
+			ceiling.Detail = map[string]any{}
+		}
+		ceiling.Detail["ceiling_eur"], ceiling.Detail["amount_eur"] = t.CeilingEUR, 0.0
+		ceiling.TaskID, ceiling.Kind = taskID, EventCardFunded
+		if _, err := s.Record(ctx, ceiling); err != nil {
+			return err
+		}
+	}
+	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
+		if _, _, err := s.extendCard(ctx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend); err != nil {
+			return err
+		}
+	}
+	if d.FundEUR > 0 {
+		if _, _, err := s.FundCard(ctx, taskID, d.FundEUR, d.PolicyCeiling, fund); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *fakeStore) SetPlanName(ctx context.Context, id, name string) error {
@@ -987,13 +1083,15 @@ func (s *fakeStore) ResetTaskUsage(ctx context.Context, id string) error {
 	return nil
 }
 
-// SetTaskUsage keeps the console's raises, as the store does.
+// SetTaskUsage keeps the console's raises and lowers no check-in share,
+// as the store does.
 func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) error {
 	t, ok := s.tasks[id]
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1012,11 +1110,17 @@ func (s *fakeStore) SetTaskSizeBudget(ctx context.Context, id, size string, held
 		return nil
 	}
 	t.Size = size
+	from := t.BudgetEUR
 	if Cents(t.BudgetEUR) == heldCents {
 		t.BudgetEUR = eur
 	}
 	s.tasks[id] = t
-	return nil
+	if Cents(t.BudgetEUR) == Cents(from) {
+		return nil
+	}
+	_, err := s.Record(ctx, Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"size": size, "from_eur": from, "to_eur": t.BudgetEUR, "amount_eur": float64(Cents(t.BudgetEUR)-Cents(from)) / 100, "by": sizeGateBy}})
+	return err
 }
 
 func (s *fakeStore) DeliverySeen(ctx context.Context, id string) (bool, error) {
@@ -1185,12 +1289,31 @@ func (s *fakeStore) UpdateSession(ctx context.Context, id string, findings []str
 
 var _ Store = (*fakeStore)(nil)
 
+// OpenCase opens c as PGStore.OpenCase does: unless a live case of its
+// task, kind and key exists, which it answers with false, it inserts c
+// with the next id, open when it names no status.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
-	return Case{}, false, nil
+	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
+	if i := slices.IndexFunc(s.cases, func(o Case) bool {
+		return o.TaskID == c.TaskID && o.Kind == c.Kind && o.StateKey == c.StateKey && live(o)
+	}); i >= 0 {
+		return s.cases[i], false, nil
+	}
+	for _, o := range s.cases {
+		c.ID = max(c.ID, o.ID)
+	}
+	c.ID++
+	c.Status = cmp.Or(c.Status, CaseOpen)
+	s.cases = append(s.cases, c)
+	return c, true, nil
 }
 
 func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
-	return 0, nil
+	if s.caseSteps == nil {
+		s.caseSteps = map[int64][]CaseStep{}
+	}
+	s.caseSteps[st.CaseID] = append(s.caseSteps[st.CaseID], st)
+	return int64(len(s.caseSteps[st.CaseID])), nil
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
@@ -1198,10 +1321,49 @@ func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found st
 }
 
 func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	s.cases[i].Status = status
 	return nil
 }
 
-func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution) error {
+// ResolveCase records its call in resolved and ends case id of cases by r
+// as PGStore.ResolveCase does, the draw and the step with it: a live case,
+// or one the webhook's copy of r's comment resolved as a plain answer.
+func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+	s.resolved = append(s.resolved, id)
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
+	if i < 0 {
+		return fmt.Errorf("case %d: %w", id, ErrNotFound)
+	}
+	comment, _ := toInt(r.Args["comment"])
+	copied := func(c Case) bool {
+		if comment == 0 || c.Status != CaseResolved || c.Resolution == nil || c.Resolution.Action != caseAnswer {
+			return false
+		}
+		answered, _ := toInt(c.Resolution.Args["comment"])
+		return answered == comment
+	}
+	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman && !copied(c) {
+		return ErrCaseEnded{c}
+	}
+	if d != nil {
+		if err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {
+			return err
+		}
+	}
+	status, now := CaseResolved, time.Now()
+	if r.Action == ActWithdraw {
+		status = CaseWithdrawn
+	}
+	s.cases[i].Status, s.cases[i].Resolution, s.cases[i].ResolvedAt = status, &r, &now
+	if st != nil {
+		step := *st
+		step.CaseID = id
+		_, _ = s.AppendCaseStep(ctx, step)
+	}
 	return nil
 }
 
@@ -1210,11 +1372,33 @@ func (s *fakeStore) WithdrawCase(ctx context.Context, id int64, reason string) e
 }
 
 func (s *fakeStore) CaseByID(ctx context.Context, id int64) (Case, error) {
-	return Case{}, nil
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
+	if i < 0 {
+		return Case{}, fmt.Errorf("case %d: %w", id, ErrNotFound)
+	}
+	return s.cases[i], nil
 }
 
 func (s *fakeStore) OpenCasesOf(ctx context.Context, taskID string) ([]Case, error) {
-	return nil, nil
+	var out []Case
+	for _, c := range s.cases {
+		if c.TaskID == taskID && (c.Status == CaseOpen || c.Status == CaseAtHuman) {
+			out = append(out, c)
+		}
+	}
+	return out, nil
+}
+
+// NewestAskCase is taskID's newest live case an answer on the card ends,
+// as PGStore's newestAskCase reads it.
+func (s *fakeStore) NewestAskCase(ctx context.Context, taskID string) (Case, error) {
+	var newest Case
+	for _, c := range s.cases {
+		if c.TaskID == taskID && (c.Status == CaseOpen || c.Status == CaseAtHuman) && AnsweredOnCard(c.Kind) && c.ID > newest.ID {
+			newest = c
+		}
+	}
+	return newest, nil
 }
 
 func (s *fakeStore) CasesOf(ctx context.Context, taskID string) ([]Case, error) {
@@ -2130,7 +2314,8 @@ func TestPGStore(t *testing.T) {
 	}
 	// the console's Extend raises columns the workflow's snapshot leaves:
 	// a snapshot written after the raise, holding none of it, keeps it
-	if _, _, err := s.ExtendCard(ctx, "t1", 1, 150, 0, Event{Repository: "sf/code", TaskID: "t1", Kind: EventCardExtended, Actor: "sebastian", Via: ViaConsole}); err != nil {
+	if err := s.DrawCard(ctx, "t1", CaseDraw{Rung: 3, Extend: policy.Draw{Sessions: 1}, Lines: 150,
+		Event: Event{Repository: "sf/code", TaskID: "t1", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
@@ -4981,5 +5166,18 @@ func TestTaskReadCountsAnExpiredUnsweptHold(t *testing.T) {
 	}
 	if k.HeldEUR != 0.4 || Cents(k.Left()) != 10 {
 		t.Fatalf("held %v, left %v; want the expired hold's 0.40 held and 0.10 left", k.HeldEUR, k.Left())
+	}
+}
+
+// The fake's usage snapshot keeps the check-in's extra share as
+// PGStore's does: the snapshot writes every counter but lowers no share.
+func TestFakeStoreKeepsTheCheckinShare(t *testing.T) {
+	s := newFakeStore()
+	s.tasks["t1"] = Task{ID: "t1", Usage: TaskUsage{ExtraCheckinShare: 1}}
+	if err := s.SetTaskUsage(context.Background(), "t1", TaskUsage{Attempts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
+		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
 	}
 }

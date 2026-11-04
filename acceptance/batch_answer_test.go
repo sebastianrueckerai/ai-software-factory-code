@@ -311,12 +311,6 @@ func (s *accBatchTasks) SetObjective(_ context.Context, _, _ string) error    { 
 func (s *accBatchTasks) RaiseTaskBudget(_ context.Context, _ string, _ float64) (float64, float64, error) {
 	return 0, 0, nil
 }
-func (s *accBatchTasks) FundCard(_ context.Context, _ string, _ float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
-	return 0, 0, nil
-}
-func (s *accBatchTasks) ExtendCard(_ context.Context, _ string, _, _ int, _ float64, _ factoryd.Event) (float64, float64, error) {
-	return 0, 0, nil
-}
 func (s *accBatchTasks) AddTaskDeps(_ context.Context, _ string, _ []string) error {
 	return nil
 }
@@ -696,7 +690,7 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, foun
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
 	panic("unused")
 }
-func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution) error {
+func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep) error {
 	panic("unused")
 }
 func (s *accBatchStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
@@ -706,6 +700,9 @@ func (s *accBatchStore) CaseByID(ctx context.Context, id int64) (factoryd.Case, 
 	panic("unused")
 }
 func (s *accBatchStore) OpenCasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) NewestAskCase(ctx context.Context, taskID string) (factoryd.Case, error) {
 	panic("unused")
 }
 func (s *accBatchStore) CasesOf(ctx context.Context, taskID string) ([]factoryd.Case, error) {
@@ -890,10 +887,16 @@ func (s *accBatchStore) ReplaceFailedCard(ctx context.Context, id string, t fact
 func (s *accBatchStore) MoveDependents(ctx context.Context, from, to string) ([]string, error) {
 	panic("unused")
 }
-func (s *accBatchStore) FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+func (s *accBatchStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e factoryd.Event) (float64, float64, error) {
 	panic("unused")
 }
-func (s *accBatchStore) ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (float64, float64, error) {
+func (s *accBatchStore) PoolDrawn(ctx context.Context, repository string, month time.Time) (policy.Draw, error) {
+	panic("unused")
+}
+func (s *accBatchStore) CardDrawn(ctx context.Context, taskID string) (policy.Draw, error) {
+	panic("unused")
+}
+func (s *accBatchStore) DrawCard(ctx context.Context, taskID string, d factoryd.CaseDraw) error {
 	panic("unused")
 }
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
@@ -1226,11 +1229,6 @@ func (f *accBatchChat) BudgetStoppedThreads(context.Context, string) ([]factoryd
 
 func (f *accBatchChat) ProjectMonthSpend(context.Context, string, time.Time) (factoryd.ProjectSpend, error) {
 	return factoryd.ProjectSpend{}, nil
-}
-
-// AgentFundedEUR: this rig funds nothing from a pool.
-func (f *accBatchChat) AgentFundedEUR(context.Context, string, time.Time) (float64, error) {
-	return 0, nil
 }
 
 func (f *accBatchChat) PutProposal(_ context.Context, p factoryd.ChatProposal) error {

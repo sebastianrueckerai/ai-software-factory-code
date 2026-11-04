@@ -65,6 +65,8 @@ func run(log func(string, ...any)) int {
 		return runReproFetch(log, workspace)
 	case mode == "repro":
 		return runRepro(log, initErr, sandboxProbe)
+	case mode == "proofs":
+		return runProofs(log, initErr, sandboxProbe)
 	}
 	return runSession(context.Background(), log, workspace, os.Stdout, initErr, sandboxProbe)
 }

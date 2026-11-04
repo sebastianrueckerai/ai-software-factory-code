@@ -142,18 +142,18 @@ func TestDenyMergeDefaultsToRequestChanges(t *testing.T) {
 }
 
 // A tell at a card waiting on a human with no pending request is the
-// answer: the member's comment on its issue, which resumes it, one
-// question_answered row via chat.
+// answer: Act's continue on its case, the human's comment on its issue,
+// one question_answered row via chat.
 func TestTellCardWaitingHuman(t *testing.T) {
 	r, _, before := tellRig(t)
 	got := toldRun(t, r, toolInput{TaskID: "t-e", Text: "a shard"})
-	equal(t, "the answer", got, `Told #13 (the text answers the question it waits on): Answered #13.`)
+	equal(t, "the answer", got, `Told #13 (the text answers the question it waits on): Case 1 took continue.`)
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {
 		t.Fatalf("the comment = %q, want the text", got)
 	}
 	chatRows(t, r.events, before, "sebastian",
 		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered,
-			Detail: postedDetail(1)})
+			Detail: map[string]any{"action": factoryd.ActContinue, "answer": "a shard", "case_id": int64(1), "comment": int64(1)}})
 }
 
 // A tell at a card in no telling state is refused 409 naming the states

@@ -7,7 +7,10 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"maps"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // CaseKind names the problem a case is about.
@@ -25,6 +28,7 @@ const (
 	CaseGateStop         CaseKind = "gate_stop"
 	CaseFindingsRepeated CaseKind = "findings_repeated"
 	CaseDependencyClosed CaseKind = "dependency_closed"
+	CaseDependencyFailed CaseKind = "dependency_failed"
 	CaseWaitExpired      CaseKind = "wait_expired"
 	CasePodNeverStarted  CaseKind = "pod_never_started"
 	CaseProviderRefused  CaseKind = "provider_refused"
@@ -261,14 +265,150 @@ func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) er
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
 
-// ResolveCase ends live case id as resolved by r, and its in-progress
-// steps with it; ErrNotFound when the case is not live.
-func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution) error {
-	return resolveCase(ctx, s.db, id, r)
+// caseAnswer is the action of a case an answer row resolved: an answer
+// comment, or a press that names no action.
+const caseAnswer = "answer"
+
+// ErrCaseEnded refuses an answer on a case that ended: Case says how.
+type ErrCaseEnded struct{ Case Case }
+
+func (e ErrCaseEnded) Error() string {
+	c := e.Case
+	if c.Resolution == nil || c.ResolvedAt == nil {
+		return fmt.Sprintf("case %d is %s", c.ID, c.Status)
+	}
+	at := c.ResolvedAt.UTC().Format("15:04")
+	if c.Status == CaseWithdrawn {
+		return fmt.Sprintf("case %d was withdrawn at %s UTC: %s", c.ID, at, c.Resolution.Reason)
+	}
+	return fmt.Sprintf("case %d was resolved by %s with %s at %s UTC", c.ID, c.Resolution.By, c.Resolution.Action, at)
+}
+
+// CaseDraw is what an answer on Rung draws beside its resolution: a raise
+// of the card's ceiling by Raise (0 for none), then Extend's sessions and
+// agent time with Lines and the check-in's Shares, which draw nothing
+// from the pool, then FundEUR into the budget, which the card's
+// ceiling bounds, else PolicyCeiling. CardBound and Pool are the card's
+// draw bound, which rungs 0 and 1 draw within, and the project's month of
+// draws, which rungs 0 to 2 draw within. RunGrants: the card's run grants
+// Extend's sessions and agent time itself, so the rows record them against
+// the pool and the card's row raises neither. Event is the rows'
+// repository, issue, actor, via and detail.
+type CaseDraw struct {
+	Rung          int
+	Raise         float64
+	Extend        policy.Draw
+	Lines         int
+	Shares        int
+	FundEUR       float64
+	PolicyCeiling float64
+	CardBound     policy.Draw
+	Pool          policy.Draw
+	RunGrants     bool
+	Event         Event
+}
+
+// amount is what d takes from the pool: its sessions, agent time and
+// money, the raise's included.
+func (d CaseDraw) amount() policy.Draw {
+	return d.Extend.Plus(policy.Draw{EUR: d.FundEUR + d.Raise})
+}
+
+// rows are d's events: the ceiling's, the extend's and the fund's. A
+// raise moves no money, so its row is no draw from the pool.
+func (d CaseDraw) rows() (ceiling, extend, fund Event) {
+	ceiling, extend, fund = d.Event, d.Event, d.Event
+	ceiling.Detail = maps.Clone(d.Event.Detail)
+	delete(ceiling.Detail, "pool")
+	extend.Kind, fund.Kind = EventCardExtended, EventCardFunded
+	return ceiling, extend, fund
+}
+
+// ResolveCase ends live case id by r, withdrawn when r withdraws it,
+// else resolved, its in-progress steps with it, and in the same
+// transaction writes draw d for the case's card and appends step st (nil
+// for none). A case the webhook's copy of r's answer comment
+// (r.Args["comment"]) resolved first as a plain answer is resolved again
+// by r. A case that ended otherwise is ErrCaseEnded, no case ErrNotFound.
+func (s *PGStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
+	comment, _ := toInt(r.Args["comment"])
+	status, outcome := CaseResolved, StepResolved
+	if r.Action == ActWithdraw {
+		status, outcome = CaseWithdrawn, StepWithdrawn
+	}
+	return s.commitRows(ctx, func(tx *sql.Tx) ([]Event, error) {
+		taskID, err := endCase(ctx, tx, id, status, outcome, r, int64(comment))
+		if errors.Is(err, ErrNotFound) {
+			c, cerr := scanCase(tx.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE id = $1`, id))
+			if errors.Is(cerr, sql.ErrNoRows) {
+				return nil, fmt.Errorf("case %d: %w", id, ErrNotFound)
+			}
+			if cerr != nil {
+				return nil, cerr
+			}
+			return nil, ErrCaseEnded{c}
+		}
+		if err != nil {
+			return nil, err
+		}
+		var rows []Event
+		if d != nil {
+			if rows, err = s.drawCase(ctx, tx, taskID, *d); err != nil {
+				return nil, err
+			}
+		}
+		if st != nil {
+			step := *st
+			step.CaseID = id
+			if _, err := appendCaseStep(ctx, tx, step); err != nil {
+				return nil, err
+			}
+		}
+		return rows, nil
+	})
+}
+
+// drawCase writes d for card taskID inside tx once its rung's bounds fit
+// it (drawFits), the raise first, and answers the rows it wrote: a row its
+// identity dropped (ID 0) is no row to publish.
+func (s *PGStore) drawCase(ctx context.Context, tx *sql.Tx, taskID string, d CaseDraw) ([]Event, error) {
+	if err := s.drawFits(ctx, tx, taskID, d); err != nil {
+		return nil, err
+	}
+	ceiling, extend, fund := d.rows()
+	var rows []Event
+	wrote := func(stored Event) {
+		if stored.ID != 0 {
+			rows = append(rows, stored)
+		}
+	}
+	if d.Raise != 0 {
+		stored, err := s.raiseCeiling(ctx, tx, taskID, d.Raise, d.PolicyCeiling, ceiling)
+		if err != nil {
+			return nil, err
+		}
+		wrote(stored)
+	}
+	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
+		_, _, stored, err := s.extendCard(ctx, tx, taskID, d.Extend, d.Lines, d.Shares, d.RunGrants, extend)
+		if err != nil {
+			return nil, err
+		}
+		wrote(stored)
+	}
+	if d.FundEUR > 0 {
+		_, _, stored, err := s.fundCard(ctx, tx, taskID, d.FundEUR, d.PolicyCeiling, fund)
+		if err != nil {
+			return nil, err
+		}
+		wrote(stored)
+	}
+	return rows, nil
 }
 
 func resolveCase(ctx context.Context, q rowQuerier, id int64, r CaseResolution) error {
-	return endCase(ctx, q, id, CaseResolved, StepResolved, r)
+	_, err := endCase(ctx, q, id, CaseResolved, StepResolved, r, 0)
+	return err
 }
 
 // WithdrawCase ends live case id as withdrawn by the factory for reason,
@@ -279,27 +419,35 @@ func (s *PGStore) WithdrawCase(ctx context.Context, id int64, reason string) err
 }
 
 func withdrawCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
-	return endCase(ctx, q, id, CaseWithdrawn, StepWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: reason})
+	_, err := endCase(ctx, q, id, CaseWithdrawn, StepWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: reason}, 0)
+	return err
 }
 
-func endCase(ctx context.Context, q rowQuerier, id int64, status, outcome string, r CaseResolution) error {
+// endCase ends case id with status by r, its in-progress steps with
+// outcome, and answers its card. It ends a live case, and with answered
+// set also a case the webhook's copy of that answer comment resolved as a
+// plain answer. Any other case is ErrNotFound.
+func endCase(ctx context.Context, q rowQuerier, id int64, status, outcome string, r CaseResolution, answered int64) (string, error) {
 	b, err := toJSON(r)
 	if err != nil {
-		return err
+		return "", err
 	}
-	var n int
+	var taskID string
 	err = q.QueryRowContext(ctx,
 		`WITH ended AS (
-		     UPDATE cases SET status = $2, resolved_at = now(), resolution = $3::jsonb WHERE id = $1 AND `+caseLive+` RETURNING id
+		     UPDATE cases SET status = $2, resolved_at = now(), resolution = $3::jsonb
+		     WHERE id = $1 AND (`+caseLive+` OR $6::bigint <> 0 AND status = $7 AND resolution->>'action' = $8
+		         AND resolution->'args'->>'comment' = $6::bigint::text)
+		     RETURNING id, task_id
 		 ), steps AS (
 		     UPDATE case_steps SET outcome = $4, ended_at = now() WHERE case_id IN (SELECT id FROM ended) AND outcome = $5
 		 )
-		 SELECT count(*) FROM ended`,
-		id, status, b, outcome, StepInProgress).Scan(&n)
-	if err == nil && n == 0 {
+		 SELECT task_id FROM ended`,
+		id, status, b, outcome, StepInProgress, answered, CaseResolved, caseAnswer).Scan(&taskID)
+	if errors.Is(err, sql.ErrNoRows) {
 		err = fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}
-	return err
+	return taskID, err
 }
 
 // CaseByID is case id; ErrNotFound when there is none.

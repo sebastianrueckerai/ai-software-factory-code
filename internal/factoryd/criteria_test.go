@@ -3,17 +3,59 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"reflect"
 	"slices"
 	"strings"
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// junitGz is a JUnit report as the worker returns it: gzipped.
+func junitGz(t *testing.T, xml string) []byte {
+	t.Helper()
+	return gzipped(t, []byte(xml))
+}
+
+// proofLines is what a proofs pod prints: one line per run, then the
+// closing line.
+func proofLines(runs ...harness.ProofRun) string {
+	var lines []string
+	for _, run := range runs {
+		b, _ := json.Marshal(harness.WorkerEnvelope{Type: "proof", Proof: &run})
+		lines = append(lines, string(b))
+	}
+	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{}})
+	return strings.Join(append(lines, string(b)), "\n")
+}
+
+// A bare path is a directory of the repository, never a standard library
+// package; a path that starts with a dash cannot pass for a flag.
+func TestGoPackageReadsABarePathAsADirectory(t *testing.T) {
+	for in, want := range map[string]string{
+		"acceptance":       "./acceptance",
+		"internal/console": "./internal/console",
+		"./a":              "./a",
+		"../b":             "../b",
+		"./...":            "./...",
+		"...":              "...",
+		"github.com/a/b":   "github.com/a/b",
+		"/abs/p":           "/abs/p",
+		"-c.x":             "./-c.x",
+	} {
+		if got := goPackage(in); got != want {
+			t.Errorf("goPackage(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // The gate's split of a plan's criteria (piece 4): kind test and kind
-// invariant parse into runs, judgement and human criteria are outside the
-// gate, and a field off the house format is a finding, never a run.
+// invariant become runs in plan order, judgement and human criteria are
+// outside the gate, and a field off the house format is a run refused,
+// never one executed.
 func TestCriteriaRunsSplitsKindsAndOffFormatFields(t *testing.T) {
 	p := Plan{Criteria: []PlanCriterion{
 		{ID: "green_login", Kind: CriterionTest, Test: "TestLogin in ./internal/auth"},
@@ -22,134 +64,189 @@ func TestCriteriaRunsSplitsKindsAndOffFormatFields(t *testing.T) {
 		{ID: "no_suite", Kind: CriterionInvariant, Test: "the app stays green"},
 		{ID: "judged", Kind: CriterionJudgement, Claim: "the page reads well"},
 		{ID: "human_eye", Kind: CriterionHuman, Claim: "the copy is true"},
+		{ID: "bare_pkg", Kind: CriterionTest, Test: "TestDivideConquerSizeBounds in acceptance"},
+		{ID: "bare_suite", Kind: CriterionInvariant, Test: "go test internal/... passes"},
 	}}
-	runs, findings := criteriaRuns(p)
 	want := []criterionRun{
-		{id: "green_login", test: "TestLogin", pkg: "./internal/auth"},
-		{id: "all_green", suite: "./..."},
+		{id: "green_login", kind: CriterionTest, test: "TestLogin", pkg: "./internal/auth"},
+		{id: "no_format", kind: CriterionTest, refused: `criterion no_format: test "a login test" is not TestXxx in <package>`},
+		{id: "all_green", kind: CriterionInvariant, suite: "./..."},
+		{id: "no_suite", kind: CriterionInvariant, refused: `criterion no_suite: suite "the app stays green" is not go test <suite> passes`},
+		{id: "bare_pkg", kind: CriterionTest, test: "TestDivideConquerSizeBounds", pkg: "./acceptance"},
+		{id: "bare_suite", kind: CriterionInvariant, suite: "./internal/..."},
 	}
+	runs := criteriaRuns(p)
 	if !slices.Equal(runs, want) {
 		t.Fatalf("runs = %+v, want %+v", runs, want)
 	}
-	wantFindings := []string{
-		`criterion no_format: test "a login test" is not TestXxx in <package>`,
-		`criterion no_suite: suite "the app stays green" is not go test <suite> passes`,
+	if got, want := runs[0].proof(), (harness.Proof{ID: "green_login", Suite: "./internal/auth", Name: "TestLogin"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("green_login proof = %+v, want %+v", got, want)
 	}
-	if !slices.Equal(findings, wantFindings) {
-		t.Fatalf("findings = %q, want %q", findings, wantFindings)
-	}
-}
-
-// The script the sandbox runs: one go test per criterion in the plan's
-// order, every output to its own file, the marker line the only stdout.
-// The printf quotes its arguments, so test output cannot word-split.
-func TestCriteriaScriptRunsEachCriterionInPlanOrder(t *testing.T) {
-	got := criteriaScript([]criterionRun{
-		{id: "green_login", test: "TestLogin", pkg: "./internal/auth"},
-		{id: "all_green", suite: "./..."},
-	})
-	want := "o=/tmp/k1\n" +
-		"go test -v -run '^TestLogin$' ./internal/auth >\"$o\" 2>&1\n" +
-		"rc=$?\n" +
-		"ran=$(grep -c '^=== RUN   TestLogin$' \"$o\")\n" +
-		"fail=$(grep -c '^--- FAIL: TestLogin ' \"$o\")\n" +
-		"ev=$(grep -m1 '^--- FAIL: ' \"$o\")\n" +
-		"[ -n \"$ev\" ] || ev=$(head -n 1 \"$o\")\n" +
-		"printf '__criterion green_login exit=%s ran=%s fail=%s %s\\n' \"$rc\" \"$ran\" \"$fail\" \"$ev\"\n" +
-		"o=/tmp/k2\n" +
-		"go test ./... >\"$o\" 2>&1\n" +
-		"rc=$?\n" +
-		"ran=$(grep -c '^ok' \"$o\")\n" +
-		"fail=$(grep -c '^FAIL' \"$o\")\n" +
-		"ev=$(grep -m1 '^--- FAIL: ' \"$o\")\n" +
-		"[ -n \"$ev\" ] || ev=$(head -n 1 \"$o\")\n" +
-		"printf '__criterion all_green exit=%s ran=%s fail=%s %s\\n' \"$rc\" \"$ran\" \"$fail\" \"$ev\"\n"
-	if got != want {
-		t.Fatalf("script =\n%s\nwant\n%s", got, want)
+	if got, want := runs[2].proof(), (harness.Proof{ID: "all_green", Suite: "./..."}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("all_green proof = %+v, want %+v", got, want)
 	}
 }
 
-// The marker parser: one entry per criterion id, the last line of one
-// winning, and nothing else on stdout read. A forged marker inside a
-// criterion's evidence stays evidence: the fields parse positionally, and
-// an id needs its house charset, two characters at least.
-func TestParseCriteriaMarkers(t *testing.T) {
-	forged := "__criterion a2 exit=1 ran=1 fail=1 x"
-	got := parseCriteriaMarkers(strings.Join([]string{
-		"agent-worker: probing",
-		"__criterion a1 exit=0 ran=1 fail=0 --- PASS: TestA",
-		"__criterion b1 exit=1 ran=2 fail=1 --- FAIL: TestB",
-		"__criterion b1 exit=0 ran=2 fail=0 ok",
-		"__criterion a1 exit=0 ran=9 fail=9 noise " + forged,
-		"__criterion A1 exit=0 ran=1 fail=0 uppercase id",
-		"__criterion a exit=0 ran=1 fail=0 one character id",
-		"__criterion c1 exit no fields",
-	}, "\n"))
-	want := map[string]criterionVerdict{
-		"a1": {exit: 0, ranCount: 9, failCount: 9, evidence: "noise " + forged},
-		"b1": {exit: 0, ranCount: 2, failCount: 0, evidence: "ok"},
-	}
-	if len(got) != len(want) {
-		t.Fatalf("markers = %+v, want %+v", got, want)
-	}
-	for id, v := range want {
-		if got[id] != v {
-			t.Fatalf("marker %s = %+v, want %+v", id, got[id], v)
-		}
-	}
-}
-
-// The report's verdicts, hand-derived one per arm: a lost marker is no
-// verdict (a gate that runs and reports nothing does not pass), a suite
-// needs its tests and a green exit, a test needs its run count, its
-// failures and a green exit, and long evidence shortens to 200 characters.
+// The report's verdicts, hand-derived one per outcome and kind: only a
+// pass meets its criterion; an outcome the run lost is no report (a gate
+// that runs and reports nothing does not pass); a refused field is unmet
+// without a run; the evidence is one line of at most 200 characters.
 func TestCriteriaReportVerdicts(t *testing.T) {
+	refused := `criterion t_refused: test "a login test" is not TestXxx in <package>`
 	runs := []criterionRun{
-		{id: "t_pass", test: "TestPass", pkg: "./p"},
-		{id: "t_nothing", test: "TestNothing", pkg: "./p"},
-		{id: "t_fail", test: "TestFail", pkg: "./p"},
-		{id: "t_exit", test: "TestExit", pkg: "./p"},
-		{id: "t_lost", test: "TestLost", pkg: "./p"},
-		{id: "t_long", test: "TestLong", pkg: "./p"},
-		{id: "i_pass", suite: "./..."},
-		{id: "i_fail", suite: "./x"},
-		{id: "i_empty", suite: "./empty"},
+		{id: "t_pass", kind: CriterionTest, test: "TestPass", pkg: "./p"},
+		{id: "t_fail", kind: CriterionTest, test: "TestFail", pkg: "./p"},
+		{id: "t_missing", kind: CriterionTest, test: "TestMissing", pkg: "./p"},
+		{id: "t_broken", kind: CriterionTest, test: "TestBroken", pkg: "./p"},
+		{id: "t_skip", kind: CriterionTest, test: "TestSkip", pkg: "./p"},
+		{id: "t_noreport", kind: CriterionTest, test: "TestNoReport", pkg: "./p"},
+		{id: "t_lost", kind: CriterionTest, test: "TestLost", pkg: "./p"},
+		{id: "t_long", kind: CriterionTest, test: "TestLong", pkg: "./p"},
+		{id: "t_refused", kind: CriterionTest, refused: refused},
+		{id: "i_pass", kind: CriterionInvariant, suite: "./..."},
+		{id: "i_fail", kind: CriterionInvariant, suite: "./x"},
+		{id: "i_empty", kind: CriterionInvariant, suite: "./empty"},
+		{id: "i_skip", kind: CriterionInvariant, suite: "./s"},
 	}
-	long := strings.Repeat("a", 250)
-	markers := map[string]criterionVerdict{
-		"t_pass":    {exit: 0, ranCount: 1, failCount: 0},
-		"t_nothing": {exit: 0, ranCount: 0, failCount: 0},
-		"t_fail":    {exit: 1, ranCount: 1, failCount: 1, evidence: "--- FAIL: TestFail (0.00s)"},
-		"t_exit":    {exit: 2, ranCount: 1, failCount: 0, evidence: "exit status 2"},
-		"t_long":    {exit: 1, ranCount: 1, failCount: 1, evidence: long},
-		"i_pass":    {exit: 0, ranCount: 3, failCount: 0},
-		"i_fail":    {exit: 1, ranCount: 1, failCount: 1, evidence: "FAIL ./x"},
-		"i_empty":   {exit: 0, ranCount: 0, failCount: 0},
+	outcomes := map[string]proofOutcome{
+		"t_pass":     {proofPassed, ""},
+		"t_fail":     {proofFailed, "Failed\n=== RUN   TestFail\n    p_test.go:9: want 3, got 2\n--- FAIL: TestFail (0.00s)"},
+		"t_missing":  {proofMissing, ""},
+		"t_broken":   {proofMissing, "Failed\nFAIL\tx/p [build failed]"},
+		"t_skip":     {proofSkipped, "p_test.go:31: FACTORYD_TEST_DATABASE_URL not set"},
+		"t_noreport": {proofNoReport, "check test wrote no report (exit 1)"},
+		"t_long":     {proofFailed, strings.Repeat("a", 250)},
+		"i_pass":     {proofPassed, "3 passed, 1 skipped"},
+		"i_fail":     {proofFailed, "Failed\nFAIL ./x"},
+		"i_empty":    {proofMissing, ""},
+		"i_skip":     {proofSkipped, "no node"},
 	}
-	findings, lines, entries := criteriaReport(runs, markers)
+	findings, lines, proofs := criteriaReport(runs, outcomes)
 	wantLines := []string{
 		"criterion t_pass: TestPass in ./p passed",
-		"criterion t_nothing: no test TestNothing in ./p",
-		"criterion t_fail: TestFail in ./p failed: --- FAIL: TestFail (0.00s)",
-		"criterion t_exit: TestExit in ./p did not run green (exit 2): exit status 2",
-		"criterion t_lost: no verdict from the run",
+		"criterion t_fail: TestFail in ./p failed: Failed === RUN TestFail p_test.go:9: want 3, got 2 --- FAIL: TestFail (0.00s)",
+		"criterion t_missing: no test TestMissing in ./p",
+		"criterion t_broken: no test TestBroken in ./p: Failed FAIL x/p [build failed]",
+		"criterion t_skip: TestSkip in ./p skipped: p_test.go:31: FACTORYD_TEST_DATABASE_URL not set",
+		"criterion t_noreport: TestNoReport in ./p: check test wrote no report (exit 1)",
+		"criterion t_lost: TestLost in ./p: the run reported nothing",
 		"criterion t_long: TestLong in ./p failed: " + strings.Repeat("a", 200) + "...",
-		"criterion i_pass: suite ./... passed",
-		"criterion i_fail: suite ./x failed: FAIL ./x",
+		refused,
+		"criterion i_pass: suite ./... passed (3 passed, 1 skipped)",
+		"criterion i_fail: suite ./x failed: Failed FAIL ./x",
 		"criterion i_empty: suite ./empty ran no tests",
+		"criterion i_skip: suite ./s skipped every test: no node",
 	}
 	if !slices.Equal(lines, wantLines) {
-		t.Fatalf("lines = %q, want %q", lines, wantLines)
+		t.Fatalf("lines =\n%q\nwant\n%q", lines, wantLines)
 	}
-	wantFindings := []string{wantLines[1], wantLines[2], wantLines[3], wantLines[4], wantLines[5], wantLines[7], wantLines[8]}
+	wantFindings := slices.Concat(wantLines[1:9], wantLines[10:])
 	if !slices.Equal(findings, wantFindings) {
 		t.Fatalf("findings = %q, want %q", findings, wantFindings)
 	}
-	wantVerdicts := []string{"passed", "no test", "failed", "failed", "no verdict", "failed", "passed", "failed", "no tests"}
-	for i, v := range wantVerdicts {
-		if entries[i]["verdict"] != v {
-			t.Fatalf("entry %d = %v, want verdict %q", i, entries[i], v)
+	if len(proofs) != len(runs) {
+		t.Fatalf("proofs = %+v, want one per run", proofs)
+	}
+	for i, p := range proofs {
+		r := runs[i]
+		o, ok := outcomes[r.id]
+		if r.id == "t_lost" {
+			o, ok = proofOutcome{proofNoReport, "the run reported nothing"}, true
 		}
+		want := gateProof{ID: r.id, Kind: r.kind, Suite: r.pkg + r.suite, Name: r.test, Outcome: o.Outcome,
+			Met: r.id == "t_pass" || r.id == "i_pass", Line: wantLines[i], Message: o.Message}
+		if !ok {
+			want.Outcome, want.Message = "", ""
+		}
+		if p != want {
+			t.Errorf("proof %d = %+v, want %+v", i, p, want)
+		}
+	}
+	rows := gateRows(proofs)
+	if len(rows) != len(proofs) {
+		t.Fatalf("rows = %+v, want one per criterion", rows)
+	}
+	for i, row := range rows {
+		verdict := "unmet"
+		if proofs[i].Met {
+			verdict = "met"
+		}
+		if want := (CriterionVerdict{Criterion: runs[i].id, Verdict: verdict, Evidence: wantLines[i], Kind: runs[i].kind}); row != want {
+			t.Errorf("row %d = %+v, want %+v", i, row, want)
+		}
+	}
+}
+
+// Evidence cuts on a character boundary, and a run of bytes that starts
+// no character cuts to nothing.
+func TestShortenEvidenceCutsOnACharacterBoundary(t *testing.T) {
+	for in, want := range map[string]string{
+		"a" + strings.Repeat("é", 150): "a" + strings.Repeat("é", 99) + "...",
+		strings.Repeat("\x80", 250):    "...",
+	} {
+		if got := shortenEvidence(in); got != want {
+			t.Errorf("shortenEvidence(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// A run's outcome, or why there is none: the entry never reported (the
+// worker's own error first), check test wrote no report (its exit and the
+// output's last line say why), or the report's reading. A package that
+// did not build is followed by the compiler's errors: gotestsum's ===
+// Errors block, at most 20 lines, or the output's last lines less the
+// module downloads and pg-test.sh's banner, so the card's line shows the
+// compiler's line.
+func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
+	moved := "proofs mode: refs/pull/9/head is at c2, not the gated head c1: the pull request moved"
+	busy := "another bash check (pid 7) runs in this checkout: wait for it to end, then run this one again"
+	broken := junitGz(t, wrap(`<testcase classname="" name="TestMain"><failure message="Failed">FAIL&#x9;x/b [build failed]&#xA;</failure></testcase>`))
+	start := "pg-test.sh: postgres (PostgreSQL) 17.6 on /tmp/tmp.k3Jq\n" +
+		"go: downloading gotest.tools/gotestsum v1.13.0\n" +
+		"go: downloading github.com/dnephin/pflag v1.0.7\n" +
+		"go: downloading github.com/fatih/color v1.18.0\n" +
+		"go: downloading golang.org/x/tools v0.30.0\n"
+	summary := start + "✖  x/b\n\n=== Failed\n=== FAIL: x/b  (0.00s)\nFAIL\tx/b [build failed]\n\n=== Errors\n" +
+		"b/b_test.go:5:32: undefined: Door\nb/b_test.go:6:2: undefined: Lock\n\n\nDONE 0 tests, 1 failure, 1 error in 0.000s\n"
+	plain := start + "# x/b [x/b.test]\nb/b_test.go:5:32: undefined: Door\nFAIL\tx/b [build failed]\n"
+	var many []string
+	for i := range 22 {
+		many = append(many, fmt.Sprintf("b/b.go:%d:1: undefined: x%d", i+1, i))
+	}
+	long := start + "=== Errors\n" + strings.Join(many, "\n") + "\n\nDONE 0 tests, 1 error in 0.000s\n"
+	const failed = "Failed\nFAIL\tx/b [build failed]\n"
+	for _, c := range []struct {
+		run    harness.ProofRun
+		ok     bool
+		runErr string
+		name   string
+		want   proofOutcome
+	}{
+		{harness.ProofRun{}, false, "", "TestA", proofOutcome{proofNoReport, "the run reported nothing for this entry"}},
+		{harness.ProofRun{}, false, moved, "TestA", proofOutcome{proofNoReport, moved}},
+		{harness.ProofRun{Exit: 1, Output: "go: downloading x\n" + busy + "\n"}, true, "", "TestA",
+			proofOutcome{proofNoReport, "check test wrote no report (exit 1): " + busy}},
+		{harness.ProofRun{Exit: -1}, true, "", "", proofOutcome{proofNoReport, "check test wrote no report (exit -1)"}},
+		{harness.ProofRun{Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}, true, "", "TestA", proofOutcome{proofPassed, ""}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB",
+			proofOutcome{proofMissing, failed + "b/b_test.go:5:32: undefined: Door\nb/b_test.go:6:2: undefined: Lock"}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: plain}, true, "", "TestB",
+			proofOutcome{proofMissing, failed + "# x/b [x/b.test]\nb/b_test.go:5:32: undefined: Door\nFAIL\tx/b [build failed]"}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: long}, true, "", "TestB",
+			proofOutcome{proofMissing, failed + strings.Join(many[:20], "\n")}},
+		{harness.ProofRun{Exit: 1, Report: broken}, true, "", "TestB", proofOutcome{proofMissing, "Failed\nFAIL\tx/b [build failed]"}},
+		{harness.ProofRun{Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestB"><failure message="Failed">want 3</failure></testcase>`)), Output: summary},
+			true, "", "TestB", proofOutcome{proofFailed, "Failed\nwant 3"}},
+	} {
+		if got := proofResult(c.run, c.ok, c.runErr, c.name); got != c.want {
+			t.Errorf("proofResult(%+v, %v, %q, %q) = %+v, want %+v", c.run, c.ok, c.runErr, c.name, got, c.want)
+		}
+	}
+	o := proofResult(harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB")
+	run := criterionRun{id: "b_guard", kind: CriterionTest, test: "TestB", pkg: "./b"}
+	if got, want := criterionLine(run, o), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
+		"b/b_test.go:5:32: undefined: Door b/b_test.go:6:2: undefined: Lock"; got != want {
+		t.Errorf("the card's line = %q, want %q", got, want)
 	}
 }
 
@@ -215,7 +312,8 @@ func TestGateCriteriaSkipsOffTheIntegrationCard(t *testing.T) {
 }
 
 // A plan that names no criteria names no proof: a finding for the human,
-// no sandbox. So every runnable criterion off the house format.
+// no sandbox. So every runnable criterion off the house format, whose
+// refusal is its unmet gate row: the plan's close never counts it unjudged.
 func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 	for name, criteria := range map[string]string{
 		"no criteria":         "",
@@ -230,16 +328,22 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 			val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1")
 			res := getInto[CriteriaResult](t, val, err)
 			var want []string
+			var wantRows []CriterionVerdict
 			switch name {
 			case "no criteria":
 				want = []string{"criteria gate: the plan names no criteria"}
 			case "off the format":
 				want = []string{`criterion no_format: test "a login test" is not TestXxx in <package>`}
+				wantRows = []CriterionVerdict{{Criterion: "no_format", Verdict: "unmet", Evidence: want[0], Kind: CriterionTest,
+					Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
 			default:
 				want = nil
 			}
 			if !slices.Equal(res.Findings, want) || len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
 				t.Fatalf("result = %+v, pods %d, mints %v; want findings %q and no sandbox", res, len(kube.podOrder), hub.minted(), want)
+			}
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, wantRows) {
+				t.Fatalf("verdict rows = %+v, want %+v", rows, wantRows)
 			}
 			if name != "judgement and human" {
 				if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "no criterion ran") || !strings.Contains(hub.comments[0], want[0]) {
@@ -248,22 +352,31 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 			} else if len(hub.comments) != 0 {
 				t.Fatalf("comments = %q, want none for criteria all outside the gate", hub.comments)
 			}
+			if name == "off the format" {
+				proofs, _ := timelineStep(t, objects, "t1", "gate_criteria")["proofs"].([]any)
+				if len(proofs) != 1 || proofs[0].(map[string]any)["outcome"] != "" || proofs[0].(map[string]any)["id"] != "no_format" {
+					t.Fatalf("timeline proofs = %v, want no_format with no outcome", proofs)
+				}
+			}
 		})
 	}
 }
 
-// The gate runs the plan's criteria in one sandbox pod: one marker line
-// per criterion on the pod's stdout, a finding per criterion not met, the
-// comment names the head and the verdicts, and the timeline holds one
-// entry per criterion.
+// The gate runs the plan's criteria in one sandbox pod: the runner's
+// proofs mode, one entry per criterion, each read from its JUnit report;
+// a finding per criterion not met, the comment names the head and the
+// verdicts, one gate row per criterion, and the timeline holds one entry
+// per criterion.
 func TestGateCriteriaRunsThePlanCriteriaInTheSandbox(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
 		`{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}`+","+
-			`{"id":"state_guard","kind":"test","test":"TestState in ./internal/auth"}`+","+
-			`{"id":"all_green","kind":"invariant","test":"go test ./... passes"}`)
+			`{"id":"state_guard","kind":"test","test":"TestState in internal/auth"}`+","+
+			`{"id":"db_guard","kind":"test","test":"TestDB in ./internal/store"}`+","+
+			`{"id":"all_green","kind":"invariant","test":"go test ./... passes"}`+","+
+			`{"id":"judged","kind":"judgement","claim":"the page reads well"}`)
 	from := time.Now()
 	done := make(chan struct{})
 	var res CriteriaResult
@@ -272,52 +385,127 @@ func TestGateCriteriaRunsThePlanCriteriaInTheSandbox(t *testing.T) {
 		defer close(done)
 		res, err = runCriteria(t, r)
 	}()
-	scriptReproPods(kube, reproLine(0, strings.Join([]string{
-		"agent-worker: probing",
-		"__criterion green_login exit=0 ran=1 fail=0 --- PASS: TestLogin",
-		"__criterion state_guard exit=1 ran=1 fail=1 --- FAIL: TestState (0.01s)",
-		"__criterion all_green exit=0 ran=42 fail=0",
-	}, "\n")))
+	scriptReproPods(kube, proofLines(
+		harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestLogin"></testcase>`))},
+		harness.ProofRun{ID: "state_guard", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestState"><failure message="Failed">--- FAIL: TestState (0.01s)</failure></testcase>`))},
+		harness.ProofRun{ID: "db_guard", Report: junitGz(t, wrap(`<testcase name="TestDB"><skipped message="FACTORYD_TEST_DATABASE_URL not set"></skipped></testcase>`))},
+		harness.ProofRun{ID: "all_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase><testcase name="TestB"><skipped message="no node"></skipped></testcase>`))},
+	))
 	<-done
 	if err != nil {
 		t.Fatal(err)
 	}
-	wantFindings := []string{"criterion state_guard: TestState in ./internal/auth failed: --- FAIL: TestState (0.01s)"}
-	if !slices.Equal(res.Findings, wantFindings) || res.Skipped != "" || res.Escalate != "" {
-		t.Fatalf("result = %+v, want the one finding %q", res, wantFindings)
+	lines := []string{
+		"criterion green_login: TestLogin in ./internal/auth passed",
+		"criterion state_guard: TestState in ./internal/auth failed: Failed --- FAIL: TestState (0.01s)",
+		"criterion db_guard: TestDB in ./internal/store skipped: FACTORYD_TEST_DATABASE_URL not set",
+		"criterion all_green: suite ./... passed (1 passed, 1 skipped)",
+	}
+	if !slices.Equal(res.Findings, lines[1:3]) || res.Skipped != "" || res.Escalate != "" {
+		t.Fatalf("result = %+v, want the findings %q", res, lines[1:3])
 	}
 	if len(kube.podOrder) != 1 || len(hub.minted()) != 1 {
 		t.Fatalf("pods %d, mints %v; want the one pod and its read token", len(kube.podOrder), hub.minted())
+	}
+	env := podEnv(kube.podOrder[0])
+	if _, repro := env["REPRO_COMMAND"]; env["MODE"] != "proofs" || env["PROOFS_BUDGET"] != "2100" || repro {
+		t.Fatalf("pod env = %v, want the proofs mode with its budget and no command", env)
+	}
+	var list []harness.Proof
+	wantList := []harness.Proof{
+		{ID: "green_login", Suite: "./internal/auth", Name: "TestLogin"},
+		{ID: "state_guard", Suite: "./internal/auth", Name: "TestState"},
+		{ID: "db_guard", Suite: "./internal/store", Name: "TestDB"},
+		{ID: "all_green", Suite: "./..."},
+	}
+	if err := json.Unmarshal([]byte(env["PROOFS"]), &list); err != nil || !reflect.DeepEqual(list, wantList) {
+		t.Fatalf("PROOFS = %s (%v), want %+v", env["PROOFS"], err, wantList)
 	}
 	if len(hub.comments) != 1 {
 		t.Fatalf("comments = %q", hub.comments)
 	}
 	for _, want := range []string{
-		"factoryd criteria gate on c1: 2 of 3 criteria met (judgement and human criteria ride the review and the approval).",
-		"criterion green_login: TestLogin in ./internal/auth passed",
-		"criterion state_guard: TestState in ./internal/auth failed: --- FAIL: TestState (0.01s)",
-		"criterion all_green: suite ./... passed",
+		"factoryd criteria gate on c1: 2 of 4 criteria met (judgement and human criteria ride the review and the approval).",
+		lines[0], lines[3],
 	} {
 		if !strings.Contains(hub.comments[0], want) {
 			t.Fatalf("comment = %q, want it to contain %q", hub.comments[0], want)
 		}
 	}
-	step := timelineStep(t, objects, "t1", "gate_criteria")
-	entries, _ := step["criteria"].([]any)
-	if len(entries) != 3 {
-		t.Fatalf("timeline criteria = %v", step["criteria"])
+	gate := func(id, verdict, kind, line string) CriterionVerdict {
+		return CriterionVerdict{Criterion: id, Verdict: verdict, Evidence: line, Kind: kind, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}
 	}
-	verdicts := []string{"passed", "failed", "passed"}
-	for i, v := range verdicts {
-		e, _ := entries[i].(map[string]any)
-		if e["id"] != runs3[i] || e["verdict"] != v {
-			t.Fatalf("entry %d = %v, want %s %s", i, e, runs3[i], v)
+	wantRows := []CriterionVerdict{
+		gate("green_login", "met", CriterionTest, lines[0]),
+		gate("state_guard", "unmet", CriterionTest, lines[1]),
+		gate("db_guard", "unmet", CriterionTest, lines[2]),
+		gate("all_green", "met", CriterionInvariant, lines[3]),
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, wantRows) {
+		t.Fatalf("verdict rows =\n%+v\nwant\n%+v", rows, wantRows)
+	}
+	step := timelineStep(t, objects, "t1", "gate_criteria")
+	proofs, _ := step["proofs"].([]any)
+	if step["commit"] != "c1" || len(proofs) != 4 {
+		t.Fatalf("timeline = %v", step)
+	}
+	for i, want := range []struct {
+		id, outcome string
+		met         bool
+	}{{"green_login", "passed", true}, {"state_guard", "failed", false}, {"db_guard", "skipped", false}, {"all_green", "passed", true}} {
+		e, _ := proofs[i].(map[string]any)
+		if e["id"] != want.id || e["outcome"] != want.outcome || e["met"] != want.met || e["line"] != lines[i] {
+			t.Fatalf("proof %d = %v, want %s %s met %v", i, e, want.id, want.outcome, want.met)
 		}
 	}
 	startedWithin(t, objects, "gate_criteria", from)
 }
 
-var runs3 = []string{"green_login", "state_guard", "all_green"}
+// A proofs pod whose log ends before its closing line (killed, evicted,
+// drained) keeps the runs it reported; the criterion it did not reach is
+// no report, saying the pod ended early, an unmet row, and the gate does
+// not fail while no hold-out went unreached.
+func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}`+","+
+			`{"id":"state_guard","kind":"test","test":"TestState in ./internal/auth"}`+","+
+			`{"id":"db_guard","kind":"test","test":"TestDB in ./internal/store"}`)
+	done := make(chan struct{})
+	var res CriteriaResult
+	var err error
+	go func() {
+		defer close(done)
+		res, err = runCriteria(t, r)
+	}()
+	body := proofLines(
+		harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestLogin"></testcase>`))},
+		harness.ProofRun{ID: "state_guard", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestState"><failure message="Failed">--- FAIL: TestState (0.01s)</failure></testcase>`))},
+	)
+	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
+	<-done
+	if err != nil {
+		t.Fatalf("the gate failed: %v", err)
+	}
+	want := []string{
+		"criterion state_guard: TestState in ./internal/auth failed: Failed --- FAIL: TestState (0.01s)",
+		"criterion db_guard: TestDB in ./internal/store: the proofs pod ended early, before it reported this entry",
+	}
+	if !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+	proofs, _ := timelineStep(t, objects, "t1", "gate_criteria")["proofs"].([]any)
+	if len(proofs) != 3 {
+		t.Fatalf("timeline proofs = %v, want three", proofs)
+	}
+	for i, outcome := range []string{proofPassed, proofFailed, proofNoReport} {
+		if e, _ := proofs[i].(map[string]any); e["outcome"] != outcome {
+			t.Fatalf("proof %d = %v, want outcome %s", i, e, outcome)
+		}
+	}
+}
 
 // runCriteria executes the GateCriteria activity in a test environment.
 func runCriteria(t *testing.T, r *Runner) (CriteriaResult, error) {
@@ -349,6 +537,9 @@ func TestGateCriteriaThatCannotStartEscalates(t *testing.T) {
 	}
 	if tl := timeline(t, objects); !strings.Contains(tl, `"start_failed":"`) {
 		t.Fatalf("timeline = %s", tl)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
+		t.Fatalf("verdict rows = %+v, want none from a gate that never ran", rows)
 	}
 
 	// a card whose image lost its pin since its session: the same start

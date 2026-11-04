@@ -231,17 +231,10 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 			return c.doRerun(ctx, a, q.ID)
 		}
 	}
-	switch {
-	case t.Status != "waiting-human":
+	if t.Status != "waiting-human" {
 		return fmt.Sprintf("#%d waits no more: it was answered or moved on elsewhere.", t.IssueNumber), nil
-	case t.Kind == "human":
-		return c.doAnswer(ctx, a, id, choice)
 	}
-	note, err := c.doAnswer(ctx, a, id, choice)
-	if answered := fmt.Sprintf("Answered #%d.", t.IssueNumber); err != nil || note != answered {
-		return note, err
-	}
-	return fmt.Sprintf("Answered #%d with “%s”; the card goes on.", t.IssueNumber, choice), nil
+	return c.doAnswer(ctx, a, id, choice)
 }
 
 // inboxAskRefusal answers an ask without choices in the inbox, where no

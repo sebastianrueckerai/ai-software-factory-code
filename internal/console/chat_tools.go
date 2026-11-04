@@ -35,6 +35,7 @@ type toolInput struct {
 	TrackReason string   `json:"track_reason,omitempty"`
 	Text        string   `json:"text,omitempty"`
 	EUR         float64  `json:"eur,omitempty"`
+	FundEUR     float64  `json:"fund_eur,omitempty"`
 	Question    int      `json:"question,omitempty"`
 	Decision    string   `json:"decision,omitempty"`
 	Note        string   `json:"note,omitempty"`
@@ -497,6 +498,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if in.EUR > 0 {
 		parts = append(parts, fmt.Sprintf("%.2f EUR", in.EUR))
 	}
+	if in.FundEUR > 0 {
+		parts = append(parts, fmt.Sprintf("fund_eur %.2f EUR", in.FundEUR))
+	}
 	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
 		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
@@ -714,8 +718,9 @@ func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factory
 
 // answer answers the question card in waits on: a plan's open questions by
 // their revision and numbers, all of them in one call when in names a list
-// of answers, which a newer revision refuses; any other question with in's
-// text.
+// of answers, which a newer revision refuses; any other question with the
+// typed action and the money in names (doAnswerAs), or with in's text
+// alone.
 func (t *turn) answer(in toolInput) (string, error) {
 	ctx := t.r.Context()
 	k, err := t.card(in)
@@ -740,6 +745,8 @@ func (t *turn) answer(in toolInput) (string, error) {
 		return t.c.doAnswerPlanQuestion(ctx, t.a, in.TaskID, in.Revision, in.Question, in.Decision, in.Text)
 	case in.Question > 0 || in.Decision != "":
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
+	case in.Action != "" || in.FundEUR != 0 || len(in.Args) > 0:
+		return t.c.doAnswerAs(ctx, t.a, in.TaskID, in.Text, in.Action, in.Args, in.FundEUR)
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
 }
@@ -751,6 +758,18 @@ func issueRef(id string, issue int64) string {
 		return fmt.Sprintf("#%d", issue)
 	}
 	return id
+}
+
+// actionNames are the names of the actions rung 2 or the human may take,
+// the answer tool's actions.
+func actionNames() []string {
+	var names []string
+	for _, a := range factoryd.Actions {
+		if a.Rungs[2] || a.Rungs[3] {
+			names = append(names, a.Name)
+		}
+	}
+	return names
 }
 
 // cardLine is t on one line for the agent.
@@ -817,7 +836,7 @@ func boardWords(d boardData) string {
 	if h := d.Status.Hold; h != nil {
 		fmt.Fprintf(&b, "Production held for %s: %s.\n", h.For, h.Reason)
 	}
-	if d.Status.Pool.Present {
+	if d.Status.Pool.Words != "" {
 		fmt.Fprintf(&b, "Pool (%s, %s UTC): %s.\n", d.Status.Pool.Policy, d.Status.Pool.Month, d.Status.Pool.Words)
 	}
 	b.WriteString("Open cards:\n")
@@ -1482,6 +1501,18 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
+		"action": map[string]any{"type": "string", "enum": actionNames(),
+			"description": "the typed action on the card's case, continue when none"},
+		"fund_eur": map[string]any{"type": "number", "exclusiveMinimum": 0,
+			"description": "the EUR it draws: the fund's own, else beside the action"},
+		"args": map[string]any{"type": "object", "description": "the action's arguments, none for retry and replan",
+			"properties": map[string]any{
+				"model":          map[string]any{"type": "string", "enum": []string{"same", "stronger", "cheaper"}, "description": "handover's model"},
+				"sessions":       map[string]any{"type": "integer", "minimum": 0, "description": "extend's sessions"},
+				"agent_time_s":   map[string]any{"type": "integer", "minimum": 0, "description": "extend's agent time in seconds"},
+				"lines":          map[string]any{"type": "integer", "minimum": 0, "description": "extend's raise of the line bound"},
+				"checkin_shares": map[string]any{"type": "integer", "minimum": 0, "maximum": 1, "description": "extend's one more share of the check-in's budget"},
+				"eur":            map[string]any{"type": "number", "exclusiveMinimum": 0, "description": "the EUR of a fund or a raise_ceiling, as fund_eur"}}},
 		"decision": map[string]any{"type": "string", "enum": []string{factoryd.DecisionConfirm, factoryd.DecisionRevise},
 			"description": "confirm accepts the plan, revise asks for changes in text"},
 		"question": map[string]any{"type": "integer", "description": "a plan question's number", "minimum": 1},
@@ -1494,7 +1525,7 @@ var tools = []chatTool{
 					"description": "its decision when this one is the plan's confirmation"}},
 				"required": []string{"question"}}}},
 		required: []string{"task_id"},
-		about:    "Answer a card's question or a plan's open ones, the plan's confirmation by your own decision.",
+		about:    "Answer a card's case or a plan's open questions, the plan's confirmation by your own decision.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.answer(in)
 			return note, nil, err
@@ -1543,7 +1574,7 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "retry", title: "Retry a card", write: true, params: map[string]any{"task_id": taskParam}, required: []string{"task_id"},
-		about: "File a failed plan card again, which starts once a work slot is free.",
+		about: "File a failed work card again as its replacement, once, which starts when a work slot is free.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doRetry(t.r.Context(), t.a, in.TaskID)
 			return note, nil, err
@@ -1679,9 +1710,9 @@ var tools = []chatTool{
 			note, err := t.c.doEdit(t.r.Context(), t.a, in.TaskID, in.Title, in.Body)
 			return note, nil, err
 		}},
-	{name: "grant_session", title: "Grant a session", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
+	{name: "grant_session", title: "Grant what the stop asks for", write: true, params: map[string]any{"task_id": taskParam, "text": textParam},
 		required: []string{"task_id", "text"},
-		about:    "Grant a card at its session cap one more session, with an answer to its findings.",
+		about:    "Grant a card at a cap what the cap asks for, with an answer to its findings.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doGrantSession(t.r.Context(), t.a, in.TaskID, in.Text)
 			return note, nil, err
@@ -1716,7 +1747,7 @@ var tools = []chatTool{
 			"eur":    map[string]any{"type": "number", "description": "the pool in EUR, or the raise on a top-up", "exclusiveMinimum": 0},
 			"reason": str("why this number, one line")},
 		required: []string{"action", "eur", "reason"},
-		about:    "Set or top up the project's discretionary pool through a pull request on its project file.",
+		about:    "Set or top up the money of the project's escalation pool through a pull request on its file.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			ch := poolChange{action: in.Action, eur: in.EUR, reason: in.Reason}
 			if t.pool != nil {
@@ -2093,6 +2124,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
+  answer's action takes its args: handover a model, extend sessions, agent_time_s, lines or checkin_shares, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
   ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
@@ -2100,7 +2132,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
   alert_verdict same_cause is a second escalation of one fault: card names the first card, and the alert's own card closes with a comment pointing at it.
   inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
-  fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the human's raise, and a project without a pool takes it too.
+  fund draws a card's money from the escalation pool. On your own decision it stays within the month's pool and the card's ceiling, and once the human confirmed it, it may pass the pool.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.
   for a long document, summarize_attachment first and read_attachment's ranges only where its answer points.
@@ -2162,80 +2194,30 @@ func (t *turn) systemText() (string, error) {
 	return b.String(), nil
 }
 
-// fund is the fund tool, fundWithinBounds' door: the agent's own raise
-// meets the bounds of the project's budget block and the policy, each
-// refusal naming its bound and the fitting action; the pool and the card's
-// cap are checked in doFund's transaction, so parallel turns overspend
-// neither. A raise the member confirmed meets none. Money compares in
-// cents.
+// fund is the fund tool: doFund on the turn's rung, the agent's own
+// decision on rung 2, which the pool and the card's ceiling bound, a
+// human's confirmed one on rung 3.
 func (t *turn) fund(in toolInput) (string, error) {
-	return t.c.fundWithinBounds(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text)
+	return t.c.doFund(t.r.Context(), t.a, in.TaskID, in.EUR, in.Text, 0)
 }
 
-// fundWithinBounds is every chat door to a raise: the fund tool's and the
-// chat answer's fund value. A raise the agent decides unconfirmed meets the
-// agent's limits; a raise the member decides (a confirmed proposal, their
-// own click) is their money, an approver's as the Fund form's, and meets no
-// pool bound.
-func (c *Console) fundWithinBounds(ctx context.Context, a actor, id string, eur float64, text string) (string, error) {
-	if a.decider != "agent" {
-		t, err := c.cardIn(ctx, a, id)
-		if err != nil {
-			return "", err
-		}
-		if err := c.admit(ctx, accessTable["fund"], a, t.Repository, "task "+id); err != nil {
-			return "", err
-		}
-		return c.doFund(ctx, a, id, eur, text, nil)
+// capSpent is the refusal of money res draws past card issue's ceiling,
+// held the budget it met: it names the raise that makes room by the
+// control the human has where they are, the answer's raise_ceiling in the
+// chat, the Fund form's ceiling field elsewhere.
+func capSpent(issue int64, held float64, res factoryd.Resolution, ceiling float64, via string) string {
+	eur, _ := res.Args["eur"].(float64)
+	if res.Action != factoryd.ActFund {
+		eur = 0
 	}
-	p, ok, err := c.projectAt(ctx, a.repository)
-	switch {
-	case err != nil:
-		log.Printf("console: the projects: %v", err)
-		return "", refuse(http.StatusInternalServerError, "cannot read the projects")
-	case !ok:
-		return "", refuse(http.StatusNotFound, "There is no project "+a.repository+".")
+	if res.Fund != nil {
+		eur += res.Fund.EUR
 	}
-	in := toolInput{TaskID: id, EUR: eur, Text: text}
-	v, ok := c.inForce(ctx)
-	if !ok {
-		return "", refuse(http.StatusInternalServerError, "no policy in force")
+	raise := "raise the ceiling in the Fund form's ceiling field as you fund"
+	if via == factoryd.ViaChat {
+		raise = "raise the ceiling first (answer with action raise_ceiling), then fund"
 	}
-	var b policy.ProjectBudget
-	if pb := v.Projects[p.Name].Budget; pb != nil {
-		b = *pb
-	}
-	card, err := c.cardIn(ctx, a, in.TaskID)
-	if err != nil {
-		return "", err
-	}
-	ceiling, bound := v.Document.Budget.TaskMaxEUR, "the policy's task_max_eur"
-	if own := b.TaskMaxEUR; own > 0 && factoryd.Cents(own) < factoryd.Cents(ceiling) {
-		ceiling, bound = own, "the project's budget.task_max_eur"
-	}
-	switch {
-	case factoryd.Cents(b.DiscretionaryEUR) <= 0:
-		return "", refuse(http.StatusConflict, "This project sets no pool: discretionary_eur is absent or 0. Record your analysis with attach_analysis; the ask then reaches the human.")
-	case factoryd.Cents(in.EUR) > factoryd.Cents(b.RaiseMaxEUR):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("A raise of €%.2f passes this project's raise_max_eur of €%.2f: raise by at most that, or record your analysis with attach_analysis so the human can fund more.", in.EUR, b.RaiseMaxEUR))
-	case factoryd.Cents(card.BudgetEUR)+factoryd.Cents(in.EUR) > factoryd.Cents(ceiling):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d holds €%.2f; €%.2f more passes %s of €%.2f: raise by at most €%.2f, or record your analysis with attach_analysis so the human can make a sizing exception.",
-			card.IssueNumber, card.BudgetEUR, in.EUR, bound, ceiling, max(ceiling-card.BudgetEUR, 0)))
-	}
-	return c.doFund(ctx, a, in.TaskID, in.EUR, in.Text, &factoryd.FundBounds{PoolEUR: b.DiscretionaryEUR, CardCapEUR: ceiling})
-}
-
-// capSpent is the refusal of a raise another turn's raise left past the
-// card's cap.
-func capSpent(issue int64, held, eur, ceiling float64) string {
-	return fmt.Sprintf("Card #%d holds €%.2f now; €%.2f more passes its cap of €%.2f. Record your analysis with attach_analysis so the human can make a sizing exception.",
-		issue, held, eur, ceiling)
-}
-
-// poolSpent is the refusal of a raise past the month's pool.
-func poolSpent(pool, funded, eur float64) string {
-	return fmt.Sprintf("The month's pool is €%.2f (discretionary_eur) and €%.2f is funded: €%.2f left, short of €%.2f. Record your analysis with attach_analysis; the ask then reaches the human.",
-		pool, funded, max(pool-funded, 0), eur)
+	return fmt.Sprintf("Card #%d holds €%.2f now, and €%.2f more passes its ceiling of €%.2f: %s.", issue, held, eur, ceiling, raise)
 }
 
 // limitLines are the policy's task budget and limits, one indented line

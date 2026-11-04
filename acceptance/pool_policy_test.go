@@ -15,41 +15,40 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// The acceptance proof of the month pool's write integrity (the
+// The acceptance proof of the escalation pool's write integrity (the
 // pool-policy rig card of plan #1399): the set_pool change a confirmed
 // proposal carries, end-to-end through the console's HTTP surface on the
-// configuration repository's fake — one guarded branch commit off main,
+// configuration repository's fake: one guarded branch commit off main,
 // one pull request, one merge, one reload request and one pool_changed
-// row, the file's own pool the only key that moves. A refused press is
+// row, the file's escalation.pool.eur the only key that moves. A refused press is
 // its typed outcome's real HTTP status, answered before any stream: a
 // stale captured source 409 whose spent token replays 404, a candidate
 // the change check refuses 422, a malformed correction 400 that leaves
-// the proposal usable for its owner. A refusal the offer itself answers
-// — a malformed amount, a file without the bounds the pool needs — is
-// the streamed refusal sentence with the typed status its tool row
-// keeps, before any token exists. None of them writes.
+// the proposal usable for its owner. A refusal the offer itself answers,
+// a malformed amount or a file whose pool the write cannot take, is the
+// streamed refusal sentence with the typed status its tool row keeps,
+// before any token exists. None of them writes.
 
 // accInfraFile is the code project's file on the configuration
 // repository's main.
 const accInfraFile = "factory/projects/" + accProjectName + ".yaml"
 
-// accPoolHead is the project file a policy PR wrote: commented, with the
-// bounds the pool needs, the pool at EUR 10.
-const accPoolHead = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 10\n"
+// accPoolBase is the project file a policy PR wrote, commented, with an
+// escalation pool that sets its sessions and leaves its money to the
+// policy.
+const accPoolBase = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  month_eur: 600\n  task_max_eur: 5\n" +
+	"escalation:\n  # the pool every extend and fund draws from, which a policy PR writes\n  pool:\n    sessions: 30\n"
 
-// accPoolLanded is accPoolHead after a set of EUR 12: only the pool
-// moved; the comment and every other key stand.
-const accPoolLanded = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 12\n"
+// accPoolHead is accPoolBase with the pool's money at EUR 10.
+const accPoolHead = accPoolBase + "    eur: 10\n"
 
-// accPoolTopped is accPoolLanded after a top-up of EUR 1: only the pool
-// moved again, on the source the top-up captured.
-const accPoolTopped = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 13\n"
+// accPoolLanded is accPoolHead after a set of EUR 12: only the pool's
+// money moved, the comment and every other key stand.
+const accPoolLanded = accPoolBase + "    eur: 12\n"
+
+// accPoolTopped is accPoolLanded after a top-up of EUR 1: only the pool's
+// money moved again, on the source the top-up captured.
+const accPoolTopped = accPoolBase + "    eur: 13\n"
 
 // poolRig answers the rig with the member logged in and the code
 // project's file seeded on infra's main.
@@ -222,12 +221,12 @@ func poolWrites(r *AcceptanceRig) int {
 
 // TestPoolPolicyPR is the live check of the pool write's integrity: the
 // confirmed Set EUR 12 lands as one guarded commit, one pull request and
-// one merge that changes only discretionary_eur, asks one reload and
+// one merge that changes only escalation.pool.eur, asks one reload and
 // records one pool_changed row; a stale captured source answers the real
 // 409 before any stream and its spent token replays 404, a candidate the
-// change check refuses answers 422, a malformed amount or a file without
-// the bounds the pool needs refuses at the offer — the streamed sentence
-// with the typed status its row keeps — and a malformed correction of a
+// change check refuses answers 422, a malformed amount or a file whose
+// pool the write cannot take refuses at the offer (the streamed sentence
+// with the typed status its row keeps), and a malformed correction of a
 // valid proposal answers 400 that leaves the proposal usable. None of
 // the refusals writes.
 func TestPoolPolicyPR(t *testing.T) {
@@ -258,7 +257,7 @@ func TestPoolPolicyPR(t *testing.T) {
 		t.Errorf("the commit's branch = %q", c.Branch)
 	}
 	equal(t, "the commit's source branch", c.From, "main")
-	if !strings.HasPrefix(c.Message, "Project "+accProjectName+": month pool 12.00 EUR\n\n") ||
+	if !strings.HasPrefix(c.Message, "Project "+accProjectName+": escalation pool 12.00 EUR\n\n") ||
 		!strings.Contains(c.Message, "Factory-Role: chat\n") ||
 		!strings.Contains(c.Message, "Requested-by: sebastian\n") {
 		t.Errorf("the commit's message = %q", c.Message)
@@ -288,7 +287,7 @@ func TestPoolPolicyPR(t *testing.T) {
 		t.Fatalf("%d pull requests, want one: %+v", len(pulls), pulls)
 	}
 	equal(t, "the pull request", []string{pulls[0].Base, pulls[0].Title},
-		[]string{"main", "Project " + accProjectName + ": month pool 12.00 EUR"})
+		[]string{"main", "Project " + accProjectName + ": escalation pool 12.00 EUR"})
 	if !strings.HasPrefix(pulls[0].Head, "config-"+accProjectName+"-") {
 		t.Errorf("the pull request's head = %q", pulls[0].Head)
 	}
@@ -298,14 +297,14 @@ func TestPoolPolicyPR(t *testing.T) {
 	}
 
 	// the change the check judged is the candidate that landed, only
-	// discretionary_eur moved, and the reload was asked once
+	// escalation.pool.eur moved, and the reload was asked once
 	equal(t, "the checked candidate", r.Checked(),
 		[]map[string]string{{"projects/" + accProjectName + ".yaml": accPoolLanded}})
 	equal(t, "main's file", r.InfraFiles()[accInfraFile], accPoolLanded)
 	equal(t, "the reload requests", r.Reloads(), 1)
 
 	// one pool_changed row naming the member, and the policy in force
-	// holds the new ceiling: the reload's activation, alone, did it
+	// holds the new pool: the reload's activation, alone, did it
 	rows := r.Events()
 	if len(rows) != 1 {
 		t.Fatalf("%d event rows, want the one pool_changed: %+v", len(rows), rows)
@@ -322,7 +321,7 @@ func TestPoolPolicyPR(t *testing.T) {
 	// its guarded commit, and the press answers the real 409 before any
 	// stream, naming the blob that moved; the attempt was valid, so the
 	// token is spent and its replay 404 — and nothing wrote
-	moved := strings.Replace(accPoolLanded, "discretionary_eur: 12", "discretionary_eur: 14", 1)
+	moved := strings.Replace(accPoolLanded, "eur: 12\n", "eur: 14\n", 1)
 	stale := `{"action":"top_up","eur":1,"reason":"a later finding"}`
 	token = proposePool(t, r, path, ck, csrf, stale)
 	r.SwitchOnRead(accInfraFile, moved)
@@ -345,14 +344,15 @@ func TestPoolPolicyPR(t *testing.T) {
 	refusedPress(t, r, path, ck, csrf, token, http.StatusUnprocessableEntity,
 		"The project file would not load: projects/"+accProjectName+".yaml: budget.month_eur must not be negative")
 	equal(t, "the rejected candidate", r.Checked()[len(r.Checked())-1],
-		map[string]string{"projects/" + accProjectName + ".yaml": strings.Replace(accPoolLanded, "discretionary_eur: 12", "discretionary_eur: 20", 1)})
+		map[string]string{"projects/" + accProjectName + ".yaml": strings.Replace(accPoolLanded, "eur: 12\n", "eur: 20\n", 1)})
 	equal(t, "the writes the rejected candidate made", poolWrites(r), 3)
 	r.RefuseCheck(nil, nil)
 
 	// a malformed amount refuses at the offer, before any token exists:
 	// the streamed sentence, the typed 400 its row keeps, no proposal
 	for _, tc := range []struct{ args, refusal string }{
-		{`{"action":"set","eur":-5,"reason":"below zero"}`, "a set takes a non-negative amount in EUR"},
+		{`{"action":"set","eur":-5,"reason":"below zero"}`, "a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure"},
+		{`{"action":"set","eur":0,"reason":"the policy's figure"}`, "a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure"},
 		{`{"action":"top_up","eur":0,"reason":"nothing"}`, "a top-up takes a positive amount in EUR"},
 		{`{"action":"set","eur":12.005,"reason":"sub-cent"}`, "a pool change's amount is whole cents"},
 	} {
@@ -360,20 +360,22 @@ func TestPoolPolicyPR(t *testing.T) {
 		equal(t, "the writes the malformed amount "+tc.args+" made", poolWrites(r), 3)
 	}
 
-	// a file without the bounds the pool needs refuses at the offer too:
-	// 409, each refusal naming the policy PR that writes the missing
-	// bound, no proposal
-	for _, tc := range []struct{ name, file, refusal string }{
-		{"no budget block", "# the code project\nrepository: sf/code\nmerge_rule: human\n",
-			"projects/" + accProjectName + ".yaml sets no budget block: a policy PR writes one, with month_eur and raise_max_eur, before a pool can change"},
-		{"no month cap", "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  raise_max_eur: 1\n  discretionary_eur: 12\n",
-			"projects/" + accProjectName + ".yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)"},
-		{"no per-raise bound", "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  month_eur: 600\n  raise_max_eur: 0\n  discretionary_eur: 12\n",
-			"projects/" + accProjectName + ".yaml sets no budget.raise_max_eur above 0: a policy PR writes the per-raise bound first (every raise of the pool would refuse)"},
+	// a file whose pool the write cannot take refuses at the offer too:
+	// 409, each refusal naming what a policy PR corrects, no proposal
+	const head = "# the code project\nrepository: sf/code\nmerge_rule: human\n"
+	file := "projects/" + accProjectName + ".yaml"
+	for _, tc := range []struct{ name, file, args, refusal string }{
+		{"a top-up of the policy's money", head, `{"action":"top_up","eur":2,"reason":"no money of its own"}`,
+			file + " sets no escalation.pool.eur, so the pool's money is the policy's: set the pool instead of a top-up"},
+		{"an aliased pool", head + "escalation:\n  pool: &pool\n    eur: 12\n  card_draw: *pool\n", `{"action":"set","eur":20,"reason":"shared"}`,
+			file + " aliases its escalation block or its pool: a policy PR removes the YAML alias before a pool change"},
+		{"an escalation block no mapping", head + "escalation: 12\n", `{"action":"set","eur":20,"reason":"no block"}`,
+			file + " holds an escalation block the pool cannot read: a policy PR corrects it"},
+		{"a money the pool cannot take", head + "escalation:\n  pool:\n    eur: lots\n", `{"action":"set","eur":20,"reason":"no amount"}`,
+			file + " holds an escalation.pool.eur the pool cannot take: a policy PR corrects it"},
 	} {
 		r.PutInfraFile(accInfraFile, tc.file)
-		args20 := `{"action":"set","eur":20,"reason":"unbounded"}`
-		offerRefusal(t, r, path, ck, csrf, args20, "Understood.", tc.refusal, http.StatusConflict)
+		offerRefusal(t, r, path, ck, csrf, tc.args, "Understood.", tc.refusal, http.StatusConflict)
 		equal(t, "the writes the file with "+tc.name+" made", poolWrites(r), 3)
 	}
 	r.PutInfraFile(accInfraFile, accPoolLanded)
@@ -408,7 +410,7 @@ func TestPoolPolicyPR(t *testing.T) {
 		t.Fatalf("%d commits, want the set's and the top-up's: %+v", len(commits), commits)
 	}
 	equal(t, "the top-up's source branch", commits[1].From, "main")
-	if !strings.HasPrefix(commits[1].Message, "Project "+accProjectName+": month pool +1.00 EUR\n\n") {
+	if !strings.HasPrefix(commits[1].Message, "Project "+accProjectName+": escalation pool +1.00 EUR\n\n") {
 		t.Errorf("the top-up's message = %q", commits[1].Message)
 	}
 	equal(t, "the top-up's change", []string{commits[1].Files[0].Operation, commits[1].Files[0].Content, commits[1].Files[0].SHA},
@@ -447,7 +449,7 @@ func TestPoolSourceBranch(t *testing.T) {
 		{"a stale sha on main", "main", "0000000000000", http.StatusConflict, `{"message":"sha does not match"}`},
 	} {
 		b, err := json.Marshal(map[string]any{"branch": tc.branch, "new_branch": "config-direct",
-			"message": "Project " + accProjectName + ": month pool 12.00 EUR",
+			"message": "Project " + accProjectName + ": escalation pool 12.00 EUR",
 			"files": []any{map[string]any{"operation": "update", "path": accInfraFile,
 				"content": accB64(accPoolLanded), "sha": tc.sha}}})
 		if err != nil {

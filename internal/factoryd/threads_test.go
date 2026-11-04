@@ -330,7 +330,7 @@ func TestInboxNeverCurrentMigration(t *testing.T) {
 	for _, q := range []string{
 		`ALTER TABLE chat_conversations DROP CONSTRAINT chat_conversations_inbox_never_current`,
 		inboxCurrent,
-		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261114100000_inbox_never_current.sql'`,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261114103000_inbox_never_current.sql'`,
 	} {
 		if _, err := s.db.ExecContext(ctx, q); err != nil {
 			t.Fatalf("%s: %v", q, err)

@@ -59,6 +59,7 @@ func seedVerdictPlan(t *testing.T, plan, integrationID, status string) *fakeStor
 
 func TestNormalizeCriteria(t *testing.T) {
 	p := criteriaPlan()
+	p.Criteria[2].Kind = CriterionJudgement
 	answer := []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Evidence: "go test ./... exits 0, 214 tests", Fix: "card"},
 		{Criterion: "c2", Verdict: "met", Evidence: "the list page reads clean"},
@@ -68,11 +69,11 @@ func TestNormalizeCriteria(t *testing.T) {
 		{Criterion: "c3", Verdict: "unmet", Fix: "wizardry"},
 	}
 	rows, behaviours := normalizeCriteria(p, answer, []string{"  the door opens only for a key that fits  ", "", "   "})
+	// c1, of kind test, is the gate's alone and drops
 	want := []CriterionVerdict{
-		{Criterion: "c1", Verdict: "met", Evidence: "go test ./... exits 0, 214 tests", Fix: "card", Kind: CriterionTest},
 		{Criterion: "c2", Verdict: "", Evidence: "the list page reads clean", Fix: "", Kind: CriterionHuman},
 		// the invalid first c3 answer drops whole; the second answer is the row
-		{Criterion: "c3", Verdict: "unmet", Fix: "", Kind: CriterionInvariant},
+		{Criterion: "c3", Verdict: "unmet", Fix: "", Kind: CriterionJudgement},
 	}
 	if fmt.Sprint(rows) != fmt.Sprint(want) {
 		t.Errorf("rows =\n%v\nwant\n%v", rows, want)
@@ -97,6 +98,31 @@ func TestEffectiveVerdictAndOpenCriteria(t *testing.T) {
 	}
 	if open := openCriteria(p, rows); len(open) != 1 || open[0].ID != "c2" {
 		t.Errorf("openCriteria = %v, want c2 alone", open)
+	}
+}
+
+func TestStandingRowRanksApproverOverGateOverReview(t *testing.T) {
+	gate := "criterion c1: suite ./... failed: Failed boom"
+	rows := []CriterionVerdict{
+		{Criterion: "c1", Source: CriteriaSourceReview, Verdict: "met"},
+		{Criterion: "c1", Source: CriteriaSourceGate, Verdict: "unmet", Evidence: gate},
+	}
+	if v, ok := StandingRow(rows, "c1"); !ok || v.Source != CriteriaSourceGate || v.Evidence != gate {
+		t.Errorf("StandingRow(c1) = %+v, %v; want the gate's", v, ok)
+	}
+	if got := effectiveVerdict(rows, "c1"); got != "unmet" {
+		t.Errorf("effectiveVerdict(c1) = %q, want unmet", got)
+	}
+	rows = append(rows, CriterionVerdict{Criterion: "c1", Source: CriteriaSourceApprover, Verdict: "waived"},
+		CriterionVerdict{Criterion: "c2", Source: CriteriaSourceReview, Verdict: "met"})
+	if v, ok := StandingRow(rows, "c1"); !ok || v.Source != CriteriaSourceApprover || v.Verdict != "waived" {
+		t.Errorf("StandingRow(c1) = %+v, %v; want the approver's", v, ok)
+	}
+	if v, ok := StandingRow(rows, "c2"); !ok || v.Source != CriteriaSourceReview || v.Verdict != "met" {
+		t.Errorf("StandingRow(c2) = %+v, %v; want the review's", v, ok)
+	}
+	if v, ok := StandingRow(rows, "c9"); ok {
+		t.Errorf("StandingRow(c9) = %+v, want none", v)
 	}
 }
 
@@ -216,14 +242,14 @@ func TestRecordHumanCriteria(t *testing.T) {
 	}
 }
 
-// featurePlan is a plan with the criteria c1 and c2 and three cards: A
-// cites c1, B cites c2, and I, the integration card, cites both.
+// featurePlan is a plan with the judgement criteria c1 and c2 and three
+// cards: A cites c1, B cites c2, and I, the integration card, cites both.
 func featurePlan() Plan {
 	return Plan{
 		Summary: "the feature",
 		Criteria: []PlanCriterion{
-			{ID: "c1", Kind: CriterionTest, Test: "TestA in ./a"},
-			{ID: "c2", Kind: CriterionTest, Test: "TestB in ./b"},
+			{ID: "c1", Kind: CriterionJudgement, Claim: "a answers"},
+			{ID: "c2", Kind: CriterionJudgement, Claim: "b answers"},
 		},
 		Cards: []PlanCard{
 			{Key: "A", Role: RoleFeature, Title: "Card A title", Brief: "build a", Acceptance: []PlanItem{{Criterion: "c1", Text: "go test ./a"}}},
@@ -338,8 +364,8 @@ func TestIntegrationReviewMakesOneCallPerCriterion(t *testing.T) {
 	}
 	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
 	want := []CriterionVerdict{
-		{Criterion: "c1", Verdict: "met", Evidence: "TestA covers a.go", Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
-		{Criterion: "c2", Verdict: "unmet", Evidence: "b.go never registers its route", Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c1", Verdict: "met", Evidence: "TestA covers a.go", Fix: "card", Kind: CriterionJudgement, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "unmet", Evidence: "b.go never registers its route", Fix: "card", Kind: CriterionJudgement, Source: "review", DecidedBy: FactoryDecider},
 	}
 	if fmt.Sprint(rows) != fmt.Sprint(want) {
 		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
@@ -581,8 +607,8 @@ func TestIntegrationReviewAbsentIsUnmet(t *testing.T) {
 	evidence := "no part of the diff holds the criterion's work: no test of a"
 	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
 	want := []CriterionVerdict{
-		{Criterion: "c1", Verdict: "unmet", Evidence: evidence, Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
-		{Criterion: "c2", Verdict: "unmet", Evidence: "b.go never registers its route", Fix: "card", Kind: CriterionTest, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c1", Verdict: "unmet", Evidence: evidence, Fix: "card", Kind: CriterionJudgement, Source: "review", DecidedBy: FactoryDecider},
+		{Criterion: "c2", Verdict: "unmet", Evidence: "b.go never registers its route", Fix: "card", Kind: CriterionJudgement, Source: "review", DecidedBy: FactoryDecider},
 	}
 	if fmt.Sprint(rows) != fmt.Sprint(want) {
 		t.Fatalf("rows =\n%v\nwant\n%v", rows, want)
@@ -608,6 +634,50 @@ func TestCriterionPromptOffersAbsent(t *testing.T) {
 		if !strings.Contains(reviewCriterionPrompt, want) {
 			t.Errorf("the criterion prompt lacks %q", want)
 		}
+	}
+}
+
+// The review makes no call on a criterion of kind test or invariant, and
+// reads verdicts for the criteria it called alone.
+func TestPlanCallsSkipTheGatesKinds(t *testing.T) {
+	p := Plan{Criteria: []PlanCriterion{
+		{ID: "g_test", Kind: CriterionTest, Test: "TestG in ./g"},
+		{ID: "c1", Kind: CriterionJudgement, Claim: "a answers"},
+		{ID: "g_inv", Kind: CriterionInvariant, Test: "go test ./... passes"},
+		{ID: "c2", Kind: CriterionHuman, Claim: "the page reads well"},
+	}}
+	calls, of := planCalls(p, "the objective", nil, featureCard{Key: "I"}, 64<<10)
+	var labels []string
+	for _, c := range calls {
+		labels = append(labels, c.Label)
+	}
+	if !slices.Equal(labels, []string{"criterion c1", "criterion c2", "behaviours"}) || !slices.Equal(of, []int{1, 3}) {
+		t.Fatalf("calls %q, of %v: want c1, c2 and the behaviours, of [1 3]", labels, of)
+	}
+	results := []callResult{
+		{Content: `{"verdict":"met","evidence":"a.go answers","fix":"card"}`},
+		{Content: `{"verdict":"","evidence":"read the list page"}`},
+		{Content: `{"behaviours":["a answers"]}`},
+	}
+	verdicts, behaviours, note := readPlanCalls(p, calls, of, results)
+	want := []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Evidence: "a.go answers", Fix: "card"},
+		{Criterion: "c2", Evidence: "read the list page"},
+	}
+	if note != "" || fmt.Sprint(verdicts) != fmt.Sprint(want) || !slices.Equal(behaviours, []string{"a answers"}) {
+		t.Fatalf("readPlanCalls = %v, %q, %q; want %v", verdicts, behaviours, note, want)
+	}
+}
+
+// The review's prompts say the gate alone judges test and invariant
+// criteria.
+func TestReviewPromptsLeaveTheGatesKindsToTheGate(t *testing.T) {
+	if !strings.Contains(reviewCriterionPrompt, "Criteria of kind test and invariant are the criteria gate's alone") ||
+		strings.Contains(reviewCriterionPrompt, "runs the criterion's test after this review") {
+		t.Errorf("the criterion prompt does not leave test and invariant criteria to the gate")
+	}
+	if !strings.Contains(reviewBehavioursPrompt, "each judgement and human criterion") {
+		t.Errorf("the behaviours prompt does not name the kinds the review judges")
 	}
 }
 
@@ -720,10 +790,12 @@ func TestReviewCriteriaStepFilesDuesAndFindings(t *testing.T) {
 		{Criterion: "c2", Evidence: "the list page reads clean"},
 		{Criterion: "c3", Verdict: "unmet", Evidence: "the endpoint times out at 30 s", Fix: "planner"},
 	}, Behaviours: []string{"the door opens only for a key that fits"}}
-	r.reviewCriteriaStep(ctx, s.tasks["t-int"], Repo{}, criteriaPlan(), 1, 2, &rv)
+	p := criteriaPlan()
+	p.Criteria[2].Kind = CriterionJudgement
+	r.reviewCriteriaStep(ctx, s.tasks["t-int"], Repo{}, p, 1, 2, &rv)
 	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
-	if len(rows) != 3 {
-		t.Fatalf("rows = %v, want 3", rows)
+	if len(rows) != 2 || rows[0].Criterion != "c2" || rows[1].Criterion != "c3" {
+		t.Fatalf("rows = %v, want c2 and c3", rows)
 	}
 	catches, _ := s.PlanCatches(ctx, "t-plan")
 	var deltas []PlanCatch
@@ -878,8 +950,9 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 
 // The close tells a judgement that never happened from one that failed:
 // with the cards final, criteria without a row file one criteria_rerun
-// ask naming the integration card's review and its note, the unmet ones
-// named beside them; unmet rows alone file today's gap ask. A pending ask
+// ask naming the criteria gate for its own and the integration card's
+// review and its note for the others, the unmet ones named beside them;
+// unmet rows alone file today's gap ask. A pending ask
 // of either kind stops the other, and the close resolves both.
 func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 	ctx := context.Background()
@@ -889,12 +962,18 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		rows                     []CriterionVerdict
 	}{
 		{"an empty table, no review", "", ApprovalCriteriaRerun,
-			"criteria never judged: the review of card #1380 did not run (the review never ran): c1, c2, c3", nil},
+			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; the review of card #1380 did not run (the review never ran): c2", nil},
 		{"an empty table, a refused review", note, ApprovalCriteriaRerun,
-			"criteria never judged: the review of card #1380 did not run (" + note + "): c1, c2, c3", nil},
+			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; the review of card #1380 did not run (" + note + "): c2", nil},
 		{"mixed", note, ApprovalCriteriaRerun,
-			"criteria never judged: the review of card #1380 did not run (" + note + "): c2, c3; not met: c1",
+			"criteria never judged: the criteria gate of card #1380 never ran: c3; the review of card #1380 did not run (" + note + "): c2; not met: c1",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "times out"}}},
+		{"the gate never ran", note, ApprovalCriteriaRerun,
+			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; not met: c2",
+			[]CriterionVerdict{{Criterion: "c2", Evidence: "read it"}}},
+		{"the review's alone", note, ApprovalCriteriaRerun,
+			"criteria never judged: the review of card #1380 did not run (" + note + "): c2; not met: c1, c3",
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "unmet"}}},
 		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
 			[]CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}},
 	} {

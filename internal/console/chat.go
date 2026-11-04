@@ -2299,21 +2299,14 @@ func (t *turn) snapshot() (string, error) {
 	if err != nil {
 		return "", err
 	}
-	s, github, pl := d.Status, "", ""
+	s, github, pool := d.Status, "", ""
 	if s.GitHub != "" {
 		github = "; GitHub: " + s.GitHub
 	}
-	switch {
-	case s.MonthPool.Ready:
-		pl = "; " + poolWords(s.MonthPool)
-	case s.MonthPool.Unavailable:
-		pl = "; pool unread this month"
-	}
-	pool := ""
-	if s.Pool.Present {
+	if s.Pool.Words != "" {
 		pool = "; pool: " + s.Pool.Words
 	}
-	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pl, pool, github), nil
+	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pool, github), nil
 }
 
 // noBoard is the status of project p, which has no board: with agents

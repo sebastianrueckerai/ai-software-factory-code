@@ -189,6 +189,18 @@ type Review struct {
 	// review's own calls (planCalls), never from a review answer.
 	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
 	Behaviours []string           `json:"behaviours,omitempty"`
+	// GateCriteria are the plan's criteria that review (criteriaContext)
+	// leaves to the criteria gate (gateJudged), whether it ran or not; nil
+	// for any other review.
+	GateCriteria *GateLeft `json:"gate_criteria,omitempty"`
+}
+
+// GateLeft are the ids of a plan's criteria of kind test and invariant, as
+// the review of one of its cards names them; Integration: the card is the
+// plan's integration card, the one card the criteria gate runs on.
+type GateLeft struct {
+	IDs         []string `json:"ids"`
+	Integration bool     `json:"integration,omitempty"`
 }
 
 // AutoMerge decides the merge outcome auto by who wrote the change (spec
@@ -271,9 +283,13 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	case criteriaProve(rv.Criteria):
 		met = append(met, "the review's criteria are all met or waived")
 	case rp.Ran:
-		unmet = append(unmet, fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)+unmetCriteria(rv.Criteria))
+		line := fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)
+		if c := criteriaUnmet(rv); c != "" {
+			line += ", and " + c
+		}
+		unmet = append(unmet, line)
 	default:
-		unmet = append(unmet, "no reproduction command and no fault the agent recorded"+unmetCriteria(rv.Criteria))
+		unmet = append(unmet, cmp.Or(criteriaUnmet(rv), "no reproduction command and no fault the agent recorded"))
 	}
 	// On both routes the review must find no drawback
 	strict := rv.StrictImprovement != nil && *rv.StrictImprovement
@@ -293,11 +309,19 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 	return len(unmet) == 0, met, unmet
 }
 
-// unmetCriteria is the tail of an unmet line when the review's criteria
-// are there and do not prove the change.
-func unmetCriteria(cs []CriterionVerdict) string {
-	if len(cs) > 0 {
-		return ", and the review's criteria are not all met"
+// criteriaUnmet is why the plan's criteria do not prove the change: the
+// review's are not all met; or they are the criteria gate's, whose
+// verdicts the auto merge does not read on the integration card and which
+// the gate never runs on a delta card; "" for a card the plan's criteria
+// do not judge.
+func criteriaUnmet(rv Review) string {
+	switch {
+	case len(rv.Criteria) > 0:
+		return "the review's criteria are not all met"
+	case rv.GateCriteria != nil && rv.GateCriteria.Integration:
+		return "the auto merge does not read the criteria gate's verdicts on " + strings.Join(rv.GateCriteria.IDs, ", ")
+	case rv.GateCriteria != nil:
+		return "the criteria gate runs on the plan's integration card alone, and a person decides this merge"
 	}
 	return ""
 }
@@ -865,15 +889,153 @@ func (r *Runner) reproSandbox(ctx context.Context, t *Task, repo Repo) (done fun
 // history (the base) when given. A sandbox that cannot start is a
 // *startFailure.
 func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, at string) (harness.Repro, error) {
+	var rep harness.Repro
+	err := r.runnerPod(ctx, t, r.reproPodSpec(t, repo, ref, commit, at), func(ns, podName string) error {
+		var err error
+		rep, err = r.readRepro(ctx, ns, podName, t.ID)
+		return err
+	})
+	return rep, err
+}
+
+// proofsBudget is the proofs pod's run budget: the activity's bound less
+// the pod's start (awaitPodStart's 10 minutes) and the reads.
+const proofsBudget = reproActivityTimeout - 15*time.Minute
+
+// runProofs runs entries in one sandbox pod and reads each one's outcome
+// by its id; a sandbox that cannot start is a *startFailure. A pod that
+// ended before it reported every entry returns the outcomes with a
+// *proofsEnded: the entries it reached keep theirs, the rest are no
+// report.
+func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
+	list, err := json.Marshal(entries)
+	if err != nil {
+		return nil, err
+	}
+	var runs []harness.ProofRun
+	var runErr string
+	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, list), func(ns, podName string) error {
+		var err error
+		runs, runErr, err = r.readProofs(ctx, ns, podName, t.ID)
+		return err
+	})
+	ended := errors.Is(err, errLogEnded)
+	if err != nil && !ended {
+		return nil, err
+	}
+	if ended {
+		runErr = proofsEndedEarly
+	}
+	byID := make(map[string]harness.ProofRun, len(runs))
+	for _, run := range runs {
+		byID[run.ID] = run
+	}
+	out := make(map[string]proofOutcome, len(entries))
+	var unreached []string
+	for _, e := range entries {
+		run, ok := byID[e.ID]
+		if !ok && ended {
+			unreached = append(unreached, e.ID)
+		}
+		out[e.ID] = proofResult(run, ok, runErr, e.Name)
+	}
+	if len(unreached) > 0 {
+		return out, &proofsEnded{unreached: unreached, of: len(entries)}
+	}
+	return out, nil
+}
+
+// proofsEnded is a proofs pod that ended before it reported unreached,
+// of its entries: killed, evicted or drained.
+type proofsEnded struct {
+	unreached []string
+	of        int
+}
+
+func (e *proofsEnded) Error() string {
+	return fmt.Sprintf("the proofs pod ended early: %d of %d entries unreported", len(e.unreached), e.of)
+}
+
+// buildFailedTail is how many lines of the compiler's errors follow a
+// report's build failure, which the report lacks.
+const buildFailedTail = 20
+
+// proofResult is one entry's outcome: why the run reported none (ok
+// false), why check test wrote no report, or the report's reading, with
+// the compiler's errors when the package did not build.
+func proofResult(run harness.ProofRun, ok bool, runErr, name string) proofOutcome {
+	if !ok {
+		if runErr == "" {
+			runErr = "the run reported nothing for this entry"
+		}
+		return proofOutcome{proofNoReport, runErr}
+	}
+	if run.Report == nil {
+		why := fmt.Sprintf("check test wrote no report (exit %d)", run.Exit)
+		if last := lastLines(run.Output, 1); len(last) > 0 {
+			why += ": " + last[0]
+		}
+		return proofOutcome{proofNoReport, why}
+	}
+	o := readReport(run.Report, name)
+	if o.Outcome != proofPassed && strings.Contains(o.Message, "[build failed]") {
+		if errs := buildErrors(run.Output); len(errs) > 0 {
+			o.Message += "\n" + strings.Join(errs, "\n")
+		}
+	}
+	return o
+}
+
+// buildErrors are the compiler's lines of a run's output, at most
+// buildFailedTail, each trimmed: gotestsum's === Errors block up to its
+// DONE line, or else the output's last lines less the module downloads
+// and pg-test.sh's banner, so the compiler's line comes first.
+func buildErrors(output string) []string {
+	lines := strings.Split(output, "\n")
+	if i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "=== Errors") }); i >= 0 {
+		var out []string
+		for _, l := range lines[i+1:] {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, "DONE ") || len(out) == buildFailedTail {
+				break
+			}
+			if l != "" {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	lines = slices.DeleteFunc(lines, func(l string) bool {
+		l = strings.TrimSpace(l)
+		return strings.HasPrefix(l, "go: downloading ") || strings.HasPrefix(l, "pg-test.sh: ")
+	})
+	return lastLines(strings.Join(lines, "\n"), buildFailedTail)
+}
+
+// lastLines are the last n non-empty lines of s, each trimmed, in order.
+func lastLines(s string, n int) []string {
+	var out []string
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			out = append(out, l)
+		}
+	}
+	slices.Reverse(out)
+	return out
+}
+
+// runnerPod creates the runner pod of spec in the task's namespace, awaits
+// its start and hands it to read.
+func (r *Runner) runnerPod(ctx context.Context, t Task, spec map[string]any, read func(ns, podName string) error) error {
 	ns, podName := r.agentNamespace(t.ID), "repro-"+strings.TrimPrefix(newID("s-"), "s-")
-	if err := r.kube.CreatePod(ctx, ns, podName, r.reproPodSpec(t, repo, ref, commit, at)); err != nil {
-		return harness.Repro{}, fmt.Errorf("create pod: %w", err)
+	if err := r.kube.CreatePod(ctx, ns, podName, spec); err != nil {
+		return fmt.Errorf("create pod: %w", err)
 	}
 	defer r.trackPod(t.ID, ns, podName)()
 	if err := r.awaitPodStart(ctx, ns, podName, 10*time.Minute, nil); err != nil {
-		return harness.Repro{}, err
+		return err
 	}
-	return r.readRepro(ctx, ns, podName, t.ID)
+	return read(ns, podName)
 }
 
 // commentOnce posts body on the pull request unless it is there already:
@@ -937,31 +1099,85 @@ func NotReproduced(summary string) string {
 // readRepro follows the repro pod's log to its report, or to the start
 // failure its worker reported instead (workerStartFailure).
 func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (harness.Repro, error) {
+	var rep *harness.Repro
+	err := r.readRunnerLog(ctx, ns, podName, taskID, func(env harness.WorkerEnvelope) (bool, bool) {
+		rep = env.Repro
+		return rep != nil, rep != nil
+	})
+	if errors.Is(err, errLogEnded) {
+		return harness.Repro{}, errors.New("the reproduction pod exited without a report")
+	}
+	if err != nil {
+		return harness.Repro{}, err
+	}
+	return *rep, nil
+}
+
+// proofsEndedEarly is the outcome of an entry the proofs pod did not
+// reach: its log ended before the closing line, as when the pod is
+// killed, evicted or drained.
+const proofsEndedEarly = "the proofs pod ended early, before it reported this entry"
+
+// readProofs follows the proofs pod's log to its closing line: the runs
+// it reported, and why none ran when it says. A log that ends before the
+// closing line keeps the runs read, with errLogEnded.
+func (r *Runner) readProofs(ctx context.Context, ns, podName, taskID string) (runs []harness.ProofRun, runErr string, err error) {
+	err = r.readRunnerLog(ctx, ns, podName, taskID, func(env harness.WorkerEnvelope) (bool, bool) {
+		switch {
+		case env.Proof != nil:
+			runs = append(runs, *env.Proof)
+			return true, false
+		case env.Proofs != nil:
+			runErr = env.Proofs.Error
+			return true, true
+		}
+		return false, false
+	})
+	if errors.Is(err, errLogEnded) {
+		return runs, "", err
+	}
+	if err != nil {
+		return nil, "", err
+	}
+	return runs, runErr, nil
+}
+
+// errLogEnded is a runner pod's log ending before take is done: the pod
+// exited or is gone.
+var errLogEnded = errors.New("the runner pod's log ended before its report")
+
+// readRunnerLog follows a runner pod's log, handing each envelope to take
+// until take is done, or to the start failure its worker reported instead
+// (workerStartFailure), or errLogEnded. A line take does not read is
+// logged.
+func (r *Runner) readRunnerLog(ctx context.Context, ns, podName, taskID string, take func(harness.WorkerEnvelope) (read, done bool)) error {
 	logCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	lines := followPodLog(logCtx, r.kube, ns, podName, taskID, nil)
 	for {
 		select {
 		case <-ctx.Done():
-			return harness.Repro{}, ctx.Err()
+			return ctx.Err()
 		case line, ok := <-lines.lines:
 			if !ok {
 				if err := lines.err(); err != nil {
-					return harness.Repro{}, err
+					return err
 				}
-				return harness.Repro{}, errors.New("the reproduction pod exited without a report")
+				return errLogEnded
 			}
 			var env harness.WorkerEnvelope
 			if json.Unmarshal(line, &env) == nil && env.Result != nil {
 				if err := workerStartFailure(*env.Result); err != nil {
-					return harness.Repro{}, err
+					return err
 				}
 			}
-			if env.Repro == nil {
+			read, done := take(env)
+			if !read {
 				log.Printf("task %s: repro: %s", taskID, line)
-				continue
 			}
-			return *env.Repro, nil
+			if done {
+				return nil
+			}
 		}
 	}
 }
@@ -1016,26 +1232,44 @@ func fenced(s string) string {
 	return f + "\n" + strings.TrimRight(s, "\n") + "\n" + f
 }
 
-// reproPodSpec is the worker pod in repro mode: no gateway token, no push
-// token, the same labels (so the sandbox egress policy selects it), image
-// and confinement. Its fetch init container alone holds the read token,
-// runs the factory's image and leaves the head in the workspace; the container that runs the
-// agent-written command holds no token at all. Neither run mounts the
-// project's shared cache, where an agent may have planted a binary or a
-// build result: Go and npm build cold in the pod's own
-// emptyDir, with PATH naming no cache directory.
+// reproPodSpec is the runner pod in repro mode: the task's reproduction
+// command.
 func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[string]any {
-	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", []map[string]any{
+	return r.runnerPodSpec(t, repo, ref, commit, at, []map[string]any{
 		{"name": "MODE", "value": "repro"},
-		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_COMMAND", "value": t.ReproCommand},
+	})
+}
+
+// proofsPodSpec is the runner pod in proofs mode: list is the entries'
+// JSON, each entry bounded by the reproduction timeout, all by proofsBudget.
+func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at string, list []byte) map[string]any {
+	return r.runnerPodSpec(t, repo, ref, commit, at, []map[string]any{
+		{"name": "MODE", "value": "proofs"},
+		{"name": "PROOFS", "value": string(list)},
+		{"name": "PROOFS_BUDGET", "value": strconv.Itoa(int(proofsBudget.Seconds()))},
+	})
+}
+
+// runnerPodSpec is the worker pod of a run with no agent, mode's env
+// first: no gateway token, no push token, the same labels (so the
+// sandbox egress policy selects it), image and confinement. Its fetch
+// init container alone holds the read token, runs the factory's image
+// and leaves the head in the workspace; the container that runs the
+// agent-written command or the tree's check holds no token at all.
+// Neither run mounts the project's shared cache, where an agent may have
+// planted a binary or a build result: Go and npm build cold in the pod's
+// own emptyDir, with PATH naming no cache directory.
+func (r *Runner) runnerPodSpec(t Task, repo Repo, ref, commit, at string, mode []map[string]any) map[string]any {
+	pod := r.sandboxPodSpec(t, r.sandboxImage(t), "", slices.Concat(mode, []map[string]any{
+		{"name": "TASK_ID", "value": t.ID},
 		{"name": "REPRO_TIMEOUT", "value": strconv.Itoa(int(r.cfg.ReproTimeout.Seconds()))},
 		{"name": "GOPATH", "value": "/build/go"},
 		{"name": "GOMODCACHE", "value": "/build/go/pkg/mod"},
 		{"name": "GOCACHE", "value": "/build/go-build"},
 		{"name": "npm_config_cache", "value": "/build/npm"},
 		{"name": "PATH", "value": "/usr/local/go/bin:/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"},
-	}, false)
+	}), false)
 	spec := pod["spec"].(map[string]any)
 	spec["volumes"] = append(spec["volumes"].([]any), map[string]any{"name": "build", "emptyDir": map[string]any{"sizeLimit": "8Gi"}})
 	worker := spec["containers"].([]any)[0].(map[string]any)
@@ -1218,7 +1452,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 	}
 	last := found[0]
 	last.Summary, last.Adjudicated, last.Claims, last.Dropped = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil
-	last.Criteria, last.Behaviours = nil, nil
+	last.Criteria, last.Behaviours, last.GateCriteria = nil, nil, nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -1275,6 +1509,9 @@ func parseReview(content string) Review {
 	}
 	if rv.Behaviours != nil {
 		return invalid("behaviours is not an answer field")
+	}
+	if rv.GateCriteria != nil {
+		return invalid("gate_criteria is not an answer field")
 	}
 	if rv.Summary = textutil.Truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
 		return invalid("no summary")
@@ -1463,8 +1700,13 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		return Review{}, err
 	}
 	model := r.callModel(t, policy.PurposeReview)
+	criteria := r.criteriaContext(ctx, t)
+	var gate *GateLeft
+	if criteria != nil {
+		gate = gateLeft(criteria.plan, t.PlanKey)
+	}
 	notRun := func(why string) (Review, error) {
-		rv := Review{Note: reviewNotStarted + why}
+		rv := Review{Note: reviewNotStarted + why, GateCriteria: gate}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model, Note: rv.Note}); err != nil {
@@ -1485,7 +1727,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	criteria := r.criteriaContext(ctx, t)
 	var feature []featureCard
 	if criteria != nil {
 		feature, err = r.featureCards(ctx, t, repo, criteria.plan, diffBytes(prFiles))
@@ -1591,6 +1832,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		read += "."
 	}
+	rv.GateCriteria = gate
 	stopBeats()
 	if ctx.Err() != nil {
 		return Review{}, ctx.Err()
@@ -1890,7 +2132,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if never, err := r.unjudgedCriteria(ctx, t); err != nil {
 		return MergeResult{}, err
 	} else if len(never) > 0 {
-		return r.holdMerge(ctx, t, repo, pr, commit, approver, len(never)), nil
+		return r.holdMerge(ctx, t, repo, pr, commit, approver, never), nil
 	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
@@ -2068,27 +2310,43 @@ func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit,
 		r.note(ctx, t, "waiting: every criterion has a verdict row now: approve again to merge")
 		return nil
 	}
-	r.holdMerge(ctx, t, repo, pr, commit, approver, len(never))
+	r.holdMerge(ctx, t, repo, pr, commit, approver, never)
 	return nil
 }
 
-// holdMerge refuses the merge of a plan's integration card while n of its
-// criteria have no verdict row, naming the last review's note, and puts
-// the merge ask on the human's surface again: the workflow answers a
-// plain refusal with a new approval wait and no retry, so without the ask
-// the card would stall unseen. Approving it runs the review again
-// (versionReviewHoldsMerge). An auto merge's hold files no ask: the
-// workflow's request follows it.
-func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, n int) MergeResult {
-	note, _ := r.lastReviewNote(ctx, t.ID)
-	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(n, "criterion was", "criteria were"))
-	if note != "" {
+// holdMerge refuses the merge of a plan's integration card while criteria
+// have no verdict row (never), naming the criteria gate for its own and
+// the last review's note for the others, each by id when both hold some,
+// and puts the merge ask on the human's surface again: the workflow
+// answers a plain refusal with a new approval wait and no retry, so
+// without the ask the card would stall unseen. Approving it runs the
+// review again (versionReviewHoldsMerge). An auto merge's hold files no
+// ask: the workflow's request follows it.
+func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, never []PlanCriterion) MergeResult {
+	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(len(never), "criterion was", "criteria were"))
+	gate, review := byJudge(never)
+	var note string
+	if review != "" {
+		note, _ = r.lastReviewNote(ctx, t.ID)
+	}
+	switch {
+	case review == "":
+		why += ", the criteria gate never ran"
+	case gate != "" && note != "":
+		why += ", the criteria gate never ran for " + gate + ", and the model review did not run (" + note + ") for " + review
+	case gate != "":
+		why += ", the criteria gate never ran for " + gate + ", and no model review judged " + review
+	case note != "":
 		why += ", the model review did not run (" + note + ")"
-	} else {
+	default:
 		why += " by a model review"
 	}
 	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
-	r.comment(ctx, t, repo, pr, fmt.Sprintf("factoryd: %s\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", res.Refusal, commit))
+	body := "factoryd: " + res.Refusal
+	if review != "" {
+		body += fmt.Sprintf("\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", commit)
+	}
+	r.comment(ctx, t, repo, pr, body)
 	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
 	r.awaitApprovalAgain(ctx, t)
 	if approver != AutoApprover {

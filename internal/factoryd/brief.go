@@ -192,7 +192,7 @@ func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]c
 	out := make([]criterionFact, len(p.Criteria))
 	for i, c := range p.Criteria {
 		out[i] = criterionFact{ID: c.ID, Kind: c.Kind, Text: criterionText(c), Verdict: "open"}
-		if v, ok := standingRow(rows, c.ID); ok {
+		if v, ok := StandingRow(rows, c.ID); ok {
 			out[i].Verdict, out[i].Evidence = v.Verdict, v.Evidence
 		}
 	}

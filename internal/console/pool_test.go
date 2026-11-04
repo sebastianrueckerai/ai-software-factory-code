@@ -19,30 +19,34 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// noPoolRead is the settings and policy reads' unset-pool line over the
-// fixtures' loaded policy: the identity and this UTC month with the
-// no-pool words.
-func noPoolRead() string {
-	return "Pool (policy version 4 (commit c9d98bb), " + time.Now().UTC().Format("2006-01") +
-		" UTC): no pool: discretionary_eur is absent or 0, every agent raise waits for a member"
+// noDraws is the pool's words of a project with no draws this month under
+// the default pool.
+const noDraws = "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
+
+// defaultPoolRead is the settings and policy reads' pool line over the
+// fixtures' loaded policy for a project with no draws: the identity and
+// this UTC month with the default pool's three parts.
+func defaultPoolRead() string {
+	return "Pool (policy version 4 (commit c9d98bb), " + time.Now().UTC().Format("2006-01") + " UTC): " + noDraws
 }
 
-// poolRig is a rig whose project ai-software-factory-code holds budget as
-// its loaded policy's budget block and funded EUR of agent-funded usage
-// this month — or a usage read that fails with fail. The fund rig's own
-// project, so the read-outs ride the board's existing fixtures.
-func poolRig(t *testing.T, budget *policy.ProjectBudget, funded float64, fail error) *rig {
+// poolRig is a rig whose project ai-software-factory-code sets pool as its
+// escalation block's pool (nil for none) and whose cards drew drawn this
+// month, or a draw read that fails with fail.
+func poolRig(t *testing.T, pool *policy.Draw, drawn policy.Draw, fail error) *rig {
 	t.Helper()
 	r := newRig(t)
-	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: "human", Objects: "factory",
-		Agents: "coder", Process: "maintenance", Budget: budget}}
-	r.chat.funded = map[string]float64{"sf/code": funded}
-	r.chat.fundedErr = fail
+	pc := policy.ProjectConfig{Repository: "sf/code", MergeRule: "human", Objects: "factory", Agents: "coder", Process: "maintenance"}
+	if pool != nil {
+		pc.Escalation = &policy.Escalation{Pool: *pool}
+	}
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": pc}
+	r.drawn, r.drawnErr = drawn, fail
 	return r
 }
 
 // poolFace is the project's face as every reader reads it: the status
-// line's pool, the board's text and HTML, and the chat's status line —
+// line's pool, the board's text and HTML, and the chat's status line,
 // one projection through them all.
 func poolFace(t *testing.T, r *rig) (pool poolLine, board, html, snap string) {
 	t.Helper()
@@ -66,121 +70,44 @@ func poolFace(t *testing.T, r *rig) (pool poolLine, board, html, snap string) {
 	return d.Status.Pool, boardWords(d), strings.ReplaceAll(rec.Body.String(), "&#39;", "'"), snap
 }
 
-// The project face's pool status is one projection the board's HTML, the
-// board's text and the chat's status line read: the configured, used and
-// remaining EUR of the UTC month agree as literal figures, usage is never
-// erased by lowering the pool, and an unreadable aggregate is never zero.
+// The project face's pool is one projection the board's HTML, the board's
+// text and the chat's status line read: the three parts drawn against the
+// pool the tree sets, the default's where the file sets none and the
+// file's own money with the default's other parts, overdrawn naming each
+// part past its pool, and an unreadable draw never zero.
 func TestProjectPoolStatus(t *testing.T) {
 	for _, tc := range []struct {
-		name       string
-		budget     *policy.ProjectBudget
-		funded     float64
-		fail       error
-		present    bool
-		configured float64
-		used       float64
-		remaining  float64
-		want       string
-		notWant    string
+		name              string
+		pool              *policy.Draw
+		drawn             policy.Draw
+		fail              error
+		present, readable bool
+		overdrawn         bool
+		want              string
 	}{
-		{name: "unset", budget: nil, funded: 3,
-			want: "no pool: discretionary_eur is absent or 0, every agent raise waits for a member"},
-		{name: "standing", budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, funded: 3,
-			present: true, configured: 10, used: 3, remaining: 7,
-			want: "€3.00 of €10.00 funded this UTC month, €7.00 left, each raise at most €2.00; fund is confirmed at this autonomy: a raise is the member's money and meets no pool bound"},
-		{name: "lowered below its use", budget: &policy.ProjectBudget{DiscretionaryEUR: 2, RaiseMaxEUR: 1}, funded: 3,
-			present: true, configured: 2, used: 3, remaining: 0,
-			want:    "€3.00 funded this UTC month of a pool now at €2.00: usage stands and nothing is left until the pool is raised or the month turns",
-			notWant: "€2.00 left"},
-		{name: "zero ceiling", budget: &policy.ProjectBudget{DiscretionaryEUR: 0, RaiseMaxEUR: 1}, funded: 3,
-			want: "no pool: discretionary_eur is absent or 0"},
-		{name: "unreadable usage", budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, funded: 3,
-			fail: errors.New("the store is down"), present: true, configured: 10,
-			want:    "the pool stands at €10.00 but its usage could not be read: how much is left is unknown, and a standing pool is not unattended authority",
-			notWant: "left, "},
+		{name: "the default", drawn: policy.Draw{Sessions: 3, AgentTime: 90 * time.Minute, EUR: 4.5}, readable: true,
+			want: "3 of 30 sessions, 1 h 30 min of 30 h agent time and €4.50 of €60.00 drawn this UTC month"},
+		{name: "its own money", pool: &policy.Draw{EUR: 10}, drawn: policy.Draw{EUR: 3}, present: true, readable: true,
+			want: "0 of 30 sessions, 0 h of 30 h agent time and €3.00 of €10.00 drawn this UTC month"},
+		{name: "overdrawn", pool: &policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 2}, drawn: policy.Draw{Sessions: 3, AgentTime: 61 * time.Minute, EUR: 2},
+			present: true, readable: true, overdrawn: true,
+			want: "3 of 2 sessions, 1 h 1 min of 1 h agent time and €2.00 of €2.00 drawn this UTC month, overdrawn in sessions and agent time: only the human draws more until the month turns"},
+		{name: "unreadable draws", pool: &policy.Draw{EUR: 10}, fail: errors.New("the store is down"), present: true,
+			want: "the pool is 30 sessions, 30 h of agent time and €10.00 this UTC month, but what its cards drew could not be read"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			pool, board, html, snap := poolFace(t, poolRig(t, tc.budget, tc.funded, tc.fail))
-			if pool.Present != tc.present {
-				t.Errorf("Present = %v, want %v (%s)", pool.Present, tc.present, pool.Words)
-			}
-			if pool.ConfiguredEUR != tc.configured || pool.UsedEUR != tc.used || pool.RemainingEUR != tc.remaining {
-				t.Errorf("the pool = configured %v, used %v, remaining %v; want %v, %v, %v",
-					pool.ConfiguredEUR, pool.UsedEUR, pool.RemainingEUR, tc.configured, tc.used, tc.remaining)
-			}
-			if !strings.Contains(pool.Words, tc.want) {
-				t.Errorf("the pool's words lack %q:\n%s", tc.want, pool.Words)
-			}
-			if tc.notWant != "" && strings.Contains(pool.Words, tc.notWant) {
-				t.Errorf("the pool's words say %q:\n%s", tc.notWant, pool.Words)
+			pool, board, html, snap := poolFace(t, poolRig(t, tc.pool, tc.drawn, tc.fail))
+			if pool.Present != tc.present || pool.Readable != tc.readable || pool.Overdrawn != tc.overdrawn || pool.Words != tc.want {
+				t.Errorf("the pool = present %v, readable %v, overdrawn %v, %q; want %v, %v, %v, %q",
+					pool.Present, pool.Readable, pool.Overdrawn, pool.Words, tc.present, tc.readable, tc.overdrawn, tc.want)
 			}
 			if len(pool.Month) != 7 || !strings.Contains(pool.Policy, "policy version") {
 				t.Errorf("the pool's month %q or policy identity %q is blank", pool.Month, pool.Policy)
 			}
 			for name, got := range map[string]string{"the board's text": board, "the board's HTML": html, "the chat's status line": snap} {
-				if tc.present && !strings.Contains(got, tc.want) {
-					t.Errorf("%s lacks the pool's figures %q:\n%s", name, tc.want, got)
-				}
-				if !tc.present && strings.Contains(got, "discretionary") {
-					t.Errorf("%s paints a pool where none stands:\n%s", name, got)
-				}
-			}
-		})
-	}
-}
-
-// Funding readiness holds the same pool — €10 configured, €3 funded —
-// and reads the loaded policy's actual rules: the autonomy as loaded, the
-// confirm list resolved over it and the per-raise guard. Only fully
-// permitted authority is called ready for unattended funding; a confirmed
-// fund or a missing guard is not, whatever the pool holds, and reading it
-// changes no permission.
-func TestProjectPoolReadiness(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		project policy.ProjectConfig
-		budget  *policy.ProjectBudget
-		ready   bool
-		want    string
-	}{
-		{name: "manual", project: policy.ProjectConfig{MergeRule: "human"},
-			budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2},
-			want:   "fund is confirmed at this autonomy: a raise is the member's money and meets no pool bound"},
-		{name: "assisted", project: policy.ProjectConfig{Autonomy: policy.AutonomyAssisted, MergeRule: "human"},
-			budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2},
-			want:   "fund is confirmed at this autonomy"},
-		{name: "autonomous", project: policy.ProjectConfig{Autonomy: policy.AutonomyAutonomous, MergeRule: "human"},
-			budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, ready: true,
-			want: "the loaded policy permits an unattended raise from it"},
-		{name: "full auto", project: policy.ProjectConfig{Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeAuto},
-			budget: &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, ready: true,
-			want: "the loaded policy permits an unattended raise from it"},
-		{name: "autonomous without the guard", project: policy.ProjectConfig{Autonomy: policy.AutonomyAutonomous, MergeRule: "human"},
-			budget: &policy.ProjectBudget{DiscretionaryEUR: 10},
-			want:   "raise_max_eur is absent or 0: every agent raise refuses, so the pool funds nothing until it is set"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			r := poolRig(t, tc.budget, 3, nil)
-			tc.project.Repository, tc.project.Objects, tc.project.Agents, tc.project.Process, tc.project.Budget = "sf/code", "factory", "coder", "maintenance", tc.budget
-			r.ledger.files["ai-software-factory-code"] = tc.project
-			pool, board, html, snap := poolFace(t, r)
-			if pool.Ready != tc.ready {
-				t.Errorf("Ready = %v, want %v (%s)", pool.Ready, tc.ready, pool.Words)
-			}
-			if !strings.Contains(pool.Words, tc.want) {
-				t.Errorf("the pool's words lack %q:\n%s", tc.want, pool.Words)
-			}
-			if pool.Ready != strings.Contains(pool.Words, "the loaded policy permits an unattended raise") {
-				t.Errorf("the pool's words name unattended raises wrongly:\n%s", pool.Words)
-			}
-			for name, got := range map[string]string{"the board's text": board, "the board's HTML": html, "the chat's status line": snap} {
 				if !strings.Contains(got, tc.want) {
-					t.Errorf("%s lacks the readiness words %q:\n%s", name, tc.want, got)
+					t.Errorf("%s lacks the pool's words %q:\n%s", name, tc.want, got)
 				}
-			}
-			if pool.ConfiguredEUR != 10 || pool.UsedEUR != 3 || pool.RemainingEUR != 7 {
-				t.Errorf("the same pool = configured %v, used %v, remaining %v; want 10, 3, 7",
-					pool.ConfiguredEUR, pool.UsedEUR, pool.RemainingEUR)
 			}
 		})
 	}
@@ -202,18 +129,17 @@ func poolTool(t *testing.T, r *rig, name string) string {
 	return out
 }
 
-// The settings and policy read-outs carry the project face's pool: EUR 10
-// configured and EUR 3 agent-funded show EUR 7 remaining with the loaded
-// policy's identity, identically in the settings and policy HTML and in
-// the settings and policy chat reads; an unset pool and an unreadable
-// aggregate stay distinct rows.
+// The settings and policy read-outs carry the project face's pool: 3
+// sessions and EUR 4 drawn of a pool of EUR 10, identically in the
+// settings and policy HTML and in the settings and policy chat reads,
+// with the loaded policy's identity; an unreadable draw stays its own row.
 func TestSettingsPolicyPool(t *testing.T) {
-	r := poolRig(t, &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, 3, nil)
+	r := poolRig(t, &policy.Draw{EUR: 10}, policy.Draw{Sessions: 3, EUR: 4}, nil)
 	ck, _ := r.loggedIn(t)
 	settings := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=ai-software-factory-code", nil), ck).Body.String()
 	policyPage := r.do(httptest.NewRequest(http.MethodGet, "/policy", nil), ck).Body.String()
 	chatSettings, chatPolicy := poolTool(t, r, "settings"), poolTool(t, r, "policy")
-	const figures = "€3.00 of €10.00 funded this UTC month, €7.00 left"
+	const figures = "3 of 30 sessions, 0 h of 30 h agent time and €4.00 of €10.00 drawn this UTC month"
 	id := func(page, name string) string {
 		t.Helper()
 		m := poolIdentity.FindStringSubmatch(page)
@@ -246,29 +172,15 @@ func TestSettingsPolicyPool(t *testing.T) {
 			t.Errorf("%s lacks the loaded policy's identity:\n%s", name, page)
 		}
 	}
-	// the same row twice is one projection: the pages show the words once
-	// per project, the reads carry them with the identity and month.
 	if !strings.Contains(chatSettings, "Pool (policy version 4 (commit c9d98bb), ") {
 		t.Errorf("the settings read lacks the pool's identity line:\n%s", chatSettings)
 	}
 
-	unset := poolRig(t, nil, 3, nil)
-	uck, _ := unset.loggedIn(t)
-	unused := unset.do(httptest.NewRequest(http.MethodGet, "/settings?project=ai-software-factory-code", nil), uck).Body.String()
-	if !strings.Contains(unused, "no pool: discretionary_eur is absent or 0") {
-		t.Errorf("the unset settings row lacks its words:\n%s", unused)
-	}
-	unreadable := poolRig(t, &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, 3, errors.New("the store is down"))
-	rr := unreadable.do(httptest.NewRequest(http.MethodGet, "/settings?project=ai-software-factory-code", nil), func() *http.Cookie { ck, _ := unreadable.loggedIn(t); return ck }()).Body.String()
-	const unread = "its usage could not be read"
-	if !strings.Contains(rr, unread) {
-		t.Errorf("the aggregate-error settings row lacks its words:\n%s", rr)
-	}
-	if strings.Contains(rr, "no pool: discretionary_eur is absent or 0") {
-		t.Errorf("the aggregate-error settings row reads as an unset pool:\n%s", rr)
-	}
-	if strings.Contains(unused, unread) {
-		t.Errorf("the unset settings row reads as an unreadable aggregate:\n%s", unused)
+	unreadable := poolRig(t, &policy.Draw{EUR: 10}, policy.Draw{}, errors.New("the store is down"))
+	uck, _ := unreadable.loggedIn(t)
+	rr := unreadable.do(httptest.NewRequest(http.MethodGet, "/settings?project=ai-software-factory-code", nil), uck).Body.String()
+	if !strings.Contains(rr, "but what its cards drew could not be read") || strings.Contains(rr, "drawn this UTC month") {
+		t.Errorf("the unreadable settings row reads as a draw:\n%s", rr)
 	}
 }
 
@@ -280,14 +192,14 @@ var poolIdentity = regexp.MustCompile(`policy version \d+ \(commit [0-9a-f]{7,}\
 // version's project file, offers no pool input or write, and a read
 // never moves the policy in force.
 func TestSettingsPoolVersion(t *testing.T) {
-	r := poolRig(t, &policy.ProjectBudget{DiscretionaryEUR: 10, RaiseMaxEUR: 2}, 3, nil)
+	r := poolRig(t, &policy.Draw{EUR: 10}, policy.Draw{EUR: 3}, nil)
 	ck, _ := r.loggedIn(t)
 	page := r.do(httptest.NewRequest(http.MethodGet, "/settings?project=ai-software-factory-code", nil), ck).Body.String()
 	const link = `href="https://git.example/sf/infra/src/commit/c9d98bb0aa11/factory/projects/ai-software-factory-code.yaml"`
 	if !strings.Contains(page, link) {
 		t.Errorf("the settings page does not link the loaded version's project file:\n%s", page)
 	}
-	for _, editable := range []string{`name="discretionary`, `name="pool`, "top-up", "Top up"} {
+	for _, editable := range []string{`name="escalation`, `name="pool`, "top-up", "Top up"} {
 		if strings.Contains(page, editable) {
 			t.Errorf("the settings page offers an editable pool (%s):\n%s", editable, page)
 		}
@@ -298,7 +210,7 @@ func TestSettingsPoolVersion(t *testing.T) {
 		}
 	}
 	v, ok := r.c.inForce(context.Background())
-	if !ok || v.ID != 4 || factoryd.Cents(v.Projects["ai-software-factory-code"].Budget.DiscretionaryEUR) != 1000 {
+	if !ok || v.ID != 4 || factoryd.Cents(v.Projects["ai-software-factory-code"].Escalation.Pool.EUR) != 1000 {
 		t.Fatalf("the policy in force moved: %v, %v", ok, v.ID)
 	}
 	if rec := r.do(httptest.NewRequest(http.MethodPost, "/settings", nil), ck); rec.Code != http.StatusMethodNotAllowed {
@@ -308,20 +220,26 @@ func TestSettingsPoolVersion(t *testing.T) {
 	poolTool(t, r, "policy")
 	after, ok := r.c.inForce(context.Background())
 	if !ok || after.ID != v.ID || after.Commit != v.Commit ||
-		factoryd.Cents(after.Projects["ai-software-factory-code"].Budget.DiscretionaryEUR) != 1000 {
+		factoryd.Cents(after.Projects["ai-software-factory-code"].Escalation.Pool.EUR) != 1000 {
 		t.Errorf("a pool read-out mutated the policy in force: version %d (%s)", after.ID, after.Commit)
 	}
 }
 
-// poolHead is demo-app's project file above the pool line; poolFile is
-// the file with the pool's bounds and a pool of pool EUR.
+// poolHead is demo-app's project file above the pool's money; poolFile
+// is the file with its escalation pool of pool EUR.
 const poolHead = "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n" +
-	"  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  # the pool the agent funds cards from\n"
+	"  month_eur: 10\n  task_max_eur: 4\nescalation:\n  # the pool every rung draws from\n  pool:\n    sessions: 10\n"
 
-func poolFile(pool string) string { return poolHead + "  discretionary_eur: " + pool + "\n" }
+func poolFile(pool string) string { return poolHead + "    eur: " + pool + "\n" }
 
-// poolRig is the writes rig whose infra's main holds demo-app's file with
-// the pool's bounds and a pool of pool EUR, and whose check loads every
+// poolLoaded is demo-app's loaded project with an escalation pool of eur.
+func poolLoaded(eur float64) policy.ProjectConfig {
+	return policy.ProjectConfig{Repository: "demo-app/demo-app", Budget: &policy.ProjectBudget{MonthEUR: 10},
+		Escalation: &policy.Escalation{Pool: policy.Draw{Sessions: 10, EUR: eur}}}
+}
+
+// poolWritesRig is the writes rig whose infra's main holds demo-app's
+// file with an escalation pool of pool EUR, and whose check loads every
 // candidate. The pool in force stays what fakeLedger's built-in holds
 // until a test seats the policy of its own.
 func poolWritesRig(t *testing.T, pool string) (*rig, *infraFake) {
@@ -334,23 +252,22 @@ func poolWritesRig(t *testing.T, pool string) (*rig, *infraFake) {
 }
 
 // TestPoolPolicyWrite covers the landed write on the writes rig: the set
-// replaces only the pool line of the project file, keeping the file's
-// comments, caps and every other line; a top-up corrected to the file as
-// it now is grows the file's own pool; an absent discretionary_eur is a
-// pool of 0 and an intentional month_eur of zero stays as it is; each
-// change is one commit, one pull request, one merge, one reload after
-// it, and the check sees the candidate. Every refusal writes nothing: a
-// malformed amount (400), a candidate the loader refuses (422), a
-// project or a file without the bounds the pool needs, a stale source
-// and a change of nothing (409).
+// replaces only escalation.pool.eur of the project file, keeping the
+// file's comments, the pool's other parts and every other line; a top-up
+// corrected to the file as it now is grows the file's own money; a file
+// with no escalation block gets one, its pool and its money; each change
+// is one commit, one pull request, one merge, one reload after it, and
+// the check sees the candidate. Every refusal writes nothing: a malformed
+// amount (400), a candidate the loader refuses (422), a project the
+// policy does not hold, a file the pool cannot read, a top-up of money
+// the file does not set, a stale source and a change of nothing (409).
 func TestPoolPolicyWrite(t *testing.T) {
 	r, infra := poolWritesRig(t, "10")
 	next := 12.0
 	reloads := 0
 	r.c.cfg.PolicyReload = func(context.Context) error {
 		reloads++
-		r.ledger.files["demo-app"] = policy.ProjectConfig{Repository: "demo-app/demo-app",
-			Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: next}}
+		r.ledger.files["demo-app"] = poolLoaded(next)
 		return nil
 	}
 	var checked []string
@@ -377,12 +294,12 @@ func TestPoolPolicyWrite(t *testing.T) {
 	content, _ := base64.StdEncoding.DecodeString(change["content"].(string))
 	landed := poolFile("12")
 	if body["branch"] != "main" || !strings.HasPrefix(branch, "config-demo-app-") ||
-		body["message"] != "Project demo-app: month pool 12.00 EUR\n\nFactory-Role: chat\nRequested-by: sebastian\n" ||
+		body["message"] != "Project demo-app: escalation pool 12.00 EUR\n\nFactory-Role: chat\nRequested-by: sebastian\n" ||
 		change["operation"] != "update" || change["path"] != "factory/projects/demo-app.yaml" || change["sha"] != "blob1" || string(content) != landed {
 		t.Fatalf("the commit = %+v (%q)", body, content)
 	}
 	if infra.pulls[0].body["head"] != branch || infra.pulls[0].body["base"] != "main" ||
-		infra.pulls[0].body["title"] != "Project demo-app: month pool 12.00 EUR" {
+		infra.pulls[0].body["title"] != "Project demo-app: escalation pool 12.00 EUR" {
 		t.Fatalf("pulls = %+v", infra.pulls)
 	}
 	equal(t, "the reload", reloads, 1)
@@ -413,30 +330,28 @@ func TestPoolPolicyWrite(t *testing.T) {
 	equal(t, "the top-up", res, poolResult{from: 8, confirmed: 4, to: 12, pr: 12, loaded: true})
 	change = infra.contents[1].body["files"].([]any)[0].(map[string]any)
 	content, _ = base64.StdEncoding.DecodeString(change["content"].(string))
-	if infra.contents[1].body["message"] != "Project demo-app: month pool +4.00 EUR\n\nFactory-Role: chat\nRequested-by: sebastian\n" ||
+	if infra.contents[1].body["message"] != "Project demo-app: escalation pool +4.00 EUR\n\nFactory-Role: chat\nRequested-by: sebastian\n" ||
 		string(content) != poolFile("12") || change["sha"] != "blob2" {
 		t.Fatalf("the top-up's commit = %+v (%q)", infra.contents[1].body, content)
 	}
 	equal(t, "two changes, two of each", []int{len(infra.contents), len(infra.pulls), len(infra.merges)}, []int{2, 2, 2})
 	equal(t, "the reload after the top-up", reloads, 2)
 
-	// An absent discretionary_eur is a pool of 0: the key lands, and
-	// the file's month cap of zero stays.
+	// A file with no escalation block gets one, with its pool and its
+	// money, and nothing else moves.
 	infra.mu.Lock()
-	infra.files["factory/projects/demo-app.yaml"] = "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 0\n  raise_max_eur: 5\n"
+	infra.files["factory/projects/demo-app.yaml"] = "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 0\n"
 	infra.shas["factory/projects/demo-app.yaml"] = "blob3"
 	infra.mu.Unlock()
 	next = 5
 	res, err = r.c.doSetPool(context.Background(), "demo-app", poolChange{action: poolSet, eur: 5,
-		reason: "the project starts a pool", source: "blob3"}, a)
+		reason: "the project sets its own pool", source: "blob3"}, a)
 	if err != nil {
 		t.Fatalf("doSetPool(set 5 onto no pool) = %v", err)
 	}
 	equal(t, "the first pool", res, poolResult{from: 0, confirmed: 5, to: 5, pr: 12, loaded: true})
-	change = infra.contents[2].body["files"].([]any)[0].(map[string]any)
-	content, _ = base64.StdEncoding.DecodeString(change["content"].(string))
-	equal(t, "the file with its first pool", string(content),
-		"# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 0\n  raise_max_eur: 5\n  discretionary_eur: 5\n")
+	equal(t, "the file with its first pool", committed(t, infra, 2),
+		"# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 0\nescalation:\n  pool:\n    eur: 5\n")
 
 	// A two-place amount lands as its exact decimal, at a size a float's
 	// own addition could not carry: the file holds the cents the member
@@ -458,8 +373,7 @@ func TestPoolPolicyWrite(t *testing.T) {
 
 	// An anchor nothing aliases changes nothing but its own value: the
 	// pool lands with the anchor kept.
-	anchored := "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n" +
-		"  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: &eur 10\n"
+	anchored := "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nescalation:\n  pool:\n    eur: &eur 10\n"
 	infra.mu.Lock()
 	infra.files["factory/projects/demo-app.yaml"] = anchored
 	infra.shas["factory/projects/demo-app.yaml"] = "blob5"
@@ -479,7 +393,7 @@ func TestPoolPolicyWrite(t *testing.T) {
 	// and answers its refusal before any commit, pull request, merge,
 	// reload or row.
 	why := poolChange{action: poolSet, eur: 5, reason: "why the pool moves", source: "blob1"}
-	raise := "projects/demo-app.yaml sets no budget.raise_max_eur above 0: a policy PR writes the per-raise bound first (every raise of the pool would refuse)"
+	aliased := "projects/demo-app.yaml aliases its escalation block or its pool: a policy PR removes the YAML alias before a pool change"
 	for _, row := range []struct {
 		name    string
 		project string
@@ -496,8 +410,8 @@ func TestPoolPolicyWrite(t *testing.T) {
 			400, "a pool change names its reason"},
 		{"a change without its source", "demo-app", poolFile("10"), "blob1", poolChange{action: poolSet, eur: 5, reason: "why the pool moves"}, "",
 			400, "a pool change names the source of the project file it read"},
-		{"a set below zero", "demo-app", poolFile("10"), "blob1", poolChange{action: poolSet, eur: -1, reason: "why the pool moves", source: "blob1"}, "",
-			400, "a set takes a non-negative amount in EUR"},
+		{"a set of zero", "demo-app", poolFile("10"), "blob1", poolChange{action: poolSet, eur: 0, reason: "why the pool moves", source: "blob1"}, "",
+			400, "a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure"},
 		{"a top-up of nothing", "demo-app", poolFile("10"), "blob1", poolChange{action: poolTopUp, eur: 0, reason: "why the pool moves", source: "blob1"}, "",
 			400, "a top-up takes a positive amount in EUR"},
 		{"an amount that is no number", "demo-app", poolFile("10"), "blob1", poolChange{action: poolSet, eur: math.Inf(1), reason: "why the pool moves", source: "blob1"}, "",
@@ -506,16 +420,13 @@ func TestPoolPolicyWrite(t *testing.T) {
 			400, "a pool change's amount is too large"},
 		{"a project the policy does not hold", "elsewhere", poolFile("10"), "blob1", why, "",
 			409, "the policy in force holds no project elsewhere"},
-		{"a file without a budget block", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n", "blob1", why, "",
-			409, "projects/demo-app.yaml sets no budget block: a policy PR writes one, with month_eur and raise_max_eur, before a pool can change"},
-		{"a budget without month_eur", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nbudget:\n  raise_max_eur: 5\n  discretionary_eur: 10\n", "blob1", why, "",
-			409, "projects/demo-app.yaml sets no budget.month_eur: a policy PR writes the project's month cap first (an intentional month of zero writes month_eur: 0)"},
-		{"a budget without a raise bound", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nbudget:\n  month_eur: 10\n  discretionary_eur: 10\n", "blob1", why, "",
-			409, raise},
-		{"a raise bound of zero", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nbudget:\n  month_eur: 10\n  raise_max_eur: 0\n  discretionary_eur: 10\n", "blob1", why, "",
-			409, raise},
-		{"a pool the file cannot hold", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nbudget:\n  month_eur: 10\n  raise_max_eur: 5\n  discretionary_eur: 1000000000000000000\n", "blob1", why, "",
-			409, "projects/demo-app.yaml holds a discretionary_eur the pool cannot take: a policy PR corrects it"},
+		{"a top-up of money the file does not set", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nescalation:\n  pool:\n    sessions: 10\n", "blob1",
+			poolChange{action: poolTopUp, eur: 5, reason: "why the pool moves", source: "blob1"}, "",
+			409, "projects/demo-app.yaml sets no escalation.pool.eur, so the pool's money is the policy's: set the pool instead of a top-up"},
+		{"an escalation block that is no mapping", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nescalation: always\n", "blob1", why, "",
+			409, "projects/demo-app.yaml holds an escalation block the pool cannot read: a policy PR corrects it"},
+		{"a pool the file cannot hold", "demo-app", poolFile("1000000000000000000"), "blob1", why, "",
+			409, "projects/demo-app.yaml holds an escalation.pool.eur the pool cannot take: a policy PR corrects it"},
 		{"a stale source", "demo-app", poolFile("8"), "blob2", why, "",
 			409, "projects/demo-app.yaml changed since the change was proposed (its blob is now blob2): read it again and propose the change anew"},
 		{"a change of nothing", "demo-app", poolFile("5"), "blob1", poolChange{action: poolSet, eur: 5, reason: "why the pool moves", source: "blob1"}, "",
@@ -527,19 +438,21 @@ func TestPoolPolicyWrite(t *testing.T) {
 		{"an amount over the pool's bound", "demo-app", poolFile("10"), "blob1", poolChange{action: poolSet, eur: 900000000001, reason: "why the pool moves", source: "blob1"}, "",
 			400, "a pool change's amount is too large"},
 		{"a file pool over the bound", "demo-app", poolFile("2000000000000"), "blob1", why, "",
-			409, "projects/demo-app.yaml holds a discretionary_eur the pool cannot take: a policy PR corrects it"},
+			409, "projects/demo-app.yaml holds an escalation.pool.eur the pool cannot take: a policy PR corrects it"},
 		{"a file pool in sub-cents", "demo-app", poolFile("10.005"), "blob1", why, "",
-			409, "projects/demo-app.yaml holds a discretionary_eur the pool cannot take: a policy PR corrects it"},
-		{"a budget shared through a YAML alias", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\ndefaults: &d\n  month_eur: 10\n  task_max_eur: 4\n  raise_max_eur: 5\n  discretionary_eur: 10\nbudget: *d\n", "blob1", why, "",
-			409, "projects/demo-app.yaml aliases its budget or its pool: a policy PR removes the YAML alias before a pool change"},
-		{"a pool shared through a YAML alias", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nautonomy: assisted\nbudget:\n  month_eur: 10\n  raise_max_eur: 5\n  discretionary_eur: &eur 10\n  task_max_eur: *eur\n", "blob1", why, "",
-			409, "projects/demo-app.yaml aliases its budget or its pool: a policy PR removes the YAML alias before a pool change"},
+			409, "projects/demo-app.yaml holds an escalation.pool.eur the pool cannot take: a policy PR corrects it"},
+		{"an escalation block shared through a YAML alias", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\ndefaults: &d\n  pool:\n    eur: 10\nescalation: *d\n", "blob1", why, "",
+			409, aliased},
+		{"a pool shared through a YAML alias", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nescalation:\n  pool: &p\n    eur: 10\n  card_draw: *p\n", "blob1", why, "",
+			409, aliased},
+		{"money shared through a YAML alias", "demo-app", "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\nescalation:\n  pool:\n    eur: &eur 10\n  card_draw:\n    eur: *eur\n", "blob1", why, "",
+			409, aliased},
 		{"a top-up over the pool's bound", "demo-app", poolFile("899999999999.99"), "blob1",
 			poolChange{action: poolTopUp, eur: 0.02, reason: "why the pool moves", source: "blob1"}, "",
 			409, "a top-up over the pool of projects/demo-app.yaml does not fit: propose a set of the target instead"},
 		{"a candidate the loader refuses", "demo-app", poolFile("10"), "blob1", why,
-			"projects/demo-app.yaml: budget.month_eur 60 is looser than policy.yaml's budget.month_eur 50",
-			422, "The project file would not load: projects/demo-app.yaml: budget.month_eur 60 is looser than policy.yaml's budget.month_eur 50"},
+			"projects/demo-app.yaml: escalation: card_draw.eur 4 is above pool.eur 3",
+			422, "The project file would not load: projects/demo-app.yaml: escalation: card_draw.eur 4 is above pool.eur 3"},
 	} {
 		t.Run(row.name, func(t *testing.T) {
 			infra.mu.Lock()
@@ -580,8 +493,7 @@ func TestPoolChangeAudit(t *testing.T) {
 	r, infra := poolWritesRig(t, "10")
 	next := 12.0
 	r.c.cfg.PolicyReload = func(context.Context) error {
-		r.ledger.files["demo-app"] = policy.ProjectConfig{Repository: "demo-app/demo-app",
-			Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: next}}
+		r.ledger.files["demo-app"] = poolLoaded(next)
 		return nil
 	}
 	_, s := r.loggedIn(t)
@@ -630,7 +542,7 @@ func TestPoolChangeAudit(t *testing.T) {
 // missing row to write by hand, and the change is never repeated.
 func TestPoolPolicyFailure(t *testing.T) {
 	const unloaded = "The pool change is merged as sf/infra#12, but the policy in force still holds the pool of demo-app at EUR 10.00: " +
-		"the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it."
+		"the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 12.00."
 	for _, row := range []struct {
 		name    string
 		seat    func(*testing.T) (*rig, *infraFake, *session)
@@ -651,12 +563,14 @@ func TestPoolPolicyFailure(t *testing.T) {
 			0, "", poolResult{}, 0},
 		{"a reload that answers while the policy in force holds the old pool", func(t *testing.T) (*rig, *infraFake, *session) {
 			r, infra := poolWritesRig(t, "10")
+			r.ledger.files["demo-app"] = poolLoaded(10)
 			r.c.cfg.PolicyReload = func(context.Context) error { return nil }
 			_, s := r.loggedIn(t)
 			return r, infra, s
 		}, "", http.StatusServiceUnavailable, unloaded, poolResult{from: 10, confirmed: 12, to: 12, pr: 12}, 1},
 		{"a reload that fails", func(t *testing.T) (*rig, *infraFake, *session) {
 			r, infra := poolWritesRig(t, "10")
+			r.ledger.files["demo-app"] = poolLoaded(10)
 			r.c.cfg.PolicyReload = func(context.Context) error { return errors.New("the loader is down") }
 			_, s := r.loggedIn(t)
 			return r, infra, s
@@ -665,8 +579,7 @@ func TestPoolPolicyFailure(t *testing.T) {
 			r, infra := poolWritesRig(t, "10")
 			next := 12.0
 			r.c.cfg.PolicyReload = func(context.Context) error {
-				r.ledger.files["demo-app"] = policy.ProjectConfig{Repository: "demo-app/demo-app",
-					Budget: &policy.ProjectBudget{MonthEUR: 10, DiscretionaryEUR: next}}
+				r.ledger.files["demo-app"] = poolLoaded(next)
 				return nil
 			}
 			r.events.fail = errors.New("the events store is down")
@@ -800,7 +713,7 @@ func TestPoolProposalDisplay(t *testing.T) {
 	if before.State != "pending" || before.Pool == nil || *before.Pool != want {
 		t.Fatalf("the top-up's restored state = %+v, want pending with %+v", before, want)
 	}
-	r.ledger.files["ai-software-factory-code"].Budget.DiscretionaryEUR = 25
+	r.ledger.files["ai-software-factory-code"].Escalation.Pool.EUR = 25
 	if moved := states()[tokens[0]]; moved.Pool == nil || *moved.Pool != want {
 		t.Errorf("the preview after the current policy moved = %+v, want the captured %+v", moved.Pool, want)
 	}

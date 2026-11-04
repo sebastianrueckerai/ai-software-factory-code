@@ -23,3 +23,14 @@ func TestPlural(t *testing.T) {
 		})
 	}
 }
+
+func TestAndList(t *testing.T) {
+	for _, tc := range []struct {
+		items []string
+		want  string
+	}{{nil, ""}, {[]string{"a"}, "a"}, {[]string{"a", "b"}, "a and b"}, {[]string{"a", "b", "c"}, "a, b and c"}} {
+		if got := AndList(tc.items); got != tc.want {
+			t.Errorf("AndList(%q) = %q, want %q", tc.items, got, tc.want)
+		}
+	}
+}

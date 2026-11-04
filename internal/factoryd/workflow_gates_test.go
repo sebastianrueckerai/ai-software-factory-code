@@ -43,6 +43,7 @@ type gateHarness struct {
 	audits       []AuditResult     // in order, the last repeating; empty: clear
 	auditErr     error
 	auditGates   []GateResults   // the gates each GateAudit call was given
+	auditRounds  []int           // the stages' round each GateAudit call was given
 	screened     int             // Screen calls
 	judged       []string        // JudgeScreening verdicts
 	merge        []MergeResult   // in order, the last repeating
@@ -163,12 +164,13 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return g.companions[min(ci, len(g.companions))-1], nil
 		})
 	a := 0
-	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).After(g.auditDelay).Return(
-		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults) (AuditResult, error) {
+	g.env.OnActivity(ActivityGateAudit, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.auditDelay).Return(
+		func(ctx context.Context, taskID string, pr PullRequest, commit string, gates GateResults, round int) (AuditResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			a++
 			g.steps = append(g.steps, "audit "+commit)
+			g.auditRounds = append(g.auditRounds, round)
 			g.auditGates = append(g.auditGates, gates)
 			if len(g.audits) == 0 {
 				return AuditResult{Verdict: AuditClear}, g.auditErr

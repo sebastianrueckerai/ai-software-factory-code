@@ -22,7 +22,7 @@ import (
 // request_image.
 func TestChatContextNamesTheSandboxImages(t *testing.T) {
 	today := time.Now().UTC().Format("2006-01-02")
-	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger"
+	status := "\n\nThe project now:\nToday is " + today + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger; pool: " + noDraws
 	for _, tc := range []struct {
 		agents string
 		pins   map[string]policy.ImagePin

@@ -197,7 +197,7 @@ var accessTable = map[string]accessRule{
 	"replan":           {need: approver, scope: scCard, what: "replan a card"},
 	"delete_comment":   rCard,
 	"set_autonomy":     {need: approver, scope: scChat, what: "change the autonomy level"},
-	"set_pool":         {need: approver, scope: scChat, what: "change the discretionary pool"},
+	"set_pool":         {need: approver, scope: scChat, what: "change the escalation pool"},
 	"routine_write":    {need: approver, scope: scChat, what: "change a routine"},
 	"routine_delete":   {need: approver, scope: scChat, what: "delete a routine"},
 	"routine_run":      {need: writer, scope: scChat},

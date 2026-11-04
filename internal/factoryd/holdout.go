@@ -10,9 +10,9 @@ import (
 	"net/http"
 	"regexp"
 	"slices"
-	"strconv"
 	"strings"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -98,12 +98,7 @@ var ErrNoHoldout = errors.New("no such hold-out")
 var ErrHoldoutClick = errors.New("the hold-out takes no such click now")
 
 var (
-	// holdoutMarker reads the dry run's marker line of one draft, as
-	// criterionMarker reads a criterion's: its index, exit, run and fail
-	// counts and one line of evidence.
-	holdoutMarker = regexp.MustCompile(`^__holdout ([0-9]+) exit=(-?[0-9]+) ran=([0-9]+) fail=([0-9]+)(?: (.*))?$`)
-	// holdoutID admits a hold-out id: the criterion charset, so a marker
-	// line cannot forge one.
+	// holdoutID admits a hold-out id: the criterion charset.
 	holdoutID = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
 	// holdoutTestName admits a drafted test's name.
 	holdoutTestName = regexp.MustCompile(`^Test[A-Za-z0-9_]*$`)
@@ -114,7 +109,6 @@ const (
 	maxHoldouts    = 5
 	maxHoldoutCode = 4 << 10
 	maxHoldoutText = 200
-	heredocMarker  = "FACTORYD_HOLDOUT"
 	holdoutPkg     = "holdout"
 )
 
@@ -124,61 +118,31 @@ func pullRef(pr int64) string { return fmt.Sprintf("refs/pull/%d/head", pr) }
 
 func branchRef(branch string) string { return "refs/heads/" + branch }
 
-// holdoutScript is the dry run: every draft written into a scratch
-// package of its own inside the repository, one go test per draft, the
-// markers alone on stdout, as criteriaScript runs the criteria.
-func holdoutScript(drafts []Holdout) string {
-	var b strings.Builder
-	for _, h := range drafts {
-		dir := fmt.Sprintf(".%s%d", holdoutPkg, h.Idx)
-		fmt.Fprintf(&b, "mkdir -p %s\ncat > %s/holdout_test.go <<'%s%d'\npackage %s\n%s\n%s%d\n", dir, dir, heredocMarker, h.Idx, holdoutPkg, h.TestCode, heredocMarker, h.Idx)
-		fmt.Fprintf(&b, "o=/tmp/ho%d\ngo test -v -run '^%s$' ./%s >\"$o\" 2>&1\nrc=$?\n", h.Idx, h.TestName, dir)
-		fmt.Fprintf(&b, "ran=$(grep -c '^=== RUN   %s$' \"$o\")\nfail=$(grep -c '^--- FAIL: %s ' \"$o\")\n", h.TestName, h.TestName)
-		b.WriteString(`ev=$(grep -m1 '^--- FAIL: ' "$o")
-[ -n "$ev" ] || ev=$(head -n 1 "$o")
-`)
-		fmt.Fprintf(&b, "printf '__holdout %d exit=%%s ran=%%s fail=%%s %%s\\n' \"$rc\" \"$ran\" \"$fail\" \"$ev\"\n", h.Idx)
-	}
-	return b.String()
+// holdoutEntry is a hold-out's id in the runner's list: criterionID
+// admits no hyphen, so it never meets a criterion's.
+func holdoutEntry(idx int) string { return fmt.Sprintf("holdout-%d", idx) }
+
+// holdoutProof is the dry run of one draft: its file written into a
+// scratch package of its own inside the repository, its test run there.
+func holdoutProof(h Holdout) harness.Proof {
+	dir := fmt.Sprintf(".%s%d", holdoutPkg, h.Idx)
+	return harness.Proof{ID: holdoutEntry(h.Idx), Suite: "./" + dir, Name: h.TestName,
+		File: &harness.ProofFile{Path: dir + "/holdout_test.go", Content: "package " + holdoutPkg + "\n" + h.TestCode + "\n"}}
 }
 
-// parseHoldoutMarkers reads the dry run's marker lines from the output
-// tail; the last marker of a draft wins.
-func parseHoldoutMarkers(output string) map[int]criterionVerdict {
-	out := map[int]criterionVerdict{}
-	for _, line := range strings.Split(output, "\n") {
-		m := holdoutMarker.FindStringSubmatch(line)
-		if m == nil {
-			continue
-		}
-		idx, _ := strconv.Atoi(m[1])
-		exit, _ := strconv.Atoi(m[2])
-		ran, _ := strconv.Atoi(m[3])
-		fail, _ := strconv.Atoi(m[4])
-		out[idx] = criterionVerdict{exit: exit, ranCount: ran, failCount: fail, evidence: m[5]}
-	}
-	return out
-}
-
-// holdoutDryVerdict judges one draft's marker: red is a hold-out's shape
+// holdoutDryVerdict judges one draft's outcome: red is a hold-out's shape
 // (the test runs and fails), green already passes (a guard to keep, or a
-// wrong test the audit settles later), unrunnable never ran (no such
-// test, or the code does not build).
-func holdoutDryVerdict(v criterionVerdict, ok bool) (dry, evidence string) {
-	if !ok {
-		return HoldoutUnrunnable, "no verdict from the run"
-	}
-	ev := shortenEvidence(v.evidence)
-	switch {
-	case v.failCount > 0:
+// wrong test the audit settles later), unrunnable is anything else (no
+// such test, a build that fails, a skip, no report).
+func holdoutDryVerdict(o proofOutcome) (dry, evidence string) {
+	ev := shortenEvidence(o.Message)
+	switch o.Outcome {
+	case proofFailed:
 		return "red", ev
-	case v.ranCount == 0:
-		return HoldoutUnrunnable, ev
-	case v.exit != 0:
-		return HoldoutUnrunnable, ev
-	default:
+	case proofPassed:
 		return "green", ev
 	}
+	return HoldoutUnrunnable, ev
 }
 
 // holdoutProposal is the review model's proposal of one hold-out, as its
@@ -251,29 +215,26 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 		return nil
 	}
 	defer done()
-	run := t
 	for pass := 0; ; pass++ {
-		pending := false
+		var pending []harness.Proof
 		for _, h := range drafts {
 			if h.DryVerdict == "" {
-				pending = true
+				pending = append(pending, holdoutProof(h))
 			}
 		}
-		if !pending || pass > 1 {
+		if len(pending) == 0 || pass > 1 {
 			break
 		}
-		run.ReproCommand = holdoutScript(drafts)
-		rep, err := r.runRepro(ctx, run, repo, branchRef(branch), head, "")
+		outcomes, err := r.runProofs(ctx, t, repo, branchRef(branch), head, "", pending)
 		if err != nil {
 			r.record(ctx, t.ID, "holdouts_not_drafted", map[string]any{"round": revision, "reason": "dry run: " + err.Error()})
 			return nil
 		}
-		markers := parseHoldoutMarkers(rep.Output)
 		for i, h := range drafts {
 			if h.DryVerdict != "" {
 				continue
 			}
-			drafts[i].DryVerdict, drafts[i].DryOutput = holdoutDryVerdict(markers[h.Idx], holdoutRan(markers, h.Idx))
+			drafts[i].DryVerdict, drafts[i].DryOutput = holdoutDryVerdict(outcomes[holdoutEntry(h.Idx)])
 			drafts[i].DryHead = head
 		}
 		if pass == 0 {
@@ -303,12 +264,6 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 	}
 	r.record(ctx, t.ID, "holdouts_proposed", map[string]any{"round": revision, "verdicts": verdicts})
 	return nil
-}
-
-// holdoutRan tells whether the run reported on idx at all.
-func holdoutRan(markers map[int]criterionVerdict, idx int) bool {
-	_, ok := markers[idx]
-	return ok
 }
 
 // gateHoldouts are the plan task's hold-outs the criteria gate runs: the
@@ -390,7 +345,7 @@ func (r *Runner) proposeHoldouts(ctx context.Context, t Task, revision int, p Pl
 		code := strings.TrimSpace(pr.TestCode)
 		criterion := strings.Join(strings.Fields(pr.Criterion), " ")
 		if !holdoutTestName.MatchString(name) || criterion == "" || len(criterion) > maxHoldoutText ||
-			code == "" || len(code) > maxHoldoutCode || strings.Contains(code, heredocMarker) ||
+			code == "" || len(code) > maxHoldoutCode ||
 			!strings.Contains(code, "func "+name+"(") {
 			continue
 		}
@@ -449,7 +404,7 @@ func (r *Runner) redraftHoldouts(ctx context.Context, t Task, p Plan, alias stri
 	out := map[string]string{}
 	for _, pr := range answer.Holdouts {
 		id, code := strings.TrimSpace(pr.ID), strings.TrimSpace(pr.TestCode)
-		if id != "" && code != "" && len(code) <= maxHoldoutCode && !strings.Contains(code, heredocMarker) {
+		if id != "" && code != "" && len(code) <= maxHoldoutCode {
 			out[id] = code
 		}
 	}
@@ -646,9 +601,6 @@ func (r *Runner) FileVerdict(ctx context.Context, in HoldoutVerdict) ([]string, 
 			if len(rewrite) > maxHoldoutCode {
 				findings = append(findings, fmt.Sprintf("file_verdict: the rewrite is longer than %d characters", maxHoldoutCode))
 			}
-			if strings.Contains(rewrite, heredocMarker) {
-				findings = append(findings, "file_verdict: the rewrite carries a marker the sandbox writes")
-			}
 			if !strings.Contains(rewrite, "func "+ho.TestName+"(") {
 				findings = append(findings, fmt.Sprintf("file_verdict: the rewrite keeps its test's name %s", ho.TestName))
 			}
@@ -840,14 +792,11 @@ func (r *Runner) rewriteOnBase(ctx context.Context, t Task, repo Repo, pr int64,
 		return "", "", err
 	}
 	defer done()
-	run := t
-	run.ReproCommand = holdoutScript([]Holdout{ho})
-	rep, err := r.runRepro(ctx, run, repo, pullRef(pr), commit, ho.DryHead)
+	outcomes, err := r.runProofs(ctx, t, repo, pullRef(pr), commit, ho.DryHead, []harness.Proof{holdoutProof(ho)})
 	if err != nil {
 		return "", "", err
 	}
-	m := parseHoldoutMarkers(rep.Output)
-	dry, ev := holdoutDryVerdict(m[ho.Idx], holdoutRan(m, ho.Idx))
+	dry, ev := holdoutDryVerdict(outcomes[holdoutEntry(ho.Idx)])
 	return dry, ev, nil
 }
 

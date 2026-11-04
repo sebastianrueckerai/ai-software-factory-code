@@ -309,7 +309,7 @@ func (k *ReleaseKeeper) question(ctx context.Context, name string, since, now ti
 	case 1:
 		q.Info += "\n\nPlan " + others[0] + " is open on main too: replan it from its drawer."
 	default:
-		q.Info += "\n\nPlans " + andList(others) + " are open on main too: replan them from their drawers."
+		q.Info += "\n\nPlans " + textutil.AndList(others) + " are open on main too: replan them from their drawers."
 	}
 	return q, nil
 }
@@ -320,7 +320,7 @@ func fixRefs(fixes []Task) string {
 	for i, f := range fixes {
 		refs[i] = fmt.Sprintf("#%d", f.IssueNumber)
 	}
-	return andList(refs)
+	return textutil.AndList(refs)
 }
 
 // hours is d in whole hours: "1 hour", "6 hours".

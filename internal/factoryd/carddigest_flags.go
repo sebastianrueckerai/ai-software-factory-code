@@ -16,14 +16,20 @@ const sessionNoPushBound = 2
 
 // expectedBudget is the budget card t holds when nothing moved it but its
 // events: its filing's budget plus every card_funded and card_extended
-// amount. The filing's budget is the one its card_created row records,
-// else, for a card filed before the rows recorded it, the policy's
-// (policy.CardBudget, as intake and the planner file a card).
+// amount. The filing's budget is the one its card_created row records.
+// A card filed before the rows recorded it starts from the budget its
+// size gate's row found, and counts the rows from that one on, else from
+// the policy's (policy.CardBudget, as intake and the planner file a card).
 func (r *Runner) expectedBudget(ctx context.Context, t Task, events []Event) (float64, error) {
 	var eur float64
 	filed := false
 	if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
 		eur, filed = events[i].Detail["budget_eur"].(float64)
+	}
+	if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardFunded && e.Detail["by"] == sizeGateBy }); !filed && i >= 0 {
+		if from, ok := events[i].Detail["from_eur"].(float64); ok {
+			eur, filed, events = from, true, events[i:]
+		}
 	}
 	if !filed {
 		p, _, err := r.store.ProjectByRepository(ctx, t.Repository)

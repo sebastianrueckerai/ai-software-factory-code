@@ -12,9 +12,9 @@ import (
 // each changed path takes the class of the first rule with a matching glob,
 // else Default, and the pull request takes the most severe class among its
 // paths, or class large over LargeLines. Classes are listed most severe
-// first. Only auto, on class normal,
-// merges without a human, and only where the project's merge rule is auto
-// and the reproduction and the model review say so.
+// first. Only auto, on class normal, and class high on a passed security
+// audit merge without a human, and only where the project's merge rule is
+// auto and the reproduction and the model review say so.
 type Risk struct {
 	// Classes are the risk classes, most severe first.
 	Classes []RiskClass `yaml:"classes" json:"classes"`

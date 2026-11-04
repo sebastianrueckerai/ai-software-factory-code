@@ -17,9 +17,9 @@ import (
 
 // casesFromEvent writes, inside the transaction tx that inserted event e,
 // what e does to its card's cases: an ask opens a case or appends a step
-// to it, an answer resolves the card's newest live ask, a withdrawal
-// withdraws it, a plan answer resolves its question's case, and a merge
-// request opens its merge case.
+// to it, an answer resolves the case it names or else the card's newest
+// live ask, a withdrawal withdraws it, a plan answer resolves its
+// question's case, and a merge request opens its merge case.
 func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error {
 	if e.TaskID == "" {
 		return nil
@@ -30,22 +30,28 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return err
 	case EventQuestionAnswered, EventSessionGranted:
 		// a grant is the console's answer at a session cap, as
-		// question_answered is the webhook's: one row per answer comment
-		id, err := newestAskCase(ctx, tx, e.TaskID)
-		if id == 0 {
-			return err
+		// question_answered is the webhook's: one row per answer comment.
+		// Act's row names the case it resolved itself.
+		comment, _ := toInt(e.Detail["comment"])
+		id, named := toInt(e.Detail["case_id"])
+		if !named {
+			ask, err := answeredAsk(ctx, tx, e.TaskID, int64(comment))
+			if ask == 0 {
+				return err
+			}
+			id = int(ask)
 		}
 		answer, _ := e.Detail["answer"].(string)
-		comment, _ := toInt(e.Detail["comment"])
-		return caseEnded(resolveCase(ctx, tx, id, CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: "answer",
+		action, _ := e.Detail["action"].(string)
+		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, caseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
-		id, err := newestAskCase(ctx, tx, e.TaskID)
-		if id == 0 {
+		c, err := newestAskCase(ctx, tx, e.TaskID)
+		if c.ID == 0 {
 			return err
 		}
 		reason, _ := e.Detail["reason"].(string)
-		return caseEnded(withdrawCase(ctx, tx, id, reason))
+		return caseEnded(withdrawCase(ctx, tx, c.ID, reason))
 	case EventPlanQuestionAnswered:
 		return resolvePlanCase(ctx, tx, e)
 	case EventApprovalRequested:
@@ -57,8 +63,28 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 }
 
 // askCase opens the case of question_asked event e, or appends a step to
-// the live case it asks again, and tells whether it opened one.
+// the live case it asks again, and tells whether it opened one. An ask
+// that names its case (OpenTrip's face) puts that case at the human with
+// its comment and appends the human's step, while the case is live and
+// the asking card's. One that names none, another card's case or a case
+// that ended goes by its words.
 func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
+	if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+		comment, _ := toInt(e.Detail["comment"])
+		err := tx.QueryRowContext(ctx, `UPDATE cases SET status = $3, comment_id = COALESCE(NULLIF($2::bigint, 0), comment_id)
+			WHERE id = $1 AND task_id = $4 AND `+caseLive+` RETURNING id`, id, comment, CaseAtHuman, e.TaskID).Scan(&id)
+		if err == nil {
+			step := CaseStep{CaseID: int64(id), Rung: 3, Actor: FactoryDecider}
+			if e.Detail["reason"] == healedReason {
+				step.Found = "asked again after a restart"
+			}
+			_, err = appendCaseStep(ctx, tx, step)
+			return false, err
+		}
+		if !errors.Is(err, sql.ErrNoRows) {
+			return false, err
+		}
+	}
 	t, err := scanTask(tx.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE id = $1`, e.TaskID).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return false, nil
@@ -84,9 +110,11 @@ func askCase(ctx context.Context, tx *sql.Tx, e Event) (bool, error) {
 		// a restart asks the question again in other words: its step goes
 		// to the card's live ask, whatever that ask's key
 		step.Found = "asked again after a restart"
-		if step.CaseID, err = newestAskCase(ctx, tx, t.ID); err != nil {
+		live, err := newestAskCase(ctx, tx, t.ID)
+		if err != nil {
 			return false, err
 		}
+		step.CaseID = live.ID
 	}
 	opened := false
 	if step.CaseID == 0 {
@@ -151,7 +179,7 @@ var caseSourceKinds = map[string]CaseKind{
 	"budget": CaseBudgetFloor, SourceMonthCap: CaseMonthCap, "project_cap": CaseProjectCap, "day_cap": CaseDayCap,
 	"provider": CaseProviderRefused, "queue": CaseGateStop, "capacity": CasePodNeverStarted, "no_answer": CaseNoAnswer,
 	"content_filter": CaseContentFilter, "image": CaseImageWait, "agent": CaseAgentEscalate, SourceChat: CaseAgentEscalate,
-	"stale": CaseWaitExpired,
+	"stale": CaseWaitExpired, SourceDependencyFailed: CaseDependencyFailed,
 }
 
 // caseKindOf maps the ask's source and reason prefixes to a CaseKind,
@@ -323,17 +351,51 @@ func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, no
 	return CaseResolved, resolveCase(ctx, q, id, CaseResolution{By: by, Rung: caseRung(by), Action: action, Reason: note})
 }
 
-// newestAskCase is the id of task taskID's newest live case an answer on
-// the card ends, 0 for none: not a merge, which its request's decision
-// ends, nor a plan question, which its own answer does.
-func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (int64, error) {
-	var id int64
-	err := q.QueryRowContext(ctx, `SELECT id FROM cases WHERE task_id = $1 AND `+caseLive+` AND kind NOT IN ($2, $3, $4)
-		ORDER BY id DESC LIMIT 1`, taskID, CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation).Scan(&id)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, nil
+// ownAnswerKinds are the cases an answer on the card does not end: a
+// merge, which its request's decision ends, and a plan question, which its
+// own answer ends. newestAskCase leaves them out.
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation}
+
+// AnsweredOnCard reports whether an answer on the card ends a case of
+// kind k: every kind but ownAnswerKinds, whose own answers end them.
+func AnsweredOnCard(k CaseKind) bool { return !slices.Contains(ownAnswerKinds, k) }
+
+// NewestAskCase is task taskID's newest live case an answer on the card
+// ends, the zero Case for none (newestAskCase): the one read the trips,
+// Act and the console find a card's live ask by.
+func (s *PGStore) NewestAskCase(ctx context.Context, taskID string) (Case, error) {
+	return newestAskCase(ctx, s.db, taskID)
+}
+
+// newestAskCase is task taskID's newest live case an answer on the card
+// ends, the zero Case for none: not one of ownAnswerKinds.
+func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (Case, error) {
+	kinds := make([]string, len(ownAnswerKinds))
+	for i, k := range ownAnswerKinds {
+		kinds[i] = string(k)
 	}
-	return id, err
+	c, err := scanCase(q.QueryRowContext(ctx, `SELECT `+caseColumns+` FROM cases WHERE task_id = $1 AND `+caseLive+` AND NOT kind = ANY($2::text[])
+		ORDER BY id DESC LIMIT 1`, taskID, kinds))
+	if errors.Is(err, sql.ErrNoRows) {
+		return Case{}, nil
+	}
+	return c, err
+}
+
+// answeredAsk is the case the answer comment comment (0 for none) of task
+// taskID ends when its row names none: the newest live ask, or none when
+// the comment answered a case already, as when Act resolved its case
+// before the webhook's copy of the comment came.
+func answeredAsk(ctx context.Context, q rowQuerier, taskID string, comment int64) (int64, error) {
+	if comment != 0 {
+		var answered bool
+		if err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM cases WHERE task_id = $1 AND NOT (`+caseLive+`)
+			AND resolution->'args'->>'comment' = $2::bigint::text)`, taskID, comment).Scan(&answered); err != nil || answered {
+			return 0, err
+		}
+	}
+	c, err := newestAskCase(ctx, q, taskID)
+	return c.ID, err
 }
 
 // newestEndedCase is the id of task taskID's newest resolved or withdrawn

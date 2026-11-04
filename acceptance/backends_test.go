@@ -597,12 +597,14 @@ func (s *acceptanceStore) ProjectByRepository(context.Context, string) (factoryd
 	return factoryd.Project{}, false, nil
 }
 
-// SetTaskUsage keeps the console's raises, as the store does.
+// SetTaskUsage keeps the console's raises and lowers no check-in share,
+// as the store does.
 func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.TaskUsage) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
-	u.RaisedSessions, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
 	return nil
@@ -1055,12 +1057,15 @@ func (s *acceptanceStore) MoveDependents(_ context.Context, from, to string) ([]
 	return moved, nil
 }
 
-func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ *factoryd.FundBounds, _ factoryd.Event) (float64, float64, error) {
+func (s *acceptanceStore) FundCard(_ context.Context, id string, eur, ceiling float64, _ factoryd.Event) (float64, float64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok {
 		return 0, 0, factoryd.ErrNotFound
+	}
+	if bound := cmp.Or(t.CeilingEUR, ceiling); bound > 0 && factoryd.Cents(t.BudgetEUR)+factoryd.Cents(eur) > factoryd.Cents(bound) {
+		return 0, 0, &factoryd.CardCapError{Budget: t.BudgetEUR}
 	}
 	from := t.BudgetEUR
 	t.BudgetEUR += eur
@@ -1068,19 +1073,61 @@ func (s *acceptanceStore) FundCard(_ context.Context, id string, eur float64, _ 
 	return from, t.BudgetEUR, nil
 }
 
-func (s *acceptanceStore) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
+// extendCard raises card id's caps by d and lines, as PGStore's drawCase does.
+func (s *acceptanceStore) extendCard(id string, d policy.Draw, lines, shares int, runGrants bool) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t, ok := s.tasks[id]
 	if !ok {
-		return 0, 0, factoryd.ErrNotFound
+		return factoryd.ErrNotFound
 	}
-	from := t.BudgetEUR
-	t.BudgetEUR += eur
-	t.Usage.ExtraAttempts += sessions
+	t.BudgetEUR += d.EUR
+	if !runGrants {
+		t.Usage.RaisedSessions += d.Sessions
+		t.Usage.RaisedTime += d.AgentTime
+	}
 	t.Usage.ExtraLines += lines
+	t.Usage.ExtraCheckinShare += shares
 	s.tasks[id] = t
-	return from, t.BudgetEUR, nil
+	return nil
+}
+
+// PoolDrawn and CardDrawn: this store keeps no event rows, so nothing is
+// drawn.
+func (s *acceptanceStore) PoolDrawn(context.Context, string, time.Time) (policy.Draw, error) {
+	return policy.Draw{}, nil
+}
+
+func (s *acceptanceStore) CardDrawn(context.Context, string) (policy.Draw, error) {
+	return policy.Draw{}, nil
+}
+
+// DrawCard raises the ceiling, extends and funds the card in turn: this
+// store keeps no event rows and weighs no pool.
+func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.CaseDraw) error {
+	if d.Raise != 0 {
+		s.mu.Lock()
+		t, ok := s.tasks[id]
+		if ok {
+			t.CeilingEUR = cmp.Or(t.CeilingEUR, d.PolicyCeiling) + d.Raise
+			s.tasks[id] = t
+		}
+		s.mu.Unlock()
+		if !ok {
+			return factoryd.ErrNotFound
+		}
+	}
+	if !d.Extend.IsZero() || d.Lines > 0 || d.Shares > 0 {
+		if err := s.extendCard(id, d.Extend, d.Lines, d.Shares, d.RunGrants); err != nil {
+			return err
+		}
+	}
+	if d.FundEUR > 0 {
+		if _, _, err := s.FundCard(ctx, id, d.FundEUR, d.PolicyCeiling, d.Event); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {
@@ -1297,7 +1344,7 @@ func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
 
-func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution) error {
+func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep) error {
 	return nil
 }
 
@@ -1309,6 +1356,10 @@ func (s *acceptanceStore) CaseByID(context.Context, int64) (factoryd.Case, error
 
 func (s *acceptanceStore) OpenCasesOf(context.Context, string) ([]factoryd.Case, error) {
 	return nil, nil
+}
+
+func (s *acceptanceStore) NewestAskCase(context.Context, string) (factoryd.Case, error) {
+	return factoryd.Case{}, nil
 }
 
 func (s *acceptanceStore) CasesOf(context.Context, string) ([]factoryd.Case, error) {
@@ -1358,4 +1409,17 @@ func (s *acceptanceStore) MarkReverted(context.Context, string, time.Time) (bool
 
 func (s *acceptanceStore) ClearRevertPause(context.Context, string, string) error {
 	return nil
+}
+
+// The acceptance store's usage snapshot keeps the check-in's extra share
+// as PGStore's does: it writes every counter but lowers no share.
+func TestAcceptanceStoreKeepsTheCheckinShare(t *testing.T) {
+	s := newAcceptanceStore()
+	s.tasks["t1"] = factoryd.Task{ID: "t1", Usage: factoryd.TaskUsage{ExtraCheckinShare: 1}}
+	if err := s.SetTaskUsage(t.Context(), "t1", factoryd.TaskUsage{Attempts: 2}); err != nil {
+		t.Fatal(err)
+	}
+	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
+		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
+	}
 }

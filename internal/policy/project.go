@@ -269,6 +269,11 @@ type ProjectConfig struct {
 	// project has no cap of its own. Stricter wins: bounded by policy.yaml's
 	// budget.month_eur and budget.task_max_eur; a looser file is rejected.
 	Budget *ProjectBudget `yaml:"budget,omitempty" json:"budget,omitempty"`
+	// Escalation is the project's escalation block, its keys over
+	// policy.yaml's. Stricter wins: bounded by policy.yaml's escalation,
+	// each part of the pool and the card draw at most the policy's. A
+	// looser file is rejected.
+	Escalation *Escalation `yaml:"escalation,omitempty" json:"escalation,omitempty"`
 	// WorkInProgress is how many of the project's cards hold a work slot
 	// at once (waiting on a dependency, working, in review or waiting on a
 	// human); a queued card starts only under it. Absent: the default, 5.
@@ -456,11 +461,6 @@ type ProjectBudget struct {
 	// TaskMaxEUR is the project's own maximum for one card, up to the
 	// policy's task_max_eur; absent: a large card's budget.
 	TaskMaxEUR float64 `yaml:"task_max_eur,omitempty" json:"task_max_eur,omitempty"`
-	// DiscretionaryEUR is the monthly pool the project agent funds cards
-	// from at autonomous and full auto; absent: no pool.
-	DiscretionaryEUR float64 `yaml:"discretionary_eur,omitempty" json:"discretionary_eur,omitempty"`
-	// RaiseMaxEUR is the most one fund call raises a card; absent: none.
-	RaiseMaxEUR float64 `yaml:"raise_max_eur,omitempty" json:"raise_max_eur,omitempty"`
 }
 
 // SeedTokens name, for a seed project, which of factoryd's seeded Forgejo
@@ -703,11 +703,10 @@ func (p ProjectConfig) Validate(name string) error {
 	if p.Budget != nil && p.Budget.MonthEUR < 0 {
 		bad("budget.month_eur must not be negative (0 stops the project's spend)")
 	}
-	if p.Budget != nil && (p.Budget.DiscretionaryEUR < 0 || p.Budget.RaiseMaxEUR < 0) {
-		bad("budget.discretionary_eur and budget.raise_max_eur must not be negative")
-	}
-	if b := p.Budget; b != nil && b.DiscretionaryEUR > 0 && b.RaiseMaxEUR <= 0 {
-		bad("budget.discretionary_eur %g needs budget.raise_max_eur above 0: every raise would refuse", b.DiscretionaryEUR)
+	if p.Escalation != nil {
+		if err := p.Escalation.validate(); err != nil {
+			bad("%v", err)
+		}
 	}
 	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
 		bad("model %q: want one of %v", p.Model, ModelValues)
@@ -791,8 +790,8 @@ func (p ProjectConfig) Validate(name string) error {
 }
 
 // checkBounds: a project file may only tighten what policy.yaml bounds
-// (stricter wins): each quota, envelope, standing and budget value at most
-// the policy's, each server type one the policy lists.
+// (stricter wins): each quota, envelope, standing, budget and escalation
+// value at most the policy's, each server type one the policy lists.
 func (d Document) checkBounds(name string, p ProjectConfig) error {
 	var errs []error
 	looser := func(field string, v, bound any, policyField string) {
@@ -835,6 +834,21 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 	if b := p.Budget; b != nil {
 		number("budget.month_eur", b.MonthEUR, d.Budget.MonthEUR, "budget.month_eur")
 		number("budget.task_max_eur", b.TaskMaxEUR, d.Budget.TaskMaxEUR, "budget.task_max_eur")
+	}
+	if e := p.Escalation; e != nil {
+		bounds := d.escalationOf(ProjectConfig{}).draws()
+		for i, draw := range e.draws() {
+			b := bounds[i].d.parts()
+			for j, part := range draw.d.parts() {
+				if part.n > b[j].n {
+					field := "escalation." + draw.key + "." + part.key
+					looser(field, part.show, b[j].show, field)
+				}
+			}
+		}
+		if err := d.escalationOf(p).checkDraw(); err != nil {
+			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
+		}
 	}
 	if p.Chat != nil {
 		number("chat.monthly_eur", p.Chat.MonthlyEUR, d.ChatOf(ProjectConfig{}).MonthlyEUR, "chat.monthly_eur")

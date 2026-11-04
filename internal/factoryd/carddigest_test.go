@@ -334,6 +334,10 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "budget_eur": 7.0})
 		}, []DigestFlag{{"budget_moved_no_event", "9.00 EUR not 7.00 EUR"}}},
 		{"a human card, which spends no budget", func(c *Task) { c.Kind, c.BudgetEUR = "human", 0 }, nil, nil},
+		{"a budget the size gate moved on a card filed before the rows recorded it", func(c *Task) { c.Size, c.BudgetEUR = "small", 5 }, func(t *testing.T, g digestRig) {
+			g.event(1, EventCardFunded, FactoryDecider, map[string]any{"size": "small", "from_eur": 5.0, "to_eur": 4.0, "amount_eur": -1.0, "by": "size gate"})
+			g.event(2, EventCardFunded, "sebastian", map[string]any{"amount_eur": 1.0})
+		}, nil},
 		{"a budget a fund and an extend moved", func(c *Task) { c.BudgetEUR = 7.5 }, func(t *testing.T, g digestRig) {
 			g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 2.0})
 			g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "lines": 0, "amount_eur": 0.5})
@@ -367,6 +371,27 @@ func TestCardDigestWithoutATimelineRendersTheEventsAlone(t *testing.T) {
 	want := "#1410 · budget 5.00 spent 1.00 holds 0.00 EUR · waiting-human\n" +
 		"   1 +0:00   filed by webhook       → direct card\n" +
 		"   2 +0:30   ask                    → agent_escalate: Which file should change?\n" +
+		"flags: none\n"
+	if got := g.digest(t).Render(); got != want {
+		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A raise of the ceiling is a step of its own, which names the ceiling it
+// raised to, and an extend that bought agent time says so beside its
+// sessions; an extend without agent time reads as it always did.
+func TestCardDigestReadsTheCeilingAndTheAgentTime(t *testing.T) {
+	g := newDigestRig(func(c *Task) { c.BudgetEUR = 5.5 })
+	g.event(1, EventCardFunded, "sebastian", map[string]any{"ceiling_eur": 9.0, "amount_eur": 0.0, "from_eur": 5.0, "to_eur": 5.0})
+	g.event(2, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "agent_time_s": 1800, "lines": 0, "amount_eur": 0.0})
+	g.event(3, EventCardExtended, "sebastian", map[string]any{"sessions": 2, "agent_time_s": 0, "lines": 100, "amount_eur": 0.5})
+	g.event(4, EventCardExtended, "sebastian", map[string]any{"sessions": 0, "agent_time_s": 0, "lines": 0, "checkin_shares": 1, "amount_eur": 0.0})
+	want := "#1410 · budget 5.50 spent 0.00 holds 0.00 EUR · slot held · running\n" +
+		"   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:01   ceiling by sebastian   → raised to 9.00 EUR\n" +
+		"   3 +0:02   extended by sebastian  → 1 session, 30 minutes of agent time, 0 lines, 0.00 EUR\n" +
+		"   4 +0:03   extended by sebastian  → 2 sessions, 100 lines, 0.50 EUR\n" +
+		"   5 +0:04   extended by sebastian  → 0 sessions, 1 check-in share, 0 lines, 0.00 EUR\n" +
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
@@ -437,10 +462,120 @@ func TestCardDigestReadsEveryStepKind(t *testing.T) {
 		"  15 +0:16   answer by sebastian    → Keep the table\n" +
 		"  16 +0:17   merged                 → pull request #12\n" +
 		"  17 +0:18   ended                  → done\n" +
-		"  18 +0:19   criteria by factoryd   → C1 met, C2 undecided\n" +
+		"  18 +0:19   criteria by review     → C1 met, C2 undecided\n" +
 		"  19 +0:20   criteria by sebastian  → C2 met\n" +
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// stateGuardLine is the gate's line for a test that failed; its id is the
+// first 12 hex of the sha256 of the lowercased text, by sha256sum.
+const (
+	stateGuardLine = "criterion state_guard: TestState in ./internal/auth failed: Failed --- FAIL: TestState (0.01s)"
+	stateGuardID   = "765189771a32"
+)
+
+// The gate writes its rows before its line: the step stands at the line's
+// start, before the rows it produced.
+func TestCardDigestShowsTheGatesRunAsAProofsStep(t *testing.T) {
+	g := newDigestRig(nil)
+	loginLine := "criterion green_login: TestLogin in ./internal/auth passed"
+	g.line(t, 32, "gate_criteria", map[string]any{"pr": 12, "commit": "8e3a1b0c9d", "started": rfc3339(digestAt(29)),
+		"proofs": []gateProof{
+			{ID: "green_login", Kind: CriterionTest, Suite: "./internal/auth", Name: "TestLogin", Outcome: proofPassed, Met: true, Line: loginLine},
+			{ID: "state_guard", Kind: CriterionTest, Suite: "./internal/auth", Name: "TestState", Outcome: proofFailed, Line: stateGuardLine,
+				Message: "Failed\n--- FAIL: TestState (0.01s)"},
+			{ID: "all_green", Kind: CriterionInvariant, Suite: "./...", Outcome: proofPassed, Met: true,
+				Line: "criterion all_green: suite ./... passed (1200 passed, 14 skipped)", Message: "1200 passed, 14 skipped"}},
+		"holdouts": []map[string]any{{"id": "holdout-1", "verdict": "red"}}, "findings": []string{stateGuardLine}})
+	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": {
+		{Criterion: "green_login", Verdict: "met", Source: CriteriaSourceGate, DecidedBy: FactoryDecider, Evidence: loginLine, CreatedAt: digestAt(31)},
+		{Criterion: "state_guard", Verdict: "unmet", Source: CriteriaSourceGate, DecidedBy: FactoryDecider, Evidence: stateGuardLine, CreatedAt: digestAt(31)},
+	}}
+	d := g.digest(t)
+	want := []DigestStep{
+		{Kind: "proofs", Actor: "gate", Outcome: "at 8e3a1b0: 1 met, 1 unmet, invariant ./... green, findings " + stateGuardID,
+			Findings: []string{stateGuardID}},
+		{Kind: "criteria", Actor: "gate", Outcome: "green_login met, state_guard unmet"},
+	}
+	if len(d.Steps) != 3 || d.Steps[0].Kind != "filed" || !d.Steps[1].At.Equal(digestAt(29)) {
+		t.Fatalf("Steps = %+v, want filed, proofs at +0:29, criteria", d.Steps)
+	}
+	for i, w := range want {
+		if s := d.Steps[i+1]; s.Kind != w.Kind || s.Actor != w.Actor || s.Outcome != w.Outcome || !slices.Equal(s.Findings, w.Findings) {
+			t.Fatalf("step %d = %+v, want %+v", i+2, s, w)
+		}
+	}
+	render := d.Render()
+	for _, w := range []string{"proofs by gate", "criteria by gate"} {
+		if !strings.Contains(render, w) {
+			t.Fatalf("Render =\n%s\nwant it to hold %q", render, w)
+		}
+	}
+	proofs, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(2): %v", err)
+	}
+	for _, w := range []string{"\npull request #12 at 8e3a1b0c9d\n", "\ngreen_login met: " + loginLine + "\n",
+		"\nstate_guard unmet: " + stateGuardLine + "\n  Failed\n  --- FAIL: TestState (0.01s)\n",
+		"\nall_green met: criterion all_green: suite ./... passed (1200 passed, 14 skipped)\n  1200 passed, 14 skipped\n"} {
+		if !strings.Contains(proofs, w) {
+			t.Fatalf("CardStep(2) =\n%s\nwant it to hold\n%s", proofs, w)
+		}
+	}
+	verdicts, err := g.r.CardStep(context.Background(), "t1410", 3, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(3): %v", err)
+	}
+	if w := "state_guard unmet, source gate\n  evidence: " + stateGuardLine; !strings.Contains(verdicts, w) {
+		t.Fatalf("CardStep(3) =\n%s\nwant it to hold\n%s", verdicts, w)
+	}
+	for _, surface := range []string{render, proofs} {
+		for _, hidden := range []string{"door_state", "holdout"} {
+			if strings.Contains(surface, hidden) {
+				t.Fatalf("a digest surface holds %q:\n%s", hidden, surface)
+			}
+		}
+	}
+}
+
+func TestCardDigestReadsEveryShapeOfTheGatesLine(t *testing.T) {
+	g := newDigestRig(nil)
+	g.line(t, 5, "gate_criteria", map[string]any{"pr": 9, "commit": "c1", "criteria": []map[string]any{{"id": "a", "verdict": "no test", "exit": 1}}})
+	g.line(t, 6, "gate_criteria", map[string]any{"pr": 9, "commit": "c1", "skipped": "not the plan's integration card"})
+	g.line(t, 7, "gate_criteria", map[string]any{"pr": 9, "commit": "c2c2c2c2", "proofs": []gateProof{},
+		"findings": []string{"criteria gate: the plan names no criteria"}})
+	g.line(t, 8, "gate_criteria", map[string]any{"pr": 9, "commit": "c3c3c3c3", "start_failed": "image pull: container fetch waits with ErrImagePull"})
+	d, err := g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatalf("CardDigest: %v", err)
+	}
+	var kinds []string
+	for _, s := range d.Steps {
+		kinds = append(kinds, s.Kind)
+	}
+	if want := []string{"filed", "proofs", "proofs"}; !slices.Equal(kinds, want) {
+		t.Fatalf("step kinds = %v, want %v", kinds, want)
+	}
+	if !d.Steps[1].At.Equal(digestAt(7)) || !d.Steps[2].At.Equal(digestAt(8)) {
+		t.Fatalf("proofs steps at %s and %s, want their lines' times with no started: +0:07 and +0:08", d.Steps[1].At, d.Steps[2].At)
+	}
+	for i, w := range []string{"at c2c2c2c: no criterion ran, findings 1f2887f692d5",
+		"at c3c3c3c: the sandbox did not start: image pull: container fetch waits with ErrImagePull"} {
+		if got := d.Steps[i+1].Outcome; got != w {
+			t.Fatalf("step %d outcome = %q, want %q", i+2, got, w)
+		}
+	}
+	for n, w := range map[int]string{2: "\n- 1f2887f692d5 criteria gate: the plan names no criteria\n",
+		3: "\nstart failed: image pull: container fetch waits with ErrImagePull\n"} {
+		got, err := g.r.CardStep(context.Background(), "t1410", n, "card", readPointer)
+		if err != nil {
+			t.Fatalf("CardStep(%d): %v", n, err)
+		}
+		if !strings.Contains(got, w) {
+			t.Fatalf("CardStep(%d) =\n%s\nwant it to hold\n%s", n, got, w)
+		}
 	}
 }

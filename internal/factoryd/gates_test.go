@@ -505,19 +505,20 @@ func TestParseReview(t *testing.T) {
 		"strict asked, true":  {`{"verdict":"approve","summary":"s","strict_improvement":true}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &yes}, "", true},
 		"strict asked, false": {`{"verdict":"approve","summary":"s","strict_improvement":false}`, Review{Verdict: "approve", Summary: "s", StrictImprovement: &no}, "", true},
 
-		"strict missing":       {`{"verdict":"approve","summary":"s"}`, Review{Verdict: "approve", Summary: "s"}, "", false},
-		"approve":              {`{"verdict":"approve","summary":"fine","findings":[]}`, Review{Verdict: "approve", Summary: "fine"}, "", false},
-		"concerns, fenced":     {"```json\n{\"verdict\":\"concerns\",\"summary\":\"s\",\"findings\":[\"a.go: x\",\" \"]}\n```", Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}}, "", false},
-		"not json":             {"looks good to me", Review{}, "model review answer invalid", false},
-		"unknown verdict":      {`{"verdict":"merge","summary":"s"}`, Review{}, `unknown verdict "merge"`, false},
-		"extra field":          {`{"verdict":"approve","summary":"s","merge":true}`, Review{}, `unknown field "merge"`, false},
-		"no summary":           {`{"verdict":"approve","summary":" "}`, Review{}, "no summary", false},
-		"trailing text":        {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
-		"a note smuggled":      {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
-		"an overrule smuggled": {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
-		"a drop smuggled":      {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
-		"criteria smuggled":    {`{"verdict":"approve","summary":"s","criteria":[{"criterion":"c1","verdict":"met"}]}`, Review{}, "criteria is not an answer field", false},
-		"behaviours smuggled":  {`{"verdict":"approve","summary":"s","behaviours":["it works"]}`, Review{}, "behaviours is not an answer field", false},
+		"strict missing":         {`{"verdict":"approve","summary":"s"}`, Review{Verdict: "approve", Summary: "s"}, "", false},
+		"approve":                {`{"verdict":"approve","summary":"fine","findings":[]}`, Review{Verdict: "approve", Summary: "fine"}, "", false},
+		"concerns, fenced":       {"```json\n{\"verdict\":\"concerns\",\"summary\":\"s\",\"findings\":[\"a.go: x\",\" \"]}\n```", Review{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}}, "", false},
+		"not json":               {"looks good to me", Review{}, "model review answer invalid", false},
+		"unknown verdict":        {`{"verdict":"merge","summary":"s"}`, Review{}, `unknown verdict "merge"`, false},
+		"extra field":            {`{"verdict":"approve","summary":"s","merge":true}`, Review{}, `unknown field "merge"`, false},
+		"no summary":             {`{"verdict":"approve","summary":" "}`, Review{}, "no summary", false},
+		"trailing text":          {`{"verdict":"approve","summary":"s"} ok`, Review{}, "text after the JSON object", false},
+		"a note smuggled":        {`{"verdict":"approve","summary":"s","note":"n"}`, Review{}, "note is not an answer field", false},
+		"an overrule smuggled":   {`{"verdict":"approve","summary":"s","adjudicated":{"a.go: x":{"by":"sebastian"}}}`, Review{}, "adjudicated is not an answer field", false},
+		"a drop smuggled":        {`{"verdict":"approve","summary":"s","dropped":[{"finding":"x"}]}`, Review{}, "dropped is not an answer field", false},
+		"criteria smuggled":      {`{"verdict":"approve","summary":"s","criteria":[{"criterion":"c1","verdict":"met"}]}`, Review{}, "criteria is not an answer field", false},
+		"behaviours smuggled":    {`{"verdict":"approve","summary":"s","behaviours":["it works"]}`, Review{}, "behaviours is not an answer field", false},
+		"gate criteria smuggled": {`{"verdict":"approve","summary":"s","gate_criteria":{"ids":["c1"],"integration":true}}`, Review{}, "gate_criteria is not an answer field", false},
 	} {
 		t.Run(name, func(t *testing.T) {
 			got := parseReview(tc.in)
@@ -1460,7 +1461,10 @@ func TestRequestApprovalNamesTheReviewThatDidNotRun(t *testing.T) {
 // count and the last review's note, and the merge ask is on the human's
 // surface again with the refused review named — filed anew from the
 // pressed request's spec, or re-opened when it names the note already.
-// A row for every criterion, whatever its verdict, merges.
+// When the criteria without a row are all the gate's, the refusal names
+// the gate and no model review; when some are the gate's and some the
+// review's, it names each by id. A row for every criterion, whatever its
+// verdict, merges.
 func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 	const base = "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"
 	note := "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
@@ -1474,9 +1478,12 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		asks    int // merge requests filed in all
 		ask     string
 	}{
-		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 2, named},
-		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the model review did not run (" + note + ")", 1, named},
-		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged by a model review", 1, base},
+		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run (" + note + ") for c3", 2, named},
+		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run (" + note + ") for c3", 1, named},
+		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and no model review judged c3", 1, base},
+		{"the review's alone", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}}, "the merge is held: 1 criterion was never judged, the model review did not run (" + note + ")", 2, named},
+		{"the review's alone, judged", "", base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}}, "the merge is held: 1 criterion was never judged by a model review", 1, base},
+		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met"}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
 		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "met"}}, "", 1, base},
 	} {
 		task := gateTask
@@ -1484,7 +1491,10 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 		r, store, _ := newGateRunner(t, task, fj)
 		ctx := context.Background()
-		b, _ := json.Marshal(criteriaPlan())
+		// c1 is the gate's, c3 the review's
+		p := criteriaPlan()
+		p.Criteria[2].Kind = CriterionJudgement
+		b, _ := json.Marshal(p)
 		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 			t.Fatal(err)
 		}
@@ -1512,6 +1522,8 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		}
 		if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], c.refusal) {
 			t.Errorf("%s: comments %q, want one naming the hold", c.name, fj.comments)
+		} else if strings.Contains(fj.comments[0], "model review") == (c.name == "the gate never ran") {
+			t.Errorf("%s: comment %q names the model review only when a criterion is the review's", c.name, fj.comments[0])
 		}
 		if len(store.approvals) != c.asks {
 			t.Errorf("%s: %d merge requests, want %d", c.name, len(store.approvals), c.asks)
@@ -1544,7 +1556,10 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
 	fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
 	r, store, _ := newGateRunner(t, task, fj)
-	b, _ := json.Marshal(criteriaPlan())
+	// c3 is the review's, so the hold names its note
+	p := criteriaPlan()
+	p.Criteria[2].Kind = CriterionJudgement
+	b, _ := json.Marshal(p)
 	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 		t.Fatal(err)
 	}
@@ -1574,7 +1589,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 	pending, _ := store.ApprovalRequests(ctx, "pending")
 	if len(fj.merges) != 0 || len(pending) != 1 || !strings.HasSuffix(pending[0].Reason, ". The model review did not run: "+note) ||
-		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the model review did not run ("+note+")" {
+		pending[0].DecisionNote != "waiting: the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run ("+note+") for c3" {
 		t.Fatalf("merges %d, pending %+v: want no merge and the ask naming the note", len(fj.merges), pending)
 	}
 	// rows that landed between the read and the hold leave nothing held:
@@ -2503,7 +2518,7 @@ func TestGateReproductionRunsTheCommandInASandbox(t *testing.T) {
 	if got := envOf(parsed.Spec.InitContainers); got != "harness: ; fetch: MODE REPO_URL REPO_TOKEN PR_REF REPO_SHA" {
 		t.Fatalf("init containers = %s", got)
 	}
-	if got := envOf(parsed.Spec.Containers); got != "worker: MODE TASK_ID REPRO_COMMAND REPRO_TIMEOUT GOPATH GOMODCACHE GOCACHE npm_config_cache PATH GATEWAY_URL EGRESS_CANARY EGRESS_DIRECT_IP" {
+	if got := envOf(parsed.Spec.Containers); got != "worker: MODE REPRO_COMMAND TASK_ID REPRO_TIMEOUT GOPATH GOMODCACHE GOCACHE npm_config_cache PATH GATEWAY_URL EGRESS_CANARY EGRESS_DIRECT_IP" {
 		t.Fatalf("containers = %s", got)
 	}
 	if calls := strings.Join(hub.calls, "\n"); !strings.Contains(calls, "mint task-t1-base read:repository sf/repo") || strings.Contains(calls, "write:repository") {
@@ -3106,6 +3121,24 @@ func TestAForbiddenChangeAlwaysAsksAHuman(t *testing.T) {
 	}
 }
 
+// A diff touching check, the criteria runner's entry point, is class
+// runner above class high, and asks a person at full auto with a clean
+// audit: it takes no merge on the audit as class high does.
+func TestARunnerChangeAlwaysAsksAHuman(t *testing.T) {
+	yaml := strings.Replace(testPolicyYAML, "    - {name: high,", "    - {name: runner, outcome: requires_approval}\n    - {name: high,", 1)
+	yaml = strings.Replace(yaml, "    - {class: high,", "    - {class: runner, paths: [check, scripts/pg-test.sh]}\n    - {class: high,", 1)
+	c := testTree(yaml).Document.Risk.Classify([]string{"check", "go.mod"}, 2)
+	if c.Class.Name != "runner" || c.Class.Outcome != policy.OutcomeRequiresApproval || !slices.Equal(c.Paths, []string{"check"}) {
+		t.Fatalf("Classify = %+v, want class runner, requires_approval, on check", c)
+	}
+	g, rv := fullAutoGates("api")
+	g.Policy.Class, g.Policy.Outcome, g.Audit = c.Class.Name, c.Class.Outcome, &AuditResult{Verdict: AuditClear}
+	want := []string{"risk class runner is requires_approval"}
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+		t.Fatalf("ok %v, unmet %q, want %q", ok, unmet, want)
+	}
+}
+
 // A reproduction that ran but did not fail at the base proves nothing, and
 // unmet criteria say so beside it.
 func TestUnreproducedWithUnmetCriteriaNamesThem(t *testing.T) {
@@ -3129,9 +3162,88 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 		t.Fatalf("unmet = %q", unmet)
 	}
 	rv.Criteria[1].Verdict = "unmet"
-	want := []string{"no reproduction command and no fault the agent recorded, and the review's criteria are not all met"}
+	want := []string{"the review's criteria are not all met"}
 	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
 		t.Fatalf("ok %v, unmet %q", ok, unmet)
+	}
+}
+
+// A card whose plan's criteria are all the gate's carries no review rows:
+// its why line names the criteria the auto merge does not read from the
+// gate, never a missing reproduction. A delta card's says the gate runs
+// on the integration card alone.
+func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
+	g, rv := fullAutoGates("api")
+	g.Reproduction = ReproResult{}
+	rv.GateCriteria = &GateLeft{IDs: []string{"c1", "c3"}, Integration: true}
+	gate := "the auto merge does not read the criteria gate's verdicts on c1, c3"
+	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{gate}) {
+		t.Fatalf("ok %v, unmet %q; want %q", ok, unmet, gate)
+	}
+	delta := "the criteria gate runs on the plan's integration card alone, and a person decides this merge"
+	rv.GateCriteria.Integration = false
+	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{delta}) {
+		t.Fatalf("a delta card: ok %v, unmet %q; want %q", ok, unmet, delta)
+	}
+	rv.GateCriteria.Integration = true
+	g.Reproduction = ReproResult{Ran: true, Exit: 0, BaseExit: 0}
+	want := "not reproduced at base: the reproduction exited 0 before the fix, and the agent recorded no fault it fixed, and " + gate
+	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{want}) {
+		t.Fatalf("ok %v, unmet %q; want %q", ok, unmet, want)
+	}
+}
+
+// An integration card's review names the criteria it leaves to the gate
+// whether it ran or not: unfunded, a part or a criterion call left
+// without an answer, or a review that ran. The why line then names them,
+// and no missing reproduction.
+func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
+	valid := func(user string) string {
+		switch callOf(user) {
+		case "c2":
+			return `{"verdict":"","evidence":"read the list page"}`
+		case "behaviours":
+			return `{"behaviours":["a request answers"]}`
+		}
+		return `{"verdict":"approve","summary":"ok"}`
+	}
+	for name, tc := range map[string]struct {
+		budget float64
+		answer func(string) string
+		note   string
+	}{
+		"unfunded":                 {0.01, valid, "model review not run: "},
+		"a part without an answer": {100, func(string) string { return "LGTM" }, "model review answer invalid"},
+		"a criterion call without an answer": {100, func(user string) string {
+			if callOf(user) == "c2" {
+				return "LGTM"
+			}
+			return valid(user)
+		}, "criterion c2, part 1 of 4: model review answer invalid"},
+		"a review that ran": {100, valid, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			r, _, ll := fundedReview(t, tc.budget, 1e-9, 1e-5, nil)
+			ll.answer = tc.answer
+			store := r.store.(*fakeStore)
+			b, _ := json.Marshal(criteriaPlan())
+			if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+				t.Fatal(err)
+			}
+			store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+			card := store.tasks["t1"]
+			card.Source, card.Parent, card.PlanKey, card.IssueNumber = SourcePlan, "t-plan", "integration", 9
+			store.tasks["t1"] = card
+			val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+			rv := getInto[Review](t, val, err)
+			ran := rv.Verdict == "approve" && rv.Note == ""
+			if tc.note == "" && !ran || tc.note != "" && (rv.Verdict != "" || !strings.Contains(rv.Note, tc.note)) {
+				t.Fatalf("review = %+v, want the note %q", rv, tc.note)
+			}
+			if want := (&GateLeft{IDs: []string{"c1", "c3"}, Integration: true}); !reflect.DeepEqual(rv.GateCriteria, want) {
+				t.Fatalf("gate criteria = %+v, want %+v", rv.GateCriteria, want)
+			}
+		})
 	}
 }
 
