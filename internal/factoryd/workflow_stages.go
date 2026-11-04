@@ -1203,10 +1203,12 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 			t.recordIgnored(SignalApproved, sig, "sent before this approval request")
 		}
-		if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
-			Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}).Get(t.ctx, nil); err != nil {
+		in := ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
+			Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}
+		if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, in).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 		}
+		t.asked, t.askedCard = in, card
 		t.approvalRequested = workflow.Now(t.ctx)
 		if v = t.awaitApproval(commit, g, covered); !v.reask {
 			break

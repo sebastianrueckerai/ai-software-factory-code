@@ -27,12 +27,15 @@ import (
 // and says why, and no finding; while the plan's prover may
 // still store any criterion's proof, the gate asks the human to wait. A
 // test or judgement criterion the store left without a proof came after
-// the prover filed: its line is a finding and its row unmet, and it never
-// opens. A judgement or human criterion's proof runs as a
+// the prover filed: its line is the human's card's and its row unmet, and
+// it never opens. A judgement or human criterion's proof runs as a
 // test criterion's and writes an artifact, which the gate stores for the
 // console: one model call judges a judgement criterion's, the human
 // settles a human one. A proof that wrote no artifact has no verdict and
-// opens; a judgement criterion without a verdict is an unmet row.
+// opens. A judgement criterion the builder left without a verdict is an
+// unmet row; one a failed call or a pod that never reached it left
+// without one has no row, so the gate has not settled it and runs again
+// on the next press, and its line is the card's.
 
 // CriteriaResult is GateCriteria's verdict: Skipped names why the gate did
 // not run (no plan filed, or a card of the plan that is neither its
@@ -49,7 +52,7 @@ type CriteriaResult struct {
 	// Holdouts is read by the workflow; the gate leaves it empty, since
 	// no audit settles a hold-out.
 	Holdouts []HoldoutGateResult `json:",omitempty"`
-	Stand    *CriteriaStand      `json:",omitempty"` // the plan's criteria after this run's rows; nil when the gate skipped
+	Stand    *CriteriaStand      `json:",omitempty"` // the plan's criteria after this run's rows; nil when the gate skipped or the plan names no criteria
 	Card     []string            `json:",omitempty"`
 }
 
@@ -240,7 +243,8 @@ type openedProof struct {
 // gateReport is criteriaReport's reading of one gate.
 type gateReport struct {
 	findings  []string
-	card      []string // the late runs' lines, which no session can settle
+	card      []string // the lines no session can settle: the late runs', and a judgement run the pod never reached
+	unreached []string // the judgement criteria the pod never reached, whose judgement row goes
 	lines     []string // the criteria's, then the opened hold-outs'
 	met       int      // the criteria met
 	proofs    []gateProof
@@ -266,7 +270,8 @@ type gateReport struct {
 // artifact did not fit the run's line is a finding and stays stored. A
 // judgement criterion held, or run with nothing left for the judgement to
 // read, is an unmet row, so it counts as judged and no earlier head's row
-// stands. A blind hold-out that
+// stands; one the pod never reached is a card line, and its row goes
+// (unreached). A blind hold-out that
 // stays stored, green or never tried, is no line, no entry and no
 // finding: its verdict alone, on the hold-outs.
 func criteriaReport(p Plan, head string, runs []criterionRun, results map[string]gateResult) gateReport {
@@ -323,6 +328,8 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 				case slices.Contains(res.dropped, name):
 					g.Message, g.Line = "", c.label()+": artifact "+name+" was too large for the run's line"
 					rep.findings = append(rep.findings, g.Line)
+				case !res.ran && c.kind == CriterionJudgement:
+					rep.card, rep.unreached = append(rep.card, g.Line), append(rep.unreached, c.id)
 				case !res.ran:
 					rep.findings = append(rep.findings, g.Line)
 				case blind:
@@ -343,7 +350,7 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 				rep.findings = append(rep.findings, g.Line)
 			}
 		}
-		if c.kind == CriterionJudgement && g.Artifact == "" {
+		if c.kind == CriterionJudgement && g.Artifact == "" && !slices.Contains(rep.unreached, c.id) {
 			why := c.held
 			if why == "" {
 				why = strings.TrimSuffix(strings.TrimPrefix(g.Line, c.label()+": "), ": no verdict")
@@ -631,16 +638,21 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
 		return CriteriaResult{}, err
 	}
+	for _, id := range rep.unreached {
+		if err := r.store.DeleteCriteriaVerdict(ctx, home.ID, CriteriaSourceJudgement, id); err != nil {
+			return CriteriaResult{}, err
+		}
+	}
 	for _, o := range rep.opened {
 		if err := r.openProof(ctx, t, commit, o); err != nil {
 			return CriteriaResult{}, err
 		}
 	}
-	judged, met, err := r.judgeArtifacts(ctx, t, home.ID, p, rep.artifacts)
+	judged, unjudged, met, err := r.judgeArtifacts(ctx, t, home.ID, p, rep.artifacts)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
-	rep.findings = append(rep.findings, judged...)
+	rep.findings, rep.card = append(rep.findings, judged...), append(rep.card, unjudged...)
 	stand, err := r.criteriaStand(ctx, home.ID, p)
 	if err != nil {
 		return CriteriaResult{}, err

@@ -73,6 +73,16 @@ func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
 	if ids, err := s.CriteriaVerdictTasks(ctx); err != nil || !slices.Equal(ids, []string{"t1"}) {
 		t.Fatalf("CriteriaVerdictTasks = %v, %v; want [t1]", ids, err)
 	}
+	// a delete takes one criterion's row of one source: c3's waiver stands
+	if err := s.DeleteCriteriaVerdict(ctx, "t1", "review", "c3"); err != nil {
+		t.Fatalf("DeleteCriteriaVerdict: %v", err)
+	}
+	if err := s.DeleteCriteriaVerdict(ctx, "t1", "review", "c9"); err != nil {
+		t.Fatalf("DeleteCriteriaVerdict of no row: %v", err)
+	}
+	if rows, err := s.CriteriaVerdicts(ctx, "t1"); err != nil || len(rows) != 2 || rows[0].Criterion != "c1" || rows[1].Source != "approver" {
+		t.Fatalf("rows after the delete = %+v, %v; want c1's and c3's waiver", rows, err)
+	}
 
 	// the catches: filed under a plan revision, deduped on their key
 	plan, _ := json.Marshal(Plan{Summary: "s"})

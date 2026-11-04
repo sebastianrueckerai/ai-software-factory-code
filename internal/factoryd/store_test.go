@@ -4392,6 +4392,16 @@ func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by 
 	return nil
 }
 
+func (s *fakeStore) DeleteCriteriaVerdict(ctx context.Context, taskID, source, criterion string) error {
+	if s.criteriaVerdicts == nil {
+		return nil
+	}
+	s.criteriaVerdicts[taskID] = slices.DeleteFunc(s.criteriaVerdicts[taskID], func(v CriterionVerdict) bool {
+		return v.Source == source && v.Criterion == criterion
+	})
+	return nil
+}
+
 func (s *fakeStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error) {
 	return s.criteriaVerdicts[taskID], nil
 }

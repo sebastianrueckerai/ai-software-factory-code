@@ -82,9 +82,9 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 	ll := &fakeLiteLLM{content: "```json\n{\"verdict\":\"met\",\"reason\":\"the page names every size\"}\n```"}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	before := time.Now()
-	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
-	if err != nil || len(findings) != 0 || met != 1 {
-		t.Fatalf("judgeArtifacts = %q, %d, %v; want one met and no finding", findings, met, err)
+	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
+	if err != nil || len(findings) != 0 || len(card) != 0 || met != 1 {
+		t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want one met and no line", findings, card, met, err)
 	}
 	if len(ll.chats) != 1 || !slices.Equal(ll.purposes, []string{policy.PurposeReview}) || ll.chats[0]["model"] != "big" || ll.chats[0]["tools"] != nil {
 		t.Fatalf("chats %v, purposes %v: want one review call on big with no tools", ll.chats, ll.purposes)
@@ -118,9 +118,10 @@ func TestJudgeCallsTheModelWithThePromptAndTheArtifactAlone(t *testing.T) {
 
 // An answer that is not the verdict, a verdict that is neither met nor
 // unmet, a gateway that refuses and a call cut at the supervisor timeout
-// give no verdict: the row is unmet and says why, so no earlier head's
-// row stands, and a finding names the criterion and the reason.
-func TestJudgeWithoutAVerdictIsUnmet(t *testing.T) {
+// give no verdict, and none of them is the builder's: the criterion has
+// no judgement row, so the gate has not settled it and the next press
+// calls again, and a card line names the criterion and the reason.
+func TestJudgeWithoutAVerdictLeavesNoRow(t *testing.T) {
 	for name, tc := range map[string]struct {
 		ll     *fakeLiteLLM
 		reason string
@@ -136,9 +137,9 @@ func TestJudgeWithoutAVerdictIsUnmet(t *testing.T) {
 			r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
 			r.cfg.Policy = withSupervisorTimeout(300 * time.Millisecond)
 			r.supervisor = testSupervisorModel(tc.ll.srv(t).URL)
-			findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
-			if err != nil || met != 0 {
-				t.Fatalf("judgeArtifacts = %q, %d, %v", findings, met, err)
+			findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")})
+			if err != nil || met != 0 || len(findings) != 0 {
+				t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want no finding", findings, card, met, err)
 			}
 			lines := judgementLines(t, objects)
 			if len(lines) != 1 || lines[0]["verdict"] != "" {
@@ -148,39 +149,38 @@ func TestJudgeWithoutAVerdictIsUnmet(t *testing.T) {
 			if (tc.prefix && !strings.HasPrefix(reason, tc.reason)) || (!tc.prefix && reason != tc.reason) {
 				t.Fatalf("reason = %q, want %q", reason, tc.reason)
 			}
-			if got, want := rowsOf(store, "reads_calm"), []CriterionVerdict{{Criterion: "reads_calm", Verdict: "unmet", Evidence: "no verdict: " + reason,
-				Kind: CriterionJudgement, Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}; !slices.Equal(got, want) {
-				t.Fatalf("rows = %+v, want %+v", got, want)
+			if got := rowsOf(store, "reads_calm"); len(got) != 0 {
+				t.Fatalf("rows = %+v, want none", got)
 			}
-			if want := "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: " + reason; !slices.Equal(findings, []string{want}) {
-				t.Fatalf("findings = %q, want %q", findings, want)
+			if want := "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: " + reason; !slices.Equal(card, []string{want}) {
+				t.Fatalf("card = %q, want %q", card, want)
 			}
 		})
 	}
 }
 
 // A call that gives no verdict at a later head leaves no earlier head's
-// met standing: the criterion is unmet, and says why.
+// met standing: the judgement's row goes, and the card says why.
 func TestJudgementWithoutAVerdictReplacesAnEarlierHeadsMet(t *testing.T) {
 	ctx := context.Background()
 	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
 	p := Plan{Criteria: []PlanCriterion{readsCalm}}
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
-	if _, met, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
+	if _, _, met, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
 		t.Fatalf("at c1: met %d, %v", met, err)
 	}
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{status: http.StatusInternalServerError}).srv(t).URL)
-	findings, _, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c2")})
+	_, card, _, err := r.judgeArtifacts(ctx, gateTask, "t1", p, []GateArtifact{calmPage("c2")})
 	if err != nil {
 		t.Fatal(err)
 	}
 	const reason = `status 500: {"error":{"message":"task headroom 0.000000 EUR","type":"budget_exceeded"}}`
 	rows, _ := store.CriteriaVerdicts(ctx, "t1")
-	if v, ok := StandingRow(rows, readsCalm); !ok || v.Verdict != "unmet" || v.Evidence != "no verdict: "+reason {
-		t.Fatalf("standing row = %+v, %v; want unmet, no verdict: %s", v, ok, reason)
+	if v, ok := StandingRow(rows, readsCalm); ok {
+		t.Fatalf("standing row = %+v; want none", v)
 	}
-	if want := "criterion reads_calm: the judgement over reads_calm.html at c2 gave no verdict: " + reason; !slices.Equal(findings, []string{want}) {
-		t.Fatalf("findings = %q, want %q", findings, want)
+	if want := "criterion reads_calm: the judgement over reads_calm.html at c2 gave no verdict: " + reason; !slices.Equal(card, []string{want}) {
+		t.Fatalf("card = %q, want %q", card, want)
 	}
 }
 
@@ -220,21 +220,21 @@ func TestJudgeArtifactsCallsAtOnce(t *testing.T) {
 	r.supervisor = testSupervisorModel(srv.URL)
 	a, b := readsCalm, readsCalm
 	a.ID, b.ID = "a", "b"
-	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
+	findings, card, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
 		{Criterion: "a", Name: "a.html", Head: "c1", Content: "<p>a</p>"}, {Criterion: "b", Name: "b.html", Head: "c1", Content: "<p>b</p>"}})
-	if err != nil || met != 1 {
-		t.Fatalf("judgeArtifacts = %q, %d, %v; want a met", findings, met, err)
+	if err != nil || met != 1 || len(findings) != 0 {
+		t.Fatalf("judgeArtifacts = %q, %q, %d, %v; want a met", findings, card, met, err)
 	}
 	mu.Lock()
 	defer mu.Unlock()
 	if peak != 2 {
 		t.Fatalf("at most %d calls at once, want 2", peak)
 	}
-	if got := rowsOf(store, "b"); len(got) != 1 || got[0].Verdict != "unmet" || got[0].Evidence != "no verdict: timed out" {
-		t.Fatalf("b's rows = %+v, want unmet, no verdict: timed out", got)
+	if got := rowsOf(store, "b"); len(got) != 0 {
+		t.Fatalf("b's rows = %+v, want none", got)
 	}
-	if want := "criterion b: the judgement over b.html at c1 gave no verdict: timed out"; !slices.Equal(findings, []string{want}) {
-		t.Fatalf("findings = %q, want %q", findings, want)
+	if want := "criterion b: the judgement over b.html at c1 gave no verdict: timed out"; !slices.Equal(card, []string{want}) {
+		t.Fatalf("card = %q, want %q", card, want)
 	}
 }
 
@@ -245,7 +245,7 @@ func TestJudgeArtifactsKeepsTheVerdictWithoutItsCost(t *testing.T) {
 	r, _, store := newTestRunner(t, gateTask, newFakeKube(), objects)
 	store.spendErr = errors.New("the ledger is down")
 	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
-	if _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
+	if _, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{readsCalm}}, []GateArtifact{calmPage("c1")}); err != nil || met != 1 {
 		t.Fatalf("met %d, %v; want the verdict", met, err)
 	}
 	if lines := judgementLines(t, objects); len(lines) != 1 || lines[0]["cost"] != nil || lines[0]["verdict"] != "met" {
@@ -405,6 +405,49 @@ func TestGateCriteriaJudgesTheArtifacts(t *testing.T) {
 	}
 }
 
+// A judgement call that gives no verdict is not the builder's: the
+// criterion has no row, so the gate's stand counts it open and has not
+// settled it, and the card names the failure; the builder gets no
+// finding for it.
+func TestGateCriteriaLeavesAJudgementTheCallFailedUnsettled(t *testing.T) {
+	res, store, _, _, _, _ := judgedGate(t, "it reads calm", readsCalmWrote(t))
+	if got := rowsOf(store, "reads_calm"); len(got) != 0 {
+		t.Fatalf("reads_calm rows = %+v, want none", got)
+	}
+	const line = "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: the answer is not the verdict json: "
+	if !slices.ContainsFunc(res.Card, func(l string) bool { return strings.HasPrefix(l, line) }) ||
+		slices.ContainsFunc(res.Findings, func(f string) bool { return strings.Contains(f, "judgement over") }) {
+		t.Fatalf("card %q, findings %q: want the failed call on the card alone", res.Card, res.Findings)
+	}
+	if res.Stand == nil || !slices.Contains(res.Stand.Open, "reads_calm") {
+		t.Fatalf("stand = %+v, want reads_calm open", res.Stand)
+	}
+}
+
+// A judgement criterion the pod never reached has no try and no verdict,
+// and the builder can do nothing about it: an earlier head's row goes,
+// and the card says why.
+func TestGateCriteriaLeavesAJudgementThePodNeverReachedUnsettled(t *testing.T) {
+	kube := newFakeKube()
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+	proofsWorker(t, r)
+	r.supervisor = testSupervisorModel((&fakeLiteLLM{content: `{"verdict":"met","reason":"the page names every size"}`}).srv(t).URL)
+	seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{readsCalm}}, artifactRows()[:1])
+	results, errs := runCriteriaWithPods(t, r, kube, proofLines(readsCalmWrote(t)),
+		proofLines(harness.ProofRun{ID: "reads_calm", Exit: -1, Output: "proofs mode: the run's 35m0s ran out before this entry"}))
+	if errs[0] != nil || errs[1] != nil || results[0].Stand == nil || len(results[0].Stand.Open) != 0 {
+		t.Fatalf("results %+v, errors %v: want reads_calm met at the first run", results, errs)
+	}
+	res := results[1]
+	if got := rowsOf(store, "reads_calm"); len(got) != 0 {
+		t.Fatalf("reads_calm rows = %+v, want the earlier met gone", got)
+	}
+	if len(res.Findings) != 0 || len(res.Card) != 1 || !strings.HasPrefix(res.Card[0], "criterion reads_calm: ") ||
+		res.Stand == nil || !slices.Equal(res.Stand.Open, []string{"reads_calm"}) {
+		t.Fatalf("result %+v: want no finding, reads_calm's line on the card and open", res)
+	}
+}
+
 // timelineText is t1's whole timeline.
 func timelineText(t *testing.T, objects *fakeObjectStore) string {
 	t.Helper()
@@ -463,8 +506,8 @@ func TestGateCriteriaOpensAProofThatWroteNoArtifact(t *testing.T) {
 	if got, want := rowsOf(store, "reads_calm"), noVerdict("its artifact reads_calm.html is not text"); len(ll.chats) != 0 || !slices.Equal(got, want) {
 		t.Fatalf("chats %v, rows %+v; want none and %+v", ll.chats, got, want)
 	}
-	if want := "criterion reads_calm: its artifact reads_calm.html is not text: no verdict"; !slices.Contains(res.Findings, want) {
-		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	if want := "criterion reads_calm: its artifact reads_calm.html is not text: no verdict"; !slices.Contains(res.Findings, want) || slices.ContainsFunc(res.Card, func(l string) bool { return strings.Contains(l, "reads_calm") }) {
+		t.Fatalf("findings = %q, card %q; want %q the builder's alone", res.Findings, res.Card, want)
 	}
 	if b, _ := objects.Get(ctx, ArtifactKey("t1", "reads_calm")); b != nil {
 		t.Fatalf("the artifact that is not text is stored: %q", b)
@@ -530,7 +573,7 @@ func TestJudgeArtifactsCallsFourAtOnce(t *testing.T) {
 		p.Criteria = append(p.Criteria, c)
 		artifacts = append(artifacts, GateArtifact{Criterion: c.ID, Name: c.ID + ".html", Head: "c1", Content: sizesPage})
 	}
-	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", p, artifacts)
+	findings, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", p, artifacts)
 	if err != nil || met != 6 || len(findings) != 0 {
 		t.Fatalf("judgeArtifacts = %q, %d, %v; want six met", findings, met, err)
 	}
@@ -552,7 +595,7 @@ func TestJudgeArtifactsRetriesAHeadroomRefusalAlone(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	a, b := readsCalm, readsCalm
 	a.ID, b.ID = "a", "b"
-	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
+	findings, _, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
 		{Criterion: "a", Name: "a.html", Head: "c1", Content: "<p>a</p>"}, {Criterion: "b", Name: "b.html", Head: "c1", Content: "<p>b</p>"}})
 	if err != nil || met != 2 || len(findings) != 0 {
 		t.Fatalf("judgeArtifacts = %q, %d, %v; want both met", findings, met, err)

@@ -756,6 +756,9 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// DeleteCriteriaVerdict deletes task's row of criterion from source;
+	// none is no error.
+	DeleteCriteriaVerdict(ctx context.Context, taskID, source, criterion string) error
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
 	CriteriaVerdictTasks(ctx context.Context) ([]string, error)
 	// The plan's blind proofs (the spec-intake concept, piece 6): a round's

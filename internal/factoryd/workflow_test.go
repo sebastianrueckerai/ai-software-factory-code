@@ -214,7 +214,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return ReportResult{}, nil
 		},
 		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
-		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
+		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
 			return MergeResult{}, nil
 		},
 		ActivityReportMergeFailure:          func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error { return nil },
@@ -5776,8 +5776,8 @@ func TestReplanBeforeAnAutoMerge(t *testing.T) {
 		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 			Review{Verdict: "approve", Summary: "fine", StrictImprovement: &yes}, nil)
 		merges := 0
-		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
+		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
 				merges++
 				return MergeResult{Merged: true}, nil
 			})

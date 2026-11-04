@@ -78,6 +78,11 @@ func (s *PGStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by st
 	return err
 }
 
+func (s *PGStore) DeleteCriteriaVerdict(ctx context.Context, taskID, source, criterion string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM criteria_verdicts WHERE task_id = $1 AND source = $2 AND criterion_id = $3`, taskID, source, criterion)
+	return err
+}
+
 // CriteriaVerdicts are task's verdict rows, in criterion order.
 func (s *PGStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT criterion_id, COALESCE(kind, ''), verdict, evidence, fix, source, COALESCE(decided_by, ''), created_at

@@ -980,6 +980,10 @@ func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, s
 	return nil
 }
 
+func (s *acceptanceStore) DeleteCriteriaVerdict(context.Context, string, string, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }

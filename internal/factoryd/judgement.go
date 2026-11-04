@@ -48,8 +48,8 @@ func judgementCall(c PlanCriterion, a GateArtifact) reviewCall {
 }
 
 // judge reads the result of c's judgement call over a on model: the row,
-// unmet with "no verdict: <reason>" when the call or its answer gave
-// none, and the judgement line's detail but its cost.
+// none when the call or its answer gave no verdict, and the judgement
+// line's detail but its cost, whose reason says why.
 func judge(c PlanCriterion, a GateArtifact, model string, res callResult) (CriterionVerdict, map[string]any) {
 	hash := promptHash(c.Prompt)
 	detail := map[string]any{"criterion": c.ID, "artifact": a.Name, "model": model, "prompt_hash": hash, "verdict": "", "reason": ""}
@@ -77,38 +77,39 @@ func judge(c PlanCriterion, a GateArtifact, model string, res callResult) (Crite
 		return CriterionVerdict{Criterion: c.ID, Verdict: answer.Verdict, Kind: CriterionJudgement,
 			Evidence: fmt.Sprintf("%s (model %s, prompt %s)", reason, aliasOf(model), hash)}, detail
 	}
-	reason = textutil.Truncate(reason, maxReviewFinding)
-	detail["reason"] = reason
-	return CriterionVerdict{Criterion: c.ID, Verdict: "unmet", Evidence: "no verdict: " + reason, Kind: CriterionJudgement}, detail
+	detail["reason"] = textutil.Truncate(reason, maxReviewFinding)
+	return CriterionVerdict{}, detail
 }
 
 // judgeArtifacts stores each artifact on home, the integration card,
 // judges each judgement criterion's through callAll, the review's
 // fan-out, each call cut at the supervisor timeout or a minute before the
-// activity's deadline, and writes each row there: met, unmet, or unmet
-// with no verdict. It returns the findings of the unmet ones and the
-// count of the met ones. Each line's cost is an even share of the task's
-// spend booked while the calls ran, unknown when the ledger cannot be
-// read. A retry calls again: a second line and a second spend, and the
-// row written over the first.
-func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan, artifacts []GateArtifact) ([]string, int, error) {
+// activity's deadline, and writes each row there, met or unmet. A call
+// that gave no verdict is no builder's to fix: it deletes the criterion's
+// judgement row, so no earlier head's row stands and the gate has not
+// settled it, and its line is the card's. It returns the findings of the
+// unmet ones, the card's lines and the count of the met ones. Each line's
+// cost is an even share of the task's spend booked while the calls ran,
+// unknown when the ledger cannot be read. A retry calls again: a second
+// line and a second spend, and the row written over the first.
+func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan, artifacts []GateArtifact) (findings, card []string, met int, err error) {
 	var judged []PlanCriterion
 	var of []GateArtifact
 	var calls []reviewCall
 	for _, a := range artifacts {
 		b, err := json.Marshal(a)
 		if err != nil {
-			return nil, 0, err
+			return nil, nil, 0, err
 		}
 		if err := r.objects.Put(ctx, ArtifactKey(home, a.Criterion), b); err != nil {
-			return nil, 0, fmt.Errorf("store the artifact of %s: %w", a.Criterion, err)
+			return nil, nil, 0, fmt.Errorf("store the artifact of %s: %w", a.Criterion, err)
 		}
 		if i := slices.IndexFunc(p.Criteria, func(c PlanCriterion) bool { return c.ID == a.Criterion }); i >= 0 && p.Criteria[i].Kind == CriterionJudgement {
 			judged, of, calls = append(judged, p.Criteria[i]), append(of, a), append(calls, judgementCall(p.Criteria[i], a))
 		}
 	}
 	if len(calls) == 0 {
-		return nil, 0, nil
+		return nil, nil, 0, nil
 	}
 	var end time.Time
 	if activity.IsActivity(ctx) {
@@ -118,7 +119,7 @@ func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan
 	before := time.Now()
 	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, r.cfg.Policy().Document.Limits.SupervisorTimeout, end, calls)
 	if err != nil {
-		return nil, 0, err
+		return nil, nil, 0, err
 	}
 	var cost any
 	if spent, err := r.store.TaskSpendSince(ctx, t.ID, before); err != nil {
@@ -126,24 +127,26 @@ func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan
 	} else {
 		cost = spent / float64(len(calls))
 	}
-	var findings []string
-	met := 0
 	for i, c := range judged {
 		row, detail := judge(c, of[i], model, results[i])
 		detail["cost"] = cost
 		r.record(ctx, t.ID, "judgement", detail)
-		if err := r.store.PutCriteriaVerdicts(ctx, home, CriteriaSourceJudgement, FactoryDecider, []CriterionVerdict{row}); err != nil {
-			return nil, 0, err
-		}
 		at := of[i].Head[:min(7, len(of[i].Head))]
-		switch {
-		case row.Verdict == "met":
+		if row.Verdict == "" {
+			if err := r.store.DeleteCriteriaVerdict(ctx, home, CriteriaSourceJudgement, c.ID); err != nil {
+				return nil, nil, 0, err
+			}
+			card = append(card, fmt.Sprintf("criterion %s: the judgement over %s at %s gave no verdict: %s", c.ID, of[i].Name, at, detail["reason"]))
+			continue
+		}
+		if err := r.store.PutCriteriaVerdicts(ctx, home, CriteriaSourceJudgement, FactoryDecider, []CriterionVerdict{row}); err != nil {
+			return nil, nil, 0, err
+		}
+		if row.Verdict == "met" {
 			met++
-		case detail["verdict"] == "":
-			findings = append(findings, fmt.Sprintf("criterion %s: the judgement over %s at %s gave no verdict: %s", c.ID, of[i].Name, at, detail["reason"]))
-		default:
+		} else {
 			findings = append(findings, fmt.Sprintf("criterion %s: the judgement over %s at %s is unmet: %s", c.ID, of[i].Name, at, detail["reason"]))
 		}
 	}
-	return findings, met, nil
+	return findings, card, met, nil
 }

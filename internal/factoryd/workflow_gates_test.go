@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"reflect"
 	"slices"
 	"strings"
 	"sync"
@@ -26,6 +27,7 @@ type gateHarness struct {
 	merges       []string   // "pr commit approver"
 	checkedHeads []string   // Merge's checkedHead per call
 	mergeMet     [][]string // Merge's met conditions per call
+	mergeBlind   []bool     // Merge's blindProofs per call
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
 	policyErrs   []error      // GatePolicy's error per call, in order; nil or short = none
@@ -194,12 +196,13 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return nil
 		})
 	m := 0
-	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
-		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
+	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.checkedHeads = append(g.checkedHeads, checkedHead)
 			g.mergeMet = append(g.mergeMet, met)
+			g.mergeBlind = append(g.mergeBlind, blindProofs)
 			m++
 			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
 				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))
@@ -1249,8 +1252,8 @@ func TestWorkflowPressRunsTheGateAgainForItsCriteria(t *testing.T) {
 	if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || len(*holds) != 0 || *unjudged != 0 {
 		t.Fatalf("merges %v, holds %v, UnjudgedCriteria reads %d: want the merge, no hold and no read of the old kind", g.merges, *holds, *unjudged)
 	}
-	if len(g.mergeMet) != 1 || !slices.Contains(g.mergeMet[0], "the plan's criteria all stand met or waived: size_bound") {
-		t.Fatalf("merge met %q, want the gate's stand", g.mergeMet)
+	if len(g.mergeMet) != 1 || !slices.Contains(g.mergeMet[0], "the plan's criteria all stand met or waived: size_bound") || !slices.Equal(g.mergeBlind, []bool{true}) {
+		t.Fatalf("merge met %q, blind proofs %v: want the gate's stand under the new version", g.mergeMet, g.mergeBlind)
 	}
 }
 
@@ -1298,6 +1301,106 @@ func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 	})
 }
 
+// A gate run again on a press whose lines are the card's alone, a
+// criterion the prover never proved among them, asks the merge again
+// with them beside the earlier card's lines and reviews: the human sees
+// them before any merge. An approval sent while the gate ran, here while
+// it waited on the human's answer, is no approval of the new ask.
+func TestWorkflowPressFilesTheGatesCardLines(t *testing.T) {
+	const late = "Criterion no_proof has no stored proof: the prover filed before a later revision added it."
+	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"no_proof"}}, {}})
+	g.criteria = []CriteriaResult{{}, {Escalate: proofsNotStored}, {Card: []string{late}}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(90*time.Minute, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the prover filed", Comment: 700})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.merges) != 0 || len(*holds) != 0 || len(g.approvals) != 2 {
+		t.Fatalf("merges %v, holds %v, approvals %d: want the ask again and no merge", g.merges, *holds, len(g.approvals))
+	}
+	first, again := g.approvals[0], g.approvals[1]
+	if again.Commit != "c1" || !slices.Contains(again.WhyHuman, late) || !reflect.DeepEqual(again.EarlierReviews, first.EarlierReviews) ||
+		!reflect.DeepEqual(again.Review, first.Review) {
+		t.Fatalf("the ask again = %+v, want the late line with the first ask's reviews", again)
+	}
+	for _, l := range first.WhyHuman {
+		if !slices.Contains(again.WhyHuman, l) {
+			t.Fatalf("the ask again's why %q drops the first card's %q", again.WhyHuman, l)
+		}
+	}
+	if !slices.ContainsFunc(g.recorded, func(r recordedStep) bool {
+		return r.step == "signal" && r.detail["ignored"] == "sent before this approval request"
+	}) {
+		t.Fatalf("recorded %+v: want the approval sent during the gate ignored", g.recorded)
+	}
+}
+
+// A judgement call that fails again on the press leaves its criterion
+// without a row: the merge asks again with the card's line naming the
+// failure and holds, the gate's to settle on the next press.
+func TestWorkflowPressHoldsAJudgementTheCallLeftOpen(t *testing.T) {
+	const failed = "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: timed out"
+	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"reads_calm"}}})
+	g.criteria = []CriteriaResult{{Card: []string{failed}}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, approval c1, hold"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s", g.steps, want)
+	}
+	if !slices.Equal(*holds, []string{"9 c1 sebastian blind"}) || len(g.merges) != 0 || !slices.Contains(g.approvals[1].WhyHuman, failed) {
+		t.Fatalf("holds %v, merges %v, approvals %+v: want the ask with the failure and the blind hold", *holds, g.merges, g.approvals)
+	}
+}
+
+// A gate run again that still leaves a criterion of its own without a
+// row holds the merge in the new words.
+func TestWorkflowPressHoldsAGateCriterionLeftWithoutARow(t *testing.T) {
+	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"size_bound"}}})
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, hold"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s", g.steps, want)
+	}
+	if !slices.Equal(*holds, []string{"9 c1 sebastian blind"}) || len(g.merges) != 0 {
+		t.Fatalf("holds %v, merges %v: want the one blind hold", *holds, g.merges)
+	}
+}
+
+// The gate run again on a press may ask the human, as while the plan's
+// prover may still store a proof: the answer runs it again, and a gate
+// that then settles every criterion merges.
+func TestWorkflowPressAsksThroughTheGatesEscalation(t *testing.T) {
+	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+	g.criteria = []CriteriaResult{{}, {Escalate: proofsNotStored}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "the prover stored it", Comment: 700})
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, criteria c1, merge"; strings.Join(g.steps, ", ") != want {
+		t.Fatalf("steps = %v, want %s", g.steps, want)
+	}
+	if !slices.Equal(g.escalated, []string{proofsNotStored}) || len(*holds) != 0 || !slices.Equal(g.merges, []string{"9 c1 sebastian"}) {
+		t.Fatalf("escalations %q, holds %v, merges %v: want the one ask, then the merge", g.escalated, *holds, g.merges)
+	}
+}
+
 // A press whose never-judged criteria are a human's holds the merge, its
 // words the human's, and runs neither the gate nor a model review.
 func TestWorkflowPressHoldsForAHumanRow(t *testing.T) {
@@ -1341,8 +1444,8 @@ func TestWorkflowBeforeBlindProofsKeepsTheOldPaths(t *testing.T) {
 		if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
 			t.Fatalf("steps = %v, want %v", g.steps, want)
 		}
-		if len(g.mergeMet) != 1 || g.mergeMet[0] != nil {
-			t.Fatalf("merge met %q, want nil", g.mergeMet)
+		if len(g.mergeMet) != 1 || g.mergeMet[0] != nil || !slices.Equal(g.mergeBlind, []bool{false}) {
+			t.Fatalf("merge met %q, blind proofs %v: want nil and false", g.mergeMet, g.mergeBlind)
 		}
 	})
 	t.Run("the press runs the review", func(t *testing.T) {

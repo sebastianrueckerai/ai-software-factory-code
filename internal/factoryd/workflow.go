@@ -1564,6 +1564,11 @@ type taskRun struct {
 	// session a change request at the cap draws (versionCases)
 	changesBy   string
 	blindProofs workflow.Version // the gate's verdicts reach the merge and the builder (versionBlindProofs)
+	// asked is the newest merge ask's input, askedCard the card's lines it
+	// held before AutoMerge's, which regate's ask again carries
+	// (versionBlindProofs)
+	asked     ApprovalInput
+	askedCard []string
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -3559,8 +3564,9 @@ func (t *taskRun) rejudge(commit string, g GateResults, approver string) (v verd
 // after its run again, nil when it did not run. The gate's findings go
 // where approval's do: stop sends them back to the agent; at the cap a
 // new merge ask carries them, since the press decided the old one, and
-// held answers. A criterion still without a row holds the merge
-// (HoldMerge), held too. Neither lets the merge go. A failed read of the
+// held answers. Its card lines, which no session settles, ride a new ask
+// too, held. A criterion still without a row holds the merge (HoldMerge),
+// held too. Neither lets the merge go. A failed first read of the
 // criteria leaves the decision to the merge's guard.
 func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdict, stop, held bool, stand *CriteriaStand) {
 	var never Unjudged
@@ -3578,26 +3584,32 @@ func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdi
 			return v, true, false, nil
 		}
 		stand, g.Criteria = res.Stand, res.Stand
+		var capped, card []string
 		if len(res.Findings) > 0 {
-			var capped, card []string
 			if v, stop := t.onFindings(criteriaStage, g, res.Findings, &capped, &card); stop {
 				return v, true, false, stand
 			}
-			why := slices.Concat(capped, t.history, card, res.Card)
-			if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID,
-				ApprovalInput{PR: t.pr, Commit: commit, Gates: g, Review: t.newestReview(), WhyHuman: why}).Get(t.ctx, nil); err != nil {
+		}
+		var lines []string
+		if len(capped) > 0 {
+			lines = slices.Concat(capped, t.history, card)
+		}
+		if lines = append(lines, res.Card...); len(lines) > 0 {
+			if err := t.askAgain(commit, g, lines); err != nil {
 				return verdict{final: "failed", reason: "request approval: " + errMessage(err)}, true, false, stand
 			}
-			return verdict{}, false, true, stand
+			if held = true; len(capped) > 0 {
+				return verdict{}, false, true, stand
+			}
 		}
 		never = Unjudged{}
 		if err := workflow.ExecuteActivity(t.short, ActivityUnjudged, t.taskID).Get(t.ctx, &never); err != nil {
 			workflow.GetLogger(t.ctx).Warn("unjudged criteria", "task", t.taskID, "error", err)
-			return verdict{}, false, false, stand
+			return verdict{}, false, held, stand
 		}
 	}
 	if len(never.Gate) == 0 && len(never.Human) == 0 {
-		return verdict{}, false, false, stand
+		return verdict{}, false, held, stand
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver, true).Get(t.ctx, nil); err != nil {
 		// the press decided the request, so a hold that failed leaves the
@@ -3605,6 +3617,26 @@ func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdi
 		workflow.GetLogger(t.ctx).Error("hold the merge: the ask may be off the human's surface", "task", t.taskID, "error", err)
 	}
 	return verdict{}, false, true, stand
+}
+
+// askAgain files the merge ask on commit again, the press having decided
+// the last one: lines first, then the last ask's card lines, with its
+// reviews, as approve asks. An approval sent before it is none of it.
+func (t *taskRun) askAgain(commit string, g GateResults, lines []string) error {
+	var sig TaskSignal
+	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
+		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
+	}
+	in := t.asked
+	in.Commit, in.Gates, in.WhyHuman = commit, g, slices.Clone(lines)
+	for _, l := range t.askedCard {
+		in.WhyHuman = appendNew(in.WhyHuman, l)
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, in).Get(t.ctx, nil); err != nil {
+		return err
+	}
+	t.asked, t.askedCard = in, in.WhyHuman
+	return nil
 }
 
 // newestReview is the run's newest model review, none before the first.
@@ -3657,10 +3689,11 @@ func rollWaitOptions() workflow.ActivityOptions {
 }
 
 // mergeArgs are Merge's arguments: the checked head, set only under
-// versionCheapTurn, and met, the conditions the merge gate found on the
-// merge rule auto.
+// versionCheapTurn, met, the conditions the merge gate found on the
+// merge rule auto, and whether the run is under versionBlindProofs, whose
+// guard holds in the new words.
 func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
-	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met}
+	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met, t.blindProofs >= versionBlindProofs}
 }
 
 // maxMergeRetries bounds the retries of one approval's merge: with
@@ -3735,22 +3768,6 @@ const MaxReproTimeout = 15 * time.Minute
 // review model call; it heartbeats while the call runs.
 func requestPlanOptions() workflow.ActivityOptions {
 	budget := policy.ReviewParts*policy.MaxSupervisorTimeout + 10*time.Minute
-	return workflow.ActivityOptions{
-		HeartbeatTimeout:       2 * time.Minute,
-		StartToCloseTimeout:    budget,
-		ScheduleToCloseTimeout: 2 * budget,
-		RetryPolicy: &temporal.RetryPolicy{
-			InitialInterval:        10 * time.Second,
-			MaximumAttempts:        3,
-			NonRetryableErrorTypes: []string{errTerminal},
-		},
-	}
-}
-
-// holdoutOptions: SettleHoldouts, which only a history that recorded
-// hold-out reds calls, settles at once: it runs no audit and no dry run.
-func holdoutOptions() workflow.ActivityOptions {
-	budget := 3*(policy.ReviewParts*policy.MaxSupervisorTimeout) + reproActivityTimeout + 10*time.Minute
 	return workflow.ActivityOptions{
 		HeartbeatTimeout:       2 * time.Minute,
 		StartToCloseTimeout:    budget,
@@ -3875,7 +3892,9 @@ func (t *taskRun) criteria(out *CriteriaResult, commit string) (verdict, bool, e
 			return v, decided, nil
 		}
 		var res HoldoutSettlement
-		v, decided, err = t.gateActivity(true, holdoutOptions(), &res, ActivityHoldoutSettlement, t.taskID, t.cfg.PolicyVersion, t.pr.Number, commit, out.Holdouts)
+		// SettleHoldouts, which only a history that recorded hold-out reds
+		// calls, settles at once: a short activity's options bound it
+		v, decided, err = t.gateActivity(true, finishOptions(), &res, ActivityHoldoutSettlement, t.taskID, t.cfg.PolicyVersion, t.pr.Number, commit, out.Holdouts)
 		if err != nil {
 			return v, decided, err
 		}

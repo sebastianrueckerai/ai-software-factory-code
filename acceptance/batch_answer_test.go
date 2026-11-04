@@ -855,6 +855,10 @@ func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, str
 	panic("unused")
 }
 
+func (s *accBatchStore) DeleteCriteriaVerdict(context.Context, string, string, string) error {
+	panic("unused")
+}
+
 func (s *accBatchStore) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
 	panic("unused")
 }
