@@ -31,8 +31,9 @@ func TestWaitsDefaultsFieldByField(t *testing.T) {
 }
 
 // A project file may shorten a bound below policy.yaml's and never
-// lengthen one. The fixture's policy.yaml sets none, so the bound is the
-// default's: queued 2h, no_push_sessions 3.
+// lengthen one. Where the fixture's policy.yaml sets none, the bound is the
+// default's: queued 2h, no_push_sessions 3. Where it shortens one, the
+// project's bound is held to policy.yaml's, not to the default.
 func TestProjectWaitsMayOnlyShorten(t *testing.T) {
 	with := func(policy, project string) map[string][]byte {
 		files := fixtureTree(t)
@@ -40,16 +41,25 @@ func TestProjectWaitsMayOnlyShorten(t *testing.T) {
 		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], project...)
 		return files
 	}
-	for name, tc := range map[string]struct{ block, want string }{
-		"queued": {"waits: {queued: 3h}\n", "project demo-app: waits.queued 3h0m0s is looser than policy.yaml's waits.queued 2h0m0s"},
-		"no push sessions": {"waits: {no_push_sessions: 4}\n",
+	for name, tc := range map[string]struct{ policy, block, want string }{
+		"queued": {"", "waits: {queued: 3h}\n", "project demo-app: waits.queued 3h0m0s is looser than policy.yaml's waits.queued 2h0m0s"},
+		"no push sessions": {"", "waits: {no_push_sessions: 4}\n",
 			"project demo-app: waits.no_push_sessions 4 is looser than policy.yaml's waits.no_push_sessions 3"},
+		"under the default, over a shortened policy": {"waits: {gate: 1h}\n", "waits: {gate: 90m}\n",
+			"project demo-app: waits.gate 1h30m0s is looser than policy.yaml's waits.gate 1h0m0s"},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if _, err := ParseTree(with("", tc.block)); err == nil || !strings.Contains(err.Error(), tc.want) {
+			if _, err := ParseTree(with(tc.policy, tc.block)); err == nil || !strings.Contains(err.Error(), tc.want) {
 				t.Fatalf("ParseTree error = %v, want it to contain %q", err, tc.want)
 			}
 		})
+	}
+	equal, err := ParseTree(with("waits: {gate: 1h}\n", "waits: {gate: 1h}\n"))
+	if err != nil {
+		t.Fatalf("ParseTree with the project's gate equal to policy.yaml's = %v", err)
+	}
+	if got := equal.WaitsOf("demo-app/demo-app").Gate; got != time.Hour {
+		t.Errorf("demo-app's gate equal to policy.yaml's = %s, want 1h0m0s", got)
 	}
 	tree, err := ParseTree(with("waits: {queued: 4h}\n", "waits: {queued: 3h, gate: 1h, no_push_sessions: 2}\n"))
 	if err != nil {
@@ -83,8 +93,8 @@ func TestWaitsBoundByName(t *testing.T) {
 }
 
 // Every bound lies between 1m and 7 days, no_push_sessions is not
-// negative, in policy.yaml and in a project file, and the schema refuses
-// no_push_sessions 0, which the code would read as the default.
+// negative, in policy.yaml and in a project file, and no_push_sessions 0
+// reads as the default 3.
 func TestWaitsAreBounded(t *testing.T) {
 	if _, err := Parse([]byte(valid + "waits: {queued: 1m, dependency: 168h, no_push_sessions: 1}\n")); err != nil {
 		t.Fatalf("Parse at the edges = %v", err)
@@ -109,20 +119,26 @@ func TestWaitsAreBounded(t *testing.T) {
 	if _, err := ParseTree(with("waits: {rung_answer: 59s}\n")); err == nil || !strings.Contains(err.Error(), want) {
 		t.Errorf("ParseTree = %v, want it to contain %q", err, want)
 	}
-	if _, err := ParseTree(with("waits: {no_push_sessions: 0}\n")); err == nil || !strings.Contains(err.Error(), "projects/demo-app.yaml: schema:") {
-		t.Errorf("ParseTree with no_push_sessions 0 = %v, want the schema's refusal", err)
+	zero, err := ParseTree(with("waits: {no_push_sessions: 0}\n"))
+	if err != nil {
+		t.Fatalf("ParseTree with no_push_sessions 0 = %v", err)
+	}
+	if got := zero.WaitsOf("demo-app/demo-app").NoPushSessions; got != 3 {
+		t.Errorf("no_push_sessions 0 reads as %d, want the default 3", got)
 	}
 }
 
 // The bounds are strings in JSON, as in YAML and as Limits' durations: the
 // stored tree and GET /policy show 2h0m0s.
 func TestWaitsJSON(t *testing.T) {
-	w := Waits{Queued: 2 * time.Hour, RungAnswer: 35 * time.Minute, NoPushSessions: 3}
+	w := Waits{Queued: time.Hour, Dependency: 2 * time.Hour, Gate: 3 * time.Hour, MergeRetry: 4 * time.Hour,
+		ProviderBackoff: 5 * time.Minute, RunQuiet: 6 * time.Minute, RungAnswer: 7 * time.Minute, NoPushSessions: 8}
 	b, err := json.Marshal(w)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := `{"queued":"2h0m0s","rung_answer":"35m0s","no_push_sessions":3}`; string(b) != want {
+	if want := `{"queued":"1h0m0s","dependency":"2h0m0s","gate":"3h0m0s","merge_retry":"4h0m0s",` +
+		`"provider_backoff":"5m0s","run_quiet":"6m0s","rung_answer":"7m0s","no_push_sessions":8}`; string(b) != want {
 		t.Fatalf("JSON = %s, want %s", b, want)
 	}
 	var back Waits

@@ -32,7 +32,7 @@ type Waits struct {
 	// Default 35m.
 	RungAnswer time.Duration `yaml:"rung_answer,omitempty" json:"rung_answer,omitempty"`
 	// NoPushSessions is how many sessions in a row may end without a push.
-	// At least 1. Default 3.
+	// Default 3.
 	NoPushSessions int `yaml:"no_push_sessions,omitempty" json:"no_push_sessions,omitempty"`
 }
 
