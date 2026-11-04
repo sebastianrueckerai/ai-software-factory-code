@@ -6,6 +6,7 @@ import (
 	"reflect"
 	"slices"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
@@ -420,12 +421,17 @@ func TestEveryWayOutOfPendingEndsTheMergeCase(t *testing.T) {
 
 // A decision whose signal failed is undone: the merge case it resolved
 // waits at the human again with a step that says why, and no second case
-// opens, so the digest reads no answer that changed nothing.
+// opens, so the digest reads no answer that changed nothing. The wake it
+// carried before its end is gone: it is the human's, and not due.
 func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
 	id := openMerge(t, s, "abc1479")
 	c := onlyOpenCase(t, s)
+	past := time.Now().Add(-time.Hour)
+	if err := s.SetCaseWake(ctx, c.ID, 0, []string{"approval_decided"}, &past); err != nil {
+		t.Fatalf("SetCaseWake: %v", err)
+	}
 	if err := s.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
 		t.Fatalf("DecideApproval: %v", err)
 	}
@@ -435,6 +441,12 @@ func TestUndecideApprovalReopensTheMergeCaseItsDecisionResolved(t *testing.T) {
 	got := onlyOpenCase(t, s)
 	if got.ID != c.ID || got.Status != CaseAtHuman || got.Resolution != nil || got.ResolvedAt != nil {
 		t.Fatalf("undone merge case = %+v, resolution %+v; want case %d at the human, unresolved", got, got.Resolution, c.ID)
+	}
+	if got.OwnerRung != 3 || len(got.WakeOn) != 0 || got.NextWakeAt != nil {
+		t.Fatalf("undone merge case = rung %d, on %v, at %v; want rung 3, no events, no wake", got.OwnerRung, got.WakeOn, got.NextWakeAt)
+	}
+	if due, err := s.DueCases(ctx, time.Now(), 10); err != nil || len(due) != 0 {
+		t.Fatalf("DueCases = %v, %v; want none", caseIDs(due), err)
 	}
 	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 {
 		t.Fatalf("CasesOf = %+v, %v; want the one merge case", cs, err)

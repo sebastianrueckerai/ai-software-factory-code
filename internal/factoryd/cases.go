@@ -295,10 +295,11 @@ func (s *PGStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Cas
 }
 
 // ExpireSteps hands up every in-progress step whose due_at is before now,
-// its Found naming the bound its rung did not answer within, and answers
-// them, oldest first.
+// its Found naming the bound its rung did not answer within after what it
+// found before, and answers them, oldest first.
 func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, started_at, due_at FROM case_steps WHERE outcome = $1 AND due_at < $2`, StepInProgress, now)
+	// the constant outcome lets the partial index case_steps_due serve
+	rows, err := s.db.QueryContext(ctx, `SELECT id, started_at, due_at, found FROM case_steps WHERE outcome = '`+StepInProgress+`' AND due_at < $1`, now)
 	if err != nil {
 		return nil, err
 	}
@@ -308,10 +309,11 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 	for rows.Next() {
 		var id int64
 		var started, due time.Time
-		if err := rows.Scan(&id, &started, &due); err != nil {
+		var before string
+		if err := rows.Scan(&id, &started, &due, &before); err != nil {
 			return nil, err
 		}
-		ids, found = append(ids, id), append(found, stepExpired(started, due))
+		ids, found = append(ids, id), append(found, stepExpired(before, started, due))
 	}
 	if err := rows.Err(); err != nil || len(ids) == 0 {
 		return nil, err
@@ -327,15 +329,22 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 		 SELECT `+caseStepColumns+` FROM ended ORDER BY id`, ids, found, StepHandedUp, StepInProgress)
 }
 
-// stepExpired is the Found of a step its rung did not answer by due: its
-// bound, due less its start, to the minute as Go prints a duration less its
-// zero seconds, as 35m or 1h30m.
-func stepExpired(started, due time.Time) string {
+// stepExpired is the Found of a step its rung did not answer by due, after
+// found, what the step found before: its bound, due less its start, to the
+// minute as Go prints a duration less its zero units, as 35m, 1h30m or 2h.
+func stepExpired(found string, started, due time.Time) string {
 	bound := due.Sub(started).Round(time.Minute).String()
 	if b, ok := strings.CutSuffix(bound, "m0s"); ok {
 		bound = b + "m"
 	}
-	return "the rung did not answer within " + bound
+	if b, ok := strings.CutSuffix(bound, "h0m"); ok {
+		bound = b + "h"
+	}
+	expired := "the rung did not answer within " + bound
+	if found == "" {
+		return expired
+	}
+	return found + ", then " + expired
 }
 
 // caseAnswer is the action of a case an answer row resolved: an answer

@@ -2,7 +2,7 @@
 -- wait and its fallback wake, which the sweep reads through cases_due. A
 -- step carries the time its rung must answer by. The monitor's flags open
 -- cases of kind monitor_flag.
-ALTER TABLE cases ADD COLUMN owner_rung smallint NOT NULL DEFAULT 3,
+ALTER TABLE cases ADD COLUMN owner_rung smallint NOT NULL DEFAULT 3 CHECK (owner_rung BETWEEN 0 AND 3),
                   ADD COLUMN next_wake_at timestamptz,
                   ADD COLUMN wake_on text[] NOT NULL DEFAULT '{}';
 CREATE INDEX cases_due ON cases (next_wake_at) WHERE status IN ('open','at_human') AND next_wake_at IS NOT NULL;

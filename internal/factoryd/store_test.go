@@ -1311,12 +1311,19 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 }
 
 // AppendCaseStep appends st as PGStore.AppendCaseStep does: started now,
-// in progress when it names no outcome. Its id counts its case's steps.
+// in progress when it names no outcome, its id the next over every case's
+// steps.
 func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
 	if s.caseSteps == nil {
 		s.caseSteps = map[int64][]CaseStep{}
 	}
-	st.ID = int64(len(s.caseSteps[st.CaseID]) + 1)
+	st.ID = 0
+	for _, steps := range s.caseSteps {
+		for _, o := range steps {
+			st.ID = max(st.ID, o.ID)
+		}
+	}
+	st.ID++
 	st.StartedAt, st.Outcome = time.Now(), cmp.Or(st.Outcome, StepInProgress)
 	s.caseSteps[st.CaseID] = append(s.caseSteps[st.CaseID], st)
 	return st.ID, nil
@@ -1335,8 +1342,12 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	return nil
 }
 
-// SetCaseWake sets live case id's wake as PGStore.SetCaseWake does.
+// SetCaseWake sets live case id's wake as PGStore.SetCaseWake does; a
+// rung other than 0 to 3 is refused, as the column's check refuses it.
 func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	if rung < 0 || rung > 3 {
+		return fmt.Errorf("case %d: owner rung %d is not 0 to 3", id, rung)
+	}
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
 	if i < 0 {
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
@@ -1359,26 +1370,28 @@ func (s *fakeStore) DueCases(ctx context.Context, now time.Time, limit int) ([]C
 }
 
 // ExpireSteps hands up the in-progress steps due before now as
-// PGStore.ExpireSteps does, by case and id.
+// PGStore.ExpireSteps does, oldest first.
 func (s *fakeStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
 	var out []CaseStep
-	for _, id := range slices.Sorted(maps.Keys(s.caseSteps)) {
-		for i, st := range s.caseSteps[id] {
+	for id, steps := range s.caseSteps {
+		for i, st := range steps {
 			if st.Outcome != StepInProgress || st.DueAt == nil || !st.DueAt.Before(now) {
 				continue
 			}
 			ended := time.Now()
-			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.StartedAt, *st.DueAt), &ended
+			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.Found, st.StartedAt, *st.DueAt), &ended
 			s.caseSteps[id][i] = st
 			out = append(out, st)
 		}
 	}
+	slices.SortFunc(out, func(a, b CaseStep) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
 }
 
 // ResolveCase records its call in resolved and ends case id of cases by r
-// as PGStore.ResolveCase does, the draw and the step with it: a live case,
-// or one the webhook's copy of r's comment resolved as a plain answer.
+// as PGStore.ResolveCase does, its in-progress steps, the draw and the step
+// with it: a live case, or one the webhook's copy of r's comment resolved
+// as a plain answer.
 func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
@@ -1401,11 +1414,11 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 			return err
 		}
 	}
-	status, now := CaseResolved, time.Now()
+	status, outcome := CaseResolved, StepResolved
 	if r.Action == ActWithdraw {
-		status = CaseWithdrawn
+		status, outcome = CaseWithdrawn, StepWithdrawn
 	}
-	s.cases[i].Status, s.cases[i].Resolution, s.cases[i].ResolvedAt = status, &r, &now
+	s.endCase(i, status, outcome, r)
 	if st != nil {
 		step := *st
 		step.CaseID = id
@@ -1414,8 +1427,28 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 	return nil
 }
 
+// WithdrawCase ends live case id as withdrawn by the factory for reason,
+// its in-progress steps with it, as PGStore.WithdrawCase does.
 func (s *fakeStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	s.endCase(i, CaseWithdrawn, StepWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: reason})
 	return nil
+}
+
+// endCase ends case i of cases with status by r, and its in-progress steps
+// with outcome, as endCase does.
+func (s *fakeStore) endCase(i int, status, outcome string, r CaseResolution) {
+	now := time.Now()
+	s.cases[i].Status, s.cases[i].Resolution, s.cases[i].ResolvedAt = status, &r, &now
+	steps := s.caseSteps[s.cases[i].ID]
+	for j := range steps {
+		if steps[j].Outcome == StepInProgress {
+			steps[j].Outcome, steps[j].EndedAt = outcome, &now
+		}
+	}
 }
 
 func (s *fakeStore) CaseByID(ctx context.Context, id int64) (Case, error) {

@@ -16,8 +16,9 @@ var caseWaitStores = map[string]func(*testing.T) Store{
 }
 
 // A live case whose wake passed is due, the oldest wake first, open or at
-// the human. One due in an hour, one with no wake and a resolved one are
-// not, and a cleared wake is no longer due.
+// the human. One due in an hour, one with no wake, a resolved one and a
+// withdrawn one are not, and a cleared wake is no longer due. A rung other
+// than 0 to 3 is refused.
 func TestSetCaseWakeAndDueCases(t *testing.T) {
 	for name, open := range caseWaitStores {
 		t.Run(name, func(t *testing.T) {
@@ -37,6 +38,7 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 				}
 			}
 			due, later, never, done, earlier := opened("due", ""), opened("later", ""), opened("never", ""), opened("done", ""), opened("earlier", CaseAtHuman)
+			gone := opened("gone", "")
 			if never.OwnerRung != 3 || never.NextWakeAt != nil || len(never.WakeOn) != 0 {
 				t.Fatalf("a new case = rung %d, wake %v on %v; want rung 3, no wake, no events", never.OwnerRung, never.NextWakeAt, never.WakeOn)
 			}
@@ -44,7 +46,11 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 			wake(later, 0, nil, at(time.Hour))
 			wake(done, 0, nil, at(-2*time.Minute))
 			wake(earlier, 3, nil, at(-3*time.Minute))
+			wake(gone, 0, nil, at(-4*time.Minute))
 			if err := s.ResolveCase(ctx, done.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.WithdrawCase(ctx, gone.ID, "card ended"); err != nil {
 				t.Fatal(err)
 			}
 
@@ -70,6 +76,14 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 			if err := s.SetCaseWake(ctx, done.ID, 0, nil, at(time.Minute)); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("SetCaseWake on a resolved case = %v, want ErrNotFound", err)
 			}
+			if err := s.SetCaseWake(ctx, gone.ID, 0, nil, at(time.Minute)); !errors.Is(err, ErrNotFound) {
+				t.Fatalf("SetCaseWake on a withdrawn case = %v, want ErrNotFound", err)
+			}
+			for _, rung := range []int{-1, 4} {
+				if err := s.SetCaseWake(ctx, earlier.ID, rung, nil, nil); err == nil || errors.Is(err, ErrNotFound) {
+					t.Fatalf("SetCaseWake to rung %d = %v, want a refusal", rung, err)
+				}
+			}
 			if err := s.SetCaseWake(ctx, earlier.ID+1000, 0, nil, nil); !errors.Is(err, ErrNotFound) {
 				t.Fatalf("SetCaseWake on no case = %v, want ErrNotFound", err)
 			}
@@ -78,61 +92,97 @@ func TestSetCaseWakeAndDueCases(t *testing.T) {
 }
 
 // A step in progress past its due_at hands up and names its bound, the
-// due_at less its start: 35m and 1h30m. A step with no due_at, one due
-// later and one that ended are untouched, and an expired step is not
-// expired again.
+// due_at less its start: 35m, 1h30m and 2h, after the finding it carried.
+// A step with no due_at, one due later, one that ended and the steps of a
+// resolved and a withdrawn case are untouched, and an expired step is not
+// expired again. Step ids are unique across cases.
 func TestExpireStepsHandsUp(t *testing.T) {
 	for name, open := range caseWaitStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
 			start := time.Now().UTC().Truncate(time.Millisecond)
 			at := func(d time.Duration) *time.Time { v := start.Add(d); return &v }
-			c, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "k", Problem: "a flag"})
-			if err != nil {
-				t.Fatal(err)
-			}
-			step := func(due *time.Time, outcome string) int64 {
-				id, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, DueAt: due, Outcome: outcome})
+			opened := func(key string) Case {
+				c, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: key, Problem: "a flag"})
 				if err != nil {
 					t.Fatal(err)
 				}
+				return c
+			}
+			var ids []int64
+			step := func(c Case, due *time.Time, outcome, found string) int64 {
+				id, err := s.AppendCaseStep(ctx, CaseStep{CaseID: c.ID, Rung: 0, Actor: FactoryDecider, DueAt: due, Outcome: outcome, Found: found})
+				if err != nil {
+					t.Fatal(err)
+				}
+				ids = append(ids, id)
 				return id
 			}
-			rung := step(at(35*time.Minute), "")
-			unbound := step(nil, StepInProgress)
-			hour := step(at(90*time.Minute), StepInProgress)
-			two := step(at(2*time.Hour), StepInProgress)
-			ended := step(at(10*time.Minute), StepResolved)
+			c := opened("k")
+			rung := step(c, at(35*time.Minute), "", "")
+			unbound := step(c, nil, StepInProgress, "")
+			hour := step(c, at(90*time.Minute), StepInProgress, "asked again after a restart")
+			two := step(c, at(2*time.Hour), StepInProgress, "")
+			ended := step(c, at(10*time.Minute), StepResolved, "")
+			resolved, withdrawn, other := opened("resolved"), opened("withdrawn"), opened("other")
+			ofResolved, ofWithdrawn := step(resolved, at(10*time.Minute), "", ""), step(withdrawn, at(10*time.Minute), "", "")
+			ofOther := step(other, at(2*time.Hour), "", "")
+			if err := s.ResolveCase(ctx, resolved.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.WithdrawCase(ctx, withdrawn.ID, "card ended"); err != nil {
+				t.Fatal(err)
+			}
+			if unique := slices.Compact(slices.Sorted(slices.Values(ids))); len(unique) != len(ids) {
+				t.Fatalf("step ids = %v, want each once", ids)
+			}
 
-			expired := func(now time.Time, id int64, found string, due time.Time) {
+			type expiry struct {
+				id    int64
+				found string
+				due   time.Time
+			}
+			expired := func(now time.Time, want ...expiry) {
 				t.Helper()
 				got, err := s.ExpireSteps(ctx, now)
-				if err != nil || len(got) != 1 {
-					t.Fatalf("ExpireSteps at %s = %+v, %v; want step %d alone", now, got, err, id)
+				if err != nil || len(got) != len(want) {
+					t.Fatalf("ExpireSteps at %s = %+v, %v; want %+v", now, got, err, want)
 				}
-				if st := got[0]; st.ID != id || st.CaseID != c.ID || st.Outcome != StepHandedUp || st.Found != found ||
-					st.EndedAt == nil || st.DueAt == nil || !st.DueAt.Equal(due) {
-					t.Fatalf("expired step = %+v, want step %d handed up with %q, due %s", st, id, found, due)
+				for i, w := range want {
+					if st := got[i]; st.ID != w.id || st.Outcome != StepHandedUp || st.Found != w.found ||
+						st.EndedAt == nil || st.DueAt == nil || !st.DueAt.Equal(w.due) {
+						t.Fatalf("expired step = %+v, want step %d handed up with %q, due %s", st, w.id, w.found, w.due)
+					}
 				}
 			}
-			expired(start.Add(36*time.Minute), rung, "the rung did not answer within 35m", start.Add(35*time.Minute))
-			expired(start.Add(91*time.Minute), hour, "the rung did not answer within 1h30m", start.Add(90*time.Minute))
+			expired(start.Add(36*time.Minute), expiry{rung, "the rung did not answer within 35m", start.Add(35 * time.Minute)})
+			expired(start.Add(91*time.Minute),
+				expiry{hour, "asked again after a restart, then the rung did not answer within 1h30m", start.Add(90 * time.Minute)})
+			expired(start.Add(121*time.Minute), expiry{two, "the rung did not answer within 2h", start.Add(2 * time.Hour)},
+				expiry{ofOther, "the rung did not answer within 2h", start.Add(2 * time.Hour)})
 
-			steps, err := s.CaseSteps(ctx, c.ID)
-			if err != nil || len(steps) != 5 {
-				t.Fatalf("CaseSteps = %+v, %v; want five", steps, err)
-			}
 			byID := map[int64]CaseStep{}
-			for _, st := range steps {
-				byID[st.ID] = st
+			for _, k := range []Case{c, resolved, withdrawn} {
+				steps, err := s.CaseSteps(ctx, k.ID)
+				if err != nil {
+					t.Fatal(err)
+				}
+				for _, st := range steps {
+					byID[st.ID] = st
+				}
 			}
-			for id, want := range map[int64]string{unbound: StepInProgress, two: StepInProgress, ended: StepResolved} {
+			for id, want := range map[int64]string{unbound: StepInProgress, ended: StepResolved, ofResolved: StepResolved, ofWithdrawn: StepWithdrawn} {
 				if st := byID[id]; st.Outcome != want || st.Found != "" {
-					t.Errorf("step %d = %+v, want it untouched, %s", id, st, want)
+					t.Errorf("step %d = %+v, want it untouched by the expiry, %s", id, st, want)
 				}
 			}
 			if st := byID[unbound]; st.DueAt != nil || st.EndedAt != nil {
 				t.Errorf("the step with no due_at = %+v, want no due_at and not ended", st)
+			}
+			for _, id := range []int64{ofResolved, ofWithdrawn} {
+				if byID[id].EndedAt == nil {
+					t.Errorf("step %d of an ended case = %+v, want it ended with its case", id, byID[id])
+				}
 			}
 		})
 	}
