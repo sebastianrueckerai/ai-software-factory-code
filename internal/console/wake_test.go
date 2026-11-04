@@ -460,16 +460,18 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 }
 
 // wakeCall is a stored tool call of a wake's turn: its name, result,
-// proposal token and refusal status.
+// whether it stored a proposal, and its refusal status.
 type wakeCall struct {
-	name, result, proposal string
-	status                 int
+	name, result string
+	proposed     bool
+	status       int
 }
 
-// mergeWake runs a merge row's wake on sebastian's inbox at autonomous
-// under merge rule rule, the model answering replies, and answers the
-// rig, its chat and the turn's stored tool calls.
-func mergeWake(t *testing.T, rule string, setup func(*rig), replies ...[]string) (*rig, *fakeChat, []wakeCall) {
+// mergeWake runs a merge row's wake on sebastian's inbox, or with inbox
+// false on his own thread 1, at autonomous under merge rule rule, the
+// model answering replies, and answers the rig, its chat and the turn's
+// stored tool calls.
+func mergeWake(t *testing.T, rule string, inbox bool, setup func(*rig), replies ...[]string) (*rig, *fakeChat, []wakeCall) {
 	t.Helper()
 	r, chat, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: rule}}
@@ -479,6 +481,12 @@ func mergeWake(t *testing.T, rule string, setup func(*rig), replies ...[]string)
 	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
+	}
+	if !inbox {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "user", Content: "what is open?", Conversation: 1}); err != nil {
+			t.Fatal(err)
+		}
+		conv = 1
 	}
 	g.replies = replies
 	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask",
@@ -492,34 +500,48 @@ func mergeWake(t *testing.T, rule string, setup func(*rig), replies ...[]string)
 	var calls []wakeCall
 	for _, m := range rows {
 		for _, c := range m.ToolCalls {
-			calls = append(calls, wakeCall{name: c.Name, result: c.Result, proposal: c.Proposal, status: c.Status})
+			calls = append(calls, wakeCall{name: c.Name, result: c.Result, proposed: c.Proposal != "", status: c.Status})
 		}
 	}
 	return r, chat, calls
 }
 
-// A wake at merge rule human decides no merge: approve_merge and
-// deny_merge refuse naming attach_analysis before any proposal is stored,
-// and the request stays pending. At merge rule auto the wake's
-// approve_merge decides the merge as the factory's own.
+// The inbox decides no merge at merge rule human: a wake's approve_merge
+// and deny_merge there refuse naming attach_analysis before any proposal
+// is stored, and the request stays pending. A wake-flagged turn on the
+// human's own thread, a fund's resume or a retry, proposes them as
+// before, and at merge rule auto the inbox's wake decides the merge as the
+// factory's own.
 func TestWakeApproveMergeRefusedOnMergeRuleHuman(t *testing.T) {
 	const refused = "Refused: A human approves merges on merge rule human: record what you found with attach_analysis."
-	r, chat, calls := mergeWake(t, policy.MergeHuman, nil,
-		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`, "deny_merge", `{"task_id":"t-m","action":"reject","note":"The column breaks the index."}`)},
-		[]string{say("A human decides this merge.")})
-	equal(t, "the wake's calls at merge rule human", calls, []wakeCall{
-		{name: "approve_merge", result: refused, status: http.StatusForbidden},
-		{name: "deny_merge", result: refused, status: http.StatusForbidden}})
-	chat.mu.Lock()
-	proposals := len(chat.proposals)
-	chat.mu.Unlock()
-	if q := r.approvals.get(4); proposals != 0 || q.Status != "pending" || len(r.fg.reviews) != 0 {
-		t.Fatalf("%d proposals, request 4 %s, reviews %v: want no proposal, the request pending, no review", proposals, q.Status, r.fg.reviews)
+	merges := []string{call(1, "approve_merge", `{"task_id":"t-m"}`, "deny_merge", `{"task_id":"t-m","action":"reject","note":"The column breaks the index."}`)}
+	pending := func(t *testing.T, r *rig, chat *fakeChat, want int) {
+		t.Helper()
+		chat.mu.Lock()
+		proposals := len(chat.proposals)
+		chat.mu.Unlock()
+		if q := r.approvals.get(4); proposals != want || q.Status != "pending" || len(r.fg.reviews) != 0 {
+			t.Fatalf("%d proposals, request 4 %s, reviews %v: want %d proposals, the request pending, no review", proposals, q.Status, r.fg.reviews, want)
+		}
 	}
 
-	r, _, calls = mergeWake(t, policy.MergeAuto, nil,
+	r, chat, calls := mergeWake(t, policy.MergeHuman, true, nil, merges, []string{say("A human decides this merge.")})
+	equal(t, "the inbox wake's calls at merge rule human", calls, []wakeCall{
+		{name: "approve_merge", result: refused, status: http.StatusForbidden},
+		{name: "deny_merge", result: refused, status: http.StatusForbidden}})
+	pending(t, r, chat, 0)
+
+	r, chat, calls = mergeWake(t, policy.MergeHuman, false, nil, merges)
+	equal(t, "the own thread's wake calls at merge rule human", calls, []wakeCall{
+		{name: "approve_merge", proposed: true,
+			result: `Proposed to sebastian: Approve a merge, #5 t-m "Fix the cache. It drops entries.". Nothing runs until they press Do it.`},
+		{name: "deny_merge", proposed: true,
+			result: `Proposed to sebastian: Deny a merge, #5 t-m "Fix the cache. It drops entries.", action reject, note The column breaks the index. Nothing runs until they press Do it.`}})
+	pending(t, r, chat, 2)
+
+	r, _, calls = mergeWake(t, policy.MergeAuto, true, nil,
 		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("Approved #5.")})
-	equal(t, "the wake's call at merge rule auto", calls, []wakeCall{
+	equal(t, "the inbox wake's call at merge rule auto", calls, []wakeCall{
 		{name: "approve_merge", result: "Approved pull request #9; factoryd merges it. It cannot be undone."}})
 	if q := r.approvals.get(4); q.Status != "approved" || q.DecidedBy != factoryd.ChatUser {
 		t.Fatalf("request 4 %s by %s, want approved by %s", q.Status, q.DecidedBy, factoryd.ChatUser)
@@ -550,7 +572,7 @@ func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
 			return nil
 		}
 	}
-	_, _, calls := mergeWake(t, policy.MergeAuto, humanFirst,
+	_, _, calls := mergeWake(t, policy.MergeAuto, true, humanFirst,
 		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`, "attach_analysis", `{"task_id":"t-m","found":"The column is added with its default."}`)},
 		[]string{say("A human approved #5 already.")})
 	equal(t, "the wake's calls after the human's approval", calls, []wakeCall{

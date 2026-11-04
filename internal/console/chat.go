@@ -1291,9 +1291,26 @@ func (t *turn) queuedRows() bool {
 	return slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Queued })
 }
 
-// wakeMergeRefusal answers a wake's merge decision on a merge rule other
-// than auto, where a human decides every merge.
-const wakeMergeRefusal = "A human approves merges on merge rule human: record what you found with attach_analysis."
+// inboxMergeRefusal answers a merge decision in the inbox on a merge rule
+// other than auto, where a human decides every merge.
+const inboxMergeRefusal = "A human approves merges on merge rule human: record what you found with attach_analysis."
+
+// inboxMerge refuses tool name when it decides a merge in the inbox on a
+// merge rule other than auto; a thread of the human's own proposes it.
+func (t *turn) inboxMerge(name string) error {
+	if name != "approve_merge" && name != "deny_merge" || t.a.mergeRule == policy.MergeAuto {
+		return nil
+	}
+	th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return refuse(http.StatusInternalServerError, "cannot read the conversation")
+	}
+	if th.Inbox {
+		return refuse(http.StatusForbidden, inboxMergeRefusal)
+	}
+	return nil
+}
 
 // call runs one tool call of the agent, or proposes it when the chat's
 // confirm names it or the tool is the member's alone to decide, and
@@ -1310,14 +1327,16 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 	switch {
 	case !ok:
 		result = "There is no tool " + call.Name + "."
-	case t.a.wake && (call.Name == "approve_merge" || call.Name == "deny_merge") && t.a.mergeRule != policy.MergeAuto:
-		result, status = "Refused: "+wakeMergeRefusal, http.StatusForbidden
 	case t.parked[call.Name]:
 		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, a press answers it, and in a thread of their own so does their message."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	default:
 		asked := in
+		if err := t.inboxMerge(tool.name); err != nil {
+			result, status = "Refused: "+t.sentence(err), refusalCode(err)
+			break
+		}
 		if err := t.byTaskID(&in); err != nil {
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break

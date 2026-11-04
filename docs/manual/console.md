@@ -292,8 +292,9 @@ decimals: a task's model calls cost fractions of a cent.
   wake or in a human's turn, goes out as `factory-chat` too: an approval
   posts none, a change request is `factory-chat`'s, which the intake
   trusts and signals and which blocks no later merge. At a merge rule
-  other than auto a wake decides no merge: `approve_merge` and
-  `deny_merge` refuse before any proposal, naming `attach_analysis`. The
+  other than auto the inbox decides no merge: a turn there refuses
+  `approve_merge` and `deny_merge` before any proposal, naming
+  `attach_analysis`. The
   agent never approves a GitHub sync's pull request: a human approves the
   GitHub commits it carries. A project without a chat
   token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
