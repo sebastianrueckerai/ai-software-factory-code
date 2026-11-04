@@ -1861,7 +1861,7 @@ var tools = []chatTool{
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
 	{name: "inbox", title: "Read the inbox",
 		params: map[string]any{"query": str("a word to filter by, 2 to 200 characters"),
-			"before": map[string]any{"type": "integer", "description": "a row id: rows older than it", "minimum": 1}},
+			"before": map[string]any{"type": "integer", "description": "a row id: older rows, the open asks left out", "minimum": 1}},
 		about: "The factory's thread: open asks first, then the newest rows, filtered by query, paged by before.",
 		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.inboxText(in); return s, nil, err }},
 	{name: "board_view", title: "Board view",
@@ -2084,7 +2084,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
   escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
-  inbox reads the factory's thread: what woke the agent and what waits on a human.
+  inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
   fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the human's raise, and a project without a pool takes it too.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.

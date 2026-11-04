@@ -20,9 +20,9 @@ const inboxPage = 20
 // inboxText is the inbox tool: the reader's own inbox when the project
 // pokes them, else the inbox of the first human it pokes, whom the Waker
 // wakes. It reads the same window chat_search reads, settled as the page
-// settles it, keeps the rows that hold the query and those below before,
-// and answers inboxPage of them: the open asks first, then the rest,
-// newest first.
+// settles it, and keeps the rows that hold the query. The first page
+// answers every open ask, then the newest inboxPage other rows; a page
+// below before answers only other rows, so no row shows twice.
 func (t *turn) inboxText(in toolInput) (string, error) {
 	var re *regexp.Regexp
 	if in.Query != "" {
@@ -58,19 +58,22 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 		log.Printf("console: the chat stop of %s: %v", t.p.Repository, err)
 	}
 	t.settleRows(ctx, msgs, login, th.Number, th.SeenUpto, stop)
+	paging := in.Before > 0
 	var asks, rest []factoryd.ChatMessage
 	for _, m := range slices.Backward(msgs) {
-		if in.Before > 0 && m.ID >= in.Before || re != nil && !re.MatchString(m.Content) {
+		if re != nil && !re.MatchString(m.Content) {
 			continue
 		}
 		if factoryd.AskFamily(m) != "" && !m.Settled {
-			asks = append(asks, m)
-		} else {
+			if !paging {
+				asks = append(asks, m)
+			}
+		} else if !paging || m.ID < in.Before {
 			rest = append(rest, m)
 		}
 	}
-	rows := append(asks, rest...)
-	page := rows[:min(len(rows), inboxPage)]
+	shown := rest[:min(len(rest), inboxPage)]
+	page := append(asks, shown...)
 	var b strings.Builder
 	fmt.Fprintf(&b, "The inbox of %s on %s:\n", login, t.p.Name)
 	if len(page) == 0 {
@@ -78,7 +81,7 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 		if re != nil {
 			fmt.Fprintf(&b, " holds %q", in.Query)
 		}
-		if in.Before > 0 {
+		if paging {
 			fmt.Fprintf(&b, " older than row %d", in.Before)
 		}
 		b.WriteString("\n")
@@ -100,8 +103,8 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 		fmt.Fprintf(&b, "%d %s %s%s: %s%s\n", m.ID, m.At.UTC().Format("01-02 15:04Z"), inboxKind(m), card,
 			textutil.Truncate(inboxSaid(m), excerptSide), inboxState(m))
 	}
-	if len(rows) > len(page) {
-		fmt.Fprintf(&b, "before=%d reads on.", page[len(page)-1].ID)
+	if len(rest) > len(shown) {
+		fmt.Fprintf(&b, "before=%d reads on.", shown[len(shown)-1].ID)
 	} else {
 		b.WriteString("That is the whole window.")
 	}

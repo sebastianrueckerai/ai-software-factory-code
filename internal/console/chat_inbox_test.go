@@ -86,20 +86,24 @@ func TestChatInboxNamesNoInboxYet(t *testing.T) {
 	}
 }
 
-// An open ask leads the page whatever its age, then the rest newest
-// first: #13 waits on a human, the two pokes about #11 nobody has read.
+// An open ask leads the first page whatever its age, then the rest newest
+// first: #13 waits on a human, the two pokes about #11 nobody has read. A
+// page below before leaves the ask out, though it is older.
 func TestChatInboxListsOpenAsksFirst(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ids := inboxRows(t, chat, "sebastian",
 		escalation("#13 needs you: Use a replica?", "t-e"),
 		poke("#11 started.", "t-r"),
 		poke("#11 merged.", "t-r"))
-	out := reads(t, r, g, "inbox", `{}`)
-	equal(t, "the read", out[0], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
+	out := reads(t, r, g, "inbox", `{}`, "inbox", fmt.Sprintf(`{"before":%d}`, ids[2]))
+	equal(t, "the first page", out[0], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
 		"%d 10-11 09:30Z escalation #13: #13 needs you: Use a replica? (open)\n"+
 		"%d 10-11 09:30Z poke #11: #11 merged. (open)\n"+
 		"%d 10-11 09:30Z poke #11: #11 started. (open)\n"+
 		"That is the whole window.", ids[0], ids[2], ids[1]))
+	equal(t, "below the newest poke", out[1], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
+		"%d 10-11 09:30Z poke #11: #11 started. (open)\n"+
+		"That is the whole window.", ids[1]))
 }
 
 // query keeps the rows that hold it in any case, a query that holds in
@@ -124,9 +128,10 @@ func TestChatInboxFiltersByQuery(t *testing.T) {
 	}
 }
 
-// A page holds 20 rows and names the id the next one reads below; the
-// last page says the window ends, and a page below the oldest row is
-// empty.
+// A page holds 20 rows besides the open asks and names the id the next
+// one reads below; the last page says the window ends, and a page below
+// the oldest row is empty. The open asks, 25 of them between 23 pokes,
+// fill the first page whole and never show again.
 func TestChatInboxPagesWithBefore(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	var rows []factoryd.ChatMessage
@@ -148,6 +153,36 @@ func TestChatInboxPagesWithBefore(t *testing.T) {
 	out = reads(t, r, g, "inbox", fmt.Sprintf(`{"before":%d}`, ids[5]), "inbox", fmt.Sprintf(`{"before":%d}`, ids[0]))
 	equal(t, "page two", out[0], head+strings.Join(second, "\n")+"\nThat is the whole window.")
 	equal(t, "below the oldest row", out[1], head+fmt.Sprintf("no row older than row %d\nThat is the whole window.", ids[0]))
+
+	r, chat, g = newChatRig(t)
+	rows = nil
+	var askAt, pokeAt []int
+	for i := range 25 {
+		askAt = append(askAt, len(rows))
+		rows = append(rows, escalation(fmt.Sprintf("ask %d", i), "t-e"))
+		if i < 23 {
+			pokeAt = append(pokeAt, len(rows))
+			rows = append(rows, poke(fmt.Sprintf("poke %d", i), ""))
+		}
+	}
+	ids = inboxRows(t, chat, "sebastian", rows...)
+	ask := func(i int) string {
+		return fmt.Sprintf("%d 10-11 09:30Z escalation #13: ask %d (open)", ids[askAt[i]], i)
+	}
+	pokeLine := func(i int) string { return fmt.Sprintf("%d 10-11 09:30Z poke: poke %d (open)", ids[pokeAt[i]], i) }
+	first, second = nil, nil
+	for i := 24; i >= 0; i-- {
+		first = append(first, ask(i))
+	}
+	for i := 22; i >= 3; i-- {
+		first = append(first, pokeLine(i))
+	}
+	for i := 2; i >= 0; i-- {
+		second = append(second, pokeLine(i))
+	}
+	out = reads(t, r, g, "inbox", `{}`, "inbox", fmt.Sprintf(`{"before":%d}`, ids[pokeAt[3]]))
+	equal(t, "the asks' first page", out[0], head+strings.Join(first, "\n")+fmt.Sprintf("\nbefore=%d reads on.", ids[pokeAt[3]]))
+	equal(t, "the pokes past it", out[1], head+strings.Join(second, "\n")+"\nThat is the whole window.")
 }
 
 // A settled ask reads its reason line as the page shows it: #13's answer
