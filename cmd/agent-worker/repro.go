@@ -483,7 +483,7 @@ func runProof(p harness.Proof, repo, own string, timeout time.Duration, late str
 	}
 	env := append(os.Environ(), "CHECK_REPORT="+filepath.Join(own, "report.xml"), "CHECK_ARTIFACTS="+filepath.Join(own, "artifacts"))
 	r := runBounded(repo, env, timeout, late, "/bin/bash", args...)
-	run := harness.ProofRun{ID: p.ID, Exit: r.Exit, Output: r.Output}
+	run := harness.ProofRun{ID: p.ID, Started: true, Exit: r.Exit, Output: r.Output}
 	if err := undo(); err != nil {
 		run.Output += fmt.Sprintf("\nproofs mode: put back %s: %v", p.File.Path, err)
 	}

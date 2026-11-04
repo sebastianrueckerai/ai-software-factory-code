@@ -211,7 +211,7 @@ func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 func TestOpenedFindingCarriesTheCriterionTheCodeAndTheOutput(t *testing.T) {
 	runs := gateRuns(blindPlan(), blindRows())
 	const sizeText = "The criterion: A size over the bound is refused. Inputs: POST /api/sizes with 3.75 against a bound of 3.5. Expected: 400 and no row in the store."
-	const rest = "; it is open now. Commit the test below at proofs/size_bound/size_bound_test.go and make it pass: " +
+	const rest = ". It is open now. Commit the test below at proofs/size_bound/size_bound_test.go and make it pass: " +
 		"fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold.\n" +
 		sizeText + "\n" +
 		"TestSizeBound in ./proofs/size_bound:\n```\npackage size_bound\n\nfunc TestSizeBound(t *testing.T) {}\n```\n" +
@@ -228,7 +228,7 @@ func TestOpenedFindingCarriesTheCriterionTheCodeAndTheOutput(t *testing.T) {
 		}
 	}
 	door := openedProof{run: runs[2], outcome: proofFlagged, text: "The criterion: A door opens for its key. Inputs: POST /doors/1/open with key 7. Expected: 200."}
-	if got, want := openedFinding(door, "c1"), "criterion door: its proof was flagged green on main by its dry run, so it had no blind try; it is open now. "+
+	if got, want := openedFinding(door, "c1"), "criterion door: its proof was flagged green on main by its dry run, so it had no blind try. It is open now. "+
 		"Commit the test below at proofs/door/door_test.go and make it pass: "+
 		"fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold.\n"+
 		"The criterion: A door opens for its key. Inputs: POST /doors/1/open with key 7. Expected: 200.\n"+
@@ -237,7 +237,7 @@ func TestOpenedFindingCarriesTheCriterionTheCodeAndTheOutput(t *testing.T) {
 	}
 	keyLog := openedProof{run: runs[5], outcome: proofFailed, output: "Failed\n--- FAIL: TestKeyLog (0.00s)",
 		text: "The hold-out: Every key turn lands in the log. Inputs: three turns of key 7. Expected: three log rows."}
-	if got, want := openedFinding(keyLog, "8e3a1b0c9d"), "hold-out key_log: its blind proof ran red at 8e3a1b0; it is open now. "+
+	if got, want := openedFinding(keyLog, "8e3a1b0c9d"), "hold-out key_log: its blind proof ran red at 8e3a1b0. It is open now. "+
 		"Commit the test below at proofs/key_log/key_log_test.go and make it pass: "+
 		"fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold.\n"+
 		"The hold-out: Every key turn lands in the log. Inputs: three turns of key 7. Expected: three log rows.\n"+
@@ -751,8 +751,8 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
 		"hold-out never_red: its proof was flagged unrunnable by its dry run, so it had no blind try",
 	}
-	if len(res.Findings) != 4 || res.Findings[0] != lines[1] || !strings.HasPrefix(res.Findings[1], lines[2]+"; it is open now.") ||
-		res.Findings[2] != lines[3] || !strings.HasPrefix(res.Findings[3], lines[5]+"; it is open now.") ||
+	if len(res.Findings) != 4 || res.Findings[0] != lines[1] || !strings.HasPrefix(res.Findings[1], lines[2]+". It is open now.") ||
+		res.Findings[2] != lines[3] || !strings.HasPrefix(res.Findings[3], lines[5]+". It is open now.") ||
 		!strings.Contains(res.Findings[3], "\nThe hold-out: A lock turn is never lost. Inputs: one turn of key 9. Expected: one log row.\n") ||
 		res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
 		t.Fatalf("result = %+v, want group_open's line, door's opening, no_proof's line and never_red's opening", res)
@@ -844,11 +844,11 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 	worker := proofsWorker(t, r)
 	seedBlindPlan(t, store, blindPlan(), blindRows())
 	results, errs := runCriteriaWithPods(t, r, kube, proofLines(
-		harness.ProofRun{ID: "size_bound", Exit: 1, Output: "=== RUN   TestSizeBound\n--- FAIL: TestSizeBound (0.00s)\n", Report: junitGz(t, sizeBoundFail)},
-		harness.ProofRun{ID: "group_open", Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"></testcase>`))},
-		harness.ProofRun{ID: "all_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
-		harness.ProofRun{ID: "holdout-4", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))},
-		harness.ProofRun{ID: "holdout-5", Report: junitGz(t, wrap(`<testcase name="TestLockLog"></testcase>`))},
+		harness.ProofRun{ID: "size_bound", Started: true, Exit: 1, Output: "=== RUN   TestSizeBound\n--- FAIL: TestSizeBound (0.00s)\n", Report: junitGz(t, sizeBoundFail)},
+		harness.ProofRun{ID: "group_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"></testcase>`))},
+		harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
+		harness.ProofRun{ID: "holdout-4", Started: true, Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))},
+		harness.ProofRun{ID: "holdout-5", Started: true, Report: junitGz(t, wrap(`<testcase name="TestLockLog"></testcase>`))},
 	))
 	res, err := results[0], errs[0]
 	if err != nil {
@@ -973,8 +973,9 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 
 // An opened proof runs from the tree at the head: a path that holds no
 // file there makes no run, and the finding names the path and carries the
-// code; a file there runs, and a red run is its line, as any criterion's.
-// Neither opens anything.
+// code; a file there runs, and a red run is its line, as any criterion's;
+// a file past Forgejo's answer bound runs too, changed. None opens
+// anything.
 func TestGateCriteriaRunsAnOpenProofFromTheTree(t *testing.T) {
 	ctx := context.Background()
 	plan := Plan{Criteria: blindPlan().Criteria[1:2]}
@@ -1024,6 +1025,23 @@ func TestGateCriteriaRunsAnOpenProofFromTheTree(t *testing.T) {
 	if n := len(gateEvents(store, "t1")) + len(gateEvents(store, "plan1")); n != 0 {
 		t.Fatalf("%d proof_opened events, want none", n)
 	}
+
+	kube = newFakeKube()
+	objects = &fakeObjectStore{}
+	r, hub, store = newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	hub.files = map[string]string{"c1:acceptance/group_open_test.go": strings.Repeat("a", maxForgejoAnswer+1)}
+	worker := proofsWorker(t, r)
+	seedBlindPlan(t, store, plan, blindRows()[1:2])
+	results, errs = runCriteriaWithPods(t, r, kube, proofLines(harness.ProofRun{ID: "group_open", Started: true,
+		Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"></testcase>`))}))
+	if errs[0] != nil || len(results[0].Findings) != 0 || len(worker.lists) != 1 {
+		t.Fatalf("a file past the answer's bound: result = %+v, %v, posts %d; want it run and met", results[0], errs[0], len(worker.lists))
+	}
+	proofs = nil
+	if err := json.Unmarshal(mustJSON(timelineStep(t, objects, "t1", "gate_criteria")["proofs"]), &proofs); err != nil || len(proofs) != 1 ||
+		!proofs[0].Changed || !proofs[0].Met {
+		t.Fatalf("the line's proofs = %+v, %v; want group_open met and changed", proofs, err)
+	}
 }
 
 // A proof opens once: the next gate at the same head runs it from the
@@ -1032,7 +1050,7 @@ func TestGateCriteriaRunsAnOpenProofFromTheTree(t *testing.T) {
 func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 	ctx := context.Background()
 	plan := Plan{Criteria: blindPlan().Criteria[:1]}
-	red := proofLines(harness.ProofRun{ID: "size_bound", Exit: 1, Report: junitGz(t, sizeBoundFail)})
+	red := proofLines(harness.ProofRun{ID: "size_bound", Started: true, Exit: 1, Report: junitGz(t, sizeBoundFail)})
 	opened := func(store *fakeStore) bool {
 		rows, _ := store.PlanProofs(ctx, "plan1")
 		return len(rows) == 1 && rows[0].State == ProofOpened
@@ -1043,7 +1061,7 @@ func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 	proofsWorker(t, r)
 	seedBlindPlan(t, store, plan, blindRows()[:1])
 	results, errs := runCriteriaWithPods(t, r, kube, red)
-	if errs[0] != nil || len(results[0].Findings) != 1 || !strings.HasPrefix(results[0].Findings[0], "criterion size_bound: its blind proof ran red at c1;") {
+	if errs[0] != nil || len(results[0].Findings) != 1 || !strings.HasPrefix(results[0].Findings[0], "criterion size_bound: its blind proof ran red at c1.") {
 		t.Fatalf("the first gate = %+v, %v; want size_bound open", results[0], errs[0])
 	}
 	second, err := runCriteria(t, r)
@@ -1065,7 +1083,7 @@ func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 	if errs[0] == nil || !strings.Contains(errs[0].Error(), "plan_proofs: connection reset") {
 		t.Fatalf("the first gate's err = %v, want the open's", errs[0])
 	}
-	if errs[1] != nil || len(results[1].Findings) != 1 || !strings.HasPrefix(results[1].Findings[0], "criterion size_bound: its blind proof ran red at c1;") ||
+	if errs[1] != nil || len(results[1].Findings) != 1 || !strings.HasPrefix(results[1].Findings[0], "criterion size_bound: its blind proof ran red at c1.") ||
 		len(kube.podOrder) != 2 {
 		t.Fatalf("the retry = %+v, %v, pods %d; want the blind try again", results[1], errs[1], len(kube.podOrder))
 	}
@@ -1074,26 +1092,36 @@ func TestGateCriteriaOpensAProofOnce(t *testing.T) {
 	}
 }
 
-// A blind proof the pod never ran had no try: a pod that ended before it,
-// or a worker that ran no entry. It stays stored and opens nothing; its
-// row is unmet and its line, which carries no code, is the finding.
+// A blind proof the worker never started had no try: a pod that ended
+// before it, a worker that ran no entry, or an entry the worker could not
+// start (its budget ran out, or its file could not be placed). It stays
+// stored and opens nothing; a criterion's row is unmet and its line,
+// which carries no code, is the finding; a hold-out stays out of every
+// surface, its verdict on the line unrunnable.
 func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 	ctx := context.Background()
 	plan := Plan{Criteria: []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."}, blindPlan().Criteria[0]}}
-	green := harness.ProofRun{ID: "all_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}
+	green := harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}
 	ended := proofLines(green)
 	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: the fetch failed"}})
+	const outOfBudget = "proofs mode: the run's 35m0s ran out before this entry"
+	unstarted := proofLines(green, harness.ProofRun{ID: "size_bound", Exit: -1, Output: outOfBudget},
+		harness.ProofRun{ID: "holdout-4", Exit: -1, Output: "proofs mode: write proofs/key_log/key_log_test.go: no room"})
 	for name, tc := range map[string]struct {
 		body, why string
+		rows      []PlanProof
+		holdouts  string
 	}{
-		"a pod that ended early": {ended[:strings.LastIndex(ended, "\n")], proofsEndedEarly},
-		"a worker that ran none": {string(closing), "proofs mode: the fetch failed"},
+		"a pod that ended early":           {ended[:strings.LastIndex(ended, "\n")], proofsEndedEarly, blindRows()[:1], `[]`},
+		"a worker that ran none":           {string(closing), "proofs mode: the fetch failed", []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
+		"entries the worker did not start": {unstarted, "check test wrote no report (exit -1): " + outOfBudget, []PlanProof{blindRows()[0], blindRows()[3]}, `[{"id":"holdout-4","verdict":"unrunnable"}]`},
 	} {
 		t.Run(name, func(t *testing.T) {
 			kube := newFakeKube()
-			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+			objects := &fakeObjectStore{}
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 			proofsWorker(t, r)
-			seedBlindPlan(t, store, plan, blindRows()[:1])
+			seedBlindPlan(t, store, plan, tc.rows)
 			results, errs := runCriteriaWithPods(t, r, kube, tc.body)
 			line := "criterion size_bound: TestSizeBound in ./proofs/size_bound: " + tc.why
 			if errs[0] != nil || !slices.Contains(results[0].Findings, line) {
@@ -1105,8 +1133,26 @@ func TestGateCriteriaKeepsABlindProofThePodNeverRan(t *testing.T) {
 				t.Fatalf("rows = %+v, want size_bound unmet, blind", rows)
 			}
 			proofs, _ := store.PlanProofs(ctx, "plan1")
-			if proofs[0].State != ProofStored || len(gateEvents(store, "t1")) != 0 || strings.Contains(strings.Join(hub.comments, "\n"), "package size_bound") {
-				t.Fatalf("row %+v, events %v; want it stored, no event and no code", proofs[0], gateEvents(store, "t1"))
+			for _, pp := range proofs {
+				if pp.State != ProofStored {
+					t.Fatalf("rows = %+v, want every one stored", proofs)
+				}
+			}
+			if n := len(gateEvents(store, "t1")) + len(gateEvents(store, "plan1")); n != 0 || strings.Contains(strings.Join(hub.comments, "\n"), "package size_bound") {
+				t.Fatalf("%d events, comments %q; want no event and no code", n, hub.comments)
+			}
+			step := timelineStep(t, objects, "t1", "gate_criteria")
+			if got := string(mustJSON(step["holdouts"])); got != tc.holdouts {
+				t.Fatalf("the line's holdouts = %s, want %s", got, tc.holdouts)
+			}
+			surfaces := map[string]string{"the comments": strings.Join(hub.comments, "\n"), "the line": string(mustJSON(step)),
+				"the findings": strings.Join(results[0].Findings, "\n"), "the events": string(mustJSON(store.events)), "the rows": string(mustJSON(rows))}
+			for _, leak := range []string{"key_log", "TestKeyLog", "proofs/key_log", "Every key turn"} {
+				for surface, text := range surfaces {
+					if strings.Contains(text, leak) {
+						t.Fatalf("%s carries %q: %s", surface, leak, text)
+					}
+				}
 			}
 		})
 	}

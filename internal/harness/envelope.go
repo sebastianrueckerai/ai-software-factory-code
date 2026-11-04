@@ -44,13 +44,16 @@ type ProofFile struct {
 	Content string `json:"content"`
 }
 
-// ProofRun is one entry's run, a stdout line of its own: check test's
-// exit (-1: it could not run or ran out of time), its output tail, its
-// report gzipped (nil when it wrote none or one too large for the line),
-// and the regular files it wrote under CHECK_ARTIFACTS, each cut at
-// 256 KiB, as many as the line holds. Output names what was left out.
+// ProofRun is one entry's run, a stdout line of its own: whether check
+// test started for it, whatever its exit (false when the run's budget
+// ran out before the entry or the worker could not set it up), check
+// test's exit (-1: it could not run or ran out of time), its output tail,
+// its report gzipped (nil when it wrote none or one too large for the
+// line), and the regular files it wrote under CHECK_ARTIFACTS, each cut
+// at 256 KiB, as many as the line holds. Output names what was left out.
 type ProofRun struct {
 	ID        string            `json:"id"`
+	Started   bool              `json:"started,omitempty"`
 	Exit      int               `json:"exit"`
 	Output    string            `json:"output"`
 	Report    []byte            `json:"report,omitempty"`

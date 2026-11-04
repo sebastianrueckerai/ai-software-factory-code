@@ -477,7 +477,8 @@ func listed(proofs ...harness.Proof) func() ([]harness.Proof, error) {
 
 // The proofs mode runs bash check test with the entry's suite, and its
 // name only when given, each with a report path and an artifacts
-// directory of its own outside the tree, and returns what the check left.
+// directory of its own outside the tree, and returns what the check left,
+// each run started whatever its exit.
 func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	ws, repo := proofsWorkspace(t, proofsCheck)
 	proofsEnvs(t)
@@ -500,7 +501,7 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 		{"none", "argc=2 test ./none", "", 2, nil},
 	} {
 		r := runs[i]
-		if r.ID != want.id || r.Exit != want.exit || strings.SplitN(r.Output, "\n", 2)[0] != want.first {
+		if r.ID != want.id || r.Exit != want.exit || !r.Started || strings.SplitN(r.Output, "\n", 2)[0] != want.first {
 			t.Errorf("run %d = %+v, want id %s, exit %d, first line %q", i, r, want.id, want.exit, want.first)
 		}
 		if want.report == "" && r.Report != nil {
@@ -561,7 +562,7 @@ func TestProofsWriteTheEntrysFileForItsRunAlone(t *testing.T) {
 }
 
 // A file the tree cannot hold, by a parent step, an absolute path or a
-// link out of it, is not written, and its entry does not run.
+// link out of it, is not written, and its entry does not start.
 func TestProofsRefuseAFileOutsideTheTree(t *testing.T) {
 	ws, repo := proofsWorkspace(t, "touch ran")
 	outside := t.TempDir()
@@ -574,7 +575,7 @@ func TestProofsRefuseAFileOutsideTheTree(t *testing.T) {
 		proofs = append(proofs, harness.Proof{ID: path, Suite: "./x", File: &harness.ProofFile{Path: path, Content: "package x\n"}})
 	}
 	for _, r := range proofRuns(t, ws, proofs...) {
-		if r.Exit != -1 || !strings.HasPrefix(r.Output, "proofs mode: write ") {
+		if r.Exit != -1 || r.Started || !strings.HasPrefix(r.Output, "proofs mode: write ") {
 			t.Errorf("run = %+v", r)
 		}
 	}
@@ -683,7 +684,7 @@ func TestProofsNeverBlockOnAFIFO(t *testing.T) {
 }
 
 // An entry's own directory is new: one a process left there, with a
-// report planted in it, fails the entry before the check runs.
+// report planted in it, fails the entry before the check starts.
 func TestProofsRefuseAnEntryDirectoryThatExists(t *testing.T) {
 	ws, repo := proofsWorkspace(t, "touch ran\n")
 	planted := filepath.Join(ws, "proofs", "0")
@@ -694,7 +695,7 @@ func TestProofsRefuseAnEntryDirectoryThatExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a", Name: "TestA"})[0]
-	if r.Exit != -1 || r.Report != nil || !strings.HasPrefix(r.Output, "proofs mode: mkdir ") {
+	if r.Exit != -1 || r.Started || r.Report != nil || !strings.HasPrefix(r.Output, "proofs mode: mkdir ") {
 		t.Fatalf("run = %+v", r)
 	}
 	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
@@ -744,7 +745,7 @@ printf '</testsuites>\n'
 
 // Each entry has its timeout, and all share the run's budget: an entry
 // the budget cuts short says so, and one it does not reach does not
-// start.
+// start, whose run says so.
 func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 	list := []harness.Proof{{ID: "slow", Suite: "./slow"}, {ID: "fast", Suite: "./a", Name: "TestA"}}
 	for _, tc := range []struct {
@@ -752,7 +753,7 @@ func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 		slow            string
 		fast            harness.ProofRun
 	}{
-		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", harness.ProofRun{ID: "fast", Exit: 0}},
+		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", harness.ProofRun{ID: "fast", Exit: 0, Started: true}},
 		{time.Minute, 300 * time.Millisecond, "\n(the run's 300ms ran out)", harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
 	} {
 		ws, _ := proofsWorkspace(t, "if [ \"$2\" = ./slow ]; then sleep 30; fi\n")
@@ -760,7 +761,7 @@ func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 		var got emitted
 		runProofList(proofsEnv{proofs: list, timeout: tc.timeout, budget: tc.budget}, ws, time.Now(), got.emit)
 		runs := got.runs(t)
-		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !strings.HasSuffix(runs[0].Output, tc.slow) {
+		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !runs[0].Started || !strings.HasSuffix(runs[0].Output, tc.slow) {
 			t.Fatalf("timeout %s, budget %s: runs = %+v", tc.timeout, tc.budget, runs)
 		}
 		if !reflect.DeepEqual(runs[1], tc.fast) {

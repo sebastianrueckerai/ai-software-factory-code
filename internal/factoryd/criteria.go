@@ -51,12 +51,15 @@ const maxProofMessage = 4 << 10
 // store a test criterion's proof.
 const proofsNotStored = "The plan's prover stored no proof yet. Once it does, answer to run the criteria gate again."
 
-// The states of a gate run of a proof, and the opening of a flagged one.
+// The states of a gate run of a proof.
 const (
-	proofBlind   = "blind"   // a stored proof's run: its blind try
-	proofOpen    = "open"    // an opened proof's run, from the repository
-	proofFlagged = "flagged" // a stored proof its dry run on main flagged: it opens without a run
+	proofBlind = "blind" // a stored proof's run: its blind try
+	proofOpen  = "open"  // an opened proof's run, from the repository
 )
+
+// proofFlagged is the outcome of an opening without a run: a stored proof
+// its dry run on main flagged.
+const proofFlagged = "flagged"
 
 // criterionRun is one run of the gate: a test or invariant criterion of
 // the plan, or a hold-out.
@@ -203,8 +206,8 @@ func shortenEvidence(s string) string {
 // gateResult is what the gate read for one run, by its id.
 type gateResult struct {
 	outcome proofOutcome
-	output  string // the check's output tail
-	ran     bool   // the runner reported a run of it: a blind proof it never ran had no try
+	output  string // the check's output as the worker sent it; an opening keeps its tail
+	ran     bool   // check test started for it: a blind proof it never started had no try
 	absent  bool   // an opened proof whose path holds no file at the head: no run
 	changed bool   // an opened proof whose file at the head is not its code
 }
@@ -224,6 +227,7 @@ type gateReport struct {
 	met      int      // the criteria met
 	proofs   []gateProof
 	opened   []openedProof
+	holdouts []map[string]any // the blind hold-outs that stay stored, by entry id, each with its holdoutDryVerdict
 }
 
 // criteriaReport judges the runs of plan p at head by their results:
@@ -233,10 +237,11 @@ type gateReport struct {
 // line alone, unmet and no finding: the builder cannot act on it; a late
 // one is a finding too, for the human. A stored proof that passed its
 // blind try meets its criterion; one whose try the runner never made is
-// its line; any other outcome, and a flag, opens it. A green hold-out is
-// no line, no entry and no finding.
+// its line; any other outcome, and a flag, opens it. A blind hold-out
+// that stays stored, green or never tried, is no line, no entry and no
+// finding: its verdict alone, on the hold-outs.
 func criteriaReport(p Plan, head string, runs []criterionRun, results map[string]gateResult) gateReport {
-	rep := gateReport{proofs: make([]gateProof, 0, len(runs))}
+	rep := gateReport{proofs: make([]gateProof, 0, len(runs)), holdouts: []map[string]any{}}
 	for _, c := range runs {
 		g := gateProof{ID: c.id, Kind: c.kind, Suite: c.suite, Name: c.name, Line: c.held, State: c.state()}
 		if c.stored != nil {
@@ -272,6 +277,8 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			blind := c.state() == proofBlind
 			switch {
 			case blind && c.holdout() && (g.Met || !res.ran):
+				dry, _ := holdoutDryVerdict(o)
+				rep.holdouts = append(rep.holdouts, map[string]any{"id": c.id, "verdict": dry})
 				continue
 			case g.Met:
 			case blind && res.ran:
@@ -318,7 +325,7 @@ func openedFinding(o openedProof, head string) string {
 		proofNoReport: "its blind proof wrote no report at " + at,
 		proofFlagged:  "its proof was flagged " + o.run.stored.Flag + " by its dry run, so it had no blind try",
 	}[o.outcome]
-	s := o.run.label() + ": " + why + "; it is open now. Commit the test below at " + o.run.stored.Path + " and make it pass: " +
+	s := o.run.label() + ": " + why + ". It is open now. Commit the test below at " + o.run.stored.Path + " and make it pass: " +
 		"fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold.\n" +
 		o.text + "\n" + o.run.name + " in " + o.run.suite + ":\n" + fenced(o.run.stored.Code)
 	if o.output != "" {
@@ -385,8 +392,12 @@ func gateRows(proofs []gateProof) []CriterionVerdict {
 // file.
 func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string) (content []byte, present bool, err error) {
 	content, err = r.forgejo.FileAt(ctx, repo.Owner, repo.Name, commit, path)
-	if errors.Is(err, errForgejoNotFound) {
+	switch {
+	case errors.Is(err, errForgejoNotFound):
 		return nil, false, nil
+	case errors.Is(err, ErrAnswerTooLong):
+		// cut at Forgejo's answer bound, past any proof's code: it differs
+		return content, true, nil
 	}
 	return content, err == nil, err
 }
@@ -395,14 +406,14 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 // fresh sandbox with no agent: one runner pod runs every gate run that is
 // not held, flagged or absent at the head, the hold-outs last, through the
 // tree's check test. A plan card that is neither the integration card
-// nor a delta card: not run, the timeline says why. A read of the proof rows, or of an opened proof's file, that
-// fails is the activity's error, so it runs again. A plan that names no
-// criteria names no proof: that is a finding, for the human. While
-// proofsPending, the gate runs nothing, writes the held rows and asks
-// proofsNotStored. The rows land on the plan's integration card; each
-// proof the gate opens is a proof_opened event on the card and on the
-// plan, once per head, before its row turns opened. The namespace and the
-// token go when it ends, however it ends.
+// nor a delta card: not run, the timeline says why. A read of the proof
+// rows, or of an opened proof's file, that fails is the activity's error,
+// so it runs again. A plan that names no criteria names no proof: that is
+// a finding, for the human. While proofsPending, the gate runs nothing,
+// writes the held rows and asks proofsNotStored. The rows land on the
+// plan's integration card; each proof the gate opens is a proof_opened
+// event on the card and on the plan, once per head, before its row turns
+// opened. The namespace and the token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
@@ -503,7 +514,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		for _, e := range entries {
 			run, ok := ran[e.ID]
 			g := results[e.ID]
-			g.outcome, g.output, g.ran = outcomes[e.ID], run.Output, ok
+			g.outcome, g.output, g.ran = outcomes[e.ID], run.Output, ok && run.Started
 			results[e.ID] = g
 		}
 	}
@@ -511,16 +522,9 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if len(p.Criteria) == 0 {
 		rep.findings = append(rep.findings, "criteria gate: the plan names no criteria")
 	}
-	holdouts := []map[string]any{}
 	opened := make([]string, 0, len(rep.opened))
 	for _, o := range rep.opened {
 		opened = append(opened, cmp.Or(o.run.stored.Criterion, o.run.stored.ID))
-	}
-	for _, c := range runs {
-		if c.holdout() && c.state() == proofBlind && !c.flagged() && !slices.ContainsFunc(rep.opened, func(o openedProof) bool { return o.run.id == c.id }) {
-			dry, _ := holdoutDryVerdict(results[c.id].outcome)
-			holdouts = append(holdouts, map[string]any{"id": c.id, "verdict": dry})
-		}
 	}
 	if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
 		return CriteriaResult{}, err
@@ -545,7 +549,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			commit, fenced(strings.Join(rep.findings, "\n")))))
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
-		"proofs": rep.proofs, "holdouts": holdouts, "opened": opened, "findings": rep.findings}))
+		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": rep.findings}))
 	return CriteriaResult{Findings: rep.findings}, nil
 }
 
