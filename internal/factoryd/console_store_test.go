@@ -598,13 +598,13 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 	if tr.Verdict != VerdictNoise || tr.ResolvedBy != "supervisor" || tr.ResolvedAt == nil || tr.BoundS != 0 {
 		t.Fatalf("supervisor trip = %+v; want resolved at once as noise by the supervisor", tr)
 	}
-	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian"); err != nil {
+	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian", nil); err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAlertVerdict(ctx, esc, VerdictNoise, "alice"); !errors.Is(err, ErrNotFound) {
+	if err := s.SetAlertVerdict(ctx, esc, VerdictNoise, "alice", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("second verdict = %v, want ErrNotFound", err)
 	}
-	if err := s.SetAlertVerdict(ctx, bound, VerdictNoise, "alice"); !errors.Is(err, ErrNotFound) {
+	if err := s.SetAlertVerdict(ctx, bound, VerdictNoise, "alice", nil); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("a human verdict on a machine alert = %v, want ErrNotFound", err)
 	}
 	alerts, _ = s.Alerts(ctx, 1)
@@ -616,6 +616,33 @@ func TestPGStoreGatesAndAlerts(t *testing.T) {
 		if b.ID == "api" && b.EscalationAlert != 0 {
 			t.Fatalf("board still offers the judged alert %d", b.EscalationAlert)
 		}
+	}
+
+	// a second escalation of one fault is judged same_cause, the first
+	// card merged into its detail, once and on escalations alone; the
+	// task's end judges only the rows without a verdict
+	second, err := s.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: "supervisor", TaskID: "api", Detail: map[string]any{"comment": 13}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAlertVerdict(ctx, second, VerdictSameCause, "sebastian", map[string]any{"same_as": "issue"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetAlertVerdict(ctx, second, VerdictSameCause, "alice", map[string]any{"same_as": "hand"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("second same_cause verdict = %v, want ErrNotFound", err)
+	}
+	if err := s.SetAlertVerdict(ctx, bound, VerdictSameCause, "alice", map[string]any{"same_as": "issue"}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("same_cause on a machine alert = %v, want ErrNotFound", err)
+	}
+	if err := s.JudgeTaskAlerts(ctx, "api", AlertEscalation, VerdictUnjudged, FactoryDecider); err != nil {
+		t.Fatal(err)
+	}
+	if a, _, err := s.AlertByID(ctx, second); err != nil || a.Verdict != VerdictSameCause || a.ResolvedBy != "sebastian" || a.ResolvedAt == nil ||
+		!reflect.DeepEqual(a.Detail, map[string]any{"comment": float64(13), "same_as": "issue"}) {
+		t.Fatalf("same_cause alert after the task's end = %+v, %v; want same_cause by sebastian, same_as issue beside the comment", a, err)
+	}
+	if a, _, err := s.AlertByID(ctx, bound); err != nil || a.Verdict != "" || a.Detail["same_as"] != nil {
+		t.Fatalf("machine alert after a refused same_cause = %+v, %v; want it untouched", a, err)
 	}
 }
 

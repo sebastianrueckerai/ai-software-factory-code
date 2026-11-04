@@ -55,6 +55,9 @@ const (
 	// VerdictUnjudged closes an escalation or info_request alert whose
 	// task ended before an approver judged it.
 	VerdictUnjudged = "unjudged"
+	// VerdictSameCause is a second escalation of one fault: its detail's
+	// same_as names the first card's task, and its own card closes.
+	VerdictSameCause = "same_cause"
 )
 
 // Alert is an alerts row. A machine that decides at once (the supervisor)
@@ -277,12 +280,20 @@ func (s *PGStore) JudgeEscalations(ctx context.Context, taskID string, filter Es
 	return err
 }
 
-// SetAlertVerdict is a human's verdict on an open escalation alert;
-// ErrNotFound when there is none (judged already, or a machine's alert).
-func (s *PGStore) SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error {
+// SetAlertVerdict is a human's verdict on an open escalation alert,
+// detail merged in; ErrNotFound when there is none (judged already, or a
+// machine's alert).
+func (s *PGStore) SetAlertVerdict(ctx context.Context, id int64, verdict, by string, detail map[string]any) error {
+	if detail == nil {
+		detail = map[string]any{}
+	}
+	b, err := json.Marshal(detail)
+	if err != nil {
+		return err
+	}
 	res, err := s.db.ExecContext(ctx,
-		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now()
-		 WHERE id = $1 AND kind = $4 AND verdict IS NULL`, id, verdict, by, AlertEscalation)
+		`UPDATE alerts SET verdict = $2, resolved_by = $3, resolved_at = now(), detail = detail || $5::jsonb
+		 WHERE id = $1 AND kind = $4 AND verdict IS NULL`, id, verdict, by, AlertEscalation, b)
 	return oneRow(res, err, "open escalation alert")
 }
 

@@ -1014,11 +1014,23 @@ func (a *fakeAlerts) Alerts(_ context.Context, limit int) ([]factoryd.Alert, err
 	return a.rows[:min(limit, len(a.rows))], nil
 }
 
-func (a *fakeAlerts) SetAlertVerdict(_ context.Context, id int64, verdict, by string) error {
+// SetAlertVerdict logs "id verdict by", the detail after it when there is
+// one.
+func (a *fakeAlerts) SetAlertVerdict(_ context.Context, id int64, verdict, by string, detail map[string]any) error {
 	for i, r := range a.rows {
 		if r.ID == id && r.Kind == factoryd.AlertEscalation && r.Verdict == "" {
 			a.rows[i].Verdict, a.rows[i].ResolvedBy = verdict, by
-			a.verdicts = append(a.verdicts, fmt.Sprintf("%d %s %s", id, verdict, by))
+			entry := fmt.Sprintf("%d %s %s", id, verdict, by)
+			if len(detail) > 0 {
+				merged := maps.Clone(r.Detail)
+				if merged == nil {
+					merged = map[string]any{}
+				}
+				maps.Copy(merged, detail)
+				a.rows[i].Detail = merged
+				entry += fmt.Sprintf(" %v", detail)
+			}
+			a.verdicts = append(a.verdicts, entry)
 			return nil
 		}
 	}
@@ -3410,16 +3422,16 @@ func TestAlertVerdictAction(t *testing.T) {
 		return 0
 	}
 	ctx := context.Background()
-	if _, err := r.c.doAlertVerdict(ctx, a, 3, "maybe"); status(err) != http.StatusBadRequest {
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, "maybe", ""); status(err) != http.StatusBadRequest {
 		t.Fatalf("an unknown verdict: %v, want 400", err)
 	}
-	if note, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictReal); err != nil || note != "Alert 3 is judged real." {
+	if note, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictReal, ""); err != nil || note != "Alert 3 is judged real." {
 		t.Fatalf("verdict = %q, %v", note, err)
 	}
-	if _, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+	if _, err := r.c.doAlertVerdict(ctx, a, 3, factoryd.VerdictNoise, ""); status(err) != http.StatusConflict {
 		t.Fatalf("a second verdict: %v, want 409", err)
 	}
-	if _, err := r.c.doAlertVerdict(ctx, a, 1, factoryd.VerdictNoise); status(err) != http.StatusConflict {
+	if _, err := r.c.doAlertVerdict(ctx, a, 1, factoryd.VerdictNoise, ""); status(err) != http.StatusConflict {
 		t.Fatalf("a verdict on a machine alert: %v, want 409", err)
 	}
 	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian"}) {
@@ -3430,7 +3442,7 @@ func TestAlertVerdictAction(t *testing.T) {
 	}
 	r.alerts.rows = append(r.alerts.rows, factoryd.Alert{ID: 4, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"})
 	a.decider = "agent"
-	if _, err := r.c.doAlertVerdict(ctx, a, 4, factoryd.VerdictNoise); err != nil {
+	if _, err := r.c.doAlertVerdict(ctx, a, 4, factoryd.VerdictNoise, ""); err != nil {
 		t.Fatal(err)
 	}
 	if got, want := r.interventions(t), map[string]int64{"alert_verdict_click none none": 1}; !reflect.DeepEqual(got, want) {
@@ -3439,6 +3451,87 @@ func TestAlertVerdictAction(t *testing.T) {
 	if !slices.Equal(r.alerts.verdicts, []string{"3 real sebastian", "4 noise agent"}) {
 		t.Fatalf("verdicts = %q", r.alerts.verdicts)
 	}
+}
+
+// same_cause names the card the same cause raised first: the verdict
+// carries the link, the alert's own card closes with a comment naming the
+// first, and the alert_verdict row carries the link before card_closed's
+// row. A close that fails after the verdict leaves the verdict and says
+// to close the card by hand.
+func TestAlertVerdictSameCauseClosesTheSecondCard(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	r.alerts.rows = []factoryd.Alert{
+		{ID: 8, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
+		{ID: 9, Kind: factoryd.AlertEscalation, Source: "supervisor", TaskID: "t-r"},
+	}
+	a := actor{s: s, via: factoryd.ViaChat, repository: "sf/code"}
+	ctx := context.Background()
+	before := r.events.count()
+	note, err := r.c.doAlertVerdict(ctx, a, 8, factoryd.VerdictSameCause, "t-m")
+	equal(t, "the answer", []any{note, err}, []any{"Alert 8 is judged same_cause, the same cause as #5. Closed #13; factoryd ends the card.", nil})
+	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]"})
+	equal(t, "Forgejo", writesOf(r.fg), []string{"POST /api/v1/repos/sf/code/issues/13/comments", "PATCH /api/v1/repos/sf/code/issues/13"})
+	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"], "Same cause as #5.")
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 8, "same_as": "t-m", "verdict": "same_cause"}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "Same cause as #5."}})
+
+	r.fg.failEdit = true
+	before = r.events.count()
+	note, err = r.c.doAlertVerdict(ctx, a, 9, factoryd.VerdictSameCause, "t-m")
+	equal(t, "the answer to a failed close", []any{note, err},
+		[]any{"Alert 9 is judged same_cause, the same cause as #5, but its card t-r could not be closed: close it by hand.", nil})
+	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]", "9 same_cause sebastian map[same_as:t-m]"})
+	equal(t, "the note on #11", r.fg.comments["/api/v1/repos/sf/code/issues/11/comments"], "Same cause as #5.")
+	equal(t, "the patches", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/13 {"state":"closed"}`})
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 9, "same_as": "t-m", "verdict": "same_cause"}})
+}
+
+// A card goes with same_cause alone, and same_cause needs one: a card of
+// the chat's project, never the alert's own. An alert its task's end
+// judged unjudged takes no verdict. Each refusal judges nothing, records
+// nothing and writes nothing to Forgejo.
+func TestAlertVerdictSameCauseRefusals(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-demo", Kind: "agent", Status: "queued",
+		Repository: "demo-app/demo-app", IssueNumber: 3, Objective: "Add the demo."}})
+	r.tasks.mu.Unlock()
+	r.alerts.rows = []factoryd.Alert{
+		{ID: 8, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
+		{ID: 9, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-r", Verdict: factoryd.VerdictUnjudged, ResolvedBy: factoryd.FactoryDecider},
+	}
+	a := actor{s: s, via: factoryd.ViaChat, repository: "sf/code"}
+	before := r.events.count()
+	for _, c := range []struct {
+		what          string
+		id            int64
+		verdict, card string
+		status        int
+		msg           string
+	}{
+		{"same_cause without a card", 8, "same_cause", "", http.StatusBadRequest,
+			"same_cause names in card the card the same cause raised first, by its task id or issue number"},
+		{"a card that is none", 8, "same_cause", "t-none", http.StatusNotFound, "There is no card t-none in this project."},
+		{"another project's card", 8, "same_cause", "t-demo", http.StatusNotFound, "There is no card t-demo in this project."},
+		{"the alert's own card", 8, "same_cause", "t-e", http.StatusBadRequest,
+			"#13 is alert 8's own card: same_cause names the other card, the one the same cause raised first"},
+		{"real with a card", 8, "real", "t-m", http.StatusBadRequest, "card goes with the verdict same_cause alone: judge real without it"},
+		{"noise with a card", 8, "noise", "t-m", http.StatusBadRequest, "card goes with the verdict same_cause alone: judge noise without it"},
+		{"an alert its task's end judged", 9, "same_cause", "t-m", http.StatusConflict, "alert 9 is no open human alert (any more); reload the page"},
+	} {
+		_, err := r.c.doAlertVerdict(context.Background(), a, c.id, c.verdict, c.card)
+		var ref *refusal
+		if !errors.As(err, &ref) || ref.status != c.status || ref.msg != c.msg {
+			t.Errorf("%s: %v, want %d %q", c.what, err, c.status, c.msg)
+		}
+	}
+	equal(t, "the verdicts", r.alerts.verdicts, []string(nil))
+	equal(t, "Forgejo", writesOf(r.fg), []string(nil))
+	chatRows(t, r.events, before, "sebastian")
 }
 
 // A session_end from before attempts were recorded leaves the attempt

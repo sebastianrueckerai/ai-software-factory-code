@@ -605,6 +605,13 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", in.ID))
 		}
 		desc += fmt.Sprintf(", alert %d %q", al.ID, alertTitle(al))
+		first, err := t.c.verdictCard(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
+		if err != nil {
+			return "", err
+		}
+		if first.ID != "" {
+			desc += fmt.Sprintf(", same cause as #%d %s %q, which closes card %s", first.IssueNumber, first.ID, factoryd.CardTitle(first), al.TaskID)
+		}
 	}
 	if tool.name == "promote_resource" || tool.name == "release_resource" {
 		res, ok, err := t.c.cfg.Resources.Commission(t.r.Context(), in.ID)
@@ -1390,11 +1397,13 @@ var tools = []chatTool{
 		about: "The project's sandbox images in force, its open tool cards and the cards waiting for an image.",
 		run:   func(t *turn, _ toolInput) (string, *inverse, error) { s, err := t.imagesText(); return s, nil, err }},
 	{name: "alert_verdict", title: "Judge an alert", write: true,
-		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
+		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1},
+			"verdict": enum("real pointed at a problem, noise did not, same_cause as card", factoryd.VerdictReal, factoryd.VerdictNoise, factoryd.VerdictSameCause),
+			"card":    str("for same_cause: the first card's task id or issue number")},
 		required: []string{"id", "verdict"},
-		about:    "Judge an open escalation alert real or noise.",
+		about:    "Judge an open escalation alert real, noise, or the same cause as a card, which closes this one.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict)
+			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
 			return note, nil, err
 		}},
 	{name: "promote_resource", title: "Make a resource standing", write: true,
@@ -2076,6 +2085,7 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
   escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
+  alert_verdict same_cause is a second escalation of one fault: card names the first card, and the alert's own card closes with a comment pointing at it.
   inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
   fund raises the budget of a card that waits after a budget refusal. Unconfirmed (autonomous, full auto) it spends the monthly pool within raise_max_eur and the card's cap; confirmed (manual, assisted) it is the human's raise, and a project without a pool takes it too.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.

@@ -93,9 +93,9 @@ type Pools interface {
 type Alerts interface {
 	// Alerts lists the newest limit alerts, newest first.
 	Alerts(ctx context.Context, limit int) ([]factoryd.Alert, error)
-	// SetAlertVerdict judges an open escalation alert as by;
-	// factoryd.ErrNotFound when there is none.
-	SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error
+	// SetAlertVerdict judges an open escalation alert as by, detail
+	// merged in; factoryd.ErrNotFound when there is none.
+	SetAlertVerdict(ctx context.Context, id int64, verdict, by string, detail map[string]any) error
 	// AlertByID reads one alert row: the task whose repository an alert
 	// verdict's event carries (factoryd.PGStore).
 	AlertByID(ctx context.Context, id int64) (factoryd.Alert, bool, error)

@@ -128,9 +128,14 @@ decimals: a task's model calls cost fractions of a cent.
   timeline shows both on its `supervisor` and `gate_supervisor` steps.
   `escalation` is every escalation, not a healed run's repeat of it. It
   shows as a needs-you card.
-  The project agent judges an open escalation `real` or `noise` with its
-  `alert_verdict` tool; a human confirms the call unless the project's
-  autonomy lets the agent act alone. The `alerts` tool lists the alerts.
+  The project agent judges an open escalation `real`, `noise` or
+  `same_cause` with its `alert_verdict` tool; a human confirms the call
+  unless the project's autonomy lets the agent act alone. `same_cause` is
+  a second escalation of one fault: it names the first card, keeps it as
+  `same_as` in the alert's detail and the `alert_verdict` event, and
+  closes the alert's own card with the comment `Same cause as #N.`; a
+  close that fails leaves the verdict, and the card is closed by hand.
+  The `alerts` tool lists the alerts.
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer is an issue comment as the

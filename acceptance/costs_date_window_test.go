@@ -502,7 +502,7 @@ func (a *acceptAlerts) Alerts(_ context.Context, limit int) ([]factoryd.Alert, e
 	return a.rows[:min(limit, len(a.rows))], nil
 }
 
-func (a *acceptAlerts) SetAlertVerdict(_ context.Context, _ int64, _, _ string) error {
+func (a *acceptAlerts) SetAlertVerdict(_ context.Context, _ int64, _, _ string, _ map[string]any) error {
 	return factoryd.ErrNotFound
 }
 

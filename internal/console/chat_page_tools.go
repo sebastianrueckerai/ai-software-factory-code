@@ -76,6 +76,9 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 			if al.ResolvedBy != "" {
 				b.WriteString(" by " + al.ResolvedBy)
 			}
+			if first, _ := al.Detail["same_as"].(string); first != "" {
+				b.WriteString(", same cause as " + first)
+			}
 			if s := alertSupervisor(al); s.Action != "" {
 				b.WriteString(", " + s.Action + ": " + s.Diagnosis)
 			}
@@ -411,16 +414,23 @@ func tailWords(parts []string) string {
 
 // doAlertVerdict is the alert_verdict tool's action: a verdict on an open
 // escalation alert, the agent's own or a factory approver's confirmed one.
-// Only a human's counts as an intervention.
-func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v string) (string, error) {
-	if v != factoryd.VerdictReal && v != factoryd.VerdictNoise {
-		return "", refuse(http.StatusBadRequest, "the verdict is real or noise")
+// Only a human's counts as an intervention. same_cause links card, the
+// first card of the fault, then closes the alert's own card; a close that
+// fails leaves the verdict and says so.
+func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v, card string) (string, error) {
+	first, err := c.verdictCard(ctx, a, id, v, card)
+	if err != nil {
+		return "", err
+	}
+	var link map[string]any
+	if first.ID != "" {
+		link = map[string]any{"same_as": first.ID}
 	}
 	by := a.s.user
 	if a.decider == "agent" {
 		by = factoryd.AgentDecider
 	}
-	switch err := c.cfg.Alerts.SetAlertVerdict(ctx, id, v, by); {
+	switch err := c.cfg.Alerts.SetAlertVerdict(ctx, id, v, by, link); {
 	case errors.Is(err, factoryd.ErrNotFound):
 		return "", refuse(http.StatusConflict, fmt.Sprintf("alert %d is no open human alert (any more); reload the page", id))
 	case err != nil:
@@ -428,22 +438,63 @@ func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v strin
 		return "", refuse(http.StatusInternalServerError, "cannot record the verdict")
 	}
 	log.Printf("console: %s judged alert %d %s via %s", a.s.user, id, v, a.via)
-	c.alertVerdictRecord(ctx, a, id, v)
-	if a.decider != "agent" {
-		c.cfg.Metrics.Intervened(ctx, factoryd.InterventionAlertVerdict, "none", "none")
-	}
-	return fmt.Sprintf("Alert %d is judged %s.", id, v), nil
-}
-
-// alertVerdictRecord writes alert id's verdict under the project its task
-// belongs to, as the actor a.
-func (c *Console) alertVerdictRecord(ctx context.Context, a actor, id int64, v string) {
 	repo, taskID := c.alertRepository(ctx, id)
 	if repo == "" {
 		log.Printf("console: alert %d: no project to record the verdict %s under", id, v)
-		return
+	} else {
+		detail := map[string]any{"alert": id, "verdict": v}
+		maps.Copy(detail, link)
+		c.record(ctx, a, repo, taskID, 0, factoryd.EventAlertVerdict, detail)
 	}
-	c.record(ctx, a, repo, taskID, 0, factoryd.EventAlertVerdict, map[string]any{"alert": id, "verdict": v})
+	if a.decider != "agent" {
+		c.cfg.Metrics.Intervened(ctx, factoryd.InterventionAlertVerdict, "none", "none")
+	}
+	if first.ID == "" {
+		return fmt.Sprintf("Alert %d is judged %s.", id, v), nil
+	}
+	judged := fmt.Sprintf("Alert %d is judged %s, the same cause as #%d", id, v, first.IssueNumber)
+	// the close comes after the verdict: the card's end judges an open
+	// escalation unjudged
+	err = c.admit(ctx, accessTable["close"], a, repo, "task "+taskID)
+	var closed string
+	if err == nil {
+		closed, err = c.doClose(ctx, a, taskID, fmt.Sprintf("Same cause as #%d.", first.IssueNumber))
+	}
+	if err != nil {
+		log.Printf("console: %s judged alert %d same_cause; its card %s stays open: %v", a.s.user, id, taskID, err)
+		return fmt.Sprintf("%s, but its card %s could not be closed: close it by hand.", judged, taskID), nil
+	}
+	return judged + ". " + closed, nil
+}
+
+// verdictCard is the first card a verdict v on alert id names in card:
+// none for real and noise, which take no card; for same_cause a card of
+// a's project other than the alert's own.
+func (c *Console) verdictCard(ctx context.Context, a actor, id int64, v, card string) (factoryd.Task, error) {
+	switch {
+	case v != factoryd.VerdictReal && v != factoryd.VerdictNoise && v != factoryd.VerdictSameCause:
+		return factoryd.Task{}, refuse(http.StatusBadRequest, "the verdict is real, noise or same_cause")
+	case v != factoryd.VerdictSameCause && card != "":
+		return factoryd.Task{}, refuse(http.StatusBadRequest, "card goes with the verdict same_cause alone: judge "+v+" without it")
+	case v != factoryd.VerdictSameCause:
+		return factoryd.Task{}, nil
+	case card == "":
+		return factoryd.Task{}, refuse(http.StatusBadRequest, "same_cause names in card the card the same cause raised first, by its task id or issue number")
+	}
+	first, err := c.cardIn(ctx, a, card)
+	if err != nil {
+		return factoryd.Task{}, err
+	}
+	al, _, err := c.cfg.Alerts.AlertByID(ctx, id)
+	switch {
+	case err != nil:
+		log.Printf("console: alert %d: %v", id, err)
+		return factoryd.Task{}, refuse(http.StatusInternalServerError, "cannot read the alert")
+	case al.TaskID == first.ID:
+		return factoryd.Task{}, refuse(http.StatusBadRequest,
+			fmt.Sprintf("#%d is alert %d's own card: same_cause names the other card, the one the same cause raised first", first.IssueNumber, id))
+	}
+	return first, nil
 }
 
 // doPromoteResource is the resources page's Promote button: make the
