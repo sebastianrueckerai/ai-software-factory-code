@@ -72,7 +72,8 @@ type TaskBrief struct {
 	// Prior is the previous session's working state, which factoryd copied
 	// from its record; nil for a first session.
 	Prior *PriorState `json:"prior,omitempty"`
-	// Proofs are the opened proofs the worker wrote into the clone, by path.
+	// Proofs are the opened proofs the clone holds, by path: the ones the
+	// worker wrote and the ones whose path held a file already.
 	Proofs []string `json:"proofs,omitempty"`
 }
 
@@ -103,8 +104,8 @@ type BriefPush struct {
 	Handover string       `json:"handover"`
 	Prior    *PriorState  `json:"prior,omitempty"`
 	Files    []ReportFile `json:"files,omitempty"`
-	Proofs   []ProofFile  `json:"proofs,omitempty"` // the plan's opened proofs, which the worker writes into the clone where the path holds no file
-	Landed   []string     `json:"landed,omitempty"` // set by the worker: the paths it wrote
+	Proofs   []ProofFile  `json:"proofs,omitempty"`   // the plan's opened proofs, which the worker writes into the clone where the path holds no file
+	InClone  []string     `json:"in_clone,omitempty"` // set by the worker: the proofs' paths the clone holds, written now or there already
 }
 
 // Author standings.

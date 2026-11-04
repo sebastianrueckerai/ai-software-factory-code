@@ -647,7 +647,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	} else {
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
-			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, ExtraLines: t.Usage.ExtraLines}.Line()
+			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -721,7 +721,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
 	if sizeBounded(t, s) {
-		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines)
+		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 	}
 	if s.attempt == 1 && r.canClimb(s) {
 		supCfg.CheapCap = r.cheapCap
@@ -1115,7 +1115,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		if ask.Gates != nil {
 			lines = ask.Gates.Policy.Lines
 		}
-		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines)
+		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 		var parent []byte
 		if s.parent != "" {
@@ -2201,7 +2201,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	// the worker's push rule reads the card's line bound: the same
 	// effective number the gate and the supervisor check
-	env = append(env, map[string]any{"name": "LINE_BOUND", "value": strconv.Itoa(EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines))})
+	env = append(env, map[string]any{"name": "LINE_BOUND", "value": strconv.Itoa(EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage))})
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
 	}

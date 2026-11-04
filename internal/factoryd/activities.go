@@ -910,15 +910,27 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
-	if s.spec, s.cardRole, s.directories, err = r.planOf(ctx, t); err != nil {
+	plan, spec, role, dirs, err := r.planOf(ctx, t)
+	if err != nil {
 		return SessionResult{}, named("plan card", err)
 	}
-	opened, err := r.openedProofs(ctx, t)
+	s.spec, s.cardRole, s.directories = spec, role, dirs
+	opened, err := r.openedProofs(ctx, t, plan)
 	if err != nil {
 		return SessionResult{}, named("opened proofs", err)
 	}
+	// the proofs are new files of the card's pull request: their lines
+	// raise the card's line bound, set again by every session
+	lines := 0
 	for _, pp := range opened {
 		s.proofs = append(s.proofs, harness.ProofFile{Path: pp.Path, Content: pp.Code})
+		lines += codeLines(pp.Code)
+	}
+	if lines != t.Usage.ProofLines {
+		if err := r.store.SetTaskProofLines(ctx, t.ID, lines); err != nil {
+			return SessionResult{}, named("proof lines", err)
+		}
+		t.Usage.ProofLines = lines
 	}
 	// a carry card's pull request: its head reaches the clone as branch
 	// pull/<n>, and the spec says so, because the sandbox holds no git

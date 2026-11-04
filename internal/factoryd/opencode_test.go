@@ -892,12 +892,11 @@ func TestBriefCarriesTheRepositoryMap(t *testing.T) {
 	}
 }
 
-// The brief names the opened proofs the worker wrote into the clone right
-// after the spec, and says what to do with them; a brief without any has
-// no such section.
+// The brief names the opened proofs the clone holds right after the spec,
+// and says what to do with them. A brief without any has no such section.
 func TestBriefTextNamesTheOpenedProofs(t *testing.T) {
 	got := briefText(harness.TaskBrief{Objective: "o", Spec: "s", Proofs: []string{"proofs/size_bound/size_bound_test.go", "proofs/key_log/key_log_test.go"}}, "x")
-	want := "SPEC-x>>>\n\nOpened proofs: factoryd wrote these tests into your clone at their paths: proofs/size_bound/size_bound_test.go and proofs/key_log/key_log_test.go. Each proves" +
+	want := "SPEC-x>>>\n\nOpened proofs: your clone holds these tests at their paths: proofs/size_bound/size_bound_test.go and proofs/key_log/key_log_test.go. Each proves" +
 		" one of the plan's criteria, ran once at the gate without passing, and is yours to see now. " +
 		"Keep each at its path and make it pass: fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold."
 	if !strings.Contains(got, want) {

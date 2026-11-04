@@ -243,11 +243,19 @@ type TaskUsage struct {
 	// RaisedTime is the agent time an extend added, written and read as
 	// RaisedSessions is.
 	RaisedTime time.Duration
+	// ProofLines are the lines of the plan's opened proofs the card's clone
+	// gets, new files of its pull request. RunSession sets them
+	// (SetTaskProofLines). The workflow's snapshot leaves them.
+	ProofLines int
 }
 
 // SessionsAdded is every session added to the policy's cap: the grants
 // the workflow's answers bought and the raises the console's Extend made.
 func (u TaskUsage) SessionsAdded() int { return u.ExtraAttempts + u.RaisedSessions }
+
+// LinesAdded is every line added to the bound the card's size plans: the
+// raises the console's Extend made and the opened proofs' lines.
+func (u TaskUsage) LinesAdded() int { return u.ExtraLines + u.ProofLines }
 
 // TimeAdded is every agent time added to the policy's cap: the answers'
 // grants, the planner's retry and the extends.
@@ -510,6 +518,7 @@ type Store interface {
 	// SetTaskUsage records what the task has used of its caps.
 	SetTaskUsage(ctx context.Context, id string, u TaskUsage) error
 	ResetTaskUsage(ctx context.Context, id string) error
+	SetTaskProofLines(ctx context.Context, id string, lines int) error
 	// SetTaskSizeBudget sets the task's size, and its budget to eur when it
 	// still holds heldCents, with the budget's move as a card_funded row,
 	// in one transaction. A task that already has the size has had its
@@ -1196,7 +1205,7 @@ const heldEURSQL = "(SELECT COALESCE(sum(eur), 0)::float8 FROM holds WHERE holds
 
 const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, ` + heldEURSQL + `, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
-	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
+	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
@@ -1211,7 +1220,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	var caps, ships, egress []byte
 	if err := scan(&t.ID, &t.Priority, &caps, &t.RiskClass, &t.BudgetEUR, &t.SpentEUR, &t.HeldEUR, &t.Status,
 		&t.Objective, &t.Repository, &t.SHA, &t.ReproBase, &t.Kind, &t.IssueNumber, &t.Source, &t.PRNumber, &t.CarryPR,
-		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
+		&t.Usage.AgentTime, &t.Usage.Attempts, &t.Usage.ExtraTime, &t.Usage.RetryTime, &t.Usage.ExtraAttempts, &t.Usage.PosterAttempts, &t.Usage.ExtraCheckinShare, &t.Usage.LastUncounted, &t.ReproCommand, &t.Usage.ExtraLines, &t.Usage.ProofLines, &t.Usage.RaisedSessions, &t.Usage.RaisedTime, &t.CeilingEUR,
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
@@ -1492,7 +1501,7 @@ func (s *PGStore) SetTaskPR(ctx context.Context, id string, number int64) error 
 
 // SetTaskUsage overwrites task id's usage counters with the snapshot u,
 // the workflow's own: the console's raises (ExtraLines, RaisedSessions,
-// RaisedTime) it leaves as they stand, and the check-in's extra share only
+// RaisedTime) and the proof lines it leaves as they stand, and the check-in's extra share only
 // grows, as a run before the cases gate grows it and an answer's extend
 // raises it on the row. RunSession's RecordUsage writes it. oneRow
 // answers ErrNotFound for an unknown task.
@@ -1507,7 +1516,14 @@ func (s *PGStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) erro
 // raises included: BecomePlan and a replan's reopen start the card over.
 func (s *PGStore) ResetTaskUsage(ctx context.Context, id string) error {
 	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET agent_time_ns = 0, attempts = 0, extra_time_ns = 0, extra_attempts = 0, poster_attempts = 0,
-		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
+		last_uncounted = false, retry_time_ns = 0, extra_checkin_share = 0, extra_lines = 0, proof_lines = 0, raised_sessions = 0, raised_time_s = 0 WHERE id = $1`, id)
+	return oneRow(res, err, "task "+id)
+}
+
+// SetTaskProofLines sets task id's proof lines (TaskUsage.ProofLines).
+// oneRow answers ErrNotFound for an unknown task.
+func (s *PGStore) SetTaskProofLines(ctx context.Context, id string, lines int) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE tasks SET proof_lines = $2 WHERE id = $1`, id, lines)
 	return oneRow(res, err, "task "+id)
 }
 

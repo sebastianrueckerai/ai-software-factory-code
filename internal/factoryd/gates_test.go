@@ -644,11 +644,11 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 	}
 }
 
-// The review of a plan's integration card reads each opened proof's
-// original code with whether the pull request's file at its path is
-// that original, and the agent's summary, which may say why the test
-// changed; its prompt says what to make of them. A card of a plan with
-// no opened proof gets neither.
+// The review of a plan's integration card reads each opened proof's path
+// and whether the pull request's file there is the original, the
+// original's code when it is not, and the agent's summary, which may say
+// why the test changed. Its first call's prompt says what to make of
+// them. A card of a plan with no opened proof gets none of it.
 func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 	const summary = "TestGroupOpen read the hours in UTC; the spec says local time, so the test changed."
 	const original = "package acceptance // group_open v1"
@@ -660,7 +660,8 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		task := gateTask
 		task.Source, task.Parent, task.PlanKey, task.AgentSummary = SourcePlan, "t-plan", "integration", summary
 		r, store, _ := newGateRunner(t, task, fj)
-		b, _ := json.Marshal(Plan{Summary: "the plan", Cards: []PlanCard{{Key: "feature", Role: RoleFeature, Title: "Feature"},
+		b, _ := json.Marshal(Plan{Summary: "the plan", Criteria: []PlanCriterion{{ID: "group_open", Kind: CriterionTest, Claim: "a group opens at its hour",
+			Inputs: "a group of 9:00 local", Expected: "open at 9:00"}}, Cards: []PlanCard{{Key: "feature", Role: RoleFeature, Title: "Feature"},
 			{Key: "integration", Role: RoleIntegration, Title: "Integration"}}})
 		if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
 			t.Fatal(err)
@@ -672,10 +673,18 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 		if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
 			t.Fatal(err)
 		}
-		if len(ll.chats) != 1 {
-			t.Fatalf("calls = %d, want the one review call", len(ll.chats))
+		// the plan's criterion adds its own calls: the first part's call
+		// is the one on the review prompt
+		var first []any
+		for _, c := range ll.chats {
+			if msgs := c["messages"].([]any); strings.HasPrefix(msgs[0].(map[string]any)["content"].(string), "You review a pull request an autonomous") {
+				first = append(first, msgs)
+			}
 		}
-		msgs := ll.chats[0]["messages"].([]any)
+		if len(first) != 1 {
+			t.Fatalf("calls on the review prompt = %d of %d, want one", len(first), len(ll.chats))
+		}
+		msgs := first[0].([]any)
 		var in map[string]any
 		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
 			t.Fatal(err)
@@ -695,7 +704,11 @@ func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			in, system, fj := review(t, tc.raw, stored, opened)
-			want := []any{map[string]any{"criterion": "group_open", "path": "acceptance/group_open_test.go", "original": original, "changed": tc.changed}}
+			proof := map[string]any{"criterion": "group_open", "path": "acceptance/group_open_test.go", "changed": tc.changed}
+			if tc.changed {
+				proof["original"] = original
+			}
+			want := []any{proof}
 			if !reflect.DeepEqual(in["opened_proofs"], want) || in["agent_summary"] != summary {
 				t.Fatalf("opened_proofs = %v, agent_summary %v; want %v and the summary", in["opened_proofs"], in["agent_summary"], want)
 			}

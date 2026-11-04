@@ -69,7 +69,7 @@ func TestToolEndpointAuth(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(ws, "repo", "notes.md"), []byte("the note\n"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := checkinHandler(t, newCheckinServe(ws))
+	h := checkinHandler(t, newCheckinServe(ws, nolog))
 	// the path as grep prints it, relative to the repo
 	body := toolBody("read_file", `"path":"notes.md"`)
 	for name, auth := range map[string]string{"no bearer": "", "wrong bearer": "Bearer session-secreT", "the hash itself": "Bearer " + testMessageHash} {
@@ -94,7 +94,7 @@ func TestToolEndpointBounds(t *testing.T) {
 	if err := os.MkdirAll(filepath.Join(ws, "repo"), 0o750); err != nil {
 		t.Fatal(err)
 	}
-	h := checkinHandler(t, newCheckinServe(ws))
+	h := checkinHandler(t, newCheckinServe(ws, nolog))
 	if code, out := postTool(t, h, "Bearer session-secret", toolBody("rm", `"path":"/workspace/repo"`)); code != http.StatusBadRequest || !strings.Contains(out, "unknown tool") {
 		t.Errorf("rm: status %d, body %q, want 400 unknown tool", code, out)
 	}
@@ -151,7 +151,7 @@ func TestToolExecutes(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	h := checkinHandler(t, newCheckinServe(seedCheckinRepo(t)))
+	h := checkinHandler(t, newCheckinServe(seedCheckinRepo(t), nolog))
 	code, out := postTool(t, h, "Bearer session-secret", toolBody("grep", `"pattern":"SessionInput"`))
 	if code != http.StatusOK {
 		t.Fatalf("grep: status %d, body %q", code, out)
@@ -294,7 +294,7 @@ func pushWhileStarting(body []byte) <-chan int {
 // sessions directory is refused.
 func TestRecordsEndpoint(t *testing.T) {
 	ws := t.TempDir()
-	h := checkinHandler(t, newCheckinServe(ws))
+	h := checkinHandler(t, newCheckinServe(ws, nolog))
 	post := func(body string) int {
 		req := httptest.NewRequest(http.MethodPost, "/records", strings.NewReader(body))
 		req.Header.Set("Authorization", "Bearer session-secret")
@@ -382,7 +382,7 @@ func TestImageEndpoint(t *testing.T) {
 	if err := syscall.Mkfifo(filepath.Join(repo, "fifo.png"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	h := checkinHandler(t, newCheckinServe(ws))
+	h := checkinHandler(t, newCheckinServe(ws, nolog))
 	const auth = "Bearer session-secret"
 
 	for name, tc := range map[string]struct {
@@ -446,7 +446,7 @@ func TestFileEndpoint(t *testing.T) {
 	if err := os.Symlink(secret, filepath.Join(repo, "link.md")); err != nil {
 		t.Fatal(err)
 	}
-	h := checkinHandler(t, newCheckinServe(ws))
+	h := checkinHandler(t, newCheckinServe(ws, nolog))
 	const auth = "Bearer session-secret"
 	// the gateway admits a path of 4096 bytes: in short names, in one name
 	// over the file system's 255, and in bytes JSON escapes to six each
@@ -500,7 +500,7 @@ func TestBriefEndpointLandsTheReportsOutsideTheRepo(t *testing.T) {
 	}
 	t.Run("lands", func(t *testing.T) {
 		ws := t.TempDir()
-		ck := newCheckinServe(ws)
+		ck := newCheckinServe(ws, nolog)
 		code := post(checkinHandler(t, ck), `{"handover":"note","prior":{"session":"s-1","heading":"h","body":"b"},"files":[{"Name":"report-1.md","Text":"full"}]}`)
 		if code != http.StatusNoContent {
 			t.Fatalf("status %d, want 204", code)
@@ -527,7 +527,7 @@ func TestBriefEndpointLandsTheReportsOutsideTheRepo(t *testing.T) {
 	} {
 		t.Run(name, func(t *testing.T) {
 			ws := t.TempDir()
-			if code := post(checkinHandler(t, newCheckinServe(ws)), body); code != http.StatusBadRequest {
+			if code := post(checkinHandler(t, newCheckinServe(ws, nolog)), body); code != http.StatusBadRequest {
 				t.Fatalf("status %d, want 400", code)
 			}
 			if _, err := os.Stat(filepath.Join(ws, ".factory")); !os.IsNotExist(err) {
@@ -549,7 +549,7 @@ func TestUnfitNameRefusalsNameEveryRule(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
 		req.Header.Set("Authorization", "Bearer session-secret")
 		rec := httptest.NewRecorder()
-		checkinHandler(t, newCheckinServe(t.TempDir())).ServeHTTP(rec, req)
+		checkinHandler(t, newCheckinServe(t.TempDir(), nolog)).ServeHTTP(rec, req)
 		if rec.Code != http.StatusBadRequest || rec.Body.String() != tc.want {
 			t.Errorf("%s: status %d, body %q; want 400, %q", tc.path, rec.Code, rec.Body.String(), tc.want)
 		}
@@ -573,7 +573,7 @@ func TestBriefEndpointTakesPushesUpToTheCap(t *testing.T) {
 		req := httptest.NewRequest(http.MethodPost, "/brief", bytes.NewReader(body))
 		req.Header.Set("Authorization", "Bearer session-secret")
 		rec := httptest.NewRecorder()
-		checkinHandler(t, newCheckinServe(t.TempDir())).ServeHTTP(rec, req)
+		checkinHandler(t, newCheckinServe(t.TempDir(), nolog)).ServeHTTP(rec, req)
 		if rec.Code != tc.status {
 			t.Errorf("a body of %d bytes: status %d, want %d", len(body), rec.Code, tc.status)
 		}
@@ -582,12 +582,13 @@ func TestBriefEndpointTakesPushesUpToTheCap(t *testing.T) {
 
 // The brief's opened proofs land in the clone before the conversation's
 // brief is released, each where its path holds no file, and the brief
-// names the ones written; a path out of the tree refuses the push, which
-// writes none of its files.
+// names every one the clone holds, written now or there already. A path
+// out of the tree refuses the push, which writes none of its files, and
+// a path the clone cannot hold is left out with a log line.
 func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
 	const push = `{"proofs":[{"path":"proofs/size_bound/size_bound_test.go","content":"package size_bound"},` +
 		`{"path":"acceptance/group_open_test.go","content":"v1"}]}`
-	landed := []string{"proofs/size_bound/size_bound_test.go"}
+	held := []string{"proofs/size_bound/size_bound_test.go", "acceptance/group_open_test.go"}
 	keep := func(t *testing.T, repo string) {
 		t.Helper()
 		if err := os.MkdirAll(filepath.Join(repo, "acceptance"), 0o750); err != nil {
@@ -617,13 +618,13 @@ func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
 		ws := t.TempDir()
 		repo := filepath.Join(ws, "repo")
 		keep(t, repo)
-		ck := newCheckinServe(ws)
+		ck := newCheckinServe(ws, nolog)
 		if rec := post(checkinHandler(t, ck), push); rec.Code != http.StatusNoContent {
 			t.Fatalf("status %d %q, want 204", rec.Code, rec.Body.String())
 		}
 		files(t, repo)
-		if got := ck.waitBrief(t.Logf); !slices.Equal(got.Landed, landed) {
-			t.Fatalf("landed = %q, want %q", got.Landed, landed)
+		if got := ck.waitBrief(t.Logf); !slices.Equal(got.InClone, held) {
+			t.Fatalf("in clone = %q, want %q", got.InClone, held)
 		}
 	})
 	t.Run("the run's brief", func(t *testing.T) {
@@ -649,8 +650,46 @@ func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
 			t.Fatalf("POST /brief answered %d, want 204", code)
 		}
 		files(t, repo)
-		if !slices.Equal(s.brief.Proofs, landed) {
-			t.Fatalf("brief proofs = %q, want %q", s.brief.Proofs, landed)
+		if !slices.Equal(s.brief.Proofs, held) {
+			t.Fatalf("brief proofs = %q, want %q", s.brief.Proofs, held)
+		}
+	})
+	t.Run("a path the clone cannot hold", func(t *testing.T) {
+		ws := t.TempDir()
+		repo := filepath.Join(ws, "repo")
+		keep(t, repo)
+		// a file where the proof's directory would be: its Lstat answers ENOTDIR
+		if err := os.WriteFile(filepath.Join(repo, "proofs"), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		var logs []string
+		ck := newCheckinServe(ws, func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) })
+		if rec := post(checkinHandler(t, ck), push); rec.Code != http.StatusNoContent {
+			t.Fatalf("status %d %q, want 204", rec.Code, rec.Body.String())
+		}
+		if got := ck.waitBrief(t.Logf); !slices.Equal(got.InClone, []string{"acceptance/group_open_test.go"}) {
+			t.Fatalf("in clone = %q, want the held group_open alone", got.InClone)
+		}
+		if len(logs) != 1 || !strings.Contains(logs[0], "proofs/size_bound/size_bound_test.go") || !strings.Contains(logs[0], "not a directory") {
+			t.Fatalf("logs = %q, want one line naming the proof and why", logs)
+		}
+	})
+	t.Run("a push after the wait", func(t *testing.T) {
+		ws := t.TempDir()
+		repo := filepath.Join(ws, "repo")
+		if err := os.MkdirAll(repo, 0o750); err != nil {
+			t.Fatal(err)
+		}
+		ck := newCheckinServe(ws, nolog)
+		ck.wait = time.Millisecond
+		if got := ck.waitBrief(t.Logf); got.Handover != "" || got.InClone != nil {
+			t.Fatalf("push = %+v, want the zero push at the deadline", got)
+		}
+		if rec := post(checkinHandler(t, ck), push); rec.Code != http.StatusConflict {
+			t.Fatalf("status %d %q, want 409", rec.Code, rec.Body.String())
+		}
+		if _, err := os.Lstat(filepath.Join(repo, "proofs")); !os.IsNotExist(err) {
+			t.Fatalf("a push after the wait wrote into the clone: %v", err)
 		}
 	})
 	for _, out := range []string{"../x_test.go", "proofs/../../x_test.go", "/x_test.go"} {
@@ -660,12 +699,12 @@ func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
 			if err := os.MkdirAll(repo, 0o750); err != nil {
 				t.Fatal(err)
 			}
-			rec := post(checkinHandler(t, newCheckinServe(ws)),
-				`{"proofs":[{"path":"proofs/size_bound/size_bound_test.go","content":"package size_bound"},{"path":"`+out+`","content":"x"}]}`)
+			rec := post(checkinHandler(t, newCheckinServe(ws, nolog)), `{"prior":{"session":"s-1"},"files":[{"Name":"r.md","Text":"x"}],`+
+				`"proofs":[{"path":"proofs/size_bound/size_bound_test.go","content":"package size_bound"},{"path":"`+out+`","content":"x"}]}`)
 			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), out) {
 				t.Fatalf("status %d %q, want 400 naming the path", rec.Code, rec.Body.String())
 			}
-			for _, p := range []string{filepath.Join(repo, "proofs"), filepath.Join(ws, "x_test.go")} {
+			for _, p := range []string{filepath.Join(repo, "proofs"), filepath.Join(ws, "x_test.go"), filepath.Join(ws, ".factory")} {
 				if _, err := os.Lstat(p); !os.IsNotExist(err) {
 					t.Fatalf("a refused push wrote %s: %v", p, err)
 				}

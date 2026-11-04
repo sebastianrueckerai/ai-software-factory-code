@@ -2746,7 +2746,7 @@ func TestChildBriefCarriesSpec(t *testing.T) {
 	// a task no plan filed gets neither
 	store.CreateTask(ctx, Task{ID: "t2", Kind: "agent", Status: "queued", Repository: "sf/r", SHA: "abc123", IssueNumber: 5, Source: "webhook",
 		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "fix it", Track: "direct"})
-	if spec, role, dirs, err := runner.planOf(ctx, store.tasks["t2"]); spec != "" || role != "" || dirs != nil || err != nil {
+	if p, spec, role, dirs, err := runner.planOf(ctx, store.tasks["t2"]); p.Summary != "" || p.Cards != nil || spec != "" || role != "" || dirs != nil || err != nil {
 		t.Fatalf("planOf a webhook task = %q %q %q %v", spec, role, dirs, err)
 	}
 }

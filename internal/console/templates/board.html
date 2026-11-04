@@ -171,8 +171,8 @@
 {{template "merge-brief" .}}
 {{with .Opened}}<div class="opened"><p class="info"><b>Opened proofs</b> Each shows the original test, then the pull request's version when the two differ.</p>
 {{range .}}<h5>{{.Criterion}}: {{.Path}}, {{if .Missing}}not in the pull request{{else if .Changed}}changed{{else}}unchanged{{end}}</h5>
-<pre class="proof original">{{.Original}}</pre>
-{{if .Changed}}<pre class="proof repository">{{.Repository}}</pre>
+<pre class="proof original" tabindex="0">{{.Original}}</pre>
+{{if .Changed}}<pre class="proof repository" tabindex="0">{{.Repository}}</pre>
 {{end}}{{end}}</div>
 {{end}}{{if .OpenedUnread}}<p class="problem">The console could not read the opened proofs. See the factoryd log.</p>
 {{end}}{{if .HeadUnread}}<p class="problem">The head's current checks could not be read, so the card may be stale; see the factoryd log.</p>

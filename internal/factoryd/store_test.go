@@ -1091,9 +1091,19 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
 	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) SetTaskProofLines(ctx context.Context, id string, lines int) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Usage.ProofLines = lines
 	s.tasks[id] = t
 	return nil
 }
@@ -2326,6 +2336,23 @@ func TestPGStore(t *testing.T) {
 	raised.RaisedSessions, raised.ExtraLines = 1, 150
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.SessionsAdded() != 2 {
 		t.Fatalf("usage after the raise and a snapshot = %+v, want %+v: the snapshot keeps the raise", got.Usage, raised)
+	}
+	// the opened proofs' lines are set, not added, and a snapshot keeps
+	// them too
+	for range 2 {
+		if err := s.SetTaskProofLines(ctx, "t1", 300); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
+		t.Fatal(err)
+	}
+	raised.ProofLines = 300
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.LinesAdded() != 450 {
+		t.Fatalf("usage after the proof lines and a snapshot = %+v, want %+v and 450 lines added", got.Usage, raised)
+	}
+	if err := s.SetTaskProofLines(ctx, "nope", 300); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetTaskProofLines unknown task = %v, want ErrNotFound", err)
 	}
 	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
 		t.Fatal(err)

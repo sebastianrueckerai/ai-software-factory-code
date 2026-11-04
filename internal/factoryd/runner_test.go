@@ -5038,6 +5038,44 @@ func TestRunSessionPushesThePlansOpenedProofs(t *testing.T) {
 	}
 }
 
+// The opened proofs a session's clone gets are new files of the card's
+// pull request, so their lines raise the card's line bound: a small
+// integration card, bound 300 at large_lines 1000, with three opened
+// proofs of 100 lines each, is bound at 600. A second session sets the
+// same raise again and does not add it twice.
+func TestRunSessionRaisesTheBoundByTheOpenedProofsLines(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 4, Source: SourcePlan, Parent: "plan1", PlanKey: "integration", Author: "sebastian", AuthorWriter: true, Size: "small",
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests"}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	store.CreateTask(ctx, Task{ID: "plan1", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener", Track: "direct"})
+	raw, sha, _ := planSHA(testPlan())
+	store.AddPlanRevision(ctx, "plan1", raw, sha)
+	hundred := strings.Repeat("// a line\n", 100)
+	store.proofs = map[string][]PlanProof{"plan1": {
+		{Idx: 1, Origin: ProofOriginCriterion, Criterion: "links_crud", ID: "links_crud", Path: "acceptance/links_test.go", Code: hundred, State: ProofOpened},
+		{Idx: 2, Origin: ProofOriginCriterion, Criterion: "redirect_302", ID: "redirect_302", Path: "acceptance/redirect_test.go", Code: hundred, State: ProofOpened},
+		{Idx: 3, Origin: ProofOriginHoldout, ID: "key_log", Path: "proofs/key_log/key_log_test.go", Code: hundred, State: ProofOpened},
+		{Idx: 4, Origin: ProofOriginCriterion, Criterion: "door", ID: "door", Path: "proofs/door/door_test.go", Code: hundred, State: ProofStored},
+	}}
+	for i := range 2 {
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: i + 1, Model: "factory/small"}, nil,
+			resultLine(true, "built")); err != nil {
+			t.Fatal(err)
+		}
+		if got := store.tasks["t1"].Usage.ProofLines; got != 300 {
+			t.Fatalf("session %d: proof lines = %d, want 300", i+1, got)
+		}
+		if got := podEnv(kube.podAt(i))["LINE_BOUND"]; got != "600" {
+			t.Fatalf("session %d: LINE_BOUND = %q, want 600: 300 for size small and 300 for the proofs", i+1, got)
+		}
+	}
+}
+
 // prevRig is a session rig whose object store holds the record of the
 // stopped session s-prev: a todo list, one changed file, its last event at
 // 23:03:32 UTC.

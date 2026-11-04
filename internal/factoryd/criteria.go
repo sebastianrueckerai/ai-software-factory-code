@@ -395,17 +395,23 @@ func CriteriaCard(p Plan, key string) bool {
 	return i < 0 || p.Cards[i].Role == RoleIntegration
 }
 
-// openedProofs are t's plan's proofs in state opened when t is its integration card or a delta card; nil for any other task.
-func (r *Runner) openedProofs(ctx context.Context, t Task) ([]PlanProof, error) {
-	if t.Source != SourcePlan || t.Parent == "" {
+// openedProofs are the proofs in state opened of p, t's plan, when t is its integration card or a delta card; nil for any other task.
+func (r *Runner) openedProofs(ctx context.Context, t Task, p Plan) ([]PlanProof, error) {
+	if t.Source != SourcePlan || t.Parent == "" || !CriteriaCard(p, t.PlanKey) {
 		return nil, nil
-	}
-	p, err := r.filedPlan(ctx, t.Parent, t.ID)
-	if err != nil || !CriteriaCard(p, t.PlanKey) {
-		return nil, err
 	}
 	rows, err := r.store.PlanProofs(ctx, t.Parent)
 	return slices.DeleteFunc(rows, func(pp PlanProof) bool { return pp.State != ProofOpened }), err
+}
+
+// codeLines is the lines of code as a diff counts them: a last line
+// without its newline counts too.
+func codeLines(code string) int {
+	n := strings.Count(code, "\n")
+	if code != "" && !strings.HasSuffix(code, "\n") {
+		n++
+	}
+	return n
 }
 
 // proofAtHead reads path at commit: present false when the path holds no

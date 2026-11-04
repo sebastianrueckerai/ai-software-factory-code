@@ -73,11 +73,11 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 		pres int
 	}{
 		{"changed", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}, false, []string{`<h5>group_open: acceptance/group_open_test.go, changed</h5>`,
-			`<pre class="proof original">v1 code</pre>`, `<pre class="proof repository">v2 code</pre>`}, 2},
+			`<pre class="proof original" tabindex="0">v1 code</pre>`, `<pre class="proof repository" tabindex="0">v2 code</pre>`}, 2},
 		{"unchanged", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v1 code"}, false, []string{`<h5>group_open: acceptance/group_open_test.go, unchanged</h5>`,
-			`<pre class="proof original">v1 code</pre>`}, 1},
+			`<pre class="proof original" tabindex="0">v1 code</pre>`}, 1},
 		{"not in the pull request", nil, false, []string{`<h5>group_open: acceptance/group_open_test.go, not in the pull request</h5>`,
-			`<pre class="proof original">v1 code</pre>`}, 1},
+			`<pre class="proof original" tabindex="0">v1 code</pre>`}, 1},
 		{"unread", nil, true, []string{`<p class="problem">The console could not read the opened proofs. See the factoryd log.</p>`}, 0},
 		{"a feature card", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}, false, nil, 0},
 	} {

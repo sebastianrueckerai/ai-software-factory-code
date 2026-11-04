@@ -656,6 +656,9 @@ func (s *accBatchStore) SetTaskUsage(ctx context.Context, id string, u factoryd.
 func (s *accBatchStore) ResetTaskUsage(ctx context.Context, id string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetTaskProofLines(ctx context.Context, id string, lines int) error {
+	panic("unused")
+}
 func (s *accBatchStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
 	panic("unused")
 }

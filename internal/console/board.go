@@ -2014,7 +2014,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	if v.approves(t.Repository) && extendable(t) {
 		k.Extend = &extendForm{CSRF: v.csrf,
 			Cap:    factoryd.SessionCap(t, v.policy.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage.ExtraLines),
+			Bound:  factoryd.EffectiveLineBound(t.Size, v.policy.Document.Risk.LargeLines, t.Usage),
 			Budget: t.BudgetEUR, Left: t.Left()}
 	}
 	if v.escalated(t) {
