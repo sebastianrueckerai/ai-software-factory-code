@@ -7,6 +7,7 @@ graph LR
   end
   subgraph planning["planning"]
     planner["planner"]
+    prover["prover"]
     delta-planner["delta-planner"]
   end
   subgraph the-session["the session"]
@@ -38,6 +39,8 @@ graph LR
 
   signals --> screening --> sizing --> planner --> coding
   signals -.-> answer-screener
+  planner --> prover
+  holdout-proposer -.-> prover
   coding -.-> opencode-subagents
   message-responder --> coding
   coding --> checkin

@@ -1228,8 +1228,9 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // a criterion still open, starts the next round of a plan whose round is
 // over, and drafts the delta cards the reviews and the grants asked for.
 // One model call per delta due, in the sweep's own time: no activity
-// holds it.
+// holds it. First it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
+	r.proverPass(ctx)
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {
 		log.Printf("criteria pass: the verdict tasks: %v", err)

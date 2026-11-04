@@ -836,7 +836,7 @@ func TestParseBehavioursAnswer(t *testing.T) {
 func TestReviewCriteriaStepFilesDuesAndFindings(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "in-review")
-	r := &Runner{store: s}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s}
 	rv := Review{Verdict: "approve", Summary: "the diff is sound", Criteria: []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Evidence: "go test exits 0", Fix: "card"},
 		{Criterion: "c2", Evidence: "the list page reads clean"},
@@ -893,7 +893,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}
 	objs := &fakeObjectStore{}
 	fj := &prForgejo{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	r.CriteriaPass(ctx)
 	if !slices.Equal(fj.issuesClosed, []int64{7}) {
 		t.Fatalf("issues closed %v, want the plan's #7", fj.issuesClosed)
@@ -912,7 +912,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 
 	// a plan whose cards are done with a criterion open asks its gap once
 	s2 := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
-	r2 := &Runner{store: s2, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r2 := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s2, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	if err := s2.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 		{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
@@ -964,7 +964,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	(&Runner{store: s3, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
+	(&Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s3, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
 	}
@@ -983,7 +983,7 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s}
 	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 40); err != nil || n != 1 {
 		t.Fatalf("the first grant = %d, %v", n, err)
 	}
@@ -1037,7 +1037,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		// brings a plan without a verdict row to the pass
 		mergeCard(s, "t-int")
 		objs := &fakeObjectStore{}
-		r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
+		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
 		if c.note != "" || c.name == "mixed" {
 			r.record(ctx, "t-int", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
 		}
@@ -1110,7 +1110,7 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {state: "open"}}}
 	objs := &fakeObjectStore{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
 		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	return r, s, objs, fj
 }
@@ -1492,7 +1492,7 @@ func TestCriteriaPassSkipsAnsweredDeltaDues(t *testing.T) {
 	}
 	// the marker holds the sweep's round back: no model call, and the gap
 	// question opens (the cards are done, c2 and c3 open)
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	r.CriteriaPass(ctx)
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("pending = %+v, want the gap question alone", pending)
@@ -1519,7 +1519,7 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 			t.Fatal(err)
 		}
 		objs := &fakeObjectStore{}
-		return s, objs, &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+		return s, objs, &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
 	}
 
 	s, objs, r := rig("in-review")
@@ -1598,7 +1598,7 @@ func firstOfRounds(t *testing.T, status string) (*Runner, *fakeStore, *bytes.Buf
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
+	return &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
 }
 
 // A plan with later rounds still to plan does not close with its round's
@@ -1662,7 +1662,7 @@ func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	setStatus(s, "t-plan", "closed")
-	r = &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r = &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 1 || len(pending) != 0 {
 		t.Fatalf("a closed plan with c1 unmet: plan_closed %d, pending %+v; want one close and no question", closeRows(s), pending)
@@ -1682,7 +1682,7 @@ func TestClosedPlanCardDeniesItsCriteriaApproval(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("the failed plan's gap: pending %+v, want the criteria approval", pending)
@@ -1711,7 +1711,7 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].TaskID != "t-plan" {
@@ -1787,7 +1787,7 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	if err := s.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},

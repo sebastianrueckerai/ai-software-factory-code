@@ -1190,6 +1190,14 @@ func (s *acceptanceStore) DecidePlanProof(context.Context, string, int, int, str
 
 func (s *acceptanceStore) SweepPlanProofs(context.Context, string) error { return nil }
 
+func (s *acceptanceStore) FilePlanProofs(context.Context, string, []factoryd.PlanProof) error {
+	return nil
+}
+
+func (s *acceptanceStore) StorePlanProofs(context.Context, string, map[int]string) error { return nil }
+
+func (s *acceptanceStore) PlansWithoutProver(context.Context) ([]string, error) { return nil, nil }
+
 func (s *acceptanceStore) PastReverts(context.Context, string) ([]string, error) {
 	return nil, nil
 }

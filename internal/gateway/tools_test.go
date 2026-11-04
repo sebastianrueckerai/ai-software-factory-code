@@ -163,6 +163,22 @@ func (f *fakePlanFiler) FilePlan(_ context.Context, taskID, plan string) (PlanFi
 	return f.res, f.err
 }
 
+type fakeProofsFiler struct {
+	mu    sync.Mutex
+	calls []string
+	in    [][]ProofIn
+	res   ProofsFiled
+	err   error
+}
+
+func (f *fakeProofsFiler) FileProofs(_ context.Context, taskID string, proofs []ProofIn) (ProofsFiled, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls = append(f.calls, taskID)
+	f.in = append(f.in, proofs)
+	return f.res, f.err
+}
+
 type fakeDeploymentReader struct {
 	mu    sync.Mutex
 	calls []string
@@ -213,6 +229,7 @@ type toolEnv struct {
 	providers   *fakeProviders
 	escalator   *fakeEscalator
 	filer       *fakePlanFiler
+	proofs      *fakeProofsFiler
 	delegator   *fakeDelegator
 	session     *mcp.ClientSession
 }
@@ -224,6 +241,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	providers := newFakeProviders(t)
 	esc := &fakeEscalator{}
 	filer := &fakePlanFiler{}
+	proofs := &fakeProofsFiler{}
 	delegator := &fakeDelegator{}
 	deployments := &fakeDeploymentReader{text: "deployment web: 2/2 ready"}
 	looker := &fakeImageLooker{text: "img1.png (Screenshot.png): a login form, the button grey"}
@@ -233,7 +251,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
-		Escalator: esc, PlanFiler: filer, Delegator: delegator,
+		Escalator: esc, PlanFiler: filer, ProofsFiler: proofs, Delegator: delegator,
 		DeploymentReader: deployments, ImageLooker: looker, Digester: digester,
 	})
 	srv := httptest.NewServer(s.Routes("test"))
@@ -244,7 +262,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: session}
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, proofs: proofs, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: session}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -300,7 +318,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1152,6 +1170,118 @@ func TestFilePlanRefused(t *testing.T) {
 	}
 	if calls := e.filer.calls; len(calls) != 2 || !strings.HasSuffix(calls[1], big) {
 		t.Fatalf("filer calls = %v, want the large plan through", calls)
+	}
+}
+
+// proofIn is a valid file_proofs entry as a tool call's arguments carry it.
+func proofIn(id, code string) map[string]any {
+	return map[string]any{"criterion": id, "path": "proofs/" + id + "/" + id + "_test.go", "suite": "./proofs/" + id, "name": "TestSizeBound",
+		"code": code, "outcome": "red"}
+}
+
+// file_proofs is the prover's filing in the session it runs in: a refused
+// one comes back with every finding and the filings left, the session goes
+// on; an accepted one stands. The audit counts the findings and never
+// quotes them.
+func TestFileProofsTool(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	args := map[string]any{"proofs": []any{proofIn("size_bound", "package size_bound")}}
+	e.proofs.res = ProofsFiled{Filing: 1, Left: 2, Findings: []string{"file_proofs: no proof for size_bound"}}
+	text, isErr := e.call(t, policy.ToolFileProofs, args)
+	if want := "the filing was refused:\n- file_proofs: no proof for size_bound\ncorrect it and file again in this session; filings left: 2"; !isErr || text != want {
+		t.Fatalf("refused = %q (%v), want %q", text, isErr, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "proofs_refused" || a.Tool != policy.ToolFileProofs || a.Reason != "filing 1, 1 findings" {
+		t.Fatalf("audit = %+v", a)
+	}
+	e.proofs.res = ProofsFiled{Filing: 3, Left: 0, Findings: []string{"file_proofs: three filings are this session's limit, and the last one that passed stands: end the session"}}
+	if text, isErr := e.call(t, policy.ToolFileProofs, args); !isErr || !strings.HasSuffix(text, "\nno filing is left: end the session") {
+		t.Fatalf("refused with none left = %q (%v)", text, isErr)
+	}
+	e.proofs.res = ProofsFiled{Filing: 2, Left: 1}
+	text, isErr = e.call(t, policy.ToolFileProofs, args)
+	if want := "filing 2 stands; factoryd runs every test on main after this session. Filings left: 1. You may end the session."; isErr || text != want {
+		t.Fatalf("accepted = %q (%v), want %q", text, isErr, want)
+	}
+	if a := e.lastAudit(t); a.Decision != "proofs_filed" || a.Reason != "filing 2, 1 proofs" {
+		t.Fatalf("audit = %+v", a)
+	}
+	want := []ProofIn{{Criterion: "size_bound", Path: "proofs/size_bound/size_bound_test.go", Suite: "./proofs/size_bound", Name: "TestSizeBound",
+		Code: "package size_bound", Outcome: "red"}}
+	if len(e.proofs.calls) != 3 || e.proofs.calls[0] != "42" || !slices.Equal(e.proofs.in[2], want) {
+		t.Fatalf("filer calls = %v %+v, want task 42 with the entries as given", e.proofs.calls, e.proofs.in)
+	}
+}
+
+// file_proofs reaches factoryd only for a running task of a class that
+// lists it, with entries whose code fits one call; a hand-over that fails
+// says so in the session.
+func TestFileProofsRefused(t *testing.T) {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	args := map[string]any{"proofs": []any{proofIn("size_bound", "package size_bound")}}
+	done := newToolEnv(t, Task{ID: "42", BudgetEUR: 1, Status: "done", Classes: []string{"coder"}}, pv)
+	if text, isErr := done.call(t, policy.ToolFileProofs, args); !isErr || !strings.Contains(text, "refused_task_status") {
+		t.Fatalf("not running = %q, want refused_task_status", text)
+	}
+	e := newToolEnv(t, running("odd"), pv)
+	if text, isErr := e.call(t, policy.ToolFileProofs, args); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("class without the tool = %q, want refused_capability", text)
+	}
+	e = newToolEnv(t, running("coder"), pv)
+	half := strings.Repeat("x", 256<<10)
+	for name, a := range map[string]map[string]any{
+		"no entries":    {"proofs": []any{}},
+		"too much code": {"proofs": []any{proofIn("a", half), proofIn("b", half+"x")}},
+	} {
+		if text, isErr := e.call(t, policy.ToolFileProofs, a); !isErr || !strings.Contains(text, "refused_arguments") {
+			t.Fatalf("%s = %q, want refused_arguments", name, text)
+		}
+	}
+	e.proofs.err = errors.New("no route")
+	if text, isErr := e.call(t, policy.ToolFileProofs, args); !isErr || text != "the filing did not reach factoryd: no route" {
+		t.Fatalf("filer error = %q", text)
+	}
+	if a := e.lastAudit(t); a.Decision != "error_proofs" {
+		t.Fatalf("audit = %+v", a)
+	}
+	if len(e.proofs.calls) != 1 {
+		t.Fatalf("filer calls = %v, want only the last one through", e.proofs.calls)
+	}
+	e.proofs.err = nil
+	if _, isErr := e.call(t, policy.ToolFileProofs, map[string]any{"proofs": []any{proofIn("a", half), proofIn("b", half)}}); isErr || len(e.proofs.calls) != 2 {
+		t.Fatalf("code of exactly the bound: refused %v, calls %v; want it through", isErr, e.proofs.calls)
+	}
+}
+
+// file_proofs's proofs are a plain array of objects, each naming the
+// fields an entry takes, artifact alone optional.
+func TestFileProofsSchemaIsAPlainArray(t *testing.T) {
+	e := newToolEnv(t, running("coder"), toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolFileProofs })
+	if i < 0 {
+		t.Fatal("file_proofs is not listed")
+	}
+	var schema struct {
+		Properties map[string]struct {
+			Type  any
+			Items struct {
+				Type     any
+				Required []string
+			}
+		}
+	}
+	b, _ := json.Marshal(res.Tools[i].InputSchema)
+	if err := json.Unmarshal(b, &schema); err != nil {
+		t.Fatal(err)
+	}
+	proofs := schema.Properties["proofs"]
+	if fmt.Sprint(proofs.Type) != "array" || fmt.Sprint(proofs.Items.Type) != "object" ||
+		!slices.Equal(proofs.Items.Required, []string{"criterion", "path", "suite", "name", "code", "outcome"}) {
+		t.Fatalf("proofs = %+v in %s", proofs, b)
 	}
 }
 

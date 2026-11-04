@@ -95,8 +95,11 @@ const (
 	maxHoldoutText = 200
 )
 
-// pullRef is a pull request's head ref: what a repro pod fetches.
+// pullRef is a pull request's head ref, branchRef a branch's: what a
+// repro pod fetches.
 func pullRef(pr int64) string { return fmt.Sprintf("refs/pull/%d/head", pr) }
+
+func branchRef(branch string) string { return "refs/heads/" + branch }
 
 // holdoutEntry is a hold-out's id in the runner's list: criterionID
 // admits no hyphen, so it never meets a criterion's.
@@ -396,6 +399,74 @@ func (s *PGStore) SweepPlanProofs(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE plan_proofs SET state = 'dropped', decided_at = now()
 		WHERE task_id = $1 AND state = 'proposed'`, id)
 	return err
+}
+
+// FilePlanProofs stores the prover's filing of plan id in one
+// transaction, every row it writes in state filed: a criterion's row in
+// place by its criterion, or inserted with the next idx; a hold-out's,
+// found by its idx, takes the test's path, suite, name, code and artifact.
+func (s *PGStore) FilePlanProofs(ctx context.Context, id string, filed []PlanProof) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	for _, pp := range filed {
+		if pp.Origin == ProofOriginHoldout {
+			res, err := tx.ExecContext(ctx, `UPDATE plan_proofs SET state = 'filed', path = $3, suite = $4, name = $5, code = $6, artifact = $7
+				WHERE task_id = $1 AND idx = $2 AND origin = 'hold-out'`, id, pp.Idx, pp.Path, pp.Suite, pp.Name, pp.Code, pp.Artifact)
+			if err := oneRow(res, err, fmt.Sprintf("hold-out %d of %s", pp.Idx, id)); err != nil {
+				return err
+			}
+			continue
+		}
+		if _, err := tx.ExecContext(ctx, `INSERT INTO plan_proofs (task_id, idx, round, id, origin, criterion, claim, inputs, expected,
+				state, path, suite, name, code, artifact)
+			VALUES ($1, (SELECT COALESCE(MAX(idx), 0) + 1 FROM plan_proofs WHERE task_id = $1), $2, $3, 'criterion', $3, $4, $5, $6,
+				'filed', $7, $8, $9, $10, $11)
+			ON CONFLICT (task_id, criterion) WHERE criterion <> '' DO UPDATE SET state = 'filed',
+				path = EXCLUDED.path, suite = EXCLUDED.suite, name = EXCLUDED.name, code = EXCLUDED.code, artifact = EXCLUDED.artifact`,
+			id, pp.Round, pp.Criterion, pp.Claim, pp.Inputs, pp.Expected, pp.Path, pp.Suite, pp.Name, pp.Code, pp.Artifact); err != nil {
+			return err
+		}
+	}
+	return tx.Commit()
+}
+
+// StorePlanProofs moves every filed row of plan id to stored, each with
+// its flag by idx ("" for none).
+func (s *PGStore) StorePlanProofs(ctx context.Context, id string, flags map[int]string) error {
+	b, err := json.Marshal(flags)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `UPDATE plan_proofs SET state = 'stored', flag = COALESCE($2::jsonb ->> idx::text, '')
+		WHERE task_id = $1 AND state = 'filed'`, id, b)
+	return err
+}
+
+// PlansWithoutProver are the open plans, by id, whose cards are filed and
+// which have no prover task yet.
+func (s *PGStore) PlansWithoutProver(ctx context.Context) ([]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT p.id FROM tasks p
+		WHERE p.track = 'plan'
+			AND NOT EXISTS (SELECT 1 FROM events WHERE task_id = p.id AND kind = 'plan_closed')
+			AND EXISTS (SELECT 1 FROM tasks c WHERE c.parent_task = p.id AND c.source = 'plan' AND c.plan_key IS NOT NULL)
+			AND NOT EXISTS (SELECT 1 FROM tasks r WHERE r.parent_task = p.id AND r.source = 'prover')
+		ORDER BY p.id`)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var out []string
+	for rows.Next() {
+		var id string
+		if err := rows.Scan(&id); err != nil {
+			return nil, err
+		}
+		out = append(out, id)
+	}
+	return out, rows.Err()
 }
 
 // PastReverts are the project's last revert objectives, one line each:

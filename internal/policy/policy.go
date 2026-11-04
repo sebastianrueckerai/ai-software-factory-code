@@ -1072,6 +1072,10 @@ const ClassCoder = "coder"
 // and writes a comment, it changes no code and commissions nothing.
 const ClassAnalyzer = "analyzer"
 
+// ClassProver is the class of a plan's prover: a report session that
+// writes one test per criterion on main and files them with file_proofs.
+const ClassProver = "prover"
+
 // The gateway's paid tools: a class allows one by listing it in
 // classes.<c>.tools with its caps.
 const (
@@ -1131,6 +1135,8 @@ const (
 	// the workspace: the answer enters the session, the file's bytes never
 	// do.
 	ToolDigest = "digest"
+	// ToolFileProofs is the prover's filing of its tests.
+	ToolFileProofs = "file_proofs"
 )
 
 // SourceToolRequest is the source of a tool card, which adds a tool an
@@ -1169,7 +1175,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileProofs, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

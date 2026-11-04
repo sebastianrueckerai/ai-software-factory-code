@@ -174,7 +174,9 @@ func (t Task) Left() float64 { return t.BudgetEUR - t.EnforcedSpent() }
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
 // and the runner's RunState ask it; it folds Source alone, no row read.
-func (t Task) Report() bool { return t.Source == SourceScreening || t.Source == SourceSizing }
+func (t Task) Report() bool {
+	return t.Source == SourceScreening || t.Source == SourceSizing || t.Source == SourceProver
+}
 
 // Standing is the issue author's standing: telemetry for an
 // alert card, writer for an author who could write the repository,
@@ -746,13 +748,17 @@ type Store interface {
 	CriteriaVerdictTasks(ctx context.Context) ([]string, error)
 	// The plan's blind proofs (the spec-intake concept, piece 6): a round's
 	// hold-out proposals, every row, the undecided count of one round, the
-	// human's okay or drop, the sweep of a closing round, and the
-	// project's past reverts.
+	// human's okay or drop, the sweep of a closing round, the prover's
+	// filing and its store after the dry run on main, the open plans with
+	// filed cards and no prover, and the project's past reverts.
 	PutPlanProofs(ctx context.Context, id string, round int, proposals []PlanProof) (bool, error)
 	PlanProofs(ctx context.Context, id string) ([]PlanProof, error)
 	UndecidedProofs(ctx context.Context, id string, round int) (int, error)
 	DecidePlanProof(ctx context.Context, id string, round, idx int, state string) error
 	SweepPlanProofs(ctx context.Context, id string) error
+	FilePlanProofs(ctx context.Context, id string, filed []PlanProof) error
+	StorePlanProofs(ctx context.Context, id string, flags map[int]string) error
+	PlansWithoutProver(ctx context.Context) ([]string, error)
 	PastReverts(ctx context.Context, repository string) ([]string, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its
 	// key, and returns the plan's card of that key.
@@ -1051,10 +1057,11 @@ func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int
 
 // OpenReportTask inserts report task t unless its parent has one of its
 // source — the partial unique conflict clause — and answers the parent's
-// report task of that source. openReport, the screening and sizing
-// sessions' opener, is its sole caller; a re-read that finds none errors.
+// report task of that source. openReport, the screening, sizing and
+// prover sessions' opener, is its sole caller; a re-read that finds none
+// errors.
 func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
-	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing') DO NOTHING`); err != nil {
+	if err := s.insertTask(ctx, t, `ON CONFLICT (parent_task, source) WHERE parent_task IS NOT NULL AND source IN ('screening', 'sizing', 'prover') DO NOTHING`); err != nil {
 		return Task{}, err
 	}
 	got, ok, err := s.ReportOf(ctx, t.Parent, t.Source)

@@ -3421,6 +3421,91 @@ func TestPGStoreProofs(t *testing.T) {
 	}
 }
 
+// The prover's rows: the open plans with filed cards and no prover, one
+// prover per plan, a filing in place and its store with the flags.
+func TestPGStoreProverRows(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, plan_proofs, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	plan := func(id string) Task {
+		return Task{ID: id, Status: "done", Objective: "o", Repository: "sf/r", Kind: "agent", Source: "webhook", Track: policy.TrackPlan}
+	}
+	card := func(id, parent string) Task {
+		return Task{ID: id, Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent", Source: SourcePlan, Parent: parent, PlanKey: "a", Track: "direct"}
+	}
+	for _, task := range []Task{plan("t-plan"), plan("t-bare"), plan("t-closed"), card("t-c", "t-plan"), card("t-cc", "t-closed")} {
+		if err := s.CreateTask(ctx, task); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-closed", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd,
+		Detail: map[string]any{"criteria": 1}}); err != nil {
+		t.Fatal(err)
+	}
+	if ids, err := s.PlansWithoutProver(ctx); err != nil || !slices.Equal(ids, []string{"t-plan"}) {
+		t.Fatalf("plans without a prover = %q, %v; want t-plan", ids, err)
+	}
+	prover := Task{ID: "t-prove", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent", Source: SourceProver, Parent: "t-plan",
+		RequiredCapabilities: []string{policy.ClassProver}, Track: "direct"}
+	first, err := s.OpenReportTask(ctx, prover)
+	if err != nil {
+		t.Fatal(err)
+	}
+	prover.ID = "t-prove-2"
+	if again, err := s.OpenReportTask(ctx, prover); err != nil || again.ID != first.ID || first.ID != "t-prove" {
+		t.Fatalf("open the prover twice = %s then %s, %v; want t-prove both times", first.ID, again.ID, err)
+	}
+	if ids, err := s.PlansWithoutProver(ctx); err != nil || len(ids) != 0 {
+		t.Fatalf("plans without a prover = %q, %v; want none", ids, err)
+	}
+
+	if ok, err := s.PutPlanProofs(ctx, "t-plan", 1, []PlanProof{{Idx: 2, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log",
+		Inputs: "three turns of key 7", Expected: "three log rows", State: ProofProposed}}); err != nil || !ok {
+		t.Fatalf("put: %v %v", ok, err)
+	}
+	if err := s.DecidePlanProof(ctx, "t-plan", 1, 2, ProofOkayed); err != nil {
+		t.Fatal(err)
+	}
+	filing := func(code string) []PlanProof {
+		return []PlanProof{
+			{Round: 1, ID: "a", Origin: ProofOriginCriterion, Criterion: "a", Claim: "c", Inputs: "i", Expected: "e", State: ProofFiled,
+				Path: "proofs/a/a_test.go", Suite: "./proofs/a", Name: "TestA", Code: code},
+			{Idx: 2, Origin: ProofOriginHoldout, State: ProofFiled, Path: "proofs/key_log/key_log_test.go", Suite: "./proofs/key_log", Name: "TestKeyLog",
+				Code: "package key_log"},
+		}
+	}
+	if err := s.FilePlanProofs(ctx, "t-plan", filing("package a")); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.FilePlanProofs(ctx, "t-plan", filing("package a // v2")); err != nil {
+		t.Fatal(err)
+	}
+	hold := PlanProof{Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log", Inputs: "three turns of key 7",
+		Expected: "three log rows", State: ProofFiled, Path: "proofs/key_log/key_log_test.go", Suite: "./proofs/key_log", Name: "TestKeyLog", Code: "package key_log"}
+	crit := filing("package a // v2")[0]
+	crit.Idx = 3
+	if rows, err := s.PlanProofs(ctx, "t-plan"); err != nil || !slices.Equal(rows, []PlanProof{hold, crit}) {
+		t.Fatalf("rows = %+v, %v; want\n%+v", rows, err, []PlanProof{hold, crit})
+	}
+	if err := s.FilePlanProofs(ctx, "t-plan", []PlanProof{{Idx: 9, Origin: ProofOriginHoldout, State: ProofFiled, Path: "p_test.go", Suite: "./p",
+		Name: "TestP", Code: "package p"}}); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("a filing of no such hold-out = %v, want ErrNotFound", err)
+	}
+	if err := s.StorePlanProofs(ctx, "t-plan", map[int]string{2: ProofFlagUnrunnable}); err != nil {
+		t.Fatal(err)
+	}
+	hold.State, hold.Flag, crit.State = ProofStored, ProofFlagUnrunnable, ProofStored
+	if rows, err := s.PlanProofs(ctx, "t-plan"); err != nil || !slices.Equal(rows, []PlanProof{hold, crit}) {
+		t.Fatalf("rows after the store = %+v, %v; want\n%+v", rows, err, []PlanProof{hold, crit})
+	}
+}
+
 func TestTouchedByPerson(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
@@ -4398,6 +4483,65 @@ func (s *fakeStore) SweepPlanProofs(ctx context.Context, id string) error {
 		}
 	}
 	return nil
+}
+
+func (s *fakeStore) FilePlanProofs(ctx context.Context, id string, filed []PlanProof) error {
+	rows := slices.Clone(s.proofs[id])
+	for _, pp := range filed {
+		pp.State = ProofFiled
+		i := slices.IndexFunc(rows, func(h PlanProof) bool {
+			if pp.Origin == ProofOriginHoldout {
+				return h.Origin == ProofOriginHoldout && h.Idx == pp.Idx
+			}
+			return h.Criterion != "" && h.Criterion == pp.Criterion
+		})
+		switch {
+		case i < 0 && pp.Origin == ProofOriginHoldout:
+			return fmt.Errorf("hold-out %d of %s: %w", pp.Idx, id, ErrNotFound)
+		case i < 0:
+			pp.Idx = 1
+			for _, h := range rows {
+				pp.Idx = max(pp.Idx, h.Idx+1)
+			}
+			rows = append(rows, pp)
+		default:
+			h := &rows[i]
+			h.State, h.Path, h.Suite, h.Name, h.Code, h.Artifact = ProofFiled, pp.Path, pp.Suite, pp.Name, pp.Code, pp.Artifact
+		}
+	}
+	if s.proofs == nil {
+		s.proofs = map[string][]PlanProof{}
+	}
+	s.proofs[id] = rows
+	return nil
+}
+
+func (s *fakeStore) StorePlanProofs(ctx context.Context, id string, flags map[int]string) error {
+	for i, pp := range s.proofs[id] {
+		if pp.State == ProofFiled {
+			s.proofs[id][i].State, s.proofs[id][i].Flag = ProofStored, flags[pp.Idx]
+		}
+	}
+	return nil
+}
+
+func (s *fakeStore) PlansWithoutProver(ctx context.Context) ([]string, error) {
+	var out []string
+	for id, t := range s.tasks {
+		if _, closed := s.closed[id]; t.Track != policy.TrackPlan || closed {
+			continue
+		}
+		var cards, provers bool
+		for _, c := range s.tasks {
+			cards = cards || c.Parent == id && c.Source == SourcePlan && c.PlanKey != ""
+			provers = provers || c.Parent == id && c.Source == SourceProver
+		}
+		if cards && !provers {
+			out = append(out, id)
+		}
+	}
+	slices.Sort(out)
+	return out, nil
 }
 
 func (s *fakeStore) PastReverts(ctx context.Context, repository string) ([]string, error) {

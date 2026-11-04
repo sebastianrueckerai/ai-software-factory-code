@@ -75,6 +75,22 @@ type PlanFiled struct {
 	Findings []string `json:"findings"`
 }
 
+// ProofsFiler files a prover's tests (the file_proofs tool): factoryd
+// checks the filing's shape against the proofs the plan owes and keeps an
+// accepted one for its dry run on main after the session. Implemented by
+// Factoryd; tests substitute a fake.
+type ProofsFiler interface {
+	FileProofs(ctx context.Context, taskID string, proofs []ProofIn) (ProofsFiled, error)
+}
+
+// ProofsFiled is a filing's answer: its number, the filings left, and
+// every finding that refused it.
+type ProofsFiled struct {
+	Filing   int      `json:"filing"`
+	Left     int      `json:"left"`
+	Findings []string `json:"findings"`
+}
+
 // DeploymentReader reads a Deployment of the task's project as the cluster
 // reports it (the deployment_health tool). Implemented by Factoryd; tests
 // substitute a fake.
@@ -123,6 +139,7 @@ const (
 var (
 	_ Escalator        = (*Factoryd)(nil)
 	_ PlanFiler        = (*Factoryd)(nil)
+	_ ProofsFiler      = (*Factoryd)(nil)
 	_ DeploymentReader = (*Factoryd)(nil)
 	_ ImageLooker      = (*Factoryd)(nil)
 	_ Digester         = (*Factoryd)(nil)
@@ -200,6 +217,21 @@ func (f *Factoryd) FilePlan(ctx context.Context, taskID, plan string) (PlanFiled
 			TaskID string `json:"task_id"`
 			Plan   string `json:"plan"`
 		}{taskID, plan})
+	if err != nil {
+		return res, err
+	}
+	err = json.Unmarshal(b, &res)
+	return res, err
+}
+
+func (f *Factoryd) FileProofs(ctx context.Context, taskID string, proofs []ProofIn) (ProofsFiled, error) {
+	var res ProofsFiled
+	b, err := call(ctx, f.HTTP, http.MethodPost, f.BaseURL+"/internal/proofs",
+		http.Header{"Authorization": {"Bearer " + f.Token}},
+		struct {
+			TaskID string    `json:"task_id"`
+			Proofs []ProofIn `json:"proofs"`
+		}{taskID, proofs})
 	if err != nil {
 		return res, err
 	}
@@ -367,6 +399,23 @@ type FilePlanIn struct {
 	Plan string `json:"plan" jsonschema:"the complete plan json: one object with spec, summary, criteria and cards"`
 }
 
+type ProofsIn struct {
+	Proofs []ProofIn `json:"proofs" jsonschema:"one entry per criterion and hold-out your brief lists"`
+}
+
+type ProofIn struct {
+	Criterion string `json:"criterion" jsonschema:"the criterion's or the hold-out's id"`
+	Path      string `json:"path" jsonschema:"the test file, relative to the repository's root"`
+	Suite     string `json:"suite" jsonschema:"the package bash check test runs, such as ./proofs/size_bound"`
+	Name      string `json:"name" jsonschema:"the test's name, such as TestSizeBound"`
+	Code      string `json:"code" jsonschema:"the test file's whole content"`
+	Outcome   string `json:"outcome" jsonschema:"what your own run of bash check test on main showed: red, green or unrunnable"`
+	Artifact  string `json:"artifact,omitempty" jsonschema:"for a judgement or human criterion: the file the test writes under CHECK_ARTIFACTS"`
+}
+
+// maxProofsCall is the code one file_proofs call may carry, summed.
+const maxProofsCall = 512 << 10
+
 type DeploymentHealthIn struct {
 	Deployment string `json:"deployment" jsonschema:"the Deployment's name, a DNS-1123 subdomain such as web-api"`
 	Namespace  string `json:"namespace,omitempty" jsonschema:"the namespace, a DNS-1123 label; leave it out to look in each of the project's namespaces"`
@@ -396,12 +445,17 @@ const (
 	maxDigestAsk  = 2000
 )
 
-// plainArrays is T's input schema with each list of strings a plain
-// array: the inferred type list ["null", "array"] is one some models' tool
-// calls refuse.
+// plainArrays is T's input schema with each list of strings or proofs a
+// plain array: the inferred type list ["null", "array"] is one some
+// models' tool calls refuse.
 func plainArrays[T any]() *jsonschema.Schema {
+	proof, err := jsonschema.For[ProofIn](nil)
+	if err != nil {
+		panic(err)
+	}
 	s, err := jsonschema.For[T](&jsonschema.ForOptions{TypeSchemas: map[reflect.Type]*jsonschema.Schema{
-		reflect.TypeFor[[]string](): {Type: "array", Items: &jsonschema.Schema{Type: "string"}}}})
+		reflect.TypeFor[[]string]():  {Type: "array", Items: &jsonschema.Schema{Type: "string"}},
+		reflect.TypeFor[[]ProofIn](): {Type: "array", Items: proof}}})
 	if err != nil {
 		panic(err)
 	}
@@ -411,6 +465,7 @@ func plainArrays[T any]() *jsonschema.Schema {
 var (
 	escalateSchema = plainArrays[EscalateIn]()
 	cutSchema      = plainArrays[RequestCutIn]()
+	proofsSchema   = plainArrays[ProofsIn]()
 )
 
 // maxQuestion bounds an escalation's question and reason and an
@@ -482,6 +537,13 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 		"A refusal names every finding; correct the plan and file it again in this session. A stored plan is this session's answer; end the session. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, in FilePlanIn) (*mcp.CallToolResult, any, error) {
 			return s.filePlan(ctx, c, in), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolFileProofs, Description: "File the proofs: one test per criterion and hold-out your brief lists, " +
+		"each with its path, suite, name, whole code, and what your own run of bash check test on main showed. " +
+		"The set is checked at once; a refusal names every finding: correct it and file again in this session, three filings at most. " +
+		"The last filing that passes stands, and factoryd runs it on main after the session. Free.", InputSchema: proofsSchema},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in ProofsIn) (*mcp.CallToolResult, any, error) {
+			return s.fileProofs(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
@@ -1197,6 +1259,52 @@ func (s *Server) filePlan(ctx context.Context, c *toolCaller, in FilePlanIn) *mc
 	s.auditTool(c, tool, "plan_stored", fmt.Sprintf("revision %d", res.Revision), &c.task.SpentEUR, nil)
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
 		Text: fmt.Sprintf("stored as revision %d; it is this session's answer. Its cards file with no further gate. You may end the session.", res.Revision)}}}
+}
+
+// fileProofs hands a prover's filing to factoryd, which checks its shape
+// against the proofs the plan owes: a refusal carries every finding back
+// into the session with the filings left, an accepted filing stands until
+// a later one passes. The audit names the filing and counts its findings,
+// never their words, which may name a hold-out. Free, for the classes
+// that list it.
+func (s *Server) fileProofs(ctx context.Context, c *toolCaller, in ProofsIn) *mcp.CallToolResult {
+	tool := policy.ToolFileProofs
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	code := 0
+	for _, p := range in.Proofs {
+		code += len(p.Code)
+	}
+	switch {
+	case len(in.Proofs) == 0:
+		return s.refuseTool(c, tool, "refused_arguments", "proofs is required: one entry per criterion and hold-out your brief lists")
+	case code > maxProofsCall:
+		return s.refuseTool(c, tool, "refused_arguments", fmt.Sprintf("the proofs carry %d bytes of code; one call carries at most %d", code, maxProofsCall))
+	case s.opts.ProofsFiler == nil:
+		return s.refuseTool(c, tool, "refused_capability", "no proofs hand-over is wired")
+	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), escalationTimeout)
+	defer cancel()
+	res, err := s.opts.ProofsFiler.FileProofs(ctx, c.task.ID, in.Proofs)
+	if err != nil {
+		s.auditTool(c, tool, "error_proofs", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError("the filing did not reach factoryd: " + err.Error())
+	}
+	if len(res.Findings) > 0 {
+		s.auditTool(c, tool, "proofs_refused", fmt.Sprintf("filing %d, %d findings", res.Filing, len(res.Findings)), &c.task.SpentEUR, nil)
+		next := fmt.Sprintf("correct it and file again in this session; filings left: %d", res.Left)
+		if res.Left == 0 {
+			next = "no filing is left: end the session"
+		}
+		return toolError("the filing was refused:\n- " + strings.Join(res.Findings, "\n- ") + "\n" + next)
+	}
+	s.auditTool(c, tool, "proofs_filed", fmt.Sprintf("filing %d, %d proofs", res.Filing, len(in.Proofs)), &c.task.SpentEUR, nil)
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{
+		Text: fmt.Sprintf("filing %d stands; factoryd runs every test on main after this session. Filings left: %d. You may end the session.", res.Filing, res.Left)}}}
 }
 
 // delegate files the child card with factoryd; the session goes on.

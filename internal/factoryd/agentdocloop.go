@@ -21,16 +21,16 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The loop's five modes are one session shape — the same brief builder, the
+// The loop's six modes are one session shape — the same brief builder, the
 // same sandbox facts, the same markers — with the guide swapped: a coding
-// session works, the three report sessions read, the responder answers a
+// session works, the four report sessions read, the responder answers a
 // writer. Each mode is one page of the map; these fixtures build the brief
 // each mode's session really reads, and the capture drives the real
 // opencode loop on it.
 
-// AgentDocLoopIDs are the loop's five modes.
+// AgentDocLoopIDs are the loop's six modes.
 func AgentDocLoopIDs() []string {
-	return []string{"coding", "screening", "sizing", "planner", "message-responder"}
+	return []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}
 }
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
@@ -64,6 +64,8 @@ func agentDocLoopClass(id string) string {
 		return "analyzer"
 	case "planner":
 		return "planner"
+	case "prover":
+		return policy.ClassProver
 	}
 	return "coder"
 }
@@ -108,6 +110,9 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 		b.Report = sizingGuide(sizeLines(v.Document.Risk.LargeLines))
 	case "planner":
 		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
+	case "prover":
+		b.Report = proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
+			Claim: "The counter counts a row the query skips twice.", Inputs: "a table with two skipped rows", Expected: "a count of 2", State: ProofOkayed}}, nil)
 	}
 	return b
 }
@@ -143,6 +148,7 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 			"screening": "(*Runner).reportGuide",
 			"sizing":    "sizingGuide",
 			"planner":   "planGuide",
+			"prover":    "proverGuide",
 		}[id]
 	}
 	s := []agentdoc.Span{
@@ -430,10 +436,10 @@ func agentDocLoopEnv() (func(), error) {
 
 // agentDocLoopModelAlias is the model the mode's session runs on, the
 // per-mode choice the runner makes: premium for the planner, big for
-// screening, small for the rest.
+// screening and the prover, small for the rest.
 func agentDocLoopModelAlias(id string) string {
 	switch id {
-	case "screening":
+	case "screening", "prover":
 		return "factory/" + policy.Big
 	case "planner":
 		return "factory/" + policy.Premium
