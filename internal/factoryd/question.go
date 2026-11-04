@@ -181,6 +181,10 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 // ask: it names the decision, not the stop.
 const plainAsk = "This card stopped and needs your decision: how should it go on?"
 
+// monitorAsk is the headline of a monitor flag's face: the card did not
+// stop.
+const monitorAsk = "The monitor flagged this card: what should happen?"
+
 // plainQuestion is the question an ask no template covers gets, so no
 // card puts words alone to a person: an agent's ask keeps its question
 // as the headline, every other stop gets one that names the decision.

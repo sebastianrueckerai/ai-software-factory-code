@@ -470,7 +470,7 @@ func (r *Runner) replanDependency(ctx context.Context, t Task, id string) ([]Cas
 // signal to its run. An ended card's close is closeEnded's.
 func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool) (CaseAction, error) {
 	if Final(t.Status) {
-		return r.closeEnded(ctx, t)
+		return r.closeEnded(ctx, t, in, posted)
 	}
 	if t.IssueNumber == 0 {
 		if err := r.cfg.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: in.By}); err != nil {
@@ -488,10 +488,13 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 	return CaseAction{Action: ActClose, Result: fmt.Sprintf("Closed #%d.", t.IssueNumber)}, nil
 }
 
-// closeEnded closes what ended card t left open: its issue, when Forgejo
-// reads it open, with factoryd's comment, as the heal closes an unconfirmed
-// close. It signals no run.
-func (r *Runner) closeEnded(ctx context.Context, t Task) (CaseAction, error) {
+// closeEnded closes what ended card t left open for in.By: its issue, when
+// Forgejo reads it open, as the heal closes an unconfirmed close. It
+// signals no run. The comment is the answer's record, as a live card's
+// close posts it, or factoryd's own words for rung 0, and none when the
+// caller posts its own. On an issue closed already a person's answer is
+// posted alone.
+func (r *Runner) closeEnded(ctx context.Context, t Task, in ActInput, posted bool) (CaseAction, error) {
 	if t.IssueNumber == 0 {
 		return CaseAction{Action: ActClose, Result: fmt.Sprintf("Card %s has no issue to close.", cardName(t))}, nil
 	}
@@ -499,17 +502,30 @@ func (r *Runner) closeEnded(ctx context.Context, t Task) (CaseAction, error) {
 	if err != nil {
 		return CaseAction{}, err
 	}
+	comment := ""
+	switch {
+	case posted:
+	case in.By == FactoryDecider:
+		comment = "factoryd: this card ended " + t.Status + ", so its issue closes."
+	default:
+		comment = r.answerComment(t, in.By, in.Res)
+	}
 	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
 		return CaseAction{}, err
 	}
-	if closed {
-		return CaseAction{Action: ActClose, Result: fmt.Sprintf("#%d was closed already.", t.IssueNumber)}, nil
+	if !closed {
+		if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, comment); err != nil {
+			return CaseAction{}, err
+		}
+		return CaseAction{Action: ActClose, Result: fmt.Sprintf("Closed #%d.", t.IssueNumber)}, nil
 	}
-	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, "factoryd: this card ended "+t.Status+", so its issue closes."); err != nil {
-		return CaseAction{}, err
+	if comment != "" && in.By != FactoryDecider {
+		if _, err := r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, comment); err != nil {
+			return CaseAction{}, err
+		}
 	}
-	return CaseAction{Action: ActClose, Result: fmt.Sprintf("Closed #%d.", t.IssueNumber)}, nil
+	return CaseAction{Action: ActClose, Result: fmt.Sprintf("#%d was closed already.", t.IssueNumber)}, nil
 }
 
 // caseDraw is what in draws for card t on facts f, nil for nothing: a raise

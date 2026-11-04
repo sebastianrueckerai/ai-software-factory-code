@@ -353,9 +353,10 @@ func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, no
 }
 
 // ownAnswerKinds are the cases an answer on the card does not end: a
-// merge, which its request's decision ends, and a plan question, which its
-// own answer ends. newestAskCase leaves them out.
-var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation}
+// merge, which its request's decision ends, a plan question, which its own
+// answer ends, and a monitor flag, which sits beside the card's run and is
+// answered by its id. newestAskCase leaves them out.
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
 // AnsweredOnCard reports whether an answer on the card ends a case of
 // kind k: every kind but ownAnswerKinds, whose own answers end them.

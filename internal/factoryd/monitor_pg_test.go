@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log"
 	"maps"
 	"net/http"
 	"net/http/httptest"
@@ -57,6 +58,8 @@ type monitorForge struct {
 	posted   int
 	closed   map[int64]bool
 	closes   []int64
+	// failComments fails that many comment posts
+	failComments int
 }
 
 func (f *monitorForge) serve(t *testing.T) *httptest.Server {
@@ -69,6 +72,9 @@ func (f *monitorForge) serve(t *testing.T) *httptest.Server {
 		switch {
 		case !ok || err != nil:
 			w.WriteHeader(http.StatusNotFound)
+		case r.Method == http.MethodPost && sub == "comments" && f.failComments > 0:
+			f.failComments--
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPost && sub == "comments":
 			var c struct{ Body string }
 			b, _ := io.ReadAll(r.Body)
@@ -127,8 +133,8 @@ func newMonitorRig(t *testing.T) monitorRig {
 	return monitorRig{m: m, s: s, forge: forge, objects: objects, signals: signals}
 }
 
-// card files agent card id on issue of demo-app/demo-app in status at
-// 08:00, four hours before the rig's clock.
+// card files agent card id on issue of demo-app/demo-app on the direct
+// track in status at 08:00, four hours before the rig's clock.
 func (g monitorRig) card(t *testing.T, id string, issue int64, status string) {
 	t.Helper()
 	ctx := context.Background()
@@ -206,55 +212,71 @@ func (g monitorRig) flagCases(t *testing.T, id string) map[string]Case {
 	return out
 }
 
-// The queue's two flags on a card held three hours by the count since
-// 09:00, the filing at 08:00, against the 2h bound.
+// A queued card held three hours by the count since 09:00, the filing at
+// 08:00, against the 2h bound: queued_over_bound's case, which
+// wait_over_bound on the same wait leaves alone.
 const (
 	queuedSince    = "2026-11-04T09:00:00Z"
 	queuedKey      = "queued_over_bound|queued|" + queuedSince
-	waitKey        = "wait_over_bound|queued|" + queuedSince
-	queuedProblem  = "Monitor flag: queued_over_bound(work bound 3 of 3 since +1:00)"
-	waitedProblem  = "Monitor flag: wait_over_bound(queued since +1:00)"
+	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 since +1:00)"
 	monitorHandsUp = "no resolver fits"
 )
 
-// assertQueueCases checks that card id carries the queue's two flag cases
-// alone, each at the human with rung 0's hand-up and the human's step,
-// its facts naming the flag, its state and the wait, beside the digest.
-func (g monitorRig) assertQueueCases(t *testing.T, id string) {
+// face is the comment of a monitor case's face on card id for line: the
+// card goes on, and the case is answered on the board or in the chat.
+func face(id, line string) string {
+	return "factoryd: task " + id + " needs a human.\n\n```\n" + line + "\n```\n\n" +
+		"The card goes on meanwhile. Answer this case on the board or in the project chat."
+}
+
+// assertQueueCase checks that card id carries the queue's flag case alone,
+// at the human with rung 0's hand-up and the human's step, its facts naming
+// the flag, its state and the wait, beside the digest, and that the card
+// stays queued on its reason with no ask of its own.
+func (g monitorRig) assertQueueCase(t *testing.T, id string) {
 	t.Helper()
+	ctx := context.Background()
 	cases := g.flagCases(t, id)
-	if len(cases) != 2 {
-		t.Fatalf("%s's flag cases = %v, want %s and %s", id, slices.Sorted(maps.Keys(cases)), queuedKey, waitKey)
+	c, ok := cases[queuedKey]
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != queuedLine {
+		t.Fatalf("%s's flag cases = %v, want %s alone at the human on %q", id, slices.Sorted(maps.Keys(cases)), queuedKey, queuedLine)
 	}
-	for key, want := range map[string]struct{ flag, detail, problem string }{
-		queuedKey: {"queued_over_bound", "work bound 3 of 3 since +1:00", queuedProblem},
-		waitKey:   {"wait_over_bound", "queued since +1:00", waitedProblem},
-	} {
-		c, ok := cases[key]
-		if !ok || c.Status != CaseAtHuman || c.Problem != want.problem {
-			t.Fatalf("%s's case %s = %+v (found %v), want it at the human on %q", id, key, c, ok, want.problem)
-		}
-		digest, _ := c.Facts["digest"].(string)
-		if c.Facts["flag"] != want.flag || c.Facts["detail"] != want.detail || c.Facts["state"] != "queued|"+queuedSince ||
-			c.Facts["wait"] != "queued" || c.Facts["since"] != queuedSince || c.Facts["bound"] != "2h" ||
-			!strings.Contains(digest, "flags: queued_over_bound(work bound 3 of 3 since +1:00), wait_over_bound(queued since +1:00)") {
-			t.Fatalf("%s's case %s facts = %v, want flag %s, detail %q, state queued|%s, the queued wait since then against 2h and the digest",
-				id, key, c.Facts, want.flag, want.detail, queuedSince)
-		}
-		steps := caseStepsOf(t, g.s, c.ID)
-		if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp ||
-			steps[1].Rung != 3 || steps[1].Outcome != StepInProgress {
-			t.Fatalf("%s's case %s steps = %+v, want rung 0's hand-up and the human's step", id, key, steps)
-		}
+	digest, _ := c.Facts["digest"].(string)
+	if c.Facts["flag"] != "queued_over_bound" || c.Facts["detail"] != "work bound 3 of 3 since +1:00" || c.Facts["state"] != "queued|"+queuedSince ||
+		c.Facts["wait"] != "queued" || c.Facts["since"] != queuedSince || c.Facts["bound"] != "2h" ||
+		!strings.Contains(digest, "flags: queued_over_bound(work bound 3 of 3 since +1:00), wait_over_bound(queued since +1:00)") {
+		t.Fatalf("%s's case facts = %v, want the flag, its detail, state queued|%s, the queued wait since then against 2h and the digest", id, c.Facts, queuedSince)
+	}
+	steps := caseStepsOf(t, g.s, c.ID)
+	if len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp ||
+		steps[1].Rung != 3 || steps[1].Outcome != StepInProgress {
+		t.Fatalf("%s's case steps = %+v, want rung 0's hand-up and the human's step", id, steps)
+	}
+	task, _, err := g.s.Task(ctx, id)
+	if err != nil || task.Status != "queued" || task.QueueReason != "work bound 3 of 3" {
+		t.Fatalf("%s = %s on %q, %v; want it queued on its reason", id, task.Status, task.QueueReason, err)
+	}
+	if intake, err := g.s.IntakeEvents(ctx, id); err != nil || len(intake) != 0 {
+		t.Fatalf("%s's intake rows = %+v, %v; want none: the card asked nothing", id, intake, err)
 	}
 }
 
-// An event on a queued card past its bound opens one monitor_flag case per
-// flag, keyed by the flag and the wait's kind and start, and the human is
-// asked on each. The card back in the queue on the same wait and another
-// event: the flags stand, and nothing is opened or asked again. Each pass
-// moves the cursor past the events it read, the first one planted at the
-// newest event, which it reads nothing past.
+// logs captures the log lines a test writes.
+func logs(t *testing.T) *strings.Builder {
+	t.Helper()
+	var b strings.Builder
+	was := log.Writer()
+	log.SetOutput(&b)
+	t.Cleanup(func() { log.SetOutput(was) })
+	return &b
+}
+
+// An event on a queued card past its bound opens queued_over_bound's case,
+// keyed by the flag and the wait's kind and start, whose face asks the
+// human beside the queue: the card stays queued, and the heal's pass leaves
+// the case at the human. Another event opens and asks nothing more. Each
+// pass moves the cursor to the newest event it read, the first one planted
+// at the newest event, which it reads nothing past.
 func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
@@ -265,22 +287,26 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	}
 	filed := g.filed(t, "t1", 12)
 	g.pass(t)
-	g.assertQueueCases(t, "t1")
-	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "waiting-human" || len(g.forge.comments[12]) != 2 {
-		t.Fatalf("t1 %s with comments %q, want it waiting on the human with one face per case", task.Status, g.forge.comments[12])
+	g.assertQueueCase(t, "t1")
+	if want := []string{face("t1", queuedLine)}; !slices.Equal(g.forge.comments[12], want) {
+		t.Fatalf("comments = %q, want %q", g.forge.comments[12], want)
 	}
 	if got := g.cursor(t); got != filed {
 		t.Fatalf("cursor = %d, want at the card_created row %d it read", got, filed)
 	}
-
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET status = 'queued' WHERE id = 't1'`); err != nil {
+	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != "The monitor flagged this card: what should happen?" {
+		t.Fatalf("asks = %+v, want one asking what should happen on the monitor's flag", asks)
+	}
+	if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
 		t.Fatal(err)
 	}
+	g.assertQueueCase(t, "t1")
+
 	again := g.event(t, "t1", 12, EventTaskStatus, map[string]any{"status": "queued"}, monitorAt.Add(-time.Minute))
 	g.pass(t)
-	g.assertQueueCases(t, "t1")
-	if len(g.forge.comments[12]) != 2 {
-		t.Fatalf("comments = %q, want the two faces of the first pass alone", g.forge.comments[12])
+	g.assertQueueCase(t, "t1")
+	if len(g.forge.comments[12]) != 1 {
+		t.Fatalf("comments = %q, want the first pass's face alone", g.forge.comments[12])
 	}
 	if got := g.cursor(t); got != again {
 		t.Fatalf("cursor = %d, want at the task_status row %d, the newest it read", got, again)
@@ -288,7 +314,7 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 }
 
 // A card whose timeline cannot be read is logged and skipped: the next
-// card's cases open and the cursor moves past both events, since the
+// card's case opens and the cursor moves past both events, since the
 // minute sweep reads the card again.
 func TestMonitorPassGoesOnPastACardItCannotRead(t *testing.T) {
 	g := newMonitorRig(t)
@@ -298,36 +324,102 @@ func TestMonitorPassGoesOnPastACardItCannotRead(t *testing.T) {
 	g.pass(t)
 	g.filed(t, "t1", 12)
 	last := g.filed(t, "t2", 13)
+	logged := logs(t)
 	g.pass(t)
 	if cases := g.flagCases(t, "t1"); len(cases) != 0 {
 		t.Fatalf("t1's flag cases = %v, want none", cases)
 	}
-	g.assertQueueCases(t, "t2")
+	g.assertQueueCase(t, "t2")
 	if got := g.cursor(t); got != last {
 		t.Fatalf("cursor = %d, want %d past both cards' events", got, last)
 	}
+	if !strings.Contains(logged.String(), "monitor: card t1: read the timeline: the object store is down") {
+		t.Fatalf("log = %q, want t1's failure", logged.String())
+	}
 }
 
-// The sweep needs no event. It opens the flags of every live card of the
-// project's repository: the queued card past its bound. It wakes the case
-// whose wake passed: rung 0 runs on it again through OpenTrip's repeat
-// path and hands it up, the human is asked on it, and its wake is gone.
-// And it expires a rung's step past its bound, on a card of no project.
+// batchStore counts the monitor's reads, by where they start, and its
+// cursor moves.
+type batchStore struct {
+	*PGStore
+	afters, cursors []int64
+}
+
+func (s *batchStore) MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error) {
+	s.afters = append(s.afters, after)
+	return s.PGStore.MonitorEvents(ctx, after, kinds, limit)
+}
+
+func (s *batchStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
+	s.cursors = append(s.cursors, eventID)
+	return s.PGStore.SetMonitorCursor(ctx, eventID)
+}
+
+// 101 events are two batches: the first hundred, of no card, move the
+// cursor to the hundredth, and the second, the queued card's filing, opens
+// its case and moves the cursor to it.
+func TestMonitorPassReadsEveryBatch(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.queued(t, "t1", 12)
+	g.pass(t)
+	var hundredth int64
+	for range 100 {
+		id, err := g.s.Record(ctx, Event{Repository: "demo-app/demo-app", Kind: EventTaskStatus, Actor: FactoryDecider, Via: ViaFactoryd})
+		if err != nil {
+			t.Fatal(err)
+		}
+		hundredth = id
+	}
+	filed := g.filed(t, "t1", 12)
+	counted := &batchStore{PGStore: g.s}
+	g.m.Store = counted
+	g.pass(t)
+	if !slices.Equal(counted.afters, []int64{0, hundredth}) || !slices.Equal(counted.cursors, []int64{hundredth, filed}) {
+		t.Fatalf("reads after %v, cursor moves %v; want reads after 0 and %d, the cursor to %d then %d",
+			counted.afters, counted.cursors, hundredth, hundredth, filed)
+	}
+	g.assertQueueCase(t, "t1")
+}
+
+// The sweep needs no event. It opens the flags of every live card of a
+// project: the queued card past its bound. It wakes the case whose wake
+// passed: rung 0 runs on it again through OpenTrip's repeat path and hands
+// it up, the human is asked on it beside the card, and its wake is gone.
+// A due case at the human already takes the repeat's step with no new face,
+// its card left running. A card of no project is not read: its step past
+// its bound opens no flag case, and the sweep expires it.
 func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
 	g.filed(t, "t1", 12)
-	g.card(t, "t2", 13, "waiting-human")
+	g.card(t, "t2", 13, "running")
 	g.filed(t, "t2", 13)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $1 WHERE id = 't2'`, monitorAt.Add(-10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
 	const cut = "Monitor flag: checkin_cut(+0:20)"
-	due, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|",
-		Status: CaseOpen, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": ""}})
+	due, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+		Status: CaseOpen, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
 	if err != nil {
 		t.Fatal(err)
 	}
 	wake := monitorAt.Add(-time.Minute)
 	if err := g.s.SetCaseWake(ctx, due.ID, 0, nil, &wake); err != nil {
+		t.Fatal(err)
+	}
+	g.card(t, "t3", 14, "running")
+	g.filed(t, "t3", 14)
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $1 WHERE id = 't3'`, monitorAt.Add(-10*time.Minute)); err != nil {
+		t.Fatal(err)
+	}
+	faced, _, err := g.s.OpenCase(ctx, Case{TaskID: "t3", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+		Status: CaseAtHuman, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := g.s.SetCaseWake(ctx, faced.ID, 3, nil, &wake); err != nil {
 		t.Fatal(err)
 	}
 	elsewhere, _, err := g.s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
@@ -346,15 +438,23 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	if err := g.m.Sweep(ctx); err != nil {
 		t.Fatalf("Sweep: %v", err)
 	}
-	g.assertQueueCases(t, "t1")
+	g.assertQueueCase(t, "t1")
 	woken := caseByID(t, g.s, due.ID)
 	steps := caseStepsOf(t, g.s, due.ID)
 	if woken.Status != CaseAtHuman || woken.NextWakeAt != nil || woken.OwnerRung != 3 || len(steps) != 2 || steps[0].Rung != 0 ||
 		steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp || steps[1].Rung != 3 {
 		t.Fatalf("woken case = %+v, steps %+v; want it at the human, owned by the human with no wake, rung 0's hand-up and the human's step", woken, steps)
 	}
-	if cases := g.flagCases(t, "t2"); len(cases) != 1 || len(g.forge.comments[13]) != 1 {
-		t.Fatalf("t2's flag cases = %v, comments %q; want the woken case alone and its one face", cases, g.forge.comments[13])
+	if task, _, _ := g.s.Task(ctx, "t2"); task.Status != "running" || len(g.flagCases(t, "t2")) != 1 || !slices.Equal(g.forge.comments[13], []string{face("t2", cut)}) {
+		t.Fatalf("t2 %s, flag cases %v, comments %q; want it running beside the woken case and its one face", task.Status, g.flagCases(t, "t2"), g.forge.comments[13])
+	}
+	repeat := caseStepsOf(t, g.s, faced.ID)
+	if task, _, _ := g.s.Task(ctx, "t3"); task.Status != "running" || caseByID(t, g.s, faced.ID).NextWakeAt != nil || len(g.forge.comments[14]) != 0 ||
+		len(repeat) != 1 || repeat[0].Rung != 0 || repeat[0].Found != "the same stop again: "+cut {
+		t.Fatalf("t3 %s, steps %+v, comments %q; want it running, the case's wake gone, the repeat's step and no face", task.Status, repeat, g.forge.comments[14])
+	}
+	if cases := g.flagCases(t, caseTask); len(cases) != 0 {
+		t.Fatalf("the card of no project has flag cases %v, want none", cases)
 	}
 	expired := caseStepsOf(t, g.s, elsewhere.ID)
 	if len(expired) != 1 || expired[0].Outcome != StepHandedUp || expired[0].Found != "the rung did not answer within 35m" {
@@ -362,28 +462,40 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	}
 }
 
-// An ended card with a live case raises issue_open_after_end, and rung 0
-// closes what it left open through Act, the human asked nothing and no run
-// signalled: closed card t1's open issue closes with factoryd's comment,
-// and done card t2's closed issue is left alone. Another event on t1 opens
-// no second case: the flag's case for that state ended, and one is all.
+// An ended card with a live case raises issue_open_after_end. Rung 0
+// closes what Finish closes, through Act, and signals no run: closed card
+// t1's open issue closes with factoryd's comment, and done card t2's closed
+// issue is left alone. The ends Finish leaves open go up beside the card:
+// failed t3, whose issue waits for its retry, and done t4 after its merge.
+// Another event on t1 opens no second case: the flag's case for that state
+// ended, and one is all.
 func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
-	g.card(t, "t1", 12, "closed")
-	g.card(t, "t2", 13, "done")
-	g.forge.closed[13] = true
-	for _, id := range []string{"t1", "t2"} {
-		if _, _, err := g.s.OpenCase(ctx, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
+	for _, c := range []struct {
+		id     string
+		issue  int64
+		status string
+	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}} {
+		g.card(t, c.id, c.issue, c.status)
+		if _, _, err := g.s.OpenCase(ctx, Case{TaskID: c.id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap",
 			Status: CaseAtHuman, Problem: "Card used its sessions"}); err != nil {
 			t.Fatal(err)
 		}
 	}
+	g.forge.closed[13] = true
 	g.pass(t)
-	g.event(t, "t1", 12, EventTaskEnded, map[string]any{"state": "closed"}, monitorAt.Add(-time.Minute))
-	g.event(t, "t2", 13, EventTaskEnded, map[string]any{"state": "done"}, monitorAt.Add(-time.Minute))
+	g.event(t, "t4", 15, EventTaskStatus, map[string]any{"status": "merged"}, monitorAt.Add(-time.Hour))
+	for _, c := range []struct {
+		id    string
+		issue int64
+		state string
+	}{{"t1", 12, "closed"}, {"t2", 13, "done"}, {"t3", 14, "failed"}, {"t4", 15, "done"}} {
+		g.event(t, c.id, c.issue, EventTaskEnded, map[string]any{"state": c.state}, monitorAt.Add(-time.Minute))
+	}
 	g.pass(t)
 
+	const line = "Monitor flag: issue_open_after_end(session_cap)"
 	for id, result := range map[string]string{"t1": "Closed #12.", "t2": "#13 was closed already."} {
 		cases := g.flagCases(t, id)
 		c, ok := cases["issue_open_after_end|"]
@@ -397,12 +509,22 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 			t.Fatalf("%s's steps = %+v, want rung 0's close: %q", id, steps, result)
 		}
 	}
+	for id, issue := range map[string]int64{"t3": 14, "t4": 15} {
+		cases := g.flagCases(t, id)
+		c, ok := cases["issue_open_after_end|"]
+		if len(cases) != 1 || !ok || c.Status != CaseAtHuman || !slices.Equal(g.forge.comments[issue], []string{face(id, line)}) {
+			t.Fatalf("%s's flag cases = %v, comments on #%d %q; want issue_open_after_end at the human with its face", id, cases, issue, g.forge.comments[issue])
+		}
+		if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 2 || steps[0].Found != monitorHandsUp {
+			t.Fatalf("%s's steps = %+v, want rung 0's hand-up and the human's step", id, steps)
+		}
+	}
 	if !slices.Equal(g.forge.closes, []int64{12}) || !slices.Equal(g.forge.comments[12], []string{"factoryd: this card ended closed, so its issue closes."}) ||
 		len(g.forge.comments[13]) != 0 {
-		t.Fatalf("closes %v, comments %v; want #12 closed with factoryd's comment and #13 untouched", g.forge.closes, g.forge.comments)
+		t.Fatalf("closes %v, comments %v; want #12 alone closed with factoryd's comment and #13 untouched", g.forge.closes, g.forge.comments)
 	}
-	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 0 || len(g.signals.got) != 0 {
-		t.Fatalf("asks %d, signals %+v; want none", len(asks), g.signals.got)
+	if len(g.signals.got) != 0 {
+		t.Fatalf("signals %+v, want none", g.signals.got)
 	}
 
 	g.event(t, "t1", 12, EventTaskStatus, map[string]any{"status": "closed"}, monitorAt)
@@ -412,26 +534,60 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	}
 }
 
+// A human's close of an ended card keeps the human's note: on closed t1's
+// open issue as the close's comment, and on done t2's closed issue as a
+// comment of its own. No run is signalled.
+func TestActKeepsTheNoteOfAHumansCloseOfAnEndedCard(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.card(t, "t1", 12, "closed")
+	g.card(t, "t2", 13, "done")
+	g.forge.closed[13] = true
+	note := "factoryd: sebastian answered with close.\n\n```\nnot worth it\n```"
+	for id, result := range map[string]string{"t1": "Closed #12.", "t2": "#13 was closed already."} {
+		c, _, err := g.s.OpenCase(ctx, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		out, err := g.m.Runner.Act(ctx, ActInput{TaskID: id, CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "not worth it"}})
+		if err != nil || !reflect.DeepEqual(out.Did, []CaseAction{{Action: ActClose, Result: result}}) {
+			t.Fatalf("%s: Act = %+v, %v; want the close: %q", id, out.Did, err, result)
+		}
+	}
+	if !slices.Equal(g.forge.closes, []int64{12}) || !slices.Equal(g.forge.comments[12], []string{note}) || !slices.Equal(g.forge.comments[13], []string{note}) ||
+		len(g.signals.got) != 0 {
+		t.Fatalf("closes %v, comments %v, signals %+v; want #12 closed, the note on #12 and #13, no signal", g.forge.closes, g.forge.comments, g.signals.got)
+	}
+}
+
 // A rung's step past its due on a live case raises wait_over_bound on
 // rung_answer, from the step's start at 11:20, the filing at 08:00. Rung
-// 0 ends the step as ExpireSteps ends it, 35m after its start, and hands
-// the flag's case up: no resolver takes it.
+// 0 ends that card's steps past their bound, as ExpireSteps ends one, says
+// so in its own step, and hands the flag's case up. Another card's step
+// past its bound is left to its own pass.
 func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
+	overdue := func(id string) (Case, int64) {
+		t.Helper()
+		held, _, err := g.s.OpenCase(ctx, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
+		if err != nil {
+			t.Fatal(err)
+		}
+		due := monitorAt.Add(-5 * time.Minute)
+		step, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: held.ID, Rung: 1, Actor: "rung 1", DueAt: &due})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = $2 WHERE id = $1`, step, monitorAt.Add(-40*time.Minute)); err != nil {
+			t.Fatal(err)
+		}
+		return held, step
+	}
 	g.card(t, "t1", 12, "waiting-human")
-	held, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "k", Status: CaseOpen, Problem: "p"})
-	if err != nil {
-		t.Fatal(err)
-	}
-	due := monitorAt.Add(-5 * time.Minute)
-	step, err := g.s.AppendCaseStep(ctx, CaseStep{CaseID: held.ID, Rung: 1, Actor: "rung 1", DueAt: &due})
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE case_steps SET started_at = $2 WHERE id = $1`, step, monitorAt.Add(-40*time.Minute)); err != nil {
-		t.Fatal(err)
-	}
+	g.card(t, "t2", 13, "waiting-human")
+	held, _ := overdue("t1")
+	other, _ := overdue("t2")
 	g.pass(t)
 	g.filed(t, "t1", 12)
 	g.pass(t)
@@ -442,17 +598,111 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 		c.Facts["wait"] != "rung_answer" || c.Facts["owner_rung"] != 1.0 {
 		t.Fatalf("t1's flag cases = %v, want wait_over_bound on rung 1's answer since 11:20 at the human", cases)
 	}
-	if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 2 || steps[0].Rung != 0 || steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp {
-		t.Fatalf("the flag's steps = %+v, want rung 0's hand-up and the human's step", steps)
+	if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 2 || steps[0].Rung != 0 ||
+		steps[0].Found != "ended the overdue step: rung 1 did not answer within 35m" || steps[0].Outcome != StepHandedUp {
+		t.Fatalf("the flag's steps = %+v, want rung 0 naming the step it ended, then the human's step", steps)
 	}
 	if ended := caseStepsOf(t, g.s, held.ID); len(ended) != 1 || ended[0].Outcome != StepHandedUp || ended[0].Found != "the rung did not answer within 35m" {
-		t.Fatalf("rung 1's step = %+v, want it handed up as unanswered within 35m", ended)
+		t.Fatalf("t1's rung 1 step = %+v, want it handed up as unanswered within 35m", ended)
+	}
+	if left := caseStepsOf(t, g.s, other.ID); len(left) != 1 || left[0].Outcome != StepInProgress {
+		t.Fatalf("t2's rung 1 step = %+v, want it in progress", left)
 	}
 }
 
-// monitorCursorStores are the stores whose monitor cursor must agree:
-// Postgres, and the fake.
-var monitorCursorStores = map[string]func(*testing.T) Store{
+// A running card quiet since its filing at 08:00, with no line and no model
+// call, raises wait_over_bound on run_quiet: one case, faced beside the
+// run, which stays running. The face writes no line on the card's
+// timeline, so the quiet keeps its start, and another event opens nothing.
+func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.card(t, "t1", 12, "running")
+	g.pass(t)
+	g.filed(t, "t1", 12)
+	g.pass(t)
+	const line = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
+	cases := g.flagCases(t, "t1")
+	c, ok := cases["wait_over_bound|run_quiet|2026-11-04T08:00:00Z"]
+	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
+		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
+	}
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
+		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
+	}
+	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
+		t.Fatalf("t1's timeline = %q, want no line", tl)
+	}
+	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
+	g.pass(t)
+	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.comments[12]) != 1 {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the one case and its one face", cases, g.forge.comments[12])
+	}
+}
+
+// A case whose face failed stays open and is not the flag's case yet: the
+// next pass finishes it through OpenTrip, the same case at the human with
+// its one face and rung 0's one step.
+func TestMonitorFacesACaseWhoseFaceFailed(t *testing.T) {
+	g := newMonitorRig(t)
+	g.queued(t, "t1", 12)
+	g.forge.failComments = 1
+	g.pass(t)
+	g.filed(t, "t1", 12)
+	g.pass(t)
+	cases := g.flagCases(t, "t1")
+	if c, ok := cases[queuedKey]; len(cases) != 1 || !ok || c.Status != CaseOpen || len(g.forge.comments[12]) != 0 {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the queue's case open with no face", cases, g.forge.comments[12])
+	}
+	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
+	g.pass(t)
+	g.assertQueueCase(t, "t1")
+	if !slices.Equal(g.forge.comments[12], []string{face("t1", queuedLine)}) {
+		t.Fatalf("comments = %q, want the case's one face", g.forge.comments[12])
+	}
+}
+
+// A trip that names its case is the case's, whatever its reason: one named
+// a monitor flag that carries the restart's reason opens that case, not
+// the healed path's.
+func TestOpenTripWithAKindTakesNoHealedPath(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.card(t, "t1", 12, "waiting-human")
+	out, err := g.m.Runner.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: healedReason, Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20"}, tripAttempt{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	cases, err := g.s.CasesOf(ctx, "t1")
+	if err != nil || len(cases) != 1 || cases[0].ID != out.CaseID || cases[0].Kind != CaseMonitorFlag || cases[0].StateKey != "checkin_cut|+0:20" {
+		t.Fatalf("t1's cases = %+v, %v; want the named monitor case alone, case %d", cases, err, out.CaseID)
+	}
+}
+
+// The newest ask on a card is the run's: a monitor case beside it, newer
+// and at the human, is answered by its id alone.
+func TestNewestAskCaseLeavesAMonitorCaseOut(t *testing.T) {
+	for name, open := range monitorStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			run, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "cap", Status: CaseAtHuman, Problem: "p"})
+			if err != nil {
+				t.Fatal(err)
+			}
+			if _, _, err := s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+				Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+				t.Fatal(err)
+			}
+			if got, err := s.NewestAskCase(ctx, "t1"); err != nil || got.ID != run.ID {
+				t.Fatalf("NewestAskCase = case %d (%s), %v; want the run's case %d", got.ID, got.Kind, err, run.ID)
+			}
+		})
+	}
+}
+
+// monitorStores are the stores whose monitor reads must agree: Postgres,
+// and the fake.
+var monitorStores = map[string]func(*testing.T) Store{
 	"postgres": func(t *testing.T) Store { return monitorStore(t) },
 	"fake":     func(*testing.T) Store { return newFakeStore() },
 }
@@ -462,7 +712,7 @@ var monitorCursorStores = map[string]func(*testing.T) Store{
 // kinds past the cursor and past after, oldest first, up to the limit.
 // The cursor moves forward only.
 func TestMonitorPlantsTheCursorAtTheNewestEvent(t *testing.T) {
-	for name, open := range monitorCursorStores {
+	for name, open := range monitorStores {
 		t.Run(name, func(t *testing.T) {
 			ctx, s := context.Background(), open(t)
 			record := func(kind string) int64 {

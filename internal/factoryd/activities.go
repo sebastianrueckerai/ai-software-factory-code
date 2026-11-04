@@ -1524,6 +1524,13 @@ func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait
 	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
 }
 
+// finishClosesIssue reports whether Finish closes the issue of card t as
+// it ends final: a closed card's, and a done card's off the plan track
+// unless it ends after its merge. A failed card's waits for its retry.
+func finishClosesIssue(t Task, final string, afterMerge bool) bool {
+	return final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan
+}
+
 func earliest(a, b time.Time) time.Time {
 	if a.Before(b) {
 		return a
@@ -2553,7 +2560,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if (final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan) && t.IssueNumber != 0 {
+		if finishClosesIssue(t, final, afterMerge) && t.IssueNumber != 0 {
 			closing := msg
 			switch {
 			case final == "done" && merged:

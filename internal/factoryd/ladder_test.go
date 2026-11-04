@@ -117,7 +117,7 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 			}
 			var got *Resolution
 			for _, row := range rung0 {
-				if res, err := row.Fire(context.Background(), nil, c, tc.f); err != nil || res != nil {
+				if res, _, err := row.Fire(context.Background(), nil, c, tc.f); err != nil || res != nil {
 					got = res
 					break
 				}

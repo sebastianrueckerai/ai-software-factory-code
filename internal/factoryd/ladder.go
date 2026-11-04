@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"go.temporal.io/sdk/activity"
 
@@ -70,10 +71,11 @@ type TripOutcome struct {
 }
 
 // resolver is one row of rung 0: it fires on a case's kind and facts and
-// returns the resolution it took, or nil.
+// returns the resolution it took, or nil and, when it acted with no
+// resolution, what it did before the case goes up.
 type resolver struct {
 	Name string
-	Fire func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
+	Fire func(ctx context.Context, r *Runner, c Case, f CaseFacts) (res *Resolution, did string, err error)
 }
 
 // headKinds are the stops keyed on the card's head, whose way on rung 0
@@ -87,50 +89,105 @@ var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, Ca
 var rung0 = []resolver{
 	// an open pull request whose head is green and approved goes to the
 	// approval again: no session is asked for
-	{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRouteApproval}), nil
+	{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
+		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRouteApproval}), "", nil
 	}},
 	// a red head's checks run again, once per head (RerunOnHead)
-	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRerunChecks}), nil
+	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
+		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRerunChecks}), "", nil
 	}},
 	// a day's, a month's or a project's cap: the run's own wait (capWait)
 	// ends it when the cap turns, and the case waits on the human until then
-	{Name: "cap_wait", Fire: func(context.Context, *Runner, Case, CaseFacts) (*Resolution, error) { return nil, nil }},
+	{Name: "cap_wait", Fire: func(context.Context, *Runner, Case, CaseFacts) (*Resolution, string, error) { return nil, "", nil }},
 	// a failed dependency outside a plan is filed again once, and a retry
 	// that failed in turn goes to the human
-	{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+	{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
 		d := caseDep(c, f)
 		if f.Plan != "" || d == nil || d.RetryOf != "" {
-			return nil, nil
+			return nil, "", nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed, CaseMonitorFlag}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
+		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), "", nil
 	}},
 	// inside a plan, the failed dependency's work goes to the plan's planner
-	{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+	{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
 		d := caseDep(c, f)
 		if f.Plan == "" || d == nil {
-			return nil, nil
+			return nil, "", nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
+		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), "", nil
 	}},
-	// the monitor's issue_open_after_end: rung 0 closes what the ended card
-	// left open, its issue as the heal closes it
-	{Name: "close_ended", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
-		if c.Facts["flag"] != "issue_open_after_end" {
-			return nil, nil
+	// the monitor's issue_open_after_end on an end whose issue Finish
+	// closes: rung 0 closes it, as the heal closes it. A failed card's
+	// waits for its retry, and Finish leaves a plan's and one done after
+	// its merge to their own closers.
+	{Name: "close_ended", Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
+		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "issue_open_after_end" {
+			return nil, "", nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), nil
+		t, _, err := r.task(ctx, c.TaskID)
+		if err != nil {
+			return nil, "", err
+		}
+		events, err := r.store.TaskEvents(ctx, t.ID, cardDigestEvents)
+		if err != nil {
+			return nil, "", err
+		}
+		afterMerge := slices.ContainsFunc(events, func(e Event) bool { return e.Kind == EventTaskStatus && e.Detail["status"] == "merged" })
+		if !finishClosesIssue(t, t.Status, afterMerge) {
+			return nil, "", nil
+		}
+		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), "", nil
 	}},
-	// the monitor's wait_over_bound on a rung that did not answer: its step
-	// ends as ExpireSteps ends it, and the case goes up
-	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, error) {
+	// the monitor's wait_over_bound on a rung that did not answer: the
+	// card's steps past their bound end as ExpireSteps ends one, and the
+	// case goes up saying so
+	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, string, error) {
 		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "wait_over_bound" || c.Facts["wait"] != "rung_answer" {
-			return nil, nil
+			return nil, "", nil
 		}
-		_, err := r.store.ExpireSteps(ctx, r.clock())
-		return nil, err
+		ended, err := r.expireCardSteps(ctx, c.TaskID)
+		if err != nil || len(ended) == 0 {
+			return nil, "", err
+		}
+		what := "step"
+		if len(ended) > 1 {
+			what = "steps"
+		}
+		return nil, "ended the overdue " + what + ": " + textutil.AndList(ended), nil
 	}},
+}
+
+// expireCardSteps ends card taskID's in-progress steps past their due as
+// ExpireSteps ends them, handed up with its words, and names each: the
+// rung that did not answer and its bound. A step its rung ended meanwhile
+// keeps its own end.
+func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, error) {
+	cases, err := r.store.OpenCasesOf(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	now := r.clock()
+	var ended []string
+	for _, c := range cases {
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, st := range steps {
+			if st.Outcome != StepInProgress || st.DueAt == nil || !st.DueAt.Before(now) {
+				continue
+			}
+			err := r.store.EndCaseStep(ctx, st.ID, StepHandedUp, stepExpired(st.Found, st.StartedAt, *st.DueAt), st.Did, st.Decision, st.Grounds, st.CostEUR)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
+		}
+	}
+	return ended, nil
 }
 
 // rungZeroTakes is res when case c is of kinds and the action table lets
@@ -144,17 +201,12 @@ func rungZeroTakes(c Case, f CaseFacts, kinds []CaseKind, res Resolution) *Resol
 }
 
 // caseDep is the dependency a case of a dependency kind is about, the one
-// its state key names, or the monitor's dependency_failed case the one its
-// state names, and nil for any other case.
+// its state key names, and nil for any other case.
 func caseDep(c Case, f CaseFacts) *DepFact {
-	id := c.StateKey
-	switch {
-	case c.Kind == CaseMonitorFlag && c.Facts["flag"] == "dependency_failed":
-		id, _ = c.Facts["state"].(string)
-	case c.Kind != CaseDependencyFailed && c.Kind != CaseDependencyClosed:
+	if c.Kind != CaseDependencyFailed && c.Kind != CaseDependencyClosed {
 		return nil
 	}
-	i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id })
+	i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == c.StateKey })
 	if i < 0 {
 		return nil
 	}
@@ -237,11 +289,13 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 		return nil, "rung 0 took this stop with " + cases[i].Resolution.Action + " before, and it came back", nil
 	}
 	for _, row := range rung0 {
-		res, err := row.Fire(ctx, r, c, f)
-		if err != nil {
+		res, did, err := row.Fire(ctx, r, c, f)
+		switch {
+		case err != nil:
 			return nil, "", err
-		}
-		if res == nil {
+		case res == nil && did != "":
+			return nil, did, nil
+		case res == nil:
 			continue
 		}
 		_, err = r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: FactoryDecider, Via: ViaFactoryd, Rung: 0, Res: *res})
@@ -362,11 +416,15 @@ func (r *Runner) tripStep(ctx context.Context, id int64, found string) error {
 }
 
 // waitsAtHuman is the trip that finds case c at the human already: a step
-// on rung 0 that found found and handed up, the card waiting on the human,
-// and the comment of the case's newest ask, which no new face follows.
+// on rung 0 that found found and handed up, the card waiting on the human
+// unless c sits beside its run, and the comment of the case's newest ask,
+// which no new face follows.
 func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string) (TripOutcome, error) {
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
+	}
+	if c.Kind == CaseMonitorFlag {
+		return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}, nil
 	}
 	if err := r.waitOnHuman(ctx, t); err != nil {
 		return TripOutcome{}, err
@@ -497,9 +555,12 @@ func replyNext(reason string) string {
 // tripNext is the last line of a trip's face for a case of kind: at a
 // cap, where a reply is a continue that asks again, the Extend form or
 // the chat's extend start the next attempt, at a budget floor the Fund
-// form or the chat's fund, and elsewhere a reply (replyNext).
+// form or the chat's fund, for a monitor flag, whose card goes on, the
+// board or the chat, and elsewhere a reply (replyNext).
 func tripNext(kind CaseKind, reason string) string {
 	switch kind {
+	case CaseMonitorFlag:
+		return "The card goes on meanwhile. Answer this case on the board or in the project chat."
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseBudgetFloor:
@@ -513,9 +574,12 @@ func tripNext(kind CaseKind, reason string) string {
 // next, the line that says what moves the card on, and a question_asked
 // row with its question and case c (none for the zero Case); the agent's
 // choices, if any, ride on that row, the timeline's step and the intake
-// event the card reads. It returns the comment's id: only later comments
-// answer it.
+// event the card reads. A monitor flag's case sits beside the card's run:
+// its face is the comment, the row and the alert, and moves no status,
+// writes no ask the run reads and no timeline line. It returns the
+// comment's id: only later comments answer it.
 func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string) (int64, error) {
+	beside := c.Kind == CaseMonitorFlag
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return 0, terminalError("%v", err)
@@ -552,6 +616,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
 		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
+		if beside {
+			shaped.Ask = monitorAsk
+		}
 		question = shaped.Ask
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
@@ -569,15 +636,17 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		_, again, _ := answersFrom(events)
 		question = cmp.Or(again, question)
 	}
-	// the durable anchor Reconcile rebuilds the answers from; a retry
-	// with the same comment records nothing twice. It is written before
-	// the wait: a card in waiting-human without its row has no ask
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-		Choices: choices, Question: shaped}); err != nil {
-		return 0, fmt.Errorf("task %s: record escalation comment %d: %w", t.ID, id, err)
-	}
-	if err := r.waitOnHuman(ctx, t); err != nil {
-		return 0, err
+	if !beside {
+		// the durable anchor Reconcile rebuilds the answers from; a retry
+		// with the same comment records nothing twice. It is written before
+		// the wait: a card in waiting-human without its row has no ask
+		if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
+			Choices: choices, Question: shaped}); err != nil {
+			return 0, fmt.Errorf("task %s: record escalation comment %d: %w", t.ID, id, err)
+		}
+		if err := r.waitOnHuman(ctx, t); err != nil {
+			return 0, err
+		}
 	}
 	// the shaped question's buttons are not these choices: they carry
 	// values, and park and keep waiting record an answer without posting
@@ -601,7 +670,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["choices"] = choices
 		}
 	}
-	r.record(ctx, t.ID, "escalated", step)
+	if !beside {
+		r.record(ctx, t.ID, "escalated", step)
+	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
 	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
 		return id, nil // the question asked again, or the screening's: its alert is open already

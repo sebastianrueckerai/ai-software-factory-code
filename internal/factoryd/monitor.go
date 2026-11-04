@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"maps"
 	"slices"
 	"sync"
 	"time"
@@ -90,17 +89,24 @@ func (m *Monitor) Pass(ctx context.Context) error {
 
 // Sweep runs card on every live card of every project, wakes the due cases
 // (rung 0 again through OpenTrip's repeat path) and expires the steps past
-// their bound. The minute loop calls it.
+// their bound. The minute loop calls it. A merged or closing card raises
+// no case, so the sweep reads neither.
 func (m *Monitor) Sweep(ctx context.Context) error {
 	var errs []error
-	projects := m.Policy().Projects
-	for _, name := range slices.Sorted(maps.Keys(projects)) {
-		cards, err := m.Store.BoardTasks(ctx, projects[name].Repository)
+	tree := m.Policy()
+	for _, status := range Statuses {
+		if Final(status) || status == "merged" || status == "closing" {
+			continue
+		}
+		cards, err := m.Store.ListTasksByStatus(ctx, status)
 		if err != nil {
-			errs = append(errs, fmt.Errorf("live cards of %s: %w", name, err))
+			errs = append(errs, fmt.Errorf("%s cards: %w", status, err))
 			continue
 		}
 		for _, c := range cards {
+			if _, _, ok := tree.ProjectOf(c.Repository); !ok || c.Kind == KindChat {
+				continue
+			}
 			if err := m.logged(ctx, c.ID); err != nil {
 				return err
 			}
@@ -137,11 +143,10 @@ func (m *Monitor) logged(ctx context.Context, taskID string) error {
 // card builds the digest, reads its flags, and opens a case for each flag
 // that is new for its state key: kind monitor_flag, problem the flag's
 // line, facts the digest's facts plus flag and state, state key
-// flag|state. A case with that key in any status is the flag's case, so a
-// standing flag costs no call and a flag rung 0 resolved opens nothing
-// twice. The card's own dependency_failed case on a dependency is the
-// flag's case for it. An ended card raises only what it left open, and a
-// merged or closing card raises nothing, since no face parks either.
+// flag|state. A faced case with that key, at the human or ended, is the
+// flag's case, so a standing flag costs no call and a flag rung 0 resolved
+// opens nothing twice. A case still open has no face yet: OpenTrip
+// finishes it.
 func (m *Monitor) card(ctx context.Context, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -149,26 +154,16 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 	if err != nil {
 		return err
 	}
-	cases, err := m.Store.CasesOf(ctx, taskID)
-	if err != nil {
-		return err
-	}
 	held := map[string]bool{}
-	for _, c := range cases {
-		switch c.Kind {
-		case CaseMonitorFlag:
+	for _, c := range d.cases {
+		if c.Kind == CaseMonitorFlag && c.Status != CaseOpen {
 			held[c.StateKey] = true
-		case CaseDependencyFailed:
-			held["dependency_failed|"+c.StateKey] = true
 		}
 	}
 	head := digestHeadCommit(d)
 	var errs []error
 	for _, f := range d.Flags {
-		if !raises(d.Head.Status, f.Name) {
-			continue
-		}
-		state, facts, ok := flagState(d, f, head)
+		state, facts, ok := flagCase(d, f)
 		key := f.Name + "|" + state
 		if !ok || held[key] {
 			continue
@@ -200,35 +195,38 @@ func (m *Monitor) wake(ctx context.Context, c Case) error {
 	return caseEnded(m.Store.SetCaseWake(ctx, c.ID, out.Rung, c.WakeOn, nil))
 }
 
-// raises reports whether a card in status opens a case for flag.
-func raises(status, flag string) bool {
-	switch {
-	case Final(status):
-		return flag == "issue_open_after_end"
-	case status == "merged", status == "closing":
-		return false
-	}
-	return true
-}
+// eventFlags are the flags about an event of the card's life, whose detail
+// names the event.
+var eventFlags = []string{"checkin_cut", "session_no_push", "grant_bought_nothing", "finding_confirmed_twice", "budget_moved_no_event",
+	"answer_changed_nothing"}
 
-// flagState is the state flag f of digest d fired on, with the facts it
-// adds: a wait's kind and start, with its owner and its bound; a failed
-// dependency's task id, matched by the flag's issue; head for any other
-// flag. ok is false when d cannot name the state.
-func flagState(d CardDigest, f DigestFlag, head string) (string, map[string]any, bool) {
-	switch f.Name {
-	case "wait_over_bound", "queued_over_bound":
-		w, ok := d.ownedWait()
-		since := w.Since.UTC().Format(time.RFC3339)
-		return w.Kind + "|" + since, map[string]any{"wait": w.Kind, "owner_rung": w.Rung, "since": since, "bound": durationText(d.Waits.Bound(w.Kind))}, ok
-	case "dependency_failed":
-		i := slices.IndexFunc(d.deps, func(dep Dependency) bool { return dep.Status == "failed" && fmt.Sprintf("#%d", dep.Issue) == f.Detail })
-		if i < 0 {
+// flagCase is the state flag f of digest d fired on, with the facts it
+// adds, and ok false for a flag that opens no case. An ended card opens
+// one only for what it left open, and a merged or closing card none. A
+// slot held by a wait is a record, and a failed dependency is its run's,
+// whose own trip takes it. A wait keys on its kind and start, with its
+// owner and its bound: one wait opens one case, so queued_over_bound takes
+// the queue's and wait_over_bound leaves it. An event flag keys on its
+// detail, and any other flag, about the head's state, on the head.
+func flagCase(d CardDigest, f DigestFlag) (string, map[string]any, bool) {
+	switch status := d.Head.Status; {
+	case Final(status):
+		if f.Name != "issue_open_after_end" {
 			return "", nil, false
 		}
-		return d.deps[i].TaskID, map[string]any{}, true
+	case status == "merged", status == "closing", f.Name == "slot_held_by_wait", f.Name == "dependency_failed":
+		return "", nil, false
 	}
-	return head, map[string]any{}, true
+	switch {
+	case f.Name == "wait_over_bound" || f.Name == "queued_over_bound":
+		w, ok := d.ownedWait()
+		since := w.Since.UTC().Format(time.RFC3339)
+		facts := map[string]any{"wait": w.Kind, "owner_rung": w.Rung, "since": since, "bound": durationText(d.Waits.Bound(w.Kind))}
+		return w.Kind + "|" + since, facts, ok && !(f.Name == "wait_over_bound" && w.Kind == "queued")
+	case slices.Contains(eventFlags, f.Name):
+		return f.Detail, map[string]any{}, true
+	}
+	return digestHeadCommit(d), map[string]any{}, true
 }
 
 // digestHeadCommit is the head the newest judged line of digest d names,
