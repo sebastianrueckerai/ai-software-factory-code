@@ -176,6 +176,19 @@ func TestCriteriaReportVerdicts(t *testing.T) {
 	}
 }
 
+// Evidence cuts on a character boundary, and a run of bytes that starts
+// no character cuts to nothing.
+func TestShortenEvidenceCutsOnACharacterBoundary(t *testing.T) {
+	for in, want := range map[string]string{
+		"a" + strings.Repeat("é", 150): "a" + strings.Repeat("é", 99) + "...",
+		strings.Repeat("\x80", 250):    "...",
+	} {
+		if got := shortenEvidence(in); got != want {
+			t.Errorf("shortenEvidence(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
 // A run's outcome, or why there is none: the entry never reported (the
 // worker's own error first), check test wrote no report (its exit and the
 // output's last line say why), or the report's reading.

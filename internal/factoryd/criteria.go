@@ -123,7 +123,7 @@ func shortenEvidence(s string) string {
 		return s
 	}
 	n := 200
-	for !utf8.RuneStart(s[n]) {
+	for n > 0 && !utf8.RuneStart(s[n]) {
 		n--
 	}
 	return s[:n] + "..."

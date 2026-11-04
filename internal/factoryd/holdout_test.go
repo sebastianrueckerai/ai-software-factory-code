@@ -553,12 +553,19 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 	if len(verdicts) != 1 || verdicts[0].Criterion != "a_green" || verdicts[0].Verdict != "met" {
 		t.Fatalf("verdict rows = %+v, want a_green's alone", verdicts)
 	}
+	step := timelineStep(t, objects, "t1", "gate_criteria")
 	for _, leak := range []string{"door_state", "key_log", "TestDoorState"} {
-		if strings.Contains(hub.comments[0], leak) || strings.Contains(verdicts[0].Evidence, leak) {
-			t.Fatalf("the comment or a row carries the hold-out %q: %s; %+v", leak, hub.comments[0], verdicts)
+		for surface, text := range map[string]string{
+			"the comment":         hub.comments[0],
+			"a row":               verdicts[0].Evidence,
+			"the timeline proofs": string(mustJSON(step["proofs"])),
+			"the card's findings": strings.Join(res.Findings, "\n"),
+		} {
+			if strings.Contains(text, leak) {
+				t.Fatalf("%s carries the hold-out %q: %s", surface, leak, text)
+			}
 		}
 	}
-	step := timelineStep(t, objects, "t1", "gate_criteria")
 	entries, _ := step["holdouts"].([]any)
 	if len(entries) != 2 {
 		t.Fatalf("timeline holdouts = %v", step["holdouts"])

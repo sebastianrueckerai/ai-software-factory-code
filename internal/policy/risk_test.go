@@ -122,6 +122,7 @@ const infraRisk = `risk:
     - {class: migration, paths: ["**/migrations/**", "internal/policy/schema.sql"]}
     - class: high
       paths: ["k8s/**", "deploy/**", "**/Dockerfile*",
+        "check", "scripts/pg-test.sh",
         "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
         "**/package.json", "**/package-lock.json", "**/npm-shrinkwrap.json", "**/yarn.lock", "**/pnpm-lock.yaml",
         "**/Cargo.toml", "**/Cargo.lock",
@@ -183,6 +184,7 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		".husky/pre-commit", ".vscode/settings.json", ".devcontainer/devcontainer.json", ".config/x/y.toml",
 		".gitignore", ".golangci.yml",
 		"k8s/factoryd.yaml", "deploy/prod/app.yaml", "cmd/x/Dockerfile",
+		"check", "scripts/pg-test.sh",
 	} {
 		if c := d.Risk.Classify([]string{p, "README.md"}, 0); c.Class.Name != "high" || !slices.Equal(c.Paths, []string{p}) {
 			t.Errorf("Classify(%s) = %s %v, want high on %s", p, c.Class.Name, c.Paths, p)
@@ -199,6 +201,8 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		"internal/gomod/go.mod.tmpl": "normal",
 		"docs/agents.md":             "normal",
 		"src/Gemfile.example":        "normal",
+		"internal/check/x.go":        "normal",
+		"scripts/other.sh":           "normal",
 	} {
 		if c := d.Risk.Classify([]string{p}, 0); c.Class.Name != want {
 			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)
