@@ -22,12 +22,12 @@ import (
 // criterion, its standing verdict and the evidence behind it.
 type criterionRow struct {
 	factoryd.PlanCriterion
-	Verdict     string
-	Evidence    string
-	Word        string                 // "blind" or "open" for a met gate row, from its evidence
-	Artifact    *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
-	ArtifactCut string                 // "the first 8 KiB of <n> KiB" when the card shows the artifact's first maxCardArtifact bytes
-	Human       bool                   // Met and Not met are offered: a human criterion on a merge card
+	Verdict  string
+	Evidence string
+	Word     string                 // "blind" or "open" for a met gate row, from its evidence
+	Artifact *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
+	CutLine  string                 // "the first 8 KiB of <n> KiB" when the card shows the artifact's first maxCardArtifact bytes
+	Human    bool                   // Met and Not met are offered: a human criterion on a merge card
 }
 
 // maxCardArtifact is the most of an artifact a merge card shows.
@@ -344,7 +344,7 @@ func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criteri
 			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
 		}
 		if len(a.Content) > maxCardArtifact {
-			rows[i].ArtifactCut = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
+			rows[i].CutLine = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
 			a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
 		}
 		rows[i].Artifact = a

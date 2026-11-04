@@ -690,9 +690,11 @@ func TestTheHumanRowsPresses(t *testing.T) {
 // judgement's row shows the model's reason, the red invariant offers its
 // Waive alone, and each human row its artifact or its evidence with Met,
 // Not met and Waive. Approve waits on the human rows with no verdict and
-// names them. A feature card's merge card has no rows, an artifact past
-// 8 KiB shows its first 8 KiB, cut on a character, and a failed read says
-// so.
+// names them. Enter in a human row's field presses nothing, since its
+// form's first submit button is a disabled one, while Enter in a row with
+// Waive alone presses its Waive. A feature card's merge card has no rows,
+// an artifact past 8 KiB shows its first 8 KiB, cut on a character, and a
+// failed read says so.
 func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 	r := newRig(t)
 	humanRig(r)
@@ -750,6 +752,23 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 			if strings.Contains(row[id], n) {
 				t.Errorf("the %s row holds %q:\n%s", id, n, row[id])
 			}
+		}
+	}
+	// the button Enter presses is a form's first submit button
+	first := func(row string) string {
+		i := strings.Index(row, `<button type="submit"`)
+		if i < 0 {
+			return ""
+		}
+		return row[i : i+strings.Index(row[i:], "</button>")+len("</button>")]
+	}
+	for id, want := range map[string]string{
+		"pages_ok":   `<button type="submit" disabled hidden></button>`,
+		"page_links": `<button type="submit" disabled hidden></button>`,
+		"all_green":  `<button type="submit" class="deny" name="verb" value="waived" aria-label="Waive criterion all_green of t-int">Waive</button>`,
+	} {
+		if got := first(row[id]); got != want {
+			t.Errorf("Enter in the %s row presses %q, want %q", id, got, want)
 		}
 	}
 	if !strings.Contains(k, `<p class="meta">Approve opens once every human criterion has a verdict: pages_ok and page_links.</p>`) ||

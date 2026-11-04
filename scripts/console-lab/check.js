@@ -449,12 +449,14 @@ async function criteriaWaive(browser, fails) {
 
 // criteriaHuman reads the human scene's merge card of t-int: its rows
 // stay inside the card at 1440 and 390, and pages_ok's artifact, one
-// unbroken line, wraps without a sideways scroll. With a reason typed under all_green, Met on pages_ok dims the card
-// and takes its buttons until the board that answers it lands, that
-// board's read held 1.2 s; the board shows pages_ok met and settled
-// without its form, and no Approve while page_links waits. A Waive on
-// page_links with its reason brings the Approve, and the reason under
-// all_green stays typed across both boards.
+// unbroken line, wraps without a sideways scroll. Enter in pages_ok's
+// field sends nothing and leaves the row open. With a reason typed under
+// all_green, Met on pages_ok dims the card and takes its buttons until
+// the board that answers it lands, that board's read held 1.2 s. The
+// board shows pages_ok met and settled without its form, and no Approve
+// while page_links waits. A Waive on page_links with its reason brings
+// the Approve, and the reason under all_green stays typed across both
+// boards.
 async function criteriaHuman(browser, fails) {
   await seed("human");
   const card = '#board article.approval[aria-labelledby="approval-31"]';
@@ -479,6 +481,20 @@ async function criteriaHuman(browser, fails) {
   const field = (c) => card + ' input[name="reason"][id$="-' + c + '"]';
   const kept = "CI covers the suite.";
   await p.page.locator(field("all_green")).fill(kept);
+  let posts = 0;
+  p.page.on("request", (r) => { if (r.method() === "POST" && new URL(r.url()).pathname === "/approvals/31/criterion") posts++; });
+  await p.page.locator(field("pages_ok")).fill("The doors page has no rows.");
+  await p.page.locator(field("pages_ok")).press("Enter");
+  await p.page.waitForTimeout(600);
+  const entered = await p.page.evaluate((s) => {
+    const k = document.querySelector(s);
+    const q = k && Array.from(k.querySelectorAll("fieldset.question")).find((f) => f.querySelector("legend").textContent.startsWith("pages_ok "));
+    return q && { legend: q.querySelector("legend").textContent, form: !!q.querySelector("form"), busy: k.getAttribute("aria-busy") };
+  }, card);
+  if (posts || !entered || entered.legend !== "pages_ok (human): open" || !entered.form || entered.busy) {
+    fails.push("criteria human: Enter in pages_ok's field sent " + posts + " presses and left the row " + JSON.stringify(entered) + ", want no press and the row open");
+    return p.ctx.close();
+  }
   let reads = 0;
   await p.page.route((u) => u.pathname === "/board", async (r) => {
     reads++;

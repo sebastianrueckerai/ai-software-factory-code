@@ -1518,7 +1518,7 @@ func criteriaScene(now time.Time) labScene {
 // of 300 characters.
 func humanScene(time.Time) labScene {
 	s := humanBoard()
-	s.objects[factoryd.ArtifactKey("t-int", "pages_ok")] = pagesOK(strings.Repeat("small|medium|large|", 16)[:300])
+	s.objects[factoryd.ArtifactKey("t-int", "pages_ok")] = pagesOK(strings.Repeat("smallmediumlarge", 19)[:300])
 	return s
 }
 

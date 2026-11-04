@@ -234,11 +234,11 @@
 {{define "criteria-rows"}}{{range $r := .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}{{with .Word}} ({{.}}){{end}}</legend>
 <p class="meta">{{or .Claim .Suite}}</p>
 {{with .Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.ArtifactCut}}, {{.}}{{end}}</p>
+{{end}}{{with .Artifact}}<p class="meta">{{.Name}} at {{printf "%.7s" .Head}}{{with $r.CutLine}}, {{.}}{{end}}</p>
 <pre class="artifact" tabindex="0">{{.Content}}</pre>
 {{else}}{{if .Human}}{{with .PlanCriterion.Evidence}}<p class="meta">Evidence: {{.}}</p>
 {{end}}{{end}}{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
-<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">
+{{if .Human}}<button type="submit" disabled hidden></button>{{end}}<input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">
 <label for="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}">{{if .Human}}Your words, one line. Not met and Waive need them.{{else}}Why it no longer holds, one line{{end}}</label>
 <input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}" name="reason" maxlength="2000"{{if not .Human}} required{{end}} hx-preserve>
 {{if .Human}}<button type="submit" name="verb" value="met" aria-label="Met: criterion {{.ID}} of {{$.TaskID}}">Met</button>
