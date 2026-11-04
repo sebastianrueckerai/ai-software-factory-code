@@ -34,7 +34,11 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		// Act's row names the case it resolved itself.
 		comment, _ := toInt(e.Detail["comment"])
 		id, named := toInt(e.Detail["case_id"])
-		if !named {
+		if named {
+			if mine, err := taskCase(ctx, tx, id, e.TaskID); !mine {
+				return err
+			}
+		} else {
 			ask, err := answeredAsk(ctx, tx, e.TaskID, int64(comment))
 			if ask == 0 {
 				return err
@@ -50,6 +54,9 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		// the card's own ask, else the card's newest ask
 		reason, _ := e.Detail["reason"].(string)
 		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+			if mine, err := taskCase(ctx, tx, id, e.TaskID); !mine {
+				return err
+			}
 			return caseEnded(withdrawCase(ctx, tx, int64(id), reason))
 		}
 		c, err := newestAskCase(ctx, tx, e.TaskID)
@@ -387,6 +394,14 @@ func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (Case, erro
 		return Case{}, nil
 	}
 	return c, err
+}
+
+// taskCase reports whether case id is task taskID's: a row ends its own
+// card's cases only.
+func taskCase(ctx context.Context, q rowQuerier, id int, taskID string) (bool, error) {
+	var mine bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM cases WHERE id = $1 AND task_id = $2)`, id, taskID).Scan(&mine)
+	return mine, err
 }
 
 // answeredAsk is the case the answer comment comment (0 for none) of task

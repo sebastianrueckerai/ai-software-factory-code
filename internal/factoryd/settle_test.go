@@ -87,3 +87,62 @@ func TestSettleOf(t *testing.T) {
 	family("an inform's family", ChatMessage{Kind: MessagePoke, BirthKind: EventTaskEnded}, "")
 	family("a row with no birth kind is an inform", ChatMessage{Kind: MessagePoke}, "")
 }
+
+// An ask row settles on what ends its case, as the events writer routes
+// it: its birth, the question_asked row the Poker wrote it from, names the
+// case. The card's own ask settles on a row naming its case or none, and
+// one that names no case on any row but a monitor case's. A monitor's ask
+// settles on a row naming its case alone and stays open while the case
+// lives, whatever the card's status. Two asks written in one pass each
+// find their own birth by their words.
+func TestSettleOfByCase(t *testing.T) {
+	at := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
+	ev := func(id int64, sec int, kind, actor string, detail map[string]any) Event {
+		return Event{ID: id, At: at.Add(time.Duration(sec) * time.Second), Kind: kind, Actor: actor, TaskID: "t-e", Detail: detail}
+	}
+	const flagged = "The monitor flagged this card: what should happen? Answer case 12 in the project chat."
+	ownAsk := ev(20, 0, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?"})
+	ownAsk5 := ev(20, 0, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?", "case_id": float64(5)})
+	monAsk := ev(21, 1, EventQuestionAsked, FactoryDecider, map[string]any{"question": flagged, "case_id": float64(12), "case_kind": string(CaseMonitorFlag)})
+	row := func(question string) ChatMessage {
+		return ChatMessage{ID: 40, At: at.Add(3 * time.Second), Kind: MessageEscalation, BirthKind: EventQuestionAsked, TaskID: "t-e",
+			Content: "#13 needs you: " + question}
+	}
+	own, mon := row("Use a replica?"), row(flagged)
+	early := ev(29, 2, EventQuestionAnswered, "sebastian", map[string]any{"case_id": float64(12), "action": ActNote})
+	withdrawn := ev(30, 60, EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(12), "reason": "the wait ended"})
+	answered := ev(31, 120, EventQuestionAnswered, "sebastian", map[string]any{"case_id": float64(5), "action": ActContinue})
+	webhook := ev(32, 180, EventQuestionAnswered, "anna", map[string]any{"comment": float64(77)})
+	monAnswer := ev(33, 240, EventQuestionAnswered, "sebastian", map[string]any{"case_id": float64(12), "action": ActNote})
+	another := ev(34, 300, EventQuestionAnswered, "sebastian", map[string]any{"case_id": float64(6), "action": ActContinue})
+	closed := ev(35, 360, EventCardClosed, "sebastian", nil)
+	open := PokeSettle{Open: true}
+	by := func(e Event, word string) PokeSettle { return PokeSettle{Word: word, By: e.Actor, At: e.At, Event: e} }
+	for _, tt := range []struct {
+		name      string
+		m         ChatMessage
+		events    []Event
+		cardWaits bool
+		want      PokeSettle
+	}{
+		{"the monitor's withdrawal settles its ask", mon, []Event{withdrawn, monAsk, ownAsk}, true, by(withdrawn, "withdrawn")},
+		{"and leaves the card's own open", own, []Event{withdrawn, monAsk, ownAsk}, true, open},
+		{"an answer naming the card's own case settles its ask", own, []Event{answered, monAsk, ownAsk}, true, by(answered, "answered")},
+		{"and leaves the monitor's open on a card that runs", mon, []Event{answered, monAsk, ownAsk}, false, open},
+		{"an answer naming the monitor's case settles its ask", mon, []Event{monAnswer, answered, monAsk, ownAsk}, false, by(monAnswer, "answered")},
+		{"an answer between the ask and its row settles it", mon, []Event{early, monAsk, ownAsk}, false, by(early, "answered")},
+		{"an answer naming no case leaves the monitor's ask open", mon, []Event{webhook, closed, monAsk, ownAsk}, false, open},
+		{"an own ask naming its case settles on an answer naming none", own, []Event{webhook, withdrawn, monAsk, ownAsk5}, true, by(webhook, "answered")},
+		{"and not on one naming another case", own, []Event{another, monAnswer, monAsk, ownAsk5}, true, open},
+		{"a row with no words finds its birth by its time", ChatMessage{At: monAsk.At, Kind: MessageEscalation, BirthKind: EventQuestionAsked},
+			[]Event{withdrawn, monAsk, ownAsk}, false, by(withdrawn, "withdrawn")},
+		{"a card with one ask and no case ids settles as before", own, []Event{webhook, ownAsk}, true, by(webhook, "answered")},
+		{"and moves on with its card", own, []Event{ownAsk}, false, PokeSettle{Word: "moved on", At: own.At}},
+	} {
+		t.Run(tt.name, func(t *testing.T) {
+			if got := SettleOf(tt.m, tt.events, tt.cardWaits, false); !reflect.DeepEqual(got, tt.want) {
+				t.Fatalf("SettleOf =\n%+v\nwant\n%+v", got, tt.want)
+			}
+		})
+	}
+}

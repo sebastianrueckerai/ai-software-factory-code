@@ -666,10 +666,11 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 }
 
 // A case whose flag no longer holds is withdrawn on the card's next pass,
-// by a question_withdrawn row that names it, so its ask in the inbox
-// settles as withdrawn, and the run's own case at the human stays. A
-// checkin_cut case on a card with no check-in goes as the flag no longer
-// holds, while the queue's case opens. Once the card is admitted, the
+// by a question_withdrawn row that names it when it is at the human, so
+// its ask in the inbox settles as withdrawn, and with no row when it is
+// open, since no face asked anyone. The run's own case at the human
+// stays. Two checkin_cut cases on a card with no check-in go as the flag
+// no longer holds, while the queue's case opens. Once the card is admitted, the
 // queue's case goes as the wait ended, and nothing opens.
 func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	g := newMonitorRig(t)
@@ -687,6 +688,12 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	const unasked = "Monitor flag: checkin_cut(+0:30)"
+	quiet, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:30",
+		Status: CaseOpen, Problem: unasked, Facts: map[string]any{"reason": unasked, "flag": "checkin_cut", "state": "+0:30"}})
+	if err != nil {
+		t.Fatal(err)
+	}
 	g.filed(t, "t1", 12)
 	g.pass(t)
 	withdrawn := func(c Case, reason string) {
@@ -696,6 +703,7 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 		}
 	}
 	withdrawn(caseByID(t, g.s, stale.ID), "the flag no longer holds")
+	withdrawn(caseByID(t, g.s, quiet.ID), "the flag no longer holds")
 	queue, ok := g.flagCases(t, "t1")[queuedKey]
 	if !ok || queue.Status != CaseAtHuman {
 		t.Fatalf("t1's queue case = %+v (found %v), want it at the human", queue, ok)
@@ -706,8 +714,8 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
 	g.pass(t)
 	withdrawn(caseByID(t, g.s, queue.ID), "the wait ended")
-	if cases := g.flagCases(t, "t1"); len(cases) != 2 || len(g.forge.comments[12]) != 1 {
-		t.Fatalf("t1's flag cases = %v, comments %q; want the two withdrawn and the queue's one face", cases, g.forge.comments[12])
+	if cases := g.flagCases(t, "t1"); len(cases) != 3 || len(g.forge.comments[12]) != 1 {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the three withdrawn and the queue's one face", cases, g.forge.comments[12])
 	}
 	rows := (actRig{s: g.s}).rows(t, EventQuestionWithdrawn)
 	if len(rows) != 2 || rows[0].Detail["case_id"] != float64(stale.ID) || rows[0].Detail["reason"] != "the flag no longer holds" ||

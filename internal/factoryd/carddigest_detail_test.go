@@ -217,3 +217,34 @@ func TestCardStepReturnsEachKindsSource(t *testing.T) {
 		}
 	}
 }
+
+// An ask's answer line reads the rows that end its case: the card's own
+// ask passes a monitor's ask and withdrawal beside it to its answer and
+// stops at its own next ask, and a monitor's ask passes an answer on the
+// card to its own withdrawal.
+func TestAskAnswerReadsTheRowsOfItsCase(t *testing.T) {
+	ev := func(kind, actor string, detail map[string]any) Event {
+		return Event{Kind: kind, Actor: actor, Detail: detail}
+	}
+	own := ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?", "case_id": float64(5)})
+	flagged := ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "The monitor flagged this card.", "case_id": float64(12),
+		"case_kind": string(CaseMonitorFlag)})
+	withdrawn := ev(EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(12), "reason": "the wait ended"})
+	webhook := ev(EventQuestionAnswered, "sebastian", map[string]any{"answer": "use it", "comment": float64(77)})
+	for _, tt := range []struct {
+		name   string
+		ask    Event
+		events []Event
+		want   string
+	}{
+		{"the card's own ask", own, []Event{flagged, withdrawn, webhook}, "Answer by sebastian: use it"},
+		{"the card's own ask before its next", own, []Event{flagged, ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which file?", "case_id": float64(6)}), webhook},
+			"Answer: none"},
+		{"a monitor's ask", flagged, []Event{webhook, withdrawn}, "Withdrawn: the wait ended"},
+		{"an ask with no case", ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which file?"}), []Event{webhook}, "Answer by sebastian: use it"},
+	} {
+		if got := askAnswer(tt.ask, tt.events); got != tt.want {
+			t.Errorf("%s: askAnswer = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}

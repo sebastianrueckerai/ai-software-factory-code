@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -43,6 +44,9 @@ func TestPokeOf(t *testing.T) {
 		// offers it no more
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
+		// a monitor's case sits beside the card's own ask: its row names the case
+		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "reason": "the wait ended"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "Case 12 needs you no more: its question is withdrawn because the wait ended."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
 		{"an agent's merge on red checks offers no Approve", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
@@ -462,5 +466,91 @@ func TestPGStorePokeLevelChangeTellsTheOthers(t *testing.T) {
 	mine, _ := s.EnsureInbox(ctx, "sf/code", "sebastian")
 	if rows, _ := s.ChatMessages(ctx, "sf/code", "sebastian", mine, 10); len(rows) != 0 {
 		t.Fatalf("sebastian's inbox = %+v, want his own level change kept out", rows)
+	}
+}
+
+// The card's own ask and a monitor's reach the inbox in one pass, both
+// rows written after both asks: the monitor's withdrawal names its case,
+// so it settles that row alone, read through either inbox read and the
+// messenger's copy, and its own row names the case.
+func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_poke_cases"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.Close()
+	ctx := t.Context()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations, chat_seen, chat_poke_cursor, events, tasks, cases CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-1", Kind: "agent", Repository: "sf/code", IssueNumber: 603, Status: "waiting-human",
+		Objective: "Session store", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	tree := policy.Tree{Projects: map[string]policy.ProjectConfig{"code": {Repository: "sf/code", Notify: []string{"sebastian"}}}}
+	p := &Poker{Store: s, Current: func() policy.Version { return policy.Version{Tree: tree} }, Line: &busyLine{busy: map[string]bool{}, landed: map[string][]int64{}}}
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	flag, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: "wait_over_bound|x",
+		Problem: "Monitor flag: wait_over_bound"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record := func(kind string, detail map[string]any) {
+		t.Helper()
+		if _, err := s.Record(ctx, Event{Repository: "sf/code", TaskID: "t-1", IssueNumber: 603, Kind: kind, Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	flagged := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", flag.ID)
+	record(EventQuestionAsked, map[string]any{"question": "Use a replica?"})
+	record(EventQuestionAsked, map[string]any{"question": flagged, "case_id": flag.ID, "case_kind": string(CaseMonitorFlag)})
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	record(EventQuestionWithdrawn, map[string]any{"case_id": flag.ID, "reason": "the wait ended"})
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	events, err := s.TaskEvents(ctx, "t-1", 500)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := s.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rows, err := s.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	asks, err := s.ChatAsks(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := fmt.Sprintf("Case %d needs you no more: its question is withdrawn because the wait ended.", flag.ID); len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
+		t.Fatalf("the inbox = %+v, asks %+v; want the two asks and the withdrawal %q", rows, asks, want)
+	}
+	for read, got := range map[string][]ChatMessage{"ChatMessages": rows[:2], "ChatAsks": asks[:2]} {
+		var words []string
+		for _, m := range got {
+			words = append(words, SettleOf(m, events, true, false).Word)
+		}
+		if !slices.Equal(words, []string{"", "withdrawn"}) {
+			t.Fatalf("%s: the asks settle as %q, want the card's own open and the monitor's withdrawn", read, words)
+		}
+	}
+	// the messenger's copy reads its row as the inbox does
+	var copies []string
+	for _, m := range rows[:2] {
+		st, err := (&Sender{Store: s}).settleState(ctx, Delivery{Kind: m.Kind, BirthKind: m.BirthKind, TaskID: m.TaskID, At: m.At, Content: m.Content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		copies = append(copies, st.Word)
+	}
+	if !slices.Equal(copies, []string{"", "withdrawn"}) {
+		t.Fatalf("the messenger's copies settle as %q, want the card's own open and the monitor's withdrawn", copies)
 	}
 }

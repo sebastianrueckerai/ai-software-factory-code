@@ -1116,10 +1116,12 @@ type rig struct {
 	chatTokens *fakeChatTokens
 	// cardSteps are card_step's answers by task id, step 1 first, and
 	// boardDigests the board digests by repository; openCases are the
-	// open cases by task id, and caseSteps their steps by case id
+	// open cases by task id, endedCases the cases that ended, and
+	// caseSteps their steps by case id
 	cardSteps    map[string][]string
 	boardDigests map[string]factoryd.BoardDigest
 	openCases    map[string][]factoryd.Case
+	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
@@ -1280,6 +1282,16 @@ func newRig(t *testing.T) *rig {
 				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
 			}
 			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+		},
+		CaseByID: func(_ context.Context, id int64) (factoryd.Case, error) {
+			all := slices.Clone(r.endedCases)
+			for _, open := range r.openCases {
+				all = append(all, open...)
+			}
+			if i := slices.IndexFunc(all, func(k factoryd.Case) bool { return k.ID == id }); i >= 0 {
+				return all[i], nil
+			}
+			return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
 		},
 		// the newest of the cases OpenCasesOf answers that an answer on
 		// the card ends, as the store reads it
@@ -1679,6 +1691,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CardStep":      func(c *Config) { c.CardStep = nil },
 		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
 		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
+		"CaseByID":      func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
 		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
 	} {

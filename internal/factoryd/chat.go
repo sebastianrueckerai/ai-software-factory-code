@@ -1087,7 +1087,7 @@ func (s *PGStore) ChatAttachmentByID(ctx context.Context, repository string, id 
 // oldest first: the rows about a card, whose state the settle rule
 // derives at read (the notification-settling concept).
 func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, at, conversation, task_id, birth_kind, kind FROM chat_messages
+	rows, err := s.db.QueryContext(ctx, `SELECT id, at, conversation, task_id, birth_kind, kind, content FROM chat_messages
 		WHERE repository = $1 AND login = $2 AND kind IN ($3, $4) AND task_id <> '' ORDER BY id`,
 		repository, login, MessageEscalation, MessagePoke)
 	if err != nil {
@@ -1097,7 +1097,7 @@ func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]Cha
 	var out []ChatMessage
 	for rows.Next() {
 		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.At, &m.Conversation, &m.TaskID, &m.BirthKind, &m.Kind); err != nil {
+		if err := rows.Scan(&m.ID, &m.At, &m.Conversation, &m.TaskID, &m.BirthKind, &m.Kind, &m.Content); err != nil {
 			return nil, err
 		}
 		out = append(out, m)
@@ -1163,7 +1163,7 @@ func askKind(e Event) string {
 // and the findings, and the ask's escalation rows rewritten to carry the
 // findings after the ask, so every member reads them with the ask. The
 // ask is the card's newest open one of either family, a question asked or
-// an approval requested; none open, the newest ask there is refuses as
+// an approval requested, a monitor's ask aside; none open, the newest ask there is refuses as
 // AskSettledError with its kind and state, a card without an ask row as
 // ErrNoAsk.
 func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendation string, e Event) error {
@@ -1188,10 +1188,12 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 	for i := range events { // newest first
 		e := &events[i]
 		var family string
-		switch e.Kind {
-		case EventQuestionAsked:
+		switch {
+		case e.Kind == EventQuestionAsked && e.Detail["case_kind"] != string(CaseMonitorFlag):
+			// a monitor's ask sits beside the card's own and is answered
+			// by its case's number: the analysis is the card's own ask's
 			family = "question"
-		case EventApprovalRequested:
+		case e.Kind == EventApprovalRequested:
 			family = "approval"
 		default:
 			continue

@@ -298,8 +298,8 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 
 // cardReads wires cfg's card reads over tasks: a card's digest is its
 // head from the task row, the rig holds no card step, a card waiting on a
-// human has its live case 1 as after the cases' heal, and the board
-// digest is empty. Its case door draws nothing and refuses every answer:
+// human has its live case 1 as after the cases' heal, no case is read by
+// its number, and the board digest is empty. Its case door draws nothing and refuses every answer:
 // a rig that answers cards wires its own Act.
 func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.CardDigest = func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
@@ -318,6 +318,9 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
+	cfg.CaseByID = func(_ context.Context, id int64) (factoryd.Case, error) {
+		return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
+	}
 	// the newest of the cases OpenCasesOf answers that an answer on the
 	// card ends, as the store reads it
 	cfg.NewestAskCase = func(ctx context.Context, taskID string) (factoryd.Case, error) {

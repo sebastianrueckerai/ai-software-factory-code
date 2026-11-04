@@ -259,7 +259,7 @@ func (s *Sender) settleState(ctx context.Context, d Delivery) (PokeSettle, error
 
 // message is the row's inbox half, as the settle rule reads it.
 func (d Delivery) message() ChatMessage {
-	return ChatMessage{Kind: d.Kind, BirthKind: d.BirthKind, TaskID: d.TaskID, At: d.At}
+	return ChatMessage{Kind: d.Kind, BirthKind: d.BirthKind, TaskID: d.TaskID, At: d.At, Content: d.Content}
 }
 
 // clip cuts text to n runes without splitting one.

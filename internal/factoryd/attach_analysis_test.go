@@ -156,6 +156,26 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 	}
 }
 
+// A monitor's ask sits beside the card's own and is answered by its
+// case's number: the analysis goes to the card's own ask, though the
+// monitor's is newer and open.
+func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40, Kind: EventQuestionAsked, Actor: FactoryDecider,
+		Via: ViaFactoryd, Detail: map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 12 in the project chat.",
+			"case_id": 12, "case_kind": string(CaseMonitorFlag)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", sebastiansAnalysis); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	if got, want := askRow(t, s, "sf/wake", "t-1"),
+		"#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on\nAnalysis: The replica adds 12 ms of lag."; got != want {
+		t.Fatalf("the card's own ask's row = %q, want %q", got, want)
+	}
+}
+
 // A session cap's stop takes the analysis too: its row is the budget stop's
 // words with the why under them, and the analysis follows the why.
 func TestAttachAnalysisEnrichesCapStop(t *testing.T) {

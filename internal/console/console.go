@@ -334,6 +334,10 @@ type Config struct {
 	// refuses a Config without either.
 	OpenCasesOf func(ctx context.Context, taskID string) ([]factoryd.Case, error)
 	CaseSteps   func(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error)
+	// CaseByID is case id, factoryd.ErrNotFound for none (factoryd's
+	// PGStore): an answer naming no live case of its card says what the
+	// number is. New refuses a Config without it.
+	CaseByID func(ctx context.Context, id int64) (factoryd.Case, error)
 	// NewestAskCase is the case an answer on a card ends: its newest live
 	// case, those whose own door answers them (a merge, a plan question)
 	// aside, the zero Case for none (factoryd's PGStore). New refuses a
@@ -604,6 +608,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no OpenCasesOf")
 	case cfg.CaseSteps == nil:
 		return nil, errors.New("console: no CaseSteps")
+	case cfg.CaseByID == nil:
+		return nil, errors.New("console: no CaseByID")
 	case cfg.NewestAskCase == nil:
 		return nil, errors.New("console: no NewestAskCase")
 	case cfg.Act == nil:

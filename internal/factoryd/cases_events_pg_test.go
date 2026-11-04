@@ -283,6 +283,32 @@ func TestAnAnswerNamingItsCaseResolvesThatCase(t *testing.T) {
 	}
 }
 
+// A row ends only its own card's case: an answer or a withdrawal on
+// caseTask that names another card's case leaves that case at the human.
+func TestARowNamingAnotherCardsCaseEndsNothing(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	if err := s.CreateTask(ctx, Task{ID: "t1411", Kind: "agent", Status: "waiting-human", Objective: "y", Repository: "sf/r",
+		IssueNumber: 1411, Track: "direct", BudgetEUR: 5}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t1411", IssueNumber: 1411, Kind: EventQuestionAsked, Actor: FactoryDecider,
+		Via: ViaFactoryd, Detail: map[string]any{"question": "Which file?", "ask": "Which file?", "comment": int64(27101), "source": "agent",
+			"reason": AgentAsks + "Which file?"}}); err != nil {
+		t.Fatal(err)
+	}
+	open, err := s.OpenCasesOf(ctx, "t1411")
+	if err != nil || len(open) != 1 {
+		t.Fatalf("t1411's cases = %+v, %v; want its ask", open, err)
+	}
+	other := open[0]
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaChat, map[string]any{"action": ActContinue, "case_id": other.ID})
+	recordCaseEvent(t, s, EventQuestionWithdrawn, FactoryDecider, ViaFactoryd, map[string]any{"case_id": other.ID, "reason": "the wait ended"})
+	if got := caseByID(t, s, other.ID); got.Status != CaseAtHuman || got.Resolution != nil {
+		t.Fatalf("t1411's case = %s, %+v; want it at the human", got.Status, got.Resolution)
+	}
+}
+
 func TestASecondAskAfterAnAnswerOpensASecondCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)

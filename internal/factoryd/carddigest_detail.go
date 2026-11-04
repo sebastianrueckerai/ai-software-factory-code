@@ -195,11 +195,27 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 // askAnswer is ask's answer among events, those after it. A plan
 // question's is the plan answer of its revision and index, past the
 // questions asked with it, until a later revision asks again; any other
-// ask's is the answer or grant before the next such ask.
+// ask's is the answer or grant before the next such ask, among the rows
+// that end its case (caseEnds). A monitor's ask and the card's own pass
+// each other: the next ask of a monitor's is one on its case, of the
+// card's own any but a monitor's.
 func askAnswer(ask Event, events []Event) string {
 	revision, _ := toInt(ask.Detail["revision"])
 	index, _ := toInt(ask.Detail["index"])
+	ends := caseEnds(ask, events)
+	own, _ := toInt(ask.Detail["case_id"])
+	beside := func(e Event) bool { return e.Detail["case_kind"] == string(CaseMonitorFlag) }
+	mine := func(e Event) bool {
+		if e.Kind != EventQuestionAsked {
+			return ends(e)
+		}
+		named, _ := toInt(e.Detail["case_id"])
+		return beside(ask) && named == own || !beside(ask) && !beside(e)
+	}
 	for _, e := range events {
+		if revision == 0 && !mine(e) {
+			continue
+		}
 		word := func(k string) string { v, _ := e.Detail[k].(string); return v }
 		answer := func() string {
 			return fmt.Sprintf("Answer by %s: %s", e.Actor, cmp.Or(word("answer"), word("decision"), "answered"))

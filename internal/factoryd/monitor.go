@@ -147,8 +147,9 @@ func (m *Monitor) logged(ctx context.Context, taskID string) error {
 // flag's case, so a standing flag costs no call and a flag rung 0 resolved
 // opens nothing twice. A case still open has no face yet: OpenTrip
 // finishes it. A live case whose flag no longer holds on its key is
-// withdrawn first, by a question_withdrawn row that names it: the wait
-// ended, or the flag no longer holds.
+// withdrawn first, by a question_withdrawn row that names it when it is
+// at the human, else with no row: the wait ended, or the flag no longer
+// holds.
 func (m *Monitor) card(ctx context.Context, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -191,10 +192,17 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		if flag := c.Facts["flag"]; flag == "wait_over_bound" || flag == "queued_over_bound" {
 			reason = "the wait ended"
 		}
-		// the row names its case, which the events writer withdraws, and
-		// settles the case's ask in the inbox
-		if _, err := m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason}}); err != nil {
+		var err error
+		if c.Status == CaseOpen {
+			// no face asked anyone: the case ends with no row
+			err = m.Runner.EndCase(ctx, c.ID, reason)
+		} else {
+			// the row names its case, which the events writer withdraws,
+			// and settles the case's ask in the inbox
+			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason}})
+		}
+		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
 		}
 	}
