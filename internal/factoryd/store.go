@@ -336,7 +336,7 @@ type Store interface {
 	SetAdmitted(ctx context.Context, id string) error
 	// SetQueueReason records why card id was refused a slot at now, keeping
 	// queue_since from the first refusal with a reason of that kind, the
-	// count's at any numbers; "" clears both.
+	// count's at any numbers.
 	SetQueueReason(ctx context.Context, id, reason string, now time.Time) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
@@ -2149,12 +2149,12 @@ func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
 // SetQueueReason writes reason on card id, with now as queue_since when
 // the reason is of a new kind: the count's at new numbers keeps the time
 // of its first refusal with a reason of that kind, the count's at any
-// numbers. "" clears both. A refusal that repeats the stored reason
-// writes nothing, so the minute's admissions keep the first time. An
-// admitted card takes none: a refusal read before another admission took
-// the card must not mark it, since nothing clears it after.
+// numbers. A refusal that repeats the stored reason writes nothing, so
+// the minute's admissions keep the first time. An admitted card takes
+// none: a refusal read before another admission took the card must not
+// mark it, since nothing clears it after.
 func (s *PGStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET queue_reason = $2, queue_since = CASE WHEN $2 = '' THEN NULL
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET queue_reason = $2, queue_since = CASE
 		WHEN starts_with(queue_reason, $4) AND starts_with($2, $4) THEN queue_since ELSE $3::timestamptz END
 		WHERE id = $1 AND queue_reason <> $2 AND admitted_at IS NULL`, id, reason, now, WorkBoundReason)
 	return err

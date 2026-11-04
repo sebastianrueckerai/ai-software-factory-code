@@ -238,10 +238,7 @@ func (s *acceptanceStore) SetQueueReason(_ context.Context, id, reason string, n
 	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
 		return nil
 	}
-	switch {
-	case reason == "":
-		t.QueueSince = nil
-	case !strings.HasPrefix(t.QueueReason, factoryd.WorkBoundReason) || !strings.HasPrefix(reason, factoryd.WorkBoundReason):
+	if !strings.HasPrefix(t.QueueReason, factoryd.WorkBoundReason) || !strings.HasPrefix(reason, factoryd.WorkBoundReason) {
 		t.QueueSince = &now
 	}
 	t.QueueReason = reason
