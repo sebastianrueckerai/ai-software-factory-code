@@ -222,7 +222,7 @@ func checkProofs(due []proofDue, proofs []FiledProof, last bool) []proofFinding 
 		case strings.TrimSpace(e.Code) == "":
 			refuse("code is empty", "code is empty")
 		case len(e.Code) > maxProofCode:
-			size := fmt.Sprintf("code is %d bytes; at most %d", len(e.Code), maxProofCode)
+			size := fmt.Sprintf("code is %d bytes, at most %d", len(e.Code), maxProofCode)
 			refuse(size, size)
 		}
 		switch e.Outcome {
@@ -306,9 +306,9 @@ func (r *Runner) FileProofs(ctx context.Context, taskID string, proofs []FiledPr
 		return ProofsFiled{}, err
 	}
 	if filings >= maxFilings {
-		limit := "file_proofs: three filings are this session's limit, and none of them passed: end the session"
+		limit := "file_proofs: the prover's third filing was its last, and none of the three passed: end the session"
 		if passed > 0 {
-			limit = fmt.Sprintf("file_proofs: three filings are this session's limit, and filing %d, the last one that passed, stands: end the session", passed)
+			limit = fmt.Sprintf("file_proofs: the prover's third filing was its last, and filing %d, the last one that passed, stands: end the session", passed)
 		}
 		return ProofsFiled{Filing: filings, Findings: []string{limit}}, nil
 	}
@@ -676,7 +676,11 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	for i, pp := range filed {
 		entries[i] = storedProof(pp)
 	}
-	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries)
+	budget := dryRunBudget(time.Until(activity.GetInfo(ctx).Deadline))
+	if budget <= 0 {
+		return fmt.Errorf("the dry run's activity ends in under a minute, too soon for its pod")
+	}
+	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries, budget)
 	if err != nil {
 		return err
 	}
@@ -705,6 +709,11 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	return nil
 }
 
+// dryRunBudget is the dry run's pod budget with left before its
+// activity's deadline: proofsBudget, or left less a minute when that is
+// shorter, so a retry late in the activity starts no pod that outlives it.
+func dryRunBudget(left time.Duration) time.Duration { return min(proofsBudget, left-time.Minute) }
+
 // proofFlag is what a proof's dry run on main flags: a test that passes
 // is green on main, one that does not fail is unrunnable; a judgement or
 // human test that did not run to a verdict, or wrote no artifact, is
@@ -729,7 +738,8 @@ func proofFlag(kind string, o proofOutcome, run harness.ProofRun, artifact strin
 // foundation card is done, or at once for a plan without one: one
 // report task of the plan at main's head, its workflow started. A plan the
 // policy cannot serve, with no prover class of session report or one whose
-// agent time leaves the session too little, waits, its id on one log line.
+// agent time leaves the session too little, waits, on a log line of its
+// own that says why.
 func (r *Runner) proverPass(ctx context.Context) {
 	ids, err := r.store.PlansWithoutProver(ctx)
 	if err != nil {
@@ -737,8 +747,6 @@ func (r *Runner) proverPass(ctx context.Context) {
 		return
 	}
 	v := r.cfg.Policy()
-	var waiting []string
-	why := ""
 	for _, id := range ids {
 		plan, repo, err := r.task(ctx, id)
 		if err != nil {
@@ -752,7 +760,7 @@ func (r *Runner) proverPass(ctx context.Context) {
 			continue
 		}
 		if unfit := proverUnfit(v, plan.Repository); unfit != "" {
-			waiting, why = append(waiting, id), unfit
+			log.Printf("prover pass: plan %s waits for its prover: %s", id, unfit)
 			continue
 		}
 		head, err := r.forgejo.DefaultBranchHeadSHA(ctx, repo.Owner, repo.Name, "")
@@ -763,9 +771,6 @@ func (r *Runner) proverPass(ctx context.Context) {
 		if _, err := openReport(ctx, r.store, r.cfg.Workflows, v.Document.Budget, plan, SourceProver, policy.ClassProver, head); err != nil {
 			log.Printf("prover pass: plan %s: %v", id, err)
 		}
-	}
-	if len(waiting) > 0 {
-		log.Printf("prover pass: plans %s wait for their prover: %s", strings.Join(waiting, ", "), why)
 	}
 }
 

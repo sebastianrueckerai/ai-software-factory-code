@@ -904,16 +904,16 @@ func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, a
 // (awaitPodStart's 10 minutes) and the reads.
 const proofsBudget = reproActivityTimeout - 15*time.Minute
 
-// proofRuns runs entries in one sandbox pod, posting their list to the
-// worker's POST /proofs once the pod runs, under a bearer of this run
-// whose hash alone is in the pod's spec: the list is in no spec, no
+// proofRuns runs entries in one sandbox pod within budget, posting their
+// list to the worker's POST /proofs once the pod runs, under a bearer of
+// this run whose hash alone is in the pod's spec: the list is in no spec, no
 // environment and no file before its entries run. It returns each entry's
 // run by its id, and why the pod reported none when it says. A list past
 // harness.MaxProofsList is a terminal error, before any pod; a sandbox
 // that cannot start is a *startFailure; a pod that does not take the list
 // is an error; a log that ends before the closing line keeps the runs
 // read, with errLogEnded.
-func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (runs map[string]harness.ProofRun, runErr string, err error) {
+func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof, budget time.Duration) (runs map[string]harness.ProofRun, runErr string, err error) {
 	list, err := json.Marshal(entries)
 	if err != nil {
 		return nil, "", err
@@ -923,7 +923,7 @@ func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, 
 	}
 	bearer := rand.Text()
 	var read []harness.ProofRun
-	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, bearer), func(ns, podName string) error {
+	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, bearer, budget), func(ns, podName string) error {
 		if err := r.postWorkerUntil(ctx, nil, ns, podName, bearer, "/proofs", json.RawMessage(list), r.endpointWait); err != nil {
 			return fmt.Errorf("hand the proofs pod its list: %w", err)
 		}
@@ -946,7 +946,7 @@ func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, 
 // outcomes with a *proofsEnded: the entries it reached keep theirs, the
 // rest are no report.
 func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
-	runs, runErr, err := r.proofRuns(ctx, t, repo, ref, commit, at, entries)
+	runs, runErr, err := r.proofRuns(ctx, t, repo, ref, commit, at, entries, proofsBudget)
 	ended := errors.Is(err, errLogEnded)
 	if err != nil && !ended {
 		return nil, err
@@ -1266,12 +1266,12 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[str
 }
 
 // proofsPodSpec is the runner pod in proofs mode, each entry bounded by
-// the reproduction timeout, all by proofsBudget. Its list comes over the
+// the reproduction timeout, all by budget. Its list comes over the
 // message port under bearer, of which the worker holds the hash alone.
-func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at, bearer string) map[string]any {
+func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at, bearer string, budget time.Duration) map[string]any {
 	return r.runnerPodSpec(t, repo, ref, commit, at, []map[string]any{
 		{"name": "MODE", "value": "proofs"},
-		{"name": "PROOFS_BUDGET", "value": strconv.Itoa(int(proofsBudget.Seconds()))},
+		{"name": "PROOFS_BUDGET", "value": strconv.Itoa(int(budget.Seconds()))},
 		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(bearer)},
 	})
 }

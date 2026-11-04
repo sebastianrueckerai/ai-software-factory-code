@@ -233,6 +233,8 @@ func TestValidatePlan(t *testing.T) {
 		"invariant suite":      {change(func(p *Plan) { p.Criteria[2].Suite = "go test ./... passes" }), []string{`plan: criterion all_green: suite "go test ./... passes": a package path such as ./...`}},
 		"invariant flag":       {change(func(p *Plan) { p.Criteria[2].Suite = "-race" }), []string{`plan: criterion all_green: suite "-race": a package path such as ./...`}},
 		"invariant outside":    {change(func(p *Plan) { p.Criteria[2].Suite = "../proofs" }), []string{`plan: criterion all_green: suite "../proofs": a package path inside the repository, with no .. segment`}},
+		"invariant dots":       {change(func(p *Plan) { p.Criteria[2].Suite = "..." }), []string{`plan: criterion all_green: suite "...": a package path such as ./...`}},
+		"invariant import":     {change(func(p *Plan) { p.Criteria[2].Suite = "a.b/c" }), []string{`plan: criterion all_green: suite "a.b/c": a package path such as ./...`}},
 		"invariant overfull":   {change(func(p *Plan) { p.Criteria[2].Expected = "no failures" }), []string{"plan: criterion all_green: kind invariant carries no inputs, expected numbers, claim, prompt or evidence"}},
 		"judgement incomplete": {change(func(p *Plan) {
 			p.Criteria = append(p.Criteria, PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the chat reads calm", Inputs: "the seeded issues"})
@@ -403,6 +405,17 @@ func TestValidatePlanOutline(t *testing.T) {
 // wants at least one criterion too; a shape without an integration card
 // refuses only the overrun. Every extra criterion is complete but
 // uncited, so the count is the first finding either way.
+// A suite's first segment holds a dot only as the whole segment: go test
+// reads ... as every package it knows and a.b/c as an import path, both
+// beyond the repository.
+func TestSuitePathTakesADotOnlyAsTheFirstSegment(t *testing.T) {
+	for suite, want := range map[string]bool{"./...": true, "./internal/...": true, "internal/x": true, "...": false, "a.b/c": false, ".x/y": false} {
+		if got := suitePath.MatchString(suite); got != want {
+			t.Errorf("suitePath(%q) = %v, want %v", suite, got, want)
+		}
+	}
+}
+
 func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 	at := func(n int) Plan {
 		p := testPlan()

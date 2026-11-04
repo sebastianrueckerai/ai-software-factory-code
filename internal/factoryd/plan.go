@@ -306,8 +306,10 @@ var (
 	// criterionID is a criterion id's shape: the concept's examples are
 	// snake_case (schedule_test), where card keys use dashes.
 	criterionID = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
-	// suitePath admits a suite bash check test runs: a package path, never a flag.
-	suitePath      = regexp.MustCompile(`^[A-Za-z0-9_.][A-Za-z0-9_./-]*$`)
+	// suitePath admits a suite bash check test runs: a package path, never
+	// a flag, whose first segment holds a dot only as the whole segment, so
+	// go test reads no ... or import path beyond the repository.
+	suitePath      = regexp.MustCompile(`^(\.|[A-Za-z0-9_][A-Za-z0-9_-]*)(/[A-Za-z0-9_./-]*)?$`)
 	roles          = []string{RoleFoundation, RoleFeature, RoleIntegration}
 	criterionKinds = []string{CriterionTest, CriterionInvariant, CriterionJudgement, CriterionHuman}
 	// deployLine is a spec's line asking for a deployment: "Deploy:" or
@@ -655,10 +657,10 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 			switch {
 			case c.Suite == "":
 				add("kind invariant names its suite")
-			case !suitePath.MatchString(c.Suite):
-				add("suite %q: a package path such as ./...", c.Suite)
 			case slices.Contains(strings.Split(c.Suite, "/"), ".."):
 				add("suite %q: a package path inside the repository, with no .. segment", c.Suite)
+			case !suitePath.MatchString(c.Suite):
+				add("suite %q: a package path such as ./...", c.Suite)
 			}
 			if c.Inputs != "" || c.Expected != "" || c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
 				add("kind invariant carries no inputs, expected numbers, claim, prompt or evidence")

@@ -5,9 +5,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"log"
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -174,7 +176,7 @@ func TestProofFindingsCheckTheShape(t *testing.T) {
 			[]string{`file_proofs: size_bound: name "Test.*|TestOther": a test's name of letters, digits, _ and the / of a subtest, such as TestSizeBound or TestSizeBound/over`}},
 		"no code": {func(f []FiledProof) []FiledProof { f[0].Code = ""; return f }, []string{"file_proofs: size_bound: code is empty"}},
 		"too much code": {func(f []FiledProof) []FiledProof { f[0].Code = strings.Repeat("x", 16385); return f },
-			[]string{"file_proofs: size_bound: code is 16385 bytes; at most 16384"}},
+			[]string{"file_proofs: size_bound: code is 16385 bytes, at most 16384"}},
 		"no such outcome": {func(f []FiledProof) []FiledProof { f[0].Outcome = "passed"; return f },
 			[]string{`file_proofs: size_bound: outcome "passed": red, green or unrunnable`}},
 		"green on main": {func(f []FiledProof) []FiledProof { f[0].Outcome = onMainGreen; return f },
@@ -279,7 +281,7 @@ func TestFileProofsKeepsTheFilingAndCountsThree(t *testing.T) {
 	}
 	r = &Runner{store: store, cfg: r.cfg, timeline: &Timeline{Objects: objects, Events: store, Store: store}}
 	check(4, []FiledProof{filedEntry("size_bound", "TestSizeBound")}, ProofsFiled{Filing: 3, Left: 0,
-		Findings: []string{"file_proofs: three filings are this session's limit, and filing 3, the last one that passed, stands: end the session"}})
+		Findings: []string{"file_proofs: the prover's third filing was its last, and filing 3, the last one that passed, stands: end the session"}})
 	if rows, _ := store.PlanProofs(ctx, "t-plan"); !slices.Equal(rows, []PlanProof{row}) {
 		t.Fatalf("rows after the cap = %+v, want them as they were", rows)
 	}
@@ -442,6 +444,16 @@ func TestProverGuideHoldsTheCriteriaTheSurfaceAndTheRun(t *testing.T) {
 	}
 }
 
+// The dry run's pod ends before its activity: with 10 minutes left its
+// budget is 9, with hours left the proofs' budget.
+func TestDryRunBudgetEndsBeforeTheActivity(t *testing.T) {
+	for left, want := range map[time.Duration]time.Duration{10 * time.Minute: 9 * time.Minute, 2 * time.Hour: proofsBudget} {
+		if got := dryRunBudget(left); got != want {
+			t.Errorf("dryRunBudget(%s) = %s, want %s", left, got, want)
+		}
+	}
+}
+
 func TestReportTimeKeepsTheDryRunsShare(t *testing.T) {
 	for _, tc := range []struct{ agent, reserve, want time.Duration }{{2 * time.Hour, 0, 2 * time.Hour}, {90 * time.Minute, 50 * time.Minute, 40 * time.Minute}} {
 		if got, err := reportTime(tc.agent, tc.reserve); err != nil || got != tc.want {
@@ -596,6 +608,10 @@ func TestRunReportOfTheProverDryRunsTheFilingOnMain(t *testing.T) {
 	fetch := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "fetch"))
 	if fetch["PR_REF"] != "refs/heads/main" || fetch["REPO_SHA"] != "m1" || fetch["CHECKOUT_SHA"] != "m0" {
 		t.Fatalf("fetch env = %v, want main at m1, checked out at m0", fetch)
+	}
+	// the test activity has 10 minutes, so the pod gets 9 less the time spent
+	if budget, _ := strconv.Atoi(podEnv(kube.podAt(0))["PROOFS_BUDGET"]); budget > 540 || budget < 500 {
+		t.Fatalf("PROOFS_BUDGET = %d, want 9 minutes less the seconds spent", budget)
 	}
 	var list []harness.Proof
 	if len(worker.lists) != 1 || json.Unmarshal([]byte(worker.lists[0]), &list) != nil {
@@ -814,6 +830,9 @@ func TestProverPassLeavesAPlanItCannotServe(t *testing.T) {
 		t.Fatal("a prover for a plan that owes no proof")
 	}
 	seedProver(t, store, proverPlan())
+	var logs strings.Builder
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
 	r.cfg.Policy = testPolicyVersion
 	r.proverPass(ctx)
 	short := proverPolicy()
@@ -823,8 +842,15 @@ func TestProverPassLeavesAPlanItCannotServe(t *testing.T) {
 	if _, ok, _ := store.ReportOf(ctx, "t-plan", SourceProver); ok || len(r.cfg.Workflows.(*fakeWorkflows).started) != 0 {
 		t.Fatal("a prover under a policy that cannot run one")
 	}
-	if why := proverUnfit(short, "sf/r"); !strings.Contains(why, "raise the class's agent_time to at least 1h0m0s") {
+	why := proverUnfit(short, "sf/r")
+	if !strings.Contains(why, "raise the class's agent_time to at least 1h0m0s") {
 		t.Fatalf("unfit = %q", why)
+	}
+	for _, want := range []string{"prover pass: plan t-plan waits for its prover: the policy has no prover class of session report\n",
+		"prover pass: plan t-plan waits for its prover: " + why + "\n"} {
+		if !strings.Contains(logs.String(), want) {
+			t.Fatalf("logs =\n%s\nwant the line %q", logs.String(), want)
+		}
 	}
 }
 
@@ -839,7 +865,7 @@ func TestFileProofsCapNamesNoFilingThatPassed(t *testing.T) {
 		}
 	}
 	got, err := r.FileProofs(context.Background(), "t-prove", validFiling())
-	if want := (ProofsFiled{Filing: 3, Findings: []string{"file_proofs: three filings are this session's limit, and none of them passed: end the session"}}); err != nil ||
+	if want := (ProofsFiled{Filing: 3, Findings: []string{"file_proofs: the prover's third filing was its last, and none of the three passed: end the session"}}); err != nil ||
 		!reflect.DeepEqual(got, want) {
 		t.Fatalf("the fourth = %+v, %v; want %+v", got, err, want)
 	}

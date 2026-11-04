@@ -2440,7 +2440,7 @@ func TestProofsPodTakesItsListOverTheMessagePort(t *testing.T) {
 	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
 	task := Task{ID: "t1", Repository: "linkshort/linkshort", Track: "direct"}
 	repo := Repo{Owner: "linkshort", Name: "linkshort"}
-	spec := r.proofsPodSpec(task, repo, pullRef(1), "c1", "", "bearer-x")["spec"].(map[string]any)
+	spec := r.proofsPodSpec(task, repo, pullRef(1), "c1", "", "bearer-x", proofsBudget)["spec"].(map[string]any)
 	worker := spec["containers"].([]any)[0].(map[string]any)
 	env := containerEnv(worker)
 	if env["MODE"] != "proofs" || env["PROOFS_BUDGET"] != "2100" || env["MESSAGE_TOKEN_SHA256"] != messageTokenHash("bearer-x") {

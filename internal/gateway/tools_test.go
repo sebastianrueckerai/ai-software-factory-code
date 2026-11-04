@@ -1194,7 +1194,7 @@ func TestFileProofsTool(t *testing.T) {
 	if a := e.lastAudit(t); a.Decision != "proofs_refused" || a.Tool != policy.ToolFileProofs || a.Reason != "filing 1, 1 findings" {
 		t.Fatalf("audit = %+v", a)
 	}
-	e.proofs.res = ProofsFiled{Filing: 3, Left: 0, Findings: []string{"file_proofs: three filings are this session's limit, and the last one that passed stands: end the session"}}
+	e.proofs.res = ProofsFiled{Filing: 3, Left: 0, Findings: []string{"file_proofs: the prover's third filing was its last, and filing 2, the last one that passed, stands: end the session"}}
 	if text, isErr := e.call(t, policy.ToolFileProofs, args); !isErr || !strings.HasSuffix(text, "\nno filing is left: end the session") {
 		t.Fatalf("refused with none left = %q (%v)", text, isErr)
 	}
