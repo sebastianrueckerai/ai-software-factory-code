@@ -82,10 +82,6 @@ type fakeChat struct {
 	totals   map[string][2]float64
 	next     int64
 	spend    []spendRow
-	// funded is the month's agent-funded EUR by repository the pool
-	// read-outs project, and fundedErr a usage read that fails
-	funded    map[string]float64
-	fundedErr error
 	// atts are the stored image rows, any member's, in arrival order
 	atts []storedAttachment
 	// proposals are the proposals and undos, in the order stored
@@ -813,14 +809,6 @@ func (f *fakeChat) ProjectMonthSpend(_ context.Context, repository string, at ti
 	return s, nil
 }
 
-// AgentFundedEUR is the month's agent-funded usage the pool read-outs
-// project: the figure the test sets by repository, or the read's failure.
-func (f *fakeChat) AgentFundedEUR(_ context.Context, repository string, _ time.Time) (float64, error) {
-	f.mu.Lock()
-	defer f.mu.Unlock()
-	return f.funded[repository], f.fundedErr
-}
-
 // TaskSpendSince sums the chat rows of chat task id's repository booked
 // at or after since: the fake's chat rows are its chat task's.
 func (f *fakeChat) TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error) {
@@ -1522,7 +1510,9 @@ func equal(t *testing.T, what string, got, want any) {
 	}
 }
 
-const boardText = `Open cards:
+// boardText is the board read of the chat rig's project, its pool with no
+// draws first.
+var boardText = defaultPoolRead() + ".\n" + `Open cards:
 Queued (1):
   #5 t-m "Fix the cache. It drops entries." queued (waits for a free work slot, in filing order), €0.40 of €3.00
 Running (1):
@@ -1573,7 +1563,7 @@ func TestChatTextReply(t *testing.T) {
 			t.Errorf("the system message lacks %q:\n%s", want, system)
 		}
 	}
-	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
+	if want := "\n\nThe project now:\nToday is " + time.Now().UTC().Format("2006-01-02") + " UTC.\nStatus: waiting on you; 1 working; 3 need you; spend this month €0.00 of €50.00, the factory's whole ledger; pool: " + noDraws + "\n" +
 		"Sandbox images: none; every card runs the factory image."; !strings.HasSuffix(system, want) {
 		t.Errorf("the system message does not end with %q:\n%s", want, system)
 	}
@@ -1594,7 +1584,7 @@ func TestChatTextReply(t *testing.T) {
 			`"last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},` +
 			`"messages":[{"id":1,"role":"user","content":"what is open?","at":"2026-10-11T09:30:01Z","conversation":1},` +
 			`{"id":2,"role":"assistant","content":"Two cards wait.","at":"2026-10-11T09:30:02Z","conversation":1}],` +
-			`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"},` +
+			`"pool":{"present":false,"can_ask":true,"words":"` + noDraws + `"},` +
 			`"open_question":"what is open?"}`})
 }
 
@@ -2488,7 +2478,7 @@ func TestChatAppliedWithUndo(t *testing.T) {
 		t.Fatalf("stream length = %d, want 7; events: %v", len(events), events)
 	}
 	equal(t, "stream text before board", events[0], `text {"text":"Let me look."}`)
-	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"Open cards:\nQueued (1):`) {
+	if !strings.HasPrefix(events[1], `tool {"arguments":{},"duration_ms":0,"name":"board","result":"`+defaultPoolRead()+`.\nOpen cards:\nQueued (1):`) {
 		t.Errorf("board tool line prefix mismatch: %s", events[1])
 	}
 	equal(t, "stream after board", events[2:], []string{
@@ -4243,13 +4233,14 @@ func TestChatAnswersWithAChoice(t *testing.T) {
 		`done {}`})
 	_, events, _ = chatPost(t, r, ck, s, chatPath+"/proposals/"+tokens[0], nil)
 	equal(t, "Do it", events, []string{
-		`tool {"arguments":{"task_id":"t-e","text":"a shard"},"duration_ms":0,"name":"answer","result":"Answered #13."}`,
-		`applied {"result":"Answered #13.","tool":"answer"}`, `done {}`})
+		`tool {"arguments":{"task_id":"t-e","text":"a shard"},"duration_ms":0,"name":"answer","result":"Case 1 took continue."}`,
+		`applied {"result":"Case 1 took continue.","tool":"answer"}`, `done {}`})
 	if got := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; got != "a shard" {
 		t.Fatalf("the comment = %q, want the second choice", got)
 	}
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered, Detail: postedDetail(1)})
+		factoryd.Event{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventQuestionAnswered,
+			Detail: map[string]any{"action": factoryd.ActContinue, "case_id": int64(1), "answer": "a shard", "comment": int64(1)}})
 }
 
 // A gateway that fails ends the turn in an error event and no done, and
@@ -4390,12 +4381,12 @@ func TestChatNewConversation(t *testing.T) {
 		`"first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":3,"role":"user","content":"world","at":"2026-10-11T09:30:03Z","conversation":2},`+
 		`{"id":4,"role":"assistant","content":"second reply","at":"2026-10-11T09:30:04Z","conversation":2}],`+
-		`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"}}`)
+		`"pool":{"present":false,"can_ask":true,"words":"`+noDraws+`"}}`)
 	equal(t, "GET conversation 1", get(chatPath+"?conversation=1"), `{"conversation":1,"thread":{"login":"sebastian","number":1,"title":"hello","state":"active","current":true,`+
 		`"first_at":"2026-10-11T09:30:01Z","last_at":"2026-10-11T09:30:02Z","messages":2,"unread":0,"unswept":2},"messages":[`+
 		`{"id":1,"role":"user","content":"hello","at":"2026-10-11T09:30:01Z","conversation":1},`+
 		`{"id":2,"role":"assistant","content":"first reply","at":"2026-10-11T09:30:02Z","conversation":1}],`+
-		`"pool":{"present":false,"can_ask":true,"words":"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"}}`)
+		`"pool":{"present":false,"can_ask":true,"words":"`+noDraws+`"}}`)
 	equal(t, "the conversations", get(chatPath+"/conversations"),
 		`[{"login":"sebastian","number":3,"title":"Inbox","state":"active","inbox":true,"first_at":"2026-10-11T09:30:04Z","last_at":"2026-10-11T09:30:04Z","messages":0,"unread":0},`+
 			`{"login":"sebastian","number":2,"title":"world","state":"active","first_at":"2026-10-11T09:30:03Z","last_at":"2026-10-11T09:30:04Z","messages":2,"unread":0,"unswept":2},`+
@@ -4619,7 +4610,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	}
 	equal(t, "stream refusals", events[:6], []string{
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-cap"}`,
-			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer); close ends it."),
+			"Refused: Card #14 "+human+", not a pending merge request: an answer with the findings grants one session (answer). Close ends it."),
 		refused("deny_merge", `{"action":"reject","note":"no","task_id":"t-e"}`,
 			"Refused: Card #13 "+human+", not a pending merge request: answer it (answer)."),
 		refused("steer", `{"task_id":"t-m","text":"go"}`, "Refused: Card #5 "+queued+", not a running session: nothing to do until it starts."),
@@ -4670,10 +4661,10 @@ func TestWrongState(t *testing.T) {
 		want string
 	}{
 		{factoryd.Task{Kind: "human", Status: "waiting-human", IssueNumber: 1}, capFacts{},
-			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer); close ends it."},
+			"Card #1 waits on a human: an answer, an approval or a decision, not a running session: one of its choices answers it (answer). Close ends it."},
 		{factoryd.Task{Kind: "agent", Status: "waiting-human", Track: policy.TrackPlan, IssueNumber: 2}, capFacts{plan: true},
 			"Card #2 waits on a human: an answer, an approval or a decision, not a running session: " +
-				"answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."},
+				"answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."},
 		{factoryd.Task{Status: "waiting-poster", IssueNumber: 3}, capFacts{},
 			"Card #3 waits on its poster's information, not a running session: the poster must answer on the issue."},
 		{factoryd.Task{Status: "queued", IssueNumber: 4}, capFacts{}, "Card #4 waits for a free work slot, in filing order, not a running session: nothing to do until it starts."},

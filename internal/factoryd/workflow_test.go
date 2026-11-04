@@ -75,7 +75,7 @@ type workflowHarness struct {
 	states      []string
 	state       RunState // what Reconcile reports; zero = a fresh task
 	finishAt    time.Time
-	escalated   []string // Escalate reasons, in order
+	escalated   []string // Escalate's and OpenTrip's reasons, in order
 	escalatedAt []time.Time
 	choices     [][]string       // Escalate choices, in order
 	successions []SuccessorInput // Successor filings, in order
@@ -111,6 +111,13 @@ type workflowHarness struct {
 	arrivedAt []time.Time
 	left      []string
 	leaveErr  error // LeaveImagePark's error, nil = none
+	// trips are OpenTrip's inputs in order. rungZero, when set, is the
+	// resolution rung 0 takes on the nth trip (from 1), nil to ask. A trip
+	// that asks opens case 700+n with Escalate's comment. ended are
+	// EndCase's calls as "case reason"
+	trips    []TripInput
+	rungZero func(n int, in TripInput) *Resolution
+	ended    []string
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -223,7 +230,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityCloseNotReproduced: func(ctx context.Context, taskID string) error { return nil },
 		ActivityRollCommit:         func(ctx context.Context, taskID string) (string, error) { return "", nil },
 		ActivityRerunChecks:        func(ctx context.Context, taskID, sha string) (string, error) { return "", nil },
-		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults) (AuditResult, error) {
+		ActivityGateAudit: func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, round int) (AuditResult, error) {
 			return AuditResult{}, nil
 		},
 		ActivityTaskConfig:   func(ctx context.Context, taskID string, pin int64) (TaskConfig, error) { return TaskConfig{}, nil },
@@ -255,6 +262,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySessionAnswered: func(ctx context.Context, in SessionAnswerInput) (bool, error) { return true, nil },
 		ActivityDayResume:       func(ctx context.Context, taskID, model string, turned bool) (bool, error) { return turned, nil },
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
+		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
+		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
+		ActivityOpenTrip:        func(ctx context.Context, in TripInput) (TripOutcome, error) { return TripOutcome{}, nil },
 		ActivityParkForTool:     func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
 		ActivityImageArrived:    func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
 		ActivityLeaveImagePark:  func(ctx context.Context, taskID, toolTask string) error { return nil },
@@ -311,6 +321,29 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			}
 			return int64(600 + len(h.escalated)), h.escalateErr
 		}).AfterFn(func() time.Duration { return h.escalateAfter })
+	h.env.OnActivity(ActivityOpenTrip, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, in TripInput) (TripOutcome, error) {
+			h.trips = append(h.trips, in)
+			n := len(h.trips)
+			if h.rungZero != nil {
+				if res := h.rungZero(n, in); res != nil {
+					return TripOutcome{CaseID: int64(700 + n), Resolution: res}, nil
+				}
+			}
+			h.escalated = append(h.escalated, in.Reason)
+			h.escalatedAt = append(h.escalatedAt, h.env.Now())
+			h.choices = append(h.choices, in.Choices)
+			comment := int64(600 + len(h.escalated))
+			if k := len(h.escalated); k <= len(h.escalationIDs) {
+				comment = h.escalationIDs[k-1]
+			}
+			return TripOutcome{CaseID: int64(700 + n), Comment: comment, Rung: 3}, h.escalateErr
+		}).AfterFn(func() time.Duration { return h.escalateAfter })
+	h.env.OnActivity(ActivityEndCase, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, caseID int64, reason string) error {
+			h.ended = append(h.ended, fmt.Sprintf("%d %s", caseID, reason))
+			return nil
+		})
 	h.env.OnActivity(ActivityRequestInfo, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, reason string) (int64, error) {
 			h.infoAsked = append(h.infoAsked, reason)
@@ -371,6 +404,13 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 			n++
 			return results[min(n, len(results))-1], nil
 		})
+}
+
+// beforeCases runs the workflow as a run from before versionCases: it asks
+// through Escalate, an answer buys a session and agent time, and the agent
+// time's cap fails a card with nothing pushed.
+func (h *workflowHarness) beforeCases() {
+	h.env.OnGetVersion("cases", workflow.DefaultVersion, versionCases).Return(workflow.DefaultVersion)
 }
 
 func (h *workflowHarness) signalAfter(d time.Duration, name string, sig TaskSignal) {
@@ -711,6 +751,7 @@ func TestWorkflowBeforeSessionCapAttemptExhaustionFails(t *testing.T) {
 // earlier ones' being stale (roadmap 201).
 func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.onSessions(
 		SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f1"}},
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push", Findings: []string{"f2"}},
@@ -757,6 +798,7 @@ func TestWorkflowSessionCapOpensTheCard(t *testing.T) {
 // cap's last finding on the card; the answer buys a session with it.
 func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.env.OnGetVersion("keep-work", workflow.DefaultVersion, versionKeepWork).Return(workflow.DefaultVersion)
 	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
 	h.onSessions(pushed("s3", "c3"), pushed("s4", "c4"))
@@ -793,6 +835,7 @@ func TestGroupRevertCardHasTwoSessions(t *testing.T) {
 	}
 
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 		Stages: testStages(), Queue: policy.QueueNone, Sessions: groupRevertSessions}
 	h.onSessions(
@@ -819,6 +862,7 @@ func TestGroupRevertCardHasTwoSessions(t *testing.T) {
 // session.
 func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
 	h.onSessions(pushed("s4", "c4"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -843,9 +887,11 @@ func TestWorkflowRunAtTheSessionCapOpensTheCard(t *testing.T) {
 // fund a call refuses the attempt an answer would buy. No session starts
 // (no key is minted), no failure round is added, and the waiting-human
 // card says why an answer will not run: each answer re-asks the same
-// refusal, and only a close ends the task.
+// refusal, and only a close ends the task. The answer's grant is a run's
+// from before versionCases.
 func TestWorkflowUnfundedAnswerRefusesTheAttempt(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.state = RunState{Status: "waiting-human", Question: "which alias?"}
 	unfunded := budgetRefused + ": 0.080 EUR of the 2.000 EUR budget remains, and the cheapest call needs more. Raise the budget (Fund on the board) and answer, or close the card."
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(unfunded, nil)
@@ -873,6 +919,7 @@ func TestWorkflowUnfundedAnswerRefusesTheAttempt(t *testing.T) {
 // session cap buys the next session once the floor read clears it.
 func TestWorkflowFundedAnswerGrantsTheAttemptAsBefore(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
 	floors := 0
 	h.env.OnActivity(ActivitySessionFunded, mock.Anything, "t1", mock.Anything).Return(
@@ -918,6 +965,7 @@ func (h *workflowHarness) refusedThenFunded(refusing ...int) map[string]int {
 // run, the cap question comes, and its answer buys attempt 4.
 func TestWorkflowAnswerToAnUncountedSessionBuysNoAttempt(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.onSessions(
 		SessionResult{Outcome: OutcomeEscalate, SessionID: "starved", StartFailed: true, Reason: "the pod could not start: image pull refused"},
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2"}, SessionResult{Outcome: OutcomeNoPush, SessionID: "s3"},
@@ -978,6 +1026,7 @@ func TestWorkflowStarvedSessionsTakeNoNumber(t *testing.T) {
 // A run from before the gate counts every session that ran.
 func TestWorkflowBeforeSessionLadderStarvedSessionsTookNumbers(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 	h.onSessions(
 		SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"}, SessionResult{Outcome: OutcomeNoPush, SessionID: "starved"},
@@ -1389,6 +1438,7 @@ func TestWorkflowRepeatTripTakesTheStrongerRung(t *testing.T) {
 
 func TestWorkflowWallClockExpiryFails(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(21 * time.Minute).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)
@@ -1405,6 +1455,7 @@ func TestWorkflowWallClockExpiryFails(t *testing.T) {
 
 func TestWorkflowSessionWallClockTripFails(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.onSessions(SessionResult{Outcome: OutcomeWallClock, SessionID: "s1"})
 
 	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || len(h.sessions) != 1 {
@@ -1499,6 +1550,7 @@ func TestCapTimeoutWithCommitsGoesToVerification(t *testing.T) {
 // A branch with nothing past the base fails at the cap as before.
 func TestCapWithoutCommitsFails(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.onSessions(wallClock("s1", ""))
 
 	if final := h.run(t); final != "failed" || h.finals[0][1] != "wall-clock cap reached" || h.branchReads != 1 {
@@ -1523,6 +1575,7 @@ func TestNoSessionUnderFiveMinutes(t *testing.T) {
 		cfg := testWorkflowConfig
 		cfg.WallClockCap = tc.cap
 		h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+		h.beforeCases()
 		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: tc.used, Attempts: 1}}
 		var steps []string
 		h.onVerify(&steps, []SessionResult{pushed("s2", "c2")})
@@ -1544,6 +1597,7 @@ func TestNoSessionUnderFiveMinutes(t *testing.T) {
 // them.
 func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.branchHead = "c2"
 	var steps []string
 	h.onVerify(&steps, []SessionResult{
@@ -1573,6 +1627,7 @@ func TestSessionCapVerifiesUnverifiedHead(t *testing.T) {
 // card, not to an approval card; the session after the answer gets them.
 func TestTimeCapFindingsGoToTheOneCard(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.branchHead = "c1"
 	h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1}}
 	var steps []string
@@ -1599,6 +1654,7 @@ func TestTimeCapFindingsGoToTheOneCard(t *testing.T) {
 // second verification of c1.
 func TestTimeCapAdoptedHeadIsJudged(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.branchHead = "c1"
 	change := "reviewer sebastian requested changes: rename it"
 	h.state = RunState{Status: "in-review", PR: PullRequest{Number: 9}, Head: "c1", Findings: []string{change},
@@ -1803,6 +1859,7 @@ func TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap(t *testing.T) {
 		},
 	} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if tc.pinned {
 			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 		}
@@ -1851,6 +1908,7 @@ func TestWorkflowRestartedCapQuestionBuysAnAttemptOnlyAtTheSessionCap(t *testing
 			granted: TaskUsage{AgentTime: 20 * time.Minute, Attempts: 1, ExtraTime: 5 * time.Minute, ExtraAttempts: 1}},
 	} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if tc.pinned {
 			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 		}
@@ -1916,6 +1974,7 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 	}
 	for name, tc := range rows {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if tc.pinned {
 			h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 		}
@@ -1945,8 +2004,10 @@ func TestWorkflowRestartedQuestionBuysByTheLoopsRule(t *testing.T) {
 // and the card's own budget stays the cap. Without the grant the next
 // moment stops the card again before any model call, and the human pays
 // one answer per stretch.
+// The share's grant is a run's from before versionCases.
 func TestWorkflowCheckSpendAnswerGrantsNextCheckin(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.state = RunState{Status: "waiting-human",
 		Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
 		Usage:    TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
@@ -1974,9 +2035,11 @@ func TestWorkflowCheckSpendAnswerGrantsNextCheckin(t *testing.T) {
 // stops there, not at every check-in moment to come. A run from before the
 // change buys the attempt alone — the next moment would stop the card
 // again.
+// The share's grant is a run's from before versionCases.
 func TestWorkflowCheckSpendAnswerInTheLoopGrantsTheShare(t *testing.T) {
 	for name, pinned := range map[string]bool{"gated": false, "before the gate": true} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if pinned {
 			h.env.OnGetVersion("checkin-grant", workflow.DefaultVersion, versionCheckinGrant).Return(workflow.DefaultVersion)
 		}
@@ -2028,6 +2091,7 @@ func TestWorkflowRestartedGateEscalationVerifiesTheHead(t *testing.T) {
 		for _, variant := range []string{"", ", before the gate", ", no pull request"} {
 			name := kind + variant
 			h := newWorkflowHarness(t)
+			h.beforeCases()
 			if variant == ", before the gate" {
 				h.env.OnGetVersion("session-ladder", workflow.DefaultVersion, versionSessionLadder).Return(workflow.DefaultVersion)
 			}
@@ -4000,6 +4064,7 @@ func TestWorkflowRetryStrongerClimbsOneRungOnly(t *testing.T) {
 // new attempt with the answer and one attempt more.
 func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.onSessions(
 		SessionResult{Outcome: OutcomeEscalate, SessionID: "s1", Reason: "the check cannot pass\n\nProgress: 9 commands", Findings: []string{"ran x"},
 			Choices: []string{"edit the script", "skip the check"}},
@@ -4038,6 +4103,7 @@ func TestWorkflowEscalationWaitsForAHumanAnswer(t *testing.T) {
 // task's row.
 func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(19 * time.Minute).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
 			h.sessions = append(h.sessions, in)
@@ -4067,6 +4133,7 @@ func TestWorkflowHumanAnswerGrantsATimeSlice(t *testing.T) {
 // on the same rung.
 func TestWorkflowSessionThatCannotStartTakesNoAgentTime(t *testing.T) {
 	h := newWorkflowHarness(t)
+	h.beforeCases()
 	reason := startEscalation("image pull", "push the worker image or correct its reference",
 		"start failed: image pull: container clone waits with ErrImagePull: not found")
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
@@ -4220,6 +4287,7 @@ func TestAnswerSliceIsAQuarterOfTheAgentTime(t *testing.T) {
 		cfg := testWorkflowConfig
 		cfg.WallClockCap = tc.cap
 		h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+		h.beforeCases()
 		h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(tc.cap).Return(
 			func(ctx context.Context, in SessionInput) (SessionResult, error) {
 				h.sessions = append(h.sessions, in)
@@ -4252,6 +4320,7 @@ func TestAnswerSliceBeforeTheChange(t *testing.T) {
 	cfg := testWorkflowConfig
 	cfg.WallClockCap, cfg.AnswerSlice = 2*time.Hour, 10*time.Minute
 	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+	h.beforeCases()
 	h.env.OnGetVersion("answer-slice", workflow.DefaultVersion, versionAnswerSlice).Return(workflow.DefaultVersion)
 	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(2 * time.Hour).Return(
 		func(ctx context.Context, in SessionInput) (SessionResult, error) {
@@ -5261,6 +5330,7 @@ func TestCheckinReplanClosesAPlansChild(t *testing.T) {
 func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
 	noPush := SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}
 	h, calls := toPlanHarness(t, becomeSwitched, timedSession{res: noPush})
+	h.beforeCases()
 	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
 	order := h.activityOrder()
 	h.toPlanAfter(time.Hour, toPlanTooBig)
@@ -5289,6 +5359,7 @@ func TestReplanWakesACardWaitingOnAPerson(t *testing.T) {
 
 	refused := "Card #1's project follows no process with a plan track, so its work cannot go back to the planner: split the work into smaller cards."
 	h, calls = toPlanHarness(t, becomeRefused(refused), timedSession{res: noPush}, timedSession{res: pushed("s2", "c2")})
+	h.beforeCases()
 	h.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
 	h.toPlanAfter(time.Hour, toPlanTooBig)
 	h.signalAfter(2*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
@@ -5811,6 +5882,7 @@ func TestSizedCardAgentTimeFollowsItsSize(t *testing.T) {
 		"small": {"small", 12 * time.Minute, SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"}, "failed"},
 	} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		h.taskConfig = askTaskConfig()
 		h.taskConfig.PlanShape = &policy.PlanShape{}
 		h.state = RunState{Status: "running", Source: "webhook"}

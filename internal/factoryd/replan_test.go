@@ -2756,3 +2756,68 @@ func TestImpasseRefusalNamesTheState(t *testing.T) {
 		t.Fatalf("the child's %s steps: %d, want 1", stepImpasse, n)
 	}
 }
+
+// A planned card's case on its failed dependency, answered with replan
+// and the dependency's id, sends the dependency's work to the plan's
+// planner: the card now waits on the plan, and the case ends with what
+// was done.
+func TestActReplanSendsADependencysWorkToThePlanner(t *testing.T) {
+	ctx := context.Background()
+	r, store, _ := impasseRig(t)
+	c, _, err := store.OpenCase(ctx, Case{TaskID: "s", Repository: "sf/repo", Kind: CaseDependencyFailed, StateKey: "c", Status: CaseAtHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	got, err := r.Act(ctx, ActInput{TaskID: "s", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActReplan, Args: map[string]any{"task_id": "c"}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := []CaseAction{{Action: ActReplan, Args: map[string]any{"task_id": "c"}, Result: "Sent the work of #12 to its plan's planner."}}
+	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved {
+		t.Fatalf("did %+v, case %+v; want the send and the case resolved", got.Did, got.Case)
+	}
+	if deps := store.deps["s"]; !slices.Equal(deps, []string{"p"}) {
+		t.Fatalf("s depends on %v, want the plan", deps)
+	}
+}
+
+// A plan that takes no replan leaves the card waiting on its failed
+// dependency: the answer is refused naming that and the fitting actions,
+// and the case stays at the human.
+func TestActReplanRefusedWhileTheCardStillWaits(t *testing.T) {
+	ctx := context.Background()
+	r, store, _ := impasseRig(t)
+	store.closed["p"] = time.Now().UTC()
+	c, _, err := store.OpenCase(ctx, Case{TaskID: "s", Repository: "sf/repo", Kind: CaseDependencyFailed, StateKey: "c", Status: CaseAtHuman})
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.Act(ctx, ActInput{TaskID: "s", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActReplan, Args: map[string]any{"task_id": "c"}}})
+	var refused ErrActRefused
+	if want := "the planner did not take the work of #12, and card #13 still waits on it: retry it or close the card"; !errors.As(err, &refused) || err.Error() != want {
+		t.Fatalf("Act = %v, want the refusal %q", err, want)
+	}
+	if got, _ := store.CaseByID(ctx, c.ID); got.Status != CaseAtHuman {
+		t.Fatalf("case = %+v, want it at the human", got)
+	}
+}
+
+// replan with a dependency's id applies to a failed dependency of a
+// planned card alone, and each refusal names the fitting action.
+func TestReplanOfADependencyAppliesToAFailedOne(t *testing.T) {
+	a, _ := ActionByName(ActReplan)
+	deps := []DepFact{{TaskID: "t-a", Issue: 5, Status: "failed"}, {TaskID: "t-b", Issue: 6, Status: "running"}}
+	for _, c := range []struct {
+		plan, id, want string
+	}{
+		{"p", "t-a", ""},
+		{"", "t-a", "the card is in no plan, so no planner takes the work of t-a: retry it instead"},
+		{"p", "t-z", "the card does not depend on t-z: name a failed dependency's task id, or replan the card itself with no task id"},
+		{"p", "t-b", "dependency #6 is running, not failed, so the planner has none of its work to take: replan the card itself with no task id"},
+	} {
+		f := CaseFacts{Plan: c.plan, Dependencies: deps}
+		if got := a.Applies(f, Resolution{Action: ActReplan, Args: map[string]any{"task_id": c.id}}); got != c.want {
+			t.Errorf("replan of %s in plan %q = %q, want %q", c.id, c.plan, got, c.want)
+		}
+	}
+}

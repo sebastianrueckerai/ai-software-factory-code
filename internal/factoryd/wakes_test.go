@@ -477,26 +477,33 @@ func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 
 // A factory ask wakes the agent, the roll ladder's for the analysis it
 // attaches; a month cap's ask wakes nobody, since the cap refuses the
-// agent's own calls, and the cursor moves past it.
+// agent's own calls, nor does an ask the factory answered as it asked it
+// (an identical plan re-file's confirmation), and the cursor moves past
+// them.
 func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 	w, s, starter, _ := newWakeRig(t, nil)
-	ask := func(task, ask, source string) int64 {
+	ask := func(task string, detail map[string]any) int64 {
 		t.Helper()
-		id, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: task, Kind: EventQuestionAsked, Via: ViaFactoryd,
-			Detail: map[string]any{"ask": ask, "source": source}})
+		id, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: task, Kind: EventQuestionAsked, Via: ViaFactoryd, Detail: detail})
 		if err != nil {
 			t.Fatal(err)
 		}
 		return id
 	}
-	id := ask("t-cap", "The month cap is reached. Raise it?", SourceMonthCap)
-	if err := drainPass(t, w); err != nil {
-		t.Fatalf("Pass: %v", err)
+	for _, detail := range []map[string]any{
+		{"ask": "The month cap is reached. Raise it?", "source": SourceMonthCap},
+		{"question": "Confirmation of the spec and the criteria of plan revision 6", "revision": 6, "index": 1, "kind": QuestionConfirmation,
+			"settled": "the same plan as revision 5, confirmed there"},
+	} {
+		id := ask("t-cap", detail)
+		if err := drainPass(t, w); err != nil {
+			t.Fatalf("Pass: %v", err)
+		}
+		if calls := starter.recorded(); len(calls) != 0 || wakeCursorOf(t, s, "sf/wake") < id {
+			t.Fatalf("%v: wakes %+v, cursor %d; want none and the cursor past %d", detail, calls, wakeCursorOf(t, s, "sf/wake"), id)
+		}
 	}
-	if calls := starter.recorded(); len(calls) != 0 || wakeCursorOf(t, s, "sf/wake") < id {
-		t.Fatalf("wakes %+v, cursor %d; want none and the cursor past %d", calls, wakeCursorOf(t, s, "sf/wake"), id)
-	}
-	ask("t-roll", "3 rolls failed since the last one merged. Retry the roll?", SourceRollFailed)
+	ask("t-roll", map[string]any{"ask": "3 rolls failed since the last one merged. Retry the roll?", "source": SourceRollFailed})
 	if err := drainPass(t, w); err != nil {
 		t.Fatalf("Pass: %v", err)
 	}

@@ -762,14 +762,16 @@ func (t *taskRun) remarked(review Review) bool {
 // when it scheduled the call at since. asked is the escalation its gate
 // supervisor asked a human while the checks wait ran, comment its issue
 // comment, answered whether another wait read an answer to it
-// (versionBesideLadder); "" for none.
+// (versionBesideLadder); "" for none. resolution is rung 0's when it took
+// the question (versionCases).
 type besideRun struct {
-	stage    string
-	head     string
-	since    time.Time
-	asked    string
-	comment  int64
-	answered bool
+	stage      string
+	head       string
+	since      time.Time
+	asked      string
+	comment    int64
+	answered   bool
+	resolution *Resolution
 	*gateRun
 }
 
@@ -814,7 +816,7 @@ func (t *taskRun) scheduleBeside(head string, g *GateResults) {
 		start(policy.StageReview, ActivityModelReview, t.taskID, t.pr, head, review, lastVerdict(t.reviews), len(t.reviews)+1)
 	}
 	if t.auditBeside >= versionAuditBeside && runs(at(policy.StageAudit)) {
-		start(policy.StageAudit, ActivityGateAudit, t.taskID, t.pr, head, gates)
+		start(policy.StageAudit, ActivityGateAudit, t.taskID, t.pr, head, gates, t.round)
 	}
 }
 
@@ -838,7 +840,8 @@ func (t *taskRun) keepTrip(trip GateTrip) {
 // runs the gate sequentially after the checks, cancelling a call still
 // beside an older head. A human's answer to the awaited call's escalation,
 // or to the one it asked while the checks wait ran (versionBesideLadder),
-// runs the gate sequentially too, as gateActivity runs a gate again.
+// as rung 0's resolution of it (versionCases), runs the gate sequentially
+// too, as gateActivity runs a gate again.
 func (t *taskRun) besideGate(stage, gate, head string, out any, activity string, args ...any) (verdict, bool, error) {
 	if i := slices.IndexFunc(t.beside, func(f *besideRun) bool { return f.stage == stage }); i >= 0 {
 		f := t.beside[i]
@@ -846,7 +849,7 @@ func (t *taskRun) besideGate(stage, gate, head string, out any, activity string,
 		switch {
 		case f.head != head:
 			t.stopBeside(checksFailed, f)
-		case f.asked != "":
+		case f.asked != "" || f.answered:
 			if v, stop := t.besideAnswered(f); stop {
 				return v, true, nil
 			}
@@ -878,17 +881,27 @@ func (t *taskRun) askBeside(run *gateRun, reason string) (verdict, bool) {
 	if err := t.ask(reason, escalationQuestion(reason), nil); err != nil {
 		return verdict{final: "failed", reason: escalateFailed + errMessage(err)}, true
 	}
+	if res := t.takeResolution(); res != nil {
+		// rung 0 took the stop: the gate's stage takes its resolution, no
+		// one asked
+		f.answered, f.resolution = true, res
+		return verdict{}, false
+	}
 	f.asked, f.comment = reason, t.escalation
 	return verdict{}, false
 }
 
 // besideAnswered waits for the answer to f's question, asked while the
 // checks wait ran (askBeside), as gateEscalated waits for one: an answer
-// a later escalation's wait read answers it at once (fileAnswer), and
-// with none the question is asked again after a later escalation.
+// a later escalation's wait read answers it at once (fileAnswer), as rung
+// 0's resolution does, and with none the question is asked again after a
+// later escalation.
 func (t *taskRun) besideAnswered(f *besideRun) (verdict, bool) {
 	switch {
 	case f.answered:
+		if f.resolution != nil {
+			t.resolution = f.resolution
+		}
 		return t.gateAnswered("", "", nil)
 	case f.comment != t.escalation:
 		return t.gateEscalated(f.asked)
@@ -920,8 +933,13 @@ func (t *taskRun) fileAnswer(sig TaskSignal, waiting int64) bool {
 
 // insertAnswer puts text, the answer k names, among the human's answers
 // in answerKey's order, ahead of those Reconcile rebuilt before this run,
-// as Reconcile rebuilds them (answersFrom).
+// as Reconcile rebuilds them (answersFrom). An answer it holds already, as
+// the webhook's copy of a resolution's comment, goes in once
+// (versionCases).
 func (t *taskRun) insertAnswer(k answerKey, text string) {
+	if t.cases >= versionCases && slices.Contains(t.answerKeys, k) {
+		return
+	}
 	i := slices.IndexFunc(t.answerKeys, func(o answerKey) bool { return k.compare(o) < 0 })
 	if i < 0 {
 		i = len(t.answerKeys)
@@ -1026,7 +1044,7 @@ func (t *taskRun) stopBeside(why string, runs ...*besideRun) {
 // for good is a finding too.
 func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v verdict, stop bool) {
 	var a AuditResult
-	v, decided, err := t.besideGate(policy.StageAudit, GateAudit, commit, &a, ActivityGateAudit, t.taskID, t.pr, commit, *g)
+	v, decided, err := t.besideGate(policy.StageAudit, GateAudit, commit, &a, ActivityGateAudit, t.taskID, t.pr, commit, *g, t.round)
 	if decided {
 		return nil, v, true
 	}

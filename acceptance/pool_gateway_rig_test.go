@@ -29,19 +29,19 @@ import (
 	"gopkg.in/yaml.v3"
 )
 
-// gwPoolHead is the code project's file a policy PR wrote for these
-// proofs: the pool at EUR 10 under a project cap of EUR 100 — lower
-// than the global month ceiling, so a proof can bind each ceiling on
-// its own.
-const gwPoolHead = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 100\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 10\n"
+// gwPoolBase is the code project's file a policy PR wrote for these
+// proofs, its pool's money aside: a project cap of EUR 100, lower than
+// the global month ceiling, so a proof can bind each ceiling on its own,
+// and an escalation pool of 30 sessions.
+const gwPoolBase = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n  month_eur: 100\n  task_max_eur: 5\n" +
+	"escalation:\n  # the pool every extend and fund draws from, which a policy PR writes\n  pool:\n    sessions: 30\n"
+
+// gwPoolHead is gwPoolBase with the pool's money at EUR 10.
+const gwPoolHead = gwPoolBase + "    eur: 10\n"
 
 // gwPoolLanded is gwPoolHead after a confirmed top-up of EUR 1: only the
-// pool moved; the comment, the caps and every other key stand.
-const gwPoolLanded = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 100\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 11\n"
+// pool's money moved, the comment, the caps and every other key stand.
+const gwPoolLanded = gwPoolBase + "    eur: 11\n"
 
 // The policy.yaml ceilings the proofs hold every call to: the day's and
 // the month's, which no project file moves and neither can its pool.
@@ -60,21 +60,26 @@ const gwProjectCapEUR = 100.0
 // change lands on — in the deployed shape of the gateway package's own
 // test policy: the classes, limits, risk and envelope the gateway
 // validates on load, the global ceilings fixed, the alias's output limit
-// 32768. Only the file's budget keys move between versions of a proof.
+// 32768. Only the file's escalation pool moves between versions of a
+// proof.
 func accGatewayPolicy(id int64, file string) (policy.Version, error) {
 	var f struct {
 		Repository string `yaml:"repository"`
 		Budget     struct {
-			MonthEUR         float64 `yaml:"month_eur"`
-			TaskMaxEUR       float64 `yaml:"task_max_eur"`
-			RaiseMaxEUR      float64 `yaml:"raise_max_eur"`
-			DiscretionaryEUR float64 `yaml:"discretionary_eur"`
+			MonthEUR   float64 `yaml:"month_eur"`
+			TaskMaxEUR float64 `yaml:"task_max_eur"`
 		} `yaml:"budget"`
+		Escalation struct {
+			Pool struct {
+				Sessions int     `yaml:"sessions"`
+				EUR      float64 `yaml:"eur"`
+			} `yaml:"pool"`
+		} `yaml:"escalation"`
 	}
 	if err := yaml.Unmarshal([]byte(file), &f); err != nil {
 		return policy.Version{}, err
 	}
-	if f.Repository != "sf/code" || f.Budget.MonthEUR <= 0 || f.Budget.DiscretionaryEUR < 0 || f.Budget.RaiseMaxEUR <= 0 {
+	if f.Repository != "sf/code" || f.Budget.MonthEUR <= 0 || f.Escalation.Pool.EUR <= 0 {
 		return policy.Version{}, fmt.Errorf("the project file holds no budget the gateway loads: %q", file)
 	}
 	return policy.Version{ID: id, Commit: fmt.Sprintf("gw-%d", id), Tree: policy.Tree{
@@ -89,8 +94,8 @@ func accGatewayPolicy(id int64, file string) (policy.Version, error) {
 			Prices:          policy.ToolPrices{MaxOutputTokens: map[string]int{"small": 32768, "big": 32768}},
 		},
 		Projects: map[string]policy.ProjectConfig{accProjectName: {Repository: f.Repository, MergeRule: "human",
-			Budget: &policy.ProjectBudget{MonthEUR: f.Budget.MonthEUR, TaskMaxEUR: f.Budget.TaskMaxEUR,
-				RaiseMaxEUR: f.Budget.RaiseMaxEUR, DiscretionaryEUR: f.Budget.DiscretionaryEUR}}},
+			Budget:     &policy.ProjectBudget{MonthEUR: f.Budget.MonthEUR, TaskMaxEUR: f.Budget.TaskMaxEUR},
+			Escalation: &policy.Escalation{Pool: policy.Draw{Sessions: f.Escalation.Pool.Sessions, EUR: f.Escalation.Pool.EUR}}}},
 	}}, nil
 }
 

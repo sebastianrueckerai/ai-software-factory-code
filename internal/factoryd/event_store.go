@@ -101,7 +101,9 @@ const EventSessionSaid = "session_said"
 // EventQuestionAsked is factoryd's record of an escalation, the question
 // question_answered answers: detail {"question", "comment", "source",
 // "reason", and "choices" when the agent offered any}; source and
-// reason name the case the ask opens (caseKindOf).
+// reason name the case the ask opens (caseKindOf). "settled" carries the
+// answer factoryd gave as it asked (an identical plan re-file's
+// confirmation): such an ask pokes and wakes no one.
 const EventQuestionAsked = "question_asked"
 
 // EventAnalysisAttached is the chat agent's record of what it found about

@@ -10,7 +10,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The acceptance proof that a project's month pool lifts no spend
+// The acceptance proof that a project's escalation pool lifts no spend
 // ceiling (the pool-gateway caps card of plan #1399), on the recovered
 // pool-gateway rig: the real gateway handler, production policy.Fit and
 // the rig's TakeHold, against each ceiling bound on its own with the
@@ -23,18 +23,18 @@ import (
 // which are also the proof that the caller's card-funded allocation
 // books no spend — and keeps the key a human raises by a commit. Spend
 // alone and spend beside a sibling's live hold both bind, the hold
-// counted once. After a member-confirmed Top up of EUR 1 through the
+// counted once. After a human-confirmed Top up of EUR 1 through the
 // console's own surface, the landed file's fresh policy version —
 // installed explicitly into a fresh gateway, never read off a merge's
 // or reload's acknowledgement — holds every ceiling exactly as before.
 
 // TestPoolDoesNotLiftSpendCaps runs the ceiling matrix under the file a
 // policy PR wrote (the pool at EUR 10), then again under the file a
-// member-confirmed Top up landed (the pool at EUR 11): three ceilings,
+// human-confirmed Top up landed (the pool at EUR 11): three ceilings,
 // each bound on its own, before and after. The top-up is the real chat
-// flow — the agent's set_pool proposal, the member's Do it, the guarded
+// flow (the agent's set_pool proposal, the human's Do it, the guarded
 // commit, pull request and merge on the configuration repository's
-// fake, the reload's activation — and only discretionary_eur moves; the
+// fake, the reload's activation), and only escalation.pool.eur moves: the
 // fixed day and month caps of policy.yaml and the project's own lower
 // cap stand, and the gateway under the landed version refuses every
 // ceiling with the same decisions, the same literal wording and the
@@ -62,7 +62,7 @@ func TestPoolDoesNotLiftSpendCaps(t *testing.T) {
 	landedPress(t, "the top-up's Do it", body, topUp,
 		"The pool of "+accProjectName+" is €11.00 now, was €10.00: sf/infra#101 carries the change and the policy in force holds it.")
 
-	// the one write the top-up made: only discretionary_eur moved, from
+	// the one write the top-up made: only escalation.pool.eur moved, from
 	// 10 to 11 — the comment, the caps and every other key stand
 	landedFile := r.InfraFiles()[accInfraFile]
 	equal(t, "main's file after the top-up", landedFile, gwPoolLanded)
@@ -70,7 +70,7 @@ func TestPoolDoesNotLiftSpendCaps(t *testing.T) {
 	if len(commits) != 1 {
 		t.Fatalf("the top-up made %d commits, want the one: %+v", len(commits), commits)
 	}
-	if msg := commits[0].Message; !strings.HasPrefix(msg, "Project "+accProjectName+": month pool +1.00 EUR\n\n") {
+	if msg := commits[0].Message; !strings.HasPrefix(msg, "Project "+accProjectName+": escalation pool +1.00 EUR\n\n") {
 		t.Errorf("the top-up's commit message = %q", msg)
 	}
 	// the pool the policy in force holds is the reload's activation
@@ -96,10 +96,10 @@ func TestPoolDoesNotLiftSpendCaps(t *testing.T) {
 		t.Fatal(err)
 	}
 	equal(t, "the fixed global caps under the landed policy", after.Document.Budget, head.Document.Budget)
-	budget := after.Tree.Projects[accProjectName].Budget
-	if budget == nil || budget.MonthEUR != gwProjectCapEUR || budget.TaskMaxEUR != 5 ||
-		budget.RaiseMaxEUR != 1 || budget.DiscretionaryEUR != 11 {
-		t.Fatalf("the landed project budget = %+v, want only the pool moved to EUR 11 under the unchanged cap", budget)
+	landed := after.Tree.Projects[accProjectName]
+	if b := landed.Budget; b == nil || b.MonthEUR != gwProjectCapEUR || b.TaskMaxEUR != 5 ||
+		landed.Escalation == nil || landed.Escalation.Pool != (policy.Draw{Sessions: 30, EUR: 11}) {
+		t.Fatalf("the landed project = %+v, want only the pool moved to EUR 11 under the unchanged cap", landed)
 	}
 	gwCapsRefusals(t, "the pool at EUR 11", after)
 }

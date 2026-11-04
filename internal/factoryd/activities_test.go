@@ -2265,9 +2265,9 @@ func TestEscalateFailsBeforeTheWaitWhenItsRowCannotBeWritten(t *testing.T) {
 // The agent's choices ride with its escalation, sanitised like the reason
 // since a click posts one as the member's comment: on the intake event the
 // board reads, on the timeline's escalated step, and in the question_asked
-// row's detail beside the question and the comment. A healed re-ask's row
-// names the question it asks again; an escalation without choices records
-// none.
+// row's detail beside the question, the comment and its case. A healed
+// re-ask's row names the question it asks again and the live case it asks
+// in. An escalation without choices records none.
 func TestEscalateRecordsTheChoices(t *testing.T) {
 	r, store, objects := newActivityRunner(t, prTask, &prForgejo{labels: map[int64][]string{4: {"agent", "state/running"}}})
 	rows := &fakeEventRecorder{}
@@ -2296,13 +2296,13 @@ func TestEscalateRecordsTheChoices(t *testing.T) {
 	}
 	want := []Event{
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent",
+			Detail: map[string]any{"question": "Which file?", "choices": []string{"a.txt", "b.txt", "ask ＠mallory", "Leave it waiting", "End the card"}, "comment": int64(701), "source": "agent", "case_id": int64(1),
 				"reason": "The agent asks: Which file?\nWhy: open\nRecommendation: a.txt, it is first",
 				"ask":    "Which file?", "why": "open", "info": plainInfo, "recommendation": "a.txt, it is first"}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason}},
+			Detail: map[string]any{"question": "Which file?", "choices": sane, "comment": int64(702), "source": "supervisor", "reason": healedReason, "case_id": int64(1)}},
 		{Repository: "sf/repo", TaskID: "t1", IssueNumber: 4, Kind: EventQuestionAsked, Actor: FactoryDecider, Via: ViaFactoryd,
-			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor",
+			Detail: map[string]any{"question": "This card stopped and needs your decision: how should it go on?", "comment": int64(703), "source": "supervisor", "case_id": int64(2),
 				"reason": "supervisor escalated: the check cannot pass\n\nProgress: 3 commands",
 				"ask":    "This card stopped and needs your decision: how should it go on?",
 				"why":    "supervisor escalated: the check cannot pass", "info": plainInfo,

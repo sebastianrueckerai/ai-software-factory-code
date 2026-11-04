@@ -158,7 +158,7 @@ func TestChatAnswersAPlanQuestion(t *testing.T) {
 	for _, in := range []toolInput{{TaskID: "t-p", Revision: 1, Question: 2, Text: "7 days"}, {TaskID: "t-p", Decision: factoryd.DecisionConfirm, Text: "fine"}} {
 		status, msg := refused(t, r, "answer", in)
 		equal(t, "an answer with no question open", []any{status, msg}, []any{http.StatusConflict,
-			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer); its next revision with none files the cards, request_changes sends it back to the planner."})
+			"Card #20 waits on a human: an answer, an approval or a decision, not an open plan question: answer its open questions (answer). Its next revision with none files the cards, request_changes sends it back to the planner."})
 	}
 }
 

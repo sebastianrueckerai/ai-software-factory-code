@@ -1094,7 +1094,7 @@ func TestPoolProposalPanel(t *testing.T) {
 	}
 	const driver = `var fs = require("fs"), vm = require("vm");
 var listeners = [], posts = [], made = [], sends = [], byId = {}, poolHostEl = null;
-var poolLine = {present: false, can_ask: true, words: "no pool: discretionary_eur is absent or 0, every agent raise waits for a member"};
+var poolLine = {present: false, can_ask: true, words: "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"};
 function el() {
   var e = {textContent: "", innerHTML: "", hidden: false, className: "", value: "", disabled: false,
     dataset: {login: "sebastian", project: "p"}, style: {setProperty: function () {}},
@@ -1176,7 +1176,7 @@ Promise.resolve().then(function () {
   return tick(); // the opening read settles: the pool control stands under the log
 }).then(function () {
   out.ctlRendered = !!poolHostEl && poolHostEl.innerHTML.indexOf("data-pool-ctl") >= 0 &&
-    poolHostEl.innerHTML.indexOf("Set the pool to, EUR") >= 0 && poolHostEl.innerHTML.indexOf("no pool: discretionary_eur") >= 0;
+    poolHostEl.innerHTML.indexOf("Set the pool to, EUR") >= 0 && poolHostEl.innerHTML.indexOf("0 of 30 sessions") >= 0;
   var card = cardFake("tok9", poolSet);
   fire(byId["chat-log"], "click", {target: card.skip});
   out.skipRemoved = card.card.gone === true;
@@ -1188,7 +1188,7 @@ Promise.resolve().then(function () {
   var turn = posts.filter(function (p) { return /\/chat$/.test(p.url); })[0];
   var sent = sends[sends.length - 1];
   out.controlStartsATurn = !!turn && !!sent && sent.parts.some(function (p) {
-    return p[0] === "message" && p[1] === "Set the month pool to EUR 10 — two verified findings"; });
+    return p[0] === "message" && p[1] === "Set the escalation pool to EUR 10: two verified findings"; });
   var card = cardFake("tok1", poolSet);
   card.input.value = "12";
   fire(byId["chat-log"], "click", {target: card.doit});
@@ -1236,7 +1236,7 @@ Promise.resolve().then(function () {
 		`<p class="pfoot"><button type="button" class="doit" data-doit>Do it</button> <button type="button" class="skip" data-skip>Skip</button></p></div>`; got["setHTML"] != want {
 		t.Errorf("the set_pool proposal =\n%s\nwant\n%s", got["setHTML"], want)
 	}
-	const poolWords = "no pool: discretionary_eur is absent or 0, every agent raise waits for a member"
+	const poolWords = "0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month"
 	if want := `<div class="poolctl" data-pool-ctl><p class="pool-note">` + poolWords + `</p>` +
 		`<p class="pool-why">Only an approver of the project asks for a pool change.</p></div>`; got["readerCtl"] != want {
 		t.Errorf("the non-approver's pool line =\n%s\nwant\n%s", got["readerCtl"], want)
@@ -1413,7 +1413,7 @@ Promise.resolve().then(function () {
 // literal activation-pending words with the pull request's identity, an
 // audit row that could not be written its literal repair words, and
 // neither completed HTTP answer turns the proposal into an applied one —
-// the card keeps its Do it, nothing claims the new ceiling counts, and
+// the card keeps its Do it, nothing claims the new pool counts, and
 // only the stream's applied line, which names the pull request and the
 // policy holding it, ever says the change loaded. Run under node, which
 // the test needs.
@@ -1424,7 +1424,7 @@ func TestPoolPanelPending(t *testing.T) {
 	}
 	const (
 		pending = "The pool change is merged as sf/infra#1482, but the policy in force still holds the pool of demo-app at EUR 10.00: " +
-			"the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it."
+			"the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 14.00."
 		repair = "The pool change is merged as sf/infra#1482, but its pool_changed row could not be written: the events store is down. " +
 			"The change stands: write the missing row (action set, from_eur 10.00, confirmed_eur 4.00, to_eur 14.00, " +
 			"reason \"the month's two verified findings\") and do not repeat the change."

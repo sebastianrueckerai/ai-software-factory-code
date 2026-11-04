@@ -587,7 +587,7 @@ func main() {
 		Policies:         store,
 		Costs:            store,
 		Dependencies:     store,
-		Pools:            store,
+		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
@@ -608,9 +608,7 @@ func main() {
 		Hold:       releases.Hold,
 		MainCommit: releases.MainCommit,
 		DeployNow:  releases.DeployNow,
-		AnswerWhole: func(ctx context.Context, taskID string, comment int64, by string) error {
-			return workflows.Signal(ctx, taskID, factoryd.SignalAnswerWhole, factoryd.TaskSignal{Author: by, Comment: comment})
-		},
+		Act:        runner.Act,
 		AnswerPlan: func(ctx context.Context, taskID string, revision, idx int, decision, answer, by string) error {
 			return factoryd.AnswerPlan(ctx, store, workflows, taskID, revision, idx, decision, answer, by)
 		},
@@ -632,8 +630,8 @@ func main() {
 		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
 			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)
 		},
-		RetryPlanCard: func(ctx context.Context, taskID, by string) (int64, error) {
-			return runner.RetryPlanCard(ctx, taskID, by)
+		RetryCard: func(ctx context.Context, taskID, by string) (int64, error) {
+			return runner.RetryCard(ctx, taskID, by)
 		},
 		RequestImage: runner.RequestImage,
 		GoCard: func(ctx context.Context, taskID, by string) (int64, error) {
@@ -674,6 +672,7 @@ func main() {
 		BoardDigest:    runner.BoardDigest,
 		OpenCasesOf:    store.OpenCasesOf,
 		CaseSteps:      store.CaseSteps,
+		NewestAskCase:  store.NewestAskCase,
 		SessionFunded:  runner.SessionFunded,
 		Chat:           store,
 		ChatTokens:     store,

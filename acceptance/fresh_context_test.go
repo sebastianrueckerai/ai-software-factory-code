@@ -41,9 +41,11 @@ const (
 	// today's date, built at use time — a const holds no runtime value —:
 	// the code project's status line, #11 running and #5 waiting in the
 	// Queued column before and after its move, the chat's task no card,
-	// and its sandbox images, none pinned.
+	// the policy's escalation pool with nothing drawn, and its sandbox
+	// images, none pinned.
 	statusHead = "\n\nThe project now:\nToday is "
-	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00, the factory's whole ledger\n" +
+	statusTail = " UTC.\nStatus: working; 1 working; 0 need you; spend this month €0.00 of €50.00, the factory's whole ledger" +
+		"; pool: 0 of 30 sessions, 0 h of 30 h agent time and €0.00 of €60.00 drawn this UTC month\n" +
 		"Sandbox images: none; every card runs the factory image."
 )
 

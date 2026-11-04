@@ -214,18 +214,18 @@ func TestProjectsShowEachEnvironmentsDeployState(t *testing.T) {
 
 	read = nil
 	equal(t, "the tool's read", reads(t, r, g, "settings", `{}`), []string{"Projects (4):\n" +
-		"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + noPoolRead() + "\n" +
+		"ai-software-factory-code (sf/code): objects seed; process maintenance; merge rule human; made by the infra repository and the seed; GitHub export none; " + defaultPoolRead() + "\n" +
 		"demo-app (demo-app/demo-app): objects factory; process none; merge rule auto; registered, not ready yet; GitHub export none; " +
 		"environments demo-staging: deploy/staging at demo-staging.aisoftwarefactory.world (ready), " +
-		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod); " + noPoolRead() + "\n" +
+		"demo-prod: deploy/prod (not deployed yet: no green build has written deploy/prod); " + defaultPoolRead() + "\n" +
 		"broken (broken/broken): objects factory; process none; merge rule auto; registered, not ready yet; GitHub export none; " +
 		"environments broken-staging: deploy/staging (not ready: Deployment/broken-staging/app dry-run failed: no matches for kind Thing), " +
 		"broken-prod: deploy/prod (not deployed yet: Flux has not reconciled it yet), broken-new: deploy/new (no Flux Kustomization yet), " +
 		"broken-locked: deploy/locked (deploy state unreadable), " +
 		"broken-gone: deploy/gone (not ready: kustomization path not found: stat /tmp/kustomization-103304189/deploy/gone: no such file or directory), " +
-		"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing); " + noPoolRead() + "\n" +
+		"broken-first: deploy/first (not deployed yet: Deployment/broken-first/app dry-run failed: no matches for kind Thing); " + defaultPoolRead() + "\n" +
 		"waiting (waiting/waiting): objects factory; process none; merge rule auto; not registered; GitHub export none; " +
-		"environments waiting-staging: deploy/staging (no Flux Kustomization yet); " + noPoolRead()})
+		"environments waiting-staging: deploy/staging (no Flux Kustomization yet); " + defaultPoolRead()})
 	slices.Sort(read)
 	equal(t, "the tool's reads", read, readOnce)
 }

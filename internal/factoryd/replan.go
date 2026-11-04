@@ -121,7 +121,7 @@ func (r *Runner) fundPlanner(ctx context.Context, id string) error {
 	if short <= 0 {
 		return nil
 	}
-	_, _, err = r.store.FundCard(ctx, t.ID, float64(short)/100, nil, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber,
+	_, _, err = r.store.FundCard(ctx, t.ID, float64(short)/100, 0, Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber,
 		Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the planner's session"}})
 	return err
 }

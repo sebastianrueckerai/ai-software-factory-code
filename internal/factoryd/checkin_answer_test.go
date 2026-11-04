@@ -40,9 +40,11 @@ func (h *workflowHarness) beforeCheckinAnswer() {
 // (checkinBudget): €1.06 spent of a €10 card's €1.00 share. A run from
 // before the change verifies alone, and its next session stops at the same
 // share before any model call.
+// The share's grant is a run's from before versionCases.
 func TestCheckinShareStopWithOpenPRGrantsTheShare(t *testing.T) {
 	for _, before := range []bool{false, true} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if before {
 			h.beforeCheckinAnswer()
 		}
@@ -98,9 +100,11 @@ func TestCheckinShareStopWithOpenPRGrantsTheShare(t *testing.T) {
 // open: the answer grants the share and records it, beside the
 // verification of the head, which buys no session. A run from before the
 // change verifies alone.
+// The share's grant is a run's from before versionCases.
 func TestCheckinShareResumeWithOpenPRGrantsTheShare(t *testing.T) {
 	for _, before := range []bool{false, true} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if before {
 			h.beforeCheckinAnswer()
 		}
@@ -134,9 +138,11 @@ func TestCheckinShareResumeWithOpenPRGrantsTheShare(t *testing.T) {
 // its own. A run from before the change verifies c1, holds the moved head
 // with a branch read, and its next stop states that no reply can change
 // the head c1.
+// The share's grant is a run's from before versionCases.
 func TestCheckinAnswerVerifiesTheSessionsOwnPush(t *testing.T) {
 	for _, before := range []bool{false, true} {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		if before {
 			h.beforeCheckinAnswer()
 		}

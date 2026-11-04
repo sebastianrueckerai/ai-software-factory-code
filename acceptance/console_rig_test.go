@@ -1,6 +1,7 @@
 package acceptance
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/base64"
@@ -137,21 +138,24 @@ type AcceptanceRig struct {
 	onReload   func()
 	reloadFail error
 	recordFail error
-	pool       *policy.ProjectBudget
+	pool       *policy.Escalation
 	// The pool-funding seams: the login the fake Forgejo answers
 	// (LoginAs), the repositories' writers — anna is a member of the code
 	// project too —, the session floors whose budget refusals a fund
 	// answers (SetSessionFloor), the autonomy the loaded policy holds
-	// (SetLoadedAutonomy), the aggregate read's failure (FailPoolReads)
-	// and the model-spend total the pool never reads (SetProjectSpend).
+	// (SetLoadedAutonomy), the draws read's failure (FailPoolReads), the
+	// model-spend total the pool never reads (SetProjectSpend), and the
+	// answers Act took with the refusal it answers (RefuseActs).
 	user         string
 	writers      map[string][]string
 	sessionFloor map[string]float64
 	autonomy     string
 	mergeRule    string
 	approvers    []string
-	fundedErr    error
+	drawnErr     error
 	spend        *factoryd.ProjectSpend
+	acted        []factoryd.ActInput
+	actRefusal   string
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -216,7 +220,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	cfg := console.Config{
 		PublicURL: "https://console.example", ForgejoURL: fg.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
-		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a, Pools: a,
+		Sessions: a, Tasks: a, Timelines: a.timelines, Policies: a, Costs: a, Approvals: a, Events: a, Chat: a, Projects: a,
 		Bus: a.bus,
 		Writers: func(context.Context) (string, map[string][]string, error) {
 			a.mu.Lock()
@@ -282,6 +286,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
 	cardReads(&cfg, a)
+	cfg.Act, cfg.PoolDrawn = a.Act, a.PoolDrawn
 	cfg.Figures = figures
 	c, err := console.New(cfg)
 	if err != nil {
@@ -292,8 +297,10 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 }
 
 // cardReads wires cfg's card reads over tasks: a card's digest is its
-// head from the task row, the rig holds no card step and no case, and
-// the board digest is empty.
+// head from the task row, the rig holds no card step, a card waiting on a
+// human has its live case 1 as after the cases' heal, and the board
+// digest is empty. Its case door draws nothing and refuses every answer:
+// a rig that answers cards wires its own Act.
 func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.CardDigest = func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
 		k, _, err := tasks.Task(ctx, taskID)
@@ -304,8 +311,29 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return "", factoryd.ErrNoStep("the acceptance rig holds no card step")
 	}
 	cfg.BoardDigest = func(context.Context, string) (factoryd.BoardDigest, error) { return factoryd.BoardDigest{}, nil }
-	cfg.OpenCasesOf = func(context.Context, string) ([]factoryd.Case, error) { return nil, nil }
+	cfg.OpenCasesOf = func(ctx context.Context, taskID string) ([]factoryd.Case, error) {
+		if k, ok, err := tasks.Task(ctx, taskID); err != nil || !ok || k.Status != "waiting-human" {
+			return nil, err
+		}
+		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
+	// the newest of the cases OpenCasesOf answers that an answer on the
+	// card ends, as the store reads it
+	cfg.NewestAskCase = func(ctx context.Context, taskID string) (factoryd.Case, error) {
+		open, err := cfg.OpenCasesOf(ctx, taskID)
+		var newest factoryd.Case
+		for _, k := range open {
+			if factoryd.AnsweredOnCard(k.Kind) && k.ID > newest.ID {
+				newest = k
+			}
+		}
+		return newest, err
+	}
+	cfg.Act = func(context.Context, factoryd.ActInput) (factoryd.ActResult, error) {
+		return factoryd.ActResult{}, factoryd.ErrActRefused("this rig answers no case")
+	}
+	cfg.PoolDrawn = func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil }
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers
@@ -917,71 +945,102 @@ func (a *AcceptanceRig) SetCardBudget(id string, eur float64) {
 	}
 }
 
-// FundCard mirrors PGStore.FundCard, the Actions fake this rig is: with
-// bounds the raise is the agent's own — its row stamped decider agent, the
-// repository's agent-funded sum read under the same lock and the raise
-// held against the month's pool and the card's cap — and without them the
-// member decided it and no bound applies. The money is judged before
-// anything moves — the raise finite, above zero and whole cents, the
-// budget it lands on whole cents, the two summed in integer cents as
-// PGStore's numeric sums them — and the budget's change
-// and the card_funded row commit as one under a.mu, the row appended by
-// the spine's own fallible append so a spine that refuses it leaves the
-// budget untouched too. No task: ErrNotFound.
-func (a *AcceptanceRig) FundCard(_ context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (float64, float64, error) {
+// Act mirrors Runner.Act, the case door this rig is: a refusal the test
+// set (RefuseActs) answers ErrActRefused with nothing done; else the caller
+// posts a case-resolving answer, and the answer's draw lands as the
+// store's rows land it, one pool draw of the answer's rung: card_funded
+// for its money, which raises the card's budget, and card_extended for
+// its sessions, which raise the card's; then the answer's own row. The
+// table's and the bounds' refusals are factoryd's own, tested there.
+func (a *AcceptanceRig) Act(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
 	a.mu.Lock()
-	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == id })
+	a.acted = append(a.acted, in)
+	refusal := a.actRefusal
+	a.mu.Unlock()
+	if refusal != "" {
+		return factoryd.ActResult{}, factoryd.ErrActRefused(refusal)
+	}
+	out := factoryd.ActResult{Text: fmt.Sprintf("Case %d took %s.", in.CaseID, in.Res.Action)}
+	resolves := in.CaseID != 0 && in.Res.Action != factoryd.ActNote && in.Res.Action != factoryd.ActWithdraw
+	if resolves && in.Post != nil {
+		var err error
+		if out.Comment, err = in.Post(ctx); err != nil {
+			return out, err
+		}
+	}
+	eur, _ := in.Res.Args["eur"].(float64)
+	if in.Res.Action != factoryd.ActFund {
+		eur = 0
+	}
+	sessions, _ := in.Res.Args["sessions"].(int)
+	if in.Res.Action != factoryd.ActExtend {
+		sessions = 0
+	}
+	if in.Res.Fund != nil {
+		eur += in.Res.Fund.EUR
+	}
+	a.mu.Lock()
+	i := slices.IndexFunc(a.tasks, func(t factoryd.BoardTask) bool { return t.ID == in.TaskID })
 	if i < 0 {
 		a.mu.Unlock()
-		return 0, 0, factoryd.ErrNotFound
+		return out, factoryd.ErrNotFound
 	}
-	from := a.tasks[i].BudgetEUR
-	switch {
-	case math.IsNaN(eur) || math.IsInf(eur, 0) || !(eur > 0):
-		a.mu.Unlock()
-		return 0, 0, fmt.Errorf("the raise of %s is no amount in EUR above zero", strconv.FormatFloat(eur, 'f', -1, 64))
-	case !accWholeCents(eur):
-		a.mu.Unlock()
-		return 0, 0, fmt.Errorf("the raise of %s is no amount in whole cents", strconv.FormatFloat(eur, 'f', -1, 64))
-	case !accWholeCents(from):
-		a.mu.Unlock()
-		return 0, 0, fmt.Errorf("the card's budget of %s is no amount in whole cents", strconv.FormatFloat(from, 'f', -1, 64))
-	}
-	raiseCents, fromCents := factoryd.Cents(eur), factoryd.Cents(from)
-	if raiseCents < 0 || fromCents < 0 || raiseCents > math.MaxInt64-fromCents {
-		a.mu.Unlock()
-		return 0, 0, fmt.Errorf("the raise of %s on %s reaches no amount in whole cents",
-			strconv.FormatFloat(eur, 'f', -1, 64), strconv.FormatFloat(from, 'f', -1, 64))
-	}
-	fromEur, toEur := float64(fromCents)/100, float64(fromCents+raiseCents)/100
-	detail := maps.Clone(e.Detail)
-	if detail == nil {
-		detail = map[string]any{}
-	}
-	if bounds != nil {
-		detail["decider"] = "agent"
-		funded := a.agentFundedLocked(e.Repository, time.Now())
-		if raiseCents > factoryd.Cents(bounds.PoolEUR)-factoryd.Cents(funded) {
-			short := &factoryd.PoolSpentError{Funded: funded}
-			a.mu.Unlock()
-			return 0, 0, short
+	k := &a.tasks[i]
+	row := func(kind string, detail map[string]any) (factoryd.Event, error) {
+		for key, v := range in.Detail {
+			if _, set := detail[key]; !set {
+				detail[key] = v
+			}
 		}
-		if fromCents+raiseCents > factoryd.Cents(bounds.CardCapEUR) {
-			a.mu.Unlock()
-			return 0, 0, &factoryd.CardCapError{Budget: from}
+		return a.appendEventLocked(factoryd.Event{Repository: k.Repository, TaskID: k.ID, IssueNumber: k.IssueNumber, Kind: kind,
+			Actor: in.By, Via: in.Via, Detail: detail})
+	}
+	var rows []factoryd.Event
+	add := func(e factoryd.Event, err error) error {
+		rows = append(rows, e)
+		return err
+	}
+	var err error
+	if eur > 0 {
+		from := k.BudgetEUR
+		k.BudgetEUR += eur
+		err = add(row(factoryd.EventCardFunded, map[string]any{"pool": true, "rung": in.Rung, "case_id": in.CaseID,
+			"amount_eur": eur, "from_eur": from, "to_eur": k.BudgetEUR}))
+	}
+	if err == nil && sessions > 0 {
+		k.Usage.RaisedSessions += sessions
+		err = add(row(factoryd.EventCardExtended, map[string]any{"pool": true, "rung": in.Rung, "case_id": in.CaseID,
+			"sessions": sessions, "agent_time_s": 0, "amount_eur": 0.0}))
+	}
+	if err == nil && resolves {
+		detail := map[string]any{"action": in.Res.Action, "case_id": in.CaseID, "answer": cmp.Or(in.Res.Note, in.Res.Action)}
+		if out.Comment != 0 {
+			detail["comment"] = out.Comment
 		}
+		err = add(row(factoryd.EventQuestionAnswered, detail))
 	}
-	detail["from_eur"], detail["to_eur"], detail["amount_eur"] = fromEur, toEur, float64(raiseCents)/100
-	e.Detail = detail
-	stored, err := a.appendEventLocked(e)
-	if err != nil {
-		a.mu.Unlock()
-		return 0, 0, err
-	}
-	a.tasks[i].BudgetEUR = toEur
 	a.mu.Unlock()
-	a.bus.Publish(stored)
-	return fromEur, toEur, nil
+	if err != nil {
+		return out, err
+	}
+	for _, e := range rows {
+		a.bus.Publish(e)
+	}
+	return out, nil
+}
+
+// RefuseActs makes Act refuse every next answer with why; "" clears it.
+func (a *AcceptanceRig) RefuseActs(why string) {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	a.actRefusal = why
+}
+
+// Acted are the answers Act took, in order.
+func (a *AcceptanceRig) Acted() []factoryd.ActInput {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	return slices.Clone(a.acted)
 }
 
 // accWholeCents reports whether eur is money this rig stores: finite and
@@ -1042,21 +1101,6 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 	a.mu.Unlock()
 	a.bus.Publish(stored)
 	return nil
-}
-
-func (a *AcceptanceRig) ExtendCard(_ context.Context, id string, sessions, lines int, eur float64, _ factoryd.Event) (float64, float64, error) {
-	a.mu.Lock()
-	defer a.mu.Unlock()
-	for i := range a.tasks {
-		if a.tasks[i].ID == id {
-			from := a.tasks[i].BudgetEUR
-			a.tasks[i].BudgetEUR += eur
-			a.tasks[i].Usage.ExtraAttempts += sessions
-			a.tasks[i].Usage.ExtraLines += lines
-			return from, a.tasks[i].BudgetEUR, nil
-		}
-	}
-	return 0, 0, factoryd.ErrNotFound
 }
 
 func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }
@@ -1182,44 +1226,39 @@ func (a *AcceptanceRig) Record(_ context.Context, e factoryd.Event) (int64, erro
 	return stored.ID, nil
 }
 
-// AgentFundedEUR mirrors PGStore.AgentFundedEUR: the card_funded rows of
-// repository the agent decided via the chat in the UTC calendar month of
-// month, summed. FailPoolReads makes it answer its failure instead, the
-// unreadable aggregate no readout may show as a zero use.
-func (a *AcceptanceRig) AgentFundedEUR(_ context.Context, repository string, month time.Time) (float64, error) {
+// PoolDrawn mirrors PGStore.PoolDrawn: the pool draws of repository's
+// cards in the UTC calendar month of month, every rung's, in three parts.
+// FailPoolReads makes it answer its failure instead, the unreadable draws
+// no readout may show as zero.
+func (a *AcceptanceRig) PoolDrawn(_ context.Context, repository string, month time.Time) (policy.Draw, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	if a.fundedErr != nil {
-		return 0, a.fundedErr
+	if a.drawnErr != nil {
+		return policy.Draw{}, a.drawnErr
 	}
-	return a.agentFundedLocked(repository, month), nil
-}
-
-// agentFundedLocked is the agent-funded sum with a.mu held, the figure
-// FundCard's own pool check reads under the same lock.
-func (a *AcceptanceRig) agentFundedLocked(repository string, month time.Time) float64 {
 	month = month.UTC()
 	from := time.Date(month.Year(), month.Month(), 1, 0, 0, 0, 0, time.UTC)
 	until := from.AddDate(0, 1, 0)
-	var eur float64
+	var d policy.Draw
 	for _, e := range a.events {
-		if e.Repository != repository || e.Kind != factoryd.EventCardFunded || e.Via != factoryd.ViaChat ||
-			e.Detail["decider"] != "agent" || e.At.Before(from) || !e.At.Before(until) {
+		if e.Repository != repository || e.Kind != factoryd.EventCardFunded && e.Kind != factoryd.EventCardExtended ||
+			e.Detail["pool"] != true || e.At.Before(from) || !e.At.Before(until) {
 			continue
 		}
-		if amount, ok := e.Detail["amount_eur"].(float64); ok {
-			eur += amount
-		}
+		sessions, _ := e.Detail["sessions"].(int)
+		seconds, _ := e.Detail["agent_time_s"].(int)
+		eur, _ := e.Detail["amount_eur"].(float64)
+		d = d.Plus(policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second, EUR: eur})
 	}
-	return eur
+	return d, nil
 }
 
-// FailPoolReads makes AgentFundedEUR answer err — nil clears it — the
-// aggregate read's failure a readout must show, never as a zero use.
+// FailPoolReads makes PoolDrawn answer err, nil clears it: the draws
+// read's failure a readout must show, never as zero.
 func (a *AcceptanceRig) FailPoolReads(err error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	a.fundedErr = err
+	a.drawnErr = err
 }
 
 func (a *AcceptanceRig) ProjectEvents(_ context.Context, repository string, after int64, limit int) ([]factoryd.Event, error) {
@@ -1578,7 +1617,7 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 	code := projects[accProjectName]
 	code.Autonomy = autonomy
 	if pool != nil {
-		code.Budget = pool
+		code.Budget, code.Escalation = &policy.ProjectBudget{MonthEUR: 600, TaskMaxEUR: 5}, pool
 	}
 	projects[accProjectName] = code
 	return policy.Version{ID: 4, Commit: "c9d98bb0aa11", LoadedAt: time.Now(), ActivatedAt: time.Now(),

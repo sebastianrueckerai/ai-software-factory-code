@@ -263,6 +263,7 @@ func replaySplice(t *testing.T, events []*historypb.HistoryEvent) {
 func TestCheckinSpendResumeBeforeTheChangeBuysSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	h.env.OnGetVersion("checkin-spend", workflow.DefaultVersion, versionCheckinSpend).Return(workflow.DefaultVersion)
+	h.beforeCases()
 	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: check-in call cap reached",
 		PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
 	var steps []string

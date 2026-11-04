@@ -334,6 +334,10 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 			g.event(0, EventCardCreated, FactoryDecider, map[string]any{"by": "sebastian", "issue": 1410, "budget_eur": 7.0})
 		}, []DigestFlag{{"budget_moved_no_event", "9.00 EUR not 7.00 EUR"}}},
 		{"a human card, which spends no budget", func(c *Task) { c.Kind, c.BudgetEUR = "human", 0 }, nil, nil},
+		{"a budget the size gate moved on a card filed before the rows recorded it", func(c *Task) { c.Size, c.BudgetEUR = "small", 5 }, func(t *testing.T, g digestRig) {
+			g.event(1, EventCardFunded, FactoryDecider, map[string]any{"size": "small", "from_eur": 5.0, "to_eur": 4.0, "amount_eur": -1.0, "by": "size gate"})
+			g.event(2, EventCardFunded, "sebastian", map[string]any{"amount_eur": 1.0})
+		}, nil},
 		{"a budget a fund and an extend moved", func(c *Task) { c.BudgetEUR = 7.5 }, func(t *testing.T, g digestRig) {
 			g.event(5, EventCardFunded, "sebastian", map[string]any{"amount_eur": 2.0})
 			g.event(6, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "lines": 0, "amount_eur": 0.5})
@@ -367,6 +371,27 @@ func TestCardDigestWithoutATimelineRendersTheEventsAlone(t *testing.T) {
 	want := "#1410 · budget 5.00 spent 1.00 holds 0.00 EUR · waiting-human\n" +
 		"   1 +0:00   filed by webhook       → direct card\n" +
 		"   2 +0:30   ask                    → agent_escalate: Which file should change?\n" +
+		"flags: none\n"
+	if got := g.digest(t).Render(); got != want {
+		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// A raise of the ceiling is a step of its own, which names the ceiling it
+// raised to, and an extend that bought agent time says so beside its
+// sessions; an extend without agent time reads as it always did.
+func TestCardDigestReadsTheCeilingAndTheAgentTime(t *testing.T) {
+	g := newDigestRig(func(c *Task) { c.BudgetEUR = 5.5 })
+	g.event(1, EventCardFunded, "sebastian", map[string]any{"ceiling_eur": 9.0, "amount_eur": 0.0, "from_eur": 5.0, "to_eur": 5.0})
+	g.event(2, EventCardExtended, "sebastian", map[string]any{"sessions": 1, "agent_time_s": 1800, "lines": 0, "amount_eur": 0.0})
+	g.event(3, EventCardExtended, "sebastian", map[string]any{"sessions": 2, "agent_time_s": 0, "lines": 100, "amount_eur": 0.5})
+	g.event(4, EventCardExtended, "sebastian", map[string]any{"sessions": 0, "agent_time_s": 0, "lines": 0, "checkin_shares": 1, "amount_eur": 0.0})
+	want := "#1410 · budget 5.50 spent 0.00 holds 0.00 EUR · slot held · running\n" +
+		"   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:01   ceiling by sebastian   → raised to 9.00 EUR\n" +
+		"   3 +0:02   extended by sebastian  → 1 session, 30 minutes of agent time, 0 lines, 0.00 EUR\n" +
+		"   4 +0:03   extended by sebastian  → 2 sessions, 100 lines, 0.50 EUR\n" +
+		"   5 +0:04   extended by sebastian  → 0 sessions, 1 check-in share, 0 lines, 0.00 EUR\n" +
 		"flags: none\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)

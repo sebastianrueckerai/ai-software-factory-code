@@ -414,6 +414,81 @@ func TestClosedDependencyOpensCard(t *testing.T) {
 	})
 }
 
+// The activity names the first dependency that failed and has no
+// replacement: #3 of the failed #3 and #4, then #4 once #3 is replaced,
+// then none once both are, each replacement waited on in its place. An
+// edge to #3 added after its retry names it no more. A closed #2 beside a
+// failed #6 sets both Ended and Failed.
+func TestDependenciesNamesTheFirstFailedOne(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t-c", Kind: "agent", Status: "waiting-deps", Track: "direct", Process: "spec", Repository: "sf/repo", IssueNumber: 7}
+	r, store, _ := newActivityRunner(t, card, &prForgejo{})
+	create := func(id, status string, issue int64) {
+		t.Helper()
+		if err := store.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: status, Track: "direct", Repository: "sf/repo", IssueNumber: issue}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	dependOn := func(ids ...string) {
+		t.Helper()
+		if err := store.AddTaskDeps(ctx, "t-c", ids); err != nil {
+			t.Fatal(err)
+		}
+	}
+	create("t-a", "failed", 3)
+	create("t-e", "failed", 4)
+	create("t-b", "running", 5)
+	dependOn("t-a", "t-e", "t-b")
+	ask := func() DepState {
+		t.Helper()
+		v, err := execActivity(t, r, ActivityDependencies, "t-c")
+		if err != nil {
+			t.Fatal(err)
+		}
+		var d DepState
+		if err := v.Get(&d); err != nil {
+			t.Fatal(err)
+		}
+		return d
+	}
+	replace := func(id string, issue int64) {
+		t.Helper()
+		n := Task{ID: RetryID(id), Kind: "agent", Status: "queued", Track: "direct", Repository: "sf/repo", IssueNumber: issue}
+		if ok, err := store.ReplaceFailedCard(ctx, id, n); !ok || err != nil {
+			t.Fatalf("replace %s = %v, %v", id, ok, err)
+		}
+	}
+	dep := func(id string, issue int64, status string) *Dependency {
+		return &Dependency{TaskID: id, Issue: issue, Status: status}
+	}
+	same := func(got, want *Dependency) bool {
+		return got == nil && want == nil || got != nil && want != nil && *got == *want
+	}
+	for _, step := range []struct {
+		name          string
+		before        func()
+		failed, ended *Dependency
+		waiting       []int64
+	}{
+		{"both failed", func() {}, dep("t-a", 3, "failed"), nil, []int64{3, 4, 5}},
+		{"#3 replaced as #9", func() { replace("t-a", 9) }, dep("t-e", 4, "failed"), nil, []int64{4, 5, 9}},
+		{"#4 replaced as #10", func() { replace("t-e", 10) }, nil, nil, []int64{5, 9, 10}},
+		{"an edge to #3 again", func() { dependOn("t-a") }, nil, nil, []int64{3, 5, 9, 10}},
+		{"a closed #2 beside a failed #6", func() {
+			create("t-x", "closed", 2)
+			create("t-z", "failed", 6)
+			dependOn("t-x", "t-z")
+		}, dep("t-z", 6, "failed"), dep("t-x", 2, "closed"), nil},
+	} {
+		step.before()
+		d := ask()
+		if !same(d.Failed, step.failed) || !same(d.Ended, step.ended) || !slices.Equal(d.Waiting, step.waiting) {
+			t.Fatalf("%s: Failed %+v, Ended %+v, Waiting %v; want Failed %+v, Ended %+v, Waiting %v",
+				step.name, d.Failed, d.Ended, d.Waiting, step.failed, step.ended, step.waiting)
+		}
+	}
+}
+
 // The heal pass signals dep_ended to a waiting card whose wait would end
 // (every dependency done, or one ended closed), not to one still waiting,
 // a failed dependency's included, and starts the workflow of every
@@ -562,7 +637,7 @@ func newRetryRig(t *testing.T) (*Runner, *fakeStore, *fakeObjectStore, *planForg
 // card, takes A's key, its dependencies and its dependents, copies its
 // branch, starts it, wakes the dependents, and closes A's issue as the
 // bot, recorded.
-func TestRetryPlanCardFilesAReplacement(t *testing.T) {
+func TestRetryCardKeepsThePlanPath(t *testing.T) {
 	const line = "Replaces #5, which failed: wall-clock cap reached"
 	for name, branch := range map[string]bool{"branch": true, "no branch": false} {
 		t.Run(name, func(t *testing.T) {
@@ -572,9 +647,9 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 				delete(fj.branches, "factory/t-a")
 			}
 			fj.calls = nil
-			issue, err := r.RetryPlanCard(ctx, "t-a", "alice")
+			issue, err := r.RetryCard(ctx, "t-a", "alice")
 			if err != nil || issue != 9 {
-				t.Fatalf("RetryPlanCard = %d, %v; want #9", issue, err)
+				t.Fatalf("RetryCard = %d, %v; want #9", issue, err)
 			}
 			cards := cardsByKey(t, store)
 			n := cards["links-api"]
@@ -636,12 +711,12 @@ func TestRetryPlanCardFilesAReplacement(t *testing.T) {
 }
 
 // The replacement of a failed card runs on the image the card named.
-func TestRetryPlanCardKeepsTheImage(t *testing.T) {
+func TestRetryCardKeepsTheImage(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
 	a := store.tasks["t-a"]
 	a.Image = "browser"
 	store.tasks["t-a"] = a
-	if _, err := r.RetryPlanCard(context.Background(), "t-a", "alice"); err != nil {
+	if _, err := r.RetryCard(context.Background(), "t-a", "alice"); err != nil {
 		t.Fatal(err)
 	}
 	if got := cardsByKey(t, store)["links-api"].Image; got != "browser" {
@@ -649,22 +724,95 @@ func TestRetryPlanCardKeepsTheImage(t *testing.T) {
 	}
 }
 
-// A card retried once, a card that did not fail and a task that is no
-// card of a plan are refused, and nothing is filed.
+// A failed card outside a plan is retried as a plan card is: its
+// replacement keeps its source, with no parent and no key, takes its
+// dependencies and its dependents, and the failed card's issue closes. A
+// second retry is refused and acts on nothing.
+func TestRetryCardReplacesADirectCardOnce(t *testing.T) {
+	const objective = "Fix the redirect loop\n\nThe redirect loops."
+	ctx := context.Background()
+	r, store, objects, fj, wf := newRetryRig(t)
+	for _, id := range []string{"t-a", "t-b"} {
+		c := store.tasks[id]
+		c.Source, c.Parent, c.PlanKey = "webhook", "", ""
+		store.tasks[id] = c
+	}
+	a := store.tasks["t-a"]
+	a.Objective, a.Size = objective, "small"
+	store.tasks["t-a"] = a
+	objects.Put(ctx, "sessions/t-a/timeline.jsonl", []byte(`{"step":"sizing","size":"small","filed":"","sized":"small","reason":"one handler","plan":false}`+"\n"+
+		`{"step":"final","state":"failed","reason":"wall-clock cap reached"}`+"\n"))
+	issue, err := r.RetryCard(ctx, "t-a", "alice")
+	if err != nil || issue != 9 {
+		t.Fatalf("RetryCard = %d, %v; want #9", issue, err)
+	}
+	n, ok := store.tasks["t-33198a8c2c69"]
+	if !ok || n.Source != "webhook" || n.Parent != "" || n.PlanKey != "" || n.Size != "small" || n.Status != "queued" || n.Track != policy.TrackDirect ||
+		!slices.Equal(n.RequiredCapabilities, []string{policy.ClassCoder}) || n.IssueNumber != 9 ||
+		n.Objective != objective+"\n\nReplaces #5, which failed: wall-clock cap reached" {
+		t.Fatalf("replacement = %+v (found %v)", n, ok)
+	}
+	if !slices.Equal(store.deps[n.ID], []string{"t-f"}) || !slices.Equal(store.deps["t-b"], []string{n.ID}) {
+		t.Fatalf("task_deps: replacement %v, B %v; want [t-f] and [%s]", store.deps[n.ID], store.deps["t-b"], n.ID)
+	}
+	if fj.issues[5].state != "closed" || !slices.Equal(wf.started, []string{n.ID}) || !slices.Equal(wf.signals, []string{"t-b dep_ended  #0: "}) {
+		t.Fatalf("#5 %s, started %q, signals %q; want #5 closed, the replacement started and dep_ended to B", fj.issues[5].state, wf.started, wf.signals)
+	}
+	tl, _ := objects.Get(ctx, "sessions/"+n.ID+"/timeline.jsonl")
+	if created := lastStep(tl, StepEvent); created["event"] != EventCardCreated || created["plan"] != nil {
+		t.Fatalf("the replacement's card_created = %v, want one with no plan", created)
+	}
+	v, err := execActivity(t, r, ActivitySizeCard, n.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sized SizeResult
+	if err := v.Get(&sized); err != nil || sized.Size != "small" || sized.ToPlan != nil {
+		t.Fatalf("SizeCard of the replacement = %+v, %v; want small, no switch", sized, err)
+	}
+	for _, c := range store.tasks {
+		if c.Source == SourceSizing {
+			t.Fatalf("the replacement was sized again by %s", c.ID)
+		}
+	}
+	fj.calls = nil
+	tasks := len(store.tasks)
+	var no ErrNoRetry
+	if _, err := r.RetryCard(ctx, "t-a", "alice"); !errors.As(err, &no) || err.Error() != "Card #5 was already retried." {
+		t.Fatalf("second retry: %v, want already retried", err)
+	}
+	if len(fj.calls) != 0 || len(store.tasks) != tasks {
+		t.Fatalf("the refused retry acted: forgejo %q, %d tasks (were %d)", fj.calls, len(store.tasks), tasks)
+	}
+}
+
+// A card retried once, a card that did not fail, and a failed plan, report
+// task and card of the factory's own are refused, and nothing is filed.
 func TestRetryRefusedTwice(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
-	if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil {
+	if _, err := r.RetryCard(ctx, "t-a", "alice"); err != nil {
 		t.Fatal(err)
+	}
+	plan := store.tasks["t-plan"]
+	plan.Status = "failed"
+	store.tasks["t-plan"] = plan
+	for _, c := range []Task{{ID: "t-size", Source: SourceSizing, Parent: "t-b"}, {ID: "t-fix", Source: SourceMainFix, IssueNumber: 7}} {
+		c.Kind, c.Status, c.Track, c.Repository = "agent", "failed", policy.TrackDirect, "linkshort/linkshort"
+		if err := store.CreateTask(ctx, c); err != nil {
+			t.Fatal(err)
+		}
 	}
 	fj.calls = nil
 	tasks := len(store.tasks)
 	for id, want := range map[string]string{
 		"t-a":    "Card #5 was already retried.",
 		"t-b":    "Card #6 did not fail: it is waiting-deps.",
-		"t-plan": "Task t-plan is no card of a plan.",
+		"t-plan": "Card #1 is a plan: ask for changes to it, or replan it.",
+		"t-size": "Task t-size is the sizing report of task t-b, not a work card: retry that card if it failed.",
+		"t-fix":  "Card #7 is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.",
 	} {
-		_, err := r.RetryPlanCard(ctx, id, "alice")
+		_, err := r.RetryCard(ctx, id, "alice")
 		var no ErrNoRetry
 		if !errors.As(err, &no) || err.Error() != want {
 			t.Errorf("retry of %s: %v, want the refusal %q", id, err, want)
@@ -782,8 +930,8 @@ func TestRetryFinishesAfterTheClientLeaves(t *testing.T) {
 	r, store, _, fj, _ := newRetryRig(t)
 	ctx, cancel := context.WithCancel(context.Background())
 	r.store = cancelOnReplace{store, cancel}
-	if issue, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
-		t.Fatalf("RetryPlanCard = %d, %v; want #9", issue, err)
+	if issue, err := r.RetryCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
+		t.Fatalf("RetryCard = %d, %v; want #9", issue, err)
 	}
 	if fj.issues[5].state != "closed" || !slices.Equal(store.deps["t-b"], []string{cardsByKey(t, store)["links-api"].ID}) {
 		t.Fatalf("#5 %s, B waits on %v; want #5 closed and B on the replacement", fj.issues[5].state, store.deps["t-b"])
@@ -805,7 +953,7 @@ func TestRetryResumesAfterAFailedStep(t *testing.T) {
 			ctx := context.Background()
 			r, store, _, fj, _ := newRetryRig(t)
 			fail(fj)
-			if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); err == nil || errors.As(err, new(ErrNoRetry)) {
+			if _, err := r.RetryCard(ctx, "t-a", "alice"); err == nil || errors.As(err, new(ErrNoRetry)) {
 				t.Fatalf("first retry: %v, want it stopped by Forgejo", err)
 			}
 			if got := store.tasks[replacement]; got.IssueNumber != 9 || !slices.Equal(store.deps["t-b"], []string{replacement}) ||
@@ -818,7 +966,7 @@ func TestRetryResumesAfterAFailedStep(t *testing.T) {
 				wantHead = "c8"
 				fj.branches["factory/"+replacement] = wantHead
 			}
-			if issue, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
+			if issue, err := r.RetryCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
 				t.Fatalf("second retry = %d, %v; want #9", issue, err)
 			}
 			var onA []string
@@ -833,7 +981,7 @@ func TestRetryResumesAfterAFailedStep(t *testing.T) {
 					fj.next, fj.issues[9].labels, fj.branches["factory/"+replacement], fj.issues[5].state, onA)
 			}
 			var no ErrNoRetry
-			if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); !errors.As(err, &no) || err.Error() != "Card #5 was already retried." {
+			if _, err := r.RetryCard(ctx, "t-a", "alice"); !errors.As(err, &no) || err.Error() != "Card #5 was already retried." {
 				t.Fatalf("third retry: %v, want already retried", err)
 			}
 		})
@@ -862,10 +1010,10 @@ func TestRetryFindsItsIssueUnlinked(t *testing.T) {
 	ctx := context.Background()
 	r, store, _, fj, _ := newRetryRig(t)
 	r.store = &failSetIssue{fakeStore: store}
-	if _, err := r.RetryPlanCard(ctx, "t-a", "alice"); err == nil || !strings.Contains(err.Error(), "stopped at linking its issue #9") {
+	if _, err := r.RetryCard(ctx, "t-a", "alice"); err == nil || !strings.Contains(err.Error(), "stopped at linking its issue #9") {
 		t.Fatalf("first retry: %v, want it stopped at the link of #9", err)
 	}
-	if issue, err := r.RetryPlanCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
+	if issue, err := r.RetryCard(ctx, "t-a", "alice"); err != nil || issue != 9 {
 		t.Fatalf("second retry = %d, %v; want #9", issue, err)
 	}
 	var filed int

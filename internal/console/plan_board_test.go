@@ -400,7 +400,7 @@ func TestFailedPlanCardShowsRetry(t *testing.T) {
 }
 
 // Item 119: Retry, by an approver, files the replacement (factoryd's
-// RetryPlanCard), which starts once a work slot is free: the console
+// RetryCard), which starts once a work slot is free: the console
 // labels nothing. A refusal answers 409 with its sentence; a writer who
 // is no approver gets 403 and nothing happens.
 func TestRetryFilesTheReplacement(t *testing.T) {
@@ -424,7 +424,7 @@ func TestRetryFilesTheReplacement(t *testing.T) {
 		t.Fatalf("retry: %d %.400s", rec.Code, rec.Body)
 	}
 	if !slices.Equal(r.retried, []string{"t-c7 by sebastian"}) || len(r.fg.labelled) != 0 {
-		t.Errorf("RetryPlanCard calls %v, labelled %v; want one call and no label", r.retried, r.fg.labelled)
+		t.Errorf("RetryCard calls %v, labelled %v; want one call and no label", r.retried, r.fg.labelled)
 	}
 	r.retryErr = factoryd.ErrNoRetry("Card #7 was already retried.")
 	if rec := retry(ck, s.csrf); rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != "Card #7 was already retried." {

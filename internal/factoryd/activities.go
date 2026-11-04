@@ -27,7 +27,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -145,6 +144,9 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySessionAnswered:             r.SessionAnswered,
 		ActivityDayResume:                   r.DayResume,
 		ActivityCapResume:                   r.CapResume,
+		ActivityEndCase:                     r.EndCase,
+		ActivityRecordGrant:                 r.RecordGrant,
+		ActivityOpenTrip:                    r.openTrip,
 		ActivityRoutineRun:                  r.RoutineRun,
 		ActivityRoutineRunFailed:            r.RoutineRunFailed,
 		ActivityParkForTool:                 r.ParkForTool,
@@ -398,7 +400,7 @@ func (h *heartbeat) snapshot() sessionProgress {
 }
 
 // ReadUsage reads the caps the task's row holds: the answer wake reloads
-// them, so a raise the console made while the card waited (ExtendCard)
+// them, so a raise an answer made while the card waited (an extend)
 // is not overwritten by the usage snapshot the last session recorded.
 func (r *Runner) ReadUsage(ctx context.Context, taskID string) (TaskUsage, error) {
 	t, _, err := r.store.Task(ctx, taskID)
@@ -679,15 +681,78 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if model == "" {
 		return "", nil
 	}
+	n, err := r.needOf(ctx, v, t, model, opening)
+	if err != nil || n.unread != "" {
+		return n.unread, err
+	}
+	req, need := n.req, n.eur
+	own, free, err := r.store.Free(ctx, req)
+	if err != nil {
+		return "", err
+	}
+	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: req.Ref, Project: req.Project, EUR: need})
+	if err == nil {
+		return "", nil
+	}
+	var refused *policy.Refusal
+	if !errors.As(err, &refused) {
+		return "", err
+	}
+
+	// the free figure rounds down to the tenth of a cent it prints, so a
+	// raise read off it (FundRaise) covers the need; 1e-6 takes up float noise
+	left := math.Floor(max(own.Free(), 0)*1000+1e-6) / 1000
+	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
+	act := "Raise the budget (Fund on the board) and answer, or close the card."
+	switch refused.Decision {
+	case policy.RefusedDayCap:
+		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
+		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
+	case policy.RefusedMonthCap:
+		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
+		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
+	case policy.RefusedProjectCap:
+		file := "projects/" + req.Project + ".yaml"
+		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), req.ProjectEUR, file)
+		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
+	default:
+		if own.Holds > 0 {
+			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
+		}
+	}
+	if o, ok := capRefusals[refused.Decision]; ok {
+		opens = o
+	}
+	// the first line is the card's question row (escalationQuestion), cut
+	// at 300 characters: it carries the actions, the state follows
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, n.call, need, n.measure, n.then), nil
+}
+
+// attemptNeed is what an attempt of card t on model needs free to start,
+// as the gateway's holds take it: the cheapest call, or with opening a
+// session's opening calls as the newest recorded openings made them, and
+// at least the floor of the model's rung. Beside the amount it keeps the
+// hold request, the call it is for, how it was measured and what an
+// attempt short of it meets. A price that cannot be read leaves unread
+// the refusal that names it, and no amount.
+type attemptNeed struct {
+	req                         policy.HoldRequest
+	eur                         float64
+	call, measure, then, unread string
+}
+
+// needOf reads card t's attemptNeed on model under version v.
+func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model string, opening bool) (attemptNeed, error) {
 	alias := aliasOf(model)
 	price, err := r.price(ctx, alias)
 	if err != nil {
 		// a model nobody can price is a hold nobody can bound: the
 		// attempt is refused (roadmap 222, item 5)
-		return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
+		return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err)}, nil
 	}
 	project, projectEUR := v.ProjectCap(t.Repository)
-	req := policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Price: price,
+	req := policy.HoldRequest{TaskID: t.ID, Kind: policy.KindModel, Ref: alias, Price: price,
 		DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
 	// the cheapest call: no prompt and policy.MinCallTokens output tokens
 	inf, cheapest := math.Inf(1), req
@@ -696,15 +761,15 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	need, call, measure, then := h.EUR, "the cheapest call on "+model, fmt.Sprintf("%d output tokens at the hold machinery's minimum", policy.MinCallTokens),
 		"an answer would start an attempt whose first call cannot run"
 	if opening {
-		o, err := r.store.Opening(ctx, taskID, alias)
+		o, err := r.store.Opening(ctx, t.ID, alias)
 		if err != nil {
-			return "", err
+			return attemptNeed{}, err
 		}
 		call, then = "a session's opening on "+model, "a session started now could not make its opening calls"
 		measure = "no session's opening is recorded: " + measure
 		eur, calls, err := o.Hold(req, func(ref string) (policy.Price, error) { return r.price(ctx, ref) })
 		if err != nil {
-			return fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err), nil
+			return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err)}, nil
 		}
 		if calls != nil {
 			on := "it"
@@ -734,47 +799,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 				"a session started now would run out of money before its work is done"
 		}
 	}
-	own, free, err := r.store.Free(ctx, req)
-	if err != nil {
-		return "", err
-	}
-	_, err = policy.FitResource(free, policy.HoldRequest{TaskID: taskID, Kind: policy.KindModel, Ref: alias, Project: project, EUR: need})
-	if err == nil {
-		return "", nil
-	}
-	var refused *policy.Refusal
-	if !errors.As(err, &refused) {
-		return "", err
-	}
-
-	// the free figure rounds down to the tenth of a cent it prints, so a
-	// raise read off it (FundRaise) covers the need; 1e-6 takes up float noise
-	left := math.Floor(max(own.Free(), 0)*1000+1e-6) / 1000
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
-	act := "Raise the budget (Fund on the board) and answer, or close the card."
-	switch refused.Decision {
-	case policy.RefusedDayCap:
-		state = fmt.Sprintf("%.6f EUR of the day's %.2f EUR (budget.day_eur) is free", max(free.Day, 0), req.DayEUR)
-		act = "Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."
-	case policy.RefusedMonthCap:
-		state = fmt.Sprintf("%.6f EUR of the month's %.2f EUR (budget.month_eur) is free", max(free.Month, 0), req.MonthEUR)
-		act = "Raise budget.month_eur in policy.yaml by a commit and answer, or wait for the next UTC month and answer."
-	case policy.RefusedProjectCap:
-		file := "projects/" + project + ".yaml"
-		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), projectEUR, file)
-		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
-	default:
-		if own.Holds > 0 {
-			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
-			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
-		}
-	}
-	if o, ok := capRefusals[refused.Decision]; ok {
-		opens = o
-	}
-	// the first line is the card's question row (escalationQuestion), cut
-	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, call, need, measure, then), nil
+	return attemptNeed{req: req, eur: need, call: call, measure: measure, then: then}, nil
 }
 
 // CapCheck is a wait on the cap Decision refused: Turned says its period
@@ -1368,124 +1393,35 @@ func (r *Runner) lastToolRefusal(ctx context.Context, taskID string) (tool, refu
 	return last.Tool, last.Err, true
 }
 
-// Escalate hands the task to a human (architecture 6.6): state
-// waiting-human, mirrored on the issue, a comment with the reason and a
-// question_asked row with its question; the agent's choices, if any, ride
-// on that row, the timeline's step and the intake event the card reads. It
-// returns the comment's id: only later comments answer it.
+// Escalate is the human face of a run from before the cases gate, which
+// takes no resolution: the stop's case opens as OpenTrip opens it, open
+// until its face is written, or the live case of its key, or for a
+// restart the card's newest live ask, takes the ask, and no rung runs. It
+// returns the face's comment (askHuman).
 func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []string) (int64, error) {
-	t, repo, err := r.task(ctx, taskID)
+	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
-	// the reason in a code block: a mention the agent wrote rings no bell
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	if floorRefused(reason) {
-		// no answer can run: the card names why and the way out
-		next = "An answer starts an attempt only once the budget can fund a call, as above; close this issue to end the task."
-	}
-	if capWaitDecision(reason) != "" {
-		next = "The task resumes on its own as above. Reply on this issue to start a new attempt sooner with your comment as guidance, or close the issue to end the task."
-	}
-	if strings.HasPrefix(reason, leftQueue) {
-		next = "Reply on this issue to put the pull request back at the end of the merge queue, request changes on it to send the task back to the agent, or close the issue to end the task."
-	}
-	safe := r.untrusted(t, reason)
-	body := "factoryd: task " + taskID + " needs a human.\n\n" + fenced(safe)
-	if links := sanitize.Links(safe, r.linkHosts(t)); len(links) > 0 {
-		// the fence renders no link: the ones the sanitiser keeps follow it
-		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
-	}
-	body += "\n\n" + next
-	if strings.HasPrefix(reason, screeningAsks) {
-		// the reasons go to the card only: they would teach the author
-		body = screenedLine
-	}
-	var id int64
-	if t.IssueNumber != 0 {
-		// a task without one (a report task) has its question on the card alone
-		if id, err = r.forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber, body); err != nil {
-			return 0, err
-		}
-	}
-	// a clicked choice is posted as the member's comment: agent text,
-	// sanitised like the reason
-	choices = slices.Clone(choices)
-	for i, c := range choices {
-		choices[i] = r.untrusted(t, c)
-	}
-	question := escalationQuestion(reason)
-	var shaped *HumanQuestion
-	if reason != healedReason && !strings.HasPrefix(reason, screeningAsks) {
-		// the deterministic stops shape their five-part question from the
-		// stop's own numbers; every other ask gets the same five parts
-		// from its reason, so no card asks with words alone
-		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
-		question = shaped.Ask
-		// the refusal the newest session ended on rides with the ask,
-		// verbatim: the blocker reaches the human with no agent-side
-		// reporting to lose it (card #1345)
-		if tool, refusal, ok := r.lastToolRefusal(ctx, taskID); ok {
-			shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
-		}
-	}
+	var c Case
 	if reason == healedReason {
-		// the restart's sentence asks nothing: the row names the question it asks again
-		events, err := r.store.IntakeEvents(ctx, taskID)
-		if err != nil {
-			log.Printf("task %s: the question a healed run asks again: %v", taskID, err)
-		}
-		_, again, _ := answersFrom(events)
-		question = cmp.Or(again, question)
-	}
-	// the durable anchor Reconcile rebuilds the answers from; a retry
-	// with the same comment records nothing twice. It is written before
-	// the wait: a card in waiting-human without its row has no ask
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: taskID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-		Choices: choices, Question: shaped}); err != nil {
-		return 0, fmt.Errorf("task %s: record escalation comment %d: %w", taskID, id, err)
-	}
-	if t.Status != "waiting-human" {
-		// queued: the screening stage's suspect verdict, before any session;
-		// waiting-deps: a dependency ended failed or closed; waiting-poster:
-		// the author's answer screened suspect, or a cap reached on it;
-		// waiting-image: the image did not come within imageWait
-		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-deps", "running", "in-review", "waiting-poster", "waiting-image"}, "waiting-human"); err != nil {
-			return 0, terminalError("task %s is %s, cannot wait for a human: %v", taskID, t.Status, err)
-		}
-		mirrorTaskState(ctx, r.forgejo, t, "waiting-human")
-		// a parked card holds no slot: the next queued card takes it
-		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
-	}
-	// the shaped question's buttons are not these choices: they carry
-	// values, and park and keep waiting record an answer without posting
-	// one, so the console renders them from the question itself
-	step := map[string]any{"reason": reason, "comment": id}
-	asked := map[string]any{"question": textutil.Truncate(question, 300), "comment": id, "source": escalationSource(reason),
-		"reason": textutil.Truncate(reason, 300)}
-	if shaped != nil {
-		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
-		if shaped.Recommendation != "" {
-			asked["recommendation"] = shaped.Recommendation
-		}
-		asked["choices"] = shaped.Labels()
-	}
-	if len(choices) > 0 {
-		step["choices"] = choices
-		if shaped == nil {
-			asked["choices"] = choices
+		c, err = r.store.NewestAskCase(ctx, t.ID)
+	} else {
+		var f CaseFacts
+		if f, err = r.tripFacts(ctx, t, ""); err == nil {
+			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
+				c, _, err = r.store.OpenCase(ctx, c)
+			}
 		}
 	}
-	r.record(ctx, taskID, "escalated", step)
-	r.timeline.RecordRow(ctx, taskID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
-	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
-		return id, nil // the question asked again, or the screening's: its alert is open already
+	if err != nil {
+		return 0, err
 	}
-	if _, err := r.store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: escalationSource(reason), TaskID: taskID,
-		Detail: map[string]any{"comment": id, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
-		log.Printf("task %s: record the escalation alert: %v", taskID, err)
+	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices)
+	if err != nil || c.ID == 0 {
+		return id, err
 	}
-	return id, nil
+	return id, r.store.SetCaseStatus(ctx, c.ID, CaseAtHuman)
 }
 
 // RequestInfo asks the issue's author for what the agent needs:
@@ -2284,7 +2220,7 @@ func (r *Runner) RerunChecks(ctx context.Context, taskID, sha string) (string, e
 			return "", fmt.Errorf("empty commit: %w", err)
 		}
 	}
-	r.record(ctx, taskID, "checks_rerun", map[string]any{"commit": sha, "head": head})
+	r.record(ctx, taskID, stepChecksRerun, map[string]any{"commit": sha, "head": head})
 	return head, nil
 }
 

@@ -74,7 +74,7 @@ func TestChatAnswerRow(t *testing.T) {
 	equal(t, "the inbox", said(), []string{
 		"assistant escalation: #13 needs you: Use a replica?",
 		"user : Yes",
-		"assistant poke: Answered #13 with “Yes”; the card goes on.",
+		"assistant poke: Case 1 took continue.",
 		"user : No",
 		"assistant poke: #13 is answered already: question answered by sebastian.",
 		"assistant escalation: #14 needs you: which store?",
@@ -95,14 +95,12 @@ func agentEndsAsk() factoryd.BoardTask {
 			Choices: []factoryd.QuestionChoice{{Value: "say:Yes", Label: "Yes"}, {Value: factoryd.AnswerPark, Label: "Leave it waiting"}, {Value: factoryd.AnswerClose, Label: "End the card"}}}}
 }
 
-// "End the card" pressed in the inbox closes the agent card: nothing is
-// posted on its issue, the close is the only row, and no answer resumes
-// the card's workflow.
+// "End the card" pressed in the inbox closes the agent card through Act
+// on its case: nothing is posted on its issue by the console, and Act's
+// answer is the only row.
 func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.tasks = append(r.tasks.tasks, agentEndsAsk())
-	signals := 0
-	r.c.cfg.AnswerWhole = func(context.Context, string, int64, string) error { signals++; return nil }
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
@@ -116,12 +114,14 @@ func TestChatAnswerRowEndsAnAgentCard(t *testing.T) {
 	if code != http.StatusNoContent {
 		t.Fatalf("the press = %d %q", code, body)
 	}
-	equal(t, "the issue", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`})
+	got, posts := actedOnce(t, r)
+	equal(t, "the close", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-a", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActClose}}, false})
 	equal(t, "the comments", r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"), []string(nil))
-	checkRows(t, r.events, before, wantRow{kind: factoryd.EventCardClosed, repo: "sf/code", taskID: "t-a", detail: map[string]any{"note": ""}})
-	equal(t, "answer signals", signals, 0)
+	checkRows(t, r.events, before, wantRow{kind: factoryd.EventQuestionAnswered, repo: "sf/code", taskID: "t-a",
+		detail: map[string]any{"action": factoryd.ActClose, "case_id": int64(1), "answer": factoryd.ActClose}})
 	rows, _ := chat.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10)
-	equal(t, "the factory's row", rows[len(rows)-1].Content, "Closed #15; factoryd ends the card.")
+	equal(t, "the factory's row", rows[len(rows)-1].Content, "Case 1 took close.")
 }
 
 // The escalate tool files the question and its five parts through the

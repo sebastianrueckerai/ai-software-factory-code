@@ -45,10 +45,12 @@ type Dependency struct {
 
 // DepState is where a card's dependencies stand: Ended, one that ended
 // closed; else Waiting, the open ones' issues ascending, a failed one's
-// included until it is retried; neither: the card starts.
+// included until it is retried; neither: the card starts. Failed is the
+// first that failed and has no replacement (RetryID) yet.
 type DepState struct {
 	Waiting []int64
 	Ended   *Dependency
+	Failed  *Dependency
 }
 
 // ended is the first dependency that ended closed: a failed one waits
@@ -136,11 +138,18 @@ func (s *PGStore) ReplaceFailedCard(ctx context.Context, id string, t Task) (boo
 	}
 	defer tx.Rollback() // #nosec G104 -- a no-op after Commit; on an earlier error the tx is abandoned anyway
 	// the key's unique index holds at every statement: the failed card lets go first
-	res, err := tx.ExecContext(ctx, `UPDATE tasks SET plan_key = NULL WHERE id = $1 AND status = 'failed' AND plan_key = $2`, id, t.PlanKey)
+	res, err := tx.ExecContext(ctx, `UPDATE tasks SET plan_key = NULL WHERE id = $1 AND status = 'failed' AND plan_key IS NOT DISTINCT FROM NULLIF($2, '')`,
+		id, t.PlanKey)
 	if err != nil {
 		return false, err
 	}
 	if n, err := res.RowsAffected(); err != nil || n == 0 {
+		return false, err
+	}
+	// a card outside a plan has no key to let go: the row lock orders two
+	// retries of it, and the second finds the first's replacement
+	var replaced bool
+	if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM tasks WHERE id = $1)`, t.ID).Scan(&replaced); err != nil || replaced {
 		return false, err
 	}
 	if err := insertTask(ctx, tx, t, ""); err != nil {
@@ -178,11 +187,12 @@ func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string
 	return moved, rows.Err()
 }
 
-// Dependencies tells the workflow where the card's dependencies stand. A
-// card that has to wait enters waiting-deps in gate dependencies (once:
-// the gate keeps the wait's start), also a healed one in waiting-human
-// whose question named a dependency that failed, which now waits for its
-// retry; one whose wait is over records its end.
+// Dependencies tells the workflow where the card's dependencies stand,
+// naming the first failed one with no replacement yet. A card that has to
+// wait enters waiting-deps in gate dependencies (once: the gate keeps the
+// wait's start), also a healed one in waiting-human whose question named a
+// dependency that failed, which now waits for its retry; one whose wait is
+// over records its end.
 func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -192,8 +202,23 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 	if err != nil {
 		return DepState{}, err
 	}
+	var st DepState
+	for _, d := range deps {
+		if d.Status != "failed" {
+			continue
+		}
+		_, retried, err := r.store.Task(ctx, RetryID(d.TaskID))
+		if err != nil {
+			return DepState{}, err
+		}
+		if !retried {
+			st.Failed = &d
+			break
+		}
+	}
 	if d := ended(deps); d != nil {
-		return DepState{Ended: d}, nil
+		st.Ended = d
+		return st, nil
 	}
 	if len(deps) == 0 {
 		if t.Status == "waiting-deps" {
@@ -201,7 +226,6 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 		}
 		return DepState{}, nil
 	}
-	var st DepState
 	for _, d := range deps {
 		st.Waiting = append(st.Waiting, d.Issue)
 	}
@@ -225,6 +249,23 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 // depEndedReason is the card's question when dependency d ended closed.
 func depEndedReason(d Dependency) string {
 	return fmt.Sprintf("dependency #%d (%s) ended %s: close this card, or answer to start it anyway", d.Issue, d.Key, d.Status)
+}
+
+// depFailed opens the question of a card whose dependency failed with no
+// replacement (versionCases), an ask of SourceDependencyFailed.
+const (
+	depFailed              = "A dependency failed: "
+	SourceDependencyFailed = "dependency_failed"
+)
+
+// depFailedReason is the card's question when dependency d failed and no
+// retry replaced it.
+func depFailedReason(d Dependency) string {
+	name := fmt.Sprintf("#%d", d.Issue)
+	if d.Key != "" {
+		name += " (" + d.Key + ")"
+	}
+	return fmt.Sprintf(depFailed+"%s, card %s, ended %s with no replacement. Retry it, close this card, or answer to start it anyway.", name, d.TaskID, d.Status)
 }
 
 // signalDependents wakes the waiting cards that depend on taskID, which
@@ -275,7 +316,11 @@ func (t *taskRun) waitsForDependencies(st RunState, u TaskUsage) bool {
 // again as the healed question): an answer starts the card with the reason
 // as a finding, and the timeline keeps it (dependencies_started), so a
 // later run starts the card without asking again; a close ends it closed,
-// also one found closed by Reconcile.
+// also one found closed by Reconcile. One that failed with no replacement
+// is a trip of its own (versionCases): a retry or a replan of it, rung 0's
+// or a human's, puts the card back in the wait on what replaced it, a
+// close waits for the issue's close, and any other answer starts the card
+// as a closed one's does.
 func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []string) {
 	switch {
 	case st.IssueClosed:
@@ -290,8 +335,14 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 		if err := workflow.ExecuteActivity(t.short, ActivityDependencies, t.taskID).Get(t.ctx, &d); err != nil {
 			return "failed", "dependencies: " + errMessage(err), nil
 		}
-		if d.Ended != nil {
-			reason := depEndedReason(*d.Ended)
+		failed := d.Ended == nil && d.Failed != nil && t.cases >= versionCases
+		if d.Ended != nil || failed {
+			var reason string
+			if failed {
+				reason = depFailedReason(*d.Failed)
+			} else {
+				reason = depEndedReason(*d.Ended)
+			}
 			var final, why string
 			var answer []string
 			if healed {
@@ -301,6 +352,13 @@ func (t *taskRun) awaitDependencies(st RunState) (final, why string, findings []
 			}
 			if final != "" {
 				return closedBeforeStart(final, why)
+			}
+			switch res := t.takeResolution(); {
+			case res != nil && res.Action == ActClose:
+				return closedBeforeStart(t.awaitClose())
+			case failed && res != nil && (res.Action == ActRetry || res.Action == ActReplan):
+				healed = false
+				continue
 			}
 			if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, stepDepsStarted, map[string]any{"reason": reason}).Get(t.ctx, nil); err != nil {
 				workflow.GetLogger(t.ctx).Warn("record dependencies_started", "task", t.taskID, "error", err)
@@ -337,8 +395,8 @@ func closedBeforeStart(final, why string) (string, string, []string) {
 	return final, why, nil
 }
 
-// ErrNoRetry refuses the retry of a task that is no failed card of a plan
-// or was retried; its message is the console's.
+// ErrNoRetry refuses the retry of a card that did not fail or was
+// retried; its message is the console's.
 type ErrNoRetry string
 
 func (e ErrNoRetry) Error() string { return string(e) }
@@ -356,24 +414,32 @@ func retryMarker(id string) string {
 	return fmt.Sprintf("<!-- factoryd retry of %s -->", id)
 }
 
-// RetryPlanCard files failed plan card taskID again for by (item 119). One
-// transaction puts the replacement in its place, once: the key, the
-// dependencies and the dependents; its base stays the failed card's. Then
-// the replacement gets its issue as fileChildren files a card's and the
-// failed card's branch, if any, to start from; the dependents wake, and the
-// failed card's issue closes as factoryd's recorded close. Each step after
-// the transaction is safe to repeat: a retry that stopped is finished by
-// the next. The replacement is queued on the direct track, where it starts
-// under the work bound once its branch is copied. It returns its issue.
-func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, error) {
+// RetryCard files failed work card taskID again for by (item 119): a
+// card on the direct track that a person, a routine or a plan filed. The
+// replacement keeps the card's source, its plan and its key, if any, and
+// its size, so it is not sized again. One transaction puts the
+// replacement, by its deterministic id RetryID, in its place, once: the
+// key, the dependencies and the dependents; its base stays the failed
+// card's. Then the replacement gets its issue as fileChildren files a
+// card's and the failed card's branch, if any, to start from; the
+// dependents wake, and the failed card's issue closes as factoryd's
+// recorded close. Each step after the transaction is safe to repeat: a
+// retry that stopped is finished by the next. The replacement is queued on
+// the direct track, where it starts under the work bound once its branch
+// is copied. It returns its issue.
+func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error) {
 	old, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err
 	}
 	retried := ErrNoRetry(fmt.Sprintf("Card #%d was already retried.", old.IssueNumber))
 	switch {
-	case old.Source != SourcePlan || old.Parent == "":
-		return 0, ErrNoRetry(fmt.Sprintf("Task %s is no card of a plan.", old.ID))
+	case old.Track == policy.TrackPlan:
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
+	case old.Source == SourceScreening || old.Source == SourceSizing:
+		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
+	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
+		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))
 	case old.Status != "failed":
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d did not fail: it is %s.", old.IssueNumber, old.Status))
 	}
@@ -389,9 +455,6 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 		return 0, err
 	}
 	if !found {
-		if old.PlanKey == "" {
-			return 0, retried
-		}
 		p, ok, err := r.store.ProjectByRepository(ctx, old.Repository)
 		if err != nil {
 			return 0, err
@@ -405,7 +468,7 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 			cmp.Or(reason, "the timeline records no reason")))
 		t = Task{ID: RetryID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass, BudgetEUR: old.BudgetEUR, Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{class}, Process: old.Process, Objective: objective, Repository: old.Repository,
-			SHA: old.SHA, Kind: "agent", Source: SourcePlan, Parent: old.Parent, PlanKey: old.PlanKey, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
+			SHA: old.SHA, Kind: "agent", Source: old.Source, Parent: old.Parent, PlanKey: old.PlanKey, Size: old.Size, Image: old.Image, Author: old.Author, AuthorWriter: old.AuthorWriter}
 		switch ok, err := r.store.ReplaceFailedCard(ctx, old.ID, t); {
 		case err != nil:
 			return 0, err
@@ -439,7 +502,11 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 		if err := r.store.SetTaskIssue(ctx, t.ID, t.IssueNumber); err != nil {
 			return 0, stopped("linking its issue #"+fmt.Sprint(t.IssueNumber), err)
 		}
-		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, map[string]any{"by": by, "issue": t.IssueNumber, "plan": old.Parent, "replaces": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR})
+		created := map[string]any{"by": by, "issue": t.IssueNumber, "replaces": old.ID, "track": t.Track, "budget_eur": t.BudgetEUR}
+		if old.Parent != "" {
+			created["plan"] = old.Parent
+		}
+		r.timeline.recordEvent(ctx, t.ID, EventCardCreated, created)
 	}
 	// a retry that stopped at the labels labels it the next time
 	if t.Status == "queued" {
@@ -449,6 +516,13 @@ func (r *Runner) RetryPlanCard(ctx context.Context, taskID, by string) (int64, e
 	}
 	if err := r.forgejo.CopyBranch(ctx, r.forgejo.Fork(repo), taskBranch(old), taskBranch(t)); err != nil {
 		return 0, stopped("copying the branch", err)
+	}
+	// the sizing step reads a recorded step first: the work was sized once
+	if lastStep(tl, StepSizing) != nil {
+		if _, err := r.timeline.AppendOnce(ctx, t.ID, StepSizing, map[string]any{"size": t.Size,
+			"skipped": fmt.Sprintf("it replaces #%d, which was sized", old.IssueNumber)}); err != nil {
+			return 0, stopped("recording its size", err)
+		}
 	}
 	if err := r.cfg.Workflows.Start(ctx, t.ID); err != nil {
 		log.Printf("task %s: start the replacement %s: %v", old.ID, t.ID, err)

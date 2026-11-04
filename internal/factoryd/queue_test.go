@@ -1275,3 +1275,43 @@ func TestEnterQueueUnderAGroupPause(t *testing.T) {
 		t.Fatalf("the revert card ahead %d %v, want its turn", ahead, err)
 	}
 }
+
+// A writer's change request while the card waits its turn in the merge
+// queue is the human's answer at the session cap as at the approval: the
+// third and last session pushed c3, sebastian asks for a change with #9
+// one behind, the fourth session runs with it, and that session is his
+// draw against the pool.
+func TestQueueChangeRequestAtTheCapDrawsThePool(t *testing.T) {
+	q := newQueueHarness(t, policy.QueueProject, green)
+	q.state = RunState{Status: "running", Usage: TaskUsage{Attempts: 2}}
+	asked := false
+	q.ahead = func(int) int {
+		if asked {
+			return 0
+		}
+		return 1
+	}
+	var grants []string
+	q.env.OnActivity(ActivityRecordGrant, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, by string, d policy.Draw, key string) error {
+			grants = append(grants, fmt.Sprintf("%s %+v %s", by, d, key))
+			return nil
+		})
+	q.env.OnActivity(ActivityPullRequestMerged, mock.Anything, "t1", mock.Anything).Return(false, nil)
+	q.onSessions(pushed("s3", "c3"), pushed("s4", "c4"))
+	q.env.RegisterDelayedCallback(func() {
+		asked = true
+		q.env.SignalWorkflow(SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+	}, 62*time.Minute) // between two of the queue's 5-minute re-checks
+	q.signalAfter(3*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := q.run(t); final != "done" {
+		t.Fatalf("final = %q (%v), want done", final, q.finals)
+	}
+	if len(q.sessions) != 2 || q.sessions[1].Attempt != 4 || slices.Contains(q.steps, "approval c3") {
+		t.Fatalf("sessions = %+v, steps %q; want the fourth after the change request in the queue, c3 never at its approval", q.sessions, q.steps)
+	}
+	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(grants, want) {
+		t.Fatalf("grants drawn = %q, want %q", grants, want)
+	}
+}

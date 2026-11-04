@@ -250,6 +250,38 @@ func TestOneAnswerCommentEndsOneCase(t *testing.T) {
 	}
 }
 
+// An answer row that names its case resolves that case, not the newest
+// ask, and nothing when that case ended. A row with no case whose comment
+// already answered a case of the card (Act resolved it first) ends no
+// second one.
+func TestAnAnswerNamingItsCaseResolvesThatCase(t *testing.T) {
+	s := caseEventStore(t)
+	askAgent(t, s, "Which file should change?", 27001)
+	older := onlyOpenCase(t, s)
+	askCap(t, s, 27002)
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaConsole, map[string]any{"action": ActReplan, "case_id": older.ID, "comment": int64(27003)})
+	got := caseByID(t, s, older.ID)
+	want := &CaseResolution{By: "sebastian", Rung: 3, Action: ActReplan, Args: map[string]any{"answer": "", "comment": float64(27003)}}
+	if got.Status != CaseResolved || !reflect.DeepEqual(got.Resolution, want) {
+		t.Fatalf("the named case = %s, %+v; want resolved by %+v", got.Status, got.Resolution, want)
+	}
+	newer := onlyOpenCase(t, s)
+	recordCaseEvent(t, s, EventSessionGranted, "sebastian", ViaConsole, map[string]any{"action": ActExtend, "case_id": older.ID, "comment": int64(27004)})
+	if open := onlyOpenCase(t, s); open.ID != newer.ID {
+		t.Fatalf("open case = %d, want the newer ask %d left live", open.ID, newer.ID)
+	}
+	if err := s.ResolveCase(context.Background(), newer.ID, CaseResolution{By: "sebastian", Rung: 3, Action: ActExtend,
+		Args: map[string]any{"sessions": 1, "comment": int64(27005)}}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	askAgent(t, s, "Which test is flaky?", 27006)
+	third := onlyOpenCase(t, s)
+	recordCaseEvent(t, s, EventQuestionAnswered, "sebastian", ViaWebhook, map[string]any{"comment": int64(27005)})
+	if open := onlyOpenCase(t, s); open.ID != third.ID {
+		t.Fatalf("open case = %d, want %d left live by the webhook's copy of an answered comment", open.ID, third.ID)
+	}
+}
+
 func TestASecondAskAfterAnAnswerOpensASecondCase(t *testing.T) {
 	ctx := context.Background()
 	s := caseEventStore(t)
@@ -445,6 +477,52 @@ func TestAPlanAnswerResolvesItsQuestionsCase(t *testing.T) {
 	}
 }
 
+// The identical re-file's confirmation opens its case and the factory's
+// answer resolves it in the same filing, at rung 0, with no human asked.
+func TestIdenticalPlanRefileResolvesItsCase(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	raw, err := json.Marshal(testPlan())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for n, sha := range []string{"s1", "s2"} {
+		if got, err := s.AddPlanRevision(ctx, caseTask, raw, sha); err != nil || got != n+1 {
+			t.Fatalf("AddPlanRevision %d: %d, %v", n+1, got, err)
+		}
+	}
+	if _, _, err := s.PutPlanConfirmation(ctx, caseTask, 1, PlanQuestion{Text: "Confirmation of revision 1"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AnswerPlanQuestion(ctx, caseTask, 1, 1, DecisionConfirm, "", "sebastian"); err != nil {
+		t.Fatal(err)
+	}
+	r, err := NewRunner(testRunnerConfig(), s, newFakeKube(), &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "bot-pw"},
+		&Completion{Store: s}, &fakeObjectStore{}, testSupervisorModel("http://127.0.0.1:1"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	task, _, err := s.Task(ctx, caseTask)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.askConfirmation(ctx, task, 2, testPlan()); err != nil {
+		t.Fatalf("askConfirmation: %v", err)
+	}
+	cs, err := s.CasesOf(ctx, caseTask)
+	if err != nil || len(cs) != 1 {
+		t.Fatalf("CasesOf = %+v, %v; want the confirmation's one case", cs, err)
+	}
+	want := &CaseResolution{By: FactoryDecider, Rung: 0, Action: "answer",
+		Args: map[string]any{"answer": "the same plan as revision 1, confirmed there", "decision": DecisionConfirm}}
+	if c := cs[0]; c.Kind != CasePlanConfirmation || c.Status != CaseResolved || !reflect.DeepEqual(c.Resolution, want) {
+		t.Fatalf("case = %+v, resolution %+v; want the plan confirmation resolved %+v", c, c.Resolution, want)
+	}
+	if open, err := s.OpenPlanQuestions(ctx, caseTask, 2); err != nil || open != 0 {
+		t.Fatalf("OpenPlanQuestions = %d, %v; want none", open, err)
+	}
+}
+
 func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 	run := &taskRun{}
 	for _, tc := range []struct {
@@ -455,6 +533,7 @@ func TestCaseKindOfReadsTheSourceAndThePrefixes(t *testing.T) {
 		{"cap", run.sessionCapCard(capReached, "the review asked for changes", []string{"the test is red"}), CaseSessionCap, nil},
 		{"cap", run.sessionCapCard(timeCapReached, "the session ran out of time", nil), CaseAgentTimeCap, nil},
 		{"cap", run.plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
+		{"cap", (&taskRun{cases: versionCases}).plannerTimeCard(TaskUsage{}), CaseAgentTimeCap, nil},
 		{"supervisor", "check-in: " + CheckPolicyClass + ": the change touches a migration", CaseCheckinHuman, map[string]any{"reason_kind": CheckPolicyClass}},
 		{"supervisor", "check-in: " + CheckAccess + ": the card needs a key the factory lacks", CaseCheckinHuman, map[string]any{"reason_kind": CheckAccess}},
 		{"supervisor", checkinShareStop + " (0.40 of 0.40 EUR)", CaseCheckinShare, nil},
@@ -498,5 +577,36 @@ func TestCaseFromAskNamesAHumanCardsAskAndRefusesNoAsk(t *testing.T) {
 	}
 	if _, err := caseFromAsk(human, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "agent"}}, ""); err == nil {
 		t.Fatal("caseFromAsk of an ask with no words = nil error")
+	}
+}
+
+// NewestAskCase is the one read of the case an answer on the card ends:
+// the newest live one, the merge and the plan's questions aside, which
+// their own answers end; none once that case ended.
+func TestNewestAskCaseIsTheCardsLiveAsk(t *testing.T) {
+	ctx := context.Background()
+	s := caseEventStore(t)
+	open := func(kind CaseKind, key string) Case {
+		c, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: kind, StateKey: key, Problem: key, Status: CaseAtHuman})
+		if err != nil {
+			t.Fatalf("OpenCase %s: %v", kind, err)
+		}
+		return c
+	}
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.ID != 0 {
+		t.Fatalf("NewestAskCase with none = %+v, %v; want the zero case", c, err)
+	}
+	older := open(CaseSessionCap, "h1")
+	ask := open(CaseAgentEscalate, "which")
+	open(CaseMergeApproval, "pr:9@h1")
+	open(CasePlanQuestion, "q1@1")
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.ID != ask.ID || c.Kind != CaseAgentEscalate || c.Problem != "which" {
+		t.Fatalf("NewestAskCase = %+v, %v; want case %d, the agent's ask", c, err, ask.ID)
+	}
+	if err := s.WithdrawCase(ctx, ask.ID, "moved on"); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.ID != older.ID {
+		t.Fatalf("NewestAskCase after the ask ended = %+v, %v; want case %d", c, err, older.ID)
 	}
 }

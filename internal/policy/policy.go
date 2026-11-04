@@ -28,6 +28,11 @@ type Document struct {
 	// Limits bound every task's work: sessions, agent time, supervisor
 	// calls.
 	Limits Limits `yaml:"limits" json:"limits"`
+	// Escalation bounds what a card's escalation may extend and grant: a
+	// pool per project and UTC month, the most one card may draw from it,
+	// and when the check-in and the factory agent judge a case. Absent
+	// keys take their defaults one by one.
+	Escalation Escalation `yaml:"escalation,omitempty" json:"escalation"`
 	// Classes are the capability classes a task can hold, by name.
 	Classes map[string]Class `yaml:"classes" json:"classes"`
 	// Prices are the tool prices no provider API reports.
@@ -1243,8 +1248,8 @@ type FalPrices struct {
 }
 
 // Validate judges d as a whole: schema version 1, a sane budget, and
-// every block's own judgement — limits, chat, risk, envelope default
-// and project_default, plus the cross-block rules: approvers distinct,
+// every block's own judgement (limits, escalation, chat, risk, envelope
+// default and project_default), plus the cross-block rules: approvers distinct,
 // hosts well formed, bounds and supervisor detectors known, the time
 // zone an IANA zone, the routines policy.yaml's, the capability classes
 // named and their tools capped. ParseTree runs it on a tree read from
@@ -1284,6 +1289,12 @@ func (d Document) Validate() error {
 	}
 	if err := d.Limits.validate(); err != nil {
 		return err
+	}
+	if err := d.Escalation.validate(); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	if err := d.escalationOf(ProjectConfig{}).checkDraw(); err != nil {
+		return fmt.Errorf("policy: %w", err)
 	}
 	if len(d.Classes) == 0 {
 		return errors.New("policy: no capability classes")

@@ -13,43 +13,30 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The month pool's chat acceptance (the pool-chat-http card of plan
-// #1399): the set_pool proposal through the real console surface — the
-// offer the stream carries with the change it captured, the member's
+// The escalation pool's chat acceptance (the pool-chat-http card of plan
+// #1399): the set_pool proposal through the real console surface (the
+// offer the stream carries with the change it captured, the human's
 // unchanged or corrected confirmation, and the access the confirmation
-// itself re-judges — beside the top-up the readout keeps whole, the
-// lowered and the disabled pool, and the partial failures a merged
-// change can still leave: a merge Forgejo refused, a ceiling the loader
-// has not activated and an audit row the spine refused, each answered
-// with its typed HTTP status before any stream, its pull request named
-// and the old authority alone funding nothing.
+// itself re-judges) beside the top-up and the lowered pool the readout
+// reads whole, and the partial failures a merged change can still leave:
+// a merge Forgejo refused, a pool the loader has not activated and an
+// audit row the spine refused, each answered with its typed HTTP status
+// before any stream, its pull request named and the old pool alone in
+// force.
 
-// accPoolNoPool is accPoolHead without the pool: the bounds a policy PR
-// writes and no discretionary_eur, an allowance of zero.
-const accPoolNoPool = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n"
+// accPoolNoPool is accPoolHead without the pool's money: the policy's
+// figure stands.
+const accPoolNoPool = accPoolBase
 
-// accPoolTopped4 is accPoolHead after a top-up of EUR 4: only the pool
-// moved.
-const accPoolTopped4 = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 14\n"
+// accPoolTopped4 is accPoolHead after a top-up of EUR 4: only the pool's
+// money moved.
+const accPoolTopped4 = accPoolBase + "    eur: 14\n"
 
 // accPoolSet2 is accPoolHead after a set of EUR 2.
-const accPoolSet2 = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 2\n"
-
-// accPoolZero is accPoolHead after a set of EUR 0: the pool disabled.
-const accPoolZero = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 0\n"
+const accPoolSet2 = accPoolBase + "    eur: 2\n"
 
 // accPool18 is accPoolHead after a top-up of EUR 4 onto a pool of 14.
-const accPool18 = "# the code project\nrepository: sf/code\nmerge_rule: human\nbudget:\n" +
-	"  # the bounds the pool needs, which a policy PR writes\n  month_eur: 600\n  task_max_eur: 5\n" +
-	"  raise_max_eur: 1\n  discretionary_eur: 18\n"
+const accPool18 = accPoolBase + "    eur: 18\n"
 
 // poolOffer has the member ask and the agent call set_pool with args,
 // and answers the proposal whole: its token, the description it carries
@@ -103,8 +90,8 @@ func poolChangedRows(r *AcceptanceRig) []factoryd.Event {
 }
 
 // poolLineOf is the pool line the policy in force reads at now: the
-// configured, used and remaining EUR, whether a pool stands and its
-// words.
+// pool's money and the money its cards drew, whether the file sets the
+// money, whether a part is overdrawn, and its words.
 func poolLineOf(t *testing.T, r *AcceptanceRig, now time.Time) []any {
 	t.Helper()
 	v, ok, err := r.CurrentPolicy(t.Context())
@@ -112,14 +99,14 @@ func poolLineOf(t *testing.T, r *AcceptanceRig, now time.Time) []any {
 		t.Fatalf("the policy in force = %v, %v", ok, err)
 	}
 	pl := r.c.ProjectPool(t.Context(), v, factoryd.Project{Name: accProjectName, Repository: "sf/code"}, now)
-	return []any{pl.ConfiguredEUR, pl.UsedEUR, pl.RemainingEUR, pl.Present, pl.Words}
+	return []any{pl.Pool.EUR, pl.Drawn.EUR, pl.Present, pl.Overdrawn, pl.Words}
 }
 
 // TestPoolChatProposal is the offer and its two confirmations through
-// the chat's HTTP surface: the model's Set EUR 10 of a file that holds
-// no pool proposes with the change it captured — the operation, the
-// suggestion, the reason and the ceiling it would stand at — and writes
-// nothing; the unchanged confirmation lands 10 with the answer naming
+// the chat's HTTP surface: the model's Set EUR 10 of a file that leaves
+// the pool's money to the policy proposes with the change it captured
+// (the operation, the suggestion, the reason and the pool it would stand
+// at) and writes nothing; the unchanged confirmation lands 10 with the answer naming
 // the pull request, and the corrected confirmation lands 12 in the
 // merged file while the policy still holds 10: the answer names the
 // pull request, distinguishes the merged change from the loaded one and
@@ -132,7 +119,7 @@ func TestPoolChatProposal(t *testing.T) {
 	// the offer: the captured change beside the arguments, nothing run
 	token, desc, preview := poolOffer(t, r, path, ck, csrf, args)
 	equal(t, "the offer's description", desc,
-		"Set the pool, the pool stands at 0.00 EUR, set it at 10.00 EUR, reason Allow two small verified follow-ups, it would stand at 10.00 EUR")
+		"Set the pool, the pool's money is the policy's, set it at 10.00 EUR, reason Allow two small verified follow-ups, it would stand at 10.00 EUR")
 	equal(t, "the offer's preview", []any{preview.Action, preview.EUR, preview.FromEUR, preview.ToEUR, preview.Reason},
 		[]any{"set", 10.0, 0.0, 10.0, "Allow two small verified follow-ups"})
 	equal(t, "the writes the offer made", poolWrites(r), 0)
@@ -144,7 +131,7 @@ func TestPoolChatProposal(t *testing.T) {
 		t.Fatalf("the unchanged Do it = %d:\n%s", code, body)
 	}
 	landedPress(t, "the unchanged Do it", body, args,
-		"The pool of "+accProjectName+" is €10.00 now, was €0.00: sf/infra#101 carries the change and the policy in force holds it.")
+		"The pool of "+accProjectName+" is €10.00 now, was the policy's: sf/infra#101 carries the change and the policy in force holds it.")
 	equal(t, "main's file after the set", r.InfraFiles()[accInfraFile], accPoolHead)
 	loaded, ok := r.LoadedPool()
 	equal(t, "the loaded pool", []any{ok, loaded}, []any{true, 10.0})
@@ -163,7 +150,7 @@ func TestPoolChatProposal(t *testing.T) {
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, `{"correction":{"eur":12}}`)
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) !=
 		"The pool change is merged as sf/infra#102, but the policy in force still holds the pool of "+accProjectName+
-			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it." {
+			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 12.00." {
 		t.Fatalf("the corrected Do it = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the corrected confirmation", r.InfraFiles()[accInfraFile], accPoolLanded)
@@ -189,24 +176,24 @@ func TestPoolChatProposal(t *testing.T) {
 	equal(t, "the writes after the replay", poolWrites(r), 6)
 }
 
-// TestPoolTopUp is the increment the member corrects and the pool the
-// readout keeps whole: the model's top-up of EUR 5 proposes with the
-// ceiling it would stand at, the member's +4 lands 14 with the month's
-// use standing at 3 — EUR 11 left, one row with the raise it
-// confirmed — and the spent token replays 404. A Set 2 keeps the use
-// whole and forbids the agent's further raises; a Set 0 keeps the use
-// in the rows while the pool itself is disabled: an absent ceiling
-// funds nothing.
+// TestPoolTopUp is the increment the human corrects and the pool line
+// that reads it whole: the model's top-up of EUR 5 proposes with the pool
+// it would stand at, the human's +4 lands 14 with the month's draws
+// standing at 3, one row with the raise it confirmed, and the spent token
+// replays 404. A set of 2 keeps the draws whole and reads the pool
+// overdrawn in money, and a set of 0 refuses at the offer: the policy's
+// figure is a pool without the project's money, which a set never
+// writes.
 func TestPoolTopUp(t *testing.T) {
 	r, path, ck, csrf := poolRig(t)
 	r.SetLoadedPool(10)
 	now := time.Now().UTC()
-	for _, eur := range []float64{1, 1, 1} { // the month's use stands at 3
+	for _, eur := range []float64{1, 1, 1} { // the month's draws stand at 3
 		seedFundRow(t, r, eur, now)
 	}
 
-	// the offer reads the standing pool and the ceiling the top-up
-	// would stand at
+	// the offer reads the standing pool and the pool the top-up would
+	// stand at
 	args := `{"action":"top_up","eur":5,"reason":"a second finding"}`
 	token, desc, preview := poolOffer(t, r, path, ck, csrf, args)
 	equal(t, "the offer's description", desc,
@@ -215,8 +202,8 @@ func TestPoolTopUp(t *testing.T) {
 		[]any{"top_up", 5.0, 10.0, 15.0})
 	equal(t, "the writes the offer made", poolWrites(r), 0)
 
-	// the member corrects +5 to +4: the raise alone changed, the pool
-	// lands at 14 with the use standing at 3
+	// the human corrects +5 to +4: the raise alone changed, the pool
+	// lands at 14 with the draws standing at 3
 	r.OnReload(func() { r.SetLoadedPool(14) })
 	code, body := pressPoolRaw(t, r, path, ck, csrf, token, `{"correction":{"eur":4}}`)
 	if code != http.StatusOK {
@@ -229,10 +216,10 @@ func TestPoolTopUp(t *testing.T) {
 	equal(t, "the top-up's row", rows[0].Detail, map[string]any{"action": "top_up", "from_eur": 10.0,
 		"confirmed_eur": 4.0, "to_eur": 14.0, "reason": "a second finding", "pr": "sf/infra#101"})
 	equal(t, "main's file after the top-up", r.InfraFiles()[accInfraFile], accPoolTopped4)
-	equal(t, "the pool line", poolLineOf(t, r, now), []any{14.0, 3.0, 11.0, true,
-		"€3.00 of €14.00 funded this UTC month, €11.00 left, each raise at most €1.00; fund is confirmed at this autonomy: a raise is the member's money and meets no pool bound"})
-	if used, err := r.AgentFundedEUR(t.Context(), "sf/code", now); err != nil || used != 3 {
-		t.Fatalf("the month's use = %v, %v; want 3 still", used, err)
+	equal(t, "the pool line", poolLineOf(t, r, now), []any{14.0, 3.0, true, false,
+		"0 of 30 sessions, 0 h of 30 h agent time and €3.00 of €14.00 drawn this UTC month"})
+	if drawn, err := r.PoolDrawn(t.Context(), "sf/code", now); err != nil || drawn != (policy.Draw{EUR: 3}) {
+		t.Fatalf("the month's draws = %+v, %v; want 3 EUR still", drawn, err)
 	}
 
 	// the spent token replays 404 and writes nothing further
@@ -242,8 +229,8 @@ func TestPoolTopUp(t *testing.T) {
 	}
 	equal(t, "the writes after the replay", poolWrites(r), 3)
 
-	// Set 2: the use stands whole, nothing is left and the agent may no
-	// longer raise from the pool
+	// set 2: the draws stand whole and the pool reads overdrawn in money,
+	// where only the human draws more
 	set := `{"action":"set","eur":2,"reason":"the month is nearly spent"}`
 	token, _, _ = poolOffer(t, r, path, ck, csrf, set)
 	r.OnReload(func() { r.SetLoadedPool(2) })
@@ -254,42 +241,15 @@ func TestPoolTopUp(t *testing.T) {
 	landedPress(t, "the lowered set's Do it", body, set,
 		"The pool of "+accProjectName+" is €2.00 now, was €14.00: sf/infra#102 carries the change and the policy in force holds it.")
 	equal(t, "main's file after the lowered set", r.InfraFiles()[accInfraFile], accPoolSet2)
-	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
-	equal(t, "the pool line the lowered set leaves", poolLineOf(t, r, now), []any{2.0, 3.0, 0.0, true,
-		"€3.00 funded this UTC month of a pool now at €2.00: usage stands and nothing is left until the pool is raised or the month turns"})
-	r.SetCardBudget("t-e", 2)
-	r.SetSessionFloor("t-e", 2)
-	raise := `{"task_id":"t-e","eur":1,"text":"the replica is worth it"}`
-	equal(t, "the raise the lowered pool refuses", agentCall(t, r, path, ck, csrf, "fund", raise, "the human decides"), []string{
-		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: The month's pool is €2.00 (discretionary_eur) and €3.00 is funded: €0.00 left, short of €1.00. Record your analysis with attach_analysis; the ask then reaches the human."}`,
-		`text {"text":"the human decides"}`, `done {}`})
-	equal(t, "the refused raise's status", lastToolRow(t, r, "sebastian", "fund").Status, http.StatusConflict)
-	card, _, _ := r.Task(t.Context(), "t-e")
-	equal(t, "the card the refused raise left", []any{card.BudgetEUR, card.Status}, []any{2.0, "waiting-human"})
+	equal(t, "the pool line the lowered set leaves", poolLineOf(t, r, now), []any{2.0, 3.0, true, true,
+		"0 of 30 sessions, 0 h of 30 h agent time and €3.00 of €2.00 drawn this UTC month, overdrawn in money: only the human draws more until the month turns"})
 
-	// Set zero: the use stands in the rows and the readout turns the
-	// pool off — an absent ceiling funds nothing
-	zero := `{"action":"set","eur":0,"reason":"stop the spending"}`
-	token, _, _ = poolOffer(t, r, path, ck, csrf, zero)
-	r.OnReload(func() { r.SetLoadedPool(0) })
-	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
-	if code != http.StatusOK {
-		t.Fatalf("the zero set's Do it = %d:\n%s", code, body)
-	}
-	landedPress(t, "the zero set's Do it", body, zero,
-		"The pool of "+accProjectName+" is €0.00 now, was €2.00: sf/infra#103 carries the change and the policy in force holds it.")
-	equal(t, "main's file after the zero set", r.InfraFiles()[accInfraFile], accPoolZero)
-	if used, err := r.AgentFundedEUR(t.Context(), "sf/code", now); err != nil || used != 3 {
-		t.Fatalf("the use the zero set kept = %v, %v; want 3 still", used, err)
-	}
-	equal(t, "the pool line the zero set leaves", poolLineOf(t, r, now), []any{0.0, 0.0, 0.0, false,
-		"no pool: discretionary_eur is absent or 0, every agent raise waits for a member"})
-	equal(t, "the raise the disabled pool refuses", agentCall(t, r, path, ck, csrf, "fund", raise, "the human decides"), []string{
-		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: This project sets no pool: discretionary_eur is absent or 0. Record your analysis with attach_analysis; the ask then reaches the human."}`,
-		`text {"text":"the human decides"}`, `done {}`})
-	card, _, _ = r.Task(t.Context(), "t-e")
-	equal(t, "the card the disabled pool left", []any{card.BudgetEUR, card.Status}, []any{2.0, "waiting-human"})
-	equal(t, "the writes the three confirmations made", poolWrites(r), 9)
+	// set 0 refuses at the offer, before any token: a pool of 0 is the
+	// policy's figure, which the project file leaves unset
+	offerRefusal(t, r, path, ck, csrf, `{"action":"set","eur":0,"reason":"stop the spending"}`, "Understood.",
+		"a set takes an amount above 0 EUR: a pool of 0 takes the policy's figure", http.StatusBadRequest)
+	equal(t, "main's file after the refused zero", r.InfraFiles()[accInfraFile], accPoolSet2)
+	equal(t, "the writes the two confirmations made", poolWrites(r), 6)
 }
 
 // TestPoolConfirmationAccess is the human press the pool change always
@@ -316,7 +276,7 @@ func TestPoolConfirmationAccess(t *testing.T) {
 	// nothing: the streamed refusal with the typed status its row keeps
 	bk, bcsrf := r.LoginAs(t, "bob")
 	equal(t, "the non-approver's offer", agentCall(t, r, path, bk, bcsrf, "set_pool", args, "Understood."), []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ` + accProjectName + ` may change the discretionary pool."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"set_pool","result":"Refused: Only the approvers of project ` + accProjectName + ` may change the escalation pool."}`,
 		`text {"text":"Understood."}`, `done {}`})
 	equal(t, "the non-approver's offer status", lastToolRow(t, r, "bob", "set_pool").Status, http.StatusForbidden)
 	equal(t, "the writes the non-approver's offer made", poolWrites(r), 0)
@@ -375,7 +335,7 @@ func TestPoolConfirmationAccess(t *testing.T) {
 	// token the attempt was valid enough to take
 	r.SetLoadedApprovers([]string{"anna"})
 	code, body = pressPoolRaw(t, r, path, ck, csrf, full, "")
-	if code != http.StatusForbidden || strings.TrimSpace(body) != "Only the approvers of project "+accProjectName+" may change the discretionary pool." {
+	if code != http.StatusForbidden || strings.TrimSpace(body) != "Only the approvers of project "+accProjectName+" may change the escalation pool." {
 		t.Fatalf("the revoked approver's press = %d:\n%s", code, body)
 	}
 	equal(t, "the writes the revoked approver's press made", poolWrites(r), 0)
@@ -428,18 +388,15 @@ func TestPoolConfirmationAccess(t *testing.T) {
 // a merge Forgejo refused answers 502 with the file and the policy
 // standing and the attempt's token spent; a change the loader has not
 // activated answers 503 naming the pull request and the pool the policy
-// still holds — its row written, its ceiling authorising nothing until
-// the activation; a change whose pool_changed row the spine refused
+// still holds, its row written and the pool line reading the old pool
+// until the activation; a change whose pool_changed row the spine refused
 // answers the repair that names the pull request and the missing row,
 // and neither repeats the change nor undoes its activation.
 func TestPoolPendingAndFailures(t *testing.T) {
 	r, path, ck, csrf := poolRig(t)
 	r.SetLoadedPool(10)
-	r.SetLoadedRaiseMax(3)
-	r.SetCardBudget("t-e", 2)
-	r.SetSessionFloor("t-e", 2)
 	now := time.Now().UTC()
-	seedFundRow(t, r, 8, now) // the month's use stands at 8
+	seedFundRow(t, r, 8, now) // the month's draws stand at 8
 	args := `{"action":"top_up","eur":4,"reason":"a verified finding"}`
 
 	// a merge Forgejo refused: the press answers the real 502, the file
@@ -465,13 +422,13 @@ func TestPoolPendingAndFailures(t *testing.T) {
 
 	// a merged change the loader has not activated: the answer names the
 	// pull request and the pool the policy still holds, the row is
-	// written and the old ceiling alone authorises funding
+	// written and the old pool alone stands
 	token, _, _ = poolOffer(t, r, path, ck, csrf, args)
 	r.OnReload(nil)
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusServiceUnavailable || strings.TrimSpace(body) !=
 		"The pool change is merged as sf/infra#102, but the policy in force still holds the pool of "+accProjectName+
-			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written; the new ceiling counts only once the policy holds it." {
+			" at EUR 10.00: the loader picks the merge up on its next poll. The pool_changed row is written, and the pool stays EUR 10.00 until the policy holds EUR 14.00." {
 		t.Fatalf("the unloaded merge's press = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the unloaded merge", r.InfraFiles()[accInfraFile], accPoolTopped4)
@@ -488,31 +445,19 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	}
 	equal(t, "the writes after the replay", poolWrites(r), 6)
 
-	// the old ceiling refuses the raise the merged 14 would allow
-	r.SetLoadedAutonomy(policy.AutonomyAutonomous)
-	raise := `{"task_id":"t-e","eur":3,"text":"the replica is worth it"}`
-	equal(t, "the raise the old ceiling refuses", agentCall(t, r, path, ck, csrf, "fund", raise, "the human decides"), []string{
-		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Refused: The month's pool is €10.00 (discretionary_eur) and €8.00 is funded: €2.00 left, short of €3.00. Record your analysis with attach_analysis; the ask then reaches the human."}`,
-		`text {"text":"the human decides"}`, `done {}`})
-
-	// the activation, not the merge, is what lets the raise through
+	// the pool line reads the old pool until the loader activates the
+	// merged one
+	equal(t, "the pool line before the activation", poolLineOf(t, r, now), []any{10.0, 8.0, true, false,
+		"0 of 30 sessions, 0 h of 30 h agent time and €8.00 of €10.00 drawn this UTC month"})
 	r.SetLoadedPool(14)
-	r.SetLoadedRaiseMax(3)
-	equal(t, "the raise the activated ceiling allows", agentCall(t, r, path, ck, csrf, "fund", raise, "raised it"), []string{
-		`tool {"arguments":` + raise + `,"duration_ms":0,"name":"fund","result":"Raised #13's budget by 3.00 EUR to 5.00 and posted your note as the answer; the card resumes."}`,
-		`applied {"result":"Raised #13's budget by 3.00 EUR to 5.00 and posted your note as the answer; the card resumes.","tool":"fund"}`,
-		`text {"text":"raised it"}`, `done {}`})
-	card, _, _ := r.Task(t.Context(), "t-e")
-	equal(t, "the card after the raise", card.BudgetEUR, 5.0)
-	if used, err := r.AgentFundedEUR(t.Context(), "sf/code", now); err != nil || used != 11 {
-		t.Fatalf("the month's use = %v, %v; want 11 of the pool's 14", used, err)
-	}
+	equal(t, "the pool line the activation leaves", poolLineOf(t, r, now), []any{14.0, 8.0, true, false,
+		"0 of 30 sessions, 0 h of 30 h agent time and €8.00 of €14.00 drawn this UTC month"})
 
 	// a merged change whose audit row the spine refused: the repair
 	// names the pull request and the missing row, the activation stands
 	// and neither the row nor a second change is written
 	r.FailRecords(errors.New("the spine is down"))
-	r.OnReload(func() { r.SetLoadedPool(18); r.SetLoadedRaiseMax(3) })
+	r.OnReload(func() { r.SetLoadedPool(18) })
 	token, _, _ = poolOffer(t, r, path, ck, csrf, args)
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")
 	if code != http.StatusInternalServerError || strings.TrimSpace(body) !=
@@ -521,7 +466,7 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	}
 	equal(t, "main's file after the repair", r.InfraFiles()[accInfraFile], accPool18)
 	loaded, ok = r.LoadedPool()
-	equal(t, "the activated ceiling", []any{ok, loaded}, []any{true, 18.0})
+	equal(t, "the activated pool", []any{ok, loaded}, []any{true, 18.0})
 	equal(t, "the rows the spine refused", len(poolChangedRows(r)), 1)
 	equal(t, "the writes the repair made", poolWrites(r), 9)
 	code, body = pressPoolRaw(t, r, path, ck, csrf, token, "")

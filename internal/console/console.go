@@ -123,15 +123,6 @@ type Tasks interface {
 	// transaction and answers the budget before and after the raise;
 	// ErrNotFound when there is no such task.
 	RaiseTaskBudget(ctx context.Context, id string, eur float64) (from, to float64, err error)
-	// FundCard raises task id's budget by eur and writes e, the raise's
-	// card_funded row, with its budgets added, in one transaction; non-nil
-	// bounds mark the agent's own raise, checked under a lock on e's
-	// repository (*factoryd.PoolSpentError, *factoryd.CardCapError).
-	FundCard(ctx context.Context, id string, eur float64, bounds *factoryd.FundBounds, e factoryd.Event) (from, to float64, err error)
-	// ExtendCard raises task id's caps — its granted sessions, its line
-	// bound and its budget — and writes e, the raise's card_extended row,
-	// in one transaction.
-	ExtendCard(ctx context.Context, id string, sessions, lines int, eur float64, e factoryd.Event) (from, to float64, err error)
 	// AddTaskDeps and RemoveTaskDeps make task id depend on the tasks
 	// dependsOn, or no longer.
 	AddTaskDeps(ctx context.Context, id string, dependsOn []string) error
@@ -179,10 +170,10 @@ type Config struct {
 	// Dependencies reads the factory's own dependency health for the
 	// status line's red dot and the panel's list (roadmap 299).
 	Dependencies Dependencies
-	// Pools answers what a project's month pool has already funded
-	// (factoryd.PGStore.AgentFundedEUR): the status line's pool figures
-	// and the chat snapshot's words; nil shows no pool line.
-	Pools Pools
+	// PoolDrawn is what repository's cards drew from the escalation pool
+	// in the UTC month of month (factoryd.PGStore.PoolDrawn): the pool
+	// line's figures. New refuses a Config without it.
+	PoolDrawn func(ctx context.Context, repository string, month time.Time) (policy.Draw, error)
 	// ConfigRepo is the infra repository's web URL and ConfigDir the
 	// configuration tree's directory in it, where every change is made.
 	ConfigRepo   string
@@ -232,10 +223,10 @@ type Config struct {
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.
 	ConfirmDeliveredCriteria func(ctx context.Context, id, by, line string) (int, error)
-	// RetryPlanCard files failed plan card taskID again for by and returns
-	// the replacement's issue (factoryd's Runner.RetryPlanCard): a refusal
-	// is factoryd.ErrNoRetry.
-	RetryPlanCard func(ctx context.Context, taskID, by string) (int64, error)
+	// RetryCard files failed card taskID again for by and returns the
+	// replacement's issue (factoryd's Runner.RetryCard): a refusal is
+	// factoryd.ErrNoRetry.
+	RetryCard func(ctx context.Context, taskID, by string) (int64, error)
 	// GoCard files human card taskID's work as an agent card for by and
 	// returns its issue (factoryd's Runner.Go): the go of a card that
 	// waits on a person. A refusal is factoryd.ErrNoGo.
@@ -279,11 +270,11 @@ type Config struct {
 	// decided by decider, and answers the commit (ReleaseKeeper.DeployNow);
 	// a free production answers factoryd.ErrNotHeld.
 	DeployNow func(ctx context.Context, repository, by, via, decider string) (string, error)
-	// AnswerWhole signals card taskID's workflow that comment, which the
-	// answer box posted for by, is a whole answer
-	// (factoryd.SignalAnswerWhole): the card resumes on it without the
-	// quiet window an answer in parts waits out. nil sends none.
-	AnswerWhole func(ctx context.Context, taskID string, comment int64, by string) error
+	// Act answers a card's case (factoryd's Runner.Act): every answer,
+	// grant, extend, fund and close of a card waiting on a case goes
+	// through it. A refusal is factoryd.ErrActRefused. New refuses a
+	// Config without it.
+	Act func(ctx context.Context, in factoryd.ActInput) (factoryd.ActResult, error)
 	// InfraRepo is the infra repository (owner/name), where the new-project
 	// button files its pull request; InfraToken reads its pull requests
 	// (factoryd's forgejo-config token).
@@ -343,6 +334,11 @@ type Config struct {
 	// refuses a Config without either.
 	OpenCasesOf func(ctx context.Context, taskID string) ([]factoryd.Case, error)
 	CaseSteps   func(ctx context.Context, caseID int64) ([]factoryd.CaseStep, error)
+	// NewestAskCase is the case an answer on a card ends: its newest live
+	// case, those whose own door answers them (a merge, a plan question)
+	// aside, the zero Case for none (factoryd's PGStore). New refuses a
+	// Config without it.
+	NewestAskCase func(ctx context.Context, taskID string) (factoryd.Case, error)
 	// SessionFunded is the floor of a session's start (roadmap 243, plan A):
 	// "" when the task's free headroom can fund a session's opening calls and
 	// its rung's floor on model, else the refusal (factoryd's
@@ -608,15 +604,18 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no OpenCasesOf")
 	case cfg.CaseSteps == nil:
 		return nil, errors.New("console: no CaseSteps")
+	case cfg.NewestAskCase == nil:
+		return nil, errors.New("console: no NewestAskCase")
+	case cfg.Act == nil:
+		return nil, errors.New("console: no Act")
+	case cfg.PoolDrawn == nil:
+		return nil, errors.New("console: no PoolDrawn")
 	}
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
 	if cfg.Events != nil {
 		cfg.Events = stampedEvents{cfg.Events}
-	}
-	if cfg.Tasks != nil {
-		cfg.Tasks = stampedTasks{cfg.Tasks}
 	}
 	if cfg.Chat != nil {
 		cfg.Chat = stampedChat{cfg.Chat}

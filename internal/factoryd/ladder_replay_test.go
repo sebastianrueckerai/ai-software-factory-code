@@ -113,6 +113,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 	// carries the fix.
 	t.Run("#839_cap_return_carries_the_handover", func(t *testing.T) {
 		h := newWorkflowHarness(t)
+		h.beforeCases()
 		h.taskConfig = askTaskConfig()
 		tests := "TaskFinishTime and TaskPinnedAt fail: the database check forbids the rows they create on purpose"
 		change := "reviewer sebastian requested changes: " + tests
@@ -176,6 +177,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 			g.taskConfig = askTaskConfig()
 			g.branchHead = "c3" // the sync with main left this head unjudged
 		})
+		g.beforeCases()
 		g.onSessions(
 			SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
 			SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
@@ -216,18 +218,27 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 
 	// #851, design section 4 problem 5 and its replay row: the planner
 	// read its agent time away and filed nothing; the time card asks the
-	// human, whose answer starts the filing session — the gate moment does
-	// not exist on a card with no review, so no check-in runs.
+	// human, whose extend of the card's agent time, with their comment,
+	// starts the filing session — the gate moment does not exist on a card
+	// with no review, so no check-in runs.
 	t.Run("#851_planner_still_asks_the_human", func(t *testing.T) {
 		h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"})
 		h.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 30 * time.Minute, RetryTime: 10 * time.Minute, Attempts: 1}}
+		start := h.env.Now()
+		h.env.OnActivity(ActivityReadUsage, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (TaskUsage, error) {
+			row := h.rowUsage
+			if h.env.Now().Sub(start) >= time.Hour {
+				row.RaisedTime = 5 * time.Minute // the extend, made with the comment
+			}
+			return row, nil
+		})
 		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "file what you have", Comment: 801})
 		h.file = map[int]bool{1: true}
 
 		if final := h.run(t); final != "done" {
 			t.Fatalf("final = %q, escalated = %q", final, h.escalated)
 		}
-		question := "the planner used its agent time and its automatic second session without filing a plan: an answer starts one more planner session with 5 minutes of agent time and the answer among its findings"
+		question := "the planner used its agent time and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings"
 		if !slices.Equal(h.escalated, []string{question}) {
 			t.Fatalf("escalations = %q, want the time card alone", h.escalated)
 		}
