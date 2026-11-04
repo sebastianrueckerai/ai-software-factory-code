@@ -3143,7 +3143,7 @@ func TestPGStoreRollsAndAlertCounts(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian"); err != nil {
+	if err := s.SetAlertVerdict(ctx, esc, VerdictReal, "sebastian", nil); err != nil {
 		t.Fatal(err)
 	}
 	if _, err := s.InsertAlert(ctx, Alert{Kind: AlertInfoRequest, Source: "agent", TaskID: "t1"}); err != nil {

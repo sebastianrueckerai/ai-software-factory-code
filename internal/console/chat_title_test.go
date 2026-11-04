@@ -1,6 +1,7 @@
 package console
 
 import (
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -62,7 +63,8 @@ func TestChatNamesTheThread(t *testing.T) {
 }
 
 // The inbox's and a card thread's first messages name nothing (roadmap
-// 304): the inbox's title and a card thread's "#task" stay.
+// 304): a card thread's "#task" stays, and the inbox takes no typed
+// message to name it by, so its title stays.
 func TestChatNamesNoInboxOrCardThread(t *testing.T) {
 	r, chat, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -74,11 +76,14 @@ func TestChatNamesNoInboxOrCardThread(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, n := range []int64{inbox, card} {
+	for _, tc := range []struct {
+		n    int64
+		want int
+	}{{inbox, http.StatusConflict}, {card, http.StatusOK}} {
 		g.replies = [][]string{{say("ok")}}
 		code, _, _ := chatPost(t, r, ck, s, chatPath,
-			url.Values{"message": {"what is open?"}, "conversation": {strconv.FormatInt(n, 10)}})
-		equal(t, "POST", code, 200)
+			url.Values{"message": {"what is open?"}, "conversation": {strconv.FormatInt(tc.n, 10)}})
+		equal(t, fmt.Sprint("POST to thread ", tc.n), code, tc.want)
 	}
 	time.Sleep(100 * time.Millisecond)
 	equal(t, "naming calls", len(g.titles()), 0)

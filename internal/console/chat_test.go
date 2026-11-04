@@ -47,7 +47,7 @@ type fakeChat struct {
 	mu         sync.Mutex
 	msgs       map[string][]factoryd.ChatMessage // by repository and login
 	// started is the conversation each member opened last, by repository
-	// and login
+	// and login: the store's current row
 	started map[string]int64
 	// titles are the renamed threads' titles, seen the seen markers and
 	// cleared the clear markers,
@@ -84,8 +84,10 @@ type fakeChat struct {
 	spend    []spendRow
 	// atts are the stored image rows, any member's, in arrival order
 	atts []storedAttachment
-	// proposals are the proposals and undos, in the order stored
+	// proposals are the proposals and undos, in the order stored; takes
+	// counts TakeProposal's calls
 	proposals []*fakeProposal
+	takes     int
 	// intake is the repositories' intake switch rows
 	intake map[string]factoryd.IntakeRow
 	// now stamps the rows stored; nil: the fixed clock at, a second a row
@@ -214,9 +216,16 @@ func (f *fakeChat) CurrentConversation(_ context.Context, repository, login stri
 	return f.current(repository, login), nil
 }
 
+// NewConversation reuses an empty current thread other than the inbox,
+// as the store does, else starts one.
 func (f *fakeChat) NewConversation(_ context.Context, repository, login string) (int64, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	k := repository + " " + login
+	if cur, ok := f.started[k]; ok && cur != f.inboxes[k].Number &&
+		!slices.ContainsFunc(f.msgs[k], func(m factoryd.ChatMessage) bool { return m.Conversation == cur }) {
+		return cur, nil
+	}
 	return f.startNew(repository, login), nil
 }
 
@@ -272,6 +281,10 @@ func (f *fakeChat) EnsureInbox(_ context.Context, repository, login string) (int
 	if f.inboxes == nil {
 		f.inboxes = map[string]factoryd.ChatConversation{}
 	}
+	if f.started == nil {
+		f.started = map[string]int64{}
+	}
+	f.started[k] = f.current(repository, login)
 	made := f.stamp()
 	f.inboxes[k] = factoryd.ChatConversation{Number: max(f.highest(repository, login), f.current(repository, login)) + 1,
 		Title: factoryd.InboxTitle, State: factoryd.ThreadActive, Inbox: true, FirstAt: made, LastAt: made}
@@ -579,9 +592,14 @@ func (f *fakeChat) Conversation(_ context.Context, repository, login string, n i
 	return factoryd.ChatConversation{}, false, nil
 }
 
+// OpenConversation refuses the inbox as the store does, ErrNotFound and
+// the current thread unchanged.
 func (f *fakeChat) OpenConversation(_ context.Context, repository, login string, n int64) error {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if in, ok := f.inboxes[repository+" "+login]; ok && in.Number == n {
+		return factoryd.ErrNotFound
+	}
 	if f.started == nil {
 		f.started = map[string]int64{}
 	}
@@ -759,14 +777,24 @@ func (f *fakeChat) ChatAttachmentByID(_ context.Context, repository string, id i
 	return factoryd.ChatAttachment{}, false, nil
 }
 
-func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
+func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatAsk, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []factoryd.ChatMessage
-	for _, m := range f.msgs[repository+" "+login] {
-		if (m.Kind == factoryd.MessageEscalation || m.Kind == factoryd.MessagePoke) && m.TaskID != "" {
-			out = append(out, m)
+	var out []factoryd.ChatAsk
+	rows := f.msgs[repository+" "+login]
+	for i, m := range rows {
+		if (m.Kind != factoryd.MessageEscalation && m.Kind != factoryd.MessagePoke) || m.TaskID == "" {
+			continue
 		}
+		a := factoryd.ChatAsk{ChatMessage: m}
+		if m.Kind == factoryd.MessagePoke && len(m.Choices) > 0 {
+			if j := slices.IndexFunc(rows[i+1:], func(n factoryd.ChatMessage) bool {
+				return n.Conversation == m.Conversation && n.Role == "user" && n.BirthKind == ""
+			}); j >= 0 {
+				a.Pressed = rows[i+1+j].At
+			}
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }
@@ -877,6 +905,7 @@ func (f *fakeChat) ReadProposal(_ context.Context, kind, token, repository, logi
 func (f *fakeChat) TakeProposal(_ context.Context, kind, token, repository, login string, now time.Time) (factoryd.ChatProposal, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.takes++
 	for _, p := range f.proposals {
 		if p.Kind != kind || p.Token != token || p.Repository != repository {
 			continue
@@ -1990,13 +2019,13 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
 			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
-			"active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
+			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
 			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
-			"attach_analysis", "active_threads", "chat_search", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
+			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
 		r, _, g := newChatRig(t)
 		members(r)
@@ -2280,7 +2309,7 @@ func TestChatReadThenReply(t *testing.T) {
 		{"role": "tool", "tool_call_id": "call_1", "content": "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
 			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
-			"merge request 4 pending for pull request #9, risk high; " +
+			"merge request 4 pending for pull request #9, risk high, review approve, strict improvement no, head abc123; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
 			"objective: Fix the cache. It drops entries.\n\nAcceptance:\n- The cache keeps entries across a restart\n"},
 	})
@@ -2974,8 +3003,8 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 
 // The ask tool questions the conversation's human in place: one row of
 // the thread, kind ask with its choices, the turn ending on it. Their
-// answer, pressed or typed, is the member's next message, and any row
-// after it settles the ask.
+// answer, pressed or typed, is the member's next message, and it settles
+// the ask.
 func TestChatAskOffersChoices(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -2983,7 +3012,7 @@ func TestChatAskOffersChoices(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args)}, {say("Filed.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file the card when I say so"}})
 	equal(t, "the ask turn", events, []string{
-		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press or their next message answers it."}`,
+		`tool {"arguments":` + args + `,"duration_ms":0,"name":"ask","result":"Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message."}`,
 		`done {}`})
 	if n := len(g.calls()); n != 1 {
 		t.Fatalf("%d model calls, want the ask to end the turn", n)
@@ -3158,7 +3187,7 @@ func TestChatParkRefusesTheBoundTool(t *testing.T) {
 	g.replies = [][]string{{call(1, "close", `{"task_id":"t-m"}`)}, {say("Their press runs it.")}}
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"close it, do it now"}})
 	equal(t, "the parked call", events, []string{
-		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`,
+		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, a press answers it, and in a thread of their own so does their message."}`,
 		`text {"text":"Their press runs it."}`, `done {}`})
 	if p, ok := chat.proposal(token); !ok || !p.used.IsZero() {
 		t.Fatalf("the refused call settled the binding: %+v", p)
@@ -3369,7 +3398,7 @@ func TestChatParkCoversTheSameAnswer(t *testing.T) {
 	g.replies = [][]string{{call(1, "ask", args, "close", `{"task_id":"t-m"}`)}}
 	before := r.events.count()
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"ask to close #5"}})
-	refused := `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, their press or their message answers it."}`
+	refused := `tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Refused: an open ask of this thread binds close; the human's press runs it, a press answers it, and in a thread of their own so does their message."}`
 	if !slices.Contains(events, refused) {
 		t.Fatalf("the same answer's bound call ran: %v", events)
 	}
@@ -3420,6 +3449,68 @@ func TestChatAskBindsForTheThreadsOwner(t *testing.T) {
 	equal(t, "the owner's press", events, []string{
 		`tool {"arguments":{"task_id":"t-m"},"duration_ms":0,"name":"close","result":"Closed #5; factoryd ends the card."}`,
 		`applied {"result":"Closed #5; factoryd ends the card.","tool":"close"}`, `done {}`})
+}
+
+// The inbox is the factory's thread: no typed message enters it, neither
+// its human's, a /compact among them, nor a writer's who talks in it by
+// its owner's name. Each answers 409 naming the buttons and a thread of
+// their own, and nothing is stored or sent to the model.
+func TestChatInboxRefusesATypedMessage(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	const want = "The inbox is the factory's thread: answer with its buttons, and write in a thread of your own."
+	conv := strconv.FormatInt(inbox, 10)
+	for _, message := range []string{"what is open?", "/compact"} {
+		code, body, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {message}, "conversation": {conv}})
+		equal(t, "sebastian's "+message+" in his inbox", []any{code, body}, []any{http.StatusConflict, []string{want}})
+	}
+	r.repoWriters["sf/code"] = append(r.repoWriters["sf/code"], "anna")
+	r.forgetWriters()
+	ak, as := r.as(t, "anna")
+	code, body, _ := chatPost(t, r, ak, as, chatPath, url.Values{"message": {"what is open?"}, "conversation": {conv}, "owner": {"sebastian"}})
+	equal(t, "anna's message in sebastian's inbox", []any{code, body}, []any{http.StatusConflict, []string{want}})
+	chat.mu.Lock()
+	rows := len(chat.msgs["sf/code sebastian"]) + len(chat.msgs["sf/code anna"])
+	chat.mu.Unlock()
+	if rows != 0 || len(g.calls()) != 0 {
+		t.Fatalf("the refused messages left %d rows and %d model calls, want none", rows, len(g.calls()))
+	}
+}
+
+// A card answer in words that match none of its choices goes to the
+// human's chat, never into the inbox: the words and the turn's answer
+// land in their current thread 1, the inbox 2 beside it stays empty, and
+// thread 1 stays current.
+func TestCardAnswerInWordsLandsInAnOwnThread(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?"},
+		Question: &factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: "say:Postgres", Label: "Postgres"}, {Value: "say:SQLite", Label: "SQLite"}}}}}
+	_, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say("I read the card.")}}
+	note, err := r.c.doAnswerValue(ctx, actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "use your own judgement on the replica", "", "")
+	if err != nil || note != "The words are in the project chat; the agent answers there." {
+		t.Fatalf("the answer in words = %q, %v", note, err)
+	}
+	if !waitFor(t, 5*time.Second, func() bool { return len(rowsOf(t, chat, "sebastian", 1)) == 2 }) {
+		t.Fatalf("thread 1 = %v, want the words and the turn's answer", rowsOf(t, chat, "sebastian", 1))
+	}
+	equal(t, "the own thread", rowsOf(t, chat, "sebastian", 1),
+		[]string{"user: About card #13 (t-e): use your own judgement on the replica", "assistant: I read the card."})
+	equal(t, "the inbox", []any{inbox, rowsOf(t, chat, "sebastian", inbox)}, []any{int64(2), []string{}})
+	cur, err := chat.CurrentConversation(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the current thread", cur, int64(1))
 }
 
 var png1x1, _ = base64.StdEncoding.DecodeString("iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mNkYPhfDwAChwGA60e6kgAAAABJRU5ErkJggg==")
@@ -4644,7 +4735,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	equal(t, "the card with a merge request", stored[0].ToolCalls[6].Result, "#15 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n"+
 		"#15 t-mr \"Add the index.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
-		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low\n"+
+		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low, review none\n"+
 		"objective: Add the index.")
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,

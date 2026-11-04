@@ -7,6 +7,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jackc/pgx/v5/pgconn"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/schema/schematest"
 )
 
@@ -270,6 +273,82 @@ func TestPGStoreChatThreads(t *testing.T) {
 	}
 	if left, err := s.ChatAttachments(ctx, repo, login, 3); err != nil || len(left) != 0 {
 		t.Fatalf("thread 3's images after the withdrawal = %v, %v, want none", left, err)
+	}
+}
+
+// Opening the inbox is refused as no thread to open: the inbox is the
+// factory's thread, never a human's current one, and the current flag
+// stays on their thread 1.
+func TestOpenConversationSkipsTheInbox(t *testing.T) {
+	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_open_inbox"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	ctx := t.Context()
+	repo, login := "sf/code", "sebastian"
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	inbox, err := s.EnsureInbox(ctx, repo, login)
+	if err != nil || inbox != 2 {
+		t.Fatalf("EnsureInbox = %d, %v, want 2", inbox, err)
+	}
+	if err := s.OpenConversation(ctx, repo, login, inbox); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("OpenConversation of the inbox = %v, want ErrNotFound", err)
+	}
+	if n, err := s.CurrentConversation(ctx, repo, login); err != nil || n != 1 {
+		t.Fatalf("the current thread = %d, %v, want 1", n, err)
+	}
+}
+
+// The inbox is never current, by a check on its row: a human whose
+// current row was the inbox before the check loses the flag and lands on
+// thread 3, one past the inbox 2, and a write that sets the flag again
+// fails on the check.
+func TestInboxNeverCurrentMigration(t *testing.T) {
+	ctx := t.Context()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_inbox_never_current"))
+	if err != nil {
+		t.Skipf("no database: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.Exec(`TRUNCATE chat_messages, chat_conversations CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	repo, login := "sf/code", "sebastian"
+	if _, err := s.AddChatMessage(ctx, repo, login, ChatMessage{Role: "user", Content: "hello"}); err != nil {
+		t.Fatal(err)
+	}
+	if inbox, err := s.EnsureInbox(ctx, repo, login); err != nil || inbox != 2 {
+		t.Fatalf("EnsureInbox = %d, %v, want 2", inbox, err)
+	}
+	const inboxCurrent = `UPDATE chat_conversations SET current = inbox WHERE repository = 'sf/code' AND login = 'sebastian'`
+	for _, q := range []string{
+		`ALTER TABLE chat_conversations DROP CONSTRAINT chat_conversations_inbox_never_current`,
+		inboxCurrent,
+		`DELETE FROM schema_migrations WHERE name = 'factoryd/20261114103000_inbox_never_current.sql'`,
+	} {
+		if _, err := s.db.ExecContext(ctx, q); err != nil {
+			t.Fatalf("%s: %v", q, err)
+		}
+	}
+	if n, err := s.CurrentConversation(ctx, repo, login); err != nil || n != 2 {
+		t.Fatalf("the current thread before the migration = %d, %v, want the inbox 2", n, err)
+	}
+	if err := schema.Migrate(ctx, s.db); err != nil {
+		t.Fatal(err)
+	}
+	if n, err := s.CurrentConversation(ctx, repo, login); err != nil || n != 3 {
+		t.Fatalf("the current thread after the migration = %d, %v, want 3", n, err)
+	}
+	_, err = s.db.ExecContext(ctx, inboxCurrent)
+	var pe *pgconn.PgError
+	if !errors.As(err, &pe) || pe.ConstraintName != "chat_conversations_inbox_never_current" {
+		t.Fatalf("setting the inbox current = %v, want the check chat_conversations_inbox_never_current", err)
 	}
 }
 

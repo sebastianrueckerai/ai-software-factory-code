@@ -320,10 +320,10 @@ type chatPool struct {
 
 // chatGet answers GET /projects/{name}/chat: the member's current
 // conversation on the project, or the one ?conversation names, which
-// becomes their current one while it is active; its last chatHistory
-// messages, oldest first, and each proposal's state among them, pending,
-// used or expired, and while the chat's budget stops it the fund state,
-// as JSON. Reading it marks it seen.
+// becomes their current one while it is active and not the inbox; its
+// last chatHistory messages, oldest first, and each proposal's state
+// among them, pending, used or expired, and while the chat's budget stops
+// it the fund state, as JSON. Reading it marks it seen.
 func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
 	if !ok {
@@ -335,7 +335,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	ctx, repo, owner := r.Context(), t.p.Repository, t.owner
-	if owner == t.a.s.user && r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 {
+	if owner == t.a.s.user && r.URL.Query().Get("conversation") != "" && th.State == factoryd.ThreadActive && !th.Current && th.Messages > 0 && !th.Inbox {
 		if err := c.cfg.Chat.OpenConversation(ctx, repo, owner, t.conv); err != nil {
 			log.Printf("console: open the chat of %s on %s: %v", owner, repo, err)
 		} else {
@@ -353,16 +353,17 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("console: the chat stop of %s: %v", repo, err)
 	}
-	t.settleRows(ctx, msgs, th.SeenUpto, stop)
+	t.settleRows(ctx, msgs, owner, t.conv, th.SeenUpto, stop)
 	// the owner's Clear old swept the rows up to their marker from view;
-	// an open ask or fund row stays whatever the marker says, and the
-	// record keeps every row. Past the summary's fold the answer carries
-	// no summary either: no summary card over rows the member swept, while
-	// the stored thread keeps its summary for the turns.
+	// an open ask, fund row or poke with choices stays whatever the
+	// marker says, and the record keeps every row. Past the summary's fold
+	// the answer carries no summary either: no summary card over rows the
+	// human swept, while the stored thread keeps its summary for the
+	// turns.
 	if th.ClearedUpto > 0 {
 		kept := make([]factoryd.ChatMessage, 0, len(msgs))
 		for _, m := range msgs {
-			if m.ID <= th.ClearedUpto && !((factoryd.AskFamily(m) != "" || fundRow(m)) && !m.Settled) {
+			if m.ID <= th.ClearedUpto && !((factoryd.AskFamily(m) != "" || fundRow(m) || choicePoke(m)) && !m.Settled) {
 				th.Cleared++
 				continue
 			}
@@ -464,24 +465,27 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// askFacts reads the settle rule's wait facts for the cards named: the
-// board's Needs-you fact, the card's status waiting-human, with its
-// events. A card in a final state settled its asks already, so its
-// events are not read. One query per fact, whatever the cards' number.
-func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, map[string][]factoryd.Event) {
+// askFacts reads the settle rule's facts for the cards named: of each
+// card in asks the board's Needs-you fact, the card's status
+// waiting-human, with its events, and of each card in pokes, named by a
+// poke with choices, its events. A card in a final state settled its
+// asks already, so its events are read only when a poke with choices
+// names it: its buttons stand until an event moves the card on. One
+// query per fact, whatever the cards' number.
+func askFacts(ctx context.Context, c *Console, asks, pokes []string) (map[string]bool, map[string][]factoryd.Event) {
 	waits, events := map[string]bool{}, map[string][]factoryd.Event{}
-	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
+	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, asks)
 	if err != nil {
 		log.Printf("console: the cards' statuses: %v", err)
 	}
-	var live []string
-	for _, id := range ids {
+	read := slices.Clone(pokes)
+	for _, id := range asks {
 		waits[id] = statuses[id] == "waiting-human"
-		if statuses[id] != "" && !factoryd.Final(statuses[id]) {
-			live = append(live, id)
+		if statuses[id] != "" && !factoryd.Final(statuses[id]) && !slices.Contains(pokes, id) {
+			read = append(read, id)
 		}
 	}
-	if evs, err := c.cfg.Events.TaskEventsFor(ctx, live, startEvents); err != nil {
+	if evs, err := c.cfg.Events.TaskEventsFor(ctx, read, startEvents); err != nil {
 		log.Printf("console: the cards' events: %v", err)
 	} else {
 		events = evs
@@ -507,24 +511,29 @@ func (t *turn) attachRows(ctx context.Context, msgs []factoryd.ChatMessage) {
 	}
 }
 
-// settleRows stamps each poke row's derived state onto the log (the
-// notification-settling concept): an ask past its settling event or its
-// wait facts gets its reason line, a poke the member has read recedes,
-// and a fund row settles by the chat's stop. Nothing is written; the
-// state derives at read, seenUpto the thread's seen marker before this
-// read.
-func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seenUpto int64, stop chatStop) {
+// settleRows stamps each poke row's derived state onto the log of
+// login's thread conv (the notification-settling concept): an ask past
+// its settling event or its wait facts gets its reason line, a poke with
+// choices settles by choiceSettle, another poke the human has read
+// recedes, and a fund row settles by the chat's stop.
+// Nothing is written; the state derives at read, seenUpto the thread's
+// seen marker before this read.
+func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, login string, conv int64, seenUpto int64, stop chatStop) {
 	pending, err := t.c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	if err != nil {
 		log.Printf("console: the approval requests: %v", err)
 	}
-	var ids []string
+	var ids, pokes []string
 	for _, m := range msgs {
-		if m.Kind == factoryd.MessageEscalation && m.TaskID != "" && !slices.Contains(ids, m.TaskID) {
+		switch {
+		case m.TaskID == "":
+		case m.Kind == factoryd.MessageEscalation && !slices.Contains(ids, m.TaskID):
 			ids = append(ids, m.TaskID)
+		case choicePoke(m) && !slices.Contains(pokes, m.TaskID):
+			pokes = append(pokes, m.TaskID)
 		}
 	}
-	waits, events := askFacts(ctx, t.c, ids)
+	waits, events := askFacts(ctx, t.c, ids, pokes)
 	// a card's own thread (the card door): an open ask row names it,
 	// whosever binding it carries
 	threads, whose := map[string]int64{}, map[string]string{}
@@ -534,8 +543,8 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 		}
 	}
 	live := map[string]bool{}
-	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, t.owner, t.conv, time.Now()); err != nil {
-		log.Printf("console: the ask bindings of %s on %s: %v", t.owner, t.p.Repository, err)
+	if binds, err := t.c.cfg.Chat.LiveAskBinds(ctx, t.p.Repository, login, conv, time.Now()); err != nil {
+		log.Printf("console: the ask bindings of %s on %s: %v", login, t.p.Repository, err)
 	} else {
 		for _, b := range binds {
 			live[b.Token] = true
@@ -547,17 +556,30 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 			continue
 		}
 		if m.Kind == factoryd.MessageAsk {
-			// an ask stands open while it is the thread's newest row: any
-			// row after it, the member's press or reply or another turn's,
-			// answers it. A bound ask stands while its binding lives: the
-			// press that takes it or its expiry answers it, no row between.
-			msgs[i].Settled = i < len(msgs)-1
+			// an ask stands open until a later row answers it: a human's
+			// press or typed message, or another ask. A poke, an escalation,
+			// a budget row or a wake's row answers nothing. A bound ask
+			// stands while its binding lives: the press that takes it or its
+			// expiry answers it, no row between.
+			msgs[i].Settled = slices.ContainsFunc(msgs[i+1:], func(n factoryd.ChatMessage) bool {
+				return humanSaid(n) || n.Kind == factoryd.MessageAsk
+			})
 			if live[m.Proposal] {
 				msgs[i].Settled = false
 			}
 			continue
 		}
 		if m.Kind != factoryd.MessagePoke && m.Kind != factoryd.MessageEscalation {
+			continue
+		}
+		if choicePoke(m) {
+			var pressed time.Time
+			if j := slices.IndexFunc(msgs[i+1:], humanSaid); j >= 0 {
+				pressed = msgs[i+1+j].At
+			}
+			if s := choiceSettle(m, pressed, events[m.TaskID], login); !s.Open {
+				msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
+			}
 			continue
 		}
 		if factoryd.AskFamily(m) == "" {
@@ -574,12 +596,54 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, seen
 	}
 }
 
+// choicePoke reports whether row m is a poke that offers choices: an
+// inform with buttons, as a failed card's Retry and Leave it, which
+// choiceSettle settles.
+func choicePoke(m factoryd.ChatMessage) bool {
+	return m.Kind == factoryd.MessagePoke && len(m.Choices) > 0 && factoryd.AskFamily(m) == ""
+}
+
+// humanSaid reports whether row n is the human's press or typed words: a
+// user row no event wrote.
+func humanSaid(n factoryd.ChatMessage) bool { return n.Role == "user" && n.BirthKind == "" }
+
+// cardMoves are the events that move a card on: a status or gate
+// change, its end, a retry filing its replacement, a close.
+var cardMoves = []string{factoryd.EventTaskStatus, factoryd.EventTaskEnded, factoryd.EventCardRetried, factoryd.EventCardClosed}
+
+// choiceSettle is choice poke m's state (the notification-settling
+// concept), the one rule the thread's rows, the cleared view through
+// them and the switcher's badge read: its buttons stand while their
+// action still applies. pressed, the time of the human's first press or
+// words after it in its thread (humanSaid), zero for none, settles it
+// "answered by <login> · 15:04"; so does the first of events, its card's,
+// at or after it that moves the card on, with the event's word, actor and
+// time; whichever came first.
+func choiceSettle(m factoryd.ChatMessage, pressed time.Time, events []factoryd.Event, login string) factoryd.PokeSettle {
+	var first factoryd.Event
+	for _, e := range events {
+		if e.At.Before(m.At) || !slices.Contains(cardMoves, e.Kind) {
+			continue
+		}
+		if first.ID == 0 || e.At.Before(first.At) || e.At.Equal(first.At) && e.ID < first.ID {
+			first = e
+		}
+	}
+	switch {
+	case !pressed.IsZero() && (first.ID == 0 || pressed.Before(first.At)):
+		return factoryd.PokeSettle{Word: "answered", By: login, At: pressed}
+	case first.ID != 0:
+		return factoryd.PokeSettle{Word: factoryd.SettleWord(first.Kind), By: first.Actor, At: first.At, Event: first}
+	}
+	return factoryd.PokeSettle{Open: true}
+}
+
 // settleCounts splits each thread's unread turns for the switcher's badge
-// (the notification-settling concept): the asks still open are its
-// needs-you side, the unread rows past the seen marker that are no open
-// ask its new side, and the thread's distinct cards with an open ask or
-// poke row are its waits-you side, the tab title's count. A read that
-// fails leaves the counts as they fall.
+// (the notification-settling concept): the asks and the pokes with
+// choices still open are its needs-you side, read or not, the unread rows
+// past the seen marker that are neither its new side, and the thread's
+// distinct cards with an open ask or poke row are its waits-you side, the
+// tab title's count. A read that fails leaves the counts as they fall.
 func (c *Console) settleCounts(ctx context.Context, repository, login string, list []factoryd.ChatConversation) {
 	asks, err := c.cfg.Chat.ChatAsks(ctx, repository, login)
 	if err != nil {
@@ -596,27 +660,37 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 	if err != nil {
 		log.Printf("console: the approval requests: %v", err)
 	}
-	var ids []string
-	for _, m := range asks {
-		if !slices.Contains(ids, m.TaskID) {
-			ids = append(ids, m.TaskID)
+	var ids, pokes []string
+	for _, a := range asks {
+		if !slices.Contains(ids, a.TaskID) {
+			ids = append(ids, a.TaskID)
+		}
+		if choicePoke(a.ChatMessage) && !slices.Contains(pokes, a.TaskID) {
+			pokes = append(pokes, a.TaskID)
 		}
 	}
-	waits, events := askFacts(ctx, c, ids)
+	waits, events := askFacts(ctx, c, ids, pokes)
 	waiting := make([]map[string]bool, len(list))
-	for _, m := range asks {
+	for _, a := range asks {
+		m := a.ChatMessage
 		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Login == login && th.Number == m.Conversation })
 		if i < 0 {
 			continue
 		}
-		if !factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
+		var s factoryd.PokeSettle
+		if choicePoke(m) {
+			s = choiceSettle(m, a.Pressed, events[m.TaskID], login)
+		} else {
+			s = factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID))
+		}
+		if !s.Open {
 			continue
 		}
 		if waiting[i] == nil {
 			waiting[i] = map[string]bool{}
 		}
 		waiting[i][m.TaskID] = true
-		if m.Kind != factoryd.MessageEscalation {
+		if m.Kind != factoryd.MessageEscalation && !choicePoke(m) {
 			continue
 		}
 		list[i].NeedsYou++
@@ -679,7 +753,7 @@ func (c *Console) chatPost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	in.Names = names(th)
-	if err := t.say(in, func() { t.open(w) }); err != nil {
+	if err := t.say(th, in, func() { t.open(w) }); err != nil {
 		c.fail(w, r, err)
 	}
 }
@@ -725,14 +799,22 @@ func names(th factoryd.ChatConversation) bool {
 	return th.Messages == 0 && !th.Inbox && th.TaskID == ""
 }
 
-// say runs the turn on in in the turn's thread: it files the month's chat
-// task, stores the message and its attachments, and answers it — joining
-// the thread's turn in flight, queued behind it, or on its own. A refusal
+// inboxRefusal answers a typed message to the inbox, which only the
+// factory and its rows' buttons write in.
+const inboxRefusal = "The inbox is the factory's thread: answer with its buttons, and write in a thread of your own."
+
+// say runs the turn on in in th, the turn's thread as its caller
+// resolved it: it files the month's chat task, stores the message and its
+// attachments, and answers it — joining the thread's turn in flight,
+// queued behind it, or on its own. The inbox refuses it, 409. A refusal
 // comes back before open opens the stream; after that the turn fails
 // through fail. It returns when the turn ends.
-func (t *turn) say(in turnInput, open func()) error {
+func (t *turn) say(th factoryd.ChatConversation, in turnInput, open func()) error {
 	c := t.c
 	ctx := t.r.Context()
+	if th.Inbox {
+		return refuse(http.StatusConflict, inboxRefusal)
+	}
 	t.pageQuery = in.View
 	task, err := c.cfg.Chat.EnsureChatTask(ctx, t.p.Name, t.p.Repository, t.cfg.MonthlyEUR, time.Now())
 	if err != nil {
@@ -1283,7 +1365,27 @@ func (t *turn) queuedRows() bool {
 	return slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Queued })
 }
 
-// call runs one tool call of the agent, or proposes it when the chat's
+// inboxMergeRefusal answers a merge decision in the inbox on a merge rule
+// other than auto, where a human decides every merge.
+const inboxMergeRefusal = "A human approves merges on merge rule human: record what you found with attach_analysis."
+
+// inboxMerge refuses tool name when it decides a merge in the inbox on a
+// merge rule other than auto; a thread of the human's own proposes it.
+func (t *turn) inboxMerge(name string) error {
+	if name != "approve_merge" && name != "deny_merge" || t.a.mergeRule == policy.MergeAuto {
+		return nil
+	}
+	th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.owner, t.conv)
+	if err != nil {
+		log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+		return refuse(http.StatusInternalServerError, "cannot read the conversation")
+	}
+	if th.Inbox {
+		return refuse(http.StatusForbidden, inboxMergeRefusal)
+	}
+	return nil
+}
+
 // call runs one tool call of the agent, or proposes it when the chat's
 // confirm names it or the tool is the member's alone to decide, and
 // answers the result the agent reads, the proposal's token and the HTTP
@@ -1300,11 +1402,15 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 	case !ok:
 		result = "There is no tool " + call.Name + "."
 	case t.parked[call.Name]:
-		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, their press or their message answers it."
+		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, a press answers it, and in a thread of their own so does their message."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:
 		result = "The arguments are no JSON object of " + call.Name + "'s parameters."
 	default:
 		asked := in
+		if err := t.inboxMerge(tool.name); err != nil {
+			result, status = "Refused: "+t.sentence(err), refusalCode(err)
+			break
+		}
 		if err := t.byTaskID(&in); err != nil {
 			result, status = "Refused: "+t.sentence(err), refusalCode(err)
 			break
@@ -1415,8 +1521,12 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 	t.send("tool", event)
 }
 
-// sentence is err as the member and the agent read it.
-func (t *turn) sentence(err error) string {
+// sentence is errSentence for the turn's actor.
+func (t *turn) sentence(err error) string { return errSentence(t.a, err) }
+
+// errSentence is err as a's human and the agent read it, the cause of a
+// failure that is no refusal logged.
+func errSentence(a actor, err error) string {
 	var no *refusal
 	var fj *forgejoRefusal
 	var stale factoryd.ErrStalePlan
@@ -1425,15 +1535,15 @@ func (t *turn) sentence(err error) string {
 	case errors.As(err, &no):
 		return no.msg
 	case errors.As(err, &fj) && errors.As(fj.err, &api):
-		log.Printf("console: %s via chat: %v", t.a.s.user, err)
+		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 		return "Forgejo refused to " + fj.what + ": " + api.reason()
 	case errors.As(err, &fj):
-		log.Printf("console: %s via chat: %v", t.a.s.user, err)
+		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 		return "Forgejo refused to " + fj.what + "; see the factoryd log."
 	case errors.As(err, &stale):
 		return stale.Error()
 	}
-	log.Printf("console: %s via chat: %v", t.a.s.user, err)
+	log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 	return "The action failed; see the factoryd log."
 }
 

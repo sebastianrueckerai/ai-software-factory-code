@@ -496,7 +496,7 @@ func (a *acceptAlerts) Alerts(_ context.Context, limit int) ([]factoryd.Alert, e
 	return a.rows[:min(limit, len(a.rows))], nil
 }
 
-func (a *acceptAlerts) SetAlertVerdict(_ context.Context, _ int64, _, _ string) error {
+func (a *acceptAlerts) SetAlertVerdict(_ context.Context, _ int64, _, _ string, _ map[string]any) error {
 	return factoryd.ErrNotFound
 }
 
@@ -832,7 +832,7 @@ func (f *acceptChat) SideConversation(_ context.Context, repository, login, _ st
 	return highest + 1, nil
 }
 
-func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatAsk, error) {
 	return nil, nil
 }
 

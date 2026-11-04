@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"net/http"
 	"net/url"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -89,6 +91,82 @@ func TestAWakesFailureStaysInItsThread(t *testing.T) {
 	if len(rows) != 2 || rows[0].BirthKind != "wake_ask" ||
 		rows[1].Role != "assistant" || rows[1].Content != "This turn failed: The model could not be reached; try again." {
 		t.Fatalf("the wake's rows = %+v", rows)
+	}
+}
+
+// The inbox takes presses only, so an ask there without choices is
+// refused, naming choices and attach_analysis, and stores no ask row,
+// whatever started the turn: a wake or a press. A wake in a thread of the
+// human's own hears the ask's plain bounds instead, and an ask with
+// choices asks in the inbox as anywhere.
+func TestInboxAskNeedsChoices(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "user", Content: "what is open?", Conversation: 1}); err != nil {
+		t.Fatal(err)
+	}
+	const bare = `{"ask":"Which store keeps the snapshots?"}`
+	const refused = "Refused: The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+	rowsIn := func(conv int64) []factoryd.ChatMessage {
+		t.Helper()
+		rows, err := chat.ChatMessages(ctx, "sf/code", "sebastian", conv, 50)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return rows
+	}
+	lastAsk := func(conv int64) string {
+		t.Helper()
+		result := ""
+		for _, m := range rowsIn(conv) {
+			for _, c := range m.ToolCalls {
+				if c.Name == "ask" {
+					result = c.Result
+				}
+			}
+		}
+		return result
+	}
+	wake := func(conv int64, args string, replies ...[]string) {
+		t.Helper()
+		g.replies = append([][]string{{call(1, "ask", args)}}, replies...)
+		if err := r.c.StartWake(ctx, "ai-software-factory-code", "sebastian", conv, "wake_ask", "#13 asks which store."); err != nil {
+			t.Fatalf("StartWake: %v", err)
+		}
+	}
+
+	wake(inbox, bare, []string{say("I recorded it instead.")})
+	equal(t, "a wake's bare ask in the inbox", lastAsk(inbox), refused)
+	wake(1, bare, []string{say("I will ask with two choices.")})
+	equal(t, "a wake's bare ask in an own thread", lastAsk(1), "Refused: choices: 2 to 5 answers of 1 to 60 characters")
+
+	id, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk,
+		Content: "Snapshots nightly?", Choices: []string{"Yes", "No"}, Conversation: inbox})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{call(1, "ask", bare)}, {say("I recorded it instead.")}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer",
+		url.Values{"conversation": {strconv.FormatInt(inbox, 10)}, "message": {strconv.FormatInt(id, 10)}, "choice": {"Yes"}})
+	want := `tool {"arguments":` + bare + `,"duration_ms":0,"name":"ask","result":"` + refused + `"}`
+	if code != http.StatusOK || !slices.Contains(events, want) {
+		t.Fatalf("a press's turn asking bare in the inbox = %d %v, want %s", code, events, want)
+	}
+	if slices.ContainsFunc(rowsIn(inbox), func(m factoryd.ChatMessage) bool { return m.Content == "Which store keeps the snapshots?" }) {
+		t.Fatalf("a refused ask stored a row: %+v", rowsIn(inbox))
+	}
+
+	wake(inbox, `{"ask":"Which store keeps the snapshots?","choices":["Postgres","SQLite"]}`)
+	rows := rowsIn(inbox)
+	ask := rows[len(rows)-1]
+	if ask.Kind != factoryd.MessageAsk || ask.Content != "Which store keeps the snapshots?" || !slices.Equal(ask.Choices, []string{"Postgres", "SQLite"}) ||
+		len(ask.ToolCalls) != 1 || ask.ToolCalls[0].Result != "Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message." {
+		t.Fatalf("the wake's ask row = %+v", ask)
 	}
 }
 
@@ -379,6 +457,129 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 		}
 		approved(t, r, "member")
 	})
+}
+
+// wakeCall is a stored tool call of a wake's turn: its name, result,
+// whether it stored a proposal, and its refusal status.
+type wakeCall struct {
+	name, result string
+	proposed     bool
+	status       int
+}
+
+// mergeWake runs a merge row's wake on sebastian's inbox, or with inbox
+// false on his own thread 1, at autonomous under merge rule rule, the
+// model answering replies, and answers the rig, its chat and the turn's
+// stored tool calls.
+func mergeWake(t *testing.T, rule string, inbox bool, setup func(*rig), replies ...[]string) (*rig, *fakeChat, []wakeCall) {
+	t.Helper()
+	r, chat, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: rule}}
+	if setup != nil {
+		setup(r)
+	}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !inbox {
+		if _, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Role: "user", Content: "what is open?", Conversation: 1}); err != nil {
+			t.Fatal(err)
+		}
+		conv = 1
+	}
+	g.replies = replies
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask",
+		"Wake: 1 ask waits for a human.\n#5: merge of PR #9, high risk"); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []wakeCall
+	for _, m := range rows {
+		for _, c := range m.ToolCalls {
+			calls = append(calls, wakeCall{name: c.Name, result: c.Result, proposed: c.Proposal != "", status: c.Status})
+		}
+	}
+	return r, chat, calls
+}
+
+// The inbox decides no merge at merge rule human: a wake's approve_merge
+// and deny_merge there refuse naming attach_analysis before any proposal
+// is stored, and the request stays pending. A wake-flagged turn on the
+// human's own thread, a fund's resume or a retry, proposes them as
+// before, and at merge rule auto the inbox's wake decides the merge as the
+// factory's own.
+func TestWakeApproveMergeRefusedOnMergeRuleHuman(t *testing.T) {
+	const refused = "Refused: A human approves merges on merge rule human: record what you found with attach_analysis."
+	merges := []string{call(1, "approve_merge", `{"task_id":"t-m"}`, "deny_merge", `{"task_id":"t-m","action":"reject","note":"The column breaks the index."}`)}
+	pending := func(t *testing.T, r *rig, chat *fakeChat, want int) {
+		t.Helper()
+		chat.mu.Lock()
+		proposals := len(chat.proposals)
+		chat.mu.Unlock()
+		if q := r.approvals.get(4); proposals != want || q.Status != "pending" || len(r.fg.reviews) != 0 {
+			t.Fatalf("%d proposals, request 4 %s, reviews %v: want %d proposals, the request pending, no review", proposals, q.Status, r.fg.reviews, want)
+		}
+	}
+
+	r, chat, calls := mergeWake(t, policy.MergeHuman, true, nil, merges, []string{say("A human decides this merge.")})
+	equal(t, "the inbox wake's calls at merge rule human", calls, []wakeCall{
+		{name: "approve_merge", result: refused, status: http.StatusForbidden},
+		{name: "deny_merge", result: refused, status: http.StatusForbidden}})
+	pending(t, r, chat, 0)
+
+	r, chat, calls = mergeWake(t, policy.MergeHuman, false, nil, merges)
+	equal(t, "the own thread's wake calls at merge rule human", calls, []wakeCall{
+		{name: "approve_merge", proposed: true,
+			result: `Proposed to sebastian: Approve a merge, #5 t-m "Fix the cache. It drops entries.". Nothing runs until they press Do it.`},
+		{name: "deny_merge", proposed: true,
+			result: `Proposed to sebastian: Deny a merge, #5 t-m "Fix the cache. It drops entries.", action reject, note The column breaks the index. Nothing runs until they press Do it.`}})
+	pending(t, r, chat, 2)
+
+	r, _, calls = mergeWake(t, policy.MergeAuto, true, nil,
+		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("Approved #5.")})
+	equal(t, "the inbox wake's call at merge rule auto", calls, []wakeCall{
+		{name: "approve_merge", result: "Approved pull request #9; factoryd merges it. It cannot be undone."}})
+	if q := r.approvals.get(4); q.Status != "approved" || q.DecidedBy != factoryd.ChatUser {
+		t.Fatalf("request 4 %s by %s, want approved by %s", q.Status, q.DecidedBy, factoryd.ChatUser)
+	}
+}
+
+// A human who approved first settled the merge: the wake's approve_merge
+// finds no pending merge request and refuses naming the card's state, and
+// attach_analysis finds the ask settled, naming who approved it.
+func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
+	humanFirst := func(r *rig) {
+		r.tasks.mu.Lock()
+		for i := range r.tasks.tasks {
+			if k := &r.tasks.tasks[i]; k.ID == "t-m" {
+				k.Status, k.PRNumber = "in-review", 9
+			}
+		}
+		r.tasks.mu.Unlock()
+		_, s := r.loggedIn(t)
+		if _, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaConsole}, 4); err != nil {
+			t.Fatalf("the human's approval: %v", err)
+		}
+		// the store's answer on a card whose merge request a human approved
+		r.c.cfg.AttachAnalysis = func(_ context.Context, taskID, _, _ string, _ factoryd.Event) error {
+			if q := r.approvals.get(4); q.TaskID == taskID && q.Status == "approved" {
+				return &factoryd.AskSettledError{Kind: factoryd.ApprovalMerge, Word: "approved", By: q.DecidedBy}
+			}
+			return nil
+		}
+	}
+	_, _, calls := mergeWake(t, policy.MergeAuto, true, humanFirst,
+		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`, "attach_analysis", `{"task_id":"t-m","found":"The column is added with its default."}`)},
+		[]string{say("A human approved #5 already.")})
+	equal(t, "the wake's calls after the human's approval", calls, []wakeCall{
+		{name: "approve_merge", status: http.StatusConflict,
+			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
+		{name: "attach_analysis", status: http.StatusConflict,
+			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
 }
 
 // A card a wake files is the woken member's: the issue goes out as the

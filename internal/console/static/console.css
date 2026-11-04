@@ -785,6 +785,7 @@ body:has(#screen) #flash { flex: none; }
 /* the start line: one line under the header's hairline, cut with an
    ellipsis, the whole text in its tooltip */
 .chat-start { flex: none; margin: 0; padding: 0 14px; overflow: hidden; border-bottom: 1px solid var(--line); color: var(--text-faint); font-size: 12px; line-height: 28px; white-space: nowrap; text-overflow: ellipsis; }
+.chat-main:has(> .chat-form.inbox) > .chat-start { display: none; }
 /* a turn: the avatar at the left, the name and the time above the text,
    the text at the full width */
 .msg { display: grid; grid-template-columns: 22px minmax(0, 1fr); gap: 0 10px; margin: 0 0 16px; font-size: 14.5px; line-height: 1.55; max-width: calc(72ch + 100px); }
@@ -1251,9 +1252,10 @@ form.poolctl button { height: 28px; background: none; color: var(--text); border
 .cmd { height: 18px; margin: 0; padding: 0 6px; border: 1px solid var(--line-strong); border-radius: 2px; background: none; color: var(--text-muted); font: 11px var(--font-mono); cursor: pointer; }
 .cmd:hover { color: var(--text); border-color: var(--text-faint); }
 .thread-link, .thread-door { margin: 0 0 8px; color: var(--text-muted); font-size: 12.5px; }
-.chat-form.arch .prompt, .chat-form.arch .own { display: none; }
-.arch-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
-.arch-note[hidden] { display: none; }
+.chat-form.arch .prompt, .chat-form.arch .own, .chat-form.arch #chat-palette, .chat-form.arch .growbar { display: none; }
+.chat-form.inbox .prompt, .chat-form.inbox .cmds, .chat-form.inbox #chat-images, .chat-form.inbox #chat-docs, .chat-form.inbox #chat-palette, .chat-form.inbox .growbar { display: none; }
+.arch-note, .inbox-note { margin: 0; color: var(--text-faint); font: 12px var(--font-mono); }
+.arch-note[hidden], .inbox-note[hidden] { display: none; }
 #chat-form.theirs .arch-note .linkbtn { display: none; }
 .lvlctl { position: relative; margin-left: auto; flex: none; }
 #level-btn { display: inline-flex; align-items: center; gap: 6px; height: 18px; margin: 0; padding: 0 8px; border: 1px solid var(--line-strong); border-radius: 3px; background: none; color: var(--text-muted); font: 11.5px var(--font-mono); cursor: pointer; }

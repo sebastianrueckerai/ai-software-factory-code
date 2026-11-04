@@ -14,12 +14,12 @@ import (
 )
 
 // The project agent's panel beside the board: a writer's project page
-// holds it with the input, the tabs of a narrow
-// screen under the status line, which spans both, the chat's keys and its
-// script; a reader's (a project they see but do not write) holds
-// it without the input, the history it may not read or the keys; a member
-// who writes no project, the wide view and a console without the chat's
-// model get no panel.
+// holds it with the input and the note an inbox shows in its place, the
+// tabs of a narrow screen under the status line, which spans both, the
+// chat's keys and its script; a reader's (a project they see but do not
+// write) holds it without the input, the history it may not read or the
+// keys; a human who writes no project, the wide view and a console
+// without the chat's model get no panel.
 func TestChatPanel(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	r.repoWriters["linkshort/linkshort"] = []string{"sebastian", "alice"}
@@ -53,6 +53,7 @@ func TestChatPanel(t *testing.T) {
 <form id="chat-form" class="chat-form composer" method="post" action="/projects/ai-software-factory-code/chat">
 <input type="hidden" name="csrf" value="` + s.csrf + `">
 <p class="arch-note" hidden>archived, read-only <button type="button" class="linkbtn" data-restore-open>restore</button></p>
+<p class="inbox-note" hidden>The factory's thread. Answer with its buttons, and write in a thread of your own. <button type="button" class="linkbtn" data-new-thread>New thread</button></p>
 <div id="chat-palette" class="palette" role="listbox" aria-label="Commands" hidden></div>
 <script type="application/json" id="chat-commands">[{"name":"compact","words":"the older turns of this thread become a summary"},{"name":"new","words":"a new thread"}]</script>
 <ol id="chat-images" class="chat-images" aria-label="Images riding your next message" title="Each rides the message you send next, named for your text to point at; × drops one. A reload drops them all." hidden></ol>
@@ -132,7 +133,9 @@ func TestChatPanel(t *testing.T) {
 // suggestion, or to a member who may not fund the line of who may. The
 // thinking mark is the stop's button with the fold's chevron beside it,
 // and a stopped turn leaves its grey mark on the cut answer and the
-// factory's stop row. Run
+// factory's stop row. Every choice, a poke's or an ask's, is a press
+// through /answer; an inbox's answer row offers no words of one's own,
+// and its head names it the factory's thread, whoever's inbox it is. Run
 // under node, which the test needs.
 func TestChatPanelScript(t *testing.T) {
 	node, err := exec.LookPath("node")
@@ -160,6 +163,7 @@ console.log(JSON.stringify({
   sum: chatView.sumHTML(threads, "sebastian", false),
   unread: String(chatView.unreadOf(threads, "sebastian")),
   inboxHead: chatView.headHTML(threads[0], "sebastian", now),
+  theirInboxHead: chatView.headHTML({number: 7, title: "Inbox", state: "active", inbox: true, login: "alice"}, "sebastian", now),
   head: chatView.headHTML(threads[1], "sebastian", now),
   headActs: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4, unswept: 4}, "sebastian", now),
   headCleared: chatView.headHTML({number: 2, title: "world", state: "active", last_at: "2026-10-11T09:30:00Z", messages: 4}, "sebastian", now),
@@ -168,6 +172,8 @@ console.log(JSON.stringify({
     chatView.pendingOf([{id: 1, kind: "escalation"}]), chatView.pendingOf([]),
     chatView.pendingOf([{id: 1, kind: "escalation", choices: ["Yes"], settled: true, reason: "answered by sebastian · 09:14"}])]),
   answerRow: chatView.answerHTML({choices: ["Postgres", "a <b>"]}),
+  askAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One card"]}),
+  inboxAnswerRow: chatView.answerHTML({id: 2, kind: "ask", choices: ["One a night", "One an hour"]}, true),
   levelMenu: chatView.levelMenuHTML([{name: "manual", words: "every action confirms"}, {name: "assisted", words: "a <b>"}], "assisted"),
   deleteOne: chatView.deleteHTML({number: 2, title: "a <b>", messages: 1}),
   deleteMany: chatView.deleteHTML({number: 2, title: "world", messages: 4}),
@@ -268,7 +274,8 @@ console.log(JSON.stringify({
 		{"sum", `Threads <span class="n">3</span> · <span class="bsplit" aria-label="1 needs you · 1 new"><span class="badge">1</span><span class="badge new">1</span></span> · <span class="tmark working"><i class="dot" aria-hidden="true"></i></span> 1 working` +
 			`<span class="chev" aria-hidden="true">⌃</span>`},
 		{"unread", "3"},
-		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: the agent speaks here uninvited</span>`},
+		{"inboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox</h3><span class="thint">the factory's thread: it speaks here uninvited, you answer with its buttons</span>`},
+		{"theirInboxHead", `<h3 class="ttl"><span class="tmark inbox" aria-hidden="true">⌂</span>Inbox · alice's</h3><span class="thint">the factory's thread: it speaks here uninvited, you answer with its buttons</span>`},
 		{"head", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>`},
 		{"headActs", `<h3 class="ttl"><button type="button" class="rename" data-rename title="Rename the thread">world</button></h3><span class="thint when">09:30</span>` +
 			`<span class="tacts"><button type="button" data-clear title="Hide the old rows from view; the record keeps them">Clear old</button>` +
@@ -279,6 +286,8 @@ console.log(JSON.stringify({
 		{"pendingRow", `[1,1,null,null,null]`},
 		{"answerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="Postgres">Postgres</button>` +
 			`<button type="button" data-answer="a &lt;b&gt;">a &lt;b&gt;</button><span class="answer-or">or in your words below</span>`},
+		{"askAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One card">One card</button><span class="answer-or">or in your words below</span>`},
+		{"inboxAnswerRow", `<span class="answer-l">Answer:</span><button type="button" data-answer="One a night">One a night</button><button type="button" data-answer="One an hour">One an hour</button>`},
 		{"levelMenu", `<p class="lp-head"><span>autonomy</span><span>one click sets it</span></p>` +
 			`<button type="button" role="menuitemradio" aria-checked="false" data-lvl="manual"><i aria-hidden="true"></i><b>manual</b><span class="ck" aria-hidden="true"></span><span class="lw">every action confirms</span></button>` +
 			`<button type="button" role="menuitemradio" aria-checked="true" data-lvl="assisted"><i aria-hidden="true"></i><b>assisted</b><span class="ck" aria-hidden="true">✓</span><span class="lw">a &lt;b&gt;</span></button>`},
@@ -292,7 +301,7 @@ console.log(JSON.stringify({
 			`<div class="acts"><button type="button" class="danger" data-dlg="delete">Delete the thread</button><button type="button" data-dlg="keep">Keep it</button></div></div></div>`},
 		{"poke", `<div class="msg agent poke" data-message="7"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">the factory</span> <time>10-11 09:12Z</time></p>` +
 			`<div class="said"><p>Started the login card.</p></div><p class="decider"><span class="visually-hidden">Decided by: </span>assisted level · started by the agent</p>` +
-			`<p class="choices"><button type="button" data-choice="Open the card">Open the card</button></p></div>`},
+			`<p class="choices"><button type="button" data-answer="Open the card">Open the card</button></p></div>`},
 		{"compacted", `<details class="compacted"><summary>2 earlier messages, compacted</summary>` +
 			`<div class="msg you"><span class="av" aria-hidden="true">S</span><p class="who"><span class="name">sebastian</span> <time>10-11 09:30Z</time></p><p class="said">a1</p></div>` +
 			`<div class="msg agent"><span class="av" aria-hidden="true"></span><p class="who"><span class="name">project agent</span> <time>10-11 09:30Z</time></p><div class="said"><p>a2</p></div></div></details>` +

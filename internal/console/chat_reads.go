@@ -129,7 +129,29 @@ func (t *turn) cardText(in toolInput) (string, error) {
 		}
 		var spec factoryd.MergeSpec
 		if q.Kind == factoryd.ApprovalMerge && json.Unmarshal(q.Spec, &spec) == nil {
-			fmt.Fprintf(&b, " for pull request #%d, risk %s", q.PRNumber, spec.RiskClass)
+			fmt.Fprintf(&b, " for pull request #%d, risk %s, review %s", q.PRNumber, spec.RiskClass, cmp.Or(spec.Review.Verdict, "none"))
+			if spec.Review.Verdict != "" {
+				strict := "no"
+				if si := spec.Review.StrictImprovement; si != nil && *si {
+					strict = "yes"
+				}
+				b.WriteString(", strict improvement " + strict)
+			}
+			if spec.HeadSHA != "" {
+				b.WriteString(", head " + spec.HeadSHA[:min(len(spec.HeadSHA), 7)])
+			}
+			if spec.RedChecks {
+				m := checksOn(steps, spec.HeadSHA)
+				red := redJobs(m)
+				switch {
+				case m != nil && m["state"] == string(factoryd.ChecksSuccess):
+					b.WriteString("; checks red at open, green since")
+				case len(red) > 0:
+					b.WriteString("; checks red: " + strings.Join(red, ", "))
+				default:
+					b.WriteString("; checks red")
+				}
+			}
 			if len(spec.WhyHuman) > 0 {
 				b.WriteString("; a human decides because " + strings.Join(spec.WhyHuman, ", "))
 			}
@@ -188,6 +210,30 @@ func newest(steps []map[string]any, step string) map[string]any {
 func verdict(m map[string]any) string {
 	v, _ := m["verdict"].(string)
 	return cmp.Or(v, "no verdict")
+}
+
+// checksOn is the newest checks step on head, nil for none.
+func checksOn(steps []map[string]any, head string) map[string]any {
+	for i := len(steps) - 1; i >= 0; i-- {
+		if steps[i]["step"] == "checks" && steps[i]["commit"] == head {
+			return steps[i]
+		}
+	}
+	return nil
+}
+
+// redJobs are the jobs checks step m found neither passed nor skipped.
+func redJobs(m map[string]any) []string {
+	var red []string
+	jobs, _ := m["jobs"].([]any)
+	for _, j := range jobs {
+		job, _ := j.(map[string]any)
+		if st, _ := job["status"].(string); st != "success" && st != "skipped" {
+			name, _ := job["name"].(string)
+			red = append(red, name)
+		}
+	}
+	return red
 }
 
 // prHead is a card's pull request's head by its timeline: the newest

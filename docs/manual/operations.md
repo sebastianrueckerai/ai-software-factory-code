@@ -294,9 +294,10 @@ Metrics, the duration buckets 5, 10, 30, 60, 120, 300, 600, 900, 1200,
 - `factory.activity.open_age{activity}`: the age of the oldest running
   activity per name.
 - `factory.alert.count{kind,verdict}`: the `alerts` table at each export,
-  `open` for no verdict yet. A machine (screening, the supervisor, a task's
-  outcome) or the project agent's `alert_verdict` tool sets the verdict; no
-  console page does.
+  verdict `real`, `noise`, `unjudged`, `same_cause` (a second escalation
+  of one fault, linked to the first card), or `open` for no verdict yet. A
+  machine (screening, the supervisor, a task's outcome) or the project
+  agent's `alert_verdict` tool sets the verdict; no console page does.
 
 Task analytics, counted where they happen and exported as
 deltas (`Providers.Analytics`): SigNoz sums a delta series, so a series'

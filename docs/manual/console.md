@@ -128,9 +128,18 @@ decimals: a task's model calls cost fractions of a cent.
   timeline shows both on its `supervisor` and `gate_supervisor` steps.
   `escalation` is every escalation, not a healed run's repeat of it. It
   shows as a needs-you card.
-  The project agent judges an open escalation `real` or `noise` with its
-  `alert_verdict` tool; a human confirms the call unless the project's
-  autonomy lets the agent act alone. The `alerts` tool lists the alerts.
+  The project agent judges an open escalation `real`, `noise` or
+  `same_cause` with its `alert_verdict` tool; a human confirms the call
+  unless the project's autonomy lets the agent act alone. `same_cause` is
+  a second escalation of one fault: it names the first card, keeps it as
+  `same_as` in the alert's detail and the `alert_verdict` event, and
+  closes the alert's own card with the comment `Same cause as #N.`, a
+  card without an issue named by its task id. Both
+  cards belong to the chat's project and the human may close the alert's
+  card, or nothing is judged. When Forgejo or factoryd then fails the
+  close, the verdict stays and the answer names the failure and `close`
+  for once it is fixed.
+  The `alerts` tool lists the alerts.
 - `/tasks/new`: files the issue as the human, labelled `agent` or `human`
   and optionally `priority/pN` (offered when the label exists); intake
   makes it a task. An escalation's answer resolves the card's newest open
@@ -235,7 +244,10 @@ decimals: a task's model calls cost fractions of a cent.
   per step with its number, repeated steps in a row folded into one, and
   the flags the steps show, or `digest unreadable: <why>` when its life
   cannot be read; with a pointer to the read holding its reviews, audit,
-  checks, plan and sessions), `history`, `card_history`, `card_step` (one
+  checks, plan and sessions; a pending merge request names its risk, the
+  review's verdict and whether it found a strict improvement, its head's
+  first 7 characters and, on red checks, the jobs found red, or green
+  since a re-run on the head), `history`, `card_history`, `card_step` (one
   step of the card's life in full, by its number), `board_digest` (the
   board in a few lines: the live cards with their flags, a card whose
   life cannot be read with why, the queue with what holds each card, the
@@ -284,8 +296,16 @@ decimals: a task's model calls cost fractions of a cent.
   that project, used once, for 30 minutes (404 otherwise, 403 for
   another human's). The `ask` tool questions the thread's human in
   place: an ask row with its choices offered as presses, the turn
-  ending on it, and a press or their next message the answer the next
-  turn reads; any later row settles an unbound ask. The ask may bind
+  ending on it, and a press, or outside the inbox their next message,
+  the answer the next turn reads. An unbound ask settles on a later
+  row that answers it: the human's press or typed message, or another
+  ask; a poke, an escalation, a budget row or a wake's row settles
+  nothing. A poke settles once its thread is read past it, save a poke
+  with choices (a failed card's Retry and Leave it): its buttons stand
+  until the human's press or words answer it
+  (`answered by <login> · 15:04`) or an event moves its card on, a
+  status change, its end, a retry or a close, with that event's word,
+  actor and time. The ask may bind
   one choice to a write tool call (`tool`, `args`, `choice`, admitted
   as the propose path admits a call): the binding is a proposal of
   kind `ask`, kept out of the pending Do it list, so only the ask row
@@ -316,9 +336,15 @@ decimals: a task's model calls cost fractions of a cent.
   wake labels as `factory-chat`, a writer. A review the agent decides, in a
   wake or in a human's turn, goes out as `factory-chat` too: an approval
   posts none, a change request is `factory-chat`'s, which the intake
-  trusts and signals and which blocks no later merge. A project without a chat
-  token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
-  running session on the supervisor's message path
+  trusts and signals and which blocks no later merge. At a merge rule
+  other than auto the inbox decides no merge: a turn there refuses
+  `approve_merge` and `deny_merge` before any proposal, naming
+  `attach_analysis`. The agent never approves a GitHub sync's pull
+  request: a human approves the GitHub commits it carries, its refusal
+  names `attach_analysis`, and a wake's line for its merge row says a
+  human approves. A wake counts its asks and its merge rows apart. A project
+  without a chat token gets no wake; the refusal names `tokens.chat`.
+  `steer` reaches a running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and human, each assistant row with its
   tool calls and their results; a turn's context is the project's status

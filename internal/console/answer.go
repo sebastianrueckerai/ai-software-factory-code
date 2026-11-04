@@ -23,8 +23,9 @@ import (
 // board's buttons do, with no model turn (roadmap 239, C14's answer row):
 // the member's row with the choice and the factory's row with what came
 // of it land in the thread behind a turn in flight there (roadmap 263),
-// then 204; a choice of a bound ask row runs its bound tool call in code
-// as the member's session or settles the ask, streamed (chatAskPress). A
+// then 204; a choice of an ask row or of a poke's choices goes to
+// chatAskPress, streamed: a bound ask's bound choice runs its tool call in
+// code as the member's session, any other press feeds the agent a turn. A
 // card that waits no more says so: the first answer wins.
 func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	t, ok := c.chatTurn(w, r)
@@ -45,21 +46,18 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	i := slices.IndexFunc(rows, func(m factoryd.ChatMessage) bool {
-		return m.ID == id && ((m.Kind == factoryd.MessageEscalation && m.TaskID != "") || (m.Kind == factoryd.MessageAsk && m.Proposal != ""))
+		return m.ID == id && ((m.Kind == factoryd.MessageEscalation && m.TaskID != "") || m.Kind == factoryd.MessageAsk ||
+			(m.Kind == factoryd.MessagePoke && len(m.Choices) > 0))
 	})
 	if i < 0 {
 		c.fail(w, r, refuse(http.StatusNotFound, "404 page not found"))
 		return
 	}
 	if !slices.Contains(rows[i].Choices, choice) {
-		whose := "the escalation's"
-		if rows[i].Kind == factoryd.MessageAsk {
-			whose = "the ask's"
-		}
-		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of "+whose))
+		c.fail(w, r, refuse(http.StatusBadRequest, "the choice is none of the "+rows[i].Kind+"'s: press one of its buttons."))
 		return
 	}
-	if rows[i].Kind == factoryd.MessageAsk {
+	if rows[i].Kind != factoryd.MessageEscalation {
 		c.chatAskPress(w, r, t, rows[i], choice)
 		return
 	}
@@ -85,14 +83,14 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-// chatAskPress answers chatAnswer's ask branch: a choice of the
-// thread's bound ask row, the ask tool's question. Every press lands
-// the human's row with its choice; the bound choice's press then runs
-// the bound tool call in code as the human's session, streamed, the
-// do- row landing as a Do it's does, any other press feeds the agent a
-// turn, which reads the row as their answer. A bound set_pool choice
-// confirms the offer's captured change as a Do it's press does — the
-// one press the confirmation: no second proposal, no model turn, no
+// chatAskPress answers chatAnswer's press of a choice row: the thread's
+// ask row, the ask tool's question, or a poke with choices. Every press
+// lands the human's row with its choice; a bound ask's bound choice's
+// press then runs the bound tool call in code as the human's session,
+// streamed, the do- row landing as a Do it's does, any other press feeds
+// the agent a turn, which reads the row as their answer. A bound set_pool
+// choice confirms the offer's captured change as a Do it's press does —
+// the one press the confirmation: no second proposal, no model turn, no
 // fresh read. The member is re-admitted and the change writes once
 // through the guarded writer before the stream opens, so only its
 // successful result streams: a file that moved since the offer, or in
@@ -102,9 +100,13 @@ func (c *Console) chatAnswer(w http.ResponseWriter, r *http.Request) {
 // onto the moved file. Taking the binding settles the ask: a second
 // press hears it is gone, another human's that it is not theirs; a
 // binding expired leaves the question an ordinary ask, every press of
-// it settling.
+// it settling, as every press of an unbound ask or a poke does.
 func (c *Console) chatAskPress(w http.ResponseWriter, r *http.Request, t *turn, m factoryd.ChatMessage, choice string) {
-	p, err := t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
+	var p factoryd.ChatProposal
+	err := factoryd.ErrNoProposal
+	if m.Proposal != "" {
+		p, err = t.c.cfg.Chat.TakeProposal(t.r.Context(), "ask", m.Proposal, t.p.Repository, t.a.s.user, time.Now())
+	}
 	gone := errors.Is(err, factoryd.ErrNoProposal)
 	var landed *poolPress
 	switch {
@@ -235,14 +237,29 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	return c.doAnswer(ctx, a, id, choice)
 }
 
+// inboxAskRefusal answers an ask without choices in the inbox, where no
+// human types an answer.
+const inboxAskRefusal = "The inbox takes buttons only: give choices, or record what you found with attach_analysis."
+
 // askMember is the ask tool: the question kept in this thread as an ask
 // row, its choices offered as presses. The row rides the answer's own
-// row (run merges it in), and the turn ends on it: the member's press or
-// their next message is the answer the next turn reads. A question may
-// bind one choice to a tool call (tool, args, choice): that choice's
-// press runs the call in code as the member's own session, under the
-// checks the propose path runs in call, until the binding expires.
+// row (run merges it in), and the turn ends on it: the member's press, or
+// outside the inbox their next message, is the answer the next turn
+// reads. A question may bind one choice to a tool call (tool, args,
+// choice): that choice's press runs the call in code as the member's own
+// session, under the checks the propose path runs in call, until the
+// binding expires.
 func (t *turn) askMember(in toolInput) (string, error) {
+	if len(in.Choices) == 0 {
+		th, _, err := t.c.cfg.Chat.Conversation(t.r.Context(), t.p.Repository, t.owner, t.conv)
+		if err != nil {
+			log.Printf("console: the chat of %s on %s: %v", t.owner, t.p.Repository, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the conversation")
+		}
+		if th.Inbox {
+			return "", refuse(http.StatusBadRequest, inboxAskRefusal)
+		}
+	}
 	question := strings.TrimSpace(in.Ask)
 	choices := slices.Clone(in.Choices)
 	for i := range choices {
@@ -261,7 +278,7 @@ func (t *turn) askMember(in toolInput) (string, error) {
 	}
 	t.ask = &factoryd.ChatMessage{Kind: factoryd.MessageAsk, Content: question, Choices: choices, Proposal: token}
 	if token == "" {
-		return "Asked the human; this turn ends. A press or their next message answers it.", nil
+		return "Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message.", nil
 	}
 	return fmt.Sprintf("Asked the human; this turn ends. Pressing “%s” runs %s; another press answers it.", in.Choice, strings.TrimSuffix(desc, ".")), nil
 }

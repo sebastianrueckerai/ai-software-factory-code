@@ -432,15 +432,20 @@ func pokeScene(now time.Time) labScene {
 }
 
 // escalationScene is the busy board at autonomy autonomous with the
-// inbox open: the agent's own start with its decider line, then the
-// question on #603 as the inbox's escalation, its choices once in the
-// answer row between the log and the box (roadmap 239, C14). A later
-// ask, already settled by the member's reply, sits over the escalation:
-// the row must still offer the escalation, not fall silent on it.
+// inbox, which the human opens by its row: the agent's own start with
+// its decider line, then the question on #603 as the inbox's escalation,
+// its choices once in the answer row between the log and the box
+// (roadmap 239, C14). A later ask, already settled by the human's press,
+// sits over the escalation: the row must still offer the escalation, not
+// fall silent on it. #597 failed a minute ago, its poke the one unread
+// row, its Retry and Leave it a press whose turn the agent answers.
 func escalationScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
-	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 5
+	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 4
+	failed := slices.IndexFunc(s.tasks, func(t factoryd.BoardTask) bool { return t.IssueNumber == 597 })
+	end := ago(time.Minute)
+	s.tasks[failed].FinishedAt = &end
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, TaskID: labID(617), At: ago(40 * time.Minute),
 			Content: `Started #617 "Chat form: center the Send button next to the two-row textarea".`, Decider: "autonomous level · started by the agent"},
@@ -449,19 +454,23 @@ func escalationScene(now time.Time) labScene {
 			Choices: []string{"Postgres", "SQLite", "Ask the author"}},
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessageAsk, At: ago(20 * time.Minute),
 			Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}},
-		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "One a night", At: ago(18 * time.Minute)})
-	s.seen[5] = int64(len(s.chat))
+		factoryd.ChatMessage{Conversation: 5, Role: "user", Content: "One a night", At: ago(18 * time.Minute)},
+		factoryd.ChatMessage{Conversation: 5, Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, TaskID: labID(597),
+			At: end, Content: "#597 failed: the session spent its €2.00 budget before the checks passed.", Choices: []string{"Retry", "Leave it"}})
+	s.seen[5] = int64(len(s.chat) - 1)
+	s.replies = []labReply{{{Say: "#597 stays failed: nothing retries it, and its card keeps the reason."}}}
 	return s
 }
 
-// wakeScene is the threads scene with the inbox open at autonomous and
-// one wake turn in it (the main agent concept): the factory woke the agent
-// on #603's ask; the turn's rows are one row that folds to the wake's
-// first line and opens on a click, the settled row's fold.
+// wakeScene is the threads scene at autonomous with one wake turn in the
+// inbox, which the human opens by its row (the main agent concept): the
+// factory woke the agent on #603's ask; the turn's rows are one row that
+// folds to the wake's first line and opens on a click, the settled row's
+// fold.
 func wakeScene(now time.Time) labScene {
 	s := threadsScene(now)
 	ago := func(d time.Duration) time.Time { return now.Add(-d) }
-	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 5
+	s.autonomy, s.inbox, s.open = policy.AutonomyAutonomous, 5, 4
 	s.chat = append(s.chat,
 		factoryd.ChatMessage{Conversation: 5, Role: "user", BirthKind: "wake_ask", At: ago(15 * time.Minute),
 			Content: "#603: Which store keeps the nightly board snapshots?\n\nRead each card. Settle what your permissions allow. For what stays the human's, record what you found with attach_analysis. An ask already answered is done."},
@@ -1241,7 +1250,7 @@ func busyChat(now time.Time, running, queued factoryd.Task, title func(factoryd.
 		args, _ := json.Marshal(map[string]any{"question": question, "choices": choices})
 		return factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk, Content: question, Choices: choices, At: at,
 			ToolCalls: []factoryd.ChatToolCall{{ID: id, Name: "ask", Arguments: string(args), ReadAt: at,
-				Result: "Asked the human; this turn ends. A press or their next message answers it."}}}
+				Result: "Asked the human; this turn ends. A press answers it, and in a thread of their own so does their next message."}}}
 	}
 	msgs := []factoryd.ChatMessage{
 		{Role: "user", Content: "File roadmap 300 as a card", At: ago(18 * time.Minute)},
@@ -1841,6 +1850,23 @@ func TestSeedSceneProject(t *testing.T) {
 	}
 	if _, ok := r.resources.standing["demo-app/demo-app"]; !ok {
 		t.Fatalf("empty scene: standing keyed %v", slices.Collect(maps.Keys(r.resources.standing)))
+	}
+}
+
+// No scene seeds the inbox as the human's current thread, a state the
+// store's check forbids: the page lands on a thread of their own, and a
+// scene shows the inbox the way a human opens it, by its row.
+func TestLabScenesLandOnAThreadOfTheirOwn(t *testing.T) {
+	r := newRig(t)
+	t.Cleanup(func() { labFiles = labPRFiles })
+	for name, scene := range labScenes {
+		s := scene(time.Now())
+		r.seedScene(s)
+		p := cmp.Or(s.project, labCodeProject)
+		k := p.Repository + " " + p.Login
+		if in, ok := r.chat.inboxes[k]; ok && r.chat.started[k] == in.Number {
+			t.Errorf("the %s scene seeds the inbox, thread %d, as current", name, in.Number)
+		}
 	}
 }
 

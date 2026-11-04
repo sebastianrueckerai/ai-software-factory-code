@@ -55,7 +55,7 @@ func TestChatAnswerRow(t *testing.T) {
 
 	e13 := escalation("t-e", "#13 needs you: Use a replica?", "Yes", "No")
 	code, body := answer(e13, "Maybe")
-	equal(t, "a choice it does not offer", []any{code, body}, []any{http.StatusBadRequest, "the choice is none of the escalation's"})
+	equal(t, "a choice it does not offer", []any{code, body}, []any{http.StatusBadRequest, "the choice is none of the escalation's: press one of its buttons."})
 	code, body = answer("999", "Yes")
 	equal(t, "no such row", []any{code, body}, []any{http.StatusNotFound, "404 page not found"})
 	if code, body := answer(e13, "Yes"); code != http.StatusNoContent {
@@ -312,6 +312,86 @@ func TestChatAnswerWaitsBehindTheTurn(t *testing.T) {
 	}
 }
 
+// answerPress is a press through /chat/answer in one of sebastian's
+// threads: the thread's number, the press's status and stream, the
+// store's TakeProposal calls, the store and the gateway.
+type answerPress struct {
+	conv   int64
+	code   int
+	events []string
+	takes  int
+	chat   *fakeChat
+	g      *chatGateway
+}
+
+// pressAnswer seeds m in sebastian's inbox, or with inbox false in his
+// own thread 1, and presses choice on it through /chat/answer, the model
+// answering reply.
+func pressAnswer(t *testing.T, inbox bool, m factoryd.ChatMessage, choice, reply string) answerPress {
+	t.Helper()
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	m.Conversation = 1
+	if inbox {
+		var err error
+		if m.Conversation, err = chat.EnsureInbox(t.Context(), "sf/code", "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+	}
+	id, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", m)
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = [][]string{{say(reply)}}
+	code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer",
+		url.Values{"conversation": {strconv.FormatInt(m.Conversation, 10)}, "message": {strconv.FormatInt(id, 10)}, "choice": {choice}})
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	return answerPress{conv: m.Conversation, code: code, events: events, takes: chat.takes, chat: chat, g: g}
+}
+
+// An ask that binds nothing answers through /chat/answer in the inbox,
+// which takes presses only, and in a thread of the human's own alike: the
+// press lands the human's row with the choice, and the agent's turn reads
+// it as their answer. A row with no binding asks the proposals' store
+// nothing.
+func TestChatAnswerPressesAnUnboundAsk(t *testing.T) {
+	for _, inbox := range []bool{true, false} {
+		p := pressAnswer(t, inbox, factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageAsk,
+			Content: "One snapshot a night, or one an hour?", Choices: []string{"One a night", "One an hour"}}, "One a night", "One a night it is.")
+		where := fmt.Sprint("thread ", p.conv)
+		equal(t, "the press in "+where, []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"One a night it is."}`, `done {}`}, 0})
+		equal(t, where, rowsOf(t, p.chat, "sebastian", p.conv),
+			[]string{"assistant: One snapshot a night, or one an hour?", "user: One a night", "assistant: One a night it is."})
+		if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "One a night" {
+			t.Fatalf("the model read %+v in %s, want the choice", got[len(got)-1], where)
+		}
+	}
+}
+
+// A poke's choices answer through /chat/answer as an ask's do: Retry
+// lands the human's row and the agent's turn reads it, the proposals'
+// store asked nothing; a choice the poke does not offer is refused,
+// nothing stored.
+func TestChatAnswerPressesAPokeChoiceInTheInbox(t *testing.T) {
+	poke := factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, TaskID: "t-r",
+		Content: "#11 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}}
+	p := pressAnswer(t, true, poke, "Retry", "I filed it again.")
+	equal(t, "the press", []any{p.code, p.events, p.takes}, []any{http.StatusOK, []string{`text {"text":"I filed it again."}`, `done {}`}, 0})
+	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv),
+		[]string{"assistant: #11 failed: checks: the checks failed on c1.", "user: Retry", "assistant: I filed it again."})
+	if got := messages(t, p.g.calls()[0]); got[len(got)-1]["content"] != "Retry" {
+		t.Fatalf("the model read %+v, want the choice", got[len(got)-1])
+	}
+
+	p = pressAnswer(t, true, poke, "Maybe", "")
+	equal(t, "a choice the poke does not offer", []any{p.code, p.events}, []any{http.StatusBadRequest, []string{"the choice is none of the poke's: press one of its buttons."}})
+	equal(t, "the inbox", rowsOf(t, p.chat, "sebastian", p.conv), []string{"assistant: #11 failed: checks: the checks failed on c1."})
+	if n := len(p.g.calls()); n != 0 {
+		t.Fatalf("%d model calls, want none", n)
+	}
+}
+
 // A factory pull request card's red checks run again from the chat as from
 // its card (roadmap 264): the inbox's Re-run the checks and the
 // rerun_checks tool signal the workflow as the member.
@@ -439,15 +519,18 @@ func TestChatSettlesRows(t *testing.T) {
 }
 
 // Clear old (the chat's sweep): the marker hides the thread's old rows
-// from the member's view, the record keeps them, and an open ask stays
-// whatever the marker says, so nothing that needs the member disappears.
+// from the human's view, the record keeps them, and an open ask or a
+// poke whose buttons still apply stays whatever the marker says, so
+// nothing that needs the human disappears; once its card moved on, the
+// poke goes with the rest.
 func TestChatClearsOldRows(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}})
+		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 21}})
 	r.tasks.mu.Unlock()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	say := func(m factoryd.ChatMessage) {
@@ -461,6 +544,8 @@ func TestChatClearsOldRows(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
 		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, Content: "#21 failed: checks: the checks failed on c1.",
+		Choices: []string{"Retry", "Leave it"}, TaskID: "t-f", Conversation: inbox})
 	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
 		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
 		t.Fatal(err)
@@ -479,15 +564,20 @@ func TestChatClearsOldRows(t *testing.T) {
 	}
 	answer := read()
 	answer = read() // the seen marker passes the plain row, it settles too
-	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{3, 0, 3})
+	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{4, 0, 4})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}); code != http.StatusNoContent {
 		t.Fatalf("POST clear = %d: %s", code, body)
 	}
 	answer = read()
-	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{1, 2, 0})
-	if answer.Messages[0].TaskID != "t-w" || answer.Messages[0].Settled {
-		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
+	equal(t, "the sweep keeps the open ask and the open choices", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{2, 2, 0})
+	equal(t, "the kept rows", []any{answer.Messages[0].TaskID, answer.Messages[0].Settled, answer.Messages[1].TaskID, answer.Messages[1].Settled, answer.Messages[1].Choices},
+		[]any{"t-w", false, "t-f", false, []string{"Retry", "Leave it"}})
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-f", Kind: factoryd.EventCardRetried,
+		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"replacement": 22}}); err != nil {
+		t.Fatal(err)
 	}
+	answer = read()
+	equal(t, "the retried card's poke goes with the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{1, 3, 0})
 	say(factoryd.ChatMessage{Role: "assistant", Content: "#16 merged.", Conversation: inbox})
 	answer = read()
 	equal(t, "a row after the sweep is the next sweep's", []int{len(answer.Messages), int(answer.Thread.Unswept)}, []int{2, 1})

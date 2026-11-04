@@ -84,9 +84,9 @@ type Dependencies interface {
 type Alerts interface {
 	// Alerts lists the newest limit alerts, newest first.
 	Alerts(ctx context.Context, limit int) ([]factoryd.Alert, error)
-	// SetAlertVerdict judges an open escalation alert as by;
-	// factoryd.ErrNotFound when there is none.
-	SetAlertVerdict(ctx context.Context, id int64, verdict, by string) error
+	// SetAlertVerdict judges an open escalation alert as by, detail
+	// merged in; factoryd.ErrNotFound when there is none.
+	SetAlertVerdict(ctx context.Context, id int64, verdict, by string, detail map[string]any) error
 	// AlertByID reads one alert row: the task whose repository an alert
 	// verdict's event carries (factoryd.PGStore).
 	AlertByID(ctx context.Context, id int64) (factoryd.Alert, bool, error)
@@ -148,9 +148,10 @@ type Chat interface {
 	ChatAttachments(ctx context.Context, repository, login string, conversation int64) ([]factoryd.ChatAttachment, error)
 	ChatAttachmentByID(ctx context.Context, repository string, id int64) (factoryd.ChatAttachment, bool, error)
 	// ChatAsks are login's ask and poke rows on repository, every
-	// thread's, the settle rule's read for the switcher's badge and the
-	// tab title's count (the notification-settling concept)
-	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
+	// thread's, with their choices and a poke with choices' press, the
+	// settle rule's read for the switcher's badge and the tab title's
+	// count (the notification-settling concept)
+	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatAsk, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
 	// SideConversation makes a thread titled title that never becomes

@@ -1183,7 +1183,7 @@ func (f *accBatchChat) AddChatTimer(context.Context, string, string, int64, time
 	return nil
 }
 
-func (f *accBatchChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+func (f *accBatchChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatAsk, error) {
 	return nil, nil
 }
 

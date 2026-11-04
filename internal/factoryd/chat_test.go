@@ -278,6 +278,74 @@ func TestPGStoreBudgetStoppedThreads(t *testing.T) {
 	}
 }
 
+// The badge's ask rows are login's escalations and pokes about a card on
+// repository, every thread's, oldest first, with their choices. A poke
+// with choices carries the time of the human's first press or words after
+// it in its own thread; a wake's row, the agent's row, a press in another
+// thread or another human's press is none.
+func TestPGStoreChatAsks(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	failed := func(task string, n int64) ChatMessage {
+		return ChatMessage{Role: "assistant", Kind: MessagePoke, BirthKind: EventTaskEnded, Content: "failed.", Choices: []string{"Retry", "Leave it"},
+			TaskID: task, Conversation: n}
+	}
+	ids := map[string]int64{}
+	for _, m := range []struct {
+		name, repo, login string
+		m                 ChatMessage
+	}{
+		{"ask", "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessageEscalation, Content: "#13 needs you.", Choices: []string{"Yes", "No"}, TaskID: "t-e", Conversation: 1}},
+		{"failed", "sf/code", "anna", failed("t-f", 1)},
+		{"wake", "sf/code", "anna", ChatMessage{Role: "user", BirthKind: "wake_ask", Content: "#21 failed.", Conversation: 1}},
+		{"inform", "sf/code", "anna", ChatMessage{Role: "assistant", Kind: MessagePoke, BirthKind: EventTaskStatus, Content: "#21 started.", TaskID: "t-f", Conversation: 1}},
+		{"press", "sf/code", "anna", ChatMessage{Role: "user", Content: "Leave it", Conversation: 1}},
+		{"words", "sf/code", "anna", ChatMessage{Role: "user", Content: "and #22?", Conversation: 1}},
+		{"other thread", "sf/code", "anna", failed("t-g", 2)},
+		{"agent", "sf/code", "anna", ChatMessage{Role: "assistant", Content: "Noted.", Conversation: 2}},
+		{"bob", "sf/code", "bob", ChatMessage{Role: "user", Content: "Retry", Conversation: 2}},
+		{"later", "sf/code", "anna", ChatMessage{Role: "user", Content: "later", Conversation: 1}},
+		{"other project", "linkshort/linkshort", "anna", failed("t-l", 1)},
+	} {
+		id, err := s.AddChatMessage(ctx, m.repo, m.login, m.m)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ids[m.name] = id
+	}
+	thread, err := s.ChatMessages(ctx, "sf/code", "anna", 1, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	i := slices.IndexFunc(thread, func(m ChatMessage) bool { return m.ID == ids["press"] })
+	if i < 0 {
+		t.Fatalf("thread 1 = %+v, want the press", thread)
+	}
+	got, err := s.ChatAsks(ctx, "sf/code", "anna")
+	if err != nil {
+		t.Fatal(err)
+	}
+	type row struct {
+		ID, Conversation int64
+		TaskID, Kind     string
+		Choices          []string
+		Pressed          string
+	}
+	stamp := func(at time.Time) string { return at.UTC().Format(time.RFC3339Nano) }
+	var out []row
+	for _, a := range got {
+		out = append(out, row{a.ID, a.Conversation, a.TaskID, a.Kind, a.Choices, stamp(a.Pressed)})
+	}
+	want := []row{
+		{ids["ask"], 1, "t-e", MessageEscalation, []string{"Yes", "No"}, stamp(time.Time{})},
+		{ids["failed"], 1, "t-f", MessagePoke, []string{"Retry", "Leave it"}, stamp(thread[i].At)},
+		{ids["inform"], 1, "t-f", MessagePoke, nil, stamp(time.Time{})},
+		{ids["other thread"], 2, "t-g", MessagePoke, []string{"Retry", "Leave it"}, stamp(time.Time{})},
+	}
+	if !reflect.DeepEqual(out, want) {
+		t.Fatalf("the ask rows =\n%+v\nwant\n%+v", out, want)
+	}
+}
+
 // withConversation is m in thread n.
 func withConversation(m ChatMessage, n int64) ChatMessage {
 	m.Conversation = n

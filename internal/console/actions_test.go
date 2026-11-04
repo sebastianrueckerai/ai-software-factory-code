@@ -3,6 +3,7 @@ package console
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -655,4 +656,71 @@ func TestBareGrantReoffersTheDenialsNote(t *testing.T) {
 	if posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]; posted != "Grant one session: split the migration first" {
 		t.Errorf("posted = %q, want the denial's note re-offered", posted)
 	}
+}
+
+// The agent never approves a GitHub sync's pull request: a human approves
+// the GitHub commits it carries. At merge rule auto, in a wake and
+// unconfirmed in a human's turn alike, the agent's approval refuses before
+// any call and the request stays pending. The human's own approval of it
+// passes, and so does the agent's of a factory pull request factoryd wrote
+// whole.
+func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
+	factoryRig := func(t *testing.T, source string) *rig {
+		t.Helper()
+		r := newRig(t)
+		r.tasks.set("", factoryd.Task{ID: "t-m", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 5, PRNumber: 9, Source: source})
+		r.approvals.rows[1].Spec = json.RawMessage(`{"risk_class":"high","head_sha":"abc123","factory":true}`)
+		return r
+	}
+	at := func(s *session, wake bool, decider string) actor {
+		return actor{s: s, repository: "sf/code", via: factoryd.ViaChat, wake: wake, decider: decider, level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}
+	}
+	inWake := func(t *testing.T, r *rig) actor {
+		t.Helper()
+		s, err := r.c.wakeSession(factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, "sebastian")
+		if err != nil {
+			t.Fatal(err)
+		}
+		return at(s, true, "agent")
+	}
+	inTurn := func(t *testing.T, r *rig, decider string) actor {
+		t.Helper()
+		_, s := r.loggedIn(t)
+		r.fg.calls = nil
+		return at(s, false, decider)
+	}
+	for _, tc := range []struct {
+		name  string
+		actor func(*testing.T, *rig) actor
+	}{
+		{"in a wake", inWake},
+		{"in a human's turn the agent decided", func(t *testing.T, r *rig) actor { return inTurn(t, r, "agent") }},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := factoryRig(t, factoryd.SourceGitHubSync)
+			_, err := r.c.doApprove(t.Context(), tc.actor(t, r), 4)
+			var no *refusal
+			if !errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != "A human approves a factory pull request that carries GitHub commits: record what you found with attach_analysis." {
+				t.Fatalf("the agent's approval = %v, want 403 naming the human", err)
+			}
+			if q := r.approvals.get(4); q.Status != "pending" || len(r.fg.calls) != 0 {
+				t.Fatalf("request 4 %s, calls %q: want it pending and no call", q.Status, r.fg.calls)
+			}
+		})
+	}
+	t.Run("the human", func(t *testing.T) {
+		r := factoryRig(t, factoryd.SourceGitHubSync)
+		note, err := r.c.doApprove(t.Context(), inTurn(t, r, "member"), 4)
+		if err != nil || note != "Approved pull request #9; factoryd merges it." ||
+			!slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}) {
+			t.Fatalf("the human's approval = %q, %v, calls %q: want their review and their approval", note, err, r.fg.calls)
+		}
+	})
+	t.Run("a template update in a wake", func(t *testing.T) {
+		r := factoryRig(t, factoryd.SourceTemplateUpdate)
+		note, err := r.c.doApprove(t.Context(), inWake(t, r), 4)
+		if err != nil || note != "Approved pull request #9; factoryd merges it." || !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) {
+			t.Fatalf("the agent's approval = %q, %v, calls %q: want it signalled as factory-chat's", note, err, r.fg.calls)
+		}
+	})
 }

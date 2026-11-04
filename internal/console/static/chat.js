@@ -108,11 +108,8 @@ var chatView = (function () {
     if (m.decider) body += "<p class=\"decider\"><span class=\"visually-hidden\">Decided by: </span>" + esc(m.decider) + "</p>";
     if (m.reason) body += "<p class=\"settled-why\"><span class=\"visually-hidden\">Settled: </span>" + esc(m.reason) + "</p>";
     if (m.choices && m.choices.length && !esc1 && !m.settled) {
-      // a bound ask's press goes through /answer (its bound choice runs a
-      // tool in code), an unbound one as the member's own message
-      var k = m.kind === "ask" && m.proposal ? "data-answer" : "data-choice";
       body += "<p class=\"choices\">" + m.choices.map(function (c) {
-        return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
+        return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>"; }).join(" ") + "</p>";
     }
     if (fund) body += fundHTML(fund);
     var fold = "";
@@ -446,8 +443,8 @@ var chatView = (function () {
   // Delete… on an active thread with rows, never on the inbox (C14)
   function headHTML(t, login, now) {
     var mine = !t.login || t.login === login;
-    var hint = !mine ? t.login + "'s thread: read it and talk in it" :
-      t.inbox ? "the factory's thread: the agent speaks here uninvited" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
+    var hint = t.inbox ? "the factory's thread: it speaks here uninvited, you answer with its buttons" :
+      !mine ? t.login + "'s thread: read it and talk in it" : t.state === "archived" ? "archived, read-only" : when(t.last_at, now);
     var acts = mine && t.messages >= 2 ? "<button type=\"button\" data-clear" + (t.unswept ? "" : " disabled") + " title=\"Hide the old rows from view; the record keeps them\">Clear old</button>" : "";
     if (mine && !t.inbox && t.state !== "archived" && t.messages) {
       acts += "<button type=\"button\" data-archive>Archive</button><button type=\"button\" class=\"danger\" data-delete>Delete…</button>";
@@ -467,13 +464,12 @@ var chatView = (function () {
     (msgs || []).forEach(function (x) { if ((x.kind === "escalation" || x.kind === "ask") && !x.settled) m = x; });
     return m && m.choices && m.choices.length ? m : null;
   }
-  function answerHTML(m) {
-    // an unbound ask answers as the member's own message, an escalation
-    // or a bound ask through /answer
-    var k = m.kind === "ask" && !m.proposal ? "data-choice" : "data-answer";
+  // answerHTML is m's answer row, every choice a press through /answer;
+  // the inbox takes no words, so only another thread offers them below
+  function answerHTML(m, inbox) {
     return "<span class=\"answer-l\">Answer:</span>" + m.choices.map(function (c) {
-      return "<button type=\"button\" " + k + "=\"" + esc(c) + "\">" + esc(c) + "</button>";
-    }).join("") + "<span class=\"answer-or\">or in your words below</span>";
+      return "<button type=\"button\" data-answer=\"" + esc(c) + "\">" + esc(c) + "</button>";
+    }).join("") + (inbox ? "" : "<span class=\"answer-or\">or in your words below</span>");
   }
   // levelMenuHTML is the level control's menu (C14, C32): its head, then
   // the four states with their words, the current one checked
@@ -568,8 +564,9 @@ var chatView = (function () {
   var login = panel.dataset.login, base = "/projects/" + encodeURIComponent(panel.dataset.project || "") + "/chat";
   var baseTitle = document.title;
   // threads is the switcher's list; open the shown thread and its row;
-  // running counts each thread's streams in this page
-  var threads = [], open = 0, openOwner = "", openThread = {}, running = {}, readOnly = false;
+  // running counts each thread's streams in this page; inboxOpen says the
+  // open thread is an inbox, which takes presses and no words
+  var threads = [], open = 0, openOwner = "", openThread = {}, running = {}, readOnly = false, inboxOpen = false;
   var foldKey = "chat-fold:" + login;
 
   // the screen's two panes: the divider drags (or the arrow keys move) the
@@ -718,6 +715,7 @@ var chatView = (function () {
     if (docs.length) addDocuments(docs);
   }
   if (input) input.addEventListener("paste", function (e) {
+    if (inboxOpen) return;
     var files = [];
     for (var i = 0; e.clipboardData && e.clipboardData.items && i < e.clipboardData.items.length; i++) {
       var it = e.clipboardData.items[i];
@@ -732,7 +730,7 @@ var chatView = (function () {
     form.addEventListener("dragover", function (e) { e.preventDefault(); });
     form.addEventListener("drop", function (e) {
       e.preventDefault();
-      if (e.dataTransfer && e.dataTransfer.files.length) routeFiles(e.dataTransfer.files);
+      if (!inboxOpen && e.dataTransfer && e.dataTransfer.files.length) routeFiles(e.dataTransfer.files);
     });
   }
   if (imagesEl) imagesEl.addEventListener("click", function (e) {
@@ -772,12 +770,12 @@ var chatView = (function () {
   function openRef() { return ref(open, openOwner); }
   function threadOwner(t) { return t && t.login && t.login !== login ? t.login : ""; }
   function busy(k) { return !!running[k]; }
-  // lock disables the composer while the open thread is read-only and the
-  // log's buttons while a turn of the open thread streams — the stop
-  // button alone stays live, it is what ends it
+  // lock disables the box, Send and the command chips while the open
+  // thread is read-only, and the log's buttons while a turn of the open
+  // thread streams — the stop button alone stays live, it is what ends it
   function lock() {
     if (!form) return;
-    form.querySelectorAll("textarea, button").forEach(function (el) { el.disabled = readOnly; });
+    form.querySelectorAll(".prompt textarea, .prompt button, .cmd").forEach(function (el) { el.disabled = readOnly; });
     log.setAttribute("aria-busy", String(busy(openRef())));
     log.querySelectorAll("button").forEach(function (b) { b.disabled = busy(openRef()) && !b.closest(".turn-tail"); });
   }
@@ -994,7 +992,7 @@ var chatView = (function () {
   }
   function send() {
     var text = input.value.trim();
-    if (!text || readOnly) return;
+    if (!text || readOnly || inboxOpen) return;
     clearInput();
     var images = pendingImages, docs = pendingDocs;
     pendingImages = [];
@@ -1062,11 +1060,11 @@ var chatView = (function () {
   function expired(el) {
     return function () { el.innerHTML = "<span class=\"expired\">expired</span>"; };
   }
-  // pressAsk is a bound ask's press: it answers through /answer as a
-  // stream, the pressed choice drawn at once as the human's own row
-  // (the store keeps it, every press an answer), the bound choice
-  // running the bound tool call in code and another settling the ask
-  // and running the agent's turn, drawn where the choices were; a used
+  // pressAsk is the press of an ask's or a poke's choice: it answers
+  // through /answer as a stream, the pressed choice drawn at once as the
+  // human's own row (the store keeps it, every press an answer), a bound
+  // ask's bound choice running the bound tool call in code and any other
+  // press running the agent's turn, drawn where the choices were; a used
   // binding's press says so
   function pressAsk(id, choice, after) {
     var out = document.createElement("div");
@@ -1282,6 +1280,7 @@ var chatView = (function () {
   form.addEventListener("click", function (e) {
     var b = e.target.closest("[data-cmd]");
     if (b) command(b.dataset.cmd);
+    if (e.target.closest("[data-new-thread]")) fresh.click();
   });
   input.addEventListener("keydown", function (e) {
     if (pal.list && (e.key === "ArrowDown" || e.key === "ArrowUp")) {
@@ -1331,7 +1330,7 @@ var chatView = (function () {
       document.getElementById("view-toggle").click();
       return;
     }
-    input.focus();
+    if (!inboxOpen) input.focus();
   });
   // the stop button in the log: a press ends the open thread's turn, so
   // it answers while the turn streams, ahead of the busy guard below
@@ -1343,9 +1342,7 @@ var chatView = (function () {
     var b = e.target.closest("button");
     if (!b || busy(openRef())) return;
     var card = b.closest(".proposal");
-    if (b.hasAttribute("data-choice")) {
-      turn(b.dataset.choice);
-    } else if (b.hasAttribute("data-answer")) {
+    if (b.hasAttribute("data-answer")) {
       var picked = b.closest(".choices");
       pressAsk(b.closest(".msg").dataset.message, b.dataset.answer, picked);
       picked.remove();
@@ -1431,9 +1428,10 @@ var chatView = (function () {
   });
 
   // load shows thread n, the current one for "": its head and its log,
-  // read marks it seen; an archived thread is read-only. keep holds the
-  // member's place: a refresh of the thread they stand in moves the log
-  // only when they sit at its end; opening lands on the newest rows
+  // read marks it seen; an archived thread is read-only, an inbox takes
+  // presses and no words. keep holds the human's place: a refresh of the
+  // thread they stand in moves the log only when they sit at its end;
+  // opening lands on the newest rows
   var intro = log.innerHTML;
   function load(n, owner, keep) {
     var url = base + (n === "" ? "" : "?conversation=" + encodeURIComponent(n) +
@@ -1446,18 +1444,22 @@ var chatView = (function () {
       openThread = data.thread || {number: open};
       openOwner = threadOwner(openThread);
       readOnly = openThread.state === "archived";
+      inboxOpen = !!openThread.inbox;
       // a stored image's src is its serving route, resolved here where the
       // panel's base lives; the optimistic ones carry their object URL
       data.messages.forEach(function (m) { (m.attachments || []).forEach(function (a) { a.url = a.url || base + "/attachments/" + a.id; }); });
       var was = log.scrollTop, held = log.scrollHeight - log.scrollTop - log.clientHeight < 160;
       log.innerHTML = data.messages.length || data.thread && data.thread.cleared ? chatView.openQuestionHTML(data.open_question) + chatView.threadHTML(data.messages, login, data.proposals, data.thread, data.budget) : intro;
-      if (poolHost) poolHost.innerHTML = data.pool && !readOnly && !openOwner ? chatView.poolCtlHTML(data.pool) : "";
+      if (poolHost) poolHost.innerHTML = data.pool && !readOnly && !inboxOpen && !openOwner ? chatView.poolCtlHTML(data.pool) : "";
       if (form) {
         // an archived thread's composer is one line with restore (C14);
-        // another member's archived thread has no restore to offer
+        // another human's archived thread has no restore to offer; an
+        // inbox's is its note with a way to a thread of the human's own
         form.classList.toggle("arch", readOnly);
+        form.classList.toggle("inbox", inboxOpen);
         form.classList.toggle("theirs", !!openOwner);
         form.querySelector(".arch-note").hidden = !readOnly;
+        form.querySelector(".inbox-note").hidden = !inboxOpen;
       }
       if (openThread.working || busy(openRef())) add(log, chatView.agentHTML(new Date(), chatView.thinkingHTML));
       pending = readOnly ? null : chatView.pendingOf(data.messages);
@@ -1477,7 +1479,7 @@ var chatView = (function () {
   function drawAnswer() {
     if (!answerRow) return;
     answerRow.hidden = !pending;
-    answerRow.innerHTML = pending ? chatView.answerHTML(pending) : "";
+    answerRow.innerHTML = pending ? chatView.answerHTML(pending, inboxOpen) : "";
   }
   function drawHead() {
     if (!head) return;
@@ -1608,19 +1610,11 @@ var chatView = (function () {
     var whose = row && row.dataset.owner && row.dataset.owner !== login ? row.dataset.owner : "";
     if (row && (Number(row.dataset.thread) !== open || whose !== openOwner)) {
       load(Number(row.dataset.thread), whose).then(function () {
-        if (!readOnly) input.focus({preventScroll: true});
+        if (!readOnly && !inboxOpen) input.focus({preventScroll: true});
       });
     }
   });
   if (answerRow) answerRow.addEventListener("click", function (e) {
-    var c = e.target.closest("[data-choice]");
-    if (c && pending) {
-      var choice = c.dataset.choice;
-      pending = null;
-      drawAnswer();
-      turn(choice);
-      return;
-    }
     var b = e.target.closest("[data-answer]");
     if (!b || !pending || sending) return;
     if (pending.kind === "ask") {

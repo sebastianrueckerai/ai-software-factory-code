@@ -58,6 +58,7 @@ type toolInput struct {
 	From        int      `json:"from,omitempty"`
 	To          int      `json:"to,omitempty"`
 	Query       string   `json:"query,omitempty"`
+	Before      int64    `json:"before,omitempty"`
 	URL         string   `json:"url,omitempty"`
 	Limit       int      `json:"limit,omitempty"`
 	Size        string   `json:"size,omitempty"`
@@ -608,6 +609,17 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", in.ID))
 		}
 		desc += fmt.Sprintf(", alert %d %q", al.ID, alertTitle(al))
+		first, own, err := t.c.verdictCards(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
+		if err != nil {
+			return "", err
+		}
+		if first.ID != "" {
+			same := first.ID
+			if first.IssueNumber > 0 {
+				same = fmt.Sprintf("#%d %s", first.IssueNumber, first.ID)
+			}
+			desc += fmt.Sprintf(", same cause as %s %q, which closes %s", same, factoryd.CardTitle(first), issueRef(own.ID, own.IssueNumber))
+		}
 	}
 	if tool.name == "promote_resource" || tool.name == "release_resource" {
 		res, ok, err := t.c.cfg.Resources.Commission(t.r.Context(), in.ID)
@@ -647,15 +659,7 @@ func mergeWarning(steps []map[string]any) string {
 		}
 	}
 	if m := newest(steps, "checks"); m != nil {
-		var failing []string
-		jobs, _ := m["jobs"].([]any)
-		for _, j := range jobs {
-			job, _ := j.(map[string]any)
-			if status, _ := job["status"].(string); status != "success" && status != "skipped" {
-				name, _ := job["name"].(string)
-				failing = append(failing, name)
-			}
-		}
+		failing := redJobs(m)
 		state, _ := m["state"].(string)
 		switch {
 		case len(failing) > 0:
@@ -745,6 +749,15 @@ func (t *turn) answer(in toolInput) (string, error) {
 		return t.c.doAnswerAs(ctx, t.a, in.TaskID, in.Text, in.Action, in.Args, in.FundEUR)
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
+}
+
+// issueRef names card id as the agent reads it: #issue when it has one,
+// else its task id.
+func issueRef(id string, issue int64) string {
+	if issue > 0 {
+		return fmt.Sprintf("#%d", issue)
+	}
+	return id
 }
 
 // actionNames are the names of the actions rung 2 or the human may take,
@@ -1416,11 +1429,13 @@ var tools = []chatTool{
 		about: "The project's sandbox images in force, its open tool cards and the cards waiting for an image.",
 		run:   func(t *turn, _ toolInput) (string, *inverse, error) { s, err := t.imagesText(); return s, nil, err }},
 	{name: "alert_verdict", title: "Judge an alert", write: true,
-		params:   map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1}, "verdict": enum("real pointed at a problem, noise did not", factoryd.VerdictReal, factoryd.VerdictNoise)},
+		params: map[string]any{"id": map[string]any{"type": "integer", "description": "the alert's id", "minimum": 1},
+			"verdict": enum("real pointed at a problem, noise did not, same_cause as card", factoryd.VerdictReal, factoryd.VerdictNoise, factoryd.VerdictSameCause),
+			"card":    str("for same_cause: the first card's task id or issue number")},
 		required: []string{"id", "verdict"},
-		about:    "Judge an open escalation alert real or noise.",
+		about:    "Judge an open escalation alert real, noise, or the same cause as a card, which closes this one.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
-			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict)
+			note, err := t.c.doAlertVerdict(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
 			return note, nil, err
 		}},
 	{name: "promote_resource", title: "Make a resource standing", write: true,
@@ -1617,7 +1632,7 @@ var tools = []chatTool{
 				return "", nil, err
 			}
 			if !ok {
-				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: ask them to answer here or on the board's card, and answer_criteria runs on their word.")
+				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
 			}
 			q, err := t.criteriaRequest(in)
 			if err != nil {
@@ -1889,6 +1904,11 @@ var tools = []chatTool{
 		required: []string{"query"},
 		about:    "Search every thread of the project, every human's, for a text, at most 20 hits.",
 		run:      func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.chatSearch(in); return s, nil, err }},
+	{name: "inbox", title: "Read the inbox",
+		params: map[string]any{"query": str("a word to filter by, 2 to 200 characters"),
+			"before": map[string]any{"type": "integer", "description": "a row id: older rows, the open asks left out", "minimum": 1}},
+		about: "The factory's thread: open asks first, then the newest rows, filtered by query, paged by before.",
+		run:   func(t *turn, in toolInput) (string, *inverse, error) { s, err := t.inboxText(in); return s, nil, err }},
 	{name: "board_view", title: "Board view",
 		about:  "Works the board's view controls as a click does: menus, find, routines, card, theme.",
 		params: boardViewParams(),
@@ -1961,7 +1981,7 @@ func init() {
 			"args":   map[string]any{"type": "object", "description": "the bound tool's arguments as it reads them"},
 			"choice": str("the choice whose press runs the bound tool call")},
 		required: []string{"ask", "choices"},
-		about:    "Ask the thread's human a question their press or message answers, one choice bound to a tool call.",
+		about:    "Ask the thread's human a question their press answers, one choice bound to a tool call.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			s, err := t.askMember(in)
 			return s, nil, err
@@ -2107,9 +2127,11 @@ var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settin
   answer's action takes its args: handover a model, extend sessions, agent_time_s, lines or checkin_shares, fund and raise_ceiling eur, and retry and replan none. An extend answers a cap or an owner exit, not a question.
   write_doc commits straight to master: an edit of one passage that is in the file once, or a new file.
   The scratchpad steers nothing: what becomes direction moves into the roadmap with write_doc.
-  ask questions this conversation's human, answered by a press or their next message, and ends the turn.
-  escalate asks the humans who are not in this conversation; a choice or a reply in their inbox answers it.
+  ask questions this conversation's human and ends the turn: a press answers it, and in a thread of their own so does their next message.
+  escalate asks the humans who are not in this conversation; a choice in their inbox or a reply in a thread of their own answers it.
   attach_analysis records what you found inside a card's open ask; the humans read it with the question.
+  alert_verdict same_cause is a second escalation of one fault: card names the first card, and the alert's own card closes with a comment pointing at it.
+  inbox reads the factory's thread: what woke the agent and what waits on a human. Its first page holds every open ask, and before pages the other rows.
   fund draws a card's money from the escalation pool. On your own decision it stays within the month's pool and the card's ceiling, and once the human confirmed it, it may pass the pool.
   analyze_image looks at an image a human sent, once per question; cite what you saw, and look again rather than guess. A human's image is spend they approved; the chat's monthly budget still bounds the looks.
   read_attachment reads the thread's documents in chunks, never the whole file: the head first, then from and to, or find.

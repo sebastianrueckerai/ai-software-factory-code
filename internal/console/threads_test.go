@@ -348,6 +348,36 @@ func TestChatInboxBadge(t *testing.T) {
 	equal(t, "the unread turns after the inbox was read", unread(list()), map[int64]int64{1: 0, 2: 0})
 }
 
+// Reading the inbox, its rows and all, never makes it the human's current
+// thread: their own thread 1 stays current, and the answer says the inbox
+// is not.
+func TestChatGetOfTheInboxLeavesTheCurrentThread(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	ck, _ := r.loggedIn(t)
+	ctx := t.Context()
+	inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, m := range []factoryd.ChatMessage{{Role: "user", Content: "hello", Conversation: 1},
+		{Role: "assistant", Kind: factoryd.MessagePoke, Content: "#7 failed: Feed page.", Conversation: inbox}} {
+		if _, err := chat.AddChatMessage(ctx, "sf/code", "sebastian", m); err != nil {
+			t.Fatal(err)
+		}
+	}
+	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(inbox, 10), nil), ck)
+	var answer chatGetAnswer
+	if rec.Code != http.StatusOK || json.Unmarshal(rec.Body.Bytes(), &answer) != nil {
+		t.Fatalf("GET the inbox = %d %s", rec.Code, rec.Body)
+	}
+	equal(t, "the inbox read", []any{answer.Conversation, answer.Thread.Inbox, answer.Thread.Current, len(answer.Messages)}, []any{int64(2), true, false, 1})
+	cur, err := chat.CurrentConversation(ctx, "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	equal(t, "the current thread", cur, int64(1))
+}
+
 // The conversations JSON carries each thread's waits_you, the tab
 // title's count (the ruling of 2026-10-19): the distinct cards with an
 // open ask or poke row on the thread. Settled rows never count, a poke
