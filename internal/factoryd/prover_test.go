@@ -26,7 +26,7 @@ const testProverClassYAML = `  prover:
     session_model: big
     supervisor_model: big
     time: {agent_time: 90m, check_in: 0s}
-    tools: {file_proofs: {}, escalate: {}, manual: {}}
+    tools: {file_proofs: {}, manual: {}}
 `
 
 // proverPolicy is version 7 of the test policy with the prover class.
