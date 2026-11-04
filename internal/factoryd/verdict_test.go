@@ -205,6 +205,9 @@ func TestDecideCriterion(t *testing.T) {
 	if err := DecideCriterion(ctx, s, "t-plan", "c2", "met", "sebastian", "I read it, it works"); err != nil {
 		t.Fatalf("met on the human criterion: %v", err)
 	}
+	if err := DecideCriterion(ctx, s, "t-plan", "c2", "met", "sebastian", "a second look"); !errors.Is(err, ErrCriterionMet) {
+		t.Errorf("a second met on the human criterion: %v, want ErrCriterionMet", err)
+	}
 	rows, err := s.CriteriaVerdicts(ctx, "t-int")
 	if err != nil {
 		t.Fatal(err)
@@ -271,26 +274,6 @@ func TestGrantCriteria(t *testing.T) {
 	}
 	if n, err = GrantCriteria(ctx, s, "t-plan", "sebastian", 8); err != nil || n != 0 {
 		t.Fatalf("second grant = %d, %v; want 0, nil", n, err)
-	}
-}
-
-func TestRecordHumanCriteria(t *testing.T) {
-	ctx := context.Background()
-	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
-	n, err := RecordHumanCriteria(ctx, s, "t-int", "sebastian")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if n != 1 {
-		t.Fatalf("recorded %d criteria, want 1 (c2 alone)", n)
-	}
-	rows, _ := s.CriteriaVerdicts(ctx, "t-int")
-	want := []CriterionVerdict{{Criterion: "c2", Verdict: "met", Evidence: "merge approved by sebastian", Kind: CriterionHuman, Source: "approver", DecidedBy: "sebastian"}}
-	if fmt.Sprint(rows) != fmt.Sprint(want) {
-		t.Errorf("rows =\n%v\nwant\n%v", rows, want)
-	}
-	if n, err := RecordHumanCriteria(ctx, s, "card-foundation", "sebastian"); err != nil || n != 0 {
-		t.Errorf("a foundation card records %d, %v; want 0, nil", n, err)
 	}
 }
 

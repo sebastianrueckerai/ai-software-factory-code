@@ -40,9 +40,51 @@ func TestChatWaivesACriterionOnTheHumansWord(t *testing.T) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
-		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criterion": "c3", "verdict": "waived"}})
+		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criterion": "c3", "verb": "waived", "reason": "the timeout is the provider's SLA"}})
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("the waiver decided the request itself: %+v", a)
+	}
+}
+
+// The chat settles the integration card's rows on the human's word: Met
+// and Waive on its merge request, and Not met, which sends the card back
+// to its agent with the human's words.
+func TestChatDecidesAHumanRowOnTheHumansWord(t *testing.T) {
+	r, _, g := newChatRig(t)
+	calls := humanRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	met := `{"task_id":"t-int","action":"met","criterion":"pages_ok"}`
+	waive := `{"task_id":"t-int","action":"waive","criterion":"all_green","reason":"CI covers it."}`
+	notMet := `{"task_id":"t-int","action":"not_met","criterion":"page_links","reason":"The help page has no links yet."}`
+	g.replies = [][]string{{call(1, "answer_criteria", met)}, {call(2, "answer_criteria", waive)}, {call(3, "answer_criteria", notMet)}, {say("Done.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"pages_ok reads well, page_links does not: the help page has no links yet"}})
+	back := "Criterion page_links is not met. The card goes back to its agent with your words."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":` + met + `,"duration_ms":0,"name":"answer_criteria","result":"Criterion pages_ok met."}`,
+		`applied {"result":"Criterion pages_ok met.","tool":"answer_criteria"}`,
+		`tool {"arguments":` + waive + `,"duration_ms":0,"name":"answer_criteria","result":"Criterion all_green waived."}`,
+		`applied {"result":"Criterion all_green waived.","tool":"answer_criteria"}`,
+		`tool {"arguments":` + notMet + `,"duration_ms":0,"name":"answer_criteria","result":"` + back + `"}`,
+		`applied {"result":"` + back + `","tool":"answer_criteria"}`,
+		`text {"text":"Done."}`, `done {}`})
+	equal(t, "the calls", *calls, []string{
+		"t-plan pages_ok met by sebastian: met (pages_ok.txt at 8e3a1b0)",
+		"t-plan all_green waived by sebastian: CI covers it.",
+	})
+	const words = "criterion page_links not met: The help page has no links yet."
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventCriterionDecided,
+			Detail: map[string]any{"approval": int64(31), "criterion": "pages_ok", "verb": "met", "reason": "met (pages_ok.txt at 8e3a1b0)"}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventCriterionDecided,
+			Detail: map[string]any{"approval": int64(31), "criterion": "all_green", "verb": "waived", "reason": "CI covers it."}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventMergeDenied,
+			Detail: map[string]any{"pr": int64(12), "action": "request_changes"}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventCriterionDecided,
+			Detail: map[string]any{"approval": int64(31), "criterion": "page_links", "verb": "not_met", "reason": "The help page has no links yet."}})
+	if q := r.approvals.get(31); q.Status != "denied" || q.DecidedBy != "sebastian" || q.DecisionNote != "changes requested: "+words {
+		t.Errorf("the merge request = %+v, want it denied by sebastian with %q", q, words)
 	}
 }
 

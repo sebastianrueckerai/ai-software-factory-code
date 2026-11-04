@@ -624,9 +624,6 @@ func main() {
 		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
 			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
 		},
-		RecordHumanCriteria: func(ctx context.Context, taskID, approver string) (int, error) {
-			return factoryd.RecordHumanCriteria(ctx, store, taskID, approver)
-		},
 		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
 			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)
 		},

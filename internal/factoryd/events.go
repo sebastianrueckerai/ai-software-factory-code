@@ -53,9 +53,12 @@ const (
 	// the actor is the member, detail {"thread"}, the stopped turn's
 	// thread.
 	EventChatStopped = "chat_stopped"
-	// EventCriterionDecided records an approver's grant or waiver on a
-	// plan's criterion (the spec-intake concept, pieces 7 and 8): detail
-	// {"approval", "criteria", "verb"} or {"criterion", "verdict"}.
+	// EventCriterionDecided records an approver's decision on a plan's
+	// criteria (the spec-intake concept, pieces 7 and 8): detail
+	// {"approval", "criteria", "verb"} for a grant (granted) or a
+	// confirmation (met), {"approval", "verb"} for a denial (denied), or
+	// {"approval", "criterion", "verb", "reason"} for one row: met,
+	// not_met or waived.
 	EventCriterionDecided = "criterion_decided"
 	// EventPlanClosed records a plan's close (the spec-intake concept,
 	// piece 8): every criterion met or waived, or, for a plan without

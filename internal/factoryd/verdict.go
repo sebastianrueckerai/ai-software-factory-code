@@ -21,9 +21,9 @@ import (
 // the criteria gate writes its own rows for the test and invariant
 // criteria, and a judgement row for each judgement criterion whose proof
 // ran: met, unmet, or unmet with no verdict, so a judgement row is the
-// newest head's. An approver's recorded decision — a human criterion's
-// met at the merge approval, a waiver — writes the approver's row, which
-// is the verdict that stands.
+// newest head's. An approver's recorded decision, a human criterion's met
+// on its row or a waiver, writes the approver's row, which is the verdict
+// that stands.
 const (
 	CatchDelta        = "delta"
 	CatchDeltaFiled   = "delta_filed"
@@ -47,7 +47,7 @@ const (
 // (criterion, verdict, evidence, fix) or the standing row the store reads
 // (with kind, source and decided_by). A human criterion's review row, from
 // a run before the judgement, carries evidence and an empty verdict: the
-// approver's decision at the merge approval is its verdict.
+// approver's Met on its row is its verdict.
 type CriterionVerdict struct {
 	Criterion string    `json:"criterion"`
 	Verdict   string    `json:"verdict"`
@@ -147,12 +147,13 @@ func (s *PGStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, erro
 // ErrNoCriterion refuses a decision on a criterion the plan does not hold.
 var ErrNoCriterion = errors.New("the plan holds no such criterion")
 
-// ErrCriterionMet is a criterion that stands met already, which a waiver
-// cannot replace: a stale board offers one, the store refuses it.
+// ErrCriterionMet is a criterion that stands met already, which neither a
+// second met nor a waiver replaces: a stale board offers one, the store
+// refuses it.
 var ErrCriterionMet = errors.New("the criterion is met already")
 
 // ErrNotHuman refuses an approver's met on a criterion whose verdict the
-// review owns.
+// criteria gate owns.
 var ErrNotHuman = errors.New("only a human criterion's verdict is the approver's to record")
 
 // planOfStore is filedPlan without the Runner: the newest plan revision
@@ -170,10 +171,10 @@ func planOfStore(ctx context.Context, store Store, parent, child string) (Plan, 
 }
 
 // DecideCriterion records an approver's decision on one criterion of plan
-// task id: waived, with their one-line reason, for any criterion that does
-// not stand met already; met, for a human criterion, whose proof is this
-// recording. The row lands on the plan's integration card, where the
-// review's rows stand.
+// task id that does not stand met already: waived, with their one-line
+// reason, for any criterion; met, for a human criterion, whose proof is
+// this recording. The row lands on the plan's integration card, where the
+// gate's rows stand.
 func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, reason string) error {
 	if verdict != "waived" && verdict != "met" {
 		return fmt.Errorf("no such verdict %q", verdict)
@@ -202,7 +203,7 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	if verdict == "met" && c.Kind != CriterionHuman {
 		return ErrNotHuman
 	}
-	integration, err := integrationCard(ctx, store, id, p)
+	integration, err := IntegrationCard(ctx, store, id, p)
 	if err != nil {
 		return err
 	}
@@ -210,7 +211,7 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	if err != nil {
 		return fmt.Errorf("verdicts of %s: %w", integration.ID, err)
 	}
-	if verdict == "waived" && effectiveVerdict(rows, c) == "met" {
+	if effectiveVerdict(rows, c) == "met" {
 		return ErrCriterionMet
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by,
@@ -233,7 +234,7 @@ func GrantCriteria(ctx context.Context, store Store, id, by string, approval int
 	if err != nil {
 		return 0, err
 	}
-	integration, err := integrationCard(ctx, store, id, p)
+	integration, err := IntegrationCard(ctx, store, id, p)
 	if err != nil {
 		return 0, err
 	}
@@ -253,42 +254,6 @@ func GrantCriteria(ctx context.Context, store Store, id, by string, approval int
 	}
 	log.Printf("plan %s: %s granted one more bounded card for %d criteria", id, by, len(details))
 	return len(details), nil
-}
-
-// RecordHumanCriteria records the approver's met on every human criterion
-// of the plan of task taskID's plan, the verdict their merge approval of
-// the feature is (a human criterion's proof is the same recording):
-// nothing when taskID is not a plan's integration card.
-func RecordHumanCriteria(ctx context.Context, store Store, taskID, approver string) (int, error) {
-	t, ok, err := store.Task(ctx, taskID)
-	if err != nil {
-		return 0, fmt.Errorf("task %s: %w", taskID, err)
-	}
-	if !ok {
-		return 0, fmt.Errorf("task %s: %w", taskID, ErrNotFound)
-	}
-	if t.Source != SourcePlan || t.Parent == "" {
-		return 0, nil
-	}
-	p, _, err := planOfStore(ctx, store, t.Parent, t.ID)
-	if err != nil {
-		return 0, err
-	}
-	if roleOf(p, t.PlanKey) != RoleIntegration {
-		return 0, nil
-	}
-	var rows []CriterionVerdict
-	for _, c := range p.Criteria {
-		if c.Kind != CriterionHuman {
-			continue
-		}
-		rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met",
-			Evidence: "merge approved by " + approver, Kind: c.Kind})
-	}
-	if len(rows) == 0 {
-		return 0, nil
-	}
-	return len(rows), store.PutCriteriaVerdicts(ctx, t.ID, CriteriaSourceApprover, approver, rows)
 }
 
 // ErrChildOpen is a plan's card that is not done or merged, which a
@@ -314,7 +279,7 @@ func ConfirmDeliveredCriteria(ctx context.Context, store Store, id, by, line str
 	if err != nil {
 		return 0, err
 	}
-	integration, err := integrationCard(ctx, store, id, p)
+	integration, err := IntegrationCard(ctx, store, id, p)
 	if err != nil {
 		return 0, err
 	}
@@ -352,8 +317,10 @@ func roleOf(p Plan, key string) string {
 	return ""
 }
 
-// integrationCard is the plan's integration card task.
-func integrationCard(ctx context.Context, store Store, parent string, p Plan) (Task, error) {
+// IntegrationCard is plan parent's integration card task, p its plan.
+func IntegrationCard(ctx context.Context, store interface {
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
+}, parent string, p Plan) (Task, error) {
 	cards, err := store.PlanCards(ctx, parent)
 	if err != nil {
 		return Task{}, err
@@ -559,7 +526,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 		rv.Behaviours = nil
 		return
 	}
-	integration, err := integrationCard(ctx, r.store, t.Parent, p)
+	integration, err := IntegrationCard(ctx, r.store, t.Parent, p)
 	if err != nil {
 		log.Printf("task %s: the criteria rows' home: %v", t.ID, err)
 		rv.Behaviours = nil
@@ -636,7 +603,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 		log.Printf("plan %s: the delta round: %v", t.ID, err)
 		return
 	}
-	integration, err := integrationCard(ctx, r.store, t.ID, p)
+	integration, err := IntegrationCard(ctx, r.store, t.ID, p)
 	if err != nil {
 		log.Printf("plan %s: the delta round: %v", t.ID, err)
 		return
@@ -894,7 +861,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		r.closePlan(ctx, t, repo, 0, comment)
 		return
 	}
-	integration, err := integrationCard(ctx, r.store, parent, p)
+	integration, err := IntegrationCard(ctx, r.store, parent, p)
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
 		return

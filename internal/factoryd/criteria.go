@@ -524,7 +524,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": skipped}))
 		return CriteriaResult{Skipped: skipped}, nil
 	}
-	home, err := integrationCard(ctx, r.store, t.Parent, p)
+	home, err := IntegrationCard(ctx, r.store, t.Parent, p)
 	if err != nil {
 		return CriteriaResult{}, err
 	}

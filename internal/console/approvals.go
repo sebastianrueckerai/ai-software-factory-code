@@ -18,12 +18,13 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// criterionRow is one criterion of a criteria approval card: the
+// criterionRow is one criterion of a criteria or merge approval card: the
 // criterion, its standing verdict and the evidence behind it.
 type criterionRow struct {
 	factoryd.PlanCriterion
 	Verdict  string
 	Evidence string
+	Artifact *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
 }
 
 // approvalCard is a pending approval request with what its kind needs.
@@ -298,6 +299,49 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
+// planRows are plan card t's plan's criteria with their standing rows on
+// its integration card, each human criterion's with its artifact, and the
+// ids with no verdict; ok false when t is not the plan's integration card
+// or a delta card.
+func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, ok bool, err error) {
+	if t.Source != factoryd.SourcePlan || t.Parent == "" {
+		return nil, nil, false, nil
+	}
+	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
+	if err != nil || !ok || !factoryd.CriteriaCard(p, t.PlanKey) {
+		return nil, nil, false, err
+	}
+	home, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, t.Parent, p)
+	if err != nil {
+		return nil, nil, false, err
+	}
+	verdicts, err := c.cfg.Tasks.CriteriaVerdicts(ctx, home.ID)
+	if err != nil {
+		return nil, nil, false, fmt.Errorf("verdicts of %s: %w", home.ID, err)
+	}
+	for _, pc := range p.Criteria {
+		v, _ := factoryd.StandingRow(verdicts, pc)
+		row := criterionRow{PlanCriterion: pc, Verdict: v.Verdict, Evidence: v.Evidence}
+		if v.Verdict == "" {
+			open = append(open, pc.ID)
+		}
+		if pc.Kind == factoryd.CriterionHuman {
+			b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home.ID, pc.ID))
+			if err != nil {
+				return nil, nil, false, fmt.Errorf("the artifact of %s: %w", pc.ID, err)
+			}
+			if b != nil {
+				row.Artifact = &factoryd.GateArtifact{}
+				if err := json.Unmarshal(b, row.Artifact); err != nil {
+					return nil, nil, false, fmt.Errorf("the artifact of %s: %w", pc.ID, err)
+				}
+			}
+		}
+		rows = append(rows, row)
+	}
+	return rows, open, true, nil
+}
+
 // planOf fills plan card k from its request's revision.
 func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if err := json.Unmarshal(k.Spec, &k.PlanSpec); err != nil {
@@ -370,11 +414,11 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// waive records the member's waiver of one criterion of the criteria
-// request the path names, with their one-line reason (doWaive).
-func (c *Console) waive(w http.ResponseWriter, r *http.Request) {
+// decideCriterion answers POST /approvals/{id}/criterion: doDecide with
+// the form's criterion, verb and reason, through decideButton.
+func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
+		return c.doDecide(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("verb"), r.PostFormValue("reason"))
 	})
 }
 

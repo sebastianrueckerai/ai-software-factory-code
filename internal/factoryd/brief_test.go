@@ -111,6 +111,16 @@ func (f *fakeBriefStore) CriteriaVerdicts(ctx context.Context, taskID string) ([
 	return f.verdicts[taskID], nil
 }
 
+func (f *fakeBriefStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
+	var out []Task
+	for _, t := range f.tasks {
+		if t.Parent == plan && t.Source == SourcePlan {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 func (f *fakeBriefStore) Record(ctx context.Context, e Event) (int64, error) {
 	f.events = append(f.events, e)
 	return int64(len(f.events)), nil
@@ -525,6 +535,87 @@ func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
 		if !strings.Contains(sent, want) {
 			t.Errorf("the model's facts lack %q: %s", want, sent)
 		}
+	}
+}
+
+// The brief of the integration card's merge request reads the plan's
+// criteria with their standing rows and tells the human to settle each
+// row before Approve; a feature card's merge request carries no rows.
+func TestTheMergeBriefCarriesThePlansRows(t *testing.T) {
+	plan, err := json.Marshal(Plan{Criteria: []PlanCriterion{
+		{ID: "size_bound", Kind: CriterionTest, Claim: "every size row stays under its bound", Inputs: "GET /sizes", Expected: "3 rows"},
+		{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the sizes page reads calm", Prompt: "Judge whether the page names every size."},
+		{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
+		{ID: "pages_ok", Kind: CriterionHuman, Claim: "The pages read well", Evidence: "Open /sizes and /doors at 390 px"},
+		{ID: "page_links", Kind: CriterionHuman, Claim: "Every page links home", Evidence: "the links on /help"},
+	}, Cards: []PlanCard{{Key: "sizes", Role: RoleFeature}, {Key: "integration", Role: RoleIntegration}}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var sent []map[string]any
+	gw := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var req struct {
+			Messages []struct {
+				Content string `json:"content"`
+				Role    string `json:"role"`
+			} `json:"messages"`
+		}
+		body, _ := io.ReadAll(r.Body)
+		_ = json.Unmarshal(body, &req)
+		for _, m := range req.Messages {
+			if m.Role == "user" {
+				var facts map[string]any
+				_ = json.Unmarshal([]byte(strings.TrimPrefix(m.Content, chatInputLead)), &facts)
+				sent = append(sent, facts)
+			}
+		}
+		_, _ = w.Write([]byte(`{"choices":[{"message":{"content":"{\"brief\": \"Two rows wait on you.\", \"detail\": \"- pages_ok open\"}"}}]}`))
+	}))
+	defer gw.Close()
+	card := func(id, key string, issue int64) Task {
+		return Task{ID: id, Repository: "sf/code", IssueNumber: issue, Parent: "t-plan", Source: SourcePlan, PlanKey: key,
+			Status: "in-review", RequiredCapabilities: []string{policy.ClassCoder}}
+	}
+	spec := json.RawMessage(`{"risk_class":"standard","head_sha":"8e3a1b0c"}`)
+	store := &fakeBriefStore{
+		tasks: map[string]Task{"t-int": card("t-int", "integration", 5), "t-sizes": card("t-sizes", "sizes", 6)},
+		rows: []ApprovalRequest{
+			{ID: 31, Kind: ApprovalMerge, TaskID: "t-int", Project: "sf/code", PRNumber: 12, Spec: spec, CreatedAt: time.Unix(0, 0).UTC()},
+			{ID: 32, Kind: ApprovalMerge, TaskID: "t-sizes", Project: "sf/code", PRNumber: 13, Spec: spec, CreatedAt: time.Unix(0, 0).UTC()},
+		},
+		brief: map[int64][2]string{}, failed: map[int64]string{},
+		revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 1, Plan: plan}},
+		verdicts: map[string][]CriterionVerdict{"t-int": {
+			{Criterion: "size_bound", Verdict: "met", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound passed", Kind: CriterionTest, Source: CriteriaSourceGate},
+			{Criterion: "reads_calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)", Kind: CriterionJudgement, Source: CriteriaSourceJudgement},
+			{Criterion: "all_green", Verdict: "unmet", Evidence: "criterion all_green: suite ./... failed: Failed boom", Kind: CriterionInvariant, Source: CriteriaSourceGate},
+		}},
+	}
+	w := &BriefWriter{Store: store, CardDigest: briefLife, Model: &SupervisorModel{GatewayURL: gw.URL, Budget: briefTestBudget}, Current: func() policy.Version { return briefVersion(gw.URL) }}
+	if err := w.Pass(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(sent) != 2 || len(store.failed) != 0 {
+		t.Fatalf("the writer sent %d briefs' facts and marked %v, want two and none", len(sent), store.failed)
+	}
+	want := []criterionFact{
+		{ID: "size_bound", Kind: CriterionTest, Text: "every size row stays under its bound", Verdict: "met", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound passed"},
+		{ID: "reads_calm", Kind: CriterionJudgement, Text: "the sizes page reads calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)"},
+		{ID: "all_green", Kind: CriterionInvariant, Text: "./...", Verdict: "unmet", Evidence: "criterion all_green: suite ./... failed: Failed boom"},
+		{ID: "pages_ok", Kind: CriterionHuman, Text: "The pages read well", Verdict: "open"},
+		{ID: "page_links", Kind: CriterionHuman, Text: "Every page links home", Verdict: "open"},
+	}
+	var got []criterionFact
+	raw, _ := json.Marshal(sent[0]["criteria"])
+	if err := json.Unmarshal(raw, &got); err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Errorf("the merge brief's criteria = %s (%v)\nwant %v", raw, err, want)
+	}
+	if got := sent[0]["buttons"]; got != "Settle each criterion row first: Met or Not met on a human criterion, Waive on any row. "+
+		"Approve opens once every criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason." {
+		t.Errorf("the merge brief's buttons = %q", got)
+	}
+	if _, ok := sent[1]["criteria"]; ok || sent[1]["buttons"] != "Approve merges the pull request into main; Deny refuses it with the human's reason, posted on the pull request as them." {
+		t.Errorf("the feature card's merge brief = %v, want no criteria and the plain buttons", sent[1])
 	}
 }
 

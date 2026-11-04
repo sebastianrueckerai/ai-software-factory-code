@@ -238,11 +238,11 @@
 {{end}}{{range .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}</legend>
 <p class="meta">{{or .Claim .Suite}}</p>
 {{with .Evidence}}<p class="reason">{{.}}</p>
-{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/waive" hx-post="/approvals/{{$.ID}}/waive">
+{{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/criterion" hx-post="/approvals/{{$.ID}}/criterion">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">
 <label for="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}">Why it no longer holds, one line</label>
 <input type="text" id="waive-{{$.ID}}{{$.IDSuffix}}-{{.ID}}" name="reason" maxlength="2000" required hx-preserve>
-<button type="submit" class="deny" aria-label="Waive criterion {{.ID}} of {{$.TaskID}}">Waive</button>
+<button type="submit" class="deny" name="verb" value="waived" aria-label="Waive criterion {{.ID}} of {{$.TaskID}}">Waive</button>
 </form>{{end}}
 </fieldset>{{end}}
 {{if and .Approver .Delivered}}<form method="post" action="/approvals/{{.ID}}/confirm" hx-post="/approvals/{{.ID}}/confirm">

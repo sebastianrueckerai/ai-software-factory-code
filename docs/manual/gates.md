@@ -167,9 +167,12 @@ token, then calling `factoryd.ApproveMerge` (a pending merge request of
 that task and pull request is required), which signals `approved` with
 signal-with-start like the webhook path. An approval the project agent
 decides (in a wake, or unconfirmed in a member's turn at full auto) is the
-factory's own, whoever is online: the console posts no review and meets
-no human criterion, and every approval request, plan answer and signal
-it decides names `factory-chat`. `Merge` treats approver `factory-chat` as the merge gate's own
+factory's own, whoever is online: the console posts no review, and every
+approval request, plan answer and signal it decides names `factory-chat`.
+A plan's integration or delta card merges only once every criterion row
+has a verdict: the human settles each human criterion on the card with
+Met or Not met, and Not met sends the card back to its agent with their
+words. `Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
 with `factoryd: the project agent approved <head> on the project's merge
 rule auto`; on any other rule, or without a gate token, it refuses as

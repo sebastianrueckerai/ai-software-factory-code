@@ -357,12 +357,12 @@ func TestAWakeOnAProjectWithoutAChatTokenIsRefused(t *testing.T) {
 
 // An approval the agent decided is the factory's own, in a wake or
 // unconfirmed in a member's turn: the merge request's approval goes to the
-// workflow as factory-chat's, no review is posted (the merge gate's review
-// carries it at the merge) and no human criterion is met. A red-checks
-// request reads only the head's checks, with the turn's token. A resource
-// request is decided as factory-chat. The events stay the woken or
-// chatting member's, decided by the agent. What the member decides stays
-// theirs: their review, their name, their criteria.
+// workflow as factory-chat's, and no review is posted (the merge gate's
+// review carries it at the merge). A red-checks request reads only the
+// head's checks, with the turn's token. A resource request is decided as
+// factory-chat. The events stay the woken or chatting member's, decided by
+// the agent. What the member decides stays theirs: their review, their
+// name.
 func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 	inWake := func(t *testing.T, r *rig) actor {
 		t.Helper()
@@ -377,14 +377,6 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 		_, s := r.loggedIn(t)
 		r.fg.calls = nil
 		return actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: decider, level: policy.AutonomyAutonomous, mergeRule: policy.MergeAuto}
-	}
-	criteria := func(r *rig) *[]string {
-		var met []string
-		r.c.cfg.RecordHumanCriteria = func(_ context.Context, taskID, approver string) (int, error) {
-			met = append(met, taskID+" by "+approver)
-			return 1, nil
-		}
-		return &met
 	}
 	approve := func(t *testing.T, r *rig, a actor, id int64) string {
 		t.Helper()
@@ -408,12 +400,11 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 	}
 	t.Run("merge in a wake", func(t *testing.T) {
 		r := newRig(t)
-		met := criteria(r)
 		if note := approve(t, r, inWake(t, r), 4); note != "Approved pull request #9; factoryd merges it." {
 			t.Fatalf("note = %q", note)
 		}
-		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 || len(*met) != 0 {
-			t.Fatalf("calls %q, reviews %v, criteria %q: want the approval signalled as factory-chat's, no review, no criterion met", r.fg.calls, r.fg.reviews, *met)
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 {
+			t.Fatalf("calls %q, reviews %v: want the approval signalled as factory-chat's, no review", r.fg.calls, r.fg.reviews)
 		}
 		approved(t, r, "agent")
 	})
@@ -440,20 +431,17 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 	})
 	t.Run("merge in a member's turn the agent decided", func(t *testing.T) {
 		r := newRig(t)
-		met := criteria(r)
 		approve(t, r, inTurn(t, r, "agent"), 4)
-		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 || len(*met) != 0 {
-			t.Fatalf("calls %q, reviews %v, criteria %q: want the approval signalled as factory-chat's, no review, no criterion met", r.fg.calls, r.fg.reviews, *met)
+		if !slices.Equal(r.fg.calls, []string{"SIGNAL approved t-m #9 by factory-chat"}) || len(r.fg.reviews) != 0 {
+			t.Fatalf("calls %q, reviews %v: want the approval signalled as factory-chat's, no review", r.fg.calls, r.fg.reviews)
 		}
 		approved(t, r, "agent")
 	})
 	t.Run("merge the member decided", func(t *testing.T) {
 		r := newRig(t)
-		met := criteria(r)
 		approve(t, r, inTurn(t, r, "member"), 4)
-		if !slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}) ||
-			!slices.Equal(*met, []string{"t-m by sebastian"}) {
-			t.Fatalf("calls %q, criteria %q: want the member's review, their approval and their criteria", r.fg.calls, *met)
+		if !slices.Equal(r.fg.calls, []string{"POST /api/v1/repos/sf/code/pulls/9/reviews Bearer access-1", "SIGNAL approved t-m #9 by sebastian"}) {
+			t.Fatalf("calls %q: want the member's review and their approval", r.fg.calls)
 		}
 		approved(t, r, "member")
 	})
