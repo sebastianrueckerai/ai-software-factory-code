@@ -78,8 +78,8 @@ func (s *PGStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by st
 	return err
 }
 
-func (s *PGStore) DeleteCriteriaVerdict(ctx context.Context, taskID, source, criterion string) error {
-	_, err := s.db.ExecContext(ctx, `DELETE FROM criteria_verdicts WHERE task_id = $1 AND source = $2 AND criterion_id = $3`, taskID, source, criterion)
+func (s *PGStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM criteria_verdicts WHERE task_id = $1 AND criterion_id = $2 AND source <> $3`, taskID, criterion, CriteriaSourceApprover)
 	return err
 }
 

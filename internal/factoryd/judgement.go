@@ -85,9 +85,10 @@ func judge(c PlanCriterion, a GateArtifact, model string, res callResult) (Crite
 // judges each judgement criterion's through callAll, the review's
 // fan-out, each call cut at the supervisor timeout or a minute before the
 // activity's deadline, and writes each row there, met or unmet. A call
-// that gave no verdict is no builder's to fix: it deletes the criterion's
-// judgement row, so no earlier head's row stands and the gate has not
-// settled it, and its line is the card's. It returns the findings of the
+// that gave no verdict is no builder's to fix: it deletes every row of
+// the criterion but the approver's, so neither an earlier head's nor an
+// older review's row stands and the gate has not settled it, and its
+// line is the card's. It returns the findings of the
 // unmet ones, the card's lines and the count of the met ones. Each line's
 // cost is an even share of the task's spend booked while the calls ran,
 // unknown when the ledger cannot be read. A retry calls again: a second
@@ -133,7 +134,7 @@ func (r *Runner) judgeArtifacts(ctx context.Context, t Task, home string, p Plan
 		r.record(ctx, t.ID, "judgement", detail)
 		at := of[i].Head[:min(7, len(of[i].Head))]
 		if row.Verdict == "" {
-			if err := r.store.DeleteCriteriaVerdict(ctx, home, CriteriaSourceJudgement, c.ID); err != nil {
+			if err := r.store.DeleteVerdictsButApprover(ctx, home, c.ID); err != nil {
 				return nil, nil, 0, err
 			}
 			card = append(card, fmt.Sprintf("criterion %s: the judgement over %s at %s gave no verdict: %s", c.ID, of[i].Name, at, detail["reason"]))

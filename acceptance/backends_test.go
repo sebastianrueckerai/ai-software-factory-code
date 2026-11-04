@@ -980,7 +980,7 @@ func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, s
 	return nil
 }
 
-func (s *acceptanceStore) DeleteCriteriaVerdict(context.Context, string, string, string) error {
+func (s *acceptanceStore) DeleteVerdictsButApprover(context.Context, string, string) error {
 	return nil
 }
 

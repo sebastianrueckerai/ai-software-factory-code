@@ -3598,7 +3598,8 @@ func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdi
 			if err := t.askAgain(commit, g, lines); err != nil {
 				return verdict{final: "failed", reason: "request approval: " + errMessage(err)}, true, false, stand
 			}
-			if held = true; len(capped) > 0 {
+			held = true
+			if len(capped) > 0 {
 				return verdict{}, false, true, stand
 			}
 		}
@@ -3620,22 +3621,28 @@ func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdi
 }
 
 // askAgain files the merge ask on commit again, the press having decided
-// the last one: lines first, then the last ask's card lines, with its
-// reviews, as approve asks. An approval sent before it is none of it.
+// the last one: lines first, then the last ask's card lines, then why
+// AutoMerge on g leaves the merge to a human, with the last ask's reviews,
+// as approve asks. An approval sent before it is none of it.
 func (t *taskRun) askAgain(commit string, g GateResults, lines []string) error {
 	var sig TaskSignal
 	for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 		t.recordIgnored(SignalApproved, sig, "sent before this approval request")
 	}
-	in := t.asked
-	in.Commit, in.Gates, in.WhyHuman = commit, g, slices.Clone(lines)
+	card := slices.Clone(lines)
 	for _, l := range t.askedCard {
+		card = appendNew(card, l)
+	}
+	in := t.asked
+	in.Commit, in.Gates, in.WhyHuman = commit, g, slices.Clone(card)
+	_, _, unmet := AutoMerge(g, in.Review, t.source)
+	for _, l := range unmet {
 		in.WhyHuman = appendNew(in.WhyHuman, l)
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, in).Get(t.ctx, nil); err != nil {
 		return err
 	}
-	t.asked, t.askedCard = in, in.WhyHuman
+	t.asked, t.askedCard = in, card
 	return nil
 }
 

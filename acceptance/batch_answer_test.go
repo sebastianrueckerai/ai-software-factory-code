@@ -855,7 +855,7 @@ func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, str
 	panic("unused")
 }
 
-func (s *accBatchStore) DeleteCriteriaVerdict(context.Context, string, string, string) error {
+func (s *accBatchStore) DeleteVerdictsButApprover(context.Context, string, string) error {
 	panic("unused")
 }
 

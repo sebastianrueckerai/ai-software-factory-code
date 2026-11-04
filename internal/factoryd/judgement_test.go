@@ -448,6 +448,45 @@ func TestGateCriteriaLeavesAJudgementThePodNeverReachedUnsettled(t *testing.T) {
 	}
 }
 
+// A failed judgement call takes every row of its criterion but the
+// approver's: an older review's row of a plan from before the judgement
+// stands no more, so the gate has not settled the criterion and the next
+// press runs it again; a waiver stands.
+func TestGateCriteriaFailedJudgementLeavesNoStaleRow(t *testing.T) {
+	ctx := context.Background()
+	for _, waived := range []bool{false, true} {
+		kube := newFakeKube()
+		r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+		proofsWorker(t, r)
+		r.supervisor = testSupervisorModel((&fakeLiteLLM{content: "it reads calm"}).srv(t).URL)
+		seedBlindPlan(t, store, Plan{Criteria: []PlanCriterion{readsCalm}}, artifactRows()[:1])
+		met := []CriterionVerdict{{Criterion: "reads_calm", Verdict: "met", Evidence: "read it", Kind: CriterionJudgement}}
+		for _, source := range []string{CriteriaSourceReview, CriteriaSourceJudgement} {
+			if err := store.PutCriteriaVerdicts(ctx, "t1", source, FactoryDecider, met); err != nil {
+				t.Fatal(err)
+			}
+		}
+		if waived {
+			if err := store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceApprover, "sebastian", []CriterionVerdict{{Criterion: "reads_calm", Verdict: "waived", Kind: CriterionJudgement}}); err != nil {
+				t.Fatal(err)
+			}
+		}
+		results, errs := runCriteriaWithPods(t, r, kube, proofLines(readsCalmWrote(t)))
+		if errs[0] != nil || len(results[0].Card) != 1 {
+			t.Fatalf("waived %v: result %+v, %v; want the failed call on the card", waived, results[0], errs[0])
+		}
+		rows := rowsOf(store, "reads_calm")
+		val, err := execActivity(t, r, ActivityUnjudged, "t1")
+		never := getInto[Unjudged](t, val, err)
+		switch {
+		case !waived && (len(rows) != 0 || !slices.Equal(never.Gate, []string{"reads_calm"})):
+			t.Fatalf("rows %+v, unjudged %+v: want no row and the gate's to settle", rows, never)
+		case waived && (len(rows) != 1 || rows[0].Source != CriteriaSourceApprover || len(never.Gate) != 0):
+			t.Fatalf("waived: rows %+v, unjudged %+v: want the waiver alone, settled", rows, never)
+		}
+	}
+}
+
 // timelineText is t1's whole timeline.
 func timelineText(t *testing.T, objects *fakeObjectStore) string {
 	t.Helper()

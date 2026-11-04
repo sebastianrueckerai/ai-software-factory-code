@@ -244,7 +244,7 @@ type openedProof struct {
 type gateReport struct {
 	findings  []string
 	card      []string // the lines no session can settle: the late runs', and a judgement run the pod never reached
-	unreached []string // the judgement criteria the pod never reached, whose judgement row goes
+	unreached []string // the judgement criteria the pod never reached, whose rows but the approver's go
 	lines     []string // the criteria's, then the opened hold-outs'
 	met       int      // the criteria met
 	proofs    []gateProof
@@ -270,8 +270,8 @@ type gateReport struct {
 // artifact did not fit the run's line is a finding and stays stored. A
 // judgement criterion held, or run with nothing left for the judgement to
 // read, is an unmet row, so it counts as judged and no earlier head's row
-// stands; one the pod never reached is a card line, and its row goes
-// (unreached). A blind hold-out that
+// stands; one the pod never reached is a card line, and its rows but the
+// approver's go (unreached). A blind hold-out that
 // stays stored, green or never tried, is no line, no entry and no
 // finding: its verdict alone, on the hold-outs.
 func criteriaReport(p Plan, head string, runs []criterionRun, results map[string]gateResult) gateReport {
@@ -639,7 +639,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		return CriteriaResult{}, err
 	}
 	for _, id := range rep.unreached {
-		if err := r.store.DeleteCriteriaVerdict(ctx, home.ID, CriteriaSourceJudgement, id); err != nil {
+		if err := r.store.DeleteVerdictsButApprover(ctx, home.ID, id); err != nil {
 			return CriteriaResult{}, err
 		}
 	}

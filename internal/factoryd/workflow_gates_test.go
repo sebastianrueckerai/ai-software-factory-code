@@ -1339,6 +1339,29 @@ func TestWorkflowPressFilesTheGatesCardLines(t *testing.T) {
 	}
 }
 
+// The ask filed again keeps why a human decides, as AutoMerge reads the
+// gates now: the merge rule and the risk class beside the gate's lines.
+func TestWorkflowPressAskAgainKeepsWhyAHuman(t *testing.T) {
+	const late = "Criterion no_proof has no stored proof: the prover filed before a later revision added it."
+	g, _, _ := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"no_proof"}}, {}})
+	g.reviews = nil
+	g.criteria = []CriteriaResult{{}, {Card: []string{late}}}
+	g.onSessions(pushed("s1", "c1"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+	if final := g.run(t); final != "closed" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	const rule, class = "the project's merge rule is human", "risk class normal is requires_approval"
+	if len(g.approvals) != 2 || !slices.Contains(g.approvals[0].WhyHuman, rule) {
+		t.Fatalf("approvals %+v: want two, the first naming the merge rule", g.approvals)
+	}
+	if why := g.approvals[1].WhyHuman; !slices.Contains(why, late) || !slices.Contains(why, rule) || !slices.Contains(why, class) {
+		t.Fatalf("the ask again's why = %q, want the late line, the merge rule and the risk class", why)
+	}
+}
+
 // A judgement call that fails again on the press leaves its criterion
 // without a row: the merge asks again with the card's line naming the
 // failure and holds, the gate's to settle on the next press.
