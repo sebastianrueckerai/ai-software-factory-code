@@ -294,8 +294,9 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	if got := g.cursor(t); got != filed {
 		t.Fatalf("cursor = %d, want at the card_created row %d it read", got, filed)
 	}
-	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != "The monitor flagged this card: what should happen?" {
-		t.Fatalf("asks = %+v, want one asking what should happen on the monitor's flag", asks)
+	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != "The monitor flagged this card: what should happen?" ||
+		!reflect.DeepEqual(asks[0].Detail["choices"], []any{"Leave it as it is", "End the card"}) {
+		t.Fatalf("asks = %+v, want one asking what should happen on the monitor's flag, offering to leave the card or end it", asks)
 	}
 	if _, err := g.s.ReconcileCases(ctx, "demo-app/demo-app"); err != nil {
 		t.Fatal(err)
@@ -384,24 +385,21 @@ func TestMonitorPassReadsEveryBatch(t *testing.T) {
 
 // The sweep needs no event. It opens the flags of every live card of a
 // project: the queued card past its bound. It wakes the case whose wake
-// passed: rung 0 runs on it again through OpenTrip's repeat path and hands
-// it up, the human is asked on it beside the card, and its wake is gone.
-// A due case at the human already takes the repeat's step with no new face,
-// its card left running. A card of no project is not read: its step past
-// its bound opens no flag case, and the sweep expires it.
+// passed: a stop's open case on a waiting card, on which rung 0 runs again
+// through OpenTrip's repeat path and hands it up to the human, with no
+// wake left. A quiet run's own case at the human already takes the
+// repeat's step with no new face, its card left running. A card of no
+// project is not read: its step past its bound opens no flag case, and the
+// sweep expires it.
 func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
 	g.queued(t, "t1", 12)
 	g.filed(t, "t1", 12)
-	g.card(t, "t2", 13, "running")
+	g.card(t, "t2", 13, "waiting-human")
 	g.filed(t, "t2", 13)
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $1 WHERE id = 't2'`, monitorAt.Add(-10*time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	const cut = "Monitor flag: checkin_cut(+0:20)"
-	due, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
-		Status: CaseOpen, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
+	due, _, err := g.s.OpenCase(ctx, Case{TaskID: "t2", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "stop",
+		Status: CaseOpen, Problem: "the stop", Facts: map[string]any{"reason": "the stop"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -411,11 +409,10 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	}
 	g.card(t, "t3", 14, "running")
 	g.filed(t, "t3", 14)
-	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET created_at = $1 WHERE id = 't3'`, monitorAt.Add(-10*time.Minute)); err != nil {
-		t.Fatal(err)
-	}
-	faced, _, err := g.s.OpenCase(ctx, Case{TaskID: "t3", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
-		Status: CaseAtHuman, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
+	const quiet = "Monitor flag: wait_over_bound(run_quiet since +0:00)"
+	faced, _, err := g.s.OpenCase(ctx, Case{TaskID: "t3", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag,
+		StateKey: "wait_over_bound|run_quiet|2026-11-04T08:00:00Z", Status: CaseAtHuman, Problem: quiet,
+		Facts: map[string]any{"reason": quiet, "flag": "wait_over_bound", "wait": "run_quiet", "state": "run_quiet|2026-11-04T08:00:00Z"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -445,13 +442,14 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 		steps[0].Found != monitorHandsUp || steps[0].Outcome != StepHandedUp || steps[1].Rung != 3 {
 		t.Fatalf("woken case = %+v, steps %+v; want it at the human, owned by the human with no wake, rung 0's hand-up and the human's step", woken, steps)
 	}
-	if task, _, _ := g.s.Task(ctx, "t2"); task.Status != "running" || len(g.flagCases(t, "t2")) != 1 || !slices.Equal(g.forge.comments[13], []string{face("t2", cut)}) {
-		t.Fatalf("t2 %s, flag cases %v, comments %q; want it running beside the woken case and its one face", task.Status, g.flagCases(t, "t2"), g.forge.comments[13])
+	if len(g.forge.comments[13]) != 1 || len(g.flagCases(t, "t2")) != 0 {
+		t.Fatalf("t2's comments %q, flag cases %v; want the stop's one face and no flag case", g.forge.comments[13], g.flagCases(t, "t2"))
 	}
 	repeat := caseStepsOf(t, g.s, faced.ID)
-	if task, _, _ := g.s.Task(ctx, "t3"); task.Status != "running" || caseByID(t, g.s, faced.ID).NextWakeAt != nil || len(g.forge.comments[14]) != 0 ||
-		len(repeat) != 1 || repeat[0].Rung != 0 || repeat[0].Found != "the same stop again: "+cut {
-		t.Fatalf("t3 %s, steps %+v, comments %q; want it running, the case's wake gone, the repeat's step and no face", task.Status, repeat, g.forge.comments[14])
+	if task, _, _ := g.s.Task(ctx, "t3"); task.Status != "running" || caseByID(t, g.s, faced.ID).Status != CaseAtHuman ||
+		caseByID(t, g.s, faced.ID).NextWakeAt != nil || len(g.forge.comments[14]) != 0 ||
+		len(repeat) != 1 || repeat[0].Rung != 0 || repeat[0].Found != "the same stop again: "+quiet {
+		t.Fatalf("t3 %s, steps %+v, comments %q; want it running, the case at the human with no wake, the repeat's step and no face", task.Status, repeat, g.forge.comments[14])
 	}
 	if cases := g.flagCases(t, caseTask); len(cases) != 0 {
 		t.Fatalf("the card of no project has flag cases %v, want none", cases)
@@ -462,13 +460,13 @@ func TestMonitorSweepWakesDueCasesAndExpiresSteps(t *testing.T) {
 	}
 }
 
-// An ended card with a live case raises issue_open_after_end. Rung 0
-// closes what Finish closes, through Act, and signals no run: closed card
-// t1's open issue closes with factoryd's comment, and done card t2's closed
-// issue is left alone. The ends Finish leaves open go up beside the card:
-// failed t3, whose issue waits for its retry, and done t4 after its merge.
-// Another event on t1 opens no second case: the flag's case for that state
-// ended, and one is all.
+// An ended card with a live case raises issue_open_after_end. Where Finish
+// closes the issue, rung 0 closes it through Act and signals no run:
+// closed card t1's open issue closes with factoryd's comment, and done card
+// t2's closed issue is left alone. Where Finish leaves it open, the monitor
+// opens no case: failed t3, whose issue waits for its retry, and done t4
+// after its merge. Another event on t1 opens no second case: the flag's
+// case for that state ended, and one is all.
 func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
@@ -495,7 +493,6 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 	}
 	g.pass(t)
 
-	const line = "Monitor flag: issue_open_after_end(session_cap)"
 	for id, result := range map[string]string{"t1": "Closed #12.", "t2": "#13 was closed already."} {
 		cases := g.flagCases(t, id)
 		c, ok := cases["issue_open_after_end|"]
@@ -510,13 +507,8 @@ func TestMonitorRungZeroClosesTheIssueOfAnEndedCard(t *testing.T) {
 		}
 	}
 	for id, issue := range map[string]int64{"t3": 14, "t4": 15} {
-		cases := g.flagCases(t, id)
-		c, ok := cases["issue_open_after_end|"]
-		if len(cases) != 1 || !ok || c.Status != CaseAtHuman || !slices.Equal(g.forge.comments[issue], []string{face(id, line)}) {
-			t.Fatalf("%s's flag cases = %v, comments on #%d %q; want issue_open_after_end at the human with its face", id, cases, issue, g.forge.comments[issue])
-		}
-		if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 2 || steps[0].Found != monitorHandsUp {
-			t.Fatalf("%s's steps = %+v, want rung 0's hand-up and the human's step", id, steps)
+		if cases := g.flagCases(t, id); len(cases) != 0 || len(g.forge.comments[issue]) != 0 {
+			t.Fatalf("%s's flag cases = %v, comments on #%d %q; want none", id, cases, issue, g.forge.comments[issue])
 		}
 	}
 	if !slices.Equal(g.forge.closes, []int64{12}) || !slices.Equal(g.forge.comments[12], []string{"factoryd: this card ended closed, so its issue closes."}) ||
@@ -637,6 +629,45 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 	g.pass(t)
 	if cases := g.flagCases(t, "t1"); len(cases) != 1 || len(g.forge.comments[12]) != 1 {
 		t.Fatalf("t1's flag cases = %v, comments %q; want the one case and its one face", cases, g.forge.comments[12])
+	}
+}
+
+// A case whose flag no longer holds is withdrawn on the card's next pass.
+// A checkin_cut case on a card with no check-in goes as the flag no longer
+// holds, while the queue's case opens. Once the card is admitted, the
+// queue's case goes as the wait ended, and nothing opens.
+func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
+	g := newMonitorRig(t)
+	ctx := context.Background()
+	g.queued(t, "t1", 12)
+	g.pass(t)
+	const cut = "Monitor flag: checkin_cut(+0:20)"
+	stale, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+		Status: CaseAtHuman, Problem: cut, Facts: map[string]any{"reason": cut, "flag": "checkin_cut", "state": "+0:20"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.filed(t, "t1", 12)
+	g.pass(t)
+	withdrawn := func(c Case, reason string) {
+		t.Helper()
+		if c.Status != CaseWithdrawn || !reflect.DeepEqual(c.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWithdraw, Reason: reason}) {
+			t.Fatalf("case %s = %s, %+v; want withdrawn by factoryd as %q", c.StateKey, c.Status, c.Resolution, reason)
+		}
+	}
+	withdrawn(caseByID(t, g.s, stale.ID), "the flag no longer holds")
+	queue, ok := g.flagCases(t, "t1")[queuedKey]
+	if !ok || queue.Status != CaseAtHuman {
+		t.Fatalf("t1's queue case = %+v (found %v), want it at the human", queue, ok)
+	}
+	if err := g.s.SetAdmitted(ctx, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
+	g.pass(t)
+	withdrawn(caseByID(t, g.s, queue.ID), "the wait ended")
+	if cases := g.flagCases(t, "t1"); len(cases) != 2 || len(g.forge.comments[12]) != 1 {
+		t.Fatalf("t1's flag cases = %v, comments %q; want the two withdrawn and the queue's one face", cases, g.forge.comments[12])
 	}
 }
 

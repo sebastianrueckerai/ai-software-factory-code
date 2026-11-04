@@ -146,7 +146,8 @@ func (m *Monitor) logged(ctx context.Context, taskID string) error {
 // flag|state. A faced case with that key, at the human or ended, is the
 // flag's case, so a standing flag costs no call and a flag rung 0 resolved
 // opens nothing twice. A case still open has no face yet: OpenTrip
-// finishes it.
+// finishes it. A live case whose flag no longer holds on its key is
+// withdrawn: the wait ended, or the flag no longer holds.
 func (m *Monitor) card(ctx context.Context, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -161,11 +162,16 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		}
 	}
 	head := digestHeadCommit(d)
+	holds := map[string]bool{}
 	var errs []error
 	for _, f := range d.Flags {
 		state, facts, ok := flagCase(d, f)
 		key := f.Name + "|" + state
-		if !ok || held[key] {
+		if !ok {
+			continue
+		}
+		holds[key] = true
+		if held[key] {
 			continue
 		}
 		held[key] = true
@@ -173,6 +179,18 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		in := TripInput{TaskID: taskID, Reason: "Monitor flag: " + flagsText([]DigestFlag{f}), Head: head, Kind: CaseMonitorFlag, StateKey: key, Extra: facts}
 		if _, err := m.Runner.OpenTrip(ctx, in, tripAttempt{}); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", key, err))
+		}
+	}
+	for _, c := range d.cases {
+		if c.Kind != CaseMonitorFlag || c.Status != CaseOpen && c.Status != CaseAtHuman || holds[c.StateKey] {
+			continue
+		}
+		reason := "the flag no longer holds"
+		if flag := c.Facts["flag"]; flag == "wait_over_bound" || flag == "queued_over_bound" {
+			reason = "the wait ended"
+		}
+		if err := m.Runner.EndCase(ctx, c.ID, reason); err != nil {
+			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
 		}
 	}
 	return errors.Join(errs...)
@@ -202,7 +220,8 @@ var eventFlags = []string{"checkin_cut", "session_no_push", "grant_bought_nothin
 
 // flagCase is the state flag f of digest d fired on, with the facts it
 // adds, and ok false for a flag that opens no case. An ended card opens
-// one only for what it left open, and a merged or closing card none. A
+// one only for what it left open where Finish closes it, and a merged or
+// closing card none. A
 // slot held by a wait is a record, and a failed dependency is its run's,
 // whose own trip takes it. A wait keys on its kind and start, with its
 // owner and its bound: one wait opens one case, so queued_over_bound takes
@@ -211,7 +230,7 @@ var eventFlags = []string{"checkin_cut", "session_no_push", "grant_bought_nothin
 func flagCase(d CardDigest, f DigestFlag) (string, map[string]any, bool) {
 	switch status := d.Head.Status; {
 	case Final(status):
-		if f.Name != "issue_open_after_end" {
+		if f.Name != "issue_open_after_end" || !d.issueCloses {
 			return "", nil, false
 		}
 	case status == "merged", status == "closing", f.Name == "slot_held_by_wait", f.Name == "dependency_failed":

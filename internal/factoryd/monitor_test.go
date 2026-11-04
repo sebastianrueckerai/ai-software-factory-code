@@ -14,8 +14,8 @@ import (
 // since 11:00, a queue held since 09:00, whose wait_over_bound is left to
 // queued_over_bound. A slot held by a wait and a failed dependency open no
 // case: the first is a record, the run's own trip takes the second. An
-// ended card opens a case only for what it left open, a merged or closing
-// one none.
+// ended card opens a case only for what it left open where Finish closes
+// it, a merged or closing one none.
 func TestMonitorFlagStates(t *testing.T) {
 	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	held := at.Add(-3 * time.Hour)
@@ -23,6 +23,8 @@ func TestMonitorFlagStates(t *testing.T) {
 		return CardDigest{Head: h, Steps: []DigestStep{{commit: "h1"}, {Kind: "session"}, {commit: "h2"}, {Kind: "session"}},
 			Waits: policy.DefaultWaits, at: at}
 	}
+	// closes is d of an end whose issue Finish closes
+	closes := func(d CardDigest) CardDigest { d.issueCloses = true; return d }
 	running := digest(DigestHead{Status: "running", StatusSince: at.Add(-time.Hour)})
 	queued := digest(DigestHead{Status: "queued", StatusSince: at.Add(-4 * time.Hour), QueueReason: "work bound 3 of 3", QueueSince: &held})
 	for _, tc := range []struct {
@@ -43,7 +45,8 @@ func TestMonitorFlagStates(t *testing.T) {
 		{running, "wait_over_bound", "run_quiet since +0:00", "run_quiet|2026-11-04T11:00:00Z"},
 		{queued, "queued_over_bound", "work bound 3 of 3 since +1:00", "queued|2026-11-04T09:00:00Z"},
 		{queued, "wait_over_bound", "queued since +1:00", "-"},
-		{digest(DigestHead{Status: "done"}), "issue_open_after_end", "session_cap", "h2"},
+		{closes(digest(DigestHead{Status: "done"})), "issue_open_after_end", "session_cap", "h2"},
+		{digest(DigestHead{Status: "failed"}), "issue_open_after_end", "session_cap", "-"},
 		{digest(DigestHead{Status: "failed"}), "budget_moved_no_event", "3.00 EUR not 5.00 EUR", "-"},
 		{digest(DigestHead{Status: "merged"}), "review_refused_not_run", "review: x", "-"},
 		{digest(DigestHead{Status: "closing"}), "checkin_cut", "+0:20", "-"},

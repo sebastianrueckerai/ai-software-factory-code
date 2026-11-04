@@ -181,9 +181,14 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 // ask: it names the decision, not the stop.
 const plainAsk = "This card stopped and needs your decision: how should it go on?"
 
-// monitorAsk is the headline of a monitor flag's face: the card did not
-// stop.
-const monitorAsk = "The monitor flagged this card: what should happen?"
+// monitorQuestion is a monitor flag's face: the card goes on in its run,
+// so its answers are those a monitor case takes (monitorActions). A note
+// leaves the card as it is and a close ends it.
+func monitorQuestion(reason string) *HumanQuestion {
+	return &HumanQuestion{Ask: "The monitor flagged this card: what should happen?", Why: escalationQuestion(reason),
+		Info:    "The card goes on in its run meanwhile. 'Leave it as it is' records your answer, and 'End the card' closes the task and its pull request. The board and the project chat can also fund the card, raise its ceiling, retry a failed dependency or replan it.",
+		Choices: []QuestionChoice{{AnswerPark, "Leave it as it is"}, {AnswerClose, "End the card"}}}
+}
 
 // plainQuestion is the question an ask no template covers gets, so no
 // card puts words alone to a person: an agent's ask keeps its question

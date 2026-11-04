@@ -1531,6 +1531,12 @@ func finishClosesIssue(t Task, final string, afterMerge bool) bool {
 	return final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan
 }
 
+// mergedBefore reports whether a card's events hold its move to merged: a
+// card that ends done after it finishes after its merge.
+func mergedBefore(events []Event) bool {
+	return slices.ContainsFunc(events, func(e Event) bool { return e.Kind == EventTaskStatus && e.Detail["status"] == "merged" })
+}
+
 func earliest(a, b time.Time) time.Time {
 	if a.Before(b) {
 		return a

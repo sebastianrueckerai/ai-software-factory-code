@@ -132,8 +132,7 @@ var rung0 = []resolver{
 		if err != nil {
 			return nil, "", err
 		}
-		afterMerge := slices.ContainsFunc(events, func(e Event) bool { return e.Kind == EventTaskStatus && e.Detail["status"] == "merged" })
-		if !finishClosesIssue(t, t.Status, afterMerge) {
+		if !finishClosesIssue(t, t.Status, mergedBefore(events)) {
 			return nil, "", nil
 		}
 		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), "", nil
@@ -615,9 +614,10 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
-		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		if beside {
-			shaped.Ask = monitorAsk
+			shaped = monitorQuestion(reason)
+		} else {
+			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
 		question = shaped.Ask
 		// the refusal the newest session ended on rides with the ask,

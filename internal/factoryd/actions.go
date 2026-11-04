@@ -210,6 +210,11 @@ var Actions = []Action{
 	}},
 }
 
+// monitorActions are the actions a monitor flag's case takes: those Act carries
+// out itself, since the card's run waits on no such case and drops its
+// resolution.
+var monitorActions = []string{ActNote, ActClose, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw}
+
 // rungs marks the rungs of in a row's Rungs.
 func rungs(of ...int) [4]bool {
 	var out [4]bool
@@ -264,6 +269,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	ended := rung == 0 && a.Name == ActClose && f.Final != ""
 	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
+	}
+	if f.Kind == CaseMonitorFlag && !slices.Contains(monitorActions, a.Name) {
+		return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why

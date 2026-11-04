@@ -35,13 +35,15 @@ type CardDigest struct {
 	// built, the time its waits are aged to. A running card's lastCallAt
 	// is its newest model call's time, and its retryDue the time the
 	// newest provider_refused line's backoff ends. cases are the card's
-	// cases.
-	lastStep   string
-	caseSteps  []CaseStep
-	at         time.Time
-	lastCallAt time.Time
-	retryDue   time.Time
-	cases      []Case
+	// cases, and issueCloses whether Finish closes the issue of the card's
+	// end (finishClosesIssue).
+	lastStep    string
+	caseSteps   []CaseStep
+	at          time.Time
+	lastCallAt  time.Time
+	retryDue    time.Time
+	cases       []Case
+	issueCloses bool
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -183,7 +185,8 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases}
+	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases,
+		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events))}
 	newest := newestLine(rows.timeline, "")
 	d.lastStep, d.LastStepAt = newest.Step, newest.Time
 	if t.Status == "running" {
