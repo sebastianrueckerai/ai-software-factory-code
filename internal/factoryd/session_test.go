@@ -186,9 +186,9 @@ func TestSessionRecorderMasksSecretsBeforeStoring(t *testing.T) {
 	}
 }
 
-// The scrub keeps what the record is read for: an acceptance command that
-// names a long test still proves the card through the stored record, and a
-// path with capitals and a long identifier in a todo stay as written.
+// The scrub keeps what the record is read for: a command that names a long
+// test survives the stored record as written, and a path with capitals and
+// a long identifier in a todo stay as written.
 func TestSessionRecorderKeepsIdentifiersAndPaths(t *testing.T) {
 	objects := &fakeObjectStore{}
 	r, err := NewSessionRecorder(context.Background(), newFakeStore(), objects, redact.New(), "t1", "s1", "", "factory/small")
@@ -214,9 +214,9 @@ func TestSessionRecorderKeepsIdentifiersAndPaths(t *testing.T) {
 		}
 	}
 	runner := &Runner{timeline: &Timeline{Objects: objects}}
-	hit := acceptanceHit(runner.sessionTranscript(context.Background(), "t1", "s1"), []string{command})
-	if hit == nil || hit.Command != command || hit.Exit != 0 {
-		t.Fatalf("acceptance hit = %+v, want %q with exit 0", hit, command)
+	events := runner.sessionTranscript(context.Background(), "t1", "s1")
+	if len(events) == 0 || events[0].Detail["command"] != command {
+		t.Fatalf("read back %+v, want the recorded command %q", events, command)
 	}
 }
 

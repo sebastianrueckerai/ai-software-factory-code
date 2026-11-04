@@ -132,8 +132,7 @@ type GateResults struct {
 	// Companions are the plan card's companion pins' verdicts, read live
 	// at each gate pass; empty: no pin declared.
 	Companions []CompanionGate `json:",omitempty"`
-	// Criteria is the criteria gate's stand, set from versionBlindProofs
-	// on; nil: AutoMerge reads the review's criteria.
+	// Criteria is the criteria gate's stand; nil: the gate has not run.
 	Criteria *CriteriaStand `json:",omitempty"`
 }
 
@@ -194,14 +193,10 @@ type Review struct {
 	Verdicts map[string]CheckVerdict `json:"verdicts,omitempty"`
 	Claims   []Claim                 `json:"claims,omitempty"`
 	Dropped  []Dropped               `json:"dropped,omitempty"`
-	// Criteria are the plan's criteria verdicts (the spec-intake concept,
-	// piece 7) a review of a run from before wrote; no review writes them
-	// now, and AutoMerge reads them for such a run. Behaviours are the
-	// feature's behaviours the review that sees the whole feature notes:
-	// the integration card's, or a delta card's, from its own call
-	// (planCalls), never from a review answer.
-	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
-	Behaviours []string           `json:"behaviours,omitempty"`
+	// Behaviours are the feature's behaviours the review that sees the
+	// whole feature notes: the integration card's, or a delta card's, from
+	// its own call (planCalls), never from a review answer.
+	Behaviours []string `json:"behaviours,omitempty"`
 	// GateCriteria are the plan's criteria that review (criteriaContext)
 	// leaves to the criteria gate (gateJudged), whether it ran or not; nil
 	// for any other review.
@@ -227,10 +222,9 @@ type GateLeft struct {
 // approving review that finds the change a strict improvement with no
 // drawback, and proof: the reproduction failed at the base and passes at
 // the head, or the agent recorded the fault it fixed, or the plan's
-// criteria stand met or waived on the gate's rows (g.Criteria), else on
-// the review's for a run from before versionBlindProofs. On a card the
-// gate ran on, a criterion that stands open holds the merge whatever the
-// reproduction says. unmet names every
+// criteria stand met or waived on the gate's rows (g.Criteria). On a card
+// the gate ran on, a criterion that stands open holds the merge whatever
+// the reproduction says. unmet names every
 // condition that sends the pull request to a human's card; met every one
 // that holds, which the gate's approval names in factoryd's
 // words alone: no command, note or summary an issue, an agent or a model
@@ -302,8 +296,6 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 		met = append(met, "the agent recorded the fault it fixed")
 	case g.Criteria != nil:
 		met = append(met, "the plan's criteria all stand met or waived: "+strings.Join(g.Criteria.IDs, ", "))
-	case criteriaProve(rv.Criteria):
-		met = append(met, "the review's criteria are all met or waived")
 	case rp.Ran:
 		line := fmt.Sprintf("not reproduced at base: the reproduction exited %d before the fix, and the agent recorded no fault it fixed", rp.BaseExit)
 		if c := criteriaUnmet(rv); c != "" {
@@ -339,25 +331,18 @@ func standUnmet(open []string) string {
 	return "the plan's criteria " + textutil.AndList(open) + " do not stand met or waived"
 }
 
-// criteriaUnmet is why the plan's criteria do not prove the change: the
-// review's are not all met; or they are the criteria gate's, whose
-// verdicts the auto merge does not read on the integration card or on a
-// delta card; "" for a card the plan's criteria do not judge.
+// criteriaUnmet is why the plan's criteria do not prove the change: they
+// are the criteria gate's, whose verdicts the auto merge does not read on
+// the integration card or on a delta card; "" for a card the plan's
+// criteria do not judge.
 func criteriaUnmet(rv Review) string {
 	switch {
-	case len(rv.Criteria) > 0:
-		return "the review's criteria are not all met"
 	case rv.GateCriteria != nil && rv.GateCriteria.Integration:
 		return "the auto merge does not read the criteria gate's verdicts on " + strings.Join(rv.GateCriteria.IDs, ", ")
 	case rv.GateCriteria != nil:
 		return "the auto merge does not read the criteria gate's verdicts on a delta card, and a person decides this merge"
 	}
 	return ""
-}
-
-// criteriaProve: the review answered every plan criterion met or waived.
-func criteriaProve(cs []CriterionVerdict) bool {
-	return len(cs) > 0 && !slices.ContainsFunc(cs, func(c CriterionVerdict) bool { return c.Verdict != "met" && c.Verdict != "waived" })
 }
 
 // MergeSpec is a merge approval request's spec: what the human reads on
@@ -1519,7 +1504,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 	}
 	last := found[0]
 	last.Summary, last.Adjudicated, last.Claims, last.Dropped = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil
-	last.Criteria, last.Behaviours, last.GateCriteria = nil, nil, nil
+	last.Behaviours, last.GateCriteria = nil, nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -1570,9 +1555,6 @@ func parseReview(content string) Review {
 	}
 	if rv.Dropped != nil {
 		return invalid("dropped is not an answer field")
-	}
-	if rv.Criteria != nil {
-		return invalid("criteria is not an answer field")
 	}
 	if rv.Behaviours != nil {
 		return invalid("behaviours is not an answer field")
@@ -1977,17 +1959,6 @@ func reviewComment(model, commit string, rv Review, read string) string {
 	for _, d := range rv.Dropped {
 		fmt.Fprintf(&b, "\n- Dropped by code, the repository contradicts it (%s): %s", d.Evidence, d.Finding)
 	}
-	for _, v := range rv.Criteria {
-		verdict := v.Verdict
-		if verdict == "" {
-			verdict = "the human approves the merge"
-		}
-		fix := ""
-		if v.Fix == "planner" {
-			fix = " (handed to the planner)"
-		}
-		fmt.Fprintf(&b, "\n- Criterion %s: **%s**. %s%s", v.Criterion, verdict, v.Evidence, fix)
-	}
 	fmt.Fprintf(&b, "\n\n%s", read)
 	return b.String()
 }
@@ -2079,21 +2050,18 @@ func (r *Runner) openMergeRequest(ctx context.Context, t Task, pr int64, commit 
 // checkedHead, when set, is the head the checks ran on, whose green holds
 // for commit (the cheap turn: main was merged in and touched no file of
 // the pull request). A run from before versionCheapTurn passes none.
-// blindProofs gives the guard's hold the words of versionBlindProofs: a
-// run from before passes false, as does a schedule from before the
-// deploy, whose missing argument decodes so.
-func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
+func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return MergeResult{}, err
 	}
-	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, met, blindProofs, lastAttempt(ctx))
+	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, met, lastAttempt(ctx))
 }
 
 // mergeAttempt is one Merge attempt; last reports a transient failure
 // instead of returning it.
-func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string, blindProofs, last bool) (MergeResult, error) {
-	res, err := r.merge(ctx, t, repo, pr, commit, approver, checkedHead, met, blindProofs)
+func (r *Runner) mergeAttempt(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string, last bool) (MergeResult, error) {
+	res, err := r.merge(ctx, t, repo, pr, commit, approver, checkedHead, met)
 	if err != nil && !isTerminal(err) && !forgejoTerminal(err) && last {
 		res = MergeResult{Failed: textutil.Truncate(err.Error(), 500)}
 		r.reportMergeFailure(ctx, t, repo, pr, commit, approver, res.Failed)
@@ -2194,7 +2162,7 @@ func RevisionDrops(started, newest PlanRevision, key string) (bool, error) {
 	return !kept, err
 }
 
-func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
+func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 	st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 	if err != nil {
 		return MergeResult{}, err
@@ -2219,7 +2187,7 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	if never, err := r.unjudgedCriteria(ctx, t); err != nil {
 		return MergeResult{}, err
 	} else if len(never) > 0 {
-		return r.holdMerge(ctx, t, repo, pr, commit, approver, never, blindProofs), nil
+		return r.holdMerge(ctx, t, repo, pr, commit, approver, never), nil
 	}
 	if st.Base != prBase {
 		return r.refuseMerge(ctx, t, repo, pr, commit, approver, fmt.Sprintf("the pull request merges into %q, not %s", st.Base, prBase)), nil
@@ -2364,22 +2332,6 @@ func (r *Runner) refuseMerge(ctx context.Context, t Task, repo Repo, pr int64, c
 	return res
 }
 
-// UnjudgedCriteria are the ids of the criteria no verdict row holds when
-// task taskID is its plan's integration card (unjudgedCriteria): the
-// press's read before its merge (versionReviewHoldsMerge).
-func (r *Runner) UnjudgedCriteria(ctx context.Context, taskID string) ([]string, error) {
-	t, _, err := r.task(ctx, taskID)
-	if err != nil {
-		return nil, err
-	}
-	never, err := r.unjudgedCriteria(ctx, t)
-	var ids []string
-	for _, c := range never {
-		ids = append(ids, c.ID)
-	}
-	return ids, err
-}
-
 // Unjudged are the never-judged criteria of a plan's integration card, by
 // who settles them.
 type Unjudged struct {
@@ -2387,9 +2339,8 @@ type Unjudged struct {
 	Human []string `json:",omitempty"`
 }
 
-// Unjudged is the press's read before its merge from versionBlindProofs
-// on: task taskID's criteria no verdict row holds (unjudgedCriteria),
-// split by gateJudged.
+// Unjudged is the press's read before its merge: task taskID's criteria
+// no verdict row holds (unjudgedCriteria), split by gateJudged.
 func (r *Runner) Unjudged(ctx context.Context, taskID string) (Unjudged, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2404,12 +2355,9 @@ func (r *Runner) Unjudged(ctx context.Context, taskID string) (Unjudged, error) 
 	return u, nil
 }
 
-// HoldMerge is holdMerge on a press: before versionBlindProofs one whose
-// review run again did not run (versionReviewHoldsMerge), from it on one
-// whose criteria without a row stay so after the gate's run again. No
-// merge is tried. blindProofs is false for a run from before, and for an
-// activity scheduled before the deploy, whose missing argument decodes so.
-func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit, approver string, blindProofs bool) error {
+// HoldMerge is holdMerge on a press: one whose criteria without a row
+// stay so after the gate's run again. No merge is tried.
+func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit, approver string) error {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return err
@@ -2423,59 +2371,15 @@ func (r *Runner) HoldMerge(ctx context.Context, taskID string, pr int64, commit,
 		r.note(ctx, t, "waiting: every criterion has a verdict row now: approve again to merge")
 		return nil
 	}
-	r.holdMerge(ctx, t, repo, pr, commit, approver, never, blindProofs)
+	r.holdMerge(ctx, t, repo, pr, commit, approver, never)
 	return nil
 }
 
 // holdMerge refuses the merge of a plan's integration card while criteria
-// have no verdict row (never), naming the criteria gate for its own and
-// the last review's note for the others, each by id when both hold some,
-// and puts the merge ask on the human's surface again: the workflow
-// answers a plain refusal with a new approval wait and no retry, so
-// without the ask the card would stall unseen. Approving it runs the
-// review again (versionReviewHoldsMerge). An auto merge's hold files no
-// ask: the workflow's request follows it. Under blindProofs it names the
-// human for a human criterion, then the gate, which the next press runs
-// again, for its own, and files no ask: the pressed one is noted again.
-func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, never []PlanCriterion, blindProofs bool) MergeResult {
-	if blindProofs {
-		return r.holdForSettling(ctx, t, repo, pr, commit, approver, never)
-	}
-	why := fmt.Sprintf("the merge is held: %s never judged", textutil.Plural(len(never), "criterion was", "criteria were"))
-	gate, review := byJudge(never)
-	var note string
-	if review != "" {
-		note, _ = r.lastReviewNote(ctx, t.ID)
-	}
-	switch {
-	case review == "":
-		why += ", the criteria gate never ran"
-	case gate != "" && note != "":
-		why += ", the criteria gate never ran for " + gate + ", and the model review did not run (" + note + ") for " + review
-	case gate != "":
-		why += ", the criteria gate never ran for " + gate + ", and no model review judged " + review
-	case note != "":
-		why += ", the model review did not run (" + note + ")"
-	default:
-		why += " by a model review"
-	}
-	res := MergeResult{Refusal: textutil.Truncate(why, 500)}
-	body := "factoryd: " + res.Refusal
-	if review != "" {
-		body += fmt.Sprintf("\n\nThe approval card names it: approving it runs the model review again, and its verdict decides the merge of %s.", commit)
-	}
-	r.comment(ctx, t, repo, pr, body)
-	r.record(ctx, t.ID, "merge_refused", gateEnd(t, GateMerge, map[string]any{"pr": pr, "commit": commit, "approver": approver, "refusal": res.Refusal}))
-	r.awaitApprovalAgain(ctx, t)
-	if approver != AutoApprover {
-		r.askHeldMerge(ctx, t, pr, commit, note)
-	}
-	r.note(ctx, t, "waiting: "+res.Refusal)
-	return res
-}
-
-// holdForSettling is holdMerge under blindProofs.
-func (r *Runner) holdForSettling(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, never []PlanCriterion) MergeResult {
+// have no verdict row (never): it names the human for a human criterion,
+// then the gate, which the next press runs again, for its own, and files
+// no ask — the pressed one is noted again.
+func (r *Runner) holdMerge(ctx context.Context, t Task, repo Repo, pr int64, commit, approver string, never []PlanCriterion) MergeResult {
 	gate, human := judgeIDs(never)
 	var parts []string
 	if len(human) > 0 {
@@ -2499,57 +2403,6 @@ func (r *Runner) holdForSettling(ctx context.Context, t Task, repo Repo, pr int6
 	r.awaitApprovalAgain(ctx, t)
 	r.note(ctx, t, "waiting: "+res.Refusal)
 	return res
-}
-
-// askHeldMerge files task t's merge ask anew from its newest merge request,
-// the refused review with note named on it (namedReview) and the judged
-// review it replaces kept as earlier. A request that names note already,
-// or no note to name, files nothing: holdMerge's note re-opens that one.
-func (r *Runner) askHeldMerge(ctx context.Context, t Task, pr int64, commit, note string) {
-	if note == "" {
-		return
-	}
-	q, ok, err := r.store.NewestApproval(ctx, t.ID, ApprovalMerge)
-	if err != nil {
-		log.Printf("task %s: the held merge's request: %v", t.ID, err)
-		return
-	}
-	base, _, _ := strings.Cut(q.Reason, notRunReason)
-	if named, _ := namedReview(base, nil, Review{Note: note}); !ok || q.Status == "denied" || q.PRNumber != pr || q.Reason == named {
-		return
-	}
-	var spec MergeSpec
-	if err := json.Unmarshal(q.Spec, &spec); err != nil {
-		log.Printf("task %s: the held merge's request %d: %v", t.ID, q.ID, err)
-		return
-	}
-	if spec.Review.Verdict != "" {
-		spec.EarlierReviews = append(spec.EarlierReviews, spec.Review)
-	}
-	spec.Review, spec.VerdictSummary = Review{Note: note}, note
-	reason, why := namedReview(base, spec.WhyHuman, spec.Review)
-	spec.WhyHuman = why
-	if err := r.openMergeRequest(ctx, t, pr, commit, spec, reason); err != nil {
-		log.Printf("task %s: ask the held merge again: %v", t.ID, err)
-	}
-}
-
-// lastReviewNote is the note of task id's last model_review step; ok
-// false when its timeline holds none or cannot be read.
-func (r *Runner) lastReviewNote(ctx context.Context, id string) (note string, ok bool) {
-	if r.timeline == nil {
-		return "", false
-	}
-	body, err := r.timeline.Objects.Get(ctx, "sessions/"+id+"/timeline.jsonl")
-	if err != nil {
-		return "", false
-	}
-	step := lastStep(body, "model_review")
-	if step == nil {
-		return "", false
-	}
-	note, _ = step["note"].(string)
-	return note, true
 }
 
 // movedHead answers a merge Forgejo refused because the agent had moved

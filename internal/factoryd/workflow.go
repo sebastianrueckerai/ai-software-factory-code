@@ -140,7 +140,6 @@ const (
 	ActivityMerge                       = "Merge"
 	ActivityReportMergeFailure          = "ReportMergeFailure"
 	ActivityReportMergeRetriesExhausted = "ReportMergeRetriesExhausted"
-	ActivityUnjudgedCriteria            = "UnjudgedCriteria"
 	ActivityUnjudged                    = "Unjudged"
 	ActivityHoldMerge                   = "HoldMerge"
 	ActivitySuperviseGate               = "SuperviseGate"
@@ -375,8 +374,7 @@ type SessionInput struct {
 	LastGates *GateResults `json:",omitempty"`
 	// Handover is the note the session's brief opens with (a mid-session
 	// handover); "" for the plain brief.
-	Handover    string `json:",omitempty"`
-	BlindProofs bool   `json:",omitempty"` // the run is under versionBlindProofs: the session end reads no acceptance command
+	Handover string `json:",omitempty"`
 }
 
 type SessionResult struct {
@@ -411,10 +409,6 @@ type SessionResult struct {
 	// session fixes (Outcome escalate). No agent ran, so the session took
 	// no agent time and made no model call.
 	StartFailed bool `json:",omitempty"`
-	// Acceptance is the plan acceptance command the session ran with exit
-	// 0 (roadmap 208), when it ran one; a card it proves closes done on
-	// the fact, no model verdict and no human's answer owed.
-	Acceptance *AcceptanceHit
 	// Capped is the refusal of the cap that stopped the session, at any cap.
 	Capped *CapRefusal `json:",omitempty"`
 	// Started is when the session began, its pod's first start for a
@@ -640,7 +634,9 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	run.cases = workflow.GetVersion(ctx, "cases", workflow.DefaultVersion, versionCases)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
-	run.blindProofs = workflow.GetVersion(ctx, "blind-proofs", workflow.DefaultVersion, versionBlindProofs)
+	// its value is unused; both bounds at the drained version, so only a
+	// history that carries the marker runs on
+	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1271,17 +1267,6 @@ const (
 	// t-6eadec8912ab's answer re-entered the gate on PR #1385's moved head
 	// and the task died, its fix unmerged).
 	versionResumeHold workflow.Version = 1
-	// versionReviewHoldsMerge (change id "review-holds-merge"): a press
-	// that would merge a plan's integration card whose criteria no review
-	// judged runs the model review again first (rejudge): findings go back
-	// to the sessions, a review that did not run again holds the merge
-	// and asks again (HoldMerge), a judging review merges. Read at the
-	// press, not at the run's start, so a run waiting on its approval at
-	// the roll takes it on its next press. A change id's version is fixed
-	// by its first read: a run whose history pressed before the change
-	// keeps the old merge on every press, which the merge guard holds;
-	// requested changes bring it a new head, whose review judges.
-	versionReviewHoldsMerge workflow.Version = 1
 	// versionCapWait (change id "cap-wait"): a code, plan or report session
 	// the gateway refused at the month's or the project's cap, or an
 	// attempt its floor refused there, waits as one at the day cap does:
@@ -1332,17 +1317,6 @@ const (
 	// run from before holds its entry through the approval wait and the
 	// merge.
 	versionQueueWaits workflow.Version = 1
-	// versionBlindProofs (change id "blind-proofs"): the criteria gate's
-	// verdicts reach the merge and the builder: the standing rows it
-	// reports ride GateResults.Criteria, which AutoMerge reads for a plan
-	// card instead of the review's criteria; its findings go back to the
-	// agent as a stage's do, to the card at the cap; a press whose
-	// never-judged criteria are the gate's runs the gate again, and one
-	// whose missing rows are a human's holds the merge, no model review
-	// run. A plan card's session that ends without a push closes on its
-	// proofs at main, and the session end reads no acceptance command. A
-	// run from before keeps the old paths.
-	versionBlindProofs workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
 	// started from; the answer to a share stop with the pull request open
@@ -1580,12 +1554,8 @@ type taskRun struct {
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
-	// blindProofs: the gate's verdicts reach the merge and the builder
-	// (versionBlindProofs)
-	blindProofs workflow.Version
 	// asked is the newest merge ask's input, askedCard the card's lines it
 	// held before AutoMerge's, which regate's ask again carries
-	// (versionBlindProofs)
 	asked     ApprovalInput
 	askedCard []string
 }
@@ -2254,7 +2224,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
-			BlindProofs: t.blindProofs >= versionBlindProofs,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
@@ -2307,7 +2276,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		// at versionCapWait a month's or a project's cap takes the day
 		// cap's path, before the escalation its outcome is
 		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil &&
-			(t.blindProofs >= versionBlindProofs || res.Acceptance == nil) && (res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
+			(res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
 		if capped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
@@ -2376,14 +2345,6 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		if t.blindProofs < versionBlindProofs && res.Acceptance != nil && res.Outcome != OutcomePushed {
-			// the session ran one of the plan's acceptance commands and it
-			// exited 0 (roadmap 208): the fact closes the card, no model
-			// verdict, no further session and no answer owed. A pushed
-			// session keeps its verification, where the same commands run
-			// again on the branch it pushed.
-			return t.finish("done", acceptanceReason(res.Acceptance))
-		}
 		// a session that ends without a push hands on the findings it was
 		// given with its own lines: the next one may be the first to act on
 		// them, and an earlier session's lines are stale. One that never
@@ -2417,7 +2378,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				handoverNote = res.CheckIn.Handover
 			}
 		}
-		if t.blindProofs >= versionBlindProofs && t.source == SourcePlan && res.Outcome == OutcomeNoPush {
+		if t.source == SourcePlan && res.Outcome == OutcomeNoPush {
 			var atMain ProofsAtMain
 			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
 				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
@@ -3365,10 +3326,9 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 // back through its turn while re-runs are left (versionRedHeadRestage);
 // one that fails otherwise keeps the approval and is tried again after
 // mergeRetryAfter (versionGatesPinned). A press on a plan's integration
-// card whose criteria no review judged runs the review on g again first
-// (versionReviewHoldsMerge); from versionBlindProofs on it runs the
-// criteria gate again for its own and holds for a human's (regate), the
-// gate's stand kept in g, whose AutoMerge met rides the merge.
+// card runs the criteria gate again for its own criteria and holds for a
+// human's (regate), the gate's stand kept in g, whose AutoMerge met rides
+// the merge.
 func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) verdict {
 	approver := ""
 	var retry workflow.Future
@@ -3443,18 +3403,11 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 		}
 		cancelRetry = nil
 		retry = nil
-		if signalled && t.source == SourcePlan &&
-			workflow.GetVersion(t.ctx, "review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge) >= versionReviewHoldsMerge {
-			var v verdict
-			var stop, held bool
-			if t.blindProofs >= versionBlindProofs {
-				var stand *CriteriaStand
-				v, stop, held, stand = t.regate(commit, g, approver)
-				if stand != nil {
-					g.Criteria = stand
-				}
-			} else {
-				v, stop, held = t.rejudge(commit, g, approver)
+		if signalled && t.source == SourcePlan {
+			var stand *CriteriaStand
+			v, stop, held, stand := t.regate(commit, g, approver)
+			if stand != nil {
+				g.Criteria = stand
 			}
 			if stop {
 				return v
@@ -3567,69 +3520,16 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 	}
 }
 
-// rejudge runs the model review again, with the stage's inputs, on a
-// press that would merge a plan's integration card whose criteria no
-// review judged (versionReviewHoldsMerge), for a run from before
-// versionBlindProofs: stop with findings not
-// overruled sends the card back to its sessions, held is a review that
-// did not run again, whose merge holds asking again with its note
-// (HoldMerge), and neither lets the merge go, whose guard reads the rows
-// again. A failed read of the criteria leaves the decision to that guard.
-func (t *taskRun) rejudge(commit string, g GateResults, approver string) (v verdict, stop, held bool) {
-	var never []string
-	if err := workflow.ExecuteActivity(t.short, ActivityUnjudgedCriteria, t.taskID).Get(t.ctx, &never); err != nil {
-		workflow.GetLogger(t.ctx).Warn("unjudged criteria", "task", t.taskID, "error", err)
-		return verdict{}, false, false
-	}
-	if len(never) == 0 {
-		return verdict{}, false, false
-	}
-	var review Review
-	v, decided, err := t.gateActivity(true, fanOutOptions(), &review, ActivityModelReview, t.taskID, t.pr, commit, g, lastVerdict(t.reviews), len(t.reviews)+1)
-	if decided {
-		return v, true, false
-	}
-	if err != nil {
-		review = Review{Note: "model review failed: " + errMessage(err)}
-		t.notRunRow(policy.StageReview, t.pr.Number, commit, len(t.reviews)+1, errMessage(err))
-		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "note": review.Note, "round": len(t.reviews) + 1}
-		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "model_review", detail).Get(t.ctx, nil); err != nil {
-			workflow.GetLogger(t.ctx).Warn("record the failed review", "error", err)
-		}
-	}
-	t.reviews = append(t.reviews, review)
-	if final, why, ok := t.decided(); ok {
-		return verdict{final: final, reason: why}, true, false
-	}
-	switch review.Verdict {
-	case "":
-		if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver, false).Get(t.ctx, nil); err != nil {
-			// the press decided the request, so a hold that failed leaves
-			// the card waiting with no ask to press: the log names it
-			workflow.GetLogger(t.ctx).Error("hold the merge: the ask may be off the human's surface", "task", t.taskID, "error", err)
-		}
-		return verdict{}, false, true
-	case "concerns":
-		findings := review.Findings
-		if t.adjudicated >= versionAdjudicated {
-			findings = slices.DeleteFunc(slices.Clone(findings), t.overruled)
-		}
-		if len(findings) > 0 {
-			return verdict{findings: findings, reason: "the model review run again at the approval has concerns"}, true, false
-		}
-	}
-	return verdict{}, false, false
-}
-
-// regate is rejudge from versionBlindProofs on: the gate again for its
-// never-judged criteria, the hold for a human's; stand is the gate's stand
-// after its run again, nil when it did not run. The gate's findings go
-// where approval's do: stop sends them back to the agent; at the cap a
-// new merge ask carries them, since the press decided the old one, and
-// held answers. Its card lines, which no session settles, ride a new ask
-// too, held. A criterion still without a row holds the merge (HoldMerge),
-// held too. Neither lets the merge go. A failed first read of the
-// criteria leaves the decision to the merge's guard.
+// regate runs the gate again, on a press that would merge a plan's
+// integration card, for its never-judged criteria, and holds for a
+// human's; stand is the gate's stand after its run again, nil when it did
+// not run. The gate's findings go where approval's do: stop sends them
+// back to the agent; at the cap a new merge ask carries them, since the
+// press decided the old one, and held answers. Its card lines, which no
+// session settles, ride a new ask too, held. A criterion still without a
+// row holds the merge (HoldMerge), held too. Neither lets the merge go. A
+// failed first read of the criteria leaves the decision to the merge's
+// guard.
 func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdict, stop, held bool, stand *CriteriaStand) {
 	var never Unjudged
 	if err := workflow.ExecuteActivity(t.short, ActivityUnjudged, t.taskID).Get(t.ctx, &never); err != nil {
@@ -3674,7 +3574,7 @@ func (t *taskRun) regate(commit string, g GateResults, approver string) (v verdi
 	if len(never.Gate) == 0 && len(never.Human) == 0 {
 		return verdict{}, false, held, stand
 	}
-	if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver, true).Get(t.ctx, nil); err != nil {
+	if err := workflow.ExecuteActivity(t.short, ActivityHoldMerge, t.taskID, t.pr.Number, commit, approver).Get(t.ctx, nil); err != nil {
 		// the press decided the request, so a hold that failed leaves the
 		// card waiting with no ask to press: the log names it
 		workflow.GetLogger(t.ctx).Error("hold the merge: the ask may be off the human's surface", "task", t.taskID, "error", err)
@@ -3758,11 +3658,10 @@ func rollWaitOptions() workflow.ActivityOptions {
 }
 
 // mergeArgs are Merge's arguments: the checked head, set only under
-// versionCheapTurn, met, the conditions the merge gate found on the
-// merge rule auto, and whether the run is under versionBlindProofs, whose
-// guard holds in the new words.
+// versionCheapTurn, and met, the conditions the merge gate found on the
+// merge rule auto.
 func (t *taskRun) mergeArgs(commit, approver string, met []string) []any {
-	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met, t.blindProofs >= versionBlindProofs}
+	return []any{t.taskID, t.pr.Number, commit, approver, t.checkedHead, met}
 }
 
 // maxMergeRetries bounds the retries of one approval's merge: with

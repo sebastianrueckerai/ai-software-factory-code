@@ -28,7 +28,6 @@ type gateHarness struct {
 	checkedHeads []string   // Merge's checkedHead per call
 	mergeMet     [][]string // Merge's met conditions per call
 	notRun       []string   // RecordNotRun's rows as "kind commit round reason"
-	mergeBlind   []bool     // Merge's blindProofs per call
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
 	policyErrs   []error      // GatePolicy's error per call, in order; nil or short = none
@@ -204,13 +203,12 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			return nil
 		})
 	m := 0
-	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
-		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
+	g.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).After(g.mergeDelay).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.checkedHeads = append(g.checkedHeads, checkedHead)
 			g.mergeMet = append(g.mergeMet, met)
-			g.mergeBlind = append(g.mergeBlind, blindProofs)
 			m++
 			if m <= len(g.mergeErrs) && g.mergeErrs[m-1] != nil {
 				g.merges = append(g.merges, fmt.Sprintf("%d %s %s error", pr, commit, approver))
@@ -1020,31 +1018,20 @@ func TestWorkflowRefusedReviewIsTheCardNeverAMerge(t *testing.T) {
 	}
 }
 
-// rejudgeHarness is a plan card's gate harness whose review the month
-// cap refused, then reviews in order, with UnjudgedCriteria answering
-// never and Unjudged kinds per call, each the last repeating; holds
-// records HoldMerge's calls, " blind" after one under versionBlindProofs.
-func rejudgeHarness(t *testing.T, never [][]string, kinds []Unjudged, reviews ...Review) (g *gateHarness, unjudged *int, holds *[]string) {
-	return rejudgeHarnessWith(t, TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}, never, kinds, reviews...)
+// regateHarness is a plan card's gate harness whose review the month cap
+// refused, then reviews in order, with Unjudged kinds per call, each the
+// last repeating; holds records HoldMerge's calls.
+func regateHarness(t *testing.T, kinds []Unjudged, reviews ...Review) (g *gateHarness, holds *[]string) {
+	return regateHarnessWith(t, TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}, kinds, reviews...)
 }
 
-// rejudgeHarnessWith is rejudgeHarness running wf.
-func rejudgeHarnessWith(t *testing.T, wf TaskWorkflow, never [][]string, kinds []Unjudged, reviews ...Review) (g *gateHarness, unjudged *int, holds *[]string) {
+// regateHarnessWith is regateHarness running wf.
+func regateHarnessWith(t *testing.T, wf TaskWorkflow, kinds []Unjudged, reviews ...Review) (g *gateHarness, holds *[]string) {
 	g = newGateHarnessWith(t, wf, func(g *gateHarness) {
 		g.reviews = append([]Review{{Note: refusedMonthNote}}, reviews...)
 	})
 	g.state.Source = SourcePlan
-	unjudged, holds = new(int), &[]string{}
-	g.env.OnActivity(ActivityUnjudgedCriteria, mock.Anything, "t1").Return(
-		func(ctx context.Context, taskID string) ([]string, error) {
-			g.mu.Lock()
-			defer g.mu.Unlock()
-			*unjudged++
-			if len(never) == 0 {
-				return nil, nil
-			}
-			return never[min(*unjudged, len(never))-1], nil
-		})
+	holds = &[]string{}
 	k := 0
 	g.env.OnActivity(ActivityUnjudged, mock.Anything, "t1").Return(
 		func(ctx context.Context, taskID string) (Unjudged, error) {
@@ -1056,106 +1043,18 @@ func rejudgeHarnessWith(t *testing.T, wf TaskWorkflow, never [][]string, kinds [
 			}
 			return kinds[min(k, len(kinds))-1], nil
 		})
-	g.env.OnActivity(ActivityHoldMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-		func(ctx context.Context, taskID string, pr int64, commit, approver string, blindProofs bool) error {
+	g.env.OnActivity(ActivityHoldMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.steps = append(g.steps, "hold")
-			hold := fmt.Sprintf("%d %s %s", pr, commit, approver)
-			if blindProofs {
-				hold += " blind"
-			}
-			*holds = append(*holds, hold)
+			*holds = append(*holds, fmt.Sprintf("%d %s %s", pr, commit, approver))
 			return nil
 		})
-	return g, unjudged, holds
+	return g, holds
 }
 
 const refusedMonthNote = "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
-
-// A press on an integration card whose criteria no review judged runs the
-// model review again, with the stage's inputs, before the merge: a review
-// that judges merges on the one press, as its approver.
-func TestWorkflowPressReviewsAnUnjudgedCardBeforeItsMerge(t *testing.T) {
-	g, unjudged, holds := rejudgeHarness(t, [][]string{{"c1", "c3"}}, nil, Review{Verdict: "approve", Summary: "judged"})
-	g.beforeBlindProofs()
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	if want := "policy, repro c1, review c1, criteria c1, approval c1, review c1, merge"; strings.Join(g.steps, ", ") != want {
-		t.Fatalf("steps = %v, want %s", g.steps, want)
-	}
-	if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || *unjudged != 1 || len(*holds) != 0 {
-		t.Fatalf("merges %v, unjudged reads %d, holds %v", g.merges, *unjudged, *holds)
-	}
-	// the stage's inputs: round 2, the gates, and lastVerdict's earlier,
-	// none, the refused review having no verdict
-	if !slices.Equal(g.rounds, []int{1, 2}) || g.reviewGates[1].Policy.Class != "normal" || !g.reviewGates[1].ChecksPassed || len(g.earlier[1]) != 0 {
-		t.Fatalf("rounds %v, gates %+v, earlier %+v: want the stage's inputs", g.rounds, g.reviewGates, g.earlier)
-	}
-}
-
-// The review run again that still does not run merges nothing: the merge
-// holds, asking again with the note, and the approval waits on.
-func TestWorkflowPressHoldsWhileTheReviewStillDoesNotRun(t *testing.T) {
-	g, _, holds := rejudgeHarness(t, [][]string{{"c1"}}, nil, Review{Note: refusedMonthNote})
-	g.beforeBlindProofs()
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-	if final := g.run(t); final != "closed" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	if want := "policy, repro c1, review c1, criteria c1, approval c1, review c1, hold"; strings.Join(g.steps, ", ") != want {
-		t.Fatalf("steps = %v, want %s", g.steps, want)
-	}
-	if len(g.merges) != 0 || !slices.Equal(*holds, []string{"9 c1 sebastian"}) {
-		t.Fatalf("merges %v, holds %v: want the one hold, no merge", g.merges, *holds)
-	}
-}
-
-// Concerns of the review run again send the card back to its sessions
-// with their findings, as at the gate; the next head's press merges.
-func TestWorkflowPressReviewConcernsGoBackToTheSessions(t *testing.T) {
-	finding := "criterion c1 not met (unmet): no test of a"
-	g, _, _ := rejudgeHarness(t, [][]string{{"c1"}, nil}, nil,
-		Review{Verdict: "concerns", Summary: "a gap", Findings: []string{finding}}, Review{Verdict: "approve", Summary: "judged"})
-	g.beforeBlindProofs()
-	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	if !slices.Equal(g.merges, []string{"9 c2 sebastian"}) {
-		t.Fatalf("merges = %v, want c2 alone", g.merges)
-	}
-	if len(g.sessions) != 2 || !slices.Equal(g.sessions[1].Findings, []string{finding}) {
-		t.Fatalf("sessions %d, the second's findings %v", len(g.sessions), g.sessions[1].Findings)
-	}
-}
-
-// A run from before the change merges on the press, the review not run
-// again: the merge guard holds it on its own.
-func TestWorkflowBeforeReviewHoldsMergeMergesOnThePress(t *testing.T) {
-	g, unjudged, _ := rejudgeHarness(t, [][]string{{"c1"}}, nil)
-	g.env.OnGetVersion("review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge).Return(workflow.DefaultVersion)
-	g.beforeBlindProofs()
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q", final)
-	}
-	if want := "policy, repro c1, review c1, criteria c1, approval c1, merge"; strings.Join(g.steps, ", ") != want || *unjudged != 0 {
-		t.Fatalf("steps = %v, unjudged reads %d; want %s and none", g.steps, *unjudged, want)
-	}
-}
 
 // opened is the criteria gate's finding for a blind proof that ran red.
 const opened = "criterion size_bound: its blind proof ran red at c1. It is open now."
@@ -1165,9 +1064,9 @@ func whyHolds(in ApprovalInput, s string) bool {
 	return slices.ContainsFunc(in.WhyHuman, func(l string) bool { return strings.Contains(l, s) })
 }
 
-// From versionBlindProofs on the criteria gate's findings go back to the
-// agent as a stage's do: the next session holds them, and the card asks
-// on the head whose gate found nothing, never naming them.
+// The criteria gate's findings go back to the agent as a stage's do: the
+// next session holds them, and the card asks on the head whose gate found
+// nothing, never naming them.
 func TestWorkflowGateFindingsGoBackToTheAgent(t *testing.T) {
 	g := newGateHarness(t, func(g *gateHarness) { g.criteria = []CriteriaResult{{Findings: []string{opened}}, {}} })
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
@@ -1241,7 +1140,7 @@ func TestWorkflowAutoMergesOnTheGatesRows(t *testing.T) {
 // gate's runs the gate again, no model review: a gate that now stands
 // every criterion merges on the one press, the stand riding the merge.
 func TestWorkflowPressRunsTheGateAgainForItsCriteria(t *testing.T) {
-	g, unjudged, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+	g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}, {}})
 	g.criteria = []CriteriaResult{{Stand: &CriteriaStand{IDs: []string{"size_bound"}, Open: []string{"size_bound"}}}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1252,11 +1151,11 @@ func TestWorkflowPressRunsTheGateAgainForItsCriteria(t *testing.T) {
 	if want := "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, merge"; strings.Join(g.steps, ", ") != want {
 		t.Fatalf("steps = %v, want %s", g.steps, want)
 	}
-	if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || len(*holds) != 0 || *unjudged != 0 {
-		t.Fatalf("merges %v, holds %v, UnjudgedCriteria reads %d: want the merge, no hold and no read of the old kind", g.merges, *holds, *unjudged)
+	if !slices.Equal(g.merges, []string{"9 c1 sebastian"}) || len(*holds) != 0 {
+		t.Fatalf("merges %v, holds %v: want the merge and no hold", g.merges, *holds)
 	}
-	if len(g.mergeMet) != 1 || !slices.Contains(g.mergeMet[0], "the plan's criteria all stand met or waived: size_bound") || !slices.Equal(g.mergeBlind, []bool{true}) {
-		t.Fatalf("merge met %q, blind proofs %v: want the gate's stand under the new version", g.mergeMet, g.mergeBlind)
+	if len(g.mergeMet) != 1 || !slices.Contains(g.mergeMet[0], "the plan's criteria all stand met or waived: size_bound") {
+		t.Fatalf("merge met %q: want the gate's stand riding the merge", g.mergeMet)
 	}
 }
 
@@ -1266,7 +1165,7 @@ func TestWorkflowPressRunsTheGateAgainForItsCriteria(t *testing.T) {
 func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 	after := func(steps []string, step string) []string { return steps[slices.Index(steps, step)+1:] }
 	t.Run("to the agent", func(t *testing.T) {
-		g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+		g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}, {}})
 		g.criteria = []CriteriaResult{{}, {Findings: []string{opened}}, {}}
 		g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 		g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1283,7 +1182,7 @@ func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 		}
 	})
 	t.Run("at the cap", func(t *testing.T) {
-		g, _, holds := rejudgeHarnessWith(t, stagesWorkflow(1, nil), nil, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+		g, holds := regateHarnessWith(t, stagesWorkflow(1, nil), []Unjudged{{Gate: []string{"size_bound"}}, {}})
 		g.criteria = []CriteriaResult{{}, {Findings: []string{opened}}}
 		g.onSessions(pushed("s1", "c1"))
 		g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1311,7 +1210,7 @@ func TestWorkflowPressSendsTheGatesFindingsBack(t *testing.T) {
 // it waited on the human's answer, is no approval of the new ask.
 func TestWorkflowPressFilesTheGatesCardLines(t *testing.T) {
 	const late = "Criterion no_proof has no stored proof: the prover filed before a later revision added it."
-	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"no_proof"}}, {}})
+	g, holds := regateHarness(t, []Unjudged{{Gate: []string{"no_proof"}}, {}})
 	g.criteria = []CriteriaResult{{}, {Escalate: proofsNotStored}, {Card: []string{late}}}
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1346,7 +1245,7 @@ func TestWorkflowPressFilesTheGatesCardLines(t *testing.T) {
 // gates now: the merge rule and the risk class beside the gate's lines.
 func TestWorkflowPressAskAgainKeepsWhyAHuman(t *testing.T) {
 	const late = "Criterion no_proof has no stored proof: the prover filed before a later revision added it."
-	g, _, _ := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"no_proof"}}, {}})
+	g, _ := regateHarness(t, []Unjudged{{Gate: []string{"no_proof"}}, {}})
 	g.reviews = nil
 	g.criteria = []CriteriaResult{{}, {Card: []string{late}}}
 	g.onSessions(pushed("s1", "c1"))
@@ -1370,7 +1269,7 @@ func TestWorkflowPressAskAgainKeepsWhyAHuman(t *testing.T) {
 // failure and holds, the gate's to settle on the next press.
 func TestWorkflowPressHoldsAJudgementTheCallLeftOpen(t *testing.T) {
 	const failed = "criterion reads_calm: the judgement over reads_calm.html at c1 gave no verdict: timed out"
-	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"reads_calm"}}})
+	g, holds := regateHarness(t, []Unjudged{{Gate: []string{"reads_calm"}}})
 	g.criteria = []CriteriaResult{{Card: []string{failed}}}
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1382,15 +1281,15 @@ func TestWorkflowPressHoldsAJudgementTheCallLeftOpen(t *testing.T) {
 	if want := "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, approval c1, hold"; strings.Join(g.steps, ", ") != want {
 		t.Fatalf("steps = %v, want %s", g.steps, want)
 	}
-	if !slices.Equal(*holds, []string{"9 c1 sebastian blind"}) || len(g.merges) != 0 || !slices.Contains(g.approvals[1].WhyHuman, failed) {
-		t.Fatalf("holds %v, merges %v, approvals %+v: want the ask with the failure and the blind hold", *holds, g.merges, g.approvals)
+	if !slices.Equal(*holds, []string{"9 c1 sebastian"}) || len(g.merges) != 0 || !slices.Contains(g.approvals[1].WhyHuman, failed) {
+		t.Fatalf("holds %v, merges %v, approvals %+v: want the ask with the failure and the hold", *holds, g.merges, g.approvals)
 	}
 }
 
 // A gate run again that still leaves a criterion of its own without a
-// row holds the merge in the new words.
+// row holds the merge.
 func TestWorkflowPressHoldsAGateCriterionLeftWithoutARow(t *testing.T) {
-	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"size_bound"}}})
+	g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}})
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1401,8 +1300,8 @@ func TestWorkflowPressHoldsAGateCriterionLeftWithoutARow(t *testing.T) {
 	if want := "policy, repro c1, review c1, criteria c1, approval c1, criteria c1, hold"; strings.Join(g.steps, ", ") != want {
 		t.Fatalf("steps = %v, want %s", g.steps, want)
 	}
-	if !slices.Equal(*holds, []string{"9 c1 sebastian blind"}) || len(g.merges) != 0 {
-		t.Fatalf("holds %v, merges %v: want the one blind hold", *holds, g.merges)
+	if !slices.Equal(*holds, []string{"9 c1 sebastian"}) || len(g.merges) != 0 {
+		t.Fatalf("holds %v, merges %v: want the one hold", *holds, g.merges)
 	}
 }
 
@@ -1410,7 +1309,7 @@ func TestWorkflowPressHoldsAGateCriterionLeftWithoutARow(t *testing.T) {
 // prover may still store a proof: the answer runs it again, and a gate
 // that then settles every criterion merges.
 func TestWorkflowPressAsksThroughTheGatesEscalation(t *testing.T) {
-	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Gate: []string{"size_bound"}}, {}})
+	g, holds := regateHarness(t, []Unjudged{{Gate: []string{"size_bound"}}, {}})
 	g.criteria = []CriteriaResult{{}, {Escalate: proofsNotStored}, {Stand: &CriteriaStand{IDs: []string{"size_bound"}}}}
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
@@ -1430,7 +1329,7 @@ func TestWorkflowPressAsksThroughTheGatesEscalation(t *testing.T) {
 // A press whose never-judged criteria are a human's holds the merge, its
 // words the human's, and runs neither the gate nor a model review.
 func TestWorkflowPressHoldsForAHumanRow(t *testing.T) {
-	g, _, holds := rejudgeHarness(t, nil, []Unjudged{{Human: []string{"pages_ok"}}})
+	g, holds := regateHarness(t, []Unjudged{{Human: []string{"pages_ok"}}})
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1441,62 +1340,9 @@ func TestWorkflowPressHoldsForAHumanRow(t *testing.T) {
 	if want := "policy, repro c1, review c1, criteria c1, approval c1, hold"; strings.Join(g.steps, ", ") != want {
 		t.Fatalf("steps = %v, want %s", g.steps, want)
 	}
-	if !slices.Equal(*holds, []string{"9 c1 sebastian blind"}) || len(g.merges) != 0 {
-		t.Fatalf("holds %v, merges %v: want the one hold under the new words, no merge", *holds, g.merges)
+	if !slices.Equal(*holds, []string{"9 c1 sebastian"}) || len(g.merges) != 0 {
+		t.Fatalf("holds %v, merges %v: want the one hold, no merge", *holds, g.merges)
 	}
-}
-
-// A run from before versionBlindProofs keeps every old path: the gate's
-// findings ride the card, its stand reaches neither the review nor the
-// merge, and a press runs the model review, whose hold reads the old
-// words.
-func TestWorkflowBeforeBlindProofsKeepsTheOldPaths(t *testing.T) {
-	stand := &CriteriaStand{IDs: []string{"green_login"}, Open: []string{"green_login"}}
-	t.Run("the findings ride the card", func(t *testing.T) {
-		const finding = "criterion green_login: no test TestLogin in ./internal/auth"
-		g := newGateHarness(t, func(g *gateHarness) {
-			g.criteria = []CriteriaResult{{Findings: []string{finding}, Stand: stand}}
-		})
-		g.beforeBlindProofs()
-		g.onSessions(pushed("s1", "c1"))
-		g.onChecks(ChecksResult{State: ChecksSuccess})
-		g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-		if final := g.run(t); final != "done" {
-			t.Fatalf("final = %q, finals %v", final, g.finals)
-		}
-		if !slices.Contains(g.approvals[0].WhyHuman, finding) || g.approvals[0].Gates.Criteria != nil {
-			t.Fatalf("why human = %q, gates' criteria %+v: want the criteria finding on the card and no stand", g.approvals[0].WhyHuman, g.approvals[0].Gates.Criteria)
-		}
-		if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
-			t.Fatalf("steps = %v, want %v", g.steps, want)
-		}
-		if len(g.mergeMet) != 1 || g.mergeMet[0] != nil || !slices.Equal(g.mergeBlind, []bool{false}) {
-			t.Fatalf("merge met %q, blind proofs %v: want nil and false", g.mergeMet, g.mergeBlind)
-		}
-	})
-	t.Run("the press runs the review", func(t *testing.T) {
-		g, unjudged, holds := rejudgeHarness(t, [][]string{{"c1"}}, nil, Review{Note: refusedMonthNote})
-		g.beforeBlindProofs()
-		g.criteria = []CriteriaResult{{Stand: stand}}
-		g.onSessions(pushed("s1", "c1"))
-		g.onChecks(ChecksResult{State: ChecksSuccess})
-		g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-		g.signalAfter(2*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
-		if final := g.run(t); final != "closed" {
-			t.Fatalf("final = %q, finals %v", final, g.finals)
-		}
-		if want := "policy, repro c1, review c1, criteria c1, approval c1, review c1, hold"; strings.Join(g.steps, ", ") != want {
-			t.Fatalf("steps = %v, want %s", g.steps, want)
-		}
-		if !slices.Equal(*holds, []string{"9 c1 sebastian"}) || *unjudged != 1 {
-			t.Fatalf("holds %v, UnjudgedCriteria reads %d: want the old hold after one read", *holds, *unjudged)
-		}
-		for i, gates := range g.reviewGates {
-			if gates.Criteria != nil {
-				t.Fatalf("review %d's gates carry the stand %+v", i+1, gates.Criteria)
-			}
-		}
-	})
 }
 
 // A review whose every finding the grep dropped starts no session: the

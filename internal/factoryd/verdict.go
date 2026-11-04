@@ -523,12 +523,11 @@ func normalizeBehaviours(behaviours []string) []string {
 
 // reviewCriteriaStep is the review's criteria half (piece 7), run when the
 // reviewed task is the plan's integration card or a delta card: it judges
-// no criterion and drops any the answer carried, hands each criterion
-// whose standing row on the integration card is unmet and that no card of
-// p, the newest revision, cites to the planner as a delta due, and notes
-// the feature's behaviours as records that notify no one.
+// no criterion, hands each criterion whose standing row on the
+// integration card is unmet and that no card of p, the newest revision,
+// cites to the planner as a delta due, and notes the feature's behaviours
+// as records that notify no one.
 func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Plan, revision, round int, rv *Review) {
-	rv.Criteria = nil
 	planned := map[string]bool{}
 	for _, c := range p.Cards {
 		planned[c.Key] = true

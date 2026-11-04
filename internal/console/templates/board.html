@@ -135,10 +135,7 @@
 <label for="fund-reason-{{$.Card.ID}}{{$.Suffix}}">note, also the card's answer</label>
 <input type="text" id="fund-reason-{{$.Card.ID}}{{$.Suffix}}" name="reason" maxlength="{{maxAnswer}}" required hx-preserve>
 <button type="submit" aria-label="Raise #{{$.Card.IssueNumber}}'s budget by the stated amount">Fund</button>
-</form>{{end}}{{template "extend-form" $}}{{with .Card.AcceptanceClose}}<form method="post" action="/tasks/{{$.Card.ID}}/acceptance-close" hx-post="/tasks/{{$.Card.ID}}/acceptance-close" class="inline" data-to="done">
-<input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
-<button type="submit" title="{{.Evidence}}">Close: acceptance green</button>
-</form>{{end}}{{end}}
+</form>{{end}}{{template "extend-form" $}}{{end}}
 {{if or .Card.IssueURL .Waiting}}<p class="need-foot">{{if .Card.IssueURL}}<a href="{{.Card.IssueURL}}" target="_blank" rel="noopener">answer on the issue</a>{{end}}{{with .Waiting}}<span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</p>
 {{end}}
 {{end}}

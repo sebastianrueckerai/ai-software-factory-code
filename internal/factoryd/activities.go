@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"crypto/sha256"
@@ -109,7 +110,6 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityMerge:                       r.Merge,
 		ActivityReportMergeFailure:          r.ReportMergeFailure,
 		ActivityReportMergeRetriesExhausted: r.ReportMergeRetriesExhausted,
-		ActivityUnjudgedCriteria:            r.UnjudgedCriteria,
 		ActivityUnjudged:                    r.Unjudged,
 		ActivityHoldMerge:                   r.HoldMerge,
 		ActivitySuperviseGate:               r.SuperviseGate,
@@ -1124,16 +1124,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 	}
 	events := r.sessionTranscript(ctx, t.ID, s.id)
-	if res.Outcome != OutcomePushed && !in.BlindProofs {
-		// the session may have proven the card itself (roadmap 208): one
-		// of its plan's acceptance commands run green. A read that fails
-		// costs the card nothing: it ends as it always did.
-		if acceptance, err := r.planAcceptance(ctx, t); err != nil {
-			log.Printf("task %s: its plan's acceptance: %v", t.ID, err)
-		} else if hit := r.sessionAcceptance(ctx, t, s.id, events, acceptance); hit != nil {
-			res.Acceptance = hit
-		}
-	}
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
 	if res.Outcome != OutcomeNotStarted && !res.StartFailed {
@@ -1169,6 +1159,30 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 	}
 	return res, nil
+}
+
+// sessionTranscript is the session's recorded events; nil when none was
+// kept or the read failed, which is logged: an unreadable transcript must
+// not fail the session that wrote it.
+func (r *Runner) sessionTranscript(ctx context.Context, taskID, session string) []harness.Event {
+	if r.timeline == nil || r.timeline.Objects == nil {
+		return nil
+	}
+	b, err := r.timeline.Objects.Get(ctx, "sessions/"+taskID+"/"+session+".jsonl")
+	if err != nil {
+		log.Printf("task %s: session %s's transcript: %v", taskID, session, err)
+		return nil
+	}
+	var events []harness.Event
+	for len(b) > 0 {
+		var line []byte
+		line, b, _ = bytes.Cut(b, []byte("\n"))
+		var ev harness.Event
+		if err := json.Unmarshal(line, &ev); err == nil {
+			events = append(events, ev)
+		}
+	}
+	return events
 }
 
 // providerRefusal is the provider's refusal of the session begun at since
@@ -2531,7 +2545,7 @@ func (r *Runner) AlertPreCheck(ctx context.Context, taskID string) (bool, error)
 // Finish is the terminal step. A failed or closed task's open pull request
 // is closed first, with the reason, and a closed or done task's issue
 // still open too (a factory-PR card's pull request carries no "Closes
-// #N", an acceptance end has none), but a plan card's, done each time a
+// #N"), but a plan card's, done each time a
 // revision files its cards, and not again when the chain covers a merged
 // card (an issue a person reopened since stays open); a done or closed
 // task's branch on the fork is deleted. Both return a transient error, so a Forgejo blip retries them before the task

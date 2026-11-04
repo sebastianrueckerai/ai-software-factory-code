@@ -189,6 +189,14 @@ func replayCheckinAnswer(t *testing.T, reason string, spend bool) {
 	// and the replay ends with no command left over
 	opened, openedRun := copyEvent(ev[265]), copyEvent(ev[266])
 	events := append([]*historypb.HistoryEvent{}, ev[:256]...)
+	// the spliced history holds the drained blind proofs marker, which a
+	// recording from before the change lacks: burst-accept's marker is
+	// rewritten to it, its value read by no code
+	for _, e := range events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"burst-accept"` {
+			id[0].Data = []byte(`"blind-proofs"`)
+		}
+	}
 	if spend {
 		for _, e := range events {
 			if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"poster-cap"` {

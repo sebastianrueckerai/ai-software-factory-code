@@ -246,11 +246,6 @@ type Config struct {
 	// moved on from sha or concluded refuses (factoryd.ErrStallGone).
 	RerunStall   func(ctx context.Context, repository, sha string) error
 	DismissStall func(ctx context.Context, repository, sha, by string) error
-	// CloseCardDone ends card taskID done for by on evidence (factoryd's
-	// Runner.CloseCardDone): a card whose sessions ran one of its plan's
-	// acceptance commands green (roadmap 208) closes on the fact, no
-	// answer owed.
-	CloseCardDone func(ctx context.Context, taskID, by, evidence string) error
 	// Replan sends card taskID, or the plan it belongs to, back to the
 	// planner for by with comment saying why (factoryd's Runner.Replan),
 	// and answers the note for the person; a card or plan that takes no
@@ -544,7 +539,6 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /tasks/{id}/plan/changes", http.HandlerFunc(c.planChanges), nil},
 		{"POST /tasks/{id}/retry", http.HandlerFunc(c.retryCard), nil},
 		{"POST /tasks/{id}/close", http.HandlerFunc(c.closeCard), nil},
-		{"POST /tasks/{id}/acceptance-close", http.HandlerFunc(c.acceptanceCloseCard), nil},
 		{"POST /tasks/{id}/steer", http.HandlerFunc(c.steerCard), nil},
 		{"POST /tasks/{id}/replan", http.HandlerFunc(c.replanCard), nil},
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},

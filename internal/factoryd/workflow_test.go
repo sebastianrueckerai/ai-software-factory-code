@@ -168,9 +168,8 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityPullRequestMerged: func(ctx context.Context, taskID string, number int64) (bool, error) { return false, nil },
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
-		ActivityUnjudgedCriteria:  func(ctx context.Context, taskID string) ([]string, error) { return nil, nil },
 		ActivityUnjudged:          func(ctx context.Context, taskID string) (Unjudged, error) { return Unjudged{}, nil },
-		ActivityHoldMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string, blindProofs bool) error {
+		ActivityHoldMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string) error {
 			return nil
 		},
 		ActivityFinish:    func(ctx context.Context, taskID, final, reason string) error { return nil },
@@ -214,7 +213,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return ReportResult{}, nil
 		},
 		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
-		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
+		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 			return MergeResult{}, nil
 		},
 		ActivityReportMergeFailure:          func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error { return nil },
@@ -437,11 +436,6 @@ func (h *workflowHarness) beforeCases() {
 // wait and the merge.
 func (h *workflowHarness) beforeQueueWaits() {
 	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
-}
-
-// beforeBlindProofs pins the run to before versionBlindProofs.
-func (h *workflowHarness) beforeBlindProofs() {
-	h.env.OnGetVersion("blind-proofs", workflow.DefaultVersion, versionBlindProofs).Return(workflow.DefaultVersion)
 }
 
 func (h *workflowHarness) signalAfter(d time.Duration, name string, sig TaskSignal) {
@@ -2578,7 +2572,9 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 // error, and the newest input each activity recorded across them decodes
 // into today's activity of that name: a roll retries an activity in
 // flight with the input the old worker recorded. Older inputs are history
-// the rolls since have passed and keep only their replay.
+// the rolls since have passed and keep only their replay. A recording
+// from before the blind proofs' deploy carries no marker and is refused
+// by the drained read, so nothing replays it again.
 func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/history-*.json")
 	if len(files) == 0 {
@@ -2586,7 +2582,9 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	}
 	newest := map[string]recordedInput{}
 	for _, f := range files {
-		replayHistory(t, f)
+		if !replayHistory(t, f) {
+			continue
+		}
 		data, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -2604,7 +2602,9 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 
 // Histories a dev server recorded under stub activities replay too: a run
 // that consumed the chain-done marker and waits in review takes today's
-// end. Their stub inputs are no live input, so no decode reads them.
+// end. Their stub inputs are no live input, so no decode reads them. A
+// recording from before the blind proofs' deploy is refused by the
+// drained read, as the live histories are.
 func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/devserver-*.json")
 	if len(files) == 0 {
@@ -2615,14 +2615,21 @@ func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 	}
 }
 
-// replayHistory replays the history in file f against TaskWorkflow.
-func replayHistory(t *testing.T, f string) {
+// replayHistory replays the history in file f against TaskWorkflow; false
+// when the drained blind proofs read refuses a recording from before its
+// marker, which no roll can pick up again.
+func replayHistory(t *testing.T, f string) bool {
 	t.Helper()
 	replayer := worker.NewWorkflowReplayer()
 	replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
-	if err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f); err != nil {
+	err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f)
+	if err != nil {
+		if strings.Contains(err.Error(), `for "blind-proofs" changeID`) {
+			return false
+		}
 		t.Fatalf("%s: %v", f, err)
 	}
+	return true
 }
 
 // retyped lists each activity whose parameters a commit changed on
@@ -5804,8 +5811,8 @@ func TestReplanBeforeAnAutoMerge(t *testing.T) {
 		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 			Review{Verdict: "approve", Summary: "fine", StrictImprovement: &yes}, nil)
 		merges := 0
-		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
+		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
 				merges++
 				return MergeResult{Merged: true}, nil
 			})
@@ -5981,27 +5988,8 @@ func TestWorkflowClosesOnItsProofsAtMain(t *testing.T) {
 	if final := h.run(t); final != "done" || h.finals[0][1] != "proofs met at 29b0d33: size_bound" {
 		t.Fatalf("finals %v, want done on the proofs", h.finals)
 	}
-	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 || !h.sessions[0].BlindProofs {
-		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session under the version", *calls, h.sessions)
-	}
-}
-
-// Under versionBlindProofs a session's acceptance green closes nothing:
-// the proofs at main judge the card, and when they are not met it runs
-// its next session.
-func TestWorkflowUnderBlindProofsTakesNoAcceptanceClose(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.state.Source = SourcePlan
-	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "the checks pass here",
-		Acceptance: &AcceptanceHit{Command: "bash check", Exit: 0, Session: "s1"}}, pushed("s2", "c2"))
-	calls := h.onProofsAtMain(ProofsAtMain{}, nil)
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
-		t.Fatalf("finals %v, want s2's push merged", h.finals)
-	}
-	if len(*calls) != 1 || len(h.sessions) != 2 {
-		t.Fatalf("calls %q, sessions %d; want one call and s2", *calls, len(h.sessions))
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 {
+		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session", *calls, h.sessions)
 	}
 }
 
@@ -6061,24 +6049,5 @@ func TestWorkflowRunsNoProofsAtMainOffAPlanCardOrAfterAPush(t *testing.T) {
 				t.Fatalf("calls %q, sessions %d; want none and %d", *calls, len(h.sessions), len(tc.sessions))
 			}
 		})
-	}
-}
-
-// A run from before versionBlindProofs runs no proofs at main and asks
-// its sessions for the acceptance read: a plan card's session that ends
-// without a push buys the next one.
-func TestWorkflowBeforeBlindProofsRunsNoProofsAtMain(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.beforeBlindProofs()
-	h.state.Source = SourcePlan
-	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2"))
-	calls := h.onProofsAtMain(ProofsAtMain{Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
-		t.Fatalf("finals %v, want s2's push merged", h.finals)
-	}
-	if len(*calls) != 0 || len(h.sessions) != 2 || h.sessions[0].BlindProofs {
-		t.Fatalf("calls %q, sessions %+v; want none, two, and s1 without BlindProofs", *calls, h.sessions)
 	}
 }

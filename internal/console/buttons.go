@@ -18,12 +18,6 @@ func (c *Console) closeCard(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// acceptanceCloseCard is the face's Close: acceptance green
-// (doCloseAcceptance).
-func (c *Console) acceptanceCloseCard(w http.ResponseWriter, r *http.Request) {
-	c.press(w, r, c.doCloseAcceptance)
-}
-
 // replanCard is the drawer's Replan (doReplan, on the form's note and its
 // off_main box).
 func (c *Console) replanCard(w http.ResponseWriter, r *http.Request) {

@@ -306,8 +306,8 @@ func (t *taskRun) runStages(commit string) verdict {
 // review findings the card shows, which an approval over it adjudicates
 // (versionAdjudicated). The criteria gate runs first, once, on the head
 // the request will name; its findings are card findings, for the human
-// (versionCriteriaGate). From versionBlindProofs on its stand rides g and
-// its findings go to the agent as a stage's do, to the card at the cap.
+// (versionCriteriaGate). Its stand rides g and its findings go to the
+// agent as a stage's do, to the card at the cap.
 func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	t.head = commit
 	if t.criteriaGate >= versionCriteriaGate {
@@ -319,14 +319,10 @@ func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed
 		if decided {
 			return v
 		}
-		if t.blindProofs < versionBlindProofs {
-			card = append(card, res.Findings...)
-		} else {
-			g.Criteria = res.Stand
-			if len(res.Findings) > 0 {
-				if v, stop := t.onFindings(criteriaStage, g, res.Findings, &capped, &card); stop {
-					return v
-				}
+		g.Criteria = res.Stand
+		if len(res.Findings) > 0 {
+			if v, stop := t.onFindings(criteriaStage, g, res.Findings, &capped, &card); stop {
+				return v
 			}
 		}
 		card = append(card, res.Card...)
@@ -347,7 +343,7 @@ func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed
 }
 
 // criteriaStage is the criteria gate as a stage whose findings go to the
-// agent (versionBlindProofs): the approval stage runs the gate, so no
+// agent: the approval stage runs the gate, so no
 // policy stage names it.
 var criteriaStage = policy.Stage{Name: "criteria", OnFindings: policy.FindingsAgent}
 

@@ -384,8 +384,8 @@ func TestIntegrationReviewJudgesNoCriterion(t *testing.T) {
 	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 {
 		t.Fatalf("rows = %v, want none", rows)
 	}
-	if rv.Verdict != "approve" || rv.Criteria != nil || len(rv.Findings) != 0 {
-		t.Fatalf("review = %+v, want approve with no criteria and no finding", rv)
+	if rv.Verdict != "approve" || len(rv.Findings) != 0 {
+		t.Fatalf("review = %+v, want approve with no finding", rv)
 	}
 	comments, err := r.forgejo.ListIssueComments(context.Background(), "sf", "repo", 9)
 	read := "Read in 1 part, 1 file, 1 KiB, in 2 calls with the feature's behaviours."
@@ -639,8 +639,7 @@ func TestReviewCriteriaStepNotesTheBehaviours(t *testing.T) {
 
 // The planner's delta dues read the gate's standing rows: a criterion
 // whose standing row is unmet and that no card of the newest revision
-// cites is the planner's. The review's own criteria answer, a run's from
-// before, files nothing and writes no row.
+// cites is the planner's.
 func TestReviewCriteriaStepFilesDuesFromTheGatesRows(t *testing.T) {
 	ctx := context.Background()
 	p := criteriaPlan()
@@ -667,7 +666,7 @@ func TestReviewCriteriaStepFilesDuesFromTheGatesRows(t *testing.T) {
 			for _, v := range tc.more {
 				put(v.Source, v)
 			}
-			rv := Review{Verdict: "approve", Summary: "the diff is sound", Criteria: []CriterionVerdict{{Criterion: "c3", Verdict: "unmet", Fix: "planner"}}}
+			rv := Review{Verdict: "approve", Summary: "the diff is sound"}
 			r.reviewCriteriaStep(ctx, s.tasks["t-int"], Repo{}, p, 1, 2, &rv)
 			catches, _ := s.PlanCatches(ctx, "t-plan")
 			var dues []string
@@ -681,9 +680,6 @@ func TestReviewCriteriaStepFilesDuesFromTheGatesRows(t *testing.T) {
 			}
 			if !slices.Equal(dues, tc.dues) {
 				t.Errorf("dues = %q, want %q", dues, tc.dues)
-			}
-			if rv.Criteria != nil || len(rv.Findings) != 0 {
-				t.Errorf("review = %+v, want no criteria and no finding", rv)
 			}
 			rows, _ := s.CriteriaVerdicts(ctx, "t-int")
 			if slices.ContainsFunc(rows, func(v CriterionVerdict) bool { return v.Source == CriteriaSourceReview }) {

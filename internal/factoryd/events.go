@@ -35,11 +35,6 @@ const (
 	// running session's conversation: detail {"session"}. The bus carries
 	// no token figures, so the row is the audit fact alone.
 	EventCompacted = "compacted"
-	// EventAcceptancePassed is factoryd's record of a session of a plan's
-	// card that ran one of the plan's acceptance commands and it exited 0
-	// (roadmap 208): detail {"command", "exit", "session"}. Only green
-	// runs are recorded; the trail is the card's evidence.
-	EventAcceptancePassed = "acceptance_passed"
 	// EventApprovalRequested is factoryd's record of an approval it opened
 	// for a card, a merge's or a plan's (roadmap 239): detail {"approval",
 	// "kind", and "pr" and "class" for a merge, "revision" and "cards"

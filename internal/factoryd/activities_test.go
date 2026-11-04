@@ -1307,12 +1307,12 @@ func TestFinishDoneFromInReview(t *testing.T) {
 
 // A card that ends done closes its issue where its end left it open: a
 // factory-PR card's pull request carries no "Closes #N" (card #1333), and
-// a card its plan's acceptance command ended has no pull request. An
+// a card a live run covers has no pull request. An
 // issue the merge's "Closes #N" closed takes no write, and a plan card,
 // done each time a revision files its cards, keeps its issue open.
 func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 	merged := `{"number":12,"state":"closed","merged":true,"merge_commit_sha":"m12"}`
-	acceptance := `acceptance "make check" exited 0 in session s2`
+	covered := `live: covered by run 5`
 	for _, tc := range []struct {
 		name, reason, source, track string
 		pr                          int64
@@ -1323,8 +1323,8 @@ func TestFinishDoneClosesTheIssueOfAnEndedCard(t *testing.T) {
 		{"a revert, its issue open", "pull request merged by factory-merge", SourceRevert, "direct", 12, false,
 			[]string{"factoryd: pull request #12 merged; this card ends with it."}, []int64{4}},
 		{"an agent card whose merge closed its issue", "pull request merged by factory-merge", "api", "direct", 12, true, nil, nil},
-		{"an acceptance end without a pull request", acceptance, SourcePlan, "direct", 0, false,
-			[]string{"factoryd: " + acceptance + "; this card ends with it."}, []int64{4}},
+		{"a covered card without a pull request", covered, SourcePlan, "direct", 0, false,
+			[]string{"factoryd: " + covered + "; this card ends with it."}, []int64{4}},
 		{"a plan card", "the plan's revision 2 filed its cards", "webhook", policy.TrackPlan, 0, false, nil, nil},
 	} {
 		fj := &prForgejo{issueOff: tc.issueOff, pulls: map[int64]string{12: merged}, labels: map[int64][]string{4: {"state/in-review"}}}
@@ -1440,7 +1440,7 @@ func TestFinishTakesARecordedMergeCommitAsMerged(t *testing.T) {
 	}
 }
 
-// A done card whose pull request never merged — an acceptance close after
+// A done card whose pull request never merged — a live run's cover after
 // an earlier attempt opened one — ends done as any card without a merge,
 // and so does one whose read Forgejo answers in a way no retry changes: a
 // pull request it no longer has, a refusal. Every cleanup runs, no merge
@@ -1457,7 +1457,7 @@ func TestFinishEndsAnUnmergedPullRequestDone(t *testing.T) {
 	} {
 		r, hub, store, objects := chainRunner(t, mergedCard, policy.ChainModeRun)
 		hub.pulls, hub.pullStatus = tc.pulls, map[int64]int{7: tc.status}
-		reason := `acceptance "make check" exited 0 in session s2`
+		reason := `live: covered by run 5`
 		if _, err := execActivity(t, r, ActivityFinish, "t1", "done", reason); err != nil {
 			t.Fatalf("%s: %v", name, err)
 		}
