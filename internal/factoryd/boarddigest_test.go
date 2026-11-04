@@ -54,6 +54,12 @@ func child(key string) func(*Task) {
 	return func(t *Task) { t.Source, t.Parent, t.PlanKey = SourcePlan, "t1344", key }
 }
 
+// queuedFor stores reason as admit's refusal of a queued card, first
+// given ago before boardNow.
+func queuedFor(reason string, ago time.Duration) func(*Task) {
+	return func(t *Task) { since := boardNow.Add(-ago); t.QueueReason, t.QueueSince = reason, &since }
+}
+
 // moved records card id's move to status and gate ago before boardNow.
 func (g boardRig) moved(id, status, gate string, ago time.Duration) {
 	g.store.events = append(g.store.events, Event{ID: int64(len(g.store.events) + 1), At: boardNow.Add(-ago), Repository: "sf/app",
@@ -104,8 +110,8 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.moved("t1472", "queued", GateIntake, 13*time.Minute)
 	g.moved("t1472", "running", GateSession, 12*time.Minute)
 
-	g.card("t1414", 1414, "queued", GateIntake, 20, nil)
-	g.card("t1453", 1453, "queued", GateIntake, 21, child("k1453"))
+	g.card("t1414", 1414, "queued", GateIntake, 20, queuedFor("work bound 3 of 3", 2*time.Hour))
+	g.card("t1453", 1453, "queued", GateIntake, 21, func(t *Task) { child("k1453")(t); queuedFor("waits on #1451", 40*time.Minute)(t) })
 	g.card("t-noissue", 0, "queued", "", 22, child("k-noissue"))
 	g.store.deps = map[string][]string{"t1452": {"t1451"}, "t1453": {"t1451"}}
 	g.store.enforced = policy.Enforced{Day: 12.4, Month: 544}
@@ -115,8 +121,8 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 		"#1452  waiting-deps          3h02m    slot  flags dependency_failed(#1451), slot_held_by_wait(waiting-deps)\n" +
 		"#1472  running, session      0h12m    slot\n" +
 		"queue:\n" +
-		"#1414  work bound 3 of 3\n" +
-		"#1453  waits on #1451\n" +
+		"#1414  work bound 3 of 3 for 2h\n" +
+		"#1453  waits on #1451 for 40m\n" +
 		"#0 t-noissue  no issue\n" +
 		"plans:\n" +
 		"#1344 session-metrics  done 2 · running 1 · waiting-deps 1 · queued 2 · failed 1\n" +
@@ -155,21 +161,6 @@ func TestBoardDigestNamesACardItCannotDigestAndGoesOn(t *testing.T) {
 	}
 }
 
-// Each card the board reads "next" takes a free slot: with one of three
-// held, two queued cards are next and the third waits on the bound.
-func TestBoardDigestCountsEachNextAsASlot(t *testing.T) {
-	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
-	g.card("t1472", 1472, "running", GateSession, 0, nil)
-	for i, id := range []string{"t1500", "t1501", "t1502"} {
-		g.card(id, int64(1500+i), "queued", GateIntake, 1+i, nil)
-	}
-	b := g.digest(t)
-	want := []BoardDigestQueued{{1500, "t1500", "next"}, {1501, "t1501", "next"}, {1502, "t1502", "work bound 3 of 3"}}
-	if !slices.Equal(b.Queue, want) || b.Slots != (BoardDigestSlots{Held: 1, Bound: 3}) {
-		t.Fatalf("Queue = %+v, Slots = %+v; want %+v with 1 of 3 held", b.Queue, b.Slots, want)
-	}
-}
-
 func TestBoardDigestNamesAQueuedCardWithoutAnIssue(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{})
 	g.card("t-noissue", 0, "queued", "", 0, child("k1"))
@@ -182,33 +173,33 @@ func TestBoardDigestNamesAQueuedCardWithoutAnIssue(t *testing.T) {
 	}
 }
 
-// A closed dependency passes the wait as admit lets it (its workflow takes
-// it to a person); the project's cap holds a card once the month's spend
-// meets it, and a card nothing holds is next.
-func TestBoardDigestNamesEachQueueReason(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		project policy.ProjectConfig
-		spent   float64
-		want    string
-	}{
-		{"nothing holds it", policy.ProjectConfig{}, 0, "next"},
-		{"the project's cap is spent", policy.ProjectConfig{Budget: &policy.ProjectBudget{MonthEUR: 10}}, 10, "project month cap"},
-		{"the project's cap has room", policy.ProjectConfig{Budget: &policy.ProjectBudget{MonthEUR: 10}}, 9.99, "next"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			g := newBoardRig(tc.project)
-			g.card("t9", 9, "closed", "", 0, nil)
-			g.card("t1500", 1500, "queued", GateIntake, 1, nil)
-			g.store.deps = map[string][]string{"t1500": {"t9"}}
-			g.store.projectSpend = map[string]float64{"sf/app": tc.spent}
-			b := g.digest(t)
-			if want := []BoardDigestQueued{{Issue: 1500, TaskID: "t1500", Reason: tc.want}}; !slices.Equal(b.Queue, want) {
-				t.Fatalf("Queue = %+v, want %+v", b.Queue, want)
-			}
-			if tc.project.Budget != nil && b.Caps[2] != (BoardDigestCap{Name: "project", SpentEUR: tc.spent, CapEUR: 10}) {
-				t.Fatalf("Caps = %+v, want the project's third", b.Caps)
-			}
-		})
+// The queue reads what admit stored, each card's reason and how long it
+// has held, and works out none of its own: #1500's dependency is open and
+// the project's cap has room, and a slot is free for #1501. A card admit
+// never refused is next, or has no issue.
+func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3, Budget: &policy.ProjectBudget{MonthEUR: 10}})
+	g.card("t9", 9, "running", GateSession, 0, nil)
+	g.card("t1500", 1500, "queued", GateIntake, 1, queuedFor("project month cap", 2*time.Hour))
+	g.card("t1501", 1501, "queued", GateIntake, 2, queuedFor("work bound 3 of 3", 90*time.Minute+40*time.Second))
+	g.card("t1502", 1502, "queued", GateIntake, 3, nil)
+	g.card("t-noissue", 0, "queued", "", 4, child("k1"))
+	g.store.deps = map[string][]string{"t1500": {"t9"}}
+	g.store.projectSpend = map[string]float64{"sf/app": 4}
+	b := g.digest(t)
+	want := []BoardDigestQueued{{Issue: 1500, TaskID: "t1500", Reason: "project month cap", Age: 2 * time.Hour},
+		{Issue: 1501, TaskID: "t1501", Reason: "work bound 3 of 3", Age: 90*time.Minute + 40*time.Second},
+		{Issue: 1502, TaskID: "t1502", Reason: "next"}, {TaskID: "t-noissue", Reason: "no issue"}}
+	if !slices.Equal(b.Queue, want) {
+		t.Fatalf("Queue = %+v, want %+v", b.Queue, want)
+	}
+	if got, want := b.Render(), "queue:\n"+
+		"#1500  project month cap for 2h\n"+
+		"#1501  work bound 3 of 3 for 1h30m\n"+
+		"#1502  next\n"+
+		"#0 t-noissue  no issue\n"+
+		"caps:\n"+
+		"month 0.00 of 600.00 EUR · day 0.00 of 150.00 EUR · project 4.00 of 10.00 EUR\n"; !strings.HasSuffix(got, want) {
+		t.Fatalf("Render =\n%s\nwant it to end\n%s", got, want)
 	}
 }

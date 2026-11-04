@@ -231,6 +231,21 @@ func (s *acceptanceStore) SetAdmitted(_ context.Context, id string) error {
 	return nil
 }
 
+func (s *acceptanceStore) SetQueueReason(_ context.Context, id, reason string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
+		return nil
+	}
+	t.QueueReason, t.QueueSince = reason, &now
+	if reason == "" {
+		t.QueueSince = nil
+	}
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (int, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

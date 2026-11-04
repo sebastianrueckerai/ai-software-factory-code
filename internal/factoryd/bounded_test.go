@@ -454,3 +454,57 @@ func TestBoundedStartLeavesAHalfFiledCard(t *testing.T) {
 		t.Fatalf("starts = %v, want the card once its issue is filed", rec.starts)
 	}
 }
+
+// admit writes why it refused a card on the card, and the time of the
+// first refusal with that reason: a repeat keeps the time, a new reason
+// restarts it, and the admission clears both.
+func TestAdmitRecordsTheRefusalAndClearsItOnAdmission(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", IssueNumber: 1},
+		Task{ID: "t-dep", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", IssueNumber: 7},
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 9})
+	store.AddTaskDeps(ctx, "t-q", []string{"t-dep"})
+	bounded.Policy = func() policy.Tree {
+		return policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"demo": {Repository: "demo/app", WorkInProgress: 1, Budget: &policy.ProjectBudget{MonthEUR: 10}}}}
+	}
+	t0 := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	clock := t0
+	bounded.Now = func() time.Time { return clock }
+	text := func(at *time.Time) string {
+		if at == nil {
+			return "none"
+		}
+		return at.Format(time.RFC3339)
+	}
+	start := func(after time.Duration, reason string, since *time.Time) {
+		t.Helper()
+		clock = t0.Add(after)
+		if err := bounded.Start(ctx, "t-q"); err != nil {
+			t.Fatal(err)
+		}
+		q, _, _ := store.Task(ctx, "t-q")
+		if q.QueueReason != reason || text(q.QueueSince) != text(since) {
+			t.Fatalf("at +%v: queue reason %q since %s, want %q since %s", after, q.QueueReason, text(q.QueueSince), reason, text(since))
+		}
+	}
+	at := func(d time.Duration) *time.Time { v := t0.Add(d); return &v }
+
+	start(0, "waits on #7", at(0))
+	start(time.Hour, "waits on #7", at(0))
+	store.tasks["t-dep"] = Task{ID: "t-dep", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "done", IssueNumber: 7}
+	store.projectSpend = map[string]float64{"demo/app": 10}
+	start(2*time.Hour, "project month cap", at(2*time.Hour))
+	store.projectSpend["demo/app"] = 9.99
+	start(3*time.Hour, "work bound 1 of 1", at(3*time.Hour))
+	start(4*time.Hour, "work bound 1 of 1", at(3*time.Hour))
+	if len(rec.starts) != 0 {
+		t.Fatalf("starts = %v, want none while a reason holds the card", rec.starts)
+	}
+	store.tasks["t-run"] = Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "done", IssueNumber: 1}
+	start(5*time.Hour, "", nil)
+	if q, _, _ := store.Task(ctx, "t-q"); !slices.Equal(rec.starts, []string{"t-q"}) || q.AdmittedAt == nil {
+		t.Fatalf("starts %v, admitted at %v: want the card started once nothing holds it", rec.starts, q.AdmittedAt)
+	}
+}

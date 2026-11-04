@@ -77,6 +77,12 @@ type Task struct {
 	// with it set holds its slot while its workflow starts, or while a
 	// run that died before running restarts.
 	AdmittedAt *time.Time
+	// QueueReason is why admit last refused the queued card a work slot:
+	// admissionWait's reason, or "work bound N of M" when the count
+	// refused it. QueueSince is the first refusal with that reason. ""
+	// and nil before any refusal and once the card is admitted.
+	QueueReason string
+	QueueSince  *time.Time
 	// Gate is the gate the task is in (Gate* constants) since GateSince;
 	// none once it finished, and never for the human lane.
 	Gate      string
@@ -326,6 +332,9 @@ type Store interface {
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
 	// moment it took one of its project's work_in_progress slots.
 	SetAdmitted(ctx context.Context, id string) error
+	// SetQueueReason records why card id was refused a slot at now, keeping
+	// queue_since from the first refusal with that reason; "" clears both.
+	SetQueueReason(ctx context.Context, id, reason string, now time.Time) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	// CountAdmitted counts repository's cards holding a work slot: those
@@ -1206,7 +1215,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress, COALESCE(roadmap_item, 0)`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1221,7 +1230,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -2106,6 +2115,17 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 // its sole caller.
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now() WHERE id = $1 AND admitted_at IS NULL`, id)
+	return err
+}
+
+// SetQueueReason writes reason on card id, with now as queue_since when
+// the reason changed; "" clears both. A refusal that repeats the stored
+// reason writes nothing, so the minute's admissions keep the first time.
+// An admitted card takes none: a refusal read before another admission
+// took the card must not mark it, since nothing clears it after.
+func (s *PGStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET queue_reason = $2, queue_since = CASE WHEN $2 = '' THEN NULL ELSE $3::timestamptz END
+		WHERE id = $1 AND queue_reason <> $2 AND admitted_at IS NULL`, id, reason, now)
 	return err
 }
 

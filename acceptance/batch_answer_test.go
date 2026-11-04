@@ -439,6 +439,10 @@ func (s *accBatchStore) SetAdmitted(ctx context.Context, id string) error {
 	return s.tasks.SetAdmitted(ctx, id)
 }
 
+func (s *accBatchStore) SetQueueReason(context.Context, string, string, time.Time) error {
+	panic("unused")
+}
+
 func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	return s.tasks.CountAdmitted(ctx, repository)
 }

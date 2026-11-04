@@ -937,6 +937,22 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	return nil
 }
 
+// SetQueueReason mirrors Postgres: a new reason restarts queue_since at
+// now, the same one keeps it, "" clears both, and an admitted card takes
+// none.
+func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
+	t, ok := s.tasks[id]
+	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
+		return nil
+	}
+	t.QueueReason, t.QueueSince = reason, &now
+	if reason == "" {
+		t.QueueSince = nil
+	}
+	s.tasks[id] = t
+	return nil
+}
+
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {

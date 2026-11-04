@@ -331,20 +331,26 @@ func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, e
 
 // stepExpired is the Found of a step its rung did not answer by due, after
 // found, what the step found before: its bound, due less its start, to the
-// minute as Go prints a duration less its zero units, as 35m, 1h30m or 2h.
+// minute as durationText writes it.
 func stepExpired(found string, started, due time.Time) string {
-	bound := due.Sub(started).Round(time.Minute).String()
-	if b, ok := strings.CutSuffix(bound, "m0s"); ok {
-		bound = b + "m"
-	}
-	if b, ok := strings.CutSuffix(bound, "h0m"); ok {
-		bound = b + "h"
-	}
-	expired := "the rung did not answer within " + bound
+	expired := "the rung did not answer within " + durationText(due.Sub(started).Round(time.Minute))
 	if found == "" {
 		return expired
 	}
 	return found + ", then " + expired
+}
+
+// durationText is d, whole minutes, as Go prints a duration less its zero
+// units: 35m, 1h30m, 2h.
+func durationText(d time.Duration) string {
+	s := d.String()
+	if m, ok := strings.CutSuffix(s, "m0s"); ok {
+		s = m + "m"
+	}
+	if h, ok := strings.CutSuffix(s, "h0m"); ok {
+		s = h + "h"
+	}
+	return s
 }
 
 // caseAnswer is the action of a case an answer row resolved: an answer
