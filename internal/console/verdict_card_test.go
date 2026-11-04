@@ -391,53 +391,73 @@ func refusedAs(t *testing.T, err error, status int, msg string) {
 	}
 }
 
-// humanRig is sf/code's board with plan t-plan's integration card t-int
+// humanCriteria are humanBoard's plan's criteria.
+var humanCriteria = []factoryd.PlanCriterion{
+	{ID: "size_bound", Kind: factoryd.CriterionTest, Claim: "every size row stays under its bound", Inputs: "GET /sizes", Expected: "3 rows"},
+	{ID: "reads_calm", Kind: factoryd.CriterionJudgement, Claim: "the sizes page reads calm", Prompt: "Judge whether the page names every size."},
+	{ID: "all_green", Kind: factoryd.CriterionInvariant, Suite: "./..."},
+	{ID: "pages_ok", Kind: factoryd.CriterionHuman, Claim: "The pages read well", Evidence: "Open /sizes and /doors at 390 px"},
+	{ID: "page_links", Kind: factoryd.CriterionHuman, Claim: "Every page links home", Evidence: "the links on /help"},
+}
+
+// humanBoard is sf/code's board with plan t-plan's integration card t-int
 // (#5) in review on merge request 31 (pull request #12): the gate's and
 // the judgement's rows stand on it, the human criteria pages_ok and
 // page_links have none, and pages_ok's proof wrote its artifact. The
 // feature card t-sizes (#6) waits on merge request 32 (pull request #13).
-// A decided criterion lands as the approver's row on t-int, and the
-// calls it took are returned.
-func humanRig(r *rig) *[]string {
-	criteria := []factoryd.PlanCriterion{
-		{ID: "size_bound", Kind: factoryd.CriterionTest, Claim: "every size row stays under its bound", Inputs: "GET /sizes", Expected: "3 rows"},
-		{ID: "reads_calm", Kind: factoryd.CriterionJudgement, Claim: "the sizes page reads calm", Prompt: "Judge whether the page names every size."},
-		{ID: "all_green", Kind: factoryd.CriterionInvariant, Suite: "./..."},
-		{ID: "pages_ok", Kind: factoryd.CriterionHuman, Claim: "The pages read well", Evidence: "Open /sizes and /doors at 390 px"},
-		{ID: "page_links", Kind: factoryd.CriterionHuman, Claim: "Every page links home", Evidence: "the links on /help"},
-	}
-	plan, _ := json.Marshal(factoryd.Plan{Summary: "The sizes and doors pages", Criteria: criteria, Cards: []factoryd.PlanCard{
+func humanBoard() labScene {
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The sizes and doors pages", Criteria: humanCriteria, Cards: []factoryd.PlanCard{
 		{Key: "sizes", Role: factoryd.RoleFeature, Title: "The sizes page"},
 		{Key: "integration", Role: factoryd.RoleIntegration, Title: "The pages together"},
 	}})
-	r.tasks.tasks = []factoryd.BoardTask{
-		{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Sizes and doors",
-			Repository: "sf/code", IssueNumber: 3}},
-		{Task: factoryd.Task{ID: "t-sizes", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 6, PRNumber: 13,
-			Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "sizes"}},
-		{Task: factoryd.Task{ID: "t-int", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 5, PRNumber: 12,
-			Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "integration"}},
-	}
-	r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
-	r.tasks.criteria = map[string][]factoryd.CriterionVerdict{"t-int": {
-		{Criterion: "size_bound", Verdict: "met", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound passed",
-			Kind: factoryd.CriterionTest, Source: factoryd.CriteriaSourceGate},
-		{Criterion: "reads_calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)",
-			Kind: factoryd.CriterionJudgement, Source: factoryd.CriteriaSourceJudgement},
-		{Criterion: "all_green", Verdict: "unmet", Evidence: "criterion all_green: suite ./... failed: Failed boom",
-			Kind: factoryd.CriterionInvariant, Source: factoryd.CriteriaSourceGate},
-	}}
-	artifact, _ := json.Marshal(factoryd.GateArtifact{Criterion: "pages_ok", Name: "pages_ok.txt", Head: "8e3a1b0c", Content: "sizes: 3 rows\ndoors: 2 rows"})
-	_ = r.c.cfg.Timelines.Put(context.Background(), factoryd.ArtifactKey("t-int", "pages_ok"), artifact)
 	spec := json.RawMessage(`{"risk_class":"standard","head_sha":"8e3a1b0c"}`)
-	r.approvals.rows = append(r.approvals.rows,
-		factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-int", Project: "sf/code", PRNumber: 12, Status: "pending",
-			Reason: "the project's merge rule is human", Spec: spec},
-		factoryd.ApprovalRequest{ID: 32, Kind: factoryd.ApprovalMerge, TaskID: "t-sizes", Project: "sf/code", PRNumber: 13, Status: "pending",
-			Reason: "the project's merge rule is human", Spec: spec})
+	return labScene{
+		tasks: []factoryd.BoardTask{
+			{Task: factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Sizes and doors",
+				Repository: "sf/code", IssueNumber: 3}},
+			{Task: factoryd.Task{ID: "t-sizes", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 6, PRNumber: 13,
+				Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "sizes"}},
+			{Task: factoryd.Task{ID: "t-int", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 5, PRNumber: 12,
+				Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "integration"}},
+		},
+		plans: map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}},
+		criteria: map[string][]factoryd.CriterionVerdict{"t-int": {
+			{Criterion: "size_bound", Verdict: "met", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound passed",
+				Kind: factoryd.CriterionTest, Source: factoryd.CriteriaSourceGate},
+			{Criterion: "reads_calm", Verdict: "met", Evidence: "the page names every size (model big, prompt 6b2355d78a19)",
+				Kind: factoryd.CriterionJudgement, Source: factoryd.CriteriaSourceJudgement},
+			{Criterion: "all_green", Verdict: "unmet", Evidence: "criterion all_green: suite ./... failed: Failed boom",
+				Kind: factoryd.CriterionInvariant, Source: factoryd.CriteriaSourceGate},
+		}},
+		objects: map[string]string{factoryd.ArtifactKey("t-int", "pages_ok"): pagesOK("sizes: 3 rows\ndoors: 2 rows")},
+		approvals: []factoryd.ApprovalRequest{
+			{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-int", Project: "sf/code", PRNumber: 12, Status: "pending",
+				Reason: "the project's merge rule is human", Spec: spec},
+			{ID: 32, Kind: factoryd.ApprovalMerge, TaskID: "t-sizes", Project: "sf/code", PRNumber: 13, Status: "pending",
+				Reason: "the project's merge rule is human", Spec: spec},
+		},
+	}
+}
+
+// pagesOK is the stored artifact pages_ok's proof wrote at 8e3a1b0c, its
+// content content.
+func pagesOK(content string) string {
+	b, _ := json.Marshal(factoryd.GateArtifact{Criterion: "pages_ok", Name: "pages_ok.txt", Head: "8e3a1b0c", Content: content})
+	return string(b)
+}
+
+// humanRig seeds r with humanBoard. A decided criterion lands as the
+// approver's row on t-int, and the calls it took are returned.
+func humanRig(r *rig) *[]string {
+	s := humanBoard()
+	r.tasks.tasks, r.tasks.plans, r.tasks.criteria = s.tasks, s.plans, s.criteria
+	for k, v := range s.objects {
+		_ = r.c.cfg.Timelines.Put(context.Background(), k, []byte(v))
+	}
+	r.approvals.rows = append(r.approvals.rows, s.approvals...)
 	var calls []string
 	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
-		i := slices.IndexFunc(criteria, func(c factoryd.PlanCriterion) bool { return c.ID == cid })
+		i := slices.IndexFunc(humanCriteria, func(c factoryd.PlanCriterion) bool { return c.ID == cid })
 		if i < 0 {
 			return factoryd.ErrNoCriterion
 		}
@@ -445,7 +465,7 @@ func humanRig(r *rig) *[]string {
 		r.tasks.mu.Lock()
 		defer r.tasks.mu.Unlock()
 		r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: cid, Verdict: verdict,
-			Evidence: reason, Kind: criteria[i].Kind, Source: factoryd.CriteriaSourceApprover, DecidedBy: by})
+			Evidence: reason, Kind: humanCriteria[i].Kind, Source: factoryd.CriteriaSourceApprover, DecidedBy: by})
 		return nil
 	}
 	return &calls
@@ -663,4 +683,110 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		}
 		approved(t, r)
 	})
+}
+
+// The integration card's merge card holds a row per criterion in the
+// plan's order: a gate row met blind or open says so and reads ended, the
+// judgement's row shows the model's reason, the red invariant offers its
+// Waive alone, and each human row its artifact or its evidence with Met,
+// Not met and Waive. Approve waits on the human rows with no verdict and
+// names them. A feature card's merge card has no rows, an artifact past
+// 8 KiB shows its first 8 KiB, cut on a character, and a failed read says
+// so.
+func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
+	r := newRig(t)
+	humanRig(r)
+	ck, _ := r.loggedIn(t)
+	card := func(id int64) string {
+		t.Helper()
+		column := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+		start := strings.Index(column, fmt.Sprintf(`aria-labelledby="approval-%d"`, id))
+		if start < 0 {
+			t.Fatalf("Needs you holds no approval %d:\n%s", id, column)
+		}
+		return column[start : start+strings.Index(column[start:], "</article>")]
+	}
+	rows := func(card string) map[string]string {
+		out := map[string]string{}
+		for _, f := range regexp.MustCompile(`(?s)<fieldset class="question[^"]*"><legend>.*?</fieldset>`).FindAllString(card, -1) {
+			out[f[strings.Index(f, "<legend>")+len("<legend>"):strings.Index(f, " (")]] = f
+		}
+		return out
+	}
+	k := card(31)
+	legends := regexp.MustCompile(`<fieldset class="question[^"]*"><legend>([^<]*)</legend>`).FindAllStringSubmatch(k, -1)
+	var order []string
+	for _, l := range legends {
+		order = append(order, l[1])
+	}
+	equal(t, "the rows", order, []string{"size_bound (test): met (blind)", "reads_calm (judgement): met", "all_green (invariant): unmet",
+		"pages_ok (human): open", "page_links (human): open"})
+	row := rows(k)
+	for id, want := range map[string][]string{
+		"size_bound": {`<fieldset class="question settled"><legend>size_bound (test): met (blind)</legend>`,
+			`<p class="reason">criterion size_bound: TestSizeBound in ./proofs/size_bound passed</p>`},
+		"reads_calm": {`<fieldset class="question settled"><legend>reads_calm (judgement): met</legend>`,
+			`<p class="reason">the page names every size (model big, prompt 6b2355d78a19)</p>`},
+		"all_green": {`<legend>all_green (invariant): unmet</legend>`, `<p class="reason">criterion all_green: suite ./... failed: Failed boom</p>`,
+			`action="/approvals/31/criterion"`, `name="reason" maxlength="2000" required hx-preserve`, `aria-label="Waive criterion all_green of t-int"`},
+		"pages_ok": {`<legend>pages_ok (human): open</legend>`, `<p class="meta">The pages read well</p>`, `<p class="meta">pages_ok.txt at 8e3a1b0</p>`,
+			`<pre class="artifact" tabindex="0">sizes: 3 rows` + "\n" + `doors: 2 rows</pre>`, `name="reason" maxlength="2000" hx-preserve`,
+			`name="verb" value="met" aria-label="Met: criterion pages_ok of t-int"`, `name="verb" value="not_met" aria-label="Not met: criterion pages_ok of t-int"`,
+			`name="verb" value="waived" aria-label="Waive criterion pages_ok of t-int"`},
+		"page_links": {`<legend>page_links (human): open</legend>`, `<p class="meta">Evidence: the links on /help</p>`,
+			`aria-label="Met: criterion page_links of t-int"`},
+	} {
+		for _, w := range want {
+			if !strings.Contains(row[id], w) {
+				t.Errorf("the %s row lacks %q:\n%s", id, w, row[id])
+			}
+		}
+	}
+	for id, not := range map[string][]string{
+		"size_bound": {"<form", "blind: "}, "reads_calm": {"<form"}, "all_green": {`value="met"`, `value="not_met"`},
+		"pages_ok": {"Evidence:", "Open /sizes and /doors"}, "page_links": {"<pre"},
+	} {
+		for _, n := range not {
+			if strings.Contains(row[id], n) {
+				t.Errorf("the %s row holds %q:\n%s", id, n, row[id])
+			}
+		}
+	}
+	if !strings.Contains(k, `<p class="meta">Approve opens once every human criterion has a verdict: pages_ok and page_links.</p>`) ||
+		strings.Contains(k, `action="/approvals/31/approve"`) || strings.Contains(k, "yours to judge") {
+		t.Errorf("the merge card offers Approve with human rows open, or does not name them:\n%s", k)
+	}
+	if k := card(32); strings.Contains(k, `<fieldset class="question`) || !strings.Contains(k, `action="/approvals/32/approve"`) {
+		t.Errorf("the feature card's merge card holds rows or no Approve:\n%s", k)
+	}
+
+	r.tasks.mu.Lock()
+	for _, cid := range []string{"pages_ok", "page_links"} {
+		r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: cid, Verdict: "met",
+			Evidence: "met (the criterion's evidence)", Kind: factoryd.CriterionHuman, Source: factoryd.CriteriaSourceApprover, DecidedBy: "sebastian"})
+	}
+	r.tasks.mu.Unlock()
+	k = card(31)
+	if !strings.Contains(k, `action="/approvals/31/approve"`) || strings.Contains(k, "Approve opens once") ||
+		!strings.Contains(rows(k)["pages_ok"], `<fieldset class="question settled"><legend>pages_ok (human): met</legend>`) ||
+		strings.Contains(rows(k)["pages_ok"], "<form") {
+		t.Errorf("with every human row met the card reads:\n%s", k)
+	}
+
+	for _, tc := range []struct{ content, shown string }{
+		{strings.Repeat("0123456789", 900), strings.Repeat("0123456789", 819) + "01"},
+		{strings.Repeat("a", 8191) + "é" + strings.Repeat("b", 807), strings.Repeat("a", 8191)},
+	} {
+		_ = r.c.cfg.Timelines.Put(t.Context(), factoryd.ArtifactKey("t-int", "pages_ok"), []byte(pagesOK(tc.content)))
+		pages := rows(card(31))["pages_ok"]
+		if !strings.Contains(pages, `<pre class="artifact" tabindex="0">`+tc.shown+`</pre>`) ||
+			!strings.Contains(pages, `<p class="meta">pages_ok.txt at 8e3a1b0, the first 8 KiB of 9 KiB</p>`) {
+			t.Errorf("an artifact of %d bytes shows:\n%.400s", len(tc.content), pages)
+		}
+	}
+
+	r.c.cfg.Timelines = failingObjects{}
+	if k := card(31); !strings.Contains(k, `<p class="problem">The console could not read the criterion rows. See the factoryd log.</p>`) {
+		t.Errorf("a failed read of the rows is not said on the card:\n%s", k)
+	}
 }

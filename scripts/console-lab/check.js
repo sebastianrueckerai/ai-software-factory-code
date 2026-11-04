@@ -447,6 +447,73 @@ async function criteriaWaive(browser, fails) {
   await p.ctx.close();
 }
 
+// criteriaHuman reads the human scene's merge card of t-int: its rows
+// stay inside the card at 1440 and 390, and pages_ok's artifact, one
+// unbroken line, wraps without a sideways scroll. With a reason typed under all_green, Met on pages_ok dims the card
+// and takes its buttons until the board that answers it lands, that
+// board's read held 1.2 s; the board shows pages_ok met and settled
+// without its form, and no Approve while page_links waits. A Waive on
+// page_links with its reason brings the Approve, and the reason under
+// all_green stays typed across both boards.
+async function criteriaHuman(browser, fails) {
+  await seed("human");
+  const card = '#board article.approval[aria-labelledby="approval-31"]';
+  for (const viewport of [{ width: 1440, height: 900 }, { width: 390, height: 844 }]) {
+    const p = await open(browser, viewport);
+    await p.page.goto(base + "/", { waitUntil: "load" });
+    await p.page.waitForTimeout(600);
+    const out = await p.page.evaluate((s) => {
+      const k = document.querySelector(s);
+      if (!k) return null;
+      const edge = k.getBoundingClientRect().right;
+      return Array.from(k.querySelectorAll("fieldset.question, fieldset.question *")).filter((e) => e.getBoundingClientRect().right > edge + 1 ||
+        (e.matches("pre.artifact") && e.scrollWidth > e.clientWidth)).map((e) => e.tagName.toLowerCase() + (e.className ? "." + e.className : "")).slice(0, 4);
+    }, card);
+    if (!out) fails.push("criteria human: no merge card of t-int on the board at " + viewport.width);
+    else if (out.length) fails.push("criteria human: at " + viewport.width + " the rows reach past the card's edge: " + out.join(", "));
+    await p.ctx.close();
+  }
+  const p = await open(browser, { width: 1440, height: 900 });
+  await p.page.goto(base + "/", { waitUntil: "load" });
+  await p.page.waitForTimeout(600);
+  const field = (c) => card + ' input[name="reason"][id$="-' + c + '"]';
+  const kept = "CI covers the suite.";
+  await p.page.locator(field("all_green")).fill(kept);
+  let reads = 0;
+  await p.page.route((u) => u.pathname === "/board", async (r) => {
+    reads++;
+    await new Promise((ok) => setTimeout(ok, 1200));
+    await r.continue();
+  });
+  const read = () => p.page.evaluate((s) => {
+    const k = document.querySelector(s);
+    if (!k) return null;
+    const q = Array.from(k.querySelectorAll("fieldset.question")).find((f) => f.querySelector("legend").textContent.startsWith("pages_ok "));
+    return { legend: q && q.querySelector("legend").textContent, settled: !!q && q.classList.contains("settled"), form: !!(q && q.querySelector("form")),
+      approve: !!k.querySelector('form[action$="/approve"] button'), kept: (k.querySelector('input[name="reason"][id$="-all_green"]') || {}).value,
+      busy: k.getAttribute("aria-busy"), live: Array.from(k.querySelectorAll("button")).filter((b) => !b.disabled).length };
+  }, card);
+  await p.page.locator(card + ' button[aria-label="Met: criterion pages_ok of t-int"]').click();
+  await p.page.waitForTimeout(500);
+  const mid = await read();
+  if (!mid || mid.busy !== "true" || mid.live) fails.push("criteria human: before the Met's board lands the card stands " + JSON.stringify(mid) + ", want it dimmed with no live button");
+  await p.page.waitForTimeout(1600);
+  const met = await read();
+  if (!reads) fails.push("criteria human: the Met read no board");
+  if (!met || met.legend !== "pages_ok (human): met" || !met.settled || met.form || met.approve || met.busy || met.kept !== kept) {
+    fails.push("criteria human: once the Met's board landed the card reads " + JSON.stringify(met) +
+      ", want pages_ok met and settled without its form, no Approve, the reason under all_green kept and the card let go");
+  }
+  await p.page.locator(field("page_links")).fill("The help page is gone.");
+  await p.page.locator(card + ' button[aria-label="Waive criterion page_links of t-int"]').click();
+  await p.page.waitForTimeout(2100);
+  const waived = await read();
+  if (!waived || !waived.approve || waived.busy || waived.kept !== kept) {
+    fails.push("criteria human: once the Waive's board landed the card reads " + JSON.stringify(waived) + ", want the Approve, the reason under all_green kept and the card let go");
+  }
+  await p.ctx.close();
+}
+
 async function text(page) {
   // what a disclosure hides (the deny form, the own-answer box, the status panel) counts once opened
   await page.evaluate(() => document.querySelectorAll('button.deny[aria-expanded="false"], button.own-toggle[aria-expanded="false"]').forEach((b) => b.click()));
@@ -2090,6 +2157,7 @@ async function text(page) {
   await cardPress(cp.page, fails);
   await cp.ctx.close();
   await criteriaWaive(browser, fails);
+  await criteriaHuman(browser, fails);
   await browser.close();
   if (fails.length) { console.log(fails.join("\n")); process.exit(1); }
   console.log("ok: every control present, the mechanics work");

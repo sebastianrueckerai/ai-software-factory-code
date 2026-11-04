@@ -22,10 +22,16 @@ import (
 // criterion, its standing verdict and the evidence behind it.
 type criterionRow struct {
 	factoryd.PlanCriterion
-	Verdict  string
-	Evidence string
-	Artifact *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
+	Verdict     string
+	Evidence    string
+	Word        string                 // "blind" or "open" for a met gate row, from its evidence
+	Artifact    *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
+	ArtifactCut string                 // "the first 8 KiB of <n> KiB" when the card shows the artifact's first maxCardArtifact bytes
+	Human       bool                   // Met and Not met are offered: a human criterion on a merge card
 }
+
+// maxCardArtifact is the most of an artifact a merge card shows.
+const maxCardArtifact = 8 << 10
 
 // approvalCard is a pending approval request with what its kind needs.
 type approvalCard struct {
@@ -58,6 +64,10 @@ type approvalCard struct {
 	Criteria     []criterionRow
 	Delivered    bool
 	Grantable    bool
+	// Unsettled: a merge card's human criteria with no verdict, which hold
+	// its Approve. A gate criterion without a row does not: the press
+	// reaches the workflow, which runs the gate again.
+	Unsettled []string
 	// a plan: its revision, the summary, the cards in filing order and the
 	// keys it takes off main
 	PlanSpec    factoryd.PlanSpec
@@ -189,6 +199,12 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 				k.OpenedUnread = true
 			}
 		}
+		if rows, open, ok, rerr := c.planRows(ctx, t); rerr != nil {
+			log.Printf("console: approval request %d: %v", a.ID, rerr)
+			k.Problem = "The console could not read the criterion rows. See the factoryd log."
+		} else if ok {
+			k.Criteria, k.Unsettled = rows, open
+		}
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
@@ -215,9 +231,6 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		}
 		for i, f := range k.Merge.Review.Findings {
 			k.Merge.Review.Findings[i] = faceLine(f, 200)
-		}
-		for i := range k.Merge.Review.Criteria {
-			k.Merge.Review.Criteria[i].Evidence = faceLine(k.Merge.Review.Criteria[i].Evidence, 200)
 		}
 		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
@@ -299,27 +312,42 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// planRows are planVerdicts' rows, each human criterion's with its
-// artifact.
+// planRows are planVerdicts' rows as the merge card shows them: a met
+// gate row's blind or open moved from its evidence to its Word, and each
+// human criterion's with its artifact, cut to maxCardArtifact bytes.
 func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, ok bool, err error) {
 	rows, open, home, ok, err := c.planVerdicts(ctx, t)
 	if err != nil || !ok {
 		return nil, nil, ok, err
 	}
 	for i, row := range rows {
+		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
+			for _, w := range []string{"blind", "open"} {
+				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
+					rows[i].Word, rows[i].Evidence = w, rest
+				}
+			}
+		}
 		if row.Kind != factoryd.CriterionHuman {
 			continue
 		}
+		rows[i].Human = true
 		b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, row.ID))
 		if err != nil {
 			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
 		}
-		if b != nil {
-			rows[i].Artifact = &factoryd.GateArtifact{}
-			if err := json.Unmarshal(b, rows[i].Artifact); err != nil {
-				return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
-			}
+		if b == nil {
+			continue
 		}
+		a := &factoryd.GateArtifact{}
+		if err := json.Unmarshal(b, a); err != nil {
+			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
+		}
+		if len(a.Content) > maxCardArtifact {
+			rows[i].ArtifactCut = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
+			a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
+		}
+		rows[i].Artifact = a
 	}
 	return rows, open, true, nil
 }

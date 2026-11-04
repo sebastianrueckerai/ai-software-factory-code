@@ -423,6 +423,8 @@ form.inline button { margin: 0; }
    the pre's 12px type is 288px, 15 lines of its 18px line height inside
    the padding and the border, and it scrolls past them */
 pre.proof { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
+/* a human criterion's artifact on its merge card row */
+pre.artifact { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 16em; overflow: auto; }
 .fold { margin: 6px 0 0; font-size: 12px; }
 .fold > summary { cursor: pointer; color: var(--text-faint); }
 .fold > summary:hover, .fold > summary:focus-visible { color: var(--text-muted); }

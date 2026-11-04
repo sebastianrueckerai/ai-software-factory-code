@@ -56,7 +56,7 @@ func TestMergeFaceWhispers(t *testing.T) {
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, whole := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "EVIDENCE_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER"} {
+	for _, whole := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER"} {
 		if !strings.Contains(drawer, whole) {
 			t.Errorf("FIX MISSING: the drawer lost the whole text (%s):\n%s", whole, drawer)
 		}

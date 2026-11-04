@@ -90,6 +90,8 @@ var funcs = template.FuncMap{
 	"pct100": func(spent, cap float64) int { return min(pct(spent, cap), 100) },
 	// initial is a member's avatar letter
 	"initial": func(s string) string { return strings.ToUpper(string([]rune(s)[:min(1, len([]rune(s)))])) },
+	// andlist is "a, b and c"
+	"andlist": textutil.AndList,
 	// words is a stored word of the factory's, its underscores spaces
 	"words": func(s string) string { return strings.ReplaceAll(s, "_", " ") },
 	// switch is whether the top bar shows the project select: the board
