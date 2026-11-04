@@ -10,6 +10,7 @@ import (
 	"maps"
 	"slices"
 	"strings"
+	"time"
 
 	"go.temporal.io/sdk/activity"
 
@@ -35,6 +36,12 @@ type TripInput struct {
 	// CheckinStop is the check-in spend stop the trip is (CheckinStop*),
 	// "" for any other stop: its repeat's ask no longer names it.
 	CheckinStop string
+	// Kind and StateKey are the case's for a caller that knows them, the
+	// monitor: with Kind set they stand in for the kind and the key the
+	// reason gives. Extra are facts the case carries beside the card's.
+	Kind     CaseKind
+	StateKey string
+	Extra    map[string]any
 }
 
 // The check-in's spend stops, which a check-in share case keeps in its
@@ -108,6 +115,65 @@ var rung0 = []resolver{
 		}
 		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
 	}},
+	// the monitor's issue_open_after_end, which the monitor raises only
+	// where Finish closes the issue: rung 0 closes it on the ended card, as
+	// the heal closes it
+	{Name: "close_ended", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "issue_open_after_end" || f.Final == "" {
+			return nil, nil
+		}
+		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), nil
+	}},
+	// the monitor's wait_over_bound on a rung that did not answer: the
+	// card's steps past their bound end as ExpireSteps ends one, and that
+	// ends the case, with no face: the steps' hand-up is the record
+	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, error) {
+		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "wait_over_bound" || c.Facts["wait"] != "rung_answer" {
+			return nil, nil
+		}
+		ended, err := r.expireCardSteps(ctx, c.TaskID)
+		if err != nil || len(ended) == 0 {
+			return nil, err
+		}
+		what := "step"
+		if len(ended) > 1 {
+			what = "steps"
+		}
+		return &Resolution{Action: ActWithdraw, Note: "ended the overdue " + what + ": " + textutil.AndList(ended)}, nil
+	}},
+}
+
+// expireCardSteps ends card taskID's in-progress steps past their due as
+// ExpireSteps ends them, handed up with its words, and names each: the
+// rung that did not answer and its bound. A step its rung ended meanwhile
+// keeps its own end.
+func (r *Runner) expireCardSteps(ctx context.Context, taskID string) ([]string, error) {
+	cases, err := r.store.OpenCasesOf(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	now := r.clock()
+	var ended []string
+	for _, c := range cases {
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return nil, err
+		}
+		for _, st := range steps {
+			if st.Outcome != StepInProgress || st.DueAt == nil || !st.DueAt.Before(now) {
+				continue
+			}
+			err := r.store.EndCaseStep(ctx, st.ID, StepHandedUp, stepExpired(st.Found, st.StartedAt, *st.DueAt), st.Did, st.Decision, st.Grounds, st.CostEUR)
+			if errors.Is(err, ErrNotFound) {
+				continue
+			}
+			if err != nil {
+				return nil, err
+			}
+			ended = append(ended, fmt.Sprintf("rung %d did not answer within %s", st.Rung, durationText(st.DueAt.Sub(st.StartedAt).Round(time.Minute))))
+		}
+	}
+	return ended, nil
 }
 
 // rungZeroTakes is res when case c is of kinds and the action table lets
@@ -148,7 +214,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if in.Reason == healedReason {
+	if in.Reason == healedReason && in.Kind == "" {
 		return r.healedTrip(ctx, t, in, at.ID)
 	}
 	f, err := r.tripFacts(ctx, t, in.Head)
@@ -182,7 +248,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c.Kind, in.Reason), in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c, in.Reason), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -271,7 +337,7 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 	if err := r.tripStep(ctx, c.ID, restarted); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c.Kind, stop), in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c, stop), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -334,11 +400,15 @@ func (r *Runner) tripStep(ctx context.Context, id int64, found string) error {
 }
 
 // waitsAtHuman is the trip that finds case c at the human already: a step
-// on rung 0 that found found and handed up, the card waiting on the human,
-// and the comment of the case's newest ask, which no new face follows.
+// on rung 0 that found found and handed up, the card waiting on the human
+// unless c sits beside its run, and the comment of the case's newest ask,
+// which no new face follows.
 func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string) (TripOutcome, error) {
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
+	}
+	if c.Kind == CaseMonitorFlag {
+		return TripOutcome{CaseID: c.ID, Comment: c.CommentID, Rung: 3}, nil
 	}
 	if err := r.waitOnHuman(ctx, t); err != nil {
 		return TripOutcome{}, err
@@ -348,11 +418,12 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 
 // tripCase is the case trip in makes on card t with facts f, open until
 // its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
-// of the reason. The problem is the shaped question's ask where a
-// template names the decision, else the reason's first line. The facts
-// are f with the reason, its source and what the reason names, the money
-// the card's for a stop on its own budget, with what the next opening
-// needs at the floor. The case follows the card's newest ended one.
+// of the reason, or in's own with its key. The problem is the shaped
+// question's ask where a template names the decision, else the reason's
+// first line. The facts are f with the reason, its source, what the reason
+// names and in's extra facts, the money the card's for a stop on its own
+// budget, with what the next opening needs at the floor. The case follows
+// the card's newest ended one.
 func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput) (Case, []Case, error) {
 	cases, err := r.store.CasesOf(ctx, t.ID)
 	if err != nil {
@@ -360,6 +431,9 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	source := escalationSource(in.Reason)
 	kind, named := caseKindOf(source, in.Reason)
+	if in.Kind != "" {
+		kind, named = in.Kind, nil
+	}
 	if kind == CaseOther && t.Kind == "human" {
 		kind = CaseHumanCard
 	}
@@ -376,11 +450,16 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 		return Case{}, nil, err
 	}
 	maps.Copy(facts, named)
+	maps.Copy(facts, in.Extra)
 	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
 	if in.CheckinStop != "" {
 		facts["checkin_stop"] = in.CheckinStop
 	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: tripKey(kind, problem, f.Head, f),
+	key := tripKey(kind, problem, f.Head, f)
+	if in.Kind != "" {
+		key = in.StateKey
+	}
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
 		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
 		if e.Status != CaseOpen && e.Status != CaseAtHuman {
@@ -457,12 +536,15 @@ func replyNext(reason string) string {
 	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 }
 
-// tripNext is the last line of a trip's face for a case of kind: at a
-// cap, where a reply is a continue that asks again, the Extend form or
-// the chat's extend start the next attempt, at a budget floor the Fund
-// form or the chat's fund, and elsewhere a reply (replyNext).
-func tripNext(kind CaseKind, reason string) string {
-	switch kind {
+// tripNext is the last line of a trip's face for case c: at a cap, where
+// a reply is a continue that asks again, the Extend form or the chat's
+// extend start the next attempt, at a budget floor the Fund form or the
+// chat's fund, for a monitor flag, whose card goes on, the case by its
+// number in the chat, and elsewhere a reply (replyNext).
+func tripNext(c Case, reason string) string {
+	switch c.Kind {
+	case CaseMonitorFlag:
+		return fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", c.ID)
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseBudgetFloor:
@@ -476,9 +558,12 @@ func tripNext(kind CaseKind, reason string) string {
 // next, the line that says what moves the card on, and a question_asked
 // row with its question and case c (none for the zero Case); the agent's
 // choices, if any, ride on that row, the timeline's step and the intake
-// event the card reads. It returns the comment's id: only later comments
-// answer it.
+// event the card reads. A monitor flag's case sits beside the card's run:
+// its face is the comment, the row and the alert, and moves no status,
+// writes no ask the run reads and no timeline line. It returns the
+// comment's id: only later comments answer it.
 func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next string, choices []string) (int64, error) {
+	beside := c.Kind == CaseMonitorFlag
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return 0, terminalError("%v", err)
@@ -514,7 +599,11 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// the deterministic stops shape their five-part question from the
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
-		shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
+		if beside {
+			shaped = monitorQuestion(reason, c.ID)
+		} else {
+			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
+		}
 		question = shaped.Ask
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
@@ -535,15 +624,17 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		_, again, _ := answersFrom(events)
 		question = cmp.Or(again, question)
 	}
-	// the durable anchor Reconcile rebuilds the answers from; a retry
-	// with the same comment records nothing twice. It is written before
-	// the wait: a card in waiting-human without its row has no ask
-	if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
-		Choices: choices, Question: shaped}); err != nil {
-		return 0, fmt.Errorf("task %s: record escalation comment %d: %w", t.ID, id, err)
-	}
-	if err := r.waitOnHuman(ctx, t); err != nil {
-		return 0, err
+	if !beside {
+		// the durable anchor Reconcile rebuilds the answers from; a retry
+		// with the same comment records nothing twice. It is written before
+		// the wait: a card in waiting-human without its row has no ask
+		if _, err := r.store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: "factoryd", Body: reason, CommentID: id,
+			Choices: choices, Question: shaped}); err != nil {
+			return 0, fmt.Errorf("task %s: record escalation comment %d: %w", t.ID, id, err)
+		}
+		if err := r.waitOnHuman(ctx, t); err != nil {
+			return 0, err
+		}
 	}
 	// the shaped question's buttons are not these choices: they carry
 	// values, and park and keep waiting record an answer without posting
@@ -553,6 +644,11 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		"reason": textutil.Truncate(reason, 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID
+	}
+	if beside {
+		// the card's own ask stays the card's: its thread seeds from that.
+		// The flag tells the settle the ask of an ended card's open issue
+		asked["case_kind"], asked["flag"] = string(c.Kind), c.Facts["flag"]
 	}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info
@@ -567,7 +663,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			asked["choices"] = choices
 		}
 	}
-	r.record(ctx, t.ID, "escalated", step)
+	if !beside {
+		r.record(ctx, t.ID, "escalated", step)
+	}
 	r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
 	if reason == healedReason || strings.HasPrefix(reason, screeningAsks) {
 		return id, nil // the question asked again, or the screening's: its alert is open already

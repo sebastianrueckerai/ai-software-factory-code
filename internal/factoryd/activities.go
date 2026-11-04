@@ -92,6 +92,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityBranchHead:                  r.BranchHead,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
 		ActivityRecordStep:                  r.RecordStep,
+		ActivityRecordNotRun:                r.RecordNotRun,
 		ActivityFinish:                      r.Finish,
 		ActivityReconcile:                   r.Reconcile,
 		ActivityEscalate:                    r.Escalate,
@@ -1539,10 +1540,43 @@ func (r *Runner) RecordStep(ctx context.Context, taskID, step string, detail map
 	return r.timeline.Append(ctx, taskID, step, detail)
 }
 
+// RecordNotRun writes the review's or the audit's did-not-run row (kind
+// policy.StageReview or policy.StageAudit) when its activity failed for
+// good, with the failure's reason: the row the monitor's
+// review_refused_not_run reads, in the shape the run activity writes for
+// a call that never started. The workflow calls it beside its own failure
+// ask, under the queue-waits gate.
+func (r *Runner) RecordNotRun(ctx context.Context, taskID, kind string, pr int64, commit string, round int, reason string) error {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if kind == policy.StageAudit {
+		res := AuditResult{Model: r.callModel(t, policy.PurposeAudit),
+			Findings: []AuditFinding{{Item: auditNoVerdict, Why: reason}}}
+		return r.auditFact(ctx, t, PullRequest{Number: pr}, commit, round, res)
+	}
+	fact := ReviewAttemptFact{PR: pr, Commit: commit, Round: round, Model: r.callModel(t, policy.PurposeReview), Note: reviewNotStarted + reason}
+	return r.reviewFact(ctx, t, fact)
+}
+
 // ProviderWait records that the task waits w.Backoff on the model
 // provider; its schedule puts the task in gate provider (activityGates).
 func (r *Runner) ProviderWait(ctx context.Context, taskID string, w ProviderWait) error {
 	return r.timeline.Append(ctx, taskID, StepProviderRefused, map[string]any{"status": w.Status, "reason": w.Reason, "backoff_s": int(w.Backoff.Seconds())})
+}
+
+// finishClosesIssue reports whether Finish closes the issue of card t as
+// it ends final: a closed card's, and a done card's off the plan track
+// unless it ends after its merge. A failed card's waits for its retry.
+func finishClosesIssue(t Task, final string, afterMerge bool) bool {
+	return final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan
+}
+
+// mergedBefore reports whether a card's events hold its move to merged: a
+// card that ends done after it finishes after its merge.
+func mergedBefore(events []Event) bool {
+	return slices.ContainsFunc(events, func(e Event) bool { return e.Kind == EventTaskStatus && e.Detail["status"] == "merged" })
 }
 
 func earliest(a, b time.Time) time.Time {
@@ -2574,7 +2608,7 @@ func (r *Runner) finish(ctx context.Context, taskID, final, reason string, after
 				return err
 			}
 		}
-		if (final == "closed" || final == "done" && !afterMerge && t.Track != policy.TrackPlan) && t.IssueNumber != 0 {
+		if finishClosesIssue(t, final, afterMerge) && t.IssueNumber != 0 {
 			closing := msg
 			switch {
 			case final == "done" && merged:

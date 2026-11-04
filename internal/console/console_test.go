@@ -477,7 +477,7 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
+		if slices.Contains([]string{"running", "closing"}, t.Status) || (t.Status == "in-review" && t.Gate != factoryd.GateApproval) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
@@ -499,10 +499,9 @@ func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error
 	n := 0
 	for _, bt := range s.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil || factoryd.Final(t.Status) {
-			continue
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil {
+			n++
 		}
-		n++
 	}
 	return n, nil
 }
@@ -632,15 +631,30 @@ func (s *fakeTasks) RollCarries(_ context.Context, id string) ([]factoryd.Task, 
 	return out, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var held []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issue {
-			return t.Task, true, nil
+			held = append(held, t.Task)
 		}
 	}
-	return factoryd.Task{}, false, nil
+	slices.SortFunc(held, func(a, b factoryd.Task) int {
+		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return factoryd.Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its
@@ -1120,10 +1134,12 @@ type rig struct {
 	chatTokens *fakeChatTokens
 	// cardSteps are card_step's answers by task id, step 1 first, and
 	// boardDigests the board digests by repository; openCases are the
-	// open cases by task id, and caseSteps their steps by case id
+	// open cases by task id, endedCases the cases that ended, and
+	// caseSteps their steps by case id
 	cardSteps    map[string][]string
 	boardDigests map[string]factoryd.BoardDigest
 	openCases    map[string][]factoryd.Case
+	endedCases   []factoryd.Case
 	caseSteps    map[int64][]factoryd.CaseStep
 	// web is the chat's fake web door; the gateway is the lab's scripted
 	// model, nil in the tests
@@ -1284,6 +1300,16 @@ func newRig(t *testing.T) *rig {
 				return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseHumanCard, Status: factoryd.CaseAtHuman}}, nil
 			}
 			return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
+		},
+		CaseByID: func(_ context.Context, id int64) (factoryd.Case, error) {
+			all := slices.Clone(r.endedCases)
+			for _, open := range r.openCases {
+				all = append(all, open...)
+			}
+			if i := slices.IndexFunc(all, func(k factoryd.Case) bool { return k.ID == id }); i >= 0 {
+				return all[i], nil
+			}
+			return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
 		},
 		// the newest of the cases OpenCasesOf answers that an answer on
 		// the card ends, as the store reads it
@@ -1683,6 +1709,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CardStep":      func(c *Config) { c.CardStep = nil },
 		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
 		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
+		"CaseByID":      func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
 		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
 	} {

@@ -117,6 +117,11 @@ const EventAnalysisAttached = "analysis_attached"
 // detail {"question", "comment", "reason"}.
 const EventQuestionWithdrawn = "question_withdrawn"
 
+// EventIssueClosed is the webhook's record of an ended card's issue
+// closed, by its closer: detail {"issue"}. The monitor reads it, so the
+// case that asks the issue closed ends with it.
+const EventIssueClosed = "issue_closed"
+
 // EventPlanReplanned is factoryd's record of a replan's revision filed on
 // its plan: detail {"revision", "kept", "changed", "dropped", "added",
 // "origin", "by", "comment"}, the old cards' fates and the new cards
@@ -314,10 +319,11 @@ func (s *PGStore) TaskEventsFor(ctx context.Context, ids []string, limit int) (m
 	if len(ids) == 0 {
 		return out, nil
 	}
-	rows, err := s.db.QueryContext(ctx, `SELECT `+eventColumns+` FROM
-		(SELECT *, row_number() OVER (PARTITION BY task_id ORDER BY id DESC) AS rn
-			FROM events WHERE task_id = ANY($1)) ranked
-		WHERE rn <= $2 ORDER BY task_id, id DESC`, ids, limit)
+	// each card's newest rows off the (task_id, id) index, not its whole
+	// history
+	rows, err := s.db.QueryContext(ctx, `SELECT `+eventColumns+` FROM unnest($1::text[]) AS card(task),
+		LATERAL (SELECT * FROM events WHERE task_id = card.task ORDER BY id DESC LIMIT $2) newest
+		ORDER BY task_id, id DESC`, ids, limit)
 	if err != nil {
 		return nil, err
 	}

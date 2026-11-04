@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"slices"
 	"strings"
 	"testing"
 
@@ -153,6 +154,71 @@ func TestAttachAnalysisEnrichesOpenAsk(t *testing.T) {
 	}
 	if rows := analyses(t, s, "t-1"); len(rows) != 2 {
 		t.Fatalf("%d analysis rows after the second attach, want 2", len(rows))
+	}
+}
+
+// A monitor's ask sits beside the card's own and is answered by its
+// case's number: the analysis goes to the card's own ask, though the
+// monitor's is newer and open.
+func TestAttachAnalysisLeavesAMonitorsAskOut(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40, Kind: EventQuestionAsked, Actor: FactoryDecider,
+		Via: ViaFactoryd, Detail: map[string]any{"question": "The monitor flagged this card: what should happen? Answer case 12 in the project chat.",
+			"case_id": 12, "case_kind": string(CaseMonitorFlag)}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(t.Context(), "t-1", "The replica adds 12 ms of lag.", "", sebastiansAnalysis); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	if got, want := askRow(t, s, "sf/wake", "t-1"),
+		"#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on\nAnalysis: The replica adds 12 ms of lag."; got != want {
+		t.Fatalf("the card's own ask's row = %q, want %q", got, want)
+	}
+}
+
+// A second ask after the first was answered takes the analysis: the
+// answer settled the first ask alone.
+func TestAttachAnalysisTakesTheAskAfterAnAnsweredOne(t *testing.T) {
+	s := newAskStore(t)
+	seedAsk(t, s, "sf/wake", "t-1", 40, "Use a replica?")
+	record := func(kind string, detail map[string]any) {
+		t.Helper()
+		if _, err := s.Record(t.Context(), Event{Repository: "sf/wake", TaskID: "t-1", IssueNumber: 40, Kind: kind, Actor: "sebastian",
+			Via: ViaChat, Detail: detail}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	record(EventQuestionAnswered, map[string]any{"answer": "No"})
+	record(EventQuestionAsked, map[string]any{"question": "Which port?"})
+	conv, err := s.EnsureInbox(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddChatMessage(t.Context(), "sf/wake", "sebastian", ChatMessage{Role: "assistant", Conversation: conv, Kind: MessageEscalation,
+		TaskID: "t-1", BirthKind: EventQuestionAsked, Content: "#40 - Use a replica? needs you: Which port?"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.AttachAnalysis(t.Context(), "t-1", "Port 8080 is taken.", "", sebastiansAnalysis); err != nil {
+		t.Fatalf("AttachAnalysis: %v", err)
+	}
+	rows, err := s.db.QueryContext(t.Context(), `SELECT content FROM chat_messages WHERE task_id = 't-1' AND kind = $1 ORDER BY id`, MessageEscalation)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var got []string
+	for rows.Next() {
+		var content string
+		if err := rows.Scan(&content); err != nil {
+			t.Fatal(err)
+		}
+		got = append(got, content)
+	}
+	want := []string{"#40 - Use a replica? needs you: Use a replica?\nWhy: the card cannot go on",
+		"#40 - Use a replica? needs you: Which port?\nAnalysis: Port 8080 is taken."}
+	if err := rows.Err(); err != nil || !slices.Equal(got, want) {
+		t.Fatalf("the asks' rows = %q, %v; want %q", got, err, want)
 	}
 }
 

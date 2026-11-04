@@ -181,6 +181,15 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 // ask: it names the decision, not the stop.
 const plainAsk = "This card stopped and needs your decision: how should it go on?"
 
+// monitorQuestion is the face of monitor case id: the card goes on in its
+// run, and the case is answered by its number in the project chat, with
+// what a monitor case takes (monitorActions). No button answers it.
+func monitorQuestion(reason string, id int64) *HumanQuestion {
+	return &HumanQuestion{Ask: fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", id),
+		Why:  escalationQuestion(reason),
+		Info: fmt.Sprintf("The card goes on in its run meanwhile. In the project chat, case %d takes a note, a close of the card, a fund, a raise of its ceiling, a retry of a failed dependency or a replan.", id)}
+}
+
 // plainQuestion is the question an ask no template covers gets, so no
 // card puts words alone to a person: an agent's ask keeps its question
 // as the headline, every other stop gets one that names the decision.

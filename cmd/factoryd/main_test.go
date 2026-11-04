@@ -22,6 +22,24 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
+// /readyz says ok once the store answers, then each pass's whole seconds
+// since its newest end, by name. A store that does not answer is a 503.
+func TestReadyzNamesEveryPassAge(t *testing.T) {
+	ages := func(time.Time) map[string]time.Duration {
+		return map[string]time.Duration{"stale": 61700 * time.Millisecond, "heal": 3 * time.Second}
+	}
+	rec := httptest.NewRecorder()
+	readyz(func(context.Context) error { return nil }, ages)(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if want := "ok\npass_heal_age_s 3\npass_stale_age_s 61\n"; rec.Code != http.StatusOK || rec.Body.String() != want {
+		t.Fatalf("readyz = %d %q, want 200 %q", rec.Code, rec.Body.String(), want)
+	}
+	rec = httptest.NewRecorder()
+	readyz(func(context.Context) error { return errors.New("refused") }, ages)(rec, httptest.NewRequest(http.MethodGet, "/readyz", nil))
+	if want := "store unreachable: refused\n"; rec.Code != http.StatusServiceUnavailable || rec.Body.String() != want {
+		t.Fatalf("readyz with the store down = %d %q, want 503 %q", rec.Code, rec.Body.String(), want)
+	}
+}
+
 func TestRequireBearer(t *testing.T) {
 	h := requireBearer("s3cret", func(w http.ResponseWriter, r *http.Request) {})
 	for header, want := range map[string]int{

@@ -114,7 +114,7 @@ func (s *accBatchTasks) SetAdmitted(_ context.Context, id string) error {
 		if bt.ID == id {
 			if bt.AdmittedAt == nil {
 				now := time.Now()
-				bt.AdmittedAt = &now
+				bt.AdmittedAt, bt.QueueReason, bt.QueueSince = &now, "", nil
 				s.tasks[i] = bt
 			}
 			return nil
@@ -131,7 +131,7 @@ func (s *accBatchTasks) CountAdmitted(_ context.Context, repository string) (int
 		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+		if slices.Contains([]string{"running", "closing"}, t.Status) || (t.Status == "in-review" && t.Gate != factoryd.GateApproval) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
@@ -439,6 +439,10 @@ func (s *accBatchStore) SetAdmitted(ctx context.Context, id string) error {
 	return s.tasks.SetAdmitted(ctx, id)
 }
 
+func (s *accBatchStore) SetQueueReason(context.Context, string, string, time.Time) error {
+	panic("unused")
+}
+
 func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	return s.tasks.CountAdmitted(ctx, repository)
 }
@@ -592,6 +596,9 @@ func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
 func (s *accBatchStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
 	panic("unused")
 }
+func (s *accBatchStore) NewestCallAt(context.Context, string) (time.Time, error) {
+	panic("unused")
+}
 func (s *accBatchStore) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
 	panic("unused")
 }
@@ -686,6 +693,21 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, foun
 	panic("unused")
 }
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	panic("unused")
+}
+func (s *accBatchStore) DueCases(ctx context.Context, now time.Time, limit int) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) ExpireSteps(ctx context.Context, now time.Time) ([]factoryd.CaseStep, error) {
+	panic("unused")
+}
+func (s *accBatchStore) MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]factoryd.Event, error) {
+	panic("unused")
+}
+func (s *accBatchStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
 	panic("unused")
 }
 func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep) error {

@@ -273,8 +273,13 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		}
 	case EventQuestionWithdrawn:
 		// a row after the card's escalation: the inbox offers its answer
-		// row no more
-		m.Content = ref + " needs you no more: its question is withdrawn because " + str("reason") + "."
+		// row no more. A monitor's case sits beside the card's own ask, so
+		// its row names the case
+		who := ref
+		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+			who = fmt.Sprintf("Case %d", id)
+		}
+		m.Content = who + " needs you no more: its question is withdrawn because " + str("reason") + "."
 	case EventPullRequestMerged:
 		// a card still merged informs once at its merge, its words the
 		// chain's facts as this poke reads them (chain, repair and covered

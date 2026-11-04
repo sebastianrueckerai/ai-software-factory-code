@@ -1677,6 +1677,21 @@ func TestAFailedIssueCloseOfAPullRequestsCardHeals(t *testing.T) {
 	g.ended("done", "pull request #5 merged by sebastian", EventQuestionAnswered, "sebastian", ViaFactoryd)
 }
 
+// An ended card's issue closed is a row on the card's events, by its
+// closer through the webhook: the monitor reads it.
+func TestAnEndedCardsIssueCloseIsARow(t *testing.T) {
+	g := newPRCardRig(t, "")
+	k := g.store.tasks["t-pr"]
+	k.Status = "done"
+	g.store.tasks["t-pr"] = k
+	closed, _ := json.Marshal(map[string]any{"action": "closed", "issue": map[string]any{"number": 9, "user": map[string]string{"login": "factory-agent"}},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"}, "sender": map[string]string{"login": "sebastian"}})
+	g.post("issues", closed, http.StatusOK)
+	if rows := g.rows.rows; len(rows) != 1 || rows[0].Kind != EventIssueClosed || rows[0].TaskID != "t-pr" || rows[0].Actor != "sebastian" || rows[0].Via != ViaWebhook {
+		t.Fatalf("rows = %+v, want the issue's close by sebastian through the webhook", rows)
+	}
+}
+
 // The card's explanatory comment is posted when it is missing, not only
 // by the call that recorded factoryd's close: a post Forgejo fails is
 // posted on the redelivery, once, and the card ends.
@@ -1757,6 +1772,30 @@ func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
 	}
 	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t1 issue_closed sebastian #0: " {
 		t.Fatalf("signals = %q", got)
+	}
+}
+
+// A re-filed issue holds two cards, one final one live: the close
+// webhook reaches the live one, and its issue_closed row lands on it.
+func TestIntakeIssueClosedSignalsTheLiveCardOfARefiledIssue(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	store.tasks["t-old"] = Task{ID: "t-old", Repository: "sf/ai-software-factory-code", Status: "done", Kind: "agent", IssueNumber: 4, CreatedAt: at}
+	store.tasks["t-live"] = Task{ID: "t-live", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 4, CreatedAt: at.Add(time.Hour)}
+	body, _ := json.Marshal(map[string]any{
+		"action":     "closed",
+		"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "factory-agent"}},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":     map[string]string{"login": "sebastian"},
+	})
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-live issue_closed sebastian #0: " {
+		t.Fatalf("signals = %q, want the live card's", got)
+	}
+	if rows := store.intakeEvents; len(rows) != 1 || rows[0].TaskID != "t-live" || rows[0].Kind != "issue_closed" {
+		t.Fatalf("intake events = %+v, want the close on the live card", rows)
 	}
 }
 

@@ -261,7 +261,7 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 	t.Run("#856_waiting_stays_waiting", func(t *testing.T) {
 		rig := newStaleRig(t, map[string]time.Duration{"t-deps": 5 * time.Hour})
 		nudged := map[string]time.Time{"t-deps": time.Now().Add(-StaleWindow - time.Minute)}
-		StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning("t-deps"), nudged)
+		StaleSweep(context.Background(), rig.store, rig.wf, rig.objects, workflowsRunning("t-deps"), nudged)
 
 		if task, _, _ := rig.store.Task(context.Background(), "t-deps"); task.Status != "waiting-deps" {
 			t.Fatalf("t-deps = %s, want still waiting-deps: its workflow waits by design", task.Status)
@@ -269,8 +269,8 @@ func TestLadderReplaysTheEightProblems(t *testing.T) {
 		if _, ok := nudged["t-deps"]; ok {
 			t.Fatal("the nudge memory did not clear")
 		}
-		if len(rig.store.intakeEvents) != 0 || len(rig.store.alerts) != 0 || len(*rig.comments) != 0 || len(rig.wf.signals) != 0 {
-			t.Fatalf("the sweep acted: %+v %v %q", rig.store.intakeEvents, *rig.comments, rig.wf.signals)
+		if len(rig.wf.signals) != 0 {
+			t.Fatalf("the sweep acted: %q", rig.wf.signals)
 		}
 	})
 

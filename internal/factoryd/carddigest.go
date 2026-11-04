@@ -26,12 +26,36 @@ type CardDigest struct {
 	Head  DigestHead
 	Steps []DigestStep // pre-fold, N is 1-based
 	Flags []DigestFlag
+	// LastStepAt is the time of the timeline's newest line, zero for a
+	// card with none.
+	LastStepAt time.Time
+	// Waits are the bounds of the card's project.
+	Waits policy.Waits
+	// lastStep is the step of the timeline's newest line, caseSteps are
+	// the steps of the card's live cases, and at is when the digest was
+	// built, the time its waits are aged to. A running card's lastCallAt
+	// is its newest model call's time, and its retryDue the time the
+	// newest provider_refused line's backoff ends. cases are the card's
+	// cases, issueCloses whether Finish closes the issue of the card's end
+	// (finishClosesIssue), and issueClosed whether its events hold its
+	// issue's close, which the webhook records on an ended card.
+	lastStep    string
+	caseSteps   []CaseStep
+	at          time.Time
+	lastCallAt  time.Time
+	retryDue    time.Time
+	cases       []Case
+	issueCloses bool
+	issueClosed bool
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
 // name, a plan task's proofs (its rows stored or opened, and what its
 // prover owes), its money, whether it holds a work slot, and its status
-// and gate since Since.
+// and gate since Since, the gate's start. StatusSince is the newest
+// task_status event's time, else the filing's. QueueReason and
+// QueueSince are the task row's: why admit last refused the queued
+// card, and since when.
 type DigestHead struct {
 	Issue, Plan                   int
 	PlanName                      string
@@ -39,7 +63,9 @@ type DigestHead struct {
 	BudgetEUR, SpentEUR, HoldsEUR float64
 	SlotHeld                      bool
 	Status, Gate                  string
-	Since                         time.Time
+	Since, StatusSince            time.Time
+	QueueReason                   string
+	QueueSince                    *time.Time
 	Blind, Criteria               int
 }
 
@@ -95,17 +121,19 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 }
 
 // cardRows are the rows a card's digest is read from: the task, its
-// events oldest first, its dependencies, its cases, its criteria verdicts
-// and its timeline object, nil when it has none; a plan task's proofs
-// (planProofCounts) and since when its prover is due: its foundation
-// card's end done, or for a plan without a foundation card its first
-// card's filing, at its confirmation; zero while the foundation is not
-// done, no card is filed or the plan owes no proof.
+// events oldest first, its dependencies, its cases, the steps of its
+// live cases, its criteria verdicts and its timeline object, nil when
+// it has none; a plan task's proofs (planProofCounts) and since when
+// its prover is due: its foundation card's end done, or for a plan
+// without a foundation card its first card's filing, at its
+// confirmation; zero while the foundation is not done, no card is filed
+// or the plan owes no proof.
 type cardRows struct {
 	task                       Task
 	events                     []Event
 	deps                       []Dependency
 	cases                      []Case
+	caseSteps                  []CaseStep
 	verdicts                   []CriterionVerdict
 	timeline                   []byte
 	proofsStored, proofsWanted int
@@ -133,6 +161,16 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	}
 	if rows.cases, err = r.store.CasesOf(ctx, taskID); err != nil {
 		return cardRows{}, err
+	}
+	for _, c := range rows.cases {
+		if c.Status != CaseOpen && c.Status != CaseAtHuman {
+			continue
+		}
+		steps, err := r.store.CaseSteps(ctx, c.ID)
+		if err != nil {
+			return cardRows{}, err
+		}
+		rows.caseSteps = append(rows.caseSteps, steps...)
 	}
 	if rows.verdicts, err = r.store.CriteriaVerdicts(ctx, taskID); err != nil {
 		return cardRows{}, err
@@ -176,7 +214,7 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 // cardDigest builds the digest of the card rows hold.
 func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, error) {
 	t := rows.task
-	head, err := r.digestHead(ctx, t)
+	head, err := r.digestHead(ctx, t, rows.events)
 	if err != nil {
 		return CardDigest{}, err
 	}
@@ -203,21 +241,41 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
+	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), cases: rows.cases,
+		issueCloses: finishClosesIssue(t, t.Status, mergedBefore(rows.events)),
+		issueClosed: slices.ContainsFunc(rows.events, func(e Event) bool { return e.Kind == EventIssueClosed })}
+	newest := newestLine(rows.timeline, "")
+	d.lastStep, d.LastStepAt = newest.Step, newest.Time
+	if t.Status == "running" {
+		if d.lastCallAt, err = r.store.NewestCallAt(ctx, t.ID); err != nil {
+			return CardDigest{}, err
+		}
+		if refused := newestLine(rows.timeline, StepProviderRefused); !refused.Time.IsZero() {
+			d.retryDue = refused.Time.Add(time.Duration(refused.BackoffS * float64(time.Second)))
+		}
+	}
 	var unproven []string
 	if t.Gate == GateApproval {
 		for _, c := range neverJudged(Plan{Criteria: rows.criteria}, rows.verdicts) {
 			unproven = append(unproven, c.ID)
 		}
 	}
-	flags := digestFlags(rows, steps, budget, r.clock(), unproven)
-	return CardDigest{Head: head, Steps: steps, Flags: flags}, nil
+	d.Flags = digestFlags(d, rows, budget, unproven)
+	return d, nil
 }
 
-func (r *Runner) digestHead(ctx context.Context, t Task) (DigestHead, error) {
+// digestHead is card t's head. Its events, oldest first, give its
+// status's since.
+func (r *Runner) digestHead(ctx context.Context, t Task, events []Event) (DigestHead, error) {
 	h := DigestHead{Issue: int(t.IssueNumber), BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, SlotHeld: holdsSlot(t),
-		Status: t.Status, Gate: t.Gate}
+		Status: t.Status, Gate: t.Gate, StatusSince: t.CreatedAt, QueueReason: t.QueueReason, QueueSince: t.QueueSince}
 	if t.GateSince != nil {
 		h.Since = *t.GateSince
+	}
+	for _, e := range events {
+		if e.Kind == EventTaskStatus {
+			h.StatusSince = e.At
+		}
 	}
 	if t.Track == policy.TrackPlan {
 		h.Plan, h.PlanName = h.Issue, t.PlanName
@@ -245,8 +303,10 @@ func holdsSlot(t Task) bool {
 		return false
 	}
 	switch t.Status {
-	case "waiting-deps", "running", "in-review", "closing":
+	case "running", "closing":
 		return true
+	case "in-review":
+		return t.Gate != GateApproval
 	}
 	return t.Status == "queued" && t.AdmittedAt != nil
 }

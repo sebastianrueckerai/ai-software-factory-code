@@ -34,7 +34,11 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		// Act's row names the case it resolved itself.
 		comment, _ := toInt(e.Detail["comment"])
 		id, named := toInt(e.Detail["case_id"])
-		if !named {
+		if named {
+			if mine, err := taskCase(ctx, tx, id, e.TaskID); !mine {
+				return err
+			}
+		} else {
 			ask, err := answeredAsk(ctx, tx, e.TaskID, int64(comment))
 			if ask == 0 {
 				return err
@@ -46,11 +50,19 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, caseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
+		// a row that names its case withdraws that one, a monitor's beside
+		// the card's own ask, else the card's newest ask
+		reason, _ := e.Detail["reason"].(string)
+		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+			if mine, err := taskCase(ctx, tx, id, e.TaskID); !mine {
+				return err
+			}
+			return caseEnded(withdrawCase(ctx, tx, int64(id), reason))
+		}
 		c, err := newestAskCase(ctx, tx, e.TaskID)
 		if c.ID == 0 {
 			return err
 		}
-		reason, _ := e.Detail["reason"].(string)
 		return caseEnded(withdrawCase(ctx, tx, c.ID, reason))
 	case EventPlanQuestionAnswered:
 		return resolvePlanCase(ctx, tx, e)
@@ -300,12 +312,13 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 }
 
 // reopenMergeCase puts the merge case that request id's decision ended
-// back at the human, its end cleared, with a step naming reason, the why
-// of the undo; with no such case, or a live one of its key, it opens the
-// request's case as openMergeCase does.
+// back at the human, its end and any wake it carried cleared, with a step
+// naming reason, the why of the undo; with no such case, or a live one of
+// its key, it opens the request's case as openMergeCase does.
 func reopenMergeCase(ctx context.Context, q rowQuerier, id int64, reason string) error {
 	var caseID int64
-	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL
+	err := q.QueryRowContext(ctx, `UPDATE cases c SET status = $3, resolution = NULL, resolved_at = NULL,
+		owner_rung = 3, wake_on = '{}', next_wake_at = NULL
 		WHERE c.id = (SELECT max(id) FROM cases WHERE kind = $2 AND (facts->>'approval')::bigint = $1) AND c.status NOT IN `+caseLiveStatuses+`
 		AND NOT EXISTS (SELECT 1 FROM cases o WHERE o.task_id = c.task_id AND o.kind = c.kind AND o.state_key = c.state_key
 		    AND o.status IN `+caseLiveStatuses+`)
@@ -352,9 +365,10 @@ func decideMergeCase(ctx context.Context, q rowQuerier, id int64, status, by, no
 }
 
 // ownAnswerKinds are the cases an answer on the card does not end: a
-// merge, which its request's decision ends, and a plan question, which its
-// own answer ends. newestAskCase leaves them out.
-var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation}
+// merge, which its request's decision ends, a plan question, which its own
+// answer ends, and a monitor flag, which sits beside the card's run and is
+// answered by its id. newestAskCase leaves them out.
+var ownAnswerKinds = []CaseKind{CaseMergeApproval, CasePlanQuestion, CasePlanConfirmation, CaseMonitorFlag}
 
 // AnsweredOnCard reports whether an answer on the card ends a case of
 // kind k: every kind but ownAnswerKinds, whose own answers end them.
@@ -380,6 +394,14 @@ func newestAskCase(ctx context.Context, q rowQuerier, taskID string) (Case, erro
 		return Case{}, nil
 	}
 	return c, err
+}
+
+// taskCase reports whether case id is task taskID's: a row ends its own
+// card's cases only.
+func taskCase(ctx context.Context, q rowQuerier, id int, taskID string) (bool, error) {
+	var mine bool
+	err := q.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM cases WHERE id = $1 AND task_id = $2)`, id, taskID).Scan(&mine)
+	return mine, err
 }
 
 // answeredAsk is the case the answer comment comment (0 for none) of task

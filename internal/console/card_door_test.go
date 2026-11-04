@@ -129,3 +129,32 @@ func TestCardDoorSeedsTheAskSentence(t *testing.T) {
 		t.Fatalf("the ask's row = %q, want it to hold %q", answer.Messages[0].Content, want)
 	}
 }
+
+// A monitor's ask sits beside the card's run and is answered by its
+// number: the card's thread seeds from the card's own ask, the older one.
+func TestCardDoorSeedsTheCardsOwnAskNotAMonitors(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	seedAsk(t, r)
+	if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-e",
+		Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd,
+		Detail: map[string]any{"ask": "The monitor flagged this card: what should happen? Answer case 7 in the project chat.",
+			"case_id": 7, "case_kind": string(factoryd.CaseMonitorFlag)}}); err != nil {
+		t.Fatal(err)
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/cards/t-e/thread", url.Values{"csrf": {s.csrf}}), ck)
+	var door struct {
+		Conversation int64 `json:"conversation"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &door); err != nil || door.Conversation == 0 {
+		t.Fatalf("the door's answer = %d %s (%v), want a conversation number", rec.Code, rec.Body.String(), err)
+	}
+	get := r.do(httptest.NewRequest(http.MethodGet, chatPath+"?conversation="+strconv.FormatInt(door.Conversation, 10), nil), ck)
+	var answer chatGetAnswer
+	if err := json.Unmarshal(get.Body.Bytes(), &answer); err != nil {
+		t.Fatal(err)
+	}
+	if len(answer.Messages) != 1 || !strings.Contains(answer.Messages[0].Content, "#13 - Use a replica? needs you: use a replica?") {
+		t.Fatalf("the thread's rows = %+v, want the card's own ask alone", answer.Messages)
+	}
+}

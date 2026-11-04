@@ -225,9 +225,24 @@ func (s *acceptanceStore) SetAdmitted(_ context.Context, id string) error {
 	}
 	if t.AdmittedAt == nil {
 		now := time.Now()
-		t.AdmittedAt = &now
+		t.AdmittedAt, t.QueueReason, t.QueueSince = &now, "", nil
 		s.tasks[id] = t
 	}
+	return nil
+}
+
+func (s *acceptanceStore) SetQueueReason(_ context.Context, id, reason string, now time.Time) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t, ok := s.tasks[id]
+	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
+		return nil
+	}
+	if !strings.HasPrefix(t.QueueReason, factoryd.WorkBoundReason) || !strings.HasPrefix(reason, factoryd.WorkBoundReason) {
+		t.QueueSince = &now
+	}
+	t.QueueReason = reason
+	s.tasks[id] = t
 	return nil
 }
 
@@ -239,7 +254,7 @@ func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (i
 		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+		if slices.Contains([]string{"running", "closing"}, t.Status) || (t.Status == "in-review" && t.Gate != factoryd.GateApproval) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
@@ -366,15 +381,30 @@ func (s *acceptanceStore) TasksByRuling(_ context.Context, repository, ruling st
 	return cards, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var held []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
-			return t, true, nil
+			held = append(held, t)
 		}
 	}
-	return factoryd.Task{}, false, nil
+	slices.SortFunc(held, func(a, b factoryd.Task) int {
+		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return factoryd.Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
@@ -506,6 +536,10 @@ func (s *acceptanceStore) CheckinSpent(context.Context, string) (float64, error)
 
 func (s *acceptanceStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
 	return 0, 0, nil
+}
+
+func (s *acceptanceStore) NewestCallAt(context.Context, string) (time.Time, error) {
+	return time.Time{}, nil
 }
 
 func (s *acceptanceStore) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
@@ -1354,6 +1388,24 @@ func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []
 }
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) SetCaseWake(context.Context, int64, int, []string, *time.Time) error {
+	return nil
+}
+
+func (s *acceptanceStore) DueCases(context.Context, time.Time, int) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) ExpireSteps(context.Context, time.Time) ([]factoryd.CaseStep, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) MonitorEvents(context.Context, int64, []string, int) ([]factoryd.Event, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) SetMonitorCursor(context.Context, int64) error { return nil }
 
 func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep) error {
 	return nil

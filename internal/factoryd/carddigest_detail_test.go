@@ -232,6 +232,46 @@ func TestCardStepReturnsEachKindsSource(t *testing.T) {
 	}
 }
 
+// An ask's answer line reads the rows that end its case: the card's own
+// ask passes a monitor's ask and withdrawal beside it to its answer and
+// stops at its own next ask, a monitor's ask passes an answer on the card
+// to its own withdrawal, and an ask with no case that follows a monitor's
+// ask passes that monitor's withdrawal. A plan question passes its
+// revision's other asks to its answer and stops at a later revision.
+func TestAskAnswerReadsTheRowsOfItsCase(t *testing.T) {
+	ev := func(kind, actor string, detail map[string]any) Event {
+		return Event{Kind: kind, Actor: actor, Detail: detail}
+	}
+	own := ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Use a replica?", "case_id": float64(5)})
+	plain := ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which file?"})
+	flagged := ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "The monitor flagged this card.", "case_id": float64(12),
+		"case_kind": string(CaseMonitorFlag)})
+	withdrawn := ev(EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(12), "reason": "the wait ended"})
+	webhook := ev(EventQuestionAnswered, "sebastian", map[string]any{"answer": "use it", "comment": float64(77)})
+	for _, tt := range []struct {
+		name string
+		rows []Event
+		ask  int
+		want string
+	}{
+		{"the card's own ask", []Event{own, flagged, withdrawn, webhook}, 0, "Answer by sebastian: use it"},
+		{"the card's own ask before its next", []Event{own, flagged, ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which port?", "case_id": float64(6)}), webhook},
+			0, "Answer: none"},
+		{"a monitor's ask", []Event{flagged, webhook, withdrawn}, 0, "Withdrawn: the wait ended"},
+		{"an ask with no case", []Event{plain, webhook}, 0, "Answer by sebastian: use it"},
+		{"an ask with no case after a monitor's", []Event{flagged, plain, withdrawn, webhook}, 1, "Answer by sebastian: use it"},
+		{"a plan question past its revision's other asks", []Event{ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which DB?", "revision": float64(2), "index": float64(1)}), ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which cache?", "revision": float64(2), "index": float64(2)}),
+			ev(EventPlanQuestionAnswered, "sebastian", map[string]any{"revision": float64(2), "index": float64(1), "answer": "Postgres"})}, 0, "Answer by sebastian: Postgres"},
+		{"the card's own ask past a plan question", []Event{plain, ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which DB?", "revision": float64(2), "index": float64(1)}), webhook},
+			0, "Answer by sebastian: use it"},
+		{"a plan question before a later revision", []Event{ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which DB?", "revision": float64(2), "index": float64(1)}), ev(EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which DB now?", "revision": float64(3), "index": float64(1)})}, 0, "Answer: none"},
+	} {
+		if got := askAnswer(tt.rows, tt.ask); got != tt.want {
+			t.Errorf("%s: askAnswer = %q, want %q", tt.name, got, tt.want)
+		}
+	}
+}
+
 // A filing's entry the timeline logs by its id alone, a criterion beside a
 // hold-out's path, reads so in the detail; an entry that names no
 // criterion reads as one; an outcome outside the three counts for none.

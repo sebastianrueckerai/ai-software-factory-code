@@ -93,7 +93,8 @@ var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, Act
 	ActivityAlertPreCheck, ActivityAttemptFunded, ActivitySessionFunded, ActivitySessionAnswered, ActivityDayResume, ActivityCapResume, ActivityHeadChecks, ActivitySetGate, ActivityDropTrip,
 	ActivityWithdrawQuestion, ActivityRoutineRun, ActivityRoutineRunFailed, ActivityHoldoutSettlement, ActivityParkForTool, ActivityImageArrived, ActivityLeaveImagePark,
 	ActivityBecomePlan, ActivitySizeCard, ActivityReplanChild, ActivityReplanStopped, ActivitySupersedeApproval, ActivityReadUsage,
-	ActivitySuccessor, ActivityUnjudgedCriteria, ActivityUnjudged, ActivityHoldMerge, ActivityEndCase, ActivityOpenTrip, ActivityRecordGrant}
+	ActivitySuccessor, ActivityUnjudgedCriteria, ActivityUnjudged, ActivityHoldMerge, ActivityEndCase, ActivityOpenTrip, ActivityRecordGrant,
+	ActivityRecordNotRun}
 
 // GateStore is what GateWatch writes.
 type GateStore interface {

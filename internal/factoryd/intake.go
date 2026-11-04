@@ -1247,6 +1247,10 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 	if !ok {
 		return nil
 	}
+	if Final(t.Status) {
+		// the monitor's case that asks the issue closed ends with this row
+		in.Timeline.RecordRow(ctx, t.ID, EventIssueClosed, p.Sender.UserName, ViaWebhook, map[string]any{"issue": p.Issue.Index})
+	}
 	return in.issueClosed(ctx, t, p.Sender.UserName)
 }
 

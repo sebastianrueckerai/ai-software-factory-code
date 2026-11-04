@@ -1997,7 +1997,8 @@ func reviewComment(model, commit string, rv Review, read string) string {
 // model review. It replaces any earlier pending one of the task. A factory
 // pull request's paths forbidden to agents come first in why a human
 // decides, and its request and event say it is one and whether its checks
-// are red, which its actions follow (roadmap 264).
+// are red, which its actions follow (roadmap 264). The approval gate holds
+// no work slot, so the next queued card takes the card's.
 func (r *Runner) RequestApproval(ctx context.Context, taskID string, in ApprovalInput) error {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -2038,6 +2039,7 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		return err
 	}
 	r.recordGateHead(ctx, t, in.Commit, "approval", in.Gates.Policy)
+	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	return nil
 }
 
@@ -2592,12 +2594,14 @@ func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64,
 	return res
 }
 
-// awaitApprovalAgain puts the task back in the approval gate: its merge
-// waits for a new approval.
+// awaitApprovalAgain puts the task back in the approval gate, whose card
+// holds no work slot: its merge waits for a new approval.
 func (r *Runner) awaitApprovalAgain(ctx context.Context, t Task) {
 	if err := r.store.SetGate(ctx, t.ID, GateApproval, time.Now()); err != nil {
 		log.Printf("task %s: back to the approval gate: %v", t.ID, err)
+		return
 	}
+	pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 }
 
 // comment posts on the pull request; a failure is logged, the comment is

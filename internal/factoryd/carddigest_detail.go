@@ -180,7 +180,7 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 	}
 	fmt.Fprintf(b, "Ask: %s\nWhy: %s\nInfo: %s\nRecommendation: %s\nChoices: %s\n", cmp.Or(askSentence(e), "none"), word("why"), word("info"),
 		word("recommendation"), cmp.Or(strings.Join(choices, "; "), "none"))
-	b.WriteString(askAnswer(e, rows.events[i+1:]) + "\n")
+	b.WriteString(askAnswer(rows.events, i) + "\n")
 	c := slices.IndexFunc(rows.cases, func(c Case) bool { return strconv.FormatInt(c.ID, 10) == s.Ref.Case })
 	if c < 0 {
 		return nil
@@ -208,14 +208,26 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 	return nil
 }
 
-// askAnswer is ask's answer among events, those after it. A plan
-// question's is the plan answer of its revision and index, past the
-// questions asked with it, until a later revision asks again; any other
-// ask's is the answer or grant before the next such ask.
-func askAnswer(ask Event, events []Event) string {
+// askAnswer is the answer of ask rows[i] among the rows after it, until
+// its next ask moves it on (movesOn). A plan question's is the plan
+// answer of its revision and index; any other ask's is the answer, grant
+// or withdrawal among the rows that end its case (caseEnds over all of
+// the card's rows, a monitor's ask before it among them).
+func askAnswer(rows []Event, i int) string {
+	ask, events := rows[i], rows[i+1:]
 	revision, _ := toInt(ask.Detail["revision"])
 	index, _ := toInt(ask.Detail["index"])
+	ends := caseEnds(ask, rows)
 	for _, e := range events {
+		if e.Kind == EventQuestionAsked {
+			if movesOn(ask, e) {
+				return "Answer: none"
+			}
+			continue
+		}
+		if revision == 0 && !ends(e) {
+			continue
+		}
 		word := func(k string) string { v, _ := e.Detail[k].(string); return v }
 		answer := func() string {
 			return fmt.Sprintf("Answer by %s: %s", e.Actor, cmp.Or(word("answer"), word("decision"), "answered"))
@@ -223,13 +235,9 @@ func askAnswer(ask Event, events []Event) string {
 		rev, _ := toInt(e.Detail["revision"])
 		idx, _ := toInt(e.Detail["index"])
 		switch {
-		case revision > 0 && e.Kind == EventQuestionAsked && rev > revision:
-			return "Answer: none"
 		case revision > 0 && e.Kind == EventPlanQuestionAnswered && rev == revision && idx == index:
 			return answer()
 		case revision > 0:
-		case e.Kind == EventQuestionAsked && rev == 0:
-			return "Answer: none"
 		case e.Kind == EventQuestionAnswered:
 			return answer()
 		case e.Kind == EventSessionGranted:

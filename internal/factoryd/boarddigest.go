@@ -38,13 +38,16 @@ type BoardDigestCard struct {
 }
 
 // BoardDigestQueued is a queued card, by issue and task id (the one name
-// a card without an issue has), and what holds it: "no issue", "waits on
-// #N", "project month cap", "work bound H of B" (H the slots held and
-// taken by the cards before it read "next"), or "next".
+// a card without an issue has), and what holds it: the reason admit last
+// refused it ("waits on #N", "project month cap", "work bound H of B" with
+// H the slots held then) and Age, the time since the first refusal with
+// that reason. A card admit never refused is "no issue" while it has
+// none, else "next", with no age.
 type BoardDigestQueued struct {
 	Issue  int
 	TaskID string
 	Reason string
+	Age    time.Duration
 }
 
 // BoardDigestSlots are the work slots the project's cards hold, and its
@@ -69,8 +72,8 @@ type BoardDigestCap struct {
 }
 
 // BoardDigest builds repository's board digest at the runner's clock: one
-// CardDigest per live card out of the queue, for its flags, and admit's
-// checks for each queued card.
+// CardDigest per live card out of the queue, for its flags, and the reason
+// admit stored for each queued card.
 func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDigest, error) {
 	now, v := r.clock(), r.cfg.Policy()
 	live, err := r.store.BoardTasks(ctx, repository)
@@ -85,8 +88,6 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 		return BoardDigest{}, err
 	}
 	b := BoardDigest{Slots: BoardDigestSlots{Held: held, Bound: v.WorkInProgressOf(repository)}}
-	// each card read "next" takes a free slot from the ones after it
-	taken := held
 	for _, t := range live {
 		if !waitsForSlot(t.Task) {
 			card, err := r.boardCard(ctx, t.ID, now)
@@ -96,18 +97,16 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 			b.Cards = append(b.Cards, card)
 			continue
 		}
-		why, err := admissionWait(ctx, r.store, v.Tree, now, t.Task)
-		if err != nil {
-			return BoardDigest{}, err
+		q := BoardDigestQueued{Issue: int(t.IssueNumber), TaskID: t.ID, Reason: t.QueueReason}
+		switch {
+		case t.QueueSince != nil:
+			q.Age = max(now.Sub(*t.QueueSince), 0)
+		case t.IssueNumber == 0:
+			q.Reason = "no issue"
+		default:
+			q.Reason = "next"
 		}
-		if why == "" {
-			why = fmt.Sprintf("work bound %d of %d", taken, b.Slots.Bound)
-			if taken < b.Slots.Bound {
-				why = "next"
-				taken++
-			}
-		}
-		b.Queue = append(b.Queue, BoardDigestQueued{Issue: int(t.IssueNumber), TaskID: t.ID, Reason: why})
+		b.Queue = append(b.Queue, q)
 	}
 	if b.Plans, err = r.boardPlans(ctx, repository); err != nil {
 		return BoardDigest{}, err
@@ -127,24 +126,14 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 	return b, nil
 }
 
-// boardCard is live card taskID's line, its age the time from its newest
-// task_status event, or its filing, to now.
+// boardCard is live card taskID's line, its age the time from its
+// status's since to now.
 func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (BoardDigestCard, error) {
-	rows, err := r.readCard(ctx, taskID)
+	d, err := r.CardDigest(ctx, taskID)
 	if err != nil {
 		return BoardDigestCard{}, err
 	}
-	d, err := r.cardDigest(ctx, rows)
-	if err != nil {
-		return BoardDigestCard{}, err
-	}
-	moved := rows.task.CreatedAt
-	for _, e := range rows.events {
-		if e.Kind == EventTaskStatus {
-			moved = e.At
-		}
-	}
-	return BoardDigestCard{Issue: d.Head.Issue, Status: d.Head.Status, Gate: d.Head.Gate, Age: max(now.Sub(moved), 0),
+	return BoardDigestCard{Issue: d.Head.Issue, Status: d.Head.Status, Gate: d.Head.Gate, Age: max(now.Sub(d.Head.StatusSince), 0),
 		SlotHeld: d.Head.SlotHeld, Flags: d.Flags, Blind: d.Head.Blind, Criteria: d.Head.Criteria}, nil
 }
 
@@ -222,7 +211,11 @@ func (b BoardDigest) Render() string {
 		if q.Issue == 0 {
 			card += " " + q.TaskID
 		}
-		fmt.Fprintf(&s, "%-5s  %s\n", card, q.Reason)
+		why := q.Reason
+		if age := q.Age.Truncate(time.Minute); age > 0 {
+			why += " for " + durationText(age)
+		}
+		fmt.Fprintf(&s, "%-5s  %s\n", card, why)
 	}
 	if len(b.Plans) > 0 {
 		s.WriteString("plans:\n")

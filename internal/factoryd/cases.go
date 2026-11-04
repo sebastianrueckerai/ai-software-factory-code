@@ -8,7 +8,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"strings"
 	"time"
+
+	"github.com/jackc/pgx/v5/pgtype"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -43,6 +46,7 @@ const (
 	CaseMergeApproval    CaseKind = "merge_approval"
 	CaseHumanCard        CaseKind = "human_card"
 	CaseOther            CaseKind = "other"
+	CaseMonitorFlag      CaseKind = "monitor_flag"
 )
 
 // Case statuses. An open or at_human case is live: a task has at most one
@@ -63,7 +67,9 @@ const caseLive = `status IN ` + caseLiveStatuses
 
 // Case is one problem on a card, from its opening to its end. Follows is
 // the case it comes after, 0 for none; CommentID is its issue comment, 0
-// for none.
+// for none. OwnerRung is the rung that owns its next move, 3 on opening;
+// WakeOn are the events that end its wait, and NextWakeAt is when the
+// sweep wakes it if none does, nil for never. SetCaseWake sets all three.
 type Case struct {
 	ID         int64
 	TaskID     string
@@ -79,6 +85,9 @@ type Case struct {
 	OpenedAt   time.Time
 	ResolvedAt *time.Time
 	Resolution *CaseResolution
+	OwnerRung  int
+	NextWakeAt *time.Time
+	WakeOn     []string
 }
 
 // CaseMoney is the money a case is about: the budget of kind, what is
@@ -103,6 +112,7 @@ type CaseResolution struct {
 
 // CaseStep is one rung's work on a case: what it read, what it found,
 // what it did, what it decided and on what grounds, and what it cost.
+// DueAt is when its rung must have answered, nil for no bound.
 type CaseStep struct {
 	ID        int64
 	CaseID    int64
@@ -117,6 +127,7 @@ type CaseStep struct {
 	Grounds   string
 	CostEUR   float64
 	Outcome   string
+	DueAt     *time.Time
 }
 
 // CaseRead is one tool call a step read through.
@@ -141,13 +152,15 @@ const (
 	StepWithdrawn  = "withdrawn"
 )
 
-const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution`
+const caseColumns = `id, task_id, repository, kind, state_key, status, problem, facts, money, comment_id, COALESCE(follows, 0), opened_at, resolved_at, resolution, owner_rung, next_wake_at, wake_on`
 
 func scanCase(row rowScanner) (Case, error) {
 	var c Case
 	var facts, money, resolution []byte
+	// the array arrives as a string through database/sql; pgx's scanner
+	// decodes it into the slice
 	if err := row.Scan(&c.ID, &c.TaskID, &c.Repository, &c.Kind, &c.StateKey, &c.Status, &c.Problem, &facts, &money,
-		&c.CommentID, &c.Follows, &c.OpenedAt, &c.ResolvedAt, &resolution); err != nil {
+		&c.CommentID, &c.Follows, &c.OpenedAt, &c.ResolvedAt, &resolution, &c.OwnerRung, &c.NextWakeAt, pgtype.NewMap().SQLScanner(&c.WakeOn)); err != nil {
 		return Case{}, err
 	}
 	if err := json.Unmarshal(facts, &c.Facts); err != nil {
@@ -214,7 +227,8 @@ func openCase(ctx context.Context, q rowQuerier, c Case) (Case, bool, error) {
 }
 
 // AppendCaseStep inserts step st of its case and answers its id. StartedAt
-// is the store's now; an empty Outcome is in_progress.
+// is the store's now; an empty Outcome is in_progress; a nil DueAt bounds
+// nothing.
 func (s *PGStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
 	return appendCaseStep(ctx, s.db, st)
 }
@@ -230,9 +244,9 @@ func appendCaseStep(ctx context.Context, q rowQuerier, st CaseStep) (int64, erro
 	}
 	var id int64
 	err = q.QueryRowContext(ctx,
-		`INSERT INTO case_steps (case_id, rung, actor, read, found, did, decision, grounds, cost_eur, outcome)
-		 VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10) RETURNING id`,
-		st.CaseID, st.Rung, st.Actor, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, cmp.Or(st.Outcome, StepInProgress)).Scan(&id)
+		`INSERT INTO case_steps (case_id, rung, actor, read, found, did, decision, grounds, cost_eur, outcome, due_at)
+		 VALUES ($1, $2, $3, $4::jsonb, $5, $6::jsonb, $7, $8, $9, $10, $11) RETURNING id`,
+		st.CaseID, st.Rung, st.Actor, read, st.Found, did, st.Decision, st.Grounds, st.CostEUR, cmp.Or(st.Outcome, StepInProgress), st.DueAt).Scan(&id)
 	return id, err
 }
 
@@ -263,6 +277,80 @@ func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) er
 	}
 	res, err := s.db.ExecContext(ctx, `UPDATE cases SET status = $2 WHERE id = $1 AND `+caseLive, id, status)
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
+// SetCaseWake sets who owns the next move on live case id, the events that
+// end its wait, and when the sweep wakes it if none does; a nil at clears
+// the wake. ErrNotFound when the case is not live.
+func (s *PGStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE cases SET owner_rung = $2, wake_on = $3, next_wake_at = $4 WHERE id = $1 AND `+caseLive,
+		id, rung, nonNil(on), at)
+	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
+// DueCases are the live cases whose wake is at or before now, the oldest
+// wake first, at most limit.
+func (s *PGStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error) {
+	return s.cases(ctx, `SELECT `+caseColumns+` FROM cases WHERE `+caseLive+` AND next_wake_at <= $1 ORDER BY next_wake_at, id LIMIT $2`, now, limit)
+}
+
+// ExpireSteps hands up every in-progress step whose due_at is before now,
+// its Found naming the bound its rung did not answer within after what it
+// found before, and answers them, oldest first.
+func (s *PGStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
+	// the constant outcome lets the partial index case_steps_due serve
+	rows, err := s.db.QueryContext(ctx, `SELECT id, started_at, due_at, found FROM case_steps WHERE outcome = '`+StepInProgress+`' AND due_at < $1`, now)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var ids []int64
+	var found []string
+	for rows.Next() {
+		var id int64
+		var started, due time.Time
+		var before string
+		if err := rows.Scan(&id, &started, &due, &before); err != nil {
+			return nil, err
+		}
+		ids, found = append(ids, id), append(found, stepExpired(before, started, due))
+	}
+	if err := rows.Err(); err != nil || len(ids) == 0 {
+		return nil, err
+	}
+	// a step its rung ended since the read keeps its own end
+	return s.caseSteps(ctx,
+		`WITH ended AS (
+		     UPDATE case_steps c SET outcome = $3, found = e.found, ended_at = now()
+		     FROM unnest($1::bigint[], $2::text[]) AS e(id, found)
+		     WHERE c.id = e.id AND c.outcome = $4
+		     RETURNING c.*
+		 )
+		 SELECT `+caseStepColumns+` FROM ended ORDER BY id`, ids, found, StepHandedUp, StepInProgress)
+}
+
+// stepExpired is the Found of a step its rung did not answer by due, after
+// found, what the step found before: its bound, due less its start, to the
+// minute as durationText writes it.
+func stepExpired(found string, started, due time.Time) string {
+	expired := "the rung did not answer within " + durationText(due.Sub(started).Round(time.Minute))
+	if found == "" {
+		return expired
+	}
+	return found + ", then " + expired
+}
+
+// durationText is d, whole minutes, as Go prints a duration less its zero
+// units: 35m, 1h30m, 2h.
+func durationText(d time.Duration) string {
+	s := d.String()
+	if m, ok := strings.CutSuffix(s, "m0s"); ok {
+		s = m + "m"
+	}
+	if h, ok := strings.CutSuffix(s, "h0m"); ok {
+		s = h + "h"
+	}
+	return s
 }
 
 // caseAnswer is the action of a case an answer row resolved: an answer
@@ -493,11 +581,15 @@ func (s *PGStore) cases(ctx context.Context, query string, args ...any) ([]Case,
 	return out, rows.Err()
 }
 
+const caseStepColumns = `id, case_id, rung, actor, started_at, ended_at, read, found, did, decision, grounds, cost_eur::float8, outcome, due_at`
+
 // CaseSteps are the steps of case caseID, oldest first.
 func (s *PGStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, error) {
-	rows, err := s.db.QueryContext(ctx,
-		`SELECT id, case_id, rung, actor, started_at, ended_at, read, found, did, decision, grounds, cost_eur::float8, outcome
-		 FROM case_steps WHERE case_id = $1 ORDER BY id`, caseID)
+	return s.caseSteps(ctx, `SELECT `+caseStepColumns+` FROM case_steps WHERE case_id = $1 ORDER BY id`, caseID)
+}
+
+func (s *PGStore) caseSteps(ctx context.Context, query string, args ...any) ([]CaseStep, error) {
+	rows, err := s.db.QueryContext(ctx, query, args...)
 	if err != nil {
 		return nil, err
 	}
@@ -507,7 +599,7 @@ func (s *PGStore) CaseSteps(ctx context.Context, caseID int64) ([]CaseStep, erro
 		var st CaseStep
 		var read, did []byte
 		if err := rows.Scan(&st.ID, &st.CaseID, &st.Rung, &st.Actor, &st.StartedAt, &st.EndedAt, &read, &st.Found, &did,
-			&st.Decision, &st.Grounds, &st.CostEUR, &st.Outcome); err != nil {
+			&st.Decision, &st.Grounds, &st.CostEUR, &st.Outcome, &st.DueAt); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(read, &st.Read); err != nil {

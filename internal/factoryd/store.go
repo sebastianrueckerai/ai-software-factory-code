@@ -77,6 +77,13 @@ type Task struct {
 	// with it set holds its slot while its workflow starts, or while a
 	// run that died before running restarts.
 	AdmittedAt *time.Time
+	// QueueReason is why admit last refused the queued card a work slot:
+	// admissionWait's reason, or "work bound N of M" when the count
+	// refused it. QueueSince is the first refusal with a reason of that
+	// kind, the count's at any numbers. "" and nil before any refusal and
+	// once the card is admitted.
+	QueueReason string
+	QueueSince  *time.Time
 	// Gate is the gate the task is in (Gate* constants) since GateSince;
 	// none once it finished, and never for the human lane.
 	Gate      string
@@ -334,24 +341,28 @@ type Store interface {
 	// waiting-human, waiting-poster or waiting-image task to running.
 	MarkStarted(ctx context.Context, id string) error
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
-	// moment it took one of its project's work_in_progress slots.
+	// moment it took one of its project's work_in_progress slots. The
+	// same write clears its queue reason and queue_since.
 	SetAdmitted(ctx context.Context, id string) error
+	// SetQueueReason records why card id was refused a slot at now, keeping
+	// queue_since from the first refusal with a reason of that kind, the
+	// count's at any numbers.
+	SetQueueReason(ctx context.Context, id, reason string, now time.Time) error
 	// ListTasksByStatus lists tasks in status, highest priority first.
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
-	// CountAdmitted counts repository's cards holding a work slot: those
-	// in a status a started card holds until it settles, plus queued
-	// cards already admitted. A card the bound leaves out (Task.Unbound:
-	// a roll, a factory pull request, a screening) and human and chat
-	// cards hold none. A card parked on a
-	// person (waiting-human, waiting-poster) or on its image
+	// CountAdmitted counts repository's cards holding a work slot: running
+	// or closing, in review in any gate but the approval's, or queued and
+	// already admitted. A card the bound leaves out (Task.Unbound: a roll,
+	// a factory pull request, a screening) and human and chat cards hold
+	// none. A card that waits on a person (waiting-human, waiting-poster,
+	// the approval gate), on a dependency (waiting-deps) or on its image
 	// (waiting-image) holds none either: no session runs and no spend
 	// accrues, so its slot frees at once (the tool card the image waits on
-	// may need it), and the answer or the image that resumes it overshoots
-	// the bound for one gate pass.
+	// may need it), and the answer, the approval, the dependency or the
+	// image that resumes it overshoots the bound for one gate pass.
 	CountAdmitted(ctx context.Context, repository string) (int, error)
-	// CountQueue counts repository's cards that hold no admission stamp:
-	// the queued cards not yet admitted, the complement of CountAdmitted's
-	// slots (roadmap 239's queue cap).
+	// CountQueue counts repository's queued cards not yet admitted
+	// (roadmap 239's queue cap).
 	CountQueue(ctx context.Context, repository string) (int, error)
 	// ListQueuedByRepository lists repository's queued cards with an
 	// issue, in filing
@@ -384,8 +395,9 @@ type Store interface {
 	// settled task is never listed again.
 	SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error)
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
-	// webhook redelivery idempotency; false means no task is linked to that
-	// issue yet.
+	// webhook redelivery idempotency, preferring the live card when a
+	// re-filed issue holds a final one beside it; false means no task is
+	// linked to that issue yet.
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	// TaskByPR looks up a task by the pull request factoryd opened outside
 	// any card's workflow (roadmap 187); false means no task is linked to
@@ -455,6 +467,10 @@ type Store interface {
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
 	SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error)
+	// NewestCallAt is the time of the task's newest audit row, whatever
+	// its kind, zero when it has none: when a running card last answered,
+	// in the card digest.
+	NewestCallAt(ctx context.Context, taskID string) (time.Time, error)
 	// TaskSpendSince is task id's ledger spend booked at or after since:
 	// what one factoryd call cost the task.
 	TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error)
@@ -820,6 +836,21 @@ type Store interface {
 	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
 	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
 	SetCaseStatus(ctx context.Context, id int64, status string) error
+	// SetCaseWake sets who owns the next move on case id, the events that
+	// end its wait, and when the sweep wakes it if none does.
+	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
+	// DueCases lists the live cases whose next_wake_at passed, oldest
+	// first.
+	DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error)
+	// ExpireSteps ends every in-progress step past its due_at as handed
+	// up, Found naming the bound its rung did not answer within.
+	ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error)
+	// MonitorEvents are the events of kinds past the monitor's cursor and
+	// past after, oldest first, at most limit. The first read plants the
+	// cursor at the newest event, so no history raises a flag.
+	MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error)
+	// SetMonitorCursor moves the monitor's cursor to eventID, never back.
+	SetMonitorCursor(ctx context.Context, eventID int64) error
 	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
@@ -1215,7 +1246,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress, COALESCE(roadmap_item, 0)`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1230,7 +1261,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -1254,10 +1285,12 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	return t, nil
 }
 
-// oneTask reads the first task WHERE where — every key point read in
-// store.go (Task, TaskByIssue, …), the routine's, the roll's, a plan's
-// and the chain-poll's. No row answers ok false; a key the table does
-// not bind (a unique key) is what makes the one row the right one.
+// oneTask reads the first task WHERE where, its tail carrying any ORDER
+// BY (the chain-poll's does) — every key point read in store.go (Task,
+// TaskByIssue, …), the routine's, the roll's, a plan's and the
+// chain-poll's. No row answers ok false; a key the table does not bind
+// (a unique key) is what makes the one row the right one, and where it
+// does not (TaskByIssue) the tail's order picks it.
 func (s *PGStore) oneTask(ctx context.Context, where string, args ...any) (Task, bool, error) {
 	t, err := scanTask(s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE `+where, args...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -1302,9 +1335,12 @@ func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]st
 // TaskByIssue is repository's card on issue issueNumber; no row answers
 // ok false. The intake's webhooks, the month cap's count and the
 // console's chat byTaskID read it. (repository, issue_number) is unique
-// among live cards only — insertTask's guard holds one at a time.
+// among live cards only — insertTask's guard holds one at a time — so a
+// re-filed issue can hold a final card beside the live one: the live
+// card answers, and among final ones the newest.
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
+	return s.oneTask(ctx, `repository = $1 AND issue_number = $2
+		ORDER BY status IN ('done', 'failed', 'closed'), created_at DESC, id DESC`, repository, issueNumber)
 }
 
 // TaskByPR is the newest card whose row links pull request number on
@@ -1691,6 +1727,14 @@ func (s *PGStore) SpendAndCallsBetween(ctx context.Context, taskID string, from,
 		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8, count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
 		taskID, from, to).Scan(&eur, &n)
 	return eur, n, err
+}
+
+// NewestCallAt is the time of the task's newest audit row, zero when it
+// has none.
+func (s *PGStore) NewestCallAt(ctx context.Context, taskID string) (time.Time, error) {
+	var at sql.NullTime
+	err := s.db.QueryRowContext(ctx, `SELECT max(ts) FROM audit WHERE task_id = $1`, taskID).Scan(&at)
+	return at.Time, err
 }
 
 // MonthSpend is the variable spend over the ledger in the UTC calendar month of at, standing
@@ -2105,9 +2149,10 @@ func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time)
 }
 
 // MarkStarted moves a startable card — queued, held, in review,
-// waiting-human and the like — to running. SetState's running branch is
-// its sole caller; a card outside the startable set answers
-// ErrNotFound.
+// waiting-human and the like — to running. A card back from a wait takes
+// its slot again by its status, over the bound, and keeps its first
+// admission. SetState's running branch is its sole caller; a card outside
+// the startable set answers ErrNotFound.
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 	changed, err := s.changeStatus(ctx, `status = 'running'`,
 		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image')`, id)
@@ -2118,24 +2163,42 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 }
 
 // SetAdmitted stamps the card admitted at now, once — a card already
-// stamped keeps its first stamp. admit, the bound's admission pass, is
-// its sole caller.
+// stamped keeps its first stamp — and clears its queue reason in the same
+// write, so no refusal lands between the two. admit, the bound's
+// admission pass, is its sole caller.
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now() WHERE id = $1 AND admitted_at IS NULL`, id)
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL`, id)
 	return err
 }
 
-// CountAdmitted counts repository's bound cards that hold the work
-// bound: running or held in it (waiting-deps, in-review, closing), or
-// queued with an admission stamp. admit, the bound's entry, is its sole
-// caller; unbound cards (a roll, a factory pull request) never count.
+// SetQueueReason writes reason on card id, with now as queue_since when
+// the reason is of a new kind: the count's at new numbers keeps the time
+// of its first refusal with a reason of that kind, the count's at any
+// numbers. A refusal that repeats the stored reason writes nothing, so
+// the minute's admissions keep the first time. An admitted card takes
+// none: a refusal read before another admission took the card must not
+// mark it, since nothing clears it after.
+func (s *PGStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET queue_reason = $2, queue_since = CASE
+		WHEN starts_with(queue_reason, $4) AND starts_with($2, $4) THEN queue_since ELSE $3::timestamptz END
+		WHERE id = $1 AND queue_reason <> $2 AND admitted_at IS NULL`, id, reason, now, WorkBoundReason)
+	return err
+}
+
+// CountAdmitted counts repository's bound cards that hold a work slot:
+// running or closing, in review in any gate but the approval's, or
+// queued with an admission stamp (holdsSlot is the same rule for one
+// card). A card waiting on a dependency or on a human's approval holds
+// none. admit, the bound's entry, is its sole caller; unbound cards (a
+// roll, a factory pull request) never count.
 func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
 		WHERE repository = $1 AND `+boundCards+`
-			AND (status IN ('waiting-deps', 'running', 'in-review', 'closing')
-				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository).Scan(&n) // #nosec G202 -- boundCards is built from constants
+			AND (status IN ('running', 'closing')
+				OR (status = 'in-review' AND gate <> $2)
+				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- boundCards is built from constants
 	return n, err
 }
 
@@ -2748,16 +2811,15 @@ func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string
 	return sha, true, nil
 }
 
-// CountQueue counts repository's cards that hold no admission stamp: the
-// queued cards not yet admitted, the complement of CountAdmitted's slots
-// (roadmap 239's queue cap). QueueRefusal, the ready check, is its sole
-// caller.
+// CountQueue counts repository's queued cards not yet admitted (roadmap
+// 239's queue cap): a card past its start counts in no queue, whatever
+// its wait. QueueRefusal, the ready check, and the roadmap refill call it.
 func (s *PGStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `
 		SELECT count(*) FROM tasks
 		WHERE repository = $1 AND `+boundCards+`
-			AND status NOT IN ('done', 'failed', 'closed') AND admitted_at IS NULL`, repository).Scan(&n) // #nosec G202 -- boundCards is built from constants
+			AND status = 'queued' AND admitted_at IS NULL`, repository).Scan(&n) // #nosec G202 -- boundCards is built from constants
 	return n, err
 }
 

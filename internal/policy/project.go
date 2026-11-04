@@ -274,9 +274,14 @@ type ProjectConfig struct {
 	// each part of the pool and the card draw at most the policy's. A
 	// looser file is rejected.
 	Escalation *Escalation `yaml:"escalation,omitempty" json:"escalation,omitempty"`
+	// Waits are the project's wait bounds, each over policy.yaml's. Each
+	// lies between 1m and 7 days. Stricter wins: each bound at most the
+	// policy's, and a longer one is rejected. Absent or 0: policy.yaml's.
+	Waits *Waits `yaml:"waits,omitempty" json:"waits,omitempty"`
 	// WorkInProgress is how many of the project's cards hold a work slot
-	// at once (waiting on a dependency, working, in review or waiting on a
-	// human); a queued card starts only under it. Absent: the default, 5.
+	// at once (running, closing, in review in any gate but the approval's,
+	// or queued and admitted); a queued card starts only under it. Absent:
+	// the default, 5.
 	WorkInProgress int `yaml:"work_in_progress,omitempty" json:"work_in_progress,omitempty"`
 	// Model runs a coding card's first session on Models.Stronger instead
 	// of the ladder's first rung; the only accepted value is "stronger".
@@ -708,6 +713,11 @@ func (p ProjectConfig) Validate(name string) error {
 			bad("%v", err)
 		}
 	}
+	if p.Waits != nil {
+		if err := p.Waits.validate(); err != nil {
+			bad("%v", err)
+		}
+	}
 	if p.Model != "" && !slices.Contains(ModelValues, p.Model) {
 		bad("model %q: want one of %v", p.Model, ModelValues)
 	}
@@ -790,8 +800,9 @@ func (p ProjectConfig) Validate(name string) error {
 }
 
 // checkBounds: a project file may only tighten what policy.yaml bounds
-// (stricter wins): each quota, envelope, standing, budget and escalation
-// value at most the policy's, each server type one the policy lists.
+// (stricter wins): each quota, envelope, standing, budget, escalation
+// and wait value at most the policy's, each server type one the policy
+// lists.
 func (d Document) checkBounds(name string, p ProjectConfig) error {
 	var errs []error
 	looser := func(field string, v, bound any, policyField string) {
@@ -848,6 +859,19 @@ func (d Document) checkBounds(name string, p ProjectConfig) error {
 		}
 		if err := d.escalationOf(p).checkDraw(); err != nil {
 			errs = append(errs, fmt.Errorf("project %s: %w", name, err))
+		}
+	}
+	if w := p.Waits; w != nil {
+		bound := d.waitsOf(ProjectConfig{})
+		bb := bound.bounds()
+		for i, b := range w.bounds() {
+			if *b.d > *bb[i].d {
+				field := "waits." + b.key
+				looser(field, *b.d, *bb[i].d, field)
+			}
+		}
+		if w.NoPushSessions > bound.NoPushSessions {
+			looser("waits.no_push_sessions", w.NoPushSessions, bound.NoPushSessions, "waits.no_push_sessions")
 		}
 	}
 	if p.Chat != nil {

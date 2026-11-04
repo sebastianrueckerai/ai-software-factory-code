@@ -998,11 +998,112 @@ var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "checkin
 // for the budget beside the action. No action is continue.
 func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action string, args json.RawMessage, eur float64) (string, error) {
 	text = strings.TrimSpace(text)
+	res, err := typedAnswer(text, action, args, eur)
+	if err != nil {
+		return "", err
+	}
+	t, said, done, err := c.answerGates(ctx, a, id, text, action, &res)
+	if done {
+		return said, err
+	}
+	return c.answerCard(ctx, a, t, res)
+}
+
+// doAnswerCase answers case caseID of card id with the typed action the
+// chat names, as doAnswerAs answers the card's own ask. A monitor's case
+// sits beside the card's run: it is answered whatever the card's status,
+// past the gates of the run's own ask, and no comment of a's goes on the
+// issue for the run to read. The card's own ask meets every answer's
+// gates. A merge's or a plan question's case is refused with its own door,
+// and a number that names no live case of the card with the card's live
+// cases (noLiveCase).
+func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, args json.RawMessage, eur float64) (string, error) {
+	text = strings.TrimSpace(text)
+	res, err := typedAnswer(text, action, args, eur)
+	if err != nil {
+		return "", err
+	}
+	if len(text) > factoryd.MaxAnswer {
+		return "", answerFits(text)
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	open, err := c.cfg.OpenCasesOf(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: the cases of %s: %v", t.ID, err)
+		return "", refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+	}
+	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return k.ID == caseID })
+	if i < 0 {
+		return "", c.noLiveCase(ctx, t, caseID, open)
+	}
+	ref := issueRef(t.ID, t.IssueNumber)
+	switch k := open[i]; k.Kind {
+	case factoryd.CaseMergeApproval:
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Case %d is %s's merge approval: decide it with approve_merge or deny_merge.", caseID, ref))
+	case factoryd.CasePlanQuestion, factoryd.CasePlanConfirmation:
+		revision, _ := k.Facts["revision"].(float64)
+		index, _ := k.Facts["index"].(float64)
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Case %d is %s's %s: answer revision %d, question %d without a case number.",
+			caseID, ref, strings.ReplaceAll(string(k.Kind), "_", " "), int(revision), int(index)))
+	}
+	post := c.posting(a, t, res)
+	if open[i].Kind == factoryd.CaseMonitorFlag {
+		post = nil
+	} else {
+		var said string
+		var done bool
+		if t, said, done, err = c.answerGates(ctx, a, id, text, action, &res); done {
+			return said, err
+		}
+	}
+	out, err := c.actOn(ctx, a, t, caseID, res, post)
+	if err != nil {
+		return "", err
+	}
+	return out.Text, nil
+}
+
+// noLiveCase refuses an answer on case id, which is no live case of card
+// t: it says why, a case unknown or another project's, one of t's that
+// ended or another card's, and names t's live cases, open, with their
+// kinds.
+func (c *Console) noLiveCase(ctx context.Context, t factoryd.Task, id int64, open []factoryd.Case) error {
+	ref := issueRef(t.ID, t.IssueNumber)
+	why := fmt.Sprintf("Card %s has no case %d.", ref, id)
+	k, err := c.cfg.CaseByID(ctx, id)
+	switch {
+	case errors.Is(err, factoryd.ErrNotFound):
+	case err != nil:
+		log.Printf("console: case %d: %v", id, err)
+		return refuse(http.StatusServiceUnavailable, "The case could not be read, so nothing was answered. Try again.")
+	case k.TaskID == t.ID:
+		why = fmt.Sprintf("Case %d ended.", id)
+	case k.Repository == t.Repository:
+		other, _, _ := c.cfg.Tasks.Task(ctx, k.TaskID)
+		why = fmt.Sprintf("Case %d is %s's.", id, issueRef(k.TaskID, other.IssueNumber))
+	}
+	if len(open) == 0 {
+		return refuse(http.StatusConflict, why+" Card "+ref+" has no live case.")
+	}
+	live := make([]string, len(open))
+	for i, k := range open {
+		live[i] = fmt.Sprintf("%d (%s)", k.ID, k.Kind)
+	}
+	return refuse(http.StatusConflict, why+" Card "+ref+"'s live cases: "+strings.Join(live, ", ")+".")
+}
+
+// typedAnswer is the chat's typed answer: action with its args, continue
+// when none, text its note, and eur the money it draws, the fund's or the
+// ceiling raise's own amount, else money for the budget beside the action.
+func typedAnswer(text, action string, args json.RawMessage, eur float64) (factoryd.Resolution, error) {
 	res := factoryd.Resolution{Action: cmp.Or(action, factoryd.ActContinue), Note: text}
 	if len(args) > 0 {
 		var all map[string]any
 		if err := json.Unmarshal(args, &all); err != nil {
-			return "", refuse(http.StatusBadRequest, "args is a JSON object of the action's arguments")
+			return res, refuse(http.StatusBadRequest, "args is a JSON object of the action's arguments")
 		}
 		for _, key := range answerArgs {
 			if v, ok := all[key]; ok {
@@ -1015,7 +1116,7 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 	}
 	switch {
 	case eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0):
-		return "", refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
+		return res, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
 	case eur == 0:
 	case res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling:
 		if res.Args == nil {
@@ -1025,11 +1126,7 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 	default:
 		res.Fund = &policy.Draw{EUR: eur}
 	}
-	t, said, done, err := c.answerGates(ctx, a, id, text, action, &res)
-	if done {
-		return said, err
-	}
-	return c.answerCard(ctx, a, t, res)
+	return res, nil
 }
 
 // fundShortfall is what a fund choice of card t raises its budget by: the

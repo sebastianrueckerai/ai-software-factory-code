@@ -189,10 +189,11 @@ func (s *PGStore) MoveDependents(ctx context.Context, from, to string) ([]string
 
 // Dependencies tells the workflow where the card's dependencies stand,
 // naming the first failed one with no replacement yet. A card that has to
-// wait enters waiting-deps in gate dependencies (once: the gate keeps the
-// wait's start), also a healed one in waiting-human whose question named a
-// dependency that failed, which now waits for its retry; one whose wait is
-// over records its end.
+// wait, also a healed one in waiting-human whose question named a
+// dependency that failed, which now waits for its retry, enters
+// waiting-deps in gate dependencies (once: the gate keeps the wait's
+// start) and hands its work slot to the next queued card. One whose wait
+// is over records its end.
 func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
@@ -233,6 +234,8 @@ func (r *Runner) Dependencies(ctx context.Context, taskID string) (DepState, err
 		if err := r.store.TransitionTask(ctx, taskID, []string{"queued", "waiting-human"}, "waiting-deps"); err != nil {
 			return DepState{}, terminalError("task %s is %s, cannot wait on its dependencies: %v", taskID, t.Status, err)
 		}
+		// the wait holds no work slot: the next queued card takes it
+		pullQueued(ctx, r.store, r.cfg.Workflows, t.Repository)
 	}
 	// the gate last: a retry after the status moved finishes the entry
 	if t.Gate == GateDependencies {

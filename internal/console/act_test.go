@@ -837,3 +837,79 @@ func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
 		t.Fatalf("Forgejo calls %q, comments %q; want the sentence posted on #13 as sebastian", r.fg.calls, r.fg.comments)
 	}
 }
+
+// A monitor case is answered by its number. The chat's answer with case_id
+// on running card t-run reaches Act on case 7, past the gates of the run's
+// own ask, with no comment of the human's for the run to read, and the run
+// is not steered, a close with no words among them. A number that names no
+// live case of the card is refused before Act, saying why and naming the
+// card's live cases with their kinds: a case unknown or another project's,
+// a case of the card that ended, a case of another card, and on a card
+// with none, that it has none. Without case_id, waiting card t-e's answer
+// finds its own ask, case 5, the newer monitor case 12 beside it aside.
+// Case 5 named meets the answer's gates and posts the human's comment,
+// and a merge's or a plan question's case named is refused with its own
+// door.
+func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}},
+		{Task: factoryd.Task{ID: "t-other", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14}},
+		{Task: factoryd.Task{ID: "t-idle", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15}}}
+	r.openCases = map[string][]factoryd.Case{"t-run": {{ID: 7, TaskID: "t-run", Repository: "sf/code", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman}},
+		"t-other": {{ID: 5, TaskID: "t-other", Repository: "sf/code", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}},
+		"t-far":   {{ID: 3, TaskID: "t-far", Repository: "sf/else", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}}}
+	r.endedCases = []factoryd.Case{{ID: 6, TaskID: "t-run", Repository: "sf/code", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseWithdrawn}}
+	var steered []string
+	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
+		steered = append(steered, taskID+": "+text)
+		return nil
+	}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActNote, Text: "seen it"}); err != nil {
+		t.Fatal(err)
+	}
+	got, posts := actedOnce(t, r)
+	equal(t, "the monitor case's answer", []any{got, posts, steered}, []any{factoryd.ActInput{TaskID: "t-run", CaseID: 7, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "seen it"}}, false, []string(nil)})
+
+	refused := func(task string, id int64, want string) {
+		t.Helper()
+		calls := len(r.acted)
+		_, err := runTool(t, r, "answer", "member", toolInput{TaskID: task, CaseID: id, Action: factoryd.ActNote, Text: "seen it"})
+		var no *refusal
+		if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != want || len(r.acted) != calls {
+			t.Fatalf("an answer on case %d = %v, Act calls %d; want %q and no call", id, err, len(r.acted)-calls, want)
+		}
+	}
+	const live = " Card #11's live cases: 7 (monitor_flag)."
+	refused("t-run", 8, "Card #11 has no case 8."+live)
+	refused("t-run", 3, "Card #11 has no case 3."+live)
+	refused("t-run", 6, "Case 6 ended."+live)
+	refused("t-run", 5, "Case 5 is #14's."+live)
+	refused("t-idle", 7, "Case 7 is #11's. Card #15 has no live case.")
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActClose}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.acted) != 2 || r.acted[1].CaseID != 7 || !reflect.DeepEqual(r.acted[1].Res, factoryd.Resolution{Action: factoryd.ActClose}) || r.acted[1].Post != nil {
+		t.Fatalf("Act calls = %+v, want the close of case 7 with no words and no post", r.acted)
+	}
+
+	r = newRig(t)
+	caseCard(r)
+	r.openCases["t-e"] = append(r.openCases["t-e"],
+		factoryd.Case{ID: 10, TaskID: "t-e", Kind: factoryd.CasePlanQuestion, Status: factoryd.CaseAtHuman, Facts: map[string]any{"revision": float64(2), "index": float64(1)}},
+		factoryd.Case{ID: 12, TaskID: "t-e", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman})
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Action: factoryd.ActNote, Text: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); got.CaseID != 5 {
+		t.Fatalf("Act took case %d, want the card's own ask, case 5", got.CaseID)
+	}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", CaseID: 5, Action: factoryd.ActNote, Text: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.acted) != 2 || r.acted[1].CaseID != 5 || r.acted[1].Post == nil {
+		t.Fatalf("Act calls = %+v, want case 5 answered with the human's comment", r.acted)
+	}
+	refused("t-e", 9, "Case 9 is #13's merge approval: decide it with approve_merge or deny_merge.")
+	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
+}

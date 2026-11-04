@@ -17,9 +17,15 @@ import (
 
 // The merge queue (stage11-design.md 1.4, merge: {queue: project}): one
 // pull request of a project merges at a time. A task enters at the
-// approval stage and holds its turn through the approval wait and the
-// merge; the oldest entry of a project holds the turn. The project is the
-// task's repository, as an approval request's is.
+// approval stage; the oldest entry of a project holds the turn. The
+// project is the task's repository, as an approval request's is. The turn
+// merges main in and runs the checks of a head that moved. A task leaves
+// the queue while its approval waits for a human, and an approval enters
+// it again at its end: that turn merges main in once more and holds
+// through the merge (versionQueueWaits). A failed merge keeps the turn
+// through its retries, and a refused merge or exhausted retries leave the
+// queue until the next approval. A run from before holds its turn through
+// the approval wait and the merge.
 
 // SignalQueueTurn wakes a task waiting in the merge queue: the entry ahead
 // of it left.
@@ -350,6 +356,13 @@ func (t *taskRun) queued() bool {
 	return t.mergeQueue >= versionMergeQueue && t.cfg.Task.Queue == policy.QueueProject
 }
 
+// waitsOutOfQueue: the task leaves its merge queue while its approval
+// waits for a human, and an approval takes a turn again before the merge
+// (versionQueueWaits).
+func (t *taskRun) waitsOutOfQueue() bool {
+	return t.queueWaits >= versionQueueWaits && t.queued()
+}
+
 // turn waits, at no cost, for the task's turn in its project's merge
 // queue, then merges main into head (SyncWithMain). stop ends the stages
 // with v (a terminal signal, a change request, a person's replan
@@ -442,6 +455,10 @@ const maxTurns = maxRestages + 3
 // leftQueue opens the escalation of a queue head still red after its
 // turns (leaveRed).
 const leftQueue = "the checks are still red after the merge queue's turns"
+
+// approvalWaitLeft is why a card leaves the merge queue when its approval
+// waits for a human (versionQueueWaits).
+const approvalWaitLeft = "the approval waits for a human"
 
 // approvalWithdrawn is the note of a merge approval request the
 // re-stage of its red head withdrew.
@@ -550,6 +567,10 @@ func (t *taskRun) restage(commit string, g GateResults, review Review, reviewed 
 		}
 		if v = t.approval(commit, g, review, reviewed, capped, card, covered); !v.restage {
 			return v
+		}
+		if t.waitsOutOfQueue() {
+			// the head the approval's turn merged on
+			commit = t.head
 		}
 		refusal, last = v.reason, []string{v.reason}
 	}

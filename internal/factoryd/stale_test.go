@@ -4,51 +4,18 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"io"
-	"net/http"
-	"net/http/httptest"
-	"reflect"
+	"maps"
 	"slices"
-	"strings"
 	"testing"
 	"time"
 )
 
-// staleForgejoStub is Forgejo as a stale escalation writes it: labels read
-// empty and replaced, a comment posted and given id 55.
-func staleForgejoStub(t *testing.T) (*Forgejo, *[]string, *[]string) {
-	t.Helper()
-	var requests, comments []string
-	srv := httptest.NewServer(firstPage(func(w http.ResponseWriter, r *http.Request) {
-		requests = append(requests, r.Method+" "+r.URL.Path)
-		switch {
-		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/labels"):
-			io.WriteString(w, `[]`)
-		case r.Method == http.MethodPut && strings.HasSuffix(r.URL.Path, "/labels"):
-			io.WriteString(w, `{}`)
-		case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
-			body, _ := io.ReadAll(r.Body)
-			comments = append(comments, string(body))
-			w.WriteHeader(http.StatusCreated)
-			io.WriteString(w, `{"id":55}`)
-		default:
-			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
-		}
-	}))
-	t.Cleanup(srv.Close)
-	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw", Seeded: testSeeded}, &requests, &comments
-}
-
-// staleRig is one sweep's world: two quiet cards, a chat task and a
-// queued one beside them, and the stores the sweep writes.
+// staleRig is one sweep's world: its cards, the workflows it signals and
+// the timelines it reads.
 type staleRig struct {
-	store    *fakeStore
-	wf       *fakeWorkflows
-	in       *Intake
-	objects  *fakeObjectStore
-	recorder *fakeEventRecorder
-	requests *[]string
-	comments *[]string
+	store   *fakeStore
+	wf      *fakeWorkflows
+	objects *fakeObjectStore
 }
 
 func newStaleRig(t *testing.T, ages map[string]time.Duration) *staleRig {
@@ -63,13 +30,7 @@ func newStaleRig(t *testing.T, ages map[string]time.Duration) *staleRig {
 		store.CreateTask(context.Background(), Task{ID: id, Status: status, Kind: map[string]string{"t-chat": KindChat}[id],
 			Repository: "sf/code", IssueNumber: 42, CreatedAt: time.Now().Add(-age), Track: "direct"})
 	}
-	forgejo, requests, comments := staleForgejoStub(t)
-	wf := &fakeWorkflows{}
-	rig := &staleRig{store: store, wf: wf, objects: &fakeObjectStore{}, recorder: &fakeEventRecorder{},
-		requests: requests, comments: comments}
-	rig.in = &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
-		Timeline: &Timeline{Objects: rig.objects, Events: rig.recorder, Store: store}}
-	return rig
+	return &staleRig{store: store, wf: &fakeWorkflows{}, objects: &fakeObjectStore{}}
 }
 
 // A live-status card quiet for the window is nudged — the signal starts a
@@ -88,128 +49,16 @@ func TestStaleSweepNudgesAQuietCardOnce(t *testing.T) {
 		t.Fatal(err)
 	}
 	nudged := map[string]time.Time{}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
 	if want := []string{"t-run stale_nudge factoryd #0: quiet for 45 min while running"}; !slices.Equal(rig.wf.signals, want) {
 		t.Fatalf("signals = %q, want the quiet running card nudged alone", rig.wf.signals)
 	}
 	if n, ok := nudged["t-run"]; !ok || time.Since(n) > time.Minute {
 		t.Fatalf("nudged = %v, want t-run remembered at now", nudged)
 	}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
 	if len(rig.wf.signals) != 1 {
 		t.Fatalf("signals = %q, want no second nudge within the grace", rig.wf.signals)
-	}
-}
-
-// A card still quiet a window after its nudge, whose workflow is dead,
-// is escalated like any escalation:
-// waiting-human mirrored on the issue, the reason a comment whose first
-// line is the question, an intake event, a question_asked row, an alert,
-// and the timeline's escalated step carrying the sweep's own words. The
-// waiting-poster card's words name its wait.
-func TestStaleSweepEscalatesAStillQuietCard(t *testing.T) {
-	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-wait": 70 * time.Minute})
-	nudged := map[string]time.Time{"t-run": time.Now().Add(-StaleWindow - time.Minute),
-		"t-wait": time.Now().Add(-StaleWindow - time.Minute)}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
-	ctx := context.Background()
-	for id, want := range map[string]string{
-		"t-run":  "The card has sat quiet 1 h 10 min while running. Keep waiting?",
-		"t-wait": "The card has sat quiet 1 h 10 min while waiting on the issue's author. Keep waiting?",
-	} {
-		reason := "The card was quiet for 1 h 10 min while " + map[string]string{
-			"t-run": "running", "t-wait": "waiting on the issue's author"}[id] + ": is its run gone?"
-		task, _, _ := rig.store.Task(ctx, id)
-		if task.Status != "waiting-human" {
-			t.Fatalf("%s = %s, want waiting-human", id, task.Status)
-		}
-		var anchor *IntakeEvent
-		for i := range rig.store.intakeEvents {
-			if rig.store.intakeEvents[i].TaskID == id {
-				anchor = &rig.store.intakeEvents[i]
-			}
-		}
-		if anchor == nil || anchor.Kind != IntakeEscalation || !strings.HasPrefix(anchor.Body, reason) || anchor.CommentID != 55 {
-			t.Fatalf("%s: intake events = %+v, want the escalation anchored with its reason and comment", id, rig.store.intakeEvents)
-		}
-		if anchor.Question == nil || anchor.Question.Ask != want || anchor.Question.Info == "" || len(anchor.Question.Choices) == 0 {
-			t.Fatalf("%s: the escalation's question = %+v, want the five parts and their choices", id, anchor.Question)
-		}
-		rig.recorder.mu.Lock()
-		var question string
-		var asked map[string]any
-		for _, e := range rig.recorder.rows {
-			if e.TaskID == id && e.Kind == EventQuestionAsked && e.Via == ViaFactoryd {
-				question, _ = e.Detail["question"].(string)
-				asked = e.Detail
-			}
-		}
-		rig.recorder.mu.Unlock()
-		wantRec := map[string]string{
-			"t-run":  "answer on the issue to start a new attempt with your comment as guidance, or close the issue to end the card",
-			"t-wait": "the issue's author answers on the issue, or close it to end the wait",
-		}[id]
-		if why, _ := asked["reason"].(string); asked["source"] != "stale" || !strings.HasPrefix(why, reason) {
-			t.Fatalf("%s: the question_asked row = %v, want source stale and the reason %q", id, asked, reason)
-		}
-		if !reflect.DeepEqual(asked["choices"], []string{"Keep waiting", "End the card"}) || asked["recommendation"] != wantRec {
-			t.Fatalf("%s: the question_asked row = %v, want the quiet template's choices and the action as recommendation %q", id, asked, wantRec)
-		}
-		if question != want {
-			t.Fatalf("%s: the question_asked row's question = %q, want %q", id, question, want)
-		}
-		body, err := rig.objects.Get(ctx, "sessions/"+id+"/timeline.jsonl")
-		if err != nil || !strings.Contains(string(body), `"step":"escalated"`) {
-			t.Fatalf("%s: the timeline lacks its escalated step (%v):\n%s", id, err, body)
-		}
-		var step map[string]any
-		for _, line := range strings.Split(strings.TrimSpace(string(body)), "\n") {
-			json.Unmarshal([]byte(line), &step)
-			if step["step"] == "escalated" {
-				break
-			}
-		}
-		// the sweep's record in its own keys, its time lowercase like every
-		// timeline line's
-		state, _ := step["state"].(string)
-		if state == "" || step["quiet"] != "1 h 10 min" || step["action"] == nil || step["reason"] == nil || step["comment"] != float64(55) {
-			t.Fatalf("%s: the escalated step = %v, want the sweep's own words beside its reason", id, step)
-		}
-		if _, ok := step["time"]; !ok {
-			t.Fatalf("%s: the escalated step lacks its time:\n%v", id, step)
-		}
-		if _, ok := nudged[id]; ok {
-			t.Fatalf("%s: still in nudged after its escalation", id)
-		}
-	}
-	if !slices.Contains(*rig.requests, "PUT /api/v1/repos/sf/code/issues/42/labels") {
-		t.Fatalf("forgejo calls = %q, want the waiting-human label", *rig.requests)
-	}
-	if len(*rig.comments) != 2 {
-		t.Fatalf("comments = %q, want one per escalated card", *rig.comments)
-	}
-	for _, raw := range *rig.comments {
-		var posted struct{ Body string }
-		if err := json.Unmarshal([]byte(raw), &posted); err != nil {
-			t.Fatal(err)
-		}
-		if !strings.HasPrefix(posted.Body, "factoryd: task ") || !strings.Contains(posted.Body, "```\nThe card was quiet for 1 h 10 min while") ||
-			!strings.Contains(posted.Body, "Reply on this issue to start a new attempt") {
-			t.Fatalf("the escalation comment = %q", posted.Body)
-		}
-	}
-	if !slices.ContainsFunc(rig.store.alerts, func(a Alert) bool {
-		reason, _ := a.Detail["reason"].(string)
-		return a.Kind == AlertEscalation && a.Source == FactoryDecider && a.TaskID != "" &&
-			strings.HasPrefix(reason, "The card was quiet for 1 h 10 min")
-	}) {
-		t.Fatalf("alerts = %+v, want the stale escalation's", rig.store.alerts)
-	}
-	// waiting-human is no longer swept: another pass records nothing new
-	before := len(rig.store.intakeEvents)
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
-	if len(rig.store.intakeEvents) != before || len(rig.wf.signals) != 0 {
-		t.Fatalf("the second pass acted again: %d intake events, %q signals", len(rig.store.intakeEvents), rig.wf.signals)
 	}
 }
 
@@ -220,27 +69,24 @@ func workflowsRunning(ids ...string) func(context.Context, string) (bool, error)
 
 // A card whose workflow runs is left alone in any state, however quiet:
 // a wait on a dependency, a human or a timer is by design. Its nudge
-// memory clears. A Temporal error escalates nobody.
+// memory clears. A Temporal error nudges nobody and keeps the memory.
 func TestStaleSweepLeavesALiveWorkflowAlone(t *testing.T) {
 	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-deps": 5 * time.Hour, "t-wait": 70 * time.Minute})
 	old := time.Now().Add(-StaleWindow - time.Minute)
 	nudged := map[string]time.Time{"t-run": old, "t-deps": old}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning("t-run", "t-deps", "t-wait"), nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.objects, workflowsRunning("t-run", "t-deps", "t-wait"), nudged)
 	for _, id := range []string{"t-run", "t-deps"} {
-		if task, _, _ := rig.store.Task(context.Background(), id); task.Status == "waiting-human" {
-			t.Fatalf("%s was escalated while its workflow runs", id)
-		}
 		if _, ok := nudged[id]; ok {
 			t.Fatalf("%s still in nudged: a running workflow clears the memory", id)
 		}
 	}
-	if len(rig.store.intakeEvents) != 0 || len(rig.store.alerts) != 0 || len(*rig.comments) != 0 || len(rig.wf.signals) != 0 {
-		t.Fatalf("the sweep acted on live workflows: %+v %v %q", rig.store.intakeEvents, *rig.comments, rig.wf.signals)
+	if len(rig.wf.signals) != 0 {
+		t.Fatalf("the sweep nudged live workflows: %q", rig.wf.signals)
 	}
 
 	down := func(context.Context, string) (bool, error) { return false, errors.New("temporal down") }
 	nudged = map[string]time.Time{"t-wait": old}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, down, nudged)
+	StaleSweep(context.Background(), rig.store, rig.wf, rig.objects, down, nudged)
 	if task, _, _ := rig.store.Task(context.Background(), "t-wait"); task.Status != "waiting-poster" || len(rig.wf.signals) != 0 {
 		t.Fatalf("t-wait = %s after %q: an unreadable Temporal must skip the card", task.Status, rig.wf.signals)
 	}
@@ -249,18 +95,74 @@ func TestStaleSweepLeavesALiveWorkflowAlone(t *testing.T) {
 	}
 }
 
-// A dead workflow keeps the ladder: a waiting-deps card is nudged once,
-// and escalated when it is still dead a window later.
-func TestStaleSweepEscalatesADeadWaitingDepsCard(t *testing.T) {
-	rig := newStaleRig(t, map[string]time.Duration{"t-deps": 5 * time.Hour})
-	nudged := map[string]time.Time{}
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
-	if len(rig.wf.signals) != 1 || !strings.Contains(rig.wf.signals[0], "while waiting on its dependencies") {
-		t.Fatalf("signals = %q, want one nudge", rig.wf.signals)
+// A dead card still quiet a window after its nudge is nudged again, and
+// the sweep asks no human: each card keeps its status, and no ask or
+// alert is written. The monitor's run_quiet flag faces the quiet running
+// card and its dependency bound the waiting-deps card. The waiting-poster
+// card has no wait the monitor owns: its nudge and the board's stale ring
+// face it. The next pass, within the new nudges' grace, sends nothing.
+func TestStaleSweepNudgesAndAsksNothing(t *testing.T) {
+	ctx := context.Background()
+	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-wait": 70 * time.Minute, "t-deps": 5 * time.Hour})
+	old := time.Now().Add(-StaleWindow - time.Minute)
+	nudged := map[string]time.Time{"t-run": old, "t-wait": old, "t-deps": old}
+	StaleSweep(ctx, rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
+	want := []string{
+		"t-deps stale_nudge factoryd #0: quiet for 5 h 0 min while waiting on its dependencies",
+		"t-run stale_nudge factoryd #0: quiet for 1 h 10 min while running",
+		"t-wait stale_nudge factoryd #0: quiet for 1 h 10 min while waiting on the issue's author",
 	}
-	nudged["t-deps"] = time.Now().Add(-StaleWindow - time.Minute)
-	StaleSweep(context.Background(), rig.store, rig.wf, rig.in, workflowsRunning(), nudged)
-	if task, _, _ := rig.store.Task(context.Background(), "t-deps"); task.Status != "waiting-human" {
-		t.Fatalf("t-deps = %s, want waiting-human", task.Status)
+	if got := slices.Sorted(slices.Values(rig.wf.signals)); !slices.Equal(got, want) {
+		t.Fatalf("signals = %q, want %q", got, want)
+	}
+	for id, status := range map[string]string{"t-run": "running", "t-wait": "waiting-poster", "t-deps": "waiting-deps"} {
+		if task, _, _ := rig.store.Task(ctx, id); task.Status != status {
+			t.Fatalf("%s = %s, want %s: the sweep asks no human", id, task.Status, status)
+		}
+		if at, ok := nudged[id]; !ok || time.Since(at) > time.Minute {
+			t.Fatalf("%s's nudge = %v (%v), want now", id, at, ok)
+		}
+	}
+	if len(rig.store.intakeEvents) != 0 || len(rig.store.alerts) != 0 {
+		t.Fatalf("the sweep asked: intake events %+v, alerts %+v", rig.store.intakeEvents, rig.store.alerts)
+	}
+	StaleSweep(ctx, rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
+	if len(rig.wf.signals) != 3 {
+		t.Fatalf("signals = %q, want no nudge within the grace", rig.wf.signals)
+	}
+}
+
+// failingList is a sweep's store whose list of one status fails.
+type failingList struct {
+	*fakeStore
+	status string
+}
+
+func (f failingList) ListTasksByStatus(ctx context.Context, status string) ([]Task, error) {
+	if status == f.status {
+		return nil, errors.New("list down")
+	}
+	return f.fakeStore.ListTasksByStatus(ctx, status)
+}
+
+// The nudge memory keeps only the cards the sweep lists: t-queued left
+// the swept statuses and t-gone is no card at all, so both are forgotten,
+// while t-run, nudged within its grace, is kept. A sweep whose list fails
+// forgets nobody, since a card it could not read may still be listed.
+func TestStaleSweepForgetsACardItNoLongerLists(t *testing.T) {
+	ctx := context.Background()
+	rig := newStaleRig(t, map[string]time.Duration{"t-run": 70 * time.Minute, "t-queued": 70 * time.Minute})
+	recent := time.Now().Add(-time.Minute)
+	nudged := map[string]time.Time{"t-run": recent, "t-queued": recent, "t-gone": recent}
+	StaleSweep(ctx, failingList{rig.store, "waiting-poster"}, rig.wf, rig.objects, workflowsRunning(), nudged)
+	if got := slices.Sorted(maps.Keys(nudged)); !slices.Equal(got, []string{"t-gone", "t-queued", "t-run"}) {
+		t.Fatalf("nudged after a failed list = %q, want every key kept", got)
+	}
+	StaleSweep(ctx, rig.store, rig.wf, rig.objects, workflowsRunning(), nudged)
+	if got := slices.Sorted(maps.Keys(nudged)); !slices.Equal(got, []string{"t-run"}) {
+		t.Fatalf("nudged = %q, want only the listed t-run", got)
+	}
+	if !nudged["t-run"].Equal(recent) || len(rig.wf.signals) != 0 {
+		t.Fatalf("t-run's nudge = %v, signals %q: within its grace it is kept and not sent again", nudged["t-run"], rig.wf.signals)
 	}
 }

@@ -243,7 +243,10 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivitySyncWithMain: func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
 			return SyncResult{}, nil
 		},
-		ActivityLeaveQueue:       func(ctx context.Context, taskID, why string) error { return nil },
+		ActivityLeaveQueue: func(ctx context.Context, taskID, why string) error { return nil },
+		ActivityRecordNotRun: func(ctx context.Context, taskID, kind string, pr int64, commit string, round int, reason string) error {
+			return nil
+		},
 		ActivityWithdrawApproval: func(ctx context.Context, taskID string) error { return nil },
 		ActivityRunPlan: func(ctx context.Context, taskID, model string, pin int64, findings []string) (PlanResult, error) {
 			return PlanResult{}, nil
@@ -427,6 +430,13 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 // time's cap fails a card with nothing pushed.
 func (h *workflowHarness) beforeCases() {
 	h.env.OnGetVersion("cases", workflow.DefaultVersion, versionCases).Return(workflow.DefaultVersion)
+}
+
+// beforeQueueWaits runs the workflow as a run from before
+// versionQueueWaits: a queued card holds its entry through the approval
+// wait and the merge.
+func (h *workflowHarness) beforeQueueWaits() {
+	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
 }
 
 // beforeBlindProofs pins the run to before versionBlindProofs.

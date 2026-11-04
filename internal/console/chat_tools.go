@@ -29,6 +29,7 @@ import (
 // toolInput holds every tool's arguments; each tool reads its own.
 type toolInput struct {
 	TaskID      string   `json:"task_id,omitempty"`
+	CaseID      int64    `json:"case_id,omitempty"`
 	Title       string   `json:"title,omitempty"`
 	Body        string   `json:"body,omitempty"`
 	Track       string   `json:"track,omitempty"`
@@ -501,6 +502,9 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 	if in.FundEUR > 0 {
 		parts = append(parts, fmt.Sprintf("fund_eur %.2f EUR", in.FundEUR))
 	}
+	if in.CaseID > 0 {
+		parts = append(parts, fmt.Sprintf("case %d", in.CaseID))
+	}
 	for _, f := range []struct{ key, v string }{{"name", in.Name}, {"tool", in.Tool}, {"need", in.Need}, {"title", in.Title}, {"body", in.Body}, {"track", in.Track}, {"track_reason", in.TrackReason},
 		{"size", in.Size}, {"image", in.Image}, {"action", in.Action},
 		{"summary", in.Summary}, {"accent", in.Accent}, {"text", in.Text}, {"note", in.Note}, {"remote", in.Remote}, {"login", in.Login}, {"mode", in.Mode},
@@ -723,6 +727,9 @@ func (c *Console) planQuestions(ctx context.Context, t factoryd.Task) ([]factory
 // alone.
 func (t *turn) answer(in toolInput) (string, error) {
 	ctx := t.r.Context()
+	if in.CaseID != 0 {
+		return t.c.doAnswerCase(ctx, t.a, in.TaskID, in.CaseID, in.Text, in.Action, in.Args, in.FundEUR)
+	}
 	k, err := t.card(in)
 	if err != nil {
 		return "", err
@@ -1500,6 +1507,8 @@ var tools = []chatTool{
 			return s, nil, err
 		}},
 	{name: "answer", title: "Answer a card", write: true, params: map[string]any{"task_id": taskParam, "text": textParam,
+		"case_id": map[string]any{"type": "integer", "minimum": 1,
+			"description": "the number of a case to answer, none for the card's own ask"},
 		"action": map[string]any{"type": "string", "enum": actionNames(),
 			"description": "the typed action on the card's case, continue when none"},
 		"fund_eur": map[string]any{"type": "number", "exclusiveMinimum": 0,

@@ -128,6 +128,8 @@ type fakeStore struct {
 	routineStates map[string]RoutineState
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
+	// monitorCursor is the monitor's cursor, nil until its first read
+	monitorCursor *int64
 	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
 	releases      map[string]Release
 	// afterRead runs once OpenGroups or QueuedPlans (the name) has read
@@ -585,7 +587,7 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, c := range s.tasks {
-		queued := c.Gate == GateMergeQueue || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
+		queued := c.Gate == GateMergeQueue || c.Gate == GateApproval || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
 		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
 			c.Status == "in-review" && queued && !slices.Contains(out, issue) {
 			out = append(out, issue)
@@ -750,13 +752,28 @@ func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) 
 	return "", false, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
+	var held []Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
-			return t, true, nil
+			held = append(held, t)
 		}
 	}
-	return Task{}, false, nil
+	slices.SortFunc(held, func(a, b Task) int {
+		if da, db := factorydFinal(a.Status), factorydFinal(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 func (s *fakeStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {
@@ -935,20 +952,32 @@ func (s *fakeStore) SetAdmitted(ctx context.Context, id string) error {
 	}
 	if t.AdmittedAt == nil {
 		now := time.Now()
-		t.AdmittedAt = &now
+		t.AdmittedAt, t.QueueReason, t.QueueSince = &now, "", nil
 		s.tasks[id] = t
 	}
+	return nil
+}
+
+// SetQueueReason mirrors Postgres: a reason of a new kind restarts
+// queue_since at now, the same one or the count's at new numbers keeps
+// it, and an admitted card takes none.
+func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now time.Time) error {
+	t, ok := s.tasks[id]
+	if !ok || t.AdmittedAt != nil || t.QueueReason == reason {
+		return nil
+	}
+	if !strings.HasPrefix(t.QueueReason, WorkBoundReason) || !strings.HasPrefix(reason, WorkBoundReason) {
+		t.QueueSince = &now
+	}
+	t.QueueReason = reason
+	s.tasks[id] = t
 	return nil
 }
 
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
-			continue
-		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
-			(t.Status == "queued" && t.AdmittedAt != nil) {
+		if t.Repository == repository && t.Kind == "agent" && holdsSlot(t) {
 			n++
 		}
 	}
@@ -958,10 +987,7 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 func (s *fakeStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil {
-			continue
-		}
-		if !factorydFinal(t.Status) {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil {
 			n++
 		}
 	}
@@ -1305,7 +1331,8 @@ var _ Store = (*fakeStore)(nil)
 
 // OpenCase opens c as PGStore.OpenCase does: unless a live case of its
 // task, kind and key exists, which it answers with false, it inserts c
-// with the next id, open when it names no status.
+// with the next id, open when it names no status, owned by rung 3 with no
+// wake.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
 	if i := slices.IndexFunc(s.cases, func(o Case) bool {
@@ -1318,16 +1345,28 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	}
 	c.ID++
 	c.Status = cmp.Or(c.Status, CaseOpen)
+	c.OwnerRung, c.NextWakeAt, c.WakeOn = 3, nil, []string{}
 	s.cases = append(s.cases, c)
 	return c, true, nil
 }
 
+// AppendCaseStep appends st as PGStore.AppendCaseStep does: started now,
+// in progress when it names no outcome, its id the next over every case's
+// steps.
 func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
 	if s.caseSteps == nil {
 		s.caseSteps = map[int64][]CaseStep{}
 	}
+	st.ID = 0
+	for _, steps := range s.caseSteps {
+		for _, o := range steps {
+			st.ID = max(st.ID, o.ID)
+		}
+	}
+	st.ID++
+	st.StartedAt, st.Outcome = time.Now(), cmp.Or(st.Outcome, StepInProgress)
 	s.caseSteps[st.CaseID] = append(s.caseSteps[st.CaseID], st)
-	return int64(len(s.caseSteps[st.CaseID])), nil
+	return st.ID, nil
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
@@ -1343,9 +1382,83 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	return nil
 }
 
+// SetCaseWake sets live case id's wake as PGStore.SetCaseWake does; a
+// rung other than 0 to 3 is refused, as the column's check refuses it.
+func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	if rung < 0 || rung > 3 {
+		return fmt.Errorf("case %d: owner rung %d is not 0 to 3", id, rung)
+	}
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	s.cases[i].OwnerRung, s.cases[i].WakeOn, s.cases[i].NextWakeAt = rung, nonNil(on), at
+	return nil
+}
+
+// DueCases are the live cases whose wake is at or before now, the oldest
+// wake first, at most limit, as PGStore.DueCases reads them.
+func (s *fakeStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error) {
+	var out []Case
+	for _, c := range s.cases {
+		if (c.Status == CaseOpen || c.Status == CaseAtHuman) && c.NextWakeAt != nil && !c.NextWakeAt.After(now) {
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b Case) int { return cmp.Or(a.NextWakeAt.Compare(*b.NextWakeAt), cmp.Compare(a.ID, b.ID)) })
+	return out[:min(limit, len(out))], nil
+}
+
+// ExpireSteps hands up the in-progress steps due before now as
+// PGStore.ExpireSteps does, oldest first.
+func (s *fakeStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
+	var out []CaseStep
+	for id, steps := range s.caseSteps {
+		for i, st := range steps {
+			if st.Outcome != StepInProgress || st.DueAt == nil || !st.DueAt.Before(now) {
+				continue
+			}
+			ended := time.Now()
+			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.Found, st.StartedAt, *st.DueAt), &ended
+			s.caseSteps[id][i] = st
+			out = append(out, st)
+		}
+	}
+	slices.SortFunc(out, func(a, b CaseStep) int { return cmp.Compare(a.ID, b.ID) })
+	return out, nil
+}
+
+// MonitorEvents reads past the monitor's cursor and after as
+// PGStore.MonitorEvents does, an event's id its place in events, 1-based:
+// the first read plants the cursor at the newest event.
+func (s *fakeStore) MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error) {
+	if s.monitorCursor == nil {
+		n := int64(len(s.events))
+		s.monitorCursor = &n
+	}
+	var out []Event
+	for i, e := range s.events {
+		if id := int64(i + 1); id > max(after, *s.monitorCursor) && slices.Contains(kinds, e.Kind) && len(out) < limit {
+			e.ID = id
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// SetMonitorCursor moves a planted cursor to eventID, never back, as
+// PGStore.SetMonitorCursor does.
+func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
+	if s.monitorCursor != nil {
+		*s.monitorCursor = max(*s.monitorCursor, eventID)
+	}
+	return nil
+}
+
 // ResolveCase records its call in resolved and ends case id of cases by r
-// as PGStore.ResolveCase does, the draw and the step with it: a live case,
-// or one the webhook's copy of r's comment resolved as a plain answer.
+// as PGStore.ResolveCase does, its in-progress steps, the draw and the step
+// with it: a live case, or one the webhook's copy of r's comment resolved
+// as a plain answer.
 func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error {
 	s.resolved = append(s.resolved, id)
 	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id })
@@ -1368,11 +1481,11 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 			return err
 		}
 	}
-	status, now := CaseResolved, time.Now()
+	status, outcome := CaseResolved, StepResolved
 	if r.Action == ActWithdraw {
-		status = CaseWithdrawn
+		status, outcome = CaseWithdrawn, StepWithdrawn
 	}
-	s.cases[i].Status, s.cases[i].Resolution, s.cases[i].ResolvedAt = status, &r, &now
+	s.endCase(i, status, outcome, r)
 	if st != nil {
 		step := *st
 		step.CaseID = id
@@ -1381,8 +1494,28 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 	return nil
 }
 
+// WithdrawCase ends live case id as withdrawn by the factory for reason,
+// its in-progress steps with it, as PGStore.WithdrawCase does.
 func (s *fakeStore) WithdrawCase(ctx context.Context, id int64, reason string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	s.endCase(i, CaseWithdrawn, StepWithdrawn, CaseResolution{By: FactoryDecider, Rung: 0, Action: "withdraw", Reason: reason})
 	return nil
+}
+
+// endCase ends case i of cases with status by r, and its in-progress steps
+// with outcome, as endCase does.
+func (s *fakeStore) endCase(i int, status, outcome string, r CaseResolution) {
+	now := time.Now()
+	s.cases[i].Status, s.cases[i].Resolution, s.cases[i].ResolvedAt = status, &r, &now
+	steps := s.caseSteps[s.cases[i].ID]
+	for j := range steps {
+		if steps[j].Outcome == StepInProgress {
+			steps[j].Outcome, steps[j].EndedAt = outcome, &now
+		}
+	}
 }
 
 func (s *fakeStore) CaseByID(ctx context.Context, id int64) (Case, error) {
@@ -1727,6 +1860,16 @@ func (s *fakeStore) SpendAndCallsBetween(ctx context.Context, taskID string, fro
 		}
 	}
 	return eur, n, nil
+}
+
+func (s *fakeStore) NewestCallAt(ctx context.Context, taskID string) (time.Time, error) {
+	var at time.Time
+	for _, sp := range s.spends {
+		if sp.task == taskID && sp.at.After(at) {
+			at = sp.at
+		}
+	}
+	return at, nil
 }
 
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {
@@ -4062,6 +4205,31 @@ func TestPGStoreSpendAndCallsBetweenReadsTheWindow(t *testing.T) {
 	}
 	if eur, n, err := s.SpendAndCallsBetween(ctx, "t3", from, to); err != nil || eur != 0 || n != 0 {
 		t.Fatalf("SpendAndCallsBetween of a task with no row = %v, %d, %v; want 0 over 0 rows", eur, n, err)
+	}
+}
+
+// NewestCallAt is the time of a task's newest audit row, whatever its
+// kind: t1's at 00:55, and the zero time for t3, which has none.
+func TestPGStoreNewestCallAtReadsTheNewestRow(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "newest_call"))
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE audit;
+		INSERT INTO audit (task_id, decision, reason, kind, tool, call_cost_eur, ts) VALUES
+		('t1', 'allowed', '', 'agent', '', 0.40, '2026-11-01 00:40:59Z'),
+		('t1', 'refused_budget', '', 'agent', '', NULL, '2026-11-01 00:55:00Z'),
+		('t1', 'allowed', '', 'checkin', '', 0.10, '2026-11-01 00:50:00Z'),
+		('t2', 'allowed', '', 'agent', '', 1.00, '2026-11-01 01:45:00Z')`); err != nil {
+		t.Fatalf("seed the audit rows: %v", err)
+	}
+	if at, err := s.NewestCallAt(ctx, "t1"); err != nil || !at.Equal(time.Date(2026, 11, 1, 0, 55, 0, 0, time.UTC)) {
+		t.Fatalf("NewestCallAt t1 = %s, %v; want 2026-11-01 00:55 UTC", at, err)
+	}
+	if at, err := s.NewestCallAt(ctx, "t3"); err != nil || !at.IsZero() {
+		t.Fatalf("NewestCallAt of a task with no row = %s, %v; want the zero time", at, err)
 	}
 }
 

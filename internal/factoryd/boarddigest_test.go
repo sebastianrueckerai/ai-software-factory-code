@@ -55,6 +55,12 @@ func child(key string) func(*Task) {
 	return func(t *Task) { t.Source, t.Parent, t.PlanKey = SourcePlan, "t1344", key }
 }
 
+// queuedFor stores reason as admit's refusal of a queued card, first
+// given ago before boardNow.
+func queuedFor(reason string, ago time.Duration) func(*Task) {
+	return func(t *Task) { since := boardNow.Add(-ago); t.QueueReason, t.QueueSince = reason, &since }
+}
+
 // moved records card id's move to status and gate ago before boardNow.
 func (g boardRig) moved(id, status, gate string, ago time.Duration) {
 	g.store.events = append(g.store.events, Event{ID: int64(len(g.store.events) + 1), At: boardNow.Add(-ago), Repository: "sf/app",
@@ -80,7 +86,6 @@ func (g boardRig) digest(t *testing.T) BoardDigest {
 
 func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
-	admitted := func(t *Task) { at := boardNow.Add(-20 * time.Hour); t.AdmittedAt = &at }
 	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
 	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{}), "r1"); err != nil {
 		t.Fatal(err)
@@ -91,6 +96,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.card("t1441", 1441, "done", "", 2, child("k1441"))
 	g.card("t1451", 1451, "failed", "", 3, child("k1451"))
 
+	admitted := func(t *Task) { at := boardNow.Add(-20 * time.Hour); t.AdmittedAt = &at }
 	g.card("t1410", 1410, "in-review", GateApproval, 10, admitted)
 	g.moved("t1410", "in-review", GateApproval, 9*time.Hour+40*time.Minute)
 	g.line(t, "t1410", 10*time.Hour, "model_review", map[string]any{"verdict": "concerns", "findings": []string{findingA}, "round": 1})
@@ -108,19 +114,19 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.moved("t1472", "queued", GateIntake, 13*time.Minute)
 	g.moved("t1472", "running", GateSession, 12*time.Minute)
 
-	g.card("t1414", 1414, "queued", GateIntake, 20, nil)
-	g.card("t1453", 1453, "queued", GateIntake, 21, child("k1453"))
+	g.card("t1414", 1414, "queued", GateIntake, 20, queuedFor("work bound 3 of 3", 2*time.Hour))
+	g.card("t1453", 1453, "queued", GateIntake, 21, func(t *Task) { child("k1453")(t); queuedFor("waits on #1451", 40*time.Minute)(t) })
 	g.card("t-noissue", 0, "queued", "", 22, child("k-noissue"))
 	g.store.deps = map[string][]string{"t1452": {"t1451"}, "t1453": {"t1451"}}
 	g.store.enforced = policy.Enforced{Day: 12.4, Month: 544}
 
-	want := "cards 6 live · slots 3 of 3 · queue 3\n" +
-		"#1410  in-review, approval   9h40m    slot  flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings, slot_held_by_wait(approval)\n" +
-		"#1452  waiting-deps          3h02m    slot  flags dependency_failed(#1451), slot_held_by_wait(waiting-deps)\n" +
+	want := "cards 6 live · slots 1 of 3 · queue 3\n" +
+		"#1410  in-review, approval   9h40m          flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings\n" +
+		"#1452  waiting-deps          3h02m          flags dependency_failed(#1451)\n" +
 		"#1472  running, session      0h12m    slot\n" +
 		"queue:\n" +
-		"#1414  work bound 3 of 3\n" +
-		"#1453  waits on #1451\n" +
+		"#1414  work bound 3 of 3 for 2h\n" +
+		"#1453  waits on #1451 for 40m\n" +
 		"#0 t-noissue  no issue\n" +
 		"plans:\n" +
 		"#1344 session-metrics  done 2 · running 1 · waiting-deps 1 · queued 2 · failed 1\n" +
@@ -177,9 +183,8 @@ func TestBoardDigestCountsTheBlindRows(t *testing.T) {
 	if !strings.Contains(integration, "blind 6 of 9") {
 		t.Fatalf("#1346's line %q wants blind 6 of 9", integration)
 	}
-	if slot, blind, flags := strings.Index(integration, "slot"), strings.Index(integration, "blind 6 of 9"),
-		strings.Index(integration, "flags"); slot < 0 || blind < slot || flags < blind {
-		t.Fatalf("#1346's line %q wants its slot, then blind 6 of 9, then its flags", integration)
+	if strings.Contains(integration, "slot") {
+		t.Fatalf("#1346's line %q wants no slot at the approval wait", integration)
 	}
 	if strings.Contains(feature, "blind") {
 		t.Fatalf("#1472's line %q wants no blind", feature)
@@ -200,7 +205,8 @@ func (u unreadable) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // A card whose digest cannot be read gets a line that says why, and the
-// board goes on to the next card.
+// board goes on to the next card, which has run without a step since its
+// filing 23 h 59 m ago.
 func TestBoardDigestNamesACardItCannotDigestAndGoesOn(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
 	g.card("t1410", 1410, "running", GateSession, 0, nil)
@@ -208,24 +214,9 @@ func TestBoardDigestNamesACardItCannotDigestAndGoesOn(t *testing.T) {
 	g.r.objects = unreadable{g.r.objects, "sessions/t1410/timeline.jsonl"}
 	want := "cards 2 live · slots 2 of 3 · queue 0\n" +
 		"#1410  running, session      digest unreadable: read the timeline: s3 down\n" +
-		"#1472  running, session      23h59m   slot\n"
+		"#1472  running, session      23h59m   slot  flags wait_over_bound(run_quiet since +0:00)\n"
 	if got := g.digest(t).Render(); !strings.HasPrefix(got, want) {
 		t.Fatalf("Render =\n%s\nwant it to start\n%s", got, want)
-	}
-}
-
-// Each card the board reads "next" takes a free slot: with one of three
-// held, two queued cards are next and the third waits on the bound.
-func TestBoardDigestCountsEachNextAsASlot(t *testing.T) {
-	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
-	g.card("t1472", 1472, "running", GateSession, 0, nil)
-	for i, id := range []string{"t1500", "t1501", "t1502"} {
-		g.card(id, int64(1500+i), "queued", GateIntake, 1+i, nil)
-	}
-	b := g.digest(t)
-	want := []BoardDigestQueued{{1500, "t1500", "next"}, {1501, "t1501", "next"}, {1502, "t1502", "work bound 3 of 3"}}
-	if !slices.Equal(b.Queue, want) || b.Slots != (BoardDigestSlots{Held: 1, Bound: 3}) {
-		t.Fatalf("Queue = %+v, Slots = %+v; want %+v with 1 of 3 held", b.Queue, b.Slots, want)
 	}
 }
 
@@ -241,34 +232,38 @@ func TestBoardDigestNamesAQueuedCardWithoutAnIssue(t *testing.T) {
 	}
 }
 
-// A closed dependency passes the wait as admit lets it (its workflow takes
-// it to a person); the project's cap holds a card once the month's spend
-// meets it, and a card nothing holds is next.
-func TestBoardDigestNamesEachQueueReason(t *testing.T) {
-	for _, tc := range []struct {
-		name    string
-		project policy.ProjectConfig
-		spent   float64
-		want    string
-	}{
-		{"nothing holds it", policy.ProjectConfig{}, 0, "next"},
-		{"the project's cap is spent", policy.ProjectConfig{Budget: &policy.ProjectBudget{MonthEUR: 10}}, 10, "project month cap"},
-		{"the project's cap has room", policy.ProjectConfig{Budget: &policy.ProjectBudget{MonthEUR: 10}}, 9.99, "next"},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			g := newBoardRig(tc.project)
-			g.card("t9", 9, "closed", "", 0, nil)
-			g.card("t1500", 1500, "queued", GateIntake, 1, nil)
-			g.store.deps = map[string][]string{"t1500": {"t9"}}
-			g.store.projectSpend = map[string]float64{"sf/app": tc.spent}
-			b := g.digest(t)
-			if want := []BoardDigestQueued{{Issue: 1500, TaskID: "t1500", Reason: tc.want}}; !slices.Equal(b.Queue, want) {
-				t.Fatalf("Queue = %+v, want %+v", b.Queue, want)
-			}
-			if tc.project.Budget != nil && b.Caps[2] != (BoardDigestCap{Name: "project", SpentEUR: tc.spent, CapEUR: 10}) {
-				t.Fatalf("Caps = %+v, want the project's third", b.Caps)
-			}
-		})
+// The queue reads what admit stored, each card's reason and how long it
+// has held, and works out none of its own: #1500's dependency is open and
+// the project's cap has room, and a slot is free for #1501. A card admit
+// never refused is next, or has no issue. An age under a minute shows
+// none.
+func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3, Budget: &policy.ProjectBudget{MonthEUR: 10}})
+	g.card("t9", 9, "running", GateSession, 0, nil)
+	g.card("t1500", 1500, "queued", GateIntake, 1, queuedFor("project month cap", 2*time.Hour))
+	g.card("t1501", 1501, "queued", GateIntake, 2, queuedFor("work bound 3 of 3", 90*time.Minute+40*time.Second))
+	g.card("t1502", 1502, "queued", GateIntake, 3, nil)
+	g.card("t-noissue", 0, "queued", "", 4, child("k1"))
+	g.card("t1503", 1503, "queued", GateIntake, 5, queuedFor("waits on #9", 40*time.Second))
+	g.store.deps = map[string][]string{"t1500": {"t9"}}
+	g.store.projectSpend = map[string]float64{"sf/app": 4}
+	b := g.digest(t)
+	want := []BoardDigestQueued{{Issue: 1500, TaskID: "t1500", Reason: "project month cap", Age: 2 * time.Hour},
+		{Issue: 1501, TaskID: "t1501", Reason: "work bound 3 of 3", Age: 90*time.Minute + 40*time.Second},
+		{Issue: 1502, TaskID: "t1502", Reason: "next"}, {TaskID: "t-noissue", Reason: "no issue"},
+		{Issue: 1503, TaskID: "t1503", Reason: "waits on #9", Age: 40 * time.Second}}
+	if !slices.Equal(b.Queue, want) {
+		t.Fatalf("Queue = %+v, want %+v", b.Queue, want)
+	}
+	if got, want := b.Render(), "queue:\n"+
+		"#1500  project month cap for 2h\n"+
+		"#1501  work bound 3 of 3 for 1h30m\n"+
+		"#1502  next\n"+
+		"#0 t-noissue  no issue\n"+
+		"#1503  waits on #9\n"+
+		"caps:\n"+
+		"month 0.00 of 600.00 EUR · day 0.00 of 150.00 EUR · project 4.00 of 10.00 EUR\n"; !strings.HasSuffix(got, want) {
+		t.Fatalf("Render =\n%s\nwant it to end\n%s", got, want)
 	}
 }
 

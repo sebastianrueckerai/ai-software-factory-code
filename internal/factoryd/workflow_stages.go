@@ -214,6 +214,10 @@ func (t *taskRun) runStages(commit string) verdict {
 				v = t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
 			if v.restage {
+				if t.waitsOutOfQueue() {
+					// the head the approval's turn merged on
+					commit = t.head
+				}
 				v = t.restage(commit, g, review, reviewed, capped, card, covered)
 			}
 			t.leaveQueue(cmp.Or(v.reason, v.final))
@@ -740,6 +744,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 		if err != nil {
 			*review = Review{Note: "model review failed: " + errMessage(err)}
+			t.notRunRow(policy.StageReview, t.pr.Number, commit, len(t.reviews)+1, errMessage(err))
 			// the activity recorded nothing: a restart rebuilds the
 			// reviews from the timeline
 			detail := map[string]any{"pr": t.pr.Number, "commit": commit, "note": review.Note, "round": len(t.reviews) + 1}
@@ -764,6 +769,20 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		return t.audit(commit, g)
 	}
 	return nil, verdict{}, false
+}
+
+// notRunRow records that the review or the audit of kind failed for good
+// on commit, at round, for reason: its activity wrote no row, so the
+// workflow writes the one the monitor's review_refused_not_run reads,
+// beside its own failure ask. A run from before queue-waits records
+// none, so its history stands (the call sits under that gate alone).
+func (t *taskRun) notRunRow(kind string, pr int64, commit string, round int, reason string) {
+	if !t.waitsOutOfQueue() {
+		return
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordNotRun, t.taskID, kind, pr, commit, round, reason).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record the "+kind+" that did not run", "task", t.taskID, "error", err)
+	}
 }
 
 // remarked: the review answered concerns and named no finding
@@ -1066,6 +1085,7 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	}
 	if err != nil {
 		a = AuditResult{Verdict: AuditFindings, Findings: []AuditFinding{{Item: auditNoVerdict, Why: "the audit failed: " + errMessage(err)}}}
+		t.notRunRow(policy.StageAudit, t.pr.Number, commit, t.round, "the audit failed: "+errMessage(err))
 		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "verdict": a.Verdict, "findings": a.Findings}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "audit", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record the failed audit", "error", err)
@@ -1173,7 +1193,9 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // run again at a human's word (versionFactoryPRActions): an empty commit
 // on its head (RerunChecks), the checks stage waits for them, and the new
 // head comes back here. A refused switch to the plan track asks for the
-// approval again (versionReplan).
+// approval again (versionReplan). A queued card leaves its merge queue
+// before the wait, and a head its approval's turn moved runs its checks
+// and asks again (versionQueueWaits).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	t.head = commit
 	v, stop, red := t.headGreen(commit, g, &card)
@@ -1210,11 +1232,19 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		}
 		t.asked, t.askedCard = in, card
 		t.approvalRequested = workflow.Now(t.ctx)
-		if v = t.awaitApproval(commit, g, covered); !v.reask {
+		if t.waitsOutOfQueue() {
+			t.leaveQueue(approvalWaitLeft)
+		}
+		v = t.awaitApproval(commit, g, covered)
+		if t.waitsOutOfQueue() {
+			// the head the approval's turn merged on
+			commit = t.head
+		}
+		if !v.reask {
 			break
 		}
 	}
-	if !v.rerun && !v.moved && !v.recheck {
+	if !v.rerun && !v.moved && !v.recheck && !v.synced {
 		return v
 	}
 	if v.recheck {
@@ -1222,6 +1252,17 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		// (versionCompanions): the gates read again from the first stage,
 		// so the merge follows the pins it sees now
 		return t.verify(commit)
+	}
+	if v.synced {
+		// the approval's turn merged in main's commits, which change a file
+		// of the pull request, so Forgejo dismissed the approval: the head
+		// the sync made runs its checks, holding the turn as before the
+		// first request, and asks again (versionQueueWaits)
+		commit, t.rerunHead, t.syncedHead, t.checkedHead, g.ChecksPassed = v.head, v.head, v.head, "", false
+		if _, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review); stop {
+			return v
+		}
+		return t.approve(commit, g, review, earlier, card, covered)
 	}
 	if v.moved {
 		// the merge was refused on a head the agent moved past its gates

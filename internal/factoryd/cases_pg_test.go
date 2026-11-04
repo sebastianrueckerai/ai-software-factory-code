@@ -45,7 +45,7 @@ func TestOpenCaseReturnsTheOpenCaseOnTheSameKey(t *testing.T) {
 	}
 	a.OpenedAt = capped.OpenedAt
 	want := capped
-	want.ID, want.Status = a.ID, CaseOpen
+	want.ID, want.Status, want.OwnerRung, want.WakeOn = a.ID, CaseOpen, 3, []string{}
 	if !reflect.DeepEqual(a, want) {
 		t.Fatalf("opened case\n%+v\nwant\n%+v", a, want)
 	}

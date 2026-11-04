@@ -517,3 +517,41 @@ func TestWithdrawIsOfferedToNoHumanAndNoChat(t *testing.T) {
 		}
 	}
 }
+
+// Rung 0 closes only what an ended card left open: it may close a card
+// that ended, and is refused on a live one, which rung 2 or the human
+// closes. Rung 1 closes neither.
+func TestRungZeroClosesOnlyAnEndedCard(t *testing.T) {
+	closing, _ := ActionByName(ActClose)
+	res := Resolution{Action: ActClose}
+	if got := closing.refusal(CaseFacts{Final: "done"}, 0, res); got != "" {
+		t.Errorf("rung 0's close of a done card = %q, want it taken", got)
+	}
+	for _, tc := range []struct {
+		rung  int
+		facts CaseFacts
+	}{{0, CaseFacts{}}, {1, CaseFacts{Final: "done"}}} {
+		if got, want := closing.refusal(tc.facts, tc.rung, res), fmt.Sprintf("rung %d may not pick close: rung 2 and the human may", tc.rung); got != want {
+			t.Errorf("rung %d's close of %+v = %q, want %q", tc.rung, tc.facts, got, want)
+		}
+	}
+	if got := offeredNames(CaseFacts{Final: "done"}, 0); !slices.Contains(got, ActClose) {
+		t.Errorf("rung 0 on a done card is offered %v, want close among them", got)
+	}
+}
+
+// A monitor flag's case sits beside the card's run, which carries out no
+// answer to it: the human is offered only what Act does itself, here the
+// raise of the ceiling, the replan and the close of the table's rung 3
+// offer, and a resume is refused.
+func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
+	f := CaseFacts{Kind: CaseMonitorFlag, Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
+		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5}
+	if got, want := offeredNames(f, 3), []string{ActRaiseCeiling, ActReplan, ActClose}; !slices.Equal(got, want) {
+		t.Errorf("rung 3 on a monitor case is offered %v, want %v", got, want)
+	}
+	resume, _ := ActionByName(ActResume)
+	if got, want := resume.refusal(f, 3, Resolution{Action: ActResume}), "resume would do nothing on a monitor flag's case: the card's run waits on none"; got != want {
+		t.Errorf("a resume of a monitor case = %q, want %q", got, want)
+	}
+}

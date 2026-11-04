@@ -360,6 +360,32 @@ func TestChatInboxNamesSettledReasons(t *testing.T) {
 		"That is the whole window.", ids[1], ids[0]))
 }
 
+// An ended card's newest rows are read too: the monitor's ask that asks
+// its issue closed stays open while no row names its case, and another
+// monitor's ask on that card moves on.
+func TestChatAskFactsReadAnEndedCardsNewestRows(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-d", Kind: "agent", Status: "done", Repository: "sf/code", IssueNumber: 17}})
+	var rows []factoryd.ChatMessage
+	for i, flag := range []string{"issue_open_after_end", "checkin_cut"} {
+		question := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", 21+i)
+		if _, err := r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: "t-d", Kind: factoryd.EventQuestionAsked, Actor: factoryd.FactoryDecider,
+			Via: factoryd.ViaFactoryd, At: at, Detail: map[string]any{"question": question, "case_id": float64(21 + i), "case_kind": string(factoryd.CaseMonitorFlag), "flag": flag}}); err != nil {
+			t.Fatal(err)
+		}
+		rows = append(rows, factoryd.ChatMessage{Kind: factoryd.MessageEscalation, BirthKind: factoryd.EventQuestionAsked, TaskID: "t-d", At: at.Add(time.Second),
+			Content: "#17 needs you: " + question})
+	}
+	statuses, events := askFacts(t.Context(), r.c, []string{"t-d"}, nil)
+	var words []string
+	for _, m := range rows {
+		words = append(words, factoryd.SettleOf(m, events["t-d"], statuses["t-d"], false).Word)
+	}
+	if !slices.Equal(words, []string{"", "moved on"}) {
+		t.Fatalf("the ended card's monitor asks settle as %q, want the issue's open and the other moved on", words)
+	}
+}
+
 // A row names what wrote it: the Waker's note a wake turn, the turn's
 // rows their role, a round of calls without words the tools it called.
 // Its words run on one line, cut at 100 bytes.

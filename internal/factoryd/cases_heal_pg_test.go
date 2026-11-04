@@ -77,6 +77,27 @@ func TestReconcileCasesWithdrawsTheCasesOfEndedCards(t *testing.T) {
 	}
 }
 
+// A monitor case on an ended card is the monitor's to withdraw: the heal
+// withdraws the card's own ask and leaves the issue_open_after_end case at
+// the human, which asks the issue closed until the issue's close
+// withdraws it.
+func TestReconcileCasesLeavesAnEndedCardsMonitorCase(t *testing.T) {
+	s := cardCaseStore(t, "cases_heal")
+	askCap(t, s, 27001)
+	own := onlyOpenCase(t, s)
+	flag, _, err := s.OpenCase(context.Background(), Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
+		Status: CaseAtHuman, Problem: "Monitor flag: issue_open_after_end"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	setCaseTaskStatus(t, s, "done")
+	reconcile(t, s, CaseHealReport{Withdrawn: 1})
+	withdrawnFor(t, s, own.ID, "card ended done")
+	if got := caseByID(t, s, flag.ID); got.Status != CaseAtHuman {
+		t.Fatalf("the monitor case = %s, want it at the human", got.Status)
+	}
+}
+
 func TestReconcileCasesOpensACaseForAnAskThatPredatesTheTable(t *testing.T) {
 	ctx := context.Background()
 	s := cardCaseStore(t, "cases_heal")
@@ -166,7 +187,7 @@ func TestReconcileCasesOpensAMonthCapCardsAskAsAMonthCap(t *testing.T) {
 // The stale sweep's ask opens as wait_expired, as its event does.
 func TestReconcileCasesOpensAStaleAskAsAWaitExpired(t *testing.T) {
 	s := cardCaseStore(t, "cases_heal")
-	// the row escalateStale writes for a card quiet 2 h while running
+	// a stale sweep's ask for a card quiet 2 h while running
 	reason := staleQuiet + "2 h 0 min while running: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: answer on the issue."
 	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: 27001,
 		Question: ShapedQuestion(reason, QuestionFacts{}, nil)})
@@ -459,5 +480,22 @@ func TestReconcileCasesOpensNoStrayCaseForAnAskResolvedAfterIt(t *testing.T) {
 	reconcile(t, s, CaseHealReport{})
 	if cs, err := s.CasesOf(ctx, caseTask); err != nil || len(cs) != 1 || cs[0].Status != CaseResolved {
 		t.Fatalf("CasesOf = %+v, %v; want the one resolved case", cs, err)
+	}
+}
+
+// A monitor case beside a waiting card is no ask of the card's: the heal
+// opens the card's missed ask all the same.
+func TestReconcileCasesOpensAMissedAskBesideAMonitorCase(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	if _, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+		Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+		t.Fatal(err)
+	}
+	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: AgentAsks + "Which file?", CommentID: 27001,
+		Question: &HumanQuestion{Ask: "Which file?", Why: "two files match", Info: plainInfo}})
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.Kind != CaseAgentEscalate || c.CommentID != 27001 {
+		t.Fatalf("the card's ask = %+v, %v; want the missed ask opened as agent_escalate", c, err)
 	}
 }

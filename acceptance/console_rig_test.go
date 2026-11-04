@@ -298,8 +298,8 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 
 // cardReads wires cfg's card reads over tasks: a card's digest is its
 // head from the task row, the rig holds no card step, a card waiting on a
-// human has its live case 1 as after the cases' heal, and the board
-// digest is empty. Its case door draws nothing and refuses every answer:
+// human has its live case 1 as after the cases' heal, no case is read by
+// its number, and the board digest is empty. Its case door draws nothing and refuses every answer:
 // a rig that answers cards wires its own Act.
 func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.CardDigest = func(ctx context.Context, taskID string) (factoryd.CardDigest, error) {
@@ -318,6 +318,9 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return []factoryd.Case{{ID: 1, TaskID: taskID, Kind: factoryd.CaseOther, Status: factoryd.CaseAtHuman}}, nil
 	}
 	cfg.CaseSteps = func(context.Context, int64) ([]factoryd.CaseStep, error) { return nil, nil }
+	cfg.CaseByID = func(_ context.Context, id int64) (factoryd.Case, error) {
+		return factoryd.Case{}, fmt.Errorf("case %d: %w", id, factoryd.ErrNotFound)
+	}
 	// the newest of the cases OpenCasesOf answers that an answer on the
 	// card ends, as the store reads it
 	cfg.NewestAskCase = func(ctx context.Context, taskID string) (factoryd.Case, error) {
@@ -803,15 +806,30 @@ func (a *AcceptanceRig) TaskStatuses(_ context.Context, ids []string) (map[strin
 	return out, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (a *AcceptanceRig) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	var held []factoryd.Task
 	for _, t := range a.tasks {
 		if t.Repository == repository && t.IssueNumber == issue {
-			return t.Task, true, nil
+			held = append(held, t.Task)
 		}
 	}
-	return factoryd.Task{}, false, nil
+	slices.SortFunc(held, func(a, b factoryd.Task) int {
+		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return factoryd.Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 func (a *AcceptanceRig) BoardTasks(_ context.Context, repository string) ([]factoryd.BoardTask, error) {
@@ -1670,7 +1688,7 @@ func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int
 		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
+		if slices.Contains([]string{"running", "closing"}, t.Status) || (t.Status == "in-review" && t.Gate != factoryd.GateApproval) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
@@ -1684,10 +1702,9 @@ func (a *AcceptanceRig) CountQueue(_ context.Context, repository string) (int, e
 	n := 0
 	for _, bt := range a.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil || factoryd.Final(t.Status) {
-			continue
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil {
+			n++
 		}
-		n++
 	}
 	return n, nil
 }

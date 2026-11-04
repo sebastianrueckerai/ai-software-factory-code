@@ -277,7 +277,8 @@ func TestPlanClosedBackfill(t *testing.T) {
 // entry, p2's c2 waits in gate merge-queue outside it (held back for
 // another group). p3's c3 is in review out of the queue, p4's c4 is in
 // sf/q's queue, p5's c5 failed in gate merge-queue, and d1, a direct card,
-// is in the queue but no plan's.
+// is in the queue but no plan's. p7's c7 waits for its approval out of the
+// queue, which its turn re-enters before the merge: it counts too.
 func TestQueuedPlans(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_queuedplans"))
@@ -298,6 +299,8 @@ func TestQueuedPlans(t *testing.T) {
 			('c5', 1, 0, 'failed', 'sf/r', 'agent', 'plan', 'p5', 'direct', 'one', 51, 'merge-queue', '2026-10-01T00:00:00Z'),
 			('p6', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 6, '', '2026-10-01T00:00:00Z'),
 			('c6', 1, 0, 'merged', 'sf/r', 'agent', 'plan', 'p6', 'direct', 'one', 61, 'merge-queue', '2026-10-01T00:00:00Z'),
+			('p7', 1, 0, 'done', 'sf/r', 'agent', 'webhook', NULL, 'plan', NULL, 7, '', '2026-10-01T00:00:00Z'),
+			('c7', 1, 0, 'in-review', 'sf/r', 'agent', 'plan', 'p7', 'direct', 'one', 71, 'approval', NULL),
 			('d1', 1, 0, 'in-review', 'sf/r', 'agent', 'webhook', NULL, 'direct', NULL, 9, '', NULL)`); err != nil {
 		t.Fatal(err)
 	}
@@ -306,7 +309,7 @@ func TestQueuedPlans(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	if got, err := s.QueuedPlans(ctx, "sf/r"); err != nil || !slices.Equal(got, []int64{1, 2}) {
-		t.Fatalf("QueuedPlans(sf/r) = %v, %v; want plans #1 and #2", got, err)
+	if got, err := s.QueuedPlans(ctx, "sf/r"); err != nil || !slices.Equal(got, []int64{1, 2, 7}) {
+		t.Fatalf("QueuedPlans(sf/r) = %v, %v; want plans #1, #2 and #7", got, err)
 	}
 }

@@ -662,7 +662,7 @@ func TestCheckinCardFactsLeadsWithTheDigest(t *testing.T) {
 	facts := `{"budget_eur":5,"spent_eur":4.92,"attempt":5,"sessions":3}`
 	tools := &runnerTools{r: g.r, taskID: "t1410", facts: facts}
 	out, cut, err := tools.Tool(t.Context(), "card_facts", nil)
-	want := "#1410 · plan #1344 session-metrics · budget 5.00 spent 4.92 holds 0.00 EUR · slot held · in-review, approval\n" +
+	want := "#1410 · plan #1344 session-metrics · budget 5.00 spent 4.92 holds 0.00 EUR · in-review, approval\n" +
 		"   1 +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
 		"   2 +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
 		"   3 +0:58   review                 → concerns, findings " + idA + " " + idB + "\n" +
@@ -670,7 +670,7 @@ func TestCheckinCardFactsLeadsWithTheDigest(t *testing.T) {
 		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
 		"   6 +9:40   answer by sebastian    → Grant one session\n" +
 		"   7 +9:41   session 4 small        → no push ×2\n" +
-		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4), slot_held_by_wait(approval)\n" +
+		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4)\n" +
 		"\n" + facts
 	if out != want || cut || err != nil {
 		t.Fatalf("card_facts = (%v, %v)\n%s\nwant\n%s", cut, err, out, want)

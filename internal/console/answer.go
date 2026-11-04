@@ -207,7 +207,7 @@ func (c *Console) resolveChoice(ctx context.Context, a actor, id, choice string,
 	if err != nil {
 		return "", refuse(http.StatusInternalServerError, "cannot read the approval requests")
 	}
-	s := factoryd.SettleOf(m, events, t.Status == "waiting-human", factoryd.ApprovalWaits(pending, id))
+	s := factoryd.SettleOf(m, events, t.Status, factoryd.ApprovalWaits(pending, id))
 	switch {
 	case s.Event.ID != 0 && s.Event.Kind == factoryd.EventQuestionWithdrawn:
 		return fmt.Sprintf("#%d needs no answer: its question is withdrawn because %v.", t.IssueNumber, s.Event.Detail["reason"]), nil
