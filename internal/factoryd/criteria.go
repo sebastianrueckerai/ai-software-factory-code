@@ -43,7 +43,7 @@ const maxProofMessage = 4 << 10
 
 // proofsNotStored is the gate's ask while the plan's prover may still
 // store a test criterion's proof.
-const proofsNotStored = "The plan's proofs are not stored yet. Once they are, answer to run the criteria gate again."
+const proofsNotStored = "The plan's prover stored no proof yet. Once it does, answer to run the criteria gate again."
 
 // criterionRun is one run of the gate for a test or invariant criterion
 // of the plan.
@@ -74,7 +74,7 @@ func gateRuns(p Plan, proofs []PlanProof) (runs []criterionRun, holdouts []PlanP
 			})
 			switch {
 			case i < 0 && stored:
-				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "Criterion " + c.ID + " has no stored proof: the prover filed before it was added.", late: true})
+				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "Criterion " + c.ID + " has no stored proof: the prover filed before a later revision added it.", late: true})
 			case i < 0:
 				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "criterion " + c.ID + ": no stored proof yet"})
 			case proofs[i].Flag != "":
@@ -231,8 +231,8 @@ func gateRows(proofs []gateProof) []CriterionVerdict {
 // check test. Not the plan's integration card: not run, the timeline says
 // why. A read of the proof rows that fails is the activity's error, so it
 // runs again. A plan that names no criteria names no proof: that is a
-// finding, for the human. While proofsPending, the gate writes its rows and
-// asks proofsNotStored instead of its findings. The namespace and the
+// finding, for the human. While proofsPending, the gate runs nothing,
+// writes the held rows and asks proofsNotStored. The namespace and the
 // token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
@@ -270,6 +270,21 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	// comment or a verdict row (blind by routing and storage); only their
 	// verdicts reach the timeline line, by entry id
 	runs, hos := gateRuns(p, rows)
+	if waits {
+		// no proof is stored: the held rows stand, and the answer runs the whole gate
+		var held []criterionRun
+		for _, c := range runs {
+			if c.held != "" {
+				held = append(held, c)
+			}
+		}
+		_, _, proofs := criteriaReport(held, nil)
+		if err := r.store.PutCriteriaVerdicts(ctx, t.ID, CriteriaSourceGate, FactoryDecider, gateRows(proofs)); err != nil {
+			return CriteriaResult{}, err
+		}
+		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "proofs": proofs, "escalate": proofsNotStored}))
+		return CriteriaResult{Escalate: proofsNotStored}, nil
+	}
 	var entries []harness.Proof
 	for _, c := range runs {
 		if c.held == "" {
@@ -334,20 +349,16 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
 			commit, fenced(strings.Join(findings, "\n")))))
 	}
-	line := map[string]any{"pr": pr, "commit": commit, "proofs": proofs, "holdouts": holdoutEntries, "findings": findings}
-	if waits {
-		line["escalate"] = proofsNotStored
-	}
-	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, line))
-	if waits {
-		return CriteriaResult{Escalate: proofsNotStored}, nil
-	}
+	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
+		"proofs": proofs, "holdouts": holdoutEntries, "findings": findings}))
 	return CriteriaResult{Findings: findings}, nil
 }
 
 // proofsPending tells whether card t's plan p owes a test criterion's
 // proof its prover may still store: no store happened, and the prover is
-// open and not final, or not opened under a policy that can run one.
+// open and not final, or not opened yet under a policy that can run one
+// while the plan's foundation card, when it names one, has not ended
+// other than done (proverDue opens none then).
 func (r *Runner) proofsPending(ctx context.Context, t Task, rows []PlanProof, p Plan) (bool, error) {
 	if !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool { return c.Kind == CriterionTest }) ||
 		slices.ContainsFunc(rows, func(pp PlanProof) bool { return pp.State == ProofStored || pp.State == ProofOpened }) {
@@ -356,6 +367,10 @@ func (r *Runner) proofsPending(ctx context.Context, t Task, rows []PlanProof, p 
 	prover, ok, err := r.store.ReportOf(ctx, t.Parent, SourceProver)
 	if err != nil || ok {
 		return ok && !Final(prover.Status), err
+	}
+	card, named, err := r.foundationCard(ctx, t.Parent, p)
+	if err != nil || (named && Final(card.Status) && card.Status != "done") {
+		return false, err
 	}
 	return proverUnfit(r.cfg.Policy(), t.Repository) == "", nil
 }

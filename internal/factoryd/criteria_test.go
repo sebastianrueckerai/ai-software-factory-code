@@ -120,7 +120,7 @@ func TestGateRunsTakeTheSuiteAndHoldTheTests(t *testing.T) {
 			file: &harness.ProofFile{Path: "proofs/size_bound/size_bound_test.go", Content: "package size_bound"}},
 		{id: "group_open", kind: CriterionTest, suite: "./acceptance", name: "TestGroupOpen"},
 		{id: "door", kind: CriterionTest, held: "criterion door: its proof is flagged green on main: no blind run"},
-		{id: "no_proof", kind: CriterionTest, held: "Criterion no_proof has no stored proof: the prover filed before it was added.", late: true},
+		{id: "no_proof", kind: CriterionTest, held: "Criterion no_proof has no stored proof: the prover filed before a later revision added it.", late: true},
 		{id: "all_green", kind: CriterionInvariant, suite: "./..."},
 	}
 	if !reflect.DeepEqual(runs, want) {
@@ -144,7 +144,7 @@ func TestGateRunsTakeTheSuiteAndHoldTheTests(t *testing.T) {
 // characters.
 func TestCriteriaReportVerdicts(t *testing.T) {
 	held := "criterion t_held: no stored proof yet"
-	late := "Criterion t_late has no stored proof: the prover filed before it was added."
+	late := "Criterion t_late has no stored proof: the prover filed before a later revision added it."
 	runs := []criterionRun{
 		{id: "t_pass", kind: CriterionTest, suite: "./p", name: "TestPass"},
 		{id: "t_fail", kind: CriterionTest, suite: "./p", name: "TestFail"},
@@ -419,29 +419,41 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 }
 
 // A test criterion whose proof the plan's prover has not stored yet asks
-// the human to wait, while the prover is open or still to open: the
-// rows the gate can write stand, and the answer runs the gate again. A
-// prover that ended without a store asks nothing.
+// the human to wait, while the prover is open or still to open: the held
+// rows stand, and the answer runs the gate again. A prover that ended
+// without a store, or one that never opens because the plan's foundation
+// card ended closed or failed, asks nothing: each test criterion is an
+// unmet row.
 func TestGateCriteriaWaitsForAProverThatIsNotDone(t *testing.T) {
-	const held = "criterion green_login: no stored proof yet"
-	const login = `{"id":"green_login","kind":"test","claim":"a login answers 200","inputs":"POST /login","expected":"200"}`
+	const tests = `{"id":"green_login","kind":"test","claim":"a login answers 200","inputs":"POST /login","expected":"200"},` +
+		`{"id":"door","kind":"test","claim":"a door opens","inputs":"POST /doors/1/open","expected":"200"}`
 	for _, tc := range []struct {
-		name   string
-		prover string // the prover's status, "" for none filed
-		policy func() policy.Version
-		want   string
+		name       string
+		prover     string // the prover's status, "" for none filed
+		foundation string // the foundation card's status, "" for a plan without one
+		policy     func() policy.Version
+		want       string
 	}{
-		{"a running prover", "running", proverPolicy, proofsNotStored},
-		{"a queued prover", "queued", proverPolicy, proofsNotStored},
-		{"a prover still to open", "", proverPolicy, proofsNotStored},
-		{"a prover that failed", "failed", proverPolicy, ""},
-		{"a policy that runs no prover", "", testPolicyVersion, ""},
+		{"a running prover", "running", "", proverPolicy, proofsNotStored},
+		{"a queued prover", "queued", "", proverPolicy, proofsNotStored},
+		{"a prover still to open", "", "", proverPolicy, proofsNotStored},
+		{"a prover still to open after a foundation in review", "", "in-review", proverPolicy, proofsNotStored},
+		{"a prover that failed", "failed", "", proverPolicy, ""},
+		{"a policy that runs no prover", "", "", testPolicyVersion, ""},
+		{"a foundation card closed", "", "closed", proverPolicy, ""},
+		{"a foundation card failed", "", "failed", proverPolicy, ""},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			kube := newFakeKube()
 			r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
 			r.cfg.Policy = tc.policy
-			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, login)
+			roles := map[string]string{"integ": RoleIntegration}
+			if tc.foundation != "" {
+				roles["found"] = RoleFoundation
+				store.tasks["t-found"] = Task{ID: "t-found", Status: tc.foundation, Repository: "sf/repo", Parent: "plan1", Source: SourcePlan,
+					PlanKey: "found", Kind: "agent"}
+			}
+			seedPlan(t, store, roles, tests)
 			if tc.prover != "" {
 				store.tasks["t-prove"] = Task{ID: "t-prove", Status: tc.prover, Repository: "sf/repo", Parent: "plan1", Source: SourceProver, Kind: "agent"}
 			}
@@ -449,11 +461,44 @@ func TestGateCriteriaWaitsForAProverThatIsNotDone(t *testing.T) {
 			if err != nil || res.Escalate != tc.want || len(res.Findings) != 0 {
 				t.Fatalf("result = %+v, %v; want the escalation %q and no finding", res, err, tc.want)
 			}
-			want := []CriterionVerdict{{Criterion: "green_login", Verdict: "unmet", Evidence: held, Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
+			held := func(id string) CriterionVerdict {
+				return CriterionVerdict{Criterion: id, Verdict: "unmet", Evidence: "criterion " + id + ": no stored proof yet", Kind: CriterionTest,
+					Source: CriteriaSourceGate, DecidedBy: FactoryDecider}
+			}
+			want := []CriterionVerdict{held("green_login"), held("door")}
 			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, want) {
 				t.Fatalf("verdict rows = %+v, want %+v", rows, want)
 			}
 		})
+	}
+}
+
+// While the gate waits for the prover it runs nothing: no pod for an
+// invariant, no comment, the held rows alone, and its timeline line names
+// the ask. The answer runs the whole gate again.
+func TestGateCriteriaWaitingRunsNoPod(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	r.cfg.Policy = proverPolicy
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"green_login","kind":"test","claim":"a login answers 200","inputs":"POST /login","expected":"200"},{"id":"all_green","kind":"invariant","suite":"./..."}`)
+	store.tasks["t-prove"] = Task{ID: "t-prove", Status: "running", Repository: "sf/repo", Parent: "plan1", Source: SourceProver, Kind: "agent"}
+	res, err := runCriteria(t, r)
+	const ask = "The plan's prover stored no proof yet. Once it does, answer to run the criteria gate again."
+	if err != nil || res.Escalate != ask {
+		t.Fatalf("result = %+v, %v; want the escalation %q", res, err, ask)
+	}
+	if len(kube.podOrder) != 0 || len(hub.minted()) != 0 || len(hub.comments) != 0 {
+		t.Fatalf("pods %d, mints %v, comments %q; want none", len(kube.podOrder), hub.minted(), hub.comments)
+	}
+	want := []CriterionVerdict{{Criterion: "green_login", Verdict: "unmet", Evidence: "criterion green_login: no stored proof yet", Kind: CriterionTest,
+		Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, want) {
+		t.Fatalf("verdict rows = %+v, want %+v", rows, want)
+	}
+	if got := timelineStep(t, objects, "t1", "gate_criteria")["escalate"]; got != ask {
+		t.Fatalf("the gate_criteria line's escalate = %v, want %q", got, ask)
 	}
 }
 
@@ -540,7 +585,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 		"criterion size_bound: TestSizeBound in ./proofs/size_bound passed",
 		"criterion group_open: TestGroupOpen in ./acceptance failed: Failed --- FAIL: TestGroupOpen (0.00s)",
 		"criterion door: its proof is flagged green on main: no blind run",
-		"Criterion no_proof has no stored proof: the prover filed before it was added.",
+		"Criterion no_proof has no stored proof: the prover filed before a later revision added it.",
 		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
 	}
 	if !slices.Equal(res.Findings, []string{lines[1], lines[3]}) || res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
