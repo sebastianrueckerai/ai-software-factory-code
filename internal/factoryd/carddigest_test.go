@@ -452,10 +452,12 @@ const (
 	stateGuardID   = "765189771a32"
 )
 
+// The gate writes its rows before its line: the step stands at the line's
+// start, before the rows it produced.
 func TestCardDigestShowsTheGatesRunAsAProofsStep(t *testing.T) {
 	g := newDigestRig(nil)
 	loginLine := "criterion green_login: TestLogin in ./internal/auth passed"
-	g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "8e3a1b0c9d", "started": rfc3339(digestAt(29)),
+	g.line(t, 32, "gate_criteria", map[string]any{"pr": 12, "commit": "8e3a1b0c9d", "started": rfc3339(digestAt(29)),
 		"proofs": []gateProof{
 			{ID: "green_login", Kind: CriterionTest, Suite: "./internal/auth", Name: "TestLogin", Outcome: proofPassed, Met: true, Line: loginLine},
 			{ID: "state_guard", Kind: CriterionTest, Suite: "./internal/auth", Name: "TestState", Outcome: proofFailed, Line: stateGuardLine,
@@ -473,8 +475,8 @@ func TestCardDigestShowsTheGatesRunAsAProofsStep(t *testing.T) {
 			Findings: []string{stateGuardID}},
 		{Kind: "criteria", Actor: "gate", Outcome: "green_login met, state_guard unmet"},
 	}
-	if len(d.Steps) != 3 || d.Steps[0].Kind != "filed" {
-		t.Fatalf("Steps = %+v, want filed, proofs, criteria", d.Steps)
+	if len(d.Steps) != 3 || d.Steps[0].Kind != "filed" || !d.Steps[1].At.Equal(digestAt(29)) {
+		t.Fatalf("Steps = %+v, want filed, proofs at +0:29, criteria", d.Steps)
 	}
 	for i, w := range want {
 		if s := d.Steps[i+1]; s.Kind != w.Kind || s.Actor != w.Actor || s.Outcome != w.Outcome || !slices.Equal(s.Findings, w.Findings) {

@@ -184,7 +184,11 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 
 // proofsStep is a gate_criteria line's step: actor gate, its head, the
 // test criteria met and unmet, each invariant's state, the findings' ids.
+// It stands at the gate's start, as the gate writes its verdict rows
+// before its line.
 func proofsStep(step DigestStep, l timelineLine) DigestStep {
+	started, _ := time.Parse(time.RFC3339Nano, l.Started)
+	step.At = cmp.Or(started, l.Time)
 	step.Kind, step.Actor, step.Findings = "proofs", "gate", findingIDs(l.Findings)
 	outcome := "the sandbox did not start: " + digestText(l.StartFailed)
 	if l.StartFailed == "" {
