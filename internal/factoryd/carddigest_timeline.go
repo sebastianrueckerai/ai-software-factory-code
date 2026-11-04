@@ -136,6 +136,22 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 	return out, sessions
 }
 
+// newestLine is the step and the time of timeline tl's newest line that
+// has a time, "" and zero when no line has one.
+func newestLine(tl []byte) (string, time.Time) {
+	lines := bytes.Split(tl, []byte("\n"))
+	for i := len(lines) - 1; i >= 0; i-- {
+		var l struct {
+			Step string    `json:"step"`
+			Time time.Time `json:"time"`
+		}
+		if json.Unmarshal(lines[i], &l) == nil && !l.Time.IsZero() {
+			return l.Step, l.Time
+		}
+	}
+	return "", time.Time{}
+}
+
 // sessionStep is session s's step: its outcome, with the head it pushed,
 // and its cost and calls from the task's audit rows between its start and
 // its end. A session with no end ran up to the next session's start, next,

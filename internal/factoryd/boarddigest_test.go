@@ -147,7 +147,8 @@ func (u unreadable) Get(ctx context.Context, key string) ([]byte, error) {
 }
 
 // A card whose digest cannot be read gets a line that says why, and the
-// board goes on to the next card.
+// board goes on to the next card, which has run without a step since its
+// filing 23 h 59 m ago.
 func TestBoardDigestNamesACardItCannotDigestAndGoesOn(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
 	g.card("t1410", 1410, "running", GateSession, 0, nil)
@@ -155,7 +156,7 @@ func TestBoardDigestNamesACardItCannotDigestAndGoesOn(t *testing.T) {
 	g.r.objects = unreadable{g.r.objects, "sessions/t1410/timeline.jsonl"}
 	want := "cards 2 live · slots 2 of 3 · queue 0\n" +
 		"#1410  running, session      digest unreadable: read the timeline: s3 down\n" +
-		"#1472  running, session      23h59m   slot\n"
+		"#1472  running, session      23h59m   slot  flags wait_over_bound(run_quiet since +0:00)\n"
 	if got := g.digest(t).Render(); !strings.HasPrefix(got, want) {
 		t.Fatalf("Render =\n%s\nwant it to start\n%s", got, want)
 	}

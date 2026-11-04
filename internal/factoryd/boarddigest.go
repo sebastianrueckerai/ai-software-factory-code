@@ -120,24 +120,14 @@ func (r *Runner) BoardDigest(ctx context.Context, repository string) (BoardDiges
 	return b, nil
 }
 
-// boardCard is live card taskID's line, its age the time from its newest
-// task_status event, or its filing, to now.
+// boardCard is live card taskID's line, its age the time from its
+// status's since to now.
 func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (BoardDigestCard, error) {
-	rows, err := r.readCard(ctx, taskID)
+	d, err := r.CardDigest(ctx, taskID)
 	if err != nil {
 		return BoardDigestCard{}, err
 	}
-	d, err := r.cardDigest(ctx, rows)
-	if err != nil {
-		return BoardDigestCard{}, err
-	}
-	moved := rows.task.CreatedAt
-	for _, e := range rows.events {
-		if e.Kind == EventTaskStatus {
-			moved = e.At
-		}
-	}
-	return BoardDigestCard{Issue: d.Head.Issue, Status: d.Head.Status, Gate: d.Head.Gate, Age: max(now.Sub(moved), 0),
+	return BoardDigestCard{Issue: d.Head.Issue, Status: d.Head.Status, Gate: d.Head.Gate, Age: max(now.Sub(d.Head.StatusSince), 0),
 		SlotHeld: d.Head.SlotHeld, Flags: d.Flags}, nil
 }
 

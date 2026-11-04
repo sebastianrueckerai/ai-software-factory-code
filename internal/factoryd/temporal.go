@@ -1,7 +1,6 @@
 package factoryd
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -567,17 +566,6 @@ func newestStepAt(ctx context.Context, objects ObjectStore, taskID string) time.
 		log.Printf("stale sweep: timeline of %s: %v", taskID, err)
 		return time.Time{}
 	}
-	lines := bytes.Split(bytes.TrimRight(body, "\n"), []byte{'\n'})
-	for i := len(lines) - 1; i >= 0; i-- {
-		var m map[string]any
-		if len(lines[i]) == 0 || json.Unmarshal(lines[i], &m) != nil {
-			continue
-		}
-		at, err := time.Parse(time.RFC3339, fmt.Sprint(m["time"]))
-		if err != nil {
-			continue // a line without a time cannot feed the ring
-		}
-		return at
-	}
-	return time.Time{}
+	_, at := newestLine(body)
+	return at
 }
