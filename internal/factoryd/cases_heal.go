@@ -128,7 +128,8 @@ func (s *PGStore) withdrawCases(ctx context.Context, query string, args ...any) 
 // minute is left to its writer, which records the event after it moves
 // the card. A card with a live case, or with a case opened or ended since
 // that row, has its case: a trip opens its case before its ask, and an
-// answer ends it before the run moves the card on. A card that left
+// answer ends it before the run moves the card on. A monitor case beside
+// the card is no ask of the card's. A card that left
 // waiting-human since that row waits on something else, as a planner on
 // its plan's questions.
 func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, error) {
@@ -137,11 +138,11 @@ func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, e
 		    WHERE e.task_id = t.id AND e.kind = $2 AND e.question IS NOT NULL ORDER BY e.id DESC LIMIT 1) esc ON true
 		WHERE t.repository = $1 AND t.status = 'waiting-human' AND esc.question->>'ask' ~ '\S'
 		AND esc.created_at < now() - interval '1 minute'
-		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id
+		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = t.id AND c.kind <> $4
 		    AND (c.status IN `+caseLiveStatuses+` OR c.opened_at >= esc.created_at OR c.resolved_at >= esc.created_at))
 		AND NOT EXISTS (SELECT 1 FROM events v WHERE v.task_id = t.id AND v.kind = $3 AND v.at > esc.created_at
 		    AND v.detail->>'status' <> 'waiting-human')`,
-		[]any{repository, IntakeEscalation, EventTaskStatus}, func(row rowScanner) (Event, error) {
+		[]any{repository, IntakeEscalation, EventTaskStatus, CaseMonitorFlag}, func(row rowScanner) (Event, error) {
 			e := Event{Kind: EventQuestionAsked}
 			var kind, source, body string
 			var comment int64

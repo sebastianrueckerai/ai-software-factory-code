@@ -196,9 +196,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
-	if t.Kind == "human" || Final(t.Status) {
-		// a human card runs no workflow and an ended card's run is over: a
-		// signal would start one
+	if t.Kind == "human" || Final(t.Status) || c.Kind == CaseMonitorFlag {
+		// a human card runs no workflow, an ended card's run is over and no
+		// run waits on a monitor case: a signal would start one
 		return out, nil
 	}
 	r.signalRun(ctx, t.ID, SignalCaseResolved, TaskSignal{Author: in.By, Comment: out.Comment,

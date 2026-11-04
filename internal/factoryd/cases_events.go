@@ -46,11 +46,16 @@ func (s *PGStore) casesFromEvent(ctx context.Context, tx *sql.Tx, e Event) error
 		return caseEnded(resolveCase(ctx, tx, int64(id), CaseResolution{By: e.Actor, Rung: caseRung(e.Actor), Action: cmp.Or(action, caseAnswer),
 			Args: map[string]any{"answer": answer, "comment": comment}}))
 	case EventQuestionWithdrawn:
+		// a row that names its case withdraws that one, a monitor's beside
+		// the card's own ask, else the card's newest ask
+		reason, _ := e.Detail["reason"].(string)
+		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
+			return caseEnded(withdrawCase(ctx, tx, int64(id), reason))
+		}
 		c, err := newestAskCase(ctx, tx, e.TaskID)
 		if c.ID == 0 {
 			return err
 		}
-		reason, _ := e.Detail["reason"].(string)
 		return caseEnded(withdrawCase(ctx, tx, c.ID, reason))
 	case EventPlanQuestionAnswered:
 		return resolvePlanCase(ctx, tx, e)

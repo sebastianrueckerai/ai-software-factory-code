@@ -461,3 +461,20 @@ func TestReconcileCasesOpensNoStrayCaseForAnAskResolvedAfterIt(t *testing.T) {
 		t.Fatalf("CasesOf = %+v, %v; want the one resolved case", cs, err)
 	}
 }
+
+// A monitor case beside a waiting card is no ask of the card's: the heal
+// opens the card's missed ask all the same.
+func TestReconcileCasesOpensAMissedAskBesideAMonitorCase(t *testing.T) {
+	ctx := context.Background()
+	s := cardCaseStore(t, "cases_heal")
+	if _, _, err := s.OpenCase(ctx, Case{TaskID: caseTask, Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "checkin_cut|+0:20",
+		Status: CaseAtHuman, Problem: "Monitor flag: checkin_cut(+0:20)"}); err != nil {
+		t.Fatal(err)
+	}
+	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: AgentAsks + "Which file?", CommentID: 27001,
+		Question: &HumanQuestion{Ask: "Which file?", Why: "two files match", Info: plainInfo}})
+	reconcile(t, s, CaseHealReport{Opened: 1})
+	if c, err := s.NewestAskCase(ctx, caseTask); err != nil || c.Kind != CaseAgentEscalate || c.CommentID != 27001 {
+		t.Fatalf("the card's ask = %+v, %v; want the missed ask opened as agent_escalate", c, err)
+	}
+}

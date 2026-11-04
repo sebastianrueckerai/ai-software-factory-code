@@ -3483,7 +3483,7 @@ func (c *Console) cardThreadStart(w http.ResponseWriter, r *http.Request) {
 
 // seedCardAsk writes the card's open ask as its thread's first row: the
 // ask's five parts with its choices, the row the thread's answer buttons
-// settle.
+// settle. A monitor's ask is not the card's.
 func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who string, n int64) {
 	events, err := c.cfg.Events.TaskEvents(ctx, bt.ID, startEvents)
 	if err != nil {
@@ -3492,7 +3492,9 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 	}
 	var ask *factoryd.Event
 	for i := range events { // newest first
-		if events[i].Kind == factoryd.EventQuestionAsked {
+		// a monitor's ask sits beside the card's run and is answered by its
+		// case's number: the thread is the card's own ask's
+		if events[i].Kind == factoryd.EventQuestionAsked && events[i].Detail["case_kind"] != string(factoryd.CaseMonitorFlag) {
 			ask = &events[i]
 			break
 		}

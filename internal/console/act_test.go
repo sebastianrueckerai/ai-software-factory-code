@@ -837,3 +837,57 @@ func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
 		t.Fatalf("Forgejo calls %q, comments %q; want the sentence posted on #13 as sebastian", r.fg.calls, r.fg.comments)
 	}
 }
+
+// A monitor case is answered by its number. The chat's answer with case_id
+// on running card t-run reaches Act on case 7, past the gates of the run's
+// own ask, with no comment of the human's for the run to read, and the run
+// is not steered, a close with no words among them. A number that names no
+// live case of the card is refused before Act. Without case_id, waiting
+// card t-e's answer finds its own ask, case 5, the newer monitor case 12
+// beside it aside, and a number naming a case of the card's own meets the
+// answer's gates and posts the human's comment.
+func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}}}
+	r.openCases = map[string][]factoryd.Case{"t-run": {{ID: 7, TaskID: "t-run", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman}}}
+	var steered []string
+	r.c.cfg.Steer = func(_ context.Context, taskID, _, text string) error {
+		steered = append(steered, taskID+": "+text)
+		return nil
+	}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActNote, Text: "seen it"}); err != nil {
+		t.Fatal(err)
+	}
+	got, posts := actedOnce(t, r)
+	equal(t, "the monitor case's answer", []any{got, posts, steered}, []any{factoryd.ActInput{TaskID: "t-run", CaseID: 7, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
+		Res: factoryd.Resolution{Action: factoryd.ActNote, Note: "seen it"}}, false, []string(nil)})
+
+	const none = "Card #11 has no live case 8: answer its own ask without a case number."
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 8, Action: factoryd.ActNote, Text: "seen it"})
+	var no *refusal
+	if !errors.As(err, &no) || no.status != http.StatusConflict || no.msg != none || len(r.acted) != 1 {
+		t.Fatalf("an answer on case 8 = %v, Act calls %d; want %q and no call", err, len(r.acted), none)
+	}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActClose}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.acted) != 2 || r.acted[1].CaseID != 7 || !reflect.DeepEqual(r.acted[1].Res, factoryd.Resolution{Action: factoryd.ActClose}) || r.acted[1].Post != nil {
+		t.Fatalf("Act calls = %+v, want the close of case 7 with no words and no post", r.acted)
+	}
+
+	r = newRig(t)
+	caseCard(r)
+	r.openCases["t-e"] = append(r.openCases["t-e"], factoryd.Case{ID: 12, TaskID: "t-e", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman})
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", Action: factoryd.ActNote, Text: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := actedOnce(t, r); got.CaseID != 5 {
+		t.Fatalf("Act took case %d, want the card's own ask, case 5", got.CaseID)
+	}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-e", CaseID: 9, Action: factoryd.ActNote, Text: "later"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(r.acted) != 2 || r.acted[1].CaseID != 9 || r.acted[1].Post == nil {
+		t.Fatalf("Act calls = %+v, want case 9 answered with the human's comment", r.acted)
+	}
+}

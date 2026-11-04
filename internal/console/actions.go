@@ -1000,11 +1000,71 @@ var answerArgs = []string{"model", "sessions", "agent_time_s", "lines", "checkin
 // for the budget beside the action. No action is continue.
 func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action string, args json.RawMessage, eur float64) (string, error) {
 	text = strings.TrimSpace(text)
+	res, err := typedAnswer(text, action, args, eur)
+	if err != nil {
+		return "", err
+	}
+	t, said, done, err := c.answerGates(ctx, a, id, text, action, &res)
+	if done {
+		return said, err
+	}
+	return c.answerCard(ctx, a, t, res)
+}
+
+// doAnswerCase answers case caseID of card id with the typed action the
+// chat names, as doAnswerAs answers the card's own ask. A monitor's case
+// sits beside the card's run: it is answered whatever the card's status,
+// past the gates of the run's own ask, and no comment of a's goes on the
+// issue for the run to read. Any other case meets every answer's gates. A
+// number that names no live case of the card is refused.
+func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID int64, text, action string, args json.RawMessage, eur float64) (string, error) {
+	text = strings.TrimSpace(text)
+	res, err := typedAnswer(text, action, args, eur)
+	if err != nil {
+		return "", err
+	}
+	if len(text) > factoryd.MaxAnswer {
+		return "", answerFits(text)
+	}
+	t, err := c.cardIn(ctx, a, id)
+	if err != nil {
+		return "", err
+	}
+	open, err := c.cfg.OpenCasesOf(ctx, t.ID)
+	if err != nil {
+		log.Printf("console: the cases of %s: %v", t.ID, err)
+		return "", refuse(http.StatusServiceUnavailable, "The card's cases could not be read, so nothing was answered. Try again.")
+	}
+	i := slices.IndexFunc(open, func(k factoryd.Case) bool { return k.ID == caseID })
+	if i < 0 {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card %s has no live case %d: answer its own ask without a case number.", issueRef(t.ID, t.IssueNumber), caseID))
+	}
+	post := c.posting(a, t, res)
+	if open[i].Kind == factoryd.CaseMonitorFlag {
+		post = nil
+	} else {
+		var said string
+		var done bool
+		if t, said, done, err = c.answerGates(ctx, a, id, text, action, &res); done {
+			return said, err
+		}
+	}
+	out, err := c.actOn(ctx, a, t, caseID, res, post)
+	if err != nil {
+		return "", err
+	}
+	return out.Text, nil
+}
+
+// typedAnswer is the chat's typed answer: action with its args, continue
+// when none, text its note, and eur the money it draws, the fund's or the
+// ceiling raise's own amount, else money for the budget beside the action.
+func typedAnswer(text, action string, args json.RawMessage, eur float64) (factoryd.Resolution, error) {
 	res := factoryd.Resolution{Action: cmp.Or(action, factoryd.ActContinue), Note: text}
 	if len(args) > 0 {
 		var all map[string]any
 		if err := json.Unmarshal(args, &all); err != nil {
-			return "", refuse(http.StatusBadRequest, "args is a JSON object of the action's arguments")
+			return res, refuse(http.StatusBadRequest, "args is a JSON object of the action's arguments")
 		}
 		for _, key := range answerArgs {
 			if v, ok := all[key]; ok {
@@ -1017,7 +1077,7 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 	}
 	switch {
 	case eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0):
-		return "", refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
+		return res, refuse(http.StatusBadRequest, "fund_eur is an amount in EUR above zero")
 	case eur == 0:
 	case res.Action == factoryd.ActFund || res.Action == factoryd.ActRaiseCeiling:
 		if res.Args == nil {
@@ -1027,11 +1087,7 @@ func (c *Console) doAnswerAs(ctx context.Context, a actor, id, text, action stri
 	default:
 		res.Fund = &policy.Draw{EUR: eur}
 	}
-	t, said, done, err := c.answerGates(ctx, a, id, text, action, &res)
-	if done {
-		return said, err
-	}
-	return c.answerCard(ctx, a, t, res)
+	return res, nil
 }
 
 // fundShortfall is what a fund choice of card t raises its budget by: the

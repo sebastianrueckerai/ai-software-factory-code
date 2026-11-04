@@ -71,11 +71,10 @@ type TripOutcome struct {
 }
 
 // resolver is one row of rung 0: it fires on a case's kind and facts and
-// returns the resolution it took, or nil and, when it acted with no
-// resolution, what it did before the case goes up.
+// returns the resolution it took, or nil.
 type resolver struct {
 	Name string
-	Fire func(ctx context.Context, r *Runner, c Case, f CaseFacts) (res *Resolution, did string, err error)
+	Fire func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, error)
 }
 
 // headKinds are the stops keyed on the card's head, whose way on rung 0
@@ -89,70 +88,58 @@ var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, Ca
 var rung0 = []resolver{
 	// an open pull request whose head is green and approved goes to the
 	// approval again: no session is asked for
-	{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
-		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRouteApproval}), "", nil
+	{Name: "route_approval", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRouteApproval}), nil
 	}},
 	// a red head's checks run again, once per head (RerunOnHead)
-	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
-		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRerunChecks}), "", nil
+	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRerunChecks}), nil
 	}},
 	// a day's, a month's or a project's cap: the run's own wait (capWait)
 	// ends it when the cap turns, and the case waits on the human until then
-	{Name: "cap_wait", Fire: func(context.Context, *Runner, Case, CaseFacts) (*Resolution, string, error) { return nil, "", nil }},
+	{Name: "cap_wait", Fire: func(context.Context, *Runner, Case, CaseFacts) (*Resolution, error) { return nil, nil }},
 	// a failed dependency outside a plan is filed again once, and a retry
 	// that failed in turn goes to the human
-	{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
+	{Name: "retry_dependency", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
 		d := caseDep(c, f)
 		if f.Plan != "" || d == nil || d.RetryOf != "" {
-			return nil, "", nil
+			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), "", nil
+		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
 	}},
 	// inside a plan, the failed dependency's work goes to the plan's planner
-	{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
+	{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
 		d := caseDep(c, f)
 		if f.Plan == "" || d == nil {
-			return nil, "", nil
+			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), "", nil
+		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
 	}},
-	// the monitor's issue_open_after_end on an end whose issue Finish
-	// closes: rung 0 closes it, as the heal closes it. A failed card's
-	// waits for its retry, and Finish leaves a plan's and one done after
-	// its merge to their own closers.
-	{Name: "close_ended", Fire: func(ctx context.Context, r *Runner, c Case, f CaseFacts) (*Resolution, string, error) {
-		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "issue_open_after_end" {
-			return nil, "", nil
+	// the monitor's issue_open_after_end, which the monitor raises only
+	// where Finish closes the issue: rung 0 closes it on the ended card, as
+	// the heal closes it
+	{Name: "close_ended", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "issue_open_after_end" || f.Final == "" {
+			return nil, nil
 		}
-		t, _, err := r.task(ctx, c.TaskID)
-		if err != nil {
-			return nil, "", err
-		}
-		events, err := r.store.TaskEvents(ctx, t.ID, cardDigestEvents)
-		if err != nil {
-			return nil, "", err
-		}
-		if !finishClosesIssue(t, t.Status, mergedBefore(events)) {
-			return nil, "", nil
-		}
-		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), "", nil
+		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), nil
 	}},
 	// the monitor's wait_over_bound on a rung that did not answer: the
-	// card's steps past their bound end as ExpireSteps ends one, and the
-	// case goes up saying so
-	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, string, error) {
+	// card's steps past their bound end as ExpireSteps ends one, and that
+	// ends the case, with no face: the steps' hand-up is the record
+	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, error) {
 		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "wait_over_bound" || c.Facts["wait"] != "rung_answer" {
-			return nil, "", nil
+			return nil, nil
 		}
 		ended, err := r.expireCardSteps(ctx, c.TaskID)
 		if err != nil || len(ended) == 0 {
-			return nil, "", err
+			return nil, err
 		}
 		what := "step"
 		if len(ended) > 1 {
 			what = "steps"
 		}
-		return nil, "ended the overdue " + what + ": " + textutil.AndList(ended), nil
+		return &Resolution{Action: ActWithdraw, Note: "ended the overdue " + what + ": " + textutil.AndList(ended)}, nil
 	}},
 }
 
@@ -261,7 +248,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c.Kind, in.Reason), in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c, in.Reason), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -288,13 +275,11 @@ func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, case
 		return nil, "rung 0 took this stop with " + cases[i].Resolution.Action + " before, and it came back", nil
 	}
 	for _, row := range rung0 {
-		res, did, err := row.Fire(ctx, r, c, f)
-		switch {
-		case err != nil:
+		res, err := row.Fire(ctx, r, c, f)
+		if err != nil {
 			return nil, "", err
-		case res == nil && did != "":
-			return nil, did, nil
-		case res == nil:
+		}
+		if res == nil {
 			continue
 		}
 		_, err = r.Act(ctx, ActInput{TaskID: t.ID, CaseID: c.ID, By: FactoryDecider, Via: ViaFactoryd, Rung: 0, Res: *res})
@@ -352,7 +337,7 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 	if err := r.tripStep(ctx, c.ID, restarted); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c.Kind, stop), in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c, stop), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -551,15 +536,15 @@ func replyNext(reason string) string {
 	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 }
 
-// tripNext is the last line of a trip's face for a case of kind: at a
-// cap, where a reply is a continue that asks again, the Extend form or
-// the chat's extend start the next attempt, at a budget floor the Fund
-// form or the chat's fund, for a monitor flag, whose card goes on, the
-// board or the chat, and elsewhere a reply (replyNext).
-func tripNext(kind CaseKind, reason string) string {
-	switch kind {
+// tripNext is the last line of a trip's face for case c: at a cap, where
+// a reply is a continue that asks again, the Extend form or the chat's
+// extend start the next attempt, at a budget floor the Fund form or the
+// chat's fund, for a monitor flag, whose card goes on, the case by its
+// number in the chat, and elsewhere a reply (replyNext).
+func tripNext(c Case, reason string) string {
+	switch c.Kind {
 	case CaseMonitorFlag:
-		return "The card goes on meanwhile. Answer this case on the board or in the project chat."
+		return fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", c.ID)
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseBudgetFloor:
@@ -615,7 +600,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
 		if beside {
-			shaped = monitorQuestion(reason)
+			shaped = monitorQuestion(reason, c.ID)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
@@ -656,6 +641,10 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		"reason": textutil.Truncate(reason, 300)}
 	if c.ID != 0 {
 		asked["case_id"] = c.ID
+	}
+	if beside {
+		// the card's own ask stays the card's: its thread seeds from that
+		asked["case_kind"] = string(c.Kind)
 	}
 	if shaped != nil {
 		asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Why, shaped.Info

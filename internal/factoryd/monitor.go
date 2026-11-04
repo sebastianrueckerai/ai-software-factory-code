@@ -147,7 +147,8 @@ func (m *Monitor) logged(ctx context.Context, taskID string) error {
 // flag's case, so a standing flag costs no call and a flag rung 0 resolved
 // opens nothing twice. A case still open has no face yet: OpenTrip
 // finishes it. A live case whose flag no longer holds on its key is
-// withdrawn: the wait ended, or the flag no longer holds.
+// withdrawn first, by a question_withdrawn row that names it: the wait
+// ended, or the flag no longer holds.
 func (m *Monitor) card(ctx context.Context, taskID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
@@ -161,9 +162,13 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			held[c.StateKey] = true
 		}
 	}
-	head := digestHeadCommit(d)
+	type opening struct {
+		key, state string
+		f          DigestFlag
+		facts      map[string]any
+	}
+	var opens []opening
 	holds := map[string]bool{}
-	var errs []error
 	for _, f := range d.Flags {
 		state, facts, ok := flagCase(d, f)
 		key := f.Name + "|" + state
@@ -171,16 +176,13 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			continue
 		}
 		holds[key] = true
-		if held[key] {
-			continue
-		}
-		held[key] = true
-		facts["flag"], facts["detail"], facts["state"], facts["digest"] = f.Name, f.Detail, state, d.Render()
-		in := TripInput{TaskID: taskID, Reason: "Monitor flag: " + flagsText([]DigestFlag{f}), Head: head, Kind: CaseMonitorFlag, StateKey: key, Extra: facts}
-		if _, err := m.Runner.OpenTrip(ctx, in, tripAttempt{}); err != nil {
-			errs = append(errs, fmt.Errorf("%s: %w", key, err))
+		if !held[key] {
+			held[key] = true
+			opens = append(opens, opening{key, state, f, facts})
 		}
 	}
+	var errs []error
+	// first what ended, so a withdrawal settles no ask this pass opens
 	for _, c := range d.cases {
 		if c.Kind != CaseMonitorFlag || c.Status != CaseOpen && c.Status != CaseAtHuman || holds[c.StateKey] {
 			continue
@@ -189,8 +191,19 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 		if flag := c.Facts["flag"]; flag == "wait_over_bound" || flag == "queued_over_bound" {
 			reason = "the wait ended"
 		}
-		if err := m.Runner.EndCase(ctx, c.ID, reason); err != nil {
+		// the row names its case, which the events writer withdraws, and
+		// settles the case's ask in the inbox
+		if _, err := m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
+			Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason}}); err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
+		}
+	}
+	head := digestHeadCommit(d)
+	for _, o := range opens {
+		o.facts["flag"], o.facts["detail"], o.facts["state"], o.facts["digest"] = o.f.Name, o.f.Detail, o.state, d.Render()
+		in := TripInput{TaskID: taskID, Reason: "Monitor flag: " + flagsText([]DigestFlag{o.f}), Head: head, Kind: CaseMonitorFlag, StateKey: o.key, Extra: o.facts}
+		if _, err := m.Runner.OpenTrip(ctx, in, tripAttempt{}); err != nil {
+			errs = append(errs, fmt.Errorf("%s: %w", o.key, err))
 		}
 	}
 	return errors.Join(errs...)
