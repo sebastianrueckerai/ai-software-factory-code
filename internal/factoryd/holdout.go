@@ -143,7 +143,7 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 		return err
 	}
 	for _, h := range rows {
-		if h.Round == revision {
+		if h.Round == revision && h.Origin == ProofOriginHoldout {
 			return nil // an activity retry: the round asked already
 		}
 	}
@@ -172,7 +172,7 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 	}
 	ids := make([]string, len(proposals))
 	for i, h := range proposals {
-		ids[i] = h.ID
+		ids[i] = holdoutEntry(h.Idx)
 	}
 	r.record(ctx, t.ID, "holdouts_proposed", map[string]any{"round": revision, "holdouts": ids})
 	return nil
@@ -318,7 +318,7 @@ func (r *Runner) SettleHoldouts(ctx context.Context, taskID string, pin int64, p
 }
 
 // PutPlanProofs stores round's hold-out proposals: false when the round
-// holds rows already, so an activity retry adds nothing.
+// holds hold-outs already, so an activity retry adds nothing.
 func (s *PGStore) PutPlanProofs(ctx context.Context, id string, round int, proposals []PlanProof) (bool, error) {
 	b, err := json.Marshal(proposals)
 	if err != nil {
@@ -329,7 +329,7 @@ func (s *PGStore) PutPlanProofs(ctx context.Context, id string, round int, propo
 		SELECT $1, (h->>'idx')::int, $2, h->>'id', h->>'origin', h->>'criterion', h->>'claim', h->>'inputs', h->>'expected',
 			h->>'state', h->>'path', h->>'suite', h->>'name', h->>'code', h->>'artifact', h->>'flag'
 		FROM jsonb_array_elements($3::jsonb) h
-		WHERE NOT EXISTS (SELECT 1 FROM plan_proofs WHERE task_id = $1 AND round = $2)
+		WHERE NOT EXISTS (SELECT 1 FROM plan_proofs WHERE task_id = $1 AND round = $2 AND origin = 'hold-out')
 		ON CONFLICT DO NOTHING`, id, round, b)
 	if err != nil {
 		return false, err

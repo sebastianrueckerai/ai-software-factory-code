@@ -90,10 +90,13 @@ func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 		}
 	}
 	tl := string(objGet(objects, "sessions/plan1/timeline.jsonl"))
-	for _, want := range []string{`"step":"holdouts_proposed"`, `"round":1`, `"holdouts":["door_state","key_log"]`} {
+	for _, want := range []string{`"step":"holdouts_proposed"`, `"round":1`, `"holdouts":["holdout-1","holdout-2"]`} {
 		if !strings.Contains(tl, want) {
 			t.Fatalf("timeline lacks %s: %s", want, tl)
 		}
+	}
+	if strings.Contains(tl, "door_state") || strings.Contains(tl, "key_log") {
+		t.Fatalf("the timeline names a hold-out by the model's id: %s", tl)
 	}
 }
 
@@ -168,6 +171,26 @@ func TestAskHoldoutsAsksOnceARound(t *testing.T) {
 	}
 	if len(ll.chats) != 0 || len(kube.podOrder) != 0 {
 		t.Fatalf("chats %d, pods %d; want none", len(ll.chats), len(kube.podOrder))
+	}
+}
+
+// A criterion's proof the prover filed at a round is no hold-out of it:
+// the round's hold-outs are asked still, numbered after the row.
+func TestAskHoldoutsAsksARoundThatHoldsOnlyACriterionsProof(t *testing.T) {
+	r, _, store := newTestRunner(t, holdoutPlanTask(), newFakeKube(), &fakeObjectStore{})
+	filed := PlanProof{Idx: 1, Round: 1, ID: "green_login", Origin: ProofOriginCriterion, Criterion: "green_login", State: ProofFiled,
+		Path: "proofs/green_login/green_login_test.go", Suite: "./proofs/green_login", Name: "TestGreenLogin", Code: "package green_login"}
+	store.proofs = map[string][]PlanProof{"plan1": {filed}}
+	ll := &fakeLiteLLM{contents: []string{`{"holdouts":[{"id":"key_log","claim":"Every key turn lands in the log","inputs":"three turns of key 7","expected":"three log rows"}]}`}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, holdoutCriteriaPlan()); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := store.PlanProofs(context.Background(), "plan1")
+	want := []PlanProof{filed, {Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log",
+		Inputs: "three turns of key 7", Expected: "three log rows", State: ProofProposed}}
+	if len(ll.chats) != 1 || !slices.Equal(rows, want) {
+		t.Fatalf("chats %d, rows %+v; want one call and %+v", len(ll.chats), rows, want)
 	}
 }
 

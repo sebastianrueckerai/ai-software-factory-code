@@ -3395,6 +3395,18 @@ func TestPGStoreProofs(t *testing.T) {
 		t.Fatalf("rows after the sweep = %+v; want idx 1 okayed, idx 3 dropped", rows)
 	}
 
+	// A criterion's proof filed at a round is no hold-out of it: the
+	// round's proposals still store.
+	if err := s.FilePlanProofs(ctx, "t-ho", []PlanProof{{Round: 3, ID: "green_login", Origin: ProofOriginCriterion, Criterion: "green_login",
+		Path: "proofs/green_login/green_login_test.go", Suite: "./proofs/green_login", Name: "TestGreenLogin", Code: "package green_login"}}); err != nil {
+		t.Fatalf("file a criterion's proof: %v", err)
+	}
+	if ok, err := s.PutPlanProofs(ctx, "t-ho", 3, []PlanProof{
+		{Idx: 5, ID: "late_gap", Origin: ProofOriginHoldout, Claim: "c", Inputs: "i", Expected: "e", State: ProofProposed},
+	}); err != nil || !ok {
+		t.Fatalf("round 3 put beside a criterion's proof: %v %v, want true", ok, err)
+	}
+
 	// A stored proof holds its test; a criterion's proof names its criterion.
 	for constraint, insert := range map[string]string{
 		"plan_proofs_file_check": `INSERT INTO plan_proofs (task_id, idx, round, id, origin, claim, state, suite, name, code)
@@ -4432,7 +4444,7 @@ func (s *fakeStore) ConfirmationIndex(ctx context.Context, id string, revision i
 
 func (s *fakeStore) PutPlanProofs(ctx context.Context, id string, round int, proposals []PlanProof) (bool, error) {
 	for _, p := range s.proofs[id] {
-		if p.Round == round {
+		if p.Round == round && p.Origin == ProofOriginHoldout {
 			return false, nil
 		}
 	}
