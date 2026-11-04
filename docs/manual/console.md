@@ -207,8 +207,11 @@ decimals: a task's model calls cost fractions of a cent.
   per step with its number, repeated steps in a row folded into one, and
   the flags the steps show, or `digest unreadable: <why>` when its life
   cannot be read; with a pointer to the read holding its reviews, audit,
-  checks, plan and sessions), `history`, `card_history`, `card_step` (one
-  step of the card's life in full, by its number), `board_digest` (the
+  checks, plan and sessions; a pending merge request names its risk, the
+  review's verdict and whether it found a strict improvement, its head's
+  first 7 characters and, on red checks, the jobs found red), `history`,
+  `card_history`, `card_step` (one step of the card's life in full, by
+  its number), `board_digest` (the
   board in a few lines: the live cards with their flags, a card whose
   life cannot be read with why, the queue with what holds each card, the
   work slots, the open plans and the caps), `costs`, `diff`, `plan` (a
@@ -288,7 +291,11 @@ decimals: a task's model calls cost fractions of a cent.
   wake labels as `factory-chat`, a writer. A review the agent decides, in a
   wake or in a human's turn, goes out as `factory-chat` too: an approval
   posts none, a change request is `factory-chat`'s, which the intake
-  trusts and signals and which blocks no later merge. A project without a chat
+  trusts and signals and which blocks no later merge. At a merge rule
+  other than auto a wake decides no merge: `approve_merge` and
+  `deny_merge` refuse before any proposal, naming `attach_analysis`. The
+  agent never approves a GitHub sync's pull request: a human approves the
+  GitHub commits it carries. A project without a chat
   token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
   running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation

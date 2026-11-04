@@ -8,13 +8,12 @@ import (
 	"regexp"
 	"slices"
 	"strings"
-	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// inboxPage bounds the rows one inbox read answers.
+// inboxPage bounds the other rows one inbox read answers.
 const inboxPage = 20
 
 // inboxText is the inbox tool: the reader's own inbox when the project
@@ -26,10 +25,10 @@ const inboxPage = 20
 func (t *turn) inboxText(in toolInput) (string, error) {
 	var re *regexp.Regexp
 	if in.Query != "" {
-		if n := utf8.RuneCountInString(in.Query); n < 2 || n > 200 {
-			return "", refuse(http.StatusBadRequest, "The query is 2 to 200 characters.")
+		var err error
+		if re, err = searchQuery(in.Query); err != nil {
+			return "", err
 		}
-		re = regexp.MustCompile("(?i)" + regexp.QuoteMeta(in.Query))
 	}
 	logins := t.p.NotifyOrApprovers(t.tree.ApproversOf(t.p.Repository))
 	if len(logins) == 0 {

@@ -922,6 +922,21 @@ func (a *fakeApprovals) RetryApprovalBrief(_ context.Context, id int64) error {
 	return nil
 }
 
+// approveMerge decides task taskID's pending merge request of pull
+// request pr approved by by, as factoryd's ApproveMerge does before it
+// signals the workflow.
+func (a *fakeApprovals) approveMerge(taskID string, pr int64, by string) error {
+	a.mu.Lock()
+	defer a.mu.Unlock()
+	for i, q := range a.rows {
+		if q.Kind == factoryd.ApprovalMerge && q.TaskID == taskID && q.PRNumber == pr && q.Status == "pending" {
+			a.rows[i].Status, a.rows[i].DecidedBy = "approved", by
+			return nil
+		}
+	}
+	return fmt.Errorf("task %s has no pending merge approval for pull request #%d", taskID, pr)
+}
+
 func (a *fakeApprovals) get(id int64) factoryd.ApprovalRequest {
 	a.mu.Lock()
 	defer a.mu.Unlock()
@@ -1300,9 +1315,12 @@ func newRig(t *testing.T) *rig {
 		},
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
-			defer fg.mu.Unlock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL approved %s #%d by %s", taskID, pr, approver))
-			return r.signalErr
+			fg.mu.Unlock()
+			if r.signalErr != nil {
+				return r.signalErr
+			}
+			return r.approvals.approveMerge(taskID, pr, approver)
 		},
 		RerunChecks: func(_ context.Context, taskID string, pr int64, by string) error {
 			fg.mu.Lock()
@@ -2544,9 +2562,6 @@ func TestMergeApproveReviewsThenSignals(t *testing.T) {
 	if rv := r.fg.reviews[0]; rv["event"] != "APPROVED" || rv["commit_id"] != "abc123" {
 		t.Fatalf("review = %v", rv)
 	}
-	if r.approvals.get(4).Status != "pending" {
-		t.Fatal("the console decided the merge request; factoryd's Merge records the approval once merged")
-	}
 }
 
 func TestMergeApproveSignalsNothingWhenTheReviewFails(t *testing.T) {
@@ -3631,6 +3646,7 @@ func TestConsoleCountsInterventions(t *testing.T) {
 	if rec := r.do(post("/approvals/4/approve", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("approve = %d", rec.Code)
 	}
+	r.approvals.rows[1].Status = "pending"
 	if rec := r.do(post("/approvals/4/deny", url.Values{"csrf": {s.csrf}, "action": {"request_changes"}, "note": {"split it"}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("request changes = %d", rec.Code)
 	}

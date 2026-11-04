@@ -23,10 +23,20 @@ import (
 // huge thread cannot hold the turn.
 const chatSearchRead = 500
 
+// searchQuery is query q as the case-blind literal pattern a search
+// matches; a query outside 2 to 200 characters refuses.
+func searchQuery(q string) (*regexp.Regexp, error) {
+	if n := utf8.RuneCountInString(q); n < 2 || n > 200 {
+		return nil, refuse(http.StatusBadRequest, "The query is 2 to 200 characters.")
+	}
+	return regexp.MustCompile("(?i)" + regexp.QuoteMeta(q)), nil
+}
+
 // chatSearch is the chat_search tool.
 func (t *turn) chatSearch(in toolInput) (string, error) {
-	if n := utf8.RuneCountInString(in.Query); n < 2 || n > 200 {
-		return "", refuse(http.StatusBadRequest, "The query is 2 to 200 characters.")
+	re, err := searchQuery(in.Query)
+	if err != nil {
+		return "", err
 	}
 	ctx := t.r.Context()
 	list, err := t.c.cfg.Chat.ProjectConversations(ctx, t.p.Repository)
@@ -45,7 +55,6 @@ func (t *turn) chatSearch(in toolInput) (string, error) {
 		}
 		list = kept
 	}
-	re := regexp.MustCompile("(?i)" + regexp.QuoteMeta(in.Query))
 	var hits []string
 	total := 0
 	for _, th := range list {

@@ -1291,7 +1291,10 @@ func (t *turn) queuedRows() bool {
 	return slices.ContainsFunc(rows, func(m factoryd.ChatMessage) bool { return m.Queued })
 }
 
-// call runs one tool call of the agent, or proposes it when the chat's
+// wakeMergeRefusal answers a wake's merge decision on a merge rule other
+// than auto, where a human decides every merge.
+const wakeMergeRefusal = "A human approves merges on merge rule human: record what you found with attach_analysis."
+
 // call runs one tool call of the agent, or proposes it when the chat's
 // confirm names it or the tool is the member's alone to decide, and
 // answers the result the agent reads, the proposal's token and the HTTP
@@ -1307,6 +1310,8 @@ func (t *turn) call(call factoryd.OperatorCall) (result, proposal string, status
 	switch {
 	case !ok:
 		result = "There is no tool " + call.Name + "."
+	case t.a.wake && (call.Name == "approve_merge" || call.Name == "deny_merge") && t.a.mergeRule != policy.MergeAuto:
+		result, status = "Refused: "+wakeMergeRefusal, http.StatusForbidden
 	case t.parked[call.Name]:
 		result = "Refused: an open ask of this thread binds " + call.Name + "; the human's press runs it, a press answers it, and in a thread of their own so does their message."
 	case json.Unmarshal([]byte(cmp.Or(args, "{}")), &in) != nil:

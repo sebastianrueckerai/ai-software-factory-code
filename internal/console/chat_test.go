@@ -2309,7 +2309,7 @@ func TestChatReadThenReply(t *testing.T) {
 		{"role": "tool", "tool_call_id": "call_1", "content": "#5 · budget 3.00 spent 0.40 holds 0.00 EUR · queued\nflags: none\n\n" +
 			"#5 t-m \"Fix the cache. It drops entries.\" queued (waits for a free work slot, in filing order), €0.40 of €3.00\n" +
 			"track direct of process maintenance\nissue https://git.example/sf/code/issues/5\nsessions: 0 of 3\ncost: no model calls\n" +
-			"merge request 4 pending for pull request #9, risk high; " +
+			"merge request 4 pending for pull request #9, risk high, review approve, strict improvement no, head abc123; " +
 			"a human decides because the project's merge rule is human, risk class high is requires_approval; recommendation: Adds the column; merge it.\n" +
 			"objective: Fix the cache. It drops entries.\n\nAcceptance:\n- The cache keeps entries across a restart\n"},
 	})
@@ -4734,7 +4734,7 @@ func TestChatRefusalsNameTheState(t *testing.T) {
 	equal(t, "the card with a merge request", stored[0].ToolCalls[6].Result, "#15 · budget 0.00 spent 0.00 holds 0.00 EUR · waiting-human\nflags: none\n\n"+
 		"#15 t-mr \"Add the index.\" waiting-human ("+human+")\n"+
 		"issue https://git.example/sf/code/issues/15\nsessions: 3 of 3\ncost: no model calls\n"+
-		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low\n"+
+		"pull request #16 https://git.example/sf/code/pulls/16, open\nmerge request 5 pending for pull request #16, risk low, review none\n"+
 		"objective: Add the index.")
 	rec := r.do(post("/tasks/t-m/answer", url.Values{"csrf": {s.csrf}, "answer": {"x"}}), ck)
 	equal(t, "the button's answer", []any{rec.Code, rec.Body.String()}, []any{http.StatusConflict,

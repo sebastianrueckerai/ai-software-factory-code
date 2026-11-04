@@ -459,6 +459,107 @@ func TestAnApprovalTheAgentDecidedIsTheFactorysOwn(t *testing.T) {
 	})
 }
 
+// wakeCall is a stored tool call of a wake's turn: its name, result,
+// proposal token and refusal status.
+type wakeCall struct {
+	name, result, proposal string
+	status                 int
+}
+
+// mergeWake runs a merge row's wake on sebastian's inbox at autonomous
+// under merge rule rule, the model answering replies, and answers the
+// rig, its chat and the turn's stored tool calls.
+func mergeWake(t *testing.T, rule string, setup func(*rig), replies ...[]string) (*rig, *fakeChat, []wakeCall) {
+	t.Helper()
+	r, chat, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAutonomous, MergeRule: rule}}
+	if setup != nil {
+		setup(r)
+	}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.replies = replies
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask",
+		"Wake: 1 ask waits for a human.\n#5: merge of PR #9, high risk"); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	rows, err := chat.ChatMessages(t.Context(), "sf/code", "sebastian", conv, 20)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var calls []wakeCall
+	for _, m := range rows {
+		for _, c := range m.ToolCalls {
+			calls = append(calls, wakeCall{name: c.Name, result: c.Result, proposal: c.Proposal, status: c.Status})
+		}
+	}
+	return r, chat, calls
+}
+
+// A wake at merge rule human decides no merge: approve_merge and
+// deny_merge refuse naming attach_analysis before any proposal is stored,
+// and the request stays pending. At merge rule auto the wake's
+// approve_merge decides the merge as the factory's own.
+func TestWakeApproveMergeRefusedOnMergeRuleHuman(t *testing.T) {
+	const refused = "Refused: A human approves merges on merge rule human: record what you found with attach_analysis."
+	r, chat, calls := mergeWake(t, policy.MergeHuman, nil,
+		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`, "deny_merge", `{"task_id":"t-m","action":"reject","note":"The column breaks the index."}`)},
+		[]string{say("A human decides this merge.")})
+	equal(t, "the wake's calls at merge rule human", calls, []wakeCall{
+		{name: "approve_merge", result: refused, status: http.StatusForbidden},
+		{name: "deny_merge", result: refused, status: http.StatusForbidden}})
+	chat.mu.Lock()
+	proposals := len(chat.proposals)
+	chat.mu.Unlock()
+	if q := r.approvals.get(4); proposals != 0 || q.Status != "pending" || len(r.fg.reviews) != 0 {
+		t.Fatalf("%d proposals, request 4 %s, reviews %v: want no proposal, the request pending, no review", proposals, q.Status, r.fg.reviews)
+	}
+
+	r, _, calls = mergeWake(t, policy.MergeAuto, nil,
+		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("Approved #5.")})
+	equal(t, "the wake's call at merge rule auto", calls, []wakeCall{
+		{name: "approve_merge", result: "Approved pull request #9; factoryd merges it. It cannot be undone."}})
+	if q := r.approvals.get(4); q.Status != "approved" || q.DecidedBy != factoryd.ChatUser {
+		t.Fatalf("request 4 %s by %s, want approved by %s", q.Status, q.DecidedBy, factoryd.ChatUser)
+	}
+}
+
+// A human who approved first settled the merge: the wake's approve_merge
+// finds no pending merge request and refuses naming the card's state, and
+// attach_analysis finds the ask settled, naming who approved it.
+func TestWakeApproveMergeAfterAHumanApprovedAnswers409(t *testing.T) {
+	humanFirst := func(r *rig) {
+		r.tasks.mu.Lock()
+		for i := range r.tasks.tasks {
+			if k := &r.tasks.tasks[i]; k.ID == "t-m" {
+				k.Status, k.PRNumber = "in-review", 9
+			}
+		}
+		r.tasks.mu.Unlock()
+		_, s := r.loggedIn(t)
+		if _, err := r.c.doApprove(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaConsole}, 4); err != nil {
+			t.Fatalf("the human's approval: %v", err)
+		}
+		// the store's answer on a card whose merge request a human approved
+		r.c.cfg.AttachAnalysis = func(_ context.Context, taskID, _, _ string, _ factoryd.Event) error {
+			if q := r.approvals.get(4); q.TaskID == taskID && q.Status == "approved" {
+				return &factoryd.AskSettledError{Kind: factoryd.ApprovalMerge, Word: "approved", By: q.DecidedBy}
+			}
+			return nil
+		}
+	}
+	_, _, calls := mergeWake(t, policy.MergeAuto, humanFirst,
+		[]string{call(1, "approve_merge", `{"task_id":"t-m"}`, "attach_analysis", `{"task_id":"t-m","found":"The column is added with its default."}`)},
+		[]string{say("A human approved #5 already.")})
+	equal(t, "the wake's calls after the human's approval", calls, []wakeCall{
+		{name: "approve_merge", status: http.StatusConflict,
+			result: "Refused: Card #5 passes the gates after its session, not a pending merge request: its gates run; nothing to do until they end."},
+		{name: "attach_analysis", status: http.StatusConflict,
+			result: "Refused: The merge request of #5 is approved by sebastian. A settled ask is done; escalate files a new one when you need a person."}})
+}
+
 // A card a wake files is the woken member's: the issue goes out as the
 // chat bot, and the console's card_filed row, which the intake reads for
 // the card's author (factoryd.Intake.Filings), names the member. When the

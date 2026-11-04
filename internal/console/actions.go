@@ -2024,7 +2024,8 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // posts the merge gate's approval on the merge rule auto and refuses on
 // any other. A red-checks merge request merges only once the same head's
 // checks turned green again (#1013: a re-run); still red, its approval
-// refuses naming what fits the card.
+// refuses naming what fits the card. The agent never approves a GitHub
+// sync's pull request: a human approves the GitHub commits it carries.
 func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, error) {
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
@@ -2067,6 +2068,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			log.Printf("console: task %s: %v", q.TaskID, err)
 			return "", refuse(http.StatusInternalServerError, "cannot read the task")
 		}
+		agent := a.approver() == factoryd.ChatUser
+		if agent && t.Source == factoryd.SourceGitHubSync {
+			return "", refuse(http.StatusForbidden, factoryMergeRefusal)
+		}
 		var spec factoryd.MergeSpec
 		if err := json.Unmarshal(q.Spec, &spec); err != nil || spec.HeadSHA == "" {
 			return "", refuse(http.StatusInternalServerError, "the merge request names no head commit")
@@ -2101,7 +2106,6 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge: deny the merge (deny_merge).", newest, t.PlanKey))
 			}
 		}
-		agent := a.approver() == factoryd.ChatUser
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
@@ -2127,6 +2131,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 	}
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
 }
+
+// factoryMergeRefusal answers the agent's approval of a GitHub sync's
+// pull request.
+const factoryMergeRefusal = "A human approves a factory pull request that carries GitHub commits."
 
 // revisionDrops tells whether plan card t's newest plan revision drops
 // its key, and that revision's number.
