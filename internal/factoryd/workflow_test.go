@@ -169,10 +169,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityPullRequestMerged: func(ctx context.Context, taskID string, number int64) (bool, error) { return false, nil },
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
 		ActivityUnjudgedCriteria:  func(ctx context.Context, taskID string) ([]string, error) { return nil, nil },
-		ActivityHoldMerge:         func(ctx context.Context, taskID string, pr int64, commit, approver string) error { return nil },
-		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
-		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
-		ActivityEscalate:          func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
+		ActivityUnjudged:          func(ctx context.Context, taskID string) (Unjudged, error) { return Unjudged{}, nil },
+		ActivityHoldMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string, blindProofs bool) error {
+			return nil
+		},
+		ActivityFinish:    func(ctx context.Context, taskID, final, reason string) error { return nil },
+		ActivityReconcile: func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
+		ActivityEscalate:  func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
 		ActivityRecordUsage: func(ctx context.Context, taskID string, u TaskUsage) error {
 			h.rowUsage = u
 			return nil

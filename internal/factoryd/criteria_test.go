@@ -264,8 +264,8 @@ func TestOpenedFindingCarriesTheCriterionTheCodeAndTheOutput(t *testing.T) {
 // pass meets its criterion; an outcome the run lost is no report (a gate
 // that runs and reports nothing does not pass); a held criterion is unmet
 // without a run and no finding, since the builder cannot act on it, and
-// a late one is a finding too; the evidence is one line of at most 200
-// characters.
+// a late one is a card line, for the human; the evidence is one line of
+// at most 200 characters.
 func TestCriteriaReportVerdicts(t *testing.T) {
 	held := "criterion t_held: no stored proof yet"
 	late := "Criterion t_late has no stored proof: the prover filed before a later revision added it."
@@ -326,9 +326,9 @@ func TestCriteriaReportVerdicts(t *testing.T) {
 	if !slices.Equal(lines, wantLines) {
 		t.Fatalf("lines =\n%q\nwant\n%q", lines, wantLines)
 	}
-	wantFindings := slices.Concat(wantLines[1:8], wantLines[9:10], wantLines[11:])
-	if !slices.Equal(findings, wantFindings) {
-		t.Fatalf("findings = %q, want %q", findings, wantFindings)
+	wantFindings := slices.Concat(wantLines[1:8], wantLines[11:])
+	if !slices.Equal(findings, wantFindings) || !slices.Equal(rep.card, []string{late}) {
+		t.Fatalf("findings = %q, card %q; want %q and the late line", findings, rep.card, wantFindings)
 	}
 	if len(proofs) != len(runs) {
 		t.Fatalf("proofs = %+v, want one per run", proofs)
@@ -489,7 +489,7 @@ func TestGateCriteriaSkipsAFeatureCard(t *testing.T) {
 		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
 	val, err := execActivity(t, r, ActivityGateCriteria, "t1", int64(9), "c1")
 	res := getInto[CriteriaResult](t, val, err)
-	if res.Skipped != "not the plan's integration card or a delta card" || len(res.Findings) != 0 || len(kube.podOrder) != 0 {
+	if res.Skipped != "not the plan's integration card or a delta card" || len(res.Findings) != 0 || res.Stand != nil || len(kube.podOrder) != 0 {
 		t.Fatalf("result = %+v, pods %d", res, len(kube.podOrder))
 	}
 	if tl := timeline(t, objects); !strings.Contains(tl, `"skipped":"not the plan's integration card or a delta card"`) {
@@ -539,8 +539,8 @@ func TestGateCriteriaRunsOnADeltaCard(t *testing.T) {
 	}
 }
 
-// A plan that names no criteria names no proof: a finding for the human,
-// no sandbox. A plan whose gate criteria are all tests or judgements runs
+// A plan that names no criteria names no proof: a card finding for the
+// human, no sandbox, no stand. A plan whose gate criteria are all tests or judgements runs
 // no sandbox either: each, with no stored proof yet, is its unmet row and
 // no finding, a test one's the gate's and a judgement one's with no
 // verdict, so the plan's close never counts it unjudged and the builder
@@ -565,6 +565,9 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 			switch name {
 			case "no criteria":
 				want = []string{"criteria gate: the plan names no criteria"}
+				if res.Stand != nil {
+					t.Fatalf("stand = %+v, want none for a plan without criteria", res.Stand)
+				}
 			case "only test criteria":
 				wantRows = []CriterionVerdict{{Criterion: "green_login", Verdict: "unmet", Evidence: held, Kind: CriterionTest,
 					Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
@@ -572,8 +575,8 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 				wantRows = []CriterionVerdict{{Criterion: "judged", Verdict: "unmet", Evidence: "no verdict: criterion judged: no stored proof yet", Kind: CriterionJudgement,
 					Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}
 			}
-			if !slices.Equal(res.Findings, want) || len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
-				t.Fatalf("result = %+v, pods %d, mints %v; want findings %q and no sandbox", res, len(kube.podOrder), hub.minted(), want)
+			if len(res.Findings) != 0 || !slices.Equal(res.Card, want) || len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
+				t.Fatalf("result = %+v, pods %d, mints %v; want no finding, the card's %q and no sandbox", res, len(kube.podOrder), hub.minted(), want)
 			}
 			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, wantRows) {
 				t.Fatalf("verdict rows = %+v, want %+v", rows, wantRows)
@@ -681,8 +684,9 @@ func TestGateCriteriaWaitingRunsNoPod(t *testing.T) {
 }
 
 // A judgement criterion a later revision added after the prover filed is
-// held as a test criterion is: its line and a finding say so, and its
-// row is an unmet judgement with no verdict, so it counts as judged. A
+// held as a test criterion is: its line and a card finding say so, for
+// the human, since no session can prove it, and its row is an unmet
+// judgement with no verdict, so it counts as judged. A
 // plan of such criteria alone runs nothing and says so on the pull
 // request.
 func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
@@ -697,8 +701,8 @@ func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
 	}
 	res, err := runCriteria(t, r)
 	const late = "Criterion late_calm has no stored proof: the prover filed before a later revision added it."
-	if err != nil || !slices.Equal(res.Findings, []string{late}) {
-		t.Fatalf("result = %+v, %v; want the late finding alone", res, err)
+	if err != nil || len(res.Findings) != 0 || !slices.Equal(res.Card, []string{late}) {
+		t.Fatalf("result = %+v, %v; want the late line on the card alone", res, err)
 	}
 	want := []CriterionVerdict{{Criterion: "late_calm", Verdict: "unmet", Evidence: "no verdict: " + late, Kind: CriterionJudgement,
 		Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}
@@ -835,11 +839,11 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 		"Criterion judged has no stored proof: the prover filed before a later revision added it.",
 		"hold-out never_red: its proof was flagged unrunnable by its dry run, so it had no blind try",
 	}
-	if len(res.Findings) != 5 || res.Findings[0] != lines[1] || !strings.HasPrefix(res.Findings[1], lines[2]+". It is open now.") ||
-		res.Findings[2] != lines[3] || res.Findings[3] != lines[5] || !strings.HasPrefix(res.Findings[4], lines[6]+". It is open now.") ||
-		!strings.Contains(res.Findings[4], "\nThe hold-out: A lock turn is never lost. Inputs: one turn of key 9. Expected: one log row.\n") ||
-		res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
-		t.Fatalf("result = %+v, want group_open's line, door's opening, no_proof's and judged's lines and never_red's opening", res)
+	if len(res.Findings) != 3 || res.Findings[0] != lines[1] || !strings.HasPrefix(res.Findings[1], lines[2]+". It is open now.") ||
+		!strings.HasPrefix(res.Findings[2], lines[6]+". It is open now.") ||
+		!strings.Contains(res.Findings[2], "\nThe hold-out: A lock turn is never lost. Inputs: one turn of key 9. Expected: one log row.\n") ||
+		!slices.Equal(res.Card, []string{lines[3], lines[5]}) || res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
+		t.Fatalf("result = %+v, want group_open's line, door's opening and never_red's opening, and no_proof's and judged's lines on the card", res)
 	}
 	gate := func(id, verdict, line string) CriterionVerdict {
 		return CriterionVerdict{Criterion: id, Verdict: verdict, Evidence: line, Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}
@@ -960,9 +964,14 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 		text: "The hold-out: Every key turn lands in the log. Inputs: three turns of key 7. Expected: three log rows."}
 	const late = "Criterion no_proof has no stored proof: the prover filed before a later revision added it."
 	const lateJudged = "Criterion judged has no stored proof: the prover filed before a later revision added it."
-	wantFindings := []string{openedFinding(sizeBound, "c1"), openedFinding(door, "c1"), late, lateJudged, openedFinding(keyLog, "c1")}
-	if !slices.Equal(res.Findings, wantFindings) || res.Escalate != "" || res.Skipped != "" {
-		t.Fatalf("findings =\n%s\nwant\n%s", strings.Join(res.Findings, "\n--\n"), strings.Join(wantFindings, "\n--\n"))
+	wantFindings := []string{openedFinding(sizeBound, "c1"), openedFinding(door, "c1"), openedFinding(keyLog, "c1")}
+	if !slices.Equal(res.Findings, wantFindings) || !slices.Equal(res.Card, []string{late, lateJudged}) || res.Escalate != "" || res.Skipped != "" {
+		t.Fatalf("findings =\n%s\nwant\n%s\ncard %q, want the late lines", strings.Join(res.Findings, "\n--\n"), strings.Join(wantFindings, "\n--\n"), res.Card)
+	}
+	wantStand := &CriteriaStand{IDs: []string{"size_bound", "group_open", "door", "no_proof", "all_green", "judged"},
+		Open: []string{"size_bound", "door", "no_proof", "judged"}}
+	if !reflect.DeepEqual(res.Stand, wantStand) {
+		t.Fatalf("stand = %+v, want %+v", res.Stand, wantStand)
 	}
 
 	lines := []string{
@@ -1046,7 +1055,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 			t.Fatalf("comment = %q, want it to hold %q", hub.comments[0], want)
 		}
 	}
-	surfaces := map[string]string{"the comment": hub.comments[0], "the line": string(mustJSON(step)), "the findings": strings.Join(res.Findings, "\n"),
+	surfaces := map[string]string{"the comment": hub.comments[0], "the line": string(mustJSON(step)), "the findings": strings.Join(slices.Concat(res.Findings, res.Card), "\n"),
 		"the events": string(mustJSON(store.events))}
 	for _, row := range rows {
 		surfaces["row "+row.Criterion] = row.Evidence
@@ -1439,27 +1448,5 @@ func TestGateCriteriaThatCannotStartEscalates(t *testing.T) {
 		"then answer to run the criteria gate again, or close the card.\nimage video of project repo has no pin in force: no sandbox runs on it until the factory pins it"
 	if err != nil || res.Escalate != want {
 		t.Fatalf("an unpinned image: result = (%+v, %v), want:\n%s", res, err, want)
-	}
-}
-
-// The gate's findings ride the approval card (piece 4): the human reads
-// them with the review's verdict, and nothing merges until the approval
-// answers them.
-func TestWorkflowCriteriaFindingsRideTheApprovalCard(t *testing.T) {
-	const finding = "criterion green_login: no test TestLogin in ./internal/auth"
-	g := newGateHarness(t, func(g *gateHarness) {
-		g.criteria = []CriteriaResult{{Findings: []string{finding}}}
-	})
-	g.onSessions(pushed("s1", "c1"))
-	g.onChecks(ChecksResult{State: ChecksSuccess})
-	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-	if final := g.run(t); final != "done" {
-		t.Fatalf("final = %q, finals %v", final, g.finals)
-	}
-	if !slices.Contains(g.approvals[0].WhyHuman, finding) {
-		t.Fatalf("why human = %q, want the criteria finding on the card", g.approvals[0].WhyHuman)
-	}
-	if want := []string{"policy", "repro c1", "review c1", "criteria c1", "approval c1", "merge"}; !slices.Equal(g.steps, want) {
-		t.Fatalf("steps = %v, want %v", g.steps, want)
 	}
 }

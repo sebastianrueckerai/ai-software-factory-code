@@ -37,9 +37,11 @@ import (
 // CriteriaResult is GateCriteria's verdict: Skipped names why the gate did
 // not run (no plan filed, or a card of the plan that is neither its
 // integration card nor a delta card); Findings are the criteria not met
-// and the proofs opened, for the approval card; Escalate is the start
-// escalation of a sandbox that could not start, or proofsNotStored, whose
-// answer runs the gate again.
+// and the proofs opened, for the builder; Card are the lines no session
+// can settle, a criterion the prover never proved and a plan without
+// criteria, for the human's card; Escalate is the start escalation of a
+// sandbox that could not start, or proofsNotStored, whose answer runs the
+// gate again.
 type CriteriaResult struct {
 	Skipped  string   `json:",omitempty"`
 	Findings []string `json:",omitempty"`
@@ -47,6 +49,8 @@ type CriteriaResult struct {
 	// Holdouts is read by the workflow; the gate leaves it empty, since
 	// no audit settles a hold-out.
 	Holdouts []HoldoutGateResult `json:",omitempty"`
+	Stand    *CriteriaStand      `json:",omitempty"` // the plan's criteria after this run's rows; nil when the gate skipped
+	Card     []string            `json:",omitempty"`
 }
 
 // maxProofMessage caps a proof's message on the timeline.
@@ -236,6 +240,7 @@ type openedProof struct {
 // gateReport is criteriaReport's reading of one gate.
 type gateReport struct {
 	findings  []string
+	card      []string // the late runs' lines, which no session can settle
 	lines     []string // the criteria's, then the opened hold-outs'
 	met       int      // the criteria met
 	proofs    []gateProof
@@ -248,11 +253,11 @@ type gateReport struct {
 }
 
 // criteriaReport judges the runs of plan p at head by their results:
-// findings for the approval card, lines for the comment, entries for the
+// findings for the builder, lines for the comment, entries for the
 // timeline, the proofs it opens. A run without a result reported nothing:
 // a gate that runs and reports nothing does not pass. A held run is its
 // line alone, unmet and no finding: the builder cannot act on it; a late
-// one is a finding too, for the human. A stored proof that passed its
+// one is a card line too, for the human. A stored proof that passed its
 // blind try meets its criterion; one whose try the runner never made is
 // its line; any other outcome, and a flag, opens it. A judgement or human
 // proof's run that wrote its artifact as text is an artifact for the
@@ -283,7 +288,7 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 		switch {
 		case c.held != "":
 			if c.late {
-				rep.findings = append(rep.findings, c.held)
+				rep.card = append(rep.card, c.held)
 			}
 		case c.flagged():
 			g.Line = c.label() + ": its proof was flagged " + c.stored.Flag + " by its dry run, so it had no blind try"
@@ -497,13 +502,14 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 // nor a delta card: not run, the timeline says why. A read of the proof
 // rows, or of an opened proof's file, that fails is the activity's error,
 // so it runs again. A plan that names no criteria names no proof: that is
-// a finding, for the human. While proofsPending, the gate runs nothing,
+// a card line, for the human. While proofsPending, the gate runs nothing,
 // writes the held rows and asks proofsNotStored. The rows land on the
 // plan's integration card; each proof the gate opens is a proof_opened
 // event on the card and on the plan, once per head, before its row turns
 // opened. The artifacts the run wrote are stored on the integration card,
 // and each judgement criterion's is judged (judgeArtifacts) before the
-// comment. The namespace and the token go when it ends, however it ends.
+// comment; the stand is read from that card's rows after them. The
+// namespace and the token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
@@ -613,7 +619,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	rep := criteriaReport(p, commit, runs, results)
 	if len(p.Criteria) == 0 {
-		rep.findings = append(rep.findings, "criteria gate: the plan names no criteria")
+		rep.card = append(rep.card, "criteria gate: the plan names no criteria")
 	}
 	opened := make([]string, 0, len(rep.opened))
 	for _, o := range rep.opened {
@@ -635,6 +641,11 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		return CriteriaResult{}, err
 	}
 	rep.findings = append(rep.findings, judged...)
+	stand, err := r.criteriaStand(ctx, home.ID, p)
+	if err != nil {
+		return CriteriaResult{}, err
+	}
+	all := slices.Concat(rep.findings, rep.card)
 	of := 0
 	for _, c := range p.Criteria {
 		if gateJudged(c.Kind) {
@@ -644,14 +655,34 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	switch {
 	case slices.ContainsFunc(runs, func(c criterionRun) bool { return c.held == "" }):
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met+met, of, rep.lines)))
-	case len(rep.findings) > 0:
+	case len(all) > 0:
 		// nothing ran: an empty plan
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
-			commit, fenced(strings.Join(rep.findings, "\n")))))
+			commit, fenced(strings.Join(all, "\n")))))
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
-		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": rep.findings}))
-	return CriteriaResult{Findings: rep.findings}, nil
+		"proofs": rep.proofs, "holdouts": rep.holdouts, "opened": opened, "findings": all}))
+	return CriteriaResult{Findings: rep.findings, Card: rep.card, Stand: stand}, nil
+}
+
+// criteriaStand is how plan p's criteria stand on the rows of home, its
+// integration card; nil for a plan without criteria.
+func (r *Runner) criteriaStand(ctx context.Context, home string, p Plan) (*CriteriaStand, error) {
+	if len(p.Criteria) == 0 {
+		return nil, nil
+	}
+	rows, err := r.store.CriteriaVerdicts(ctx, home)
+	if err != nil {
+		return nil, err
+	}
+	s := &CriteriaStand{}
+	for _, c := range p.Criteria {
+		s.IDs = append(s.IDs, c.ID)
+	}
+	for _, c := range openCriteria(p, rows) {
+		s.Open = append(s.Open, c.ID)
+	}
+	return s, nil
 }
 
 // openProof records o's opening at head on card t and on its plan, unless

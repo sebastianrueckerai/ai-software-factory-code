@@ -1697,6 +1697,97 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 }
 
+// The press's read under versionBlindProofs splits the integration card's
+// criteria without a row by who settles them: test, invariant and
+// judgement are the gate's, human ones the human's; a feature card has
+// none.
+func TestUnjudgedSplitsTheGatesFromTheHumans(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+	r, store, _ := newGateRunner(t, task, &gateForgejo{mergeStatus: []int{http.StatusOK}})
+	p := criteriaPlan()
+	p.Criteria = []PlanCriterion{
+		{ID: "size_bound", Kind: CriterionTest, Claim: "a size over the bound is refused", Inputs: "3.75", Expected: "400"},
+		{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the page reads calm", Inputs: "the page's text"},
+		{ID: "pages_ok", Kind: CriterionHuman, Claim: "the pages look right", Evidence: "a screenshot"},
+		{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
+	}
+	b, _ := json.Marshal(p)
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-found"] = Task{ID: "t-found", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation"}
+	if err := store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{{Criterion: "all_green", Verdict: "met", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityUnjudged, "t1")
+	if got, want := getInto[Unjudged](t, val, err), (Unjudged{Gate: []string{"size_bound", "reads_calm"}, Human: []string{"pages_ok"}}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unjudged = %+v, want %+v", got, want)
+	}
+	val, err = execActivity(t, r, ActivityUnjudged, "t-found")
+	if got := getInto[Unjudged](t, val, err); !reflect.DeepEqual(got, Unjudged{}) {
+		t.Fatalf("a feature card's unjudged = %+v, want none", got)
+	}
+}
+
+// Under versionBlindProofs the held merge names who settles each
+// criterion without a row: the human on this card, or the criteria gate,
+// which the next approval runs again. It reads no review note and files
+// no ask of its own: the workflow's press runs the gate and asks.
+func TestHoldMergeUnderBlindProofsNamesWhoSettles(t *testing.T) {
+	ctx := context.Background()
+	pagesOK := PlanCriterion{ID: "pages_ok", Kind: CriterionHuman}
+	pageLinks := PlanCriterion{ID: "page_links", Kind: CriterionHuman}
+	sizeBound := PlanCriterion{ID: "size_bound", Kind: CriterionTest}
+	for _, c := range []struct {
+		name    string
+		never   []PlanCriterion
+		refusal string
+		rerun   bool // the comment says the next approval runs the gate again
+	}{
+		{"the human's", []PlanCriterion{pagesOK, pageLinks},
+			"the merge is held: 2 criteria were never judged: pages_ok and page_links are yours to settle on this card", false},
+		{"the gate's", []PlanCriterion{sizeBound},
+			"the merge is held: 1 criterion was never judged: the criteria gate has not settled size_bound. Approving again runs it again", true},
+		{"both", []PlanCriterion{sizeBound, pagesOK},
+			"the merge is held: 2 criteria were never judged: the criteria gate has not settled size_bound. Approving again runs it again, and pages_ok is yours to settle on this card", true},
+	} {
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		r, store, _ := newGateRunner(t, task, fj)
+		r.record(ctx, "t1", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": refusedMonthNote})
+		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
+		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
+			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+			t.Fatal(err)
+		}
+		tk, repo, err := r.task(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := r.holdMerge(ctx, tk, repo, 9, "c1", "sebastian", c.never, true)
+		if res.Merged || res.Refusal != c.refusal {
+			t.Errorf("%s: result %+v, want the refusal %q", c.name, res, c.refusal)
+		}
+		if len(fj.comments) != 1 || fj.comments[0] != "factoryd: "+c.refusal+map[bool]string{true: "\n\nApproving it again runs the criteria gate again on c1."}[c.rerun] {
+			t.Errorf("%s: comments %q", c.name, fj.comments)
+		}
+		for _, body := range fj.comments {
+			if strings.Contains(body, "model review") {
+				t.Errorf("%s: comment %q names the model review", c.name, body)
+			}
+		}
+		pending, _ := store.ApprovalRequests(ctx, "pending")
+		if len(store.approvals) != 1 || len(pending) != 1 || pending[0].DecisionNote != "waiting: "+c.refusal {
+			t.Errorf("%s: %d merge requests, pending %+v: want the pressed one alone, noted with the hold", c.name, len(store.approvals), pending)
+		}
+	}
+}
+
 // The merge commit's message names the approver, and its trailers the
 // merge, the task, the issue author behind it and the approver (roadmap
 // 41).
@@ -3405,6 +3496,33 @@ func TestAutoMergeNamesWhatItFoundMet(t *testing.T) {
 				t.Fatalf("ok %v, unmet %q, met %q; want met %q", ok, unmet, met, tc.met)
 			}
 		})
+	}
+}
+
+// With the gate's stand set the auto merge proves a plan card on its rows
+// and never on the review's criteria; with none it reads the review's.
+func TestAutoMergeReadsTheGatesStand(t *testing.T) {
+	yes := true
+	rv := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}
+	g := GateResults{Policy: PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}, ChecksPassed: true}
+	g.Criteria = &CriteriaStand{IDs: []string{"size_bound", "pages_ok"}}
+	if ok, met, unmet := AutoMerge(g, rv, SourcePlan); !ok || !slices.Contains(met, "the plan's criteria all stand met or waived: size_bound, pages_ok") {
+		t.Fatalf("ok %v, met %q, unmet %q: want the stand met", ok, met, unmet)
+	}
+	g.Criteria.Open = []string{"pages_ok"}
+	ok, _, unmet := AutoMerge(g, rv, SourcePlan)
+	if ok || !slices.Contains(unmet, "the plan's criteria pages_ok do not stand met or waived") || strings.Contains(strings.Join(unmet, "\n"), "review's criteria") {
+		t.Fatalf("ok %v, unmet %q: want the open criteria named, not the review's", ok, unmet)
+	}
+	g.Reproduction = ReproResult{Ran: true, Command: "make repro"}
+	ok, _, unmet = AutoMerge(g, rv, SourcePlan)
+	if want := "not reproduced at base: the reproduction exited 0 before the fix, and the agent recorded no fault it fixed, and the plan's criteria pages_ok do not stand met or waived"; ok || !slices.Contains(unmet, want) {
+		t.Fatalf("ok %v, unmet %q: want %q", ok, unmet, want)
+	}
+	g.Criteria, g.Reproduction = nil, ReproResult{}
+	rv.Criteria = []CriterionVerdict{{Criterion: "c1", Verdict: "met"}}
+	if ok, met, unmet := AutoMerge(g, rv, SourcePlan); !ok || !slices.Contains(met, "the review's criteria are all met or waived") {
+		t.Fatalf("ok %v, met %q, unmet %q: want the review's criteria with no stand", ok, met, unmet)
 	}
 }
 

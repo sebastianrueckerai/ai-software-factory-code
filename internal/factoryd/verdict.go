@@ -391,15 +391,21 @@ func gateLeft(p Plan, key string) *GateLeft {
 // byJudge splits cs into the criteria gate's ids (gateJudged) and the
 // human ones, each joined for a sentence.
 func byJudge(cs []PlanCriterion) (gate, human string) {
-	var g, r []string
+	g, h := judgeIDs(cs)
+	return strings.Join(g, ", "), strings.Join(h, ", ")
+}
+
+// judgeIDs splits cs into the criteria gate's ids (gateJudged) and the
+// human ones.
+func judgeIDs(cs []PlanCriterion) (gate, human []string) {
 	for _, c := range cs {
 		if gateJudged(c.Kind) {
-			g = append(g, c.ID)
+			gate = append(gate, c.ID)
 		} else {
-			r = append(r, c.ID)
+			human = append(human, c.ID)
 		}
 	}
-	return strings.Join(g, ", "), strings.Join(r, ", ")
+	return gate, human
 }
 
 // effectiveVerdict is criterion c's standing verdict (StandingRow); ""
