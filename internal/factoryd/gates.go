@@ -903,7 +903,10 @@ func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, a
 const proofsBudget = reproActivityTimeout - 15*time.Minute
 
 // runProofs runs entries in one sandbox pod and reads each one's outcome
-// by its id; a sandbox that cannot start is a *startFailure.
+// by its id; a sandbox that cannot start is a *startFailure. A pod that
+// ended before it reported every entry returns the outcomes with a
+// *proofsEnded: the entries it reached keep theirs, the rest are no
+// report.
 func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
 	list, err := json.Marshal(entries)
 	if err != nil {
@@ -916,28 +919,50 @@ func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, 
 		runs, runErr, err = r.readProofs(ctx, ns, podName, t.ID)
 		return err
 	})
-	if err != nil {
+	ended := errors.Is(err, errLogEnded)
+	if err != nil && !ended {
 		return nil, err
+	}
+	if ended {
+		runErr = proofsEndedEarly
 	}
 	byID := make(map[string]harness.ProofRun, len(runs))
 	for _, run := range runs {
 		byID[run.ID] = run
 	}
 	out := make(map[string]proofOutcome, len(entries))
+	var unreached []string
 	for _, e := range entries {
 		run, ok := byID[e.ID]
+		if !ok && ended {
+			unreached = append(unreached, e.ID)
+		}
 		out[e.ID] = proofResult(run, ok, runErr, e.Name)
+	}
+	if len(unreached) > 0 {
+		return out, &proofsEnded{unreached: unreached, of: len(entries)}
 	}
 	return out, nil
 }
 
-// buildFailedTail is how many of the output's last lines follow a
-// report's build failure: the compiler's errors, which the report lacks.
+// proofsEnded is a proofs pod that ended before it reported unreached,
+// of its entries: killed, evicted or drained.
+type proofsEnded struct {
+	unreached []string
+	of        int
+}
+
+func (e *proofsEnded) Error() string {
+	return fmt.Sprintf("the proofs pod ended early: %d of %d entries unreported", len(e.unreached), e.of)
+}
+
+// buildFailedTail is how many lines of the compiler's errors follow a
+// report's build failure, which the report lacks.
 const buildFailedTail = 20
 
 // proofResult is one entry's outcome: why the run reported none (ok
 // false), why check test wrote no report, or the report's reading, with
-// the output's last lines when the package did not build.
+// the compiler's errors when the package did not build.
 func proofResult(run harness.ProofRun, ok bool, runErr, name string) proofOutcome {
 	if !ok {
 		if runErr == "" {
@@ -954,11 +979,36 @@ func proofResult(run harness.ProofRun, ok bool, runErr, name string) proofOutcom
 	}
 	o := readReport(run.Report, name)
 	if o.Outcome != proofPassed && strings.Contains(o.Message, "[build failed]") {
-		if tail := lastLines(run.Output, buildFailedTail); len(tail) > 0 {
-			o.Message += "\n" + strings.Join(tail, "\n")
+		if errs := buildErrors(run.Output); len(errs) > 0 {
+			o.Message += "\n" + strings.Join(errs, "\n")
 		}
 	}
 	return o
+}
+
+// buildErrors are the compiler's lines of a run's output, at most
+// buildFailedTail, each trimmed: gotestsum's === Errors block up to its
+// DONE line, or else the output's last lines less the module downloads
+// and pg-test.sh's banner, so the compiler's line comes first.
+func buildErrors(output string) []string {
+	lines := strings.Split(output, "\n")
+	if i := slices.IndexFunc(lines, func(l string) bool { return strings.Contains(l, "=== Errors") }); i >= 0 {
+		var out []string
+		for _, l := range lines[i+1:] {
+			if l = strings.TrimSpace(l); strings.HasPrefix(l, "DONE ") || len(out) == buildFailedTail {
+				break
+			}
+			if l != "" {
+				out = append(out, l)
+			}
+		}
+		return out
+	}
+	lines = slices.DeleteFunc(lines, func(l string) bool {
+		l = strings.TrimSpace(l)
+		return strings.HasPrefix(l, "go: downloading ") || strings.HasPrefix(l, "pg-test.sh: ")
+	})
+	return lastLines(strings.Join(lines, "\n"), buildFailedTail)
 }
 
 // lastLines are the last n non-empty lines of s, each trimmed, in order.
@@ -1070,7 +1120,7 @@ const proofsEndedEarly = "the proofs pod ended early, before it reported this en
 
 // readProofs follows the proofs pod's log to its closing line: the runs
 // it reported, and why none ran when it says. A log that ends before the
-// closing line keeps the runs read, and the rest ended early.
+// closing line keeps the runs read, with errLogEnded.
 func (r *Runner) readProofs(ctx context.Context, ns, podName, taskID string) (runs []harness.ProofRun, runErr string, err error) {
 	err = r.readRunnerLog(ctx, ns, podName, taskID, func(env harness.WorkerEnvelope) (bool, bool) {
 		switch {
@@ -1084,7 +1134,7 @@ func (r *Runner) readProofs(ctx context.Context, ns, podName, taskID string) (ru
 		return false, false
 	})
 	if errors.Is(err, errLogEnded) {
-		return runs, proofsEndedEarly, nil
+		return runs, "", err
 	}
 	if err != nil {
 		return nil, "", err

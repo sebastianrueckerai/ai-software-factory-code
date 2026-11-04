@@ -262,7 +262,15 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			return cannotStart(err)
 		}
 		defer done()
-		if outcomes, err = r.runProofs(ctx, t, repo, pullRef(pr), commit, "", entries); err != nil {
+		outcomes, err = r.runProofs(ctx, t, repo, pullRef(pr), commit, "", entries)
+		// a pod that ended early leaves the criteria it did not reach
+		// unmet; a hold-out it did not reach is no verdict, so the
+		// activity fails and runs again
+		var ended *proofsEnded
+		if errors.As(err, &ended) && !slices.ContainsFunc(hos, func(h Holdout) bool { return slices.Contains(ended.unreached, holdoutEntry(h.Idx)) }) {
+			err = nil
+		}
+		if err != nil {
 			return cannotStart(err)
 		}
 	}

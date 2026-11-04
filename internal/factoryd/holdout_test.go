@@ -171,6 +171,41 @@ func TestAskHoldoutsRecordsARefusalAndLeavesTheRoundEmpty(t *testing.T) {
 	}
 }
 
+// A dry-run pod that ends before it reports every draft leaves the round
+// empty and the timeline names why: an unreached draft is not one that
+// cannot run, so nothing goes to the redraft.
+func TestAskHoldoutsLeavesTheRoundEmptyWhenTheDryRunEndsEarly(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, holdoutPlanTask(), kube, objects)
+	proposal := `{"holdouts":[` +
+		`{"id":"door_state","criterion":"The door stays shut until a key that fits turns the lock","test_name":"TestDoorShut","test_code":"func TestDoorShut(t *testing.T) {}"},` +
+		`{"id":"key_log","criterion":"Every key turn lands in the log","test_name":"TestKeyLog","test_code":"func TestKeyLog(t *testing.T) {}"}` +
+		`]}`
+	ll := &fakeLiteLLM{contents: []string{proposal}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	done := make(chan error, 1)
+	go func() {
+		done <- r.askHoldouts(context.Background(), holdoutPlanTask(), 1, Plan{Spec: &Spec{Outcome: "The door opens only for a key that fits the lock"}})
+	}()
+	body := proofLines(harness.ProofRun{ID: "holdout-1", Exit: 1,
+		Report: junitGz(t, wrap(`<testcase name="TestDoorShut"><failure message="Failed">--- FAIL: TestDoorShut (0.00s)</failure></testcase>`))})
+	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
+	if err := <-done; err != nil {
+		t.Fatal(err)
+	}
+	if rows, _ := store.PlanHoldouts(context.Background(), "plan1"); len(rows) != 0 {
+		t.Fatalf("rows = %+v, want none", rows)
+	}
+	if len(kube.podOrder) != 1 || len(ll.chats) != 1 {
+		t.Fatalf("pods %d, chats %d; want the one dry run and no redraft", len(kube.podOrder), len(ll.chats))
+	}
+	if tl := string(objGet(objects, "sessions/plan1/timeline.jsonl")); !strings.Contains(tl, `"step":"holdouts_not_drafted"`) ||
+		!strings.Contains(tl, "dry run: the proofs pod ended early: 1 of 2 entries unreported") {
+		t.Fatalf("timeline = %s", tl)
+	}
+}
+
 // A round asks once: rows of the round mean an activity retry, no
 // second model call, no second sandbox.
 func TestAskHoldoutsAsksOnceARound(t *testing.T) {
@@ -581,6 +616,39 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 	}
 }
 
+// A pod that ends before it reaches the hold-outs fails the gate, so the
+// activity runs again: an unreached hold-out has no verdict, and the
+// settlement never reads one as unrunnable. Nothing lands: no row, no
+// comment, no line.
+func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"a_green","kind":"test","test":"TestA in ./a"}`)
+	if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 1, []Holdout{
+		{Idx: 1, Round: 1, ID: "door_state", State: HoldoutStored, DryVerdict: "red", TestName: "TestDoorState", TestCode: "func TestDoorState(t *testing.T) {}"},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	done := make(chan struct{})
+	var err error
+	go func() {
+		defer close(done)
+		_, err = runCriteria(t, r)
+	}()
+	body := proofLines(harness.ProofRun{ID: "a_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))})
+	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
+	<-done
+	if err == nil || !strings.Contains(err.Error(), "the proofs pod ended early: 1 of 2 entries unreported") {
+		t.Fatalf("err = %v, want the early end", err)
+	}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 || len(hub.comments) != 0 ||
+		strings.Contains(timeline(t, objects), `"step":"gate_criteria"`) {
+		t.Fatalf("rows %+v, comments %q, timeline %s: want nothing landed", rows, hub.comments, timeline(t, objects))
+	}
+}
+
 // settleRig is the settlement's rig: the integration card of a plan
 // whose spec the audits quote, with the plan's hold-out rows seeded.
 func settleRig(t *testing.T, rows ...Holdout) (*Runner, *fakeKube, *fakeStore) {
@@ -750,6 +818,28 @@ func TestSettleHoldoutsRefusesARewriteThatBends(t *testing.T) {
 	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
 	if rows[0].TestCode != "orig" || rows[0].AuditVerdict != "" || rows[0].State != HoldoutStored {
 		t.Fatalf("row = %+v", rows[0])
+	}
+}
+
+// A rewrite whose dry run ends early fails the settlement, so the
+// activity runs again: it is no bending, and the hold-out keeps its row
+// with no ask.
+func TestSettleHoldoutsFailsWhenTheRewritesRunEndsEarly(t *testing.T) {
+	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
+		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
+	r, kube, store := settleRig(t, row)
+	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
+	res, err := settle(t, r, kube, reds,
+		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock",
+			Quote: "The door opens only for a key that fits", TestCode: "func TestDoorShut(t *testing.T) {}"},
+		sessionLog("audited"),
+		"go: downloading gotest.tools/gotestsum v1.13.0")
+	if err == nil || !strings.Contains(err.Error(), "the proofs pod ended early: 1 of 1 entries unreported") || res.Ask != "" {
+		t.Fatalf("settlement = %+v, err = %v; want the early end and no ask", res, err)
+	}
+	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
+	if rows[0].TestCode != "orig" || rows[0].State != HoldoutStored || rows[0].AuditVerdict != AuditWrongTest {
+		t.Fatalf("row = %+v, want its test and the audit's verdict kept", rows[0])
 	}
 }
 

@@ -193,18 +193,28 @@ func TestShortenEvidenceCutsOnACharacterBoundary(t *testing.T) {
 // A run's outcome, or why there is none: the entry never reported (the
 // worker's own error first), check test wrote no report (its exit and the
 // output's last line say why), or the report's reading. A package that
-// did not build is followed by the output's last 20 lines, the
-// compiler's errors among them.
+// did not build is followed by the compiler's errors: gotestsum's ===
+// Errors block, at most 20 lines, or the output's last lines less the
+// module downloads and pg-test.sh's banner, so the card's line shows the
+// compiler's line.
 func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 	moved := "proofs mode: refs/pull/9/head is at c2, not the gated head c1: the pull request moved"
 	busy := "another bash check (pid 7) runs in this checkout: wait for it to end, then run this one again"
 	broken := junitGz(t, wrap(`<testcase classname="" name="TestMain"><failure message="Failed">FAIL&#x9;x/b [build failed]&#xA;</failure></testcase>`))
-	var noise []string
-	for i := range 25 {
-		noise = append(noise, fmt.Sprintf("go: downloading m%d v1.0.0", i))
+	start := "pg-test.sh: postgres (PostgreSQL) 17.6 on /tmp/tmp.k3Jq\n" +
+		"go: downloading gotest.tools/gotestsum v1.13.0\n" +
+		"go: downloading github.com/dnephin/pflag v1.0.7\n" +
+		"go: downloading github.com/fatih/color v1.18.0\n" +
+		"go: downloading golang.org/x/tools v0.30.0\n"
+	summary := start + "✖  x/b\n\n=== Failed\n=== FAIL: x/b  (0.00s)\nFAIL\tx/b [build failed]\n\n=== Errors\n" +
+		"b/b_test.go:5:32: undefined: Door\nb/b_test.go:6:2: undefined: Lock\n\n\nDONE 0 tests, 1 failure, 1 error in 0.000s\n"
+	plain := start + "# x/b [x/b.test]\nb/b_test.go:5:32: undefined: Door\nFAIL\tx/b [build failed]\n"
+	var many []string
+	for i := range 22 {
+		many = append(many, fmt.Sprintf("b/b.go:%d:1: undefined: x%d", i+1, i))
 	}
-	compiler := "  ./b_test.go:5:2: undefined: Door  \n\nDONE 0 tests, 1 error in 0.4s\n"
-	built := strings.Join(noise[7:], "\n") + "\n./b_test.go:5:2: undefined: Door\nDONE 0 tests, 1 error in 0.4s"
+	long := start + "=== Errors\n" + strings.Join(many, "\n") + "\n\nDONE 0 tests, 1 error in 0.000s\n"
+	const failed = "Failed\nFAIL\tx/b [build failed]\n"
 	for _, c := range []struct {
 		run    harness.ProofRun
 		ok     bool
@@ -218,15 +228,25 @@ func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 			proofOutcome{proofNoReport, "check test wrote no report (exit 1): " + busy}},
 		{harness.ProofRun{Exit: -1}, true, "", "", proofOutcome{proofNoReport, "check test wrote no report (exit -1)"}},
 		{harness.ProofRun{Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}, true, "", "TestA", proofOutcome{proofPassed, ""}},
-		{harness.ProofRun{Exit: 1, Report: broken, Output: strings.Join(noise, "\n") + "\n" + compiler}, true, "", "TestB",
-			proofOutcome{proofMissing, "Failed\nFAIL\tx/b [build failed]\n" + built}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB",
+			proofOutcome{proofMissing, failed + "b/b_test.go:5:32: undefined: Door\nb/b_test.go:6:2: undefined: Lock"}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: plain}, true, "", "TestB",
+			proofOutcome{proofMissing, failed + "# x/b [x/b.test]\nb/b_test.go:5:32: undefined: Door\nFAIL\tx/b [build failed]"}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: long}, true, "", "TestB",
+			proofOutcome{proofMissing, failed + strings.Join(many[:20], "\n")}},
 		{harness.ProofRun{Exit: 1, Report: broken}, true, "", "TestB", proofOutcome{proofMissing, "Failed\nFAIL\tx/b [build failed]"}},
-		{harness.ProofRun{Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestB"><failure message="Failed">want 3</failure></testcase>`)), Output: compiler},
+		{harness.ProofRun{Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestB"><failure message="Failed">want 3</failure></testcase>`)), Output: summary},
 			true, "", "TestB", proofOutcome{proofFailed, "Failed\nwant 3"}},
 	} {
 		if got := proofResult(c.run, c.ok, c.runErr, c.name); got != c.want {
 			t.Errorf("proofResult(%+v, %v, %q, %q) = %+v, want %+v", c.run, c.ok, c.runErr, c.name, got, c.want)
 		}
+	}
+	o := proofResult(harness.ProofRun{Exit: 1, Report: broken, Output: summary}, true, "", "TestB")
+	run := criterionRun{id: "b_guard", kind: CriterionTest, test: "TestB", pkg: "./b"}
+	if got, want := criterionLine(run, o), "criterion b_guard: no test TestB in ./b: Failed FAIL x/b [build failed] "+
+		"b/b_test.go:5:32: undefined: Door b/b_test.go:6:2: undefined: Lock"; got != want {
+		t.Errorf("the card's line = %q, want %q", got, want)
 	}
 }
 
@@ -442,8 +462,9 @@ func TestGateCriteriaRunsThePlanCriteriaInTheSandbox(t *testing.T) {
 }
 
 // A proofs pod whose log ends before its closing line (killed, evicted,
-// drained) keeps the runs it reported; the entry it did not reach is no
-// report, saying the pod ended early, and the gate does not fail.
+// drained) keeps the runs it reported; the criterion it did not reach is
+// no report, saying the pod ended early, an unmet row, and the gate does
+// not fail while no hold-out went unreached.
 func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
