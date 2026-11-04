@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bytes"
 	"cmp"
 	"context"
 	"errors"
@@ -23,11 +24,14 @@ import (
 // main, opens it, and its finding hands the builder its code and its
 // output. An opened proof runs from the repository. A test criterion
 // whose proof is not stored yet makes no run: its row is unmet and says
-// why, and no finding; while the plan's prover may still store it, the
-// gate asks the human to wait. A test criterion the store left without a
-// proof came after the prover filed: its unmet row is a finding too, and
-// it never opens. Judgement and human criteria are outside the gate:
-// their proof is the review's verdict or the approver's decision.
+// why, and no finding; while the plan's prover may still store any
+// criterion's proof, the gate asks the human to wait. A test criterion
+// the store left without a proof came after the prover filed: its unmet
+// row is a finding too, and it never opens. A judgement or human
+// criterion's proof runs as a test criterion's and writes an artifact,
+// which the gate stores for the console: one model call judges a
+// judgement criterion's, the human settles a human one. A proof that
+// wrote no artifact has no verdict and opens.
 
 // CriteriaResult is GateCriteria's verdict: Skipped names why the gate did
 // not run (no plan filed, or a card of the plan that is neither its
@@ -57,12 +61,14 @@ const (
 	proofOpen  = "open"  // an opened proof's run, from the repository
 )
 
-// proofFlagged is the outcome of an opening without a run: a stored proof
-// its dry run on main flagged.
-const proofFlagged = "flagged"
+// The outcome words of an opening that are no proof* word.
+const (
+	proofFlagged    = "flagged"     // no run: a stored proof its dry run on main flagged
+	proofNoArtifact = "no artifact" // a judgement or human proof's run that wrote no artifact under its name
+)
 
-// criterionRun is one run of the gate: a test or invariant criterion of
-// the plan, or a hold-out.
+// criterionRun is one run of the gate: a criterion of the plan, or a
+// hold-out.
 type criterionRun struct {
 	id, kind    string             // id: the criterion's, or holdoutEntry(idx) for a hold-out
 	suite, name string             // name "" runs the whole suite
@@ -103,40 +109,41 @@ func (c criterionRun) flagged() bool { return c.state() == proofBlind && c.store
 
 // gateRuns are the runs the gate makes for p's criteria on its proof
 // rows, in plan order, then the stored and opened hold-outs in idx order:
-// an invariant runs its suite through goPackage; a test criterion and a
-// hold-out run their stored proof blind with its file (a flagged one
+// an invariant runs its suite through goPackage; any other criterion and
+// a hold-out run their stored proof blind with its file (a flagged one
 // makes no run and opens), or their opened one by suite and name from the
 // tree. A test criterion without a stored or opened row is held, late
-// when the store happened without it.
+// when the store happened without it; a judgement or human one makes no
+// run.
 func gateRuns(p Plan, proofs []PlanProof) []criterionRun {
 	runnable := func(pp PlanProof) bool { return pp.State == ProofStored || pp.State == ProofOpened }
-	proofRun := func(id string, pp PlanProof) criterionRun {
+	proofRun := func(id, kind string, pp PlanProof) criterionRun {
 		e := storedProof(pp)
-		return criterionRun{id: id, kind: CriterionTest, suite: e.Suite, name: e.Name, file: e.File, stored: &pp}
+		return criterionRun{id: id, kind: kind, suite: e.Suite, name: e.Name, file: e.File, stored: &pp}
 	}
 	stored := slices.ContainsFunc(proofs, runnable)
 	var runs []criterionRun
 	for _, c := range p.Criteria {
-		switch c.Kind {
-		case CriterionInvariant:
+		if c.Kind == CriterionInvariant {
 			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, suite: goPackage(c.Suite)})
-		case CriterionTest:
-			i := slices.IndexFunc(proofs, func(pp PlanProof) bool {
-				return pp.Origin == ProofOriginCriterion && pp.Criterion == c.ID && runnable(pp)
-			})
-			switch {
-			case i < 0 && stored:
-				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "Criterion " + c.ID + " has no stored proof: the prover filed before a later revision added it.", late: true})
-			case i < 0:
-				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "criterion " + c.ID + ": no stored proof yet"})
-			default:
-				runs = append(runs, proofRun(c.ID, proofs[i]))
-			}
+			continue
+		}
+		i := slices.IndexFunc(proofs, func(pp PlanProof) bool {
+			return pp.Origin == ProofOriginCriterion && pp.Criterion == c.ID && runnable(pp)
+		})
+		switch {
+		case i >= 0:
+			runs = append(runs, proofRun(c.ID, c.Kind, proofs[i]))
+		case c.Kind != CriterionTest:
+		case stored:
+			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "Criterion " + c.ID + " has no stored proof: the prover filed before a later revision added it.", late: true})
+		default:
+			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "criterion " + c.ID + ": no stored proof yet"})
 		}
 	}
 	for _, pp := range proofs {
 		if pp.Origin == ProofOriginHoldout && runnable(pp) {
-			runs = append(runs, proofRun(holdoutEntry(pp.Idx), pp))
+			runs = append(runs, proofRun(holdoutEntry(pp.Idx), CriterionTest, pp))
 		}
 	}
 	return runs
@@ -187,6 +194,9 @@ type gateProof struct {
 	Path    string `json:"path,omitempty"`    // a proof's file
 	Holdout bool   `json:"holdout,omitempty"` // an opened hold-out, by its own id
 	Changed bool   `json:"changed,omitempty"` // an opened proof whose file at the head is not its original
+	// Artifact is a judgement or human proof's artifact, by name, when
+	// its run wrote it as text
+	Artifact string `json:"artifact,omitempty"`
 }
 
 // shortenEvidence keeps a proof's message readable on a card: one line,
@@ -205,29 +215,31 @@ func shortenEvidence(s string) string {
 
 // gateResult is what the gate read for one run, by its id.
 type gateResult struct {
-	outcome proofOutcome
-	output  string // the check's output as the worker sent it; an opening keeps its tail
-	ran     bool   // check test started for it: a blind proof it never started had no try
-	absent  bool   // an opened proof whose path holds no file at the head: no run
-	changed bool   // an opened proof whose file at the head is not its code
+	outcome   proofOutcome
+	output    string            // the check's output as the worker sent it; an opening keeps its tail
+	ran       bool              // check test started for it: a blind proof it never started had no try
+	absent    bool              // an opened proof whose path holds no file at the head: no run
+	changed   bool              // an opened proof whose file at the head is not its code
+	artifacts map[string][]byte // the run's files under CHECK_ARTIFACTS
 }
 
 // openedProof is a proof this run opens.
 type openedProof struct {
 	run     criterionRun
-	outcome string // a proof* word, or proofFlagged
+	outcome string // a proof* word, proofNoArtifact, or proofFlagged
 	output  string // the report's message for failed and skipped, else the check's output tail; "" when flagged; at most maxProofMessage
 	text    string // "The criterion: ..." or "The hold-out: ...", the claim with its inputs and expected numbers
 }
 
 // gateReport is criteriaReport's reading of one gate.
 type gateReport struct {
-	findings []string
-	lines    []string // the criteria's, then the opened hold-outs'
-	met      int      // the criteria met
-	proofs   []gateProof
-	opened   []openedProof
-	holdouts []map[string]any // the blind hold-outs that stay stored, by entry id, each with its holdoutDryVerdict
+	findings  []string
+	lines     []string // the criteria's, then the opened hold-outs'
+	met       int      // the criteria met
+	proofs    []gateProof
+	opened    []openedProof
+	holdouts  []map[string]any // the blind hold-outs that stay stored, by entry id, each with its holdoutDryVerdict
+	artifacts []GateArtifact   // the judgement and human criteria's artifacts this run wrote, in plan order
 }
 
 // criteriaReport judges the runs of plan p at head by their results:
@@ -237,9 +249,12 @@ type gateReport struct {
 // line alone, unmet and no finding: the builder cannot act on it; a late
 // one is a finding too, for the human. A stored proof that passed its
 // blind try meets its criterion; one whose try the runner never made is
-// its line; any other outcome, and a flag, opens it. A blind hold-out
-// that stays stored, green or never tried, is no line, no entry and no
-// finding: its verdict alone, on the hold-outs.
+// its line; any other outcome, and a flag, opens it. A judgement or human
+// proof's run that wrote its artifact as text is an artifact for the
+// judgement or the human and keeps its output off every surface; one
+// that wrote no artifact opens, whatever its report says. A blind
+// hold-out that stays stored, green or never tried, is no line, no entry
+// and no finding: its verdict alone, on the hold-outs.
 func criteriaReport(p Plan, head string, runs []criterionRun, results map[string]gateResult) gateReport {
 	rep := gateReport{proofs: make([]gateProof, 0, len(runs)), holdouts: []map[string]any{}}
 	for _, c := range runs {
@@ -275,17 +290,37 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 			g.Outcome, g.Met, g.Line = o.Outcome, o.Outcome == proofPassed, criterionLine(c, o)
 			g.Message, g.Changed = textutil.Truncate(o.Message, maxProofMessage), res.changed
 			blind := c.state() == proofBlind
+			output := textutil.Tail(res.output, maxProofMessage)
+			if o.Outcome == proofFailed || o.Outcome == proofSkipped {
+				output = g.Message
+			}
 			switch {
+			case c.kind == CriterionJudgement || c.kind == CriterionHuman:
+				name, at := c.stored.Artifact, head[:min(7, len(head))]
+				content, wrote := res.artifacts[name]
+				g.Met = false
+				switch {
+				case wrote && (!utf8.Valid(content) || bytes.IndexByte(content, 0) >= 0):
+					g.Message, g.Line = "", c.label()+": its artifact "+name+" is not text: no verdict"
+					rep.findings = append(rep.findings, g.Line)
+				case wrote:
+					g.Message, g.Line, g.Artifact = "", c.label()+": "+c.name+" in "+c.suite+" wrote "+name, name
+					rep.artifacts = append(rep.artifacts, GateArtifact{Criterion: c.id, Name: name, Head: head, Content: string(content)})
+				case !res.ran:
+					rep.findings = append(rep.findings, g.Line)
+				case blind:
+					g.Line = c.label() + ": its blind proof wrote no artifact " + name + " at " + at
+					open(proofNoArtifact, output)
+				default:
+					g.Line = c.label() + ": its open proof wrote no artifact " + name + " at " + at
+					rep.findings = append(rep.findings, g.Line)
+				}
 			case blind && c.holdout() && (g.Met || !res.ran):
 				dry, _ := holdoutDryVerdict(o)
 				rep.holdouts = append(rep.holdouts, map[string]any{"id": c.id, "verdict": dry})
 				continue
 			case g.Met:
 			case blind && res.ran:
-				output := textutil.Tail(res.output, maxProofMessage)
-				if o.Outcome == proofFailed || o.Outcome == proofSkipped {
-					output = g.Message
-				}
 				open(o.Outcome, output)
 			default:
 				rep.findings = append(rep.findings, g.Line)
@@ -301,13 +336,21 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 }
 
 // claimText is run c's claim with its inputs and expected numbers: its
-// criterion's in p, or its hold-out's.
+// criterion's in p, or its hold-out's; a judgement or human criterion's
+// with what its artifact shows.
 func claimText(p Plan, c criterionRun) string {
 	what, claim, inputs, expected := "criterion", "", "", ""
 	if c.holdout() {
 		what, claim, inputs, expected = "hold-out", c.stored.Claim, c.stored.Inputs, c.stored.Expected
 	} else if i := slices.IndexFunc(p.Criteria, func(pc PlanCriterion) bool { return pc.ID == c.id }); i >= 0 {
-		claim, inputs, expected = p.Criteria[i].Claim, p.Criteria[i].Inputs, p.Criteria[i].Expected
+		pc := p.Criteria[i]
+		switch pc.Kind {
+		case CriterionJudgement:
+			return fmt.Sprintf("The criterion: %s. The artifact shows: %s.", strings.TrimSuffix(pc.Claim, "."), strings.TrimSuffix(pc.Inputs, "."))
+		case CriterionHuman:
+			return fmt.Sprintf("The criterion: %s. The artifact shows: %s.", strings.TrimSuffix(pc.Claim, "."), strings.TrimSuffix(pc.Evidence, "."))
+		}
+		claim, inputs, expected = pc.Claim, pc.Inputs, pc.Expected
 	}
 	return fmt.Sprintf("The %s: %s. Inputs: %s. Expected: %s.", what,
 		strings.TrimSuffix(claim, "."), strings.TrimSuffix(inputs, "."), strings.TrimSuffix(expected, "."))
@@ -319,11 +362,12 @@ func claimText(p Plan, c criterionRun) string {
 func openedFinding(o openedProof, head string) string {
 	at := head[:min(7, len(head))]
 	why := map[string]string{
-		proofFailed:   "its blind proof ran red at " + at,
-		proofMissing:  "its blind proof ran no test of its name at " + at,
-		proofSkipped:  "its blind proof skipped at " + at,
-		proofNoReport: "its blind proof wrote no report at " + at,
-		proofFlagged:  "its proof was flagged " + o.run.stored.Flag + " by its dry run, so it had no blind try",
+		proofFailed:     "its blind proof ran red at " + at,
+		proofMissing:    "its blind proof ran no test of its name at " + at,
+		proofSkipped:    "its blind proof skipped at " + at,
+		proofNoReport:   "its blind proof wrote no report at " + at,
+		proofNoArtifact: "its blind proof wrote no artifact " + o.run.stored.Artifact + " at " + at,
+		proofFlagged:    "its proof was flagged " + o.run.stored.Flag + " by its dry run, so it had no blind try",
 	}[o.outcome]
 	s := o.run.label() + ": " + why + ". It is open now. Commit the test below at " + o.run.stored.Path + " and make it pass: " +
 		"fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold.\n" +
@@ -373,7 +417,7 @@ func criterionLine(r criterionRun, o proofOutcome) string {
 func gateRows(proofs []gateProof) []CriterionVerdict {
 	rows := make([]CriterionVerdict, 0, len(proofs))
 	for _, g := range proofs {
-		if g.Holdout || !gateJudged(g.Kind) {
+		if g.Holdout || (g.Kind != CriterionTest && g.Kind != CriterionInvariant) {
 			continue
 		}
 		verdict, evidence := "unmet", g.Line
@@ -439,7 +483,9 @@ func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string
 // writes the held rows and asks proofsNotStored. The rows land on the
 // plan's integration card; each proof the gate opens is a proof_opened
 // event on the card and on the plan, once per head, before its row turns
-// opened. The namespace and the token go when it ends, however it ends.
+// opened. The artifacts the run wrote are stored on the integration card,
+// and each judgement criterion's is judged (judgeArtifacts) before the
+// comment. The namespace and the token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
@@ -540,7 +586,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		for _, e := range entries {
 			run, ok := ran[e.ID]
 			g := results[e.ID]
-			g.outcome, g.output, g.ran = outcomes[e.ID], run.Output, ok && run.Started
+			g.outcome, g.output, g.ran, g.artifacts = outcomes[e.ID], run.Output, ok && run.Started, run.Artifacts
 			results[e.ID] = g
 		}
 	}
@@ -560,6 +606,11 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			return CriteriaResult{}, err
 		}
 	}
+	judged, met, err := r.judgeArtifacts(ctx, t, home.ID, p, rep.artifacts)
+	if err != nil {
+		return CriteriaResult{}, err
+	}
+	rep.findings = append(rep.findings, judged...)
 	of := 0
 	for _, c := range p.Criteria {
 		if gateJudged(c.Kind) {
@@ -568,7 +619,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	switch {
 	case slices.ContainsFunc(runs, func(c criterionRun) bool { return c.held == "" }):
-		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met, of, rep.lines)))
+		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, criteriaComment(commit, rep.met+met, of, rep.lines)))
 	case len(rep.findings) > 0:
 		// nothing ran: an empty plan
 		r.commentOnce(ctx, t, repo, pr, r.untrusted(t, fmt.Sprintf("factoryd criteria gate on %s: no criterion ran.\n\n%s",
@@ -603,13 +654,13 @@ func (r *Runner) openProof(ctx context.Context, t Task, head string, o openedPro
 	return err
 }
 
-// proofsPending tells whether card t's plan p owes a test criterion's
-// proof its prover may still store: no store happened, and the prover is
-// open and not final, or not opened yet under a policy that can run one
-// while the plan's foundation card, when it names one, has not ended
-// other than done (proverDue opens none then).
+// proofsPending tells whether card t's plan p owes a criterion's proof
+// (proofsDue) its prover may still store: no store happened, and the
+// prover is open and not final, or not opened yet under a policy that can
+// run one while the plan's foundation card, when it names one, has not
+// ended other than done (proverDue opens none then).
 func (r *Runner) proofsPending(ctx context.Context, t Task, rows []PlanProof, p Plan) (bool, error) {
-	if !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool { return c.Kind == CriterionTest }) ||
+	if len(proofsDue(p, nil)) == 0 ||
 		slices.ContainsFunc(rows, func(pp PlanProof) bool { return pp.State == ProofStored || pp.State == ProofOpened }) {
 		return false, nil
 	}
@@ -625,8 +676,9 @@ func (r *Runner) proofsPending(ctx context.Context, t Task, rows []PlanProof, p 
 }
 
 // criteriaComment is the gate's comment on the pull request: the head, how
-// many of the gate's of criteria it met, and its lines.
+// many of the gate's of criteria it met, the judgement's among them, and
+// its lines.
 func criteriaComment(commit string, met, of int, lines []string) string {
-	return fmt.Sprintf("factoryd criteria gate on %s: %d of %d criteria met (judgement and human criteria ride the review and the approval).\n\n%s",
+	return fmt.Sprintf("factoryd criteria gate on %s: %d of %d criteria met (human criteria ride the approval).\n\n%s",
 		commit, met, of, fenced(strings.Join(lines, "\n")))
 }

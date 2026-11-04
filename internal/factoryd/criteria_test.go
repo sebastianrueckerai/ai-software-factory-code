@@ -168,7 +168,8 @@ func seedBlindPlan(t *testing.T, store *fakeStore, p Plan, rows []PlanProof) {
 // flagged one too, which makes no entry and opens; an opened proof runs
 // by suite and name from the tree; a test criterion without a stored or
 // opened row is held, late when the store happened without it, and never
-// opens; judgement and human criteria are outside the gate.
+// opens; a judgement and a human criterion run their proof as a test
+// criterion does, and make no run without one.
 func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 	rows := blindRows()
 	runs := gateRuns(blindPlan(), rows)
@@ -201,6 +202,16 @@ func TestGateRunsOpenAndHoldTheProofs(t *testing.T) {
 	bare.Criteria = append(bare.Criteria, PlanCriterion{ID: "bare_suite", Kind: CriterionInvariant, Suite: "internal/..."})
 	if runs := gateRuns(bare, nil); runs[len(runs)-1].suite != "./internal/..." || runs[0].held != "criterion size_bound: no stored proof yet" || runs[0].late {
 		t.Fatalf("runs = %+v, want a bare suite read as a directory and every test held", runs)
+	}
+	withArtifacts := blindPlan()
+	withArtifacts.Criteria = append(withArtifacts.Criteria, readsCalm, pagesOK)
+	rows = append(blindRows(), artifactRows()...)
+	runs = gateRuns(withArtifacts, rows)
+	want = slices.Insert(want, 5,
+		criterionRun{id: "reads_calm", kind: CriterionJudgement, suite: "./proofs/reads_calm", name: "TestReadsCalm", file: file(rows[5]), stored: &rows[5]},
+		criterionRun{id: "pages_ok", kind: CriterionHuman, suite: "./proofs/pages_ok", name: "TestPagesOK", file: file(rows[6]), stored: &rows[6]})
+	if !reflect.DeepEqual(runs, want) {
+		t.Fatalf("runs with artifacts = %+v, want %+v", runs, want)
 	}
 }
 
@@ -663,6 +674,31 @@ func TestGateCriteriaWaitingRunsNoPod(t *testing.T) {
 	}
 }
 
+// A judgement or a human criterion's proof is the prover's too: a plan
+// with no test criterion waits for it as well, runs nothing and writes
+// no row.
+func TestGateCriteriaWaitsForAJudgementOrHumanProof(t *testing.T) {
+	for kind, criterion := range map[string]string{
+		CriterionJudgement: `{"id":"reads_calm","kind":"judgement","claim":"The sizes page reads calm","inputs":"the sizes page","prompt":"Calm?"}`,
+		CriterionHuman:     `{"id":"pages_ok","kind":"human","claim":"The pages read well","evidence":"Open /sizes"}`,
+	} {
+		t.Run(kind, func(t *testing.T) {
+			kube := newFakeKube()
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+			r.cfg.Policy = proverPolicy
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion+`,{"id":"all_green","kind":"invariant","suite":"./..."}`)
+			store.tasks["t-prove"] = Task{ID: "t-prove", Status: "running", Repository: "sf/repo", Parent: "plan1", Source: SourceProver, Kind: "agent"}
+			res, err := runCriteria(t, r)
+			if err != nil || res.Escalate != proofsNotStored {
+				t.Fatalf("result = %+v, %v; want the escalation %q", res, err, proofsNotStored)
+			}
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(kube.podOrder) != 0 || len(hub.comments) != 0 || len(rows) != 0 {
+				t.Fatalf("pods %d, comments %q, rows %+v; want none", len(kube.podOrder), hub.comments, rows)
+			}
+		})
+	}
+}
+
 // proofsWorker is a worker endpoint that takes the proofs pod's list.
 func proofsWorker(t *testing.T, r *Runner) *fakeWorkerEndpoint {
 	t.Helper()
@@ -772,7 +808,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	if len(hub.comments) != 1 {
 		t.Fatalf("comments = %q", hub.comments)
 	}
-	for _, want := range append([]string{"factoryd criteria gate on c1: 2 of 5 criteria met (judgement and human criteria ride the review and the approval)."}, lines...) {
+	for _, want := range append([]string{"factoryd criteria gate on c1: 2 of 6 criteria met (human criteria ride the approval)."}, lines...) {
 		if !strings.Contains(hub.comments[0], want) {
 			t.Fatalf("comment = %q, want it to contain %q", hub.comments[0], want)
 		}
@@ -952,7 +988,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 	if len(hub.comments) != 1 {
 		t.Fatalf("comments = %q, want one", hub.comments)
 	}
-	for _, want := range append([]string{"factoryd criteria gate on c1: 2 of 5 criteria met (judgement and human criteria ride the review and the approval)."}, lines...) {
+	for _, want := range append([]string{"factoryd criteria gate on c1: 2 of 6 criteria met (human criteria ride the approval)."}, lines...) {
 		if !strings.Contains(hub.comments[0], want) {
 			t.Fatalf("comment = %q, want it to hold %q", hub.comments[0], want)
 		}

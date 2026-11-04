@@ -48,7 +48,7 @@ var registry = []Agent{
 	{ID: "model-review", Pkg: "internal/factoryd", Family: "B", Job: "Reviews a diff for one criterion or one behaviour", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "security-audit", Pkg: "internal/factoryd", Family: "B", Job: "Audits changes against the security checklist", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "gate-supervisor", Pkg: "internal/factoryd", Family: "B", Job: "Decides approve or escalate at the gates", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
-	{ID: "review-criteria", Pkg: "internal/factoryd", Family: "B", Job: "Drafts the review criteria text", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
+	{ID: "judgement", Pkg: "internal/factoryd", Family: "B", Job: "Judges a judgement criterion's artifact with its pinned prompt", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "review-behaviours", Pkg: "internal/factoryd", Family: "B", Job: "Drafts the review behaviours text", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "delta-planner", Pkg: "internal/factoryd", Family: "B", Job: "Plans delta work between reviews", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "holdout-proposer", Pkg: "internal/factoryd", Family: "B", Job: "Proposes hold-out criteria", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},

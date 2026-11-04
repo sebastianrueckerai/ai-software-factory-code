@@ -455,6 +455,9 @@ type Store interface {
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
 	SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error)
+	// TaskSpendSince is task id's ledger spend booked at or after since:
+	// what one factoryd call cost the task.
+	TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error)
 	// Free is the task's own headroom and its outstanding holds, and the
 	// free task, day, month and project headroom under r's caps: the
 	// figures the gateway fits the task's next call into (policy.ReadFree).

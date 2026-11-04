@@ -1573,8 +1573,8 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and no model review judged c3", 1, base},
 		{"the review's alone", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}}, "the merge is held: 1 criterion was never judged, the model review did not run (" + note + ")", 2, named},
 		{"the review's alone, judged", "", base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}}, "the merge is held: 1 criterion was never judged by a model review", 1, base},
-		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
-		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}, "", 1, base},
+		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionHuman}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
+		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionHuman}}, "", 1, base},
 	} {
 		task := gateTask
 		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
@@ -1583,7 +1583,7 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		ctx := context.Background()
 		// c1 is the gate's, c3 the review's
 		p := criteriaPlan()
-		p.Criteria[2].Kind = CriterionJudgement
+		p.Criteria[2].Kind = CriterionHuman
 		b, _ := json.Marshal(p)
 		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 			t.Fatal(err)
@@ -1648,7 +1648,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	r, store, _ := newGateRunner(t, task, fj)
 	// c3 is the review's, so the hold names its note
 	p := criteriaPlan()
-	p.Criteria[2].Kind = CriterionJudgement
+	p.Criteria[2].Kind = CriterionHuman
 	b, _ := json.Marshal(p)
 	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 		t.Fatal(err)
@@ -1684,7 +1684,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 	// rows that landed between the read and the hold leave nothing held:
 	// the ask says so and asks for the press again
-	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}); err != nil {
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionHuman}}); err != nil {
 		t.Fatal(err)
 	}
 	comments := len(fj.comments)
@@ -3314,15 +3314,12 @@ func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 }
 
 // An integration card's review names the criteria it leaves to the gate
-// whether it ran or not: unfunded, a part or a criterion call left
+// whether it ran or not: unfunded, a part or the behaviours call left
 // without an answer, or a review that ran. The why line then names them,
 // and no missing reproduction.
 func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 	valid := func(user string) string {
-		switch callOf(user) {
-		case "c2":
-			return `{"verdict":"","evidence":"read the list page"}`
-		case "behaviours":
+		if callOf(user) == "behaviours" {
 			return `{"behaviours":["a request answers"]}`
 		}
 		return `{"verdict":"approve","summary":"ok"}`
@@ -3334,12 +3331,12 @@ func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 	}{
 		"unfunded":                 {0.01, valid, "model review not run: "},
 		"a part without an answer": {100, func(string) string { return "LGTM" }, "model review answer invalid"},
-		"a criterion call without an answer": {100, func(user string) string {
-			if callOf(user) == "c2" {
+		"the behaviours call without an answer": {100, func(user string) string {
+			if callOf(user) == "behaviours" {
 				return "LGTM"
 			}
 			return valid(user)
-		}, "criterion c2, part 1 of 4: model review answer invalid"},
+		}, "behaviours: model review answer invalid"},
 		"a review that ran": {100, valid, ""},
 	} {
 		t.Run(name, func(t *testing.T) {

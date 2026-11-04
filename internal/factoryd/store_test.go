@@ -118,6 +118,8 @@ type fakeStore struct {
 	criteriaVerdicts map[string][]CriterionVerdict // rows by task, every source's
 	proofs           map[string][]PlanProof        // the plan proof rows, idx order, by task
 	openErr          error                         // answered once by OpenPlanProof
+	spendSince       float64                       // TaskSpendSince's answer
+	spendFrom        time.Time                     // TaskSpendSince's last since
 	queue            []queueEntry                  // the merge queues, oldest first
 	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
@@ -4593,6 +4595,11 @@ func (s *fakeStore) StorePlanProofs(ctx context.Context, id string, flags map[in
 		}
 	}
 	return nil
+}
+
+func (s *fakeStore) TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error) {
+	s.spendFrom = since
+	return s.spendSince, nil
 }
 
 func (s *fakeStore) OpenPlanProof(ctx context.Context, id string, idx int) (bool, error) {

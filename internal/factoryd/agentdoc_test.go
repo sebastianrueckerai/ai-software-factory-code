@@ -2,7 +2,7 @@ package factoryd
 
 import (
 	"context"
-	"encoding/json"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -126,30 +126,36 @@ func TestAgentDocDirectEnvelope(t *testing.T) {
 	}
 }
 
-// The criterion capture sends a criterion the review judges, in its input
-// and its span: one of kind test or invariant never reaches the call.
-func TestAgentDocCriterionIsTheReviewsKind(t *testing.T) {
+// The judgement capture drives judge's own call: its system prompt is the
+// criterion's pinned prompt with the answer's form, its input the
+// artifact alone. The review's criterion call is gone from the map.
+func TestAgentDocJudgementDrivesTheJudgeCall(t *testing.T) {
+	ids := AgentDocDirectIDs()
+	if !slices.Contains(ids, "judgement") || slices.Contains(ids, "review-criteria") {
+		t.Fatalf("ids = %q, want judgement and no review-criteria", ids)
+	}
 	g := agentdoc.NewGateway(`{"decision":"continue"}`)
 	defer g.Close()
-	spans, err := AgentDocDirect(context.Background(), "review-criteria", g.URL, agentDocPolicy(), nil)
+	spans, err := AgentDocDirect(context.Background(), "judgement", g.URL, agentDocPolicy(), nil)
 	if err != nil {
 		t.Fatalf("capture: %v", err)
 	}
-	var in criterionInput
-	var c PlanCriterion
+	symbols := map[string]string{}
 	for _, s := range spans {
-		switch s.Name {
-		case "the criterion call's facts":
-			err = json.Unmarshal([]byte(s.Text), &in)
-		case "the criterion":
-			err = json.Unmarshal([]byte(s.Text), &c)
-		}
-		if err != nil {
-			t.Fatalf("span %s: %v", s.Name, err)
+		symbols[s.Name] = s.Symbol
+	}
+	for name, symbol := range map[string]string{"the criterion's prompt": "factoryd.PlanCriterion.Prompt", "the answer's form": "factoryd.judgementAnswer",
+		"the artifact": "factoryd.GateArtifact"} {
+		if symbols[name] != symbol {
+			t.Errorf("span %q has symbol %q, want %q", name, symbols[name], symbol)
 		}
 	}
-	if c.ID == "" || gateJudged(c.Kind) || in.Criterion.ID != c.ID || in.Criterion.Kind != c.Kind {
-		t.Fatalf("the criterion span %+v, the input's %+v: want one criterion the review judges in both", c, in.Criterion)
+	b, err := agentdoc.ParseBody(g.Bodies()[0].Raw)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(b.Messages) != 2 || !strings.HasSuffix(b.Messages[0].Content, "\n\n"+judgementAnswer) || !strings.Contains(b.Messages[1].Content, `"artifact":`) {
+		t.Fatalf("messages = %+v, want the pinned prompt with the answer's form and the artifact", b.Messages)
 	}
 }
 
@@ -158,7 +164,7 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 	purposeByID := map[string]string{
 		"checkin": policy.PurposeCheckin, "model-review": policy.PurposeReview,
 		"security-audit": policy.PurposeAudit, "gate-supervisor": policy.PurposeGateSupervisor,
-		"review-criteria": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
+		"judgement": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
 		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief,
 		"title": policy.PurposeTitle,

@@ -184,10 +184,11 @@ type Review struct {
 	Claims   []Claim                 `json:"claims,omitempty"`
 	Dropped  []Dropped               `json:"dropped,omitempty"`
 	// Criteria are the plan's criteria verdicts (the spec-intake concept,
-	// piece 7), answered only by the review that sees the whole feature:
-	// the integration card's, or a delta card's. Behaviours are the
-	// feature's behaviours the same review notes. Both come from that
-	// review's own calls (planCalls), never from a review answer.
+	// piece 7) a review of a run from before wrote; no review writes them
+	// now, and AutoMerge reads them for such a run. Behaviours are the
+	// feature's behaviours the review that sees the whole feature notes:
+	// the integration card's, or a delta card's, from its own call
+	// (planCalls), never from a review answer.
 	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
 	Behaviours []string           `json:"behaviours,omitempty"`
 	// GateCriteria are the plan's criteria that review (criteriaContext)
@@ -196,9 +197,9 @@ type Review struct {
 	GateCriteria *GateLeft `json:"gate_criteria,omitempty"`
 }
 
-// GateLeft are the ids of a plan's criteria of kind test and invariant, as
-// the review of one of its cards names them; Integration: the card is the
-// plan's integration card.
+// GateLeft are the ids of a plan's criteria the criteria gate settles
+// (gateJudged), as the review of one of its cards names them;
+// Integration: the card is the plan's integration card.
 type GateLeft struct {
 	IDs         []string `json:"ids"`
 	Integration bool     `json:"integration,omitempty"`
@@ -1832,11 +1833,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 			calls[i].Label = fmt.Sprintf("part %d of %d", i+1, len(parts))
 		}
 	}
-	var of []int
 	if criteria != nil {
 		title, brief := cardText(criteria.plan, t)
-		more, at := planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles}, limit)
-		calls, of = append(calls, more...), at
+		calls = append(calls, planCalls(criteria.plan, first.Brief.Objective, feature, featureCard{Key: t.PlanKey, Title: title, Brief: brief, Files: prFiles})...)
 	}
 	if why, err := r.unfunded(ctx, t.ID, model, policy.PurposeReview, calls); err != nil {
 		return Review{}, err
@@ -1871,24 +1870,19 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		answers = append(answers, a)
 	}
-	var verdicts []CriterionVerdict
 	var behaviours []string
 	if rv.Note == "" && criteria != nil {
-		verdicts, behaviours, rv.Note = readPlanCalls(criteria.plan, calls[len(parts):], of, results[len(parts):])
+		behaviours, rv.Note = readPlanCalls(results[len(parts):])
 	}
 	if rv.Note == "" {
 		rv = r.dropContradicted(ctx, repo, pr.Number, commit, combineReviews(answers), prFiles)
 		if criteria != nil {
-			rv.Criteria, rv.Behaviours = verdicts, behaviours
-			findings := len(rv.Findings)
+			rv.Behaviours = behaviours
 			r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)
-			if len(rv.Findings) > findings && rv.Verdict == "approve" {
-				rv.Verdict = "concerns"
-			}
 		}
 		read = fmt.Sprintf("Read in %s, %s, %d KiB", textutil.Plural(len(parts), "part", "parts"), textutil.Plural(len(prFiles), "file", "files"), kib(diffBytes(prFiles)))
 		if len(calls) > len(parts) {
-			read += fmt.Sprintf(", in %d calls with the plan's criteria and the feature's behaviours", len(calls))
+			read += fmt.Sprintf(", in %d calls with the feature's behaviours", len(calls))
 		}
 		read += "."
 	}

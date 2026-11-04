@@ -13,7 +13,7 @@ changes.
 - model-review: Judges the change against one review criterion or behaviour, the texts the criteria and behaviours agents draft.
 - security-audit: Checks the change against the security checklist. No other agent makes this reading.
 - gate-supervisor: Reads the verdicts and answers approve or escalate. Nothing merges past this agent unjudged.
-- review-criteria: Drafts the criteria text the model reviews judge by.
+- judgement: Reads the artifact a blind test wrote and answers met or unmet with the criterion's pinned prompt. It never sees the diff.
 - review-behaviours: Drafts the behaviours text the model reviews watch for.
 - delta-planner: Plans the delta work between one review and the next.
 - holdout-proposer: Proposes the hold-out criteria the finished work is judged by. The session that writes the work does not see them.

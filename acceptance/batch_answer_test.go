@@ -592,6 +592,9 @@ func (s *accBatchStore) CheckinSpent(context.Context, string) (float64, error) {
 func (s *accBatchStore) SpendAndCallsBetween(context.Context, string, time.Time, time.Time) (float64, int, error) {
 	panic("unused")
 }
+func (s *accBatchStore) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
+	panic("unused")
+}
 func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
 	panic("unused")
 }
