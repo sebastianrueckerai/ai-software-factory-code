@@ -231,8 +231,9 @@ func gateRows(proofs []gateProof) []CriterionVerdict {
 // check test. Not the plan's integration card: not run, the timeline says
 // why. A read of the proof rows that fails is the activity's error, so it
 // runs again. A plan that names no criteria names no proof: that is a
-// finding, for the human. The namespace and the token go when it ends,
-// however it ends.
+// finding, for the human. While proofsPending, the gate writes its rows and
+// asks proofsNotStored instead of its findings. The namespace and the
+// token go when it ends, however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
@@ -257,6 +258,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		return CriteriaResult{Skipped: "not the plan's integration card"}, nil
 	}
 	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return CriteriaResult{}, err
+	}
+	waits, err := r.proofsPending(ctx, t, rows, p)
 	if err != nil {
 		return CriteriaResult{}, err
 	}
@@ -330,10 +335,6 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 			commit, fenced(strings.Join(findings, "\n")))))
 	}
 	line := map[string]any{"pr": pr, "commit": commit, "proofs": proofs, "holdouts": holdoutEntries, "findings": findings}
-	waits, err := r.proofsPending(ctx, t, rows, p)
-	if err != nil {
-		return CriteriaResult{}, err
-	}
 	if waits {
 		line["escalate"] = proofsNotStored
 	}

@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"log"
 	"net/http"
@@ -678,7 +679,7 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	}
 	budget := dryRunBudget(time.Until(activity.GetInfo(ctx).Deadline))
 	if budget <= 0 {
-		return fmt.Errorf("the dry run's activity ends in under a minute, too soon for its pod")
+		return errors.New("the dry run's activity ends in under a minute, too soon for its pod")
 	}
 	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries, budget)
 	if err != nil {
