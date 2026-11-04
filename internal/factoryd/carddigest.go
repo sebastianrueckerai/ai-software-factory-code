@@ -345,13 +345,22 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 		i, ok := at[w]
 		if !ok {
 			i, at[w] = len(out), len(out)
-			out = append(out, DigestStep{At: v.CreatedAt, Kind: "criteria", Actor: v.DecidedBy})
+			out = append(out, DigestStep{At: v.CreatedAt, Kind: "criteria", Actor: criteriaActor(v)})
 		} else {
 			out[i].Outcome += ", "
 		}
 		out[i].Outcome += v.Criterion + " " + cmp.Or(v.Verdict, "undecided")
 	}
 	return out
+}
+
+// criteriaActor is who wrote a verdict row as the digest names it: the
+// source for the factory's rows, else the human.
+func criteriaActor(v CriterionVerdict) string {
+	if v.DecidedBy == FactoryDecider || v.DecidedBy == "" {
+		return v.Source
+	}
+	return v.DecidedBy
 }
 
 // digestText is the first line of s, cut to fit a digest line.

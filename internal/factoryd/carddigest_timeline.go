@@ -14,22 +14,24 @@ import (
 
 // timelineLine is the part of a timeline line the digest reads.
 type timelineLine struct {
-	Step     string                  `json:"step"`
-	Time     time.Time               `json:"time"`
-	Session  string                  `json:"session"`
-	Model    string                  `json:"model"`
-	Attempt  int                     `json:"attempt"`
-	Outcome  string                  `json:"outcome"`
-	Started  string                  `json:"started"`
-	Commit   string                  `json:"commit"`
-	State    string                  `json:"state"`
-	Verdict  string                  `json:"verdict"`
-	Findings json.RawMessage         `json:"findings"`
-	Decision string                  `json:"decision"`
-	Moment   string                  `json:"moment"`
-	Verdicts map[string]CheckVerdict `json:"verdicts"`
-	Record   *CheckInRecord          `json:"record"`
-	Handover string                  `json:"handover"`
+	Step        string                  `json:"step"`
+	Time        time.Time               `json:"time"`
+	Session     string                  `json:"session"`
+	Model       string                  `json:"model"`
+	Attempt     int                     `json:"attempt"`
+	Outcome     string                  `json:"outcome"`
+	Started     string                  `json:"started"`
+	Commit      string                  `json:"commit"`
+	State       string                  `json:"state"`
+	Verdict     string                  `json:"verdict"`
+	Findings    json.RawMessage         `json:"findings"`
+	Decision    string                  `json:"decision"`
+	Moment      string                  `json:"moment"`
+	Verdicts    map[string]CheckVerdict `json:"verdicts"`
+	Record      *CheckInRecord          `json:"record"`
+	Handover    string                  `json:"handover"`
+	Proofs      json.RawMessage         `json:"proofs"`
+	StartFailed string                  `json:"start_failed"`
 }
 
 // digestSession is one session the timeline records: its start, its end
@@ -42,9 +44,9 @@ type digestSession struct {
 
 // timelineSteps are the steps of the card's timeline tl: its sessions,
 // with their cost and calls from the audit rows, check-ins, handovers,
-// checks, reviews and audits. A line of a kind the digest does not read,
-// or one it cannot parse, is skipped; the asks and approvals there are
-// the events' too, and come from them.
+// checks, the criteria gate's runs, reviews and audits. A line of a kind
+// the digest does not read, or one it cannot parse, is skipped; the asks
+// and approvals there are the events' too, and come from them.
 func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([]DigestStep, error) {
 	var out []DigestStep
 	var sessions []*digestSession
@@ -87,6 +89,11 @@ func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([
 		case "checks":
 			step.Kind, step.Findings = "checks", findingIDs(l.Findings)
 			step.Outcome = withFindings(fmt.Sprintf("%s at %s", l.State, l.Commit[:min(7, len(l.Commit))]), step.Findings)
+		case "gate_criteria":
+			if len(l.Proofs) == 0 && l.StartFailed == "" {
+				continue
+			}
+			step = proofsStep(step, l)
 		case "model_review":
 			step.Kind, step.Findings, step.state = "review", findingIDs(l.Findings), l.Verdict
 			step.Outcome = withFindings(cmp.Or(l.Verdict, "no verdict"), step.Findings)
@@ -172,6 +179,43 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 	}
 	step.Kind, step.Actor, step.Findings, step.state = "checkin", moment, byState[CheckConfirmed], decision
 	step.Outcome = strings.Join(append(parts, shown), ", ")
+	return step
+}
+
+// proofsStep is a gate_criteria line's step: actor gate, its head, the
+// test criteria met and unmet, each invariant's state, the findings' ids.
+func proofsStep(step DigestStep, l timelineLine) DigestStep {
+	step.Kind, step.Actor, step.Findings = "proofs", "gate", findingIDs(l.Findings)
+	outcome := "the sandbox did not start: " + digestText(l.StartFailed)
+	if l.StartFailed == "" {
+		var proofs []gateProof
+		_ = json.Unmarshal(l.Proofs, &proofs)
+		var parts, invariants []string
+		met, unmet := 0, 0
+		for _, p := range proofs {
+			switch {
+			case p.Kind == CriterionInvariant:
+				state := cmp.Or(p.Outcome, "not run")
+				if p.Met {
+					state = "green"
+				}
+				invariants = append(invariants, "invariant "+cmp.Or(p.Suite, p.ID)+" "+state)
+			case p.Met:
+				met++
+			default:
+				unmet++
+			}
+		}
+		if met+unmet > 0 {
+			parts = append(parts, fmt.Sprintf("%d met, %d unmet", met, unmet))
+		}
+		parts = append(parts, invariants...)
+		if len(proofs) == 0 {
+			parts = append(parts, "no criterion ran")
+		}
+		outcome = strings.Join(parts, ", ")
+	}
+	step.Outcome = withFindings("at "+l.Commit[:min(7, len(l.Commit))]+": "+outcome, step.Findings)
 	return step
 }
 
