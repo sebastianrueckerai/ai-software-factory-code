@@ -318,6 +318,7 @@ func TestQueueOneAtATime(t *testing.T) {
 
 	t.Run("workflow", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, green)
+		q.beforeQueueWaits()
 		turn := false
 		q.ahead = func(int) int {
 			if turn {
@@ -347,6 +348,7 @@ func TestQueueOneAtATime(t *testing.T) {
 
 	t.Run("recheck", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, green)
+		q.beforeQueueWaits()
 		q.ahead = func(call int) int { return max(0, 3-call) }
 		q.onSessions(pushed("s1", "c1"))
 		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -536,6 +538,7 @@ func timelineLines(t *testing.T, r *Runner, id string) []map[string]any {
 // reads the checks' green on the head they ran on.
 func TestSyncSkipsTheRecheckWithoutAFileInCommon(t *testing.T) {
 	q := newQueueHarness(t, policy.QueueProject, green)
+	q.beforeQueueWaits()
 	q.sync = func(from string) SyncResult { return SyncResult{From: from, To: "m1", Main: "main1", Base: "b0"} }
 	q.onSessions(pushed("s1", "c1"))
 	q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -556,6 +559,7 @@ func TestSyncSkipsTheRecheckWithoutAFileInCommon(t *testing.T) {
 func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 	t.Run("green", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, green)
+		q.beforeQueueWaits()
 		q.sync = func(from string) SyncResult {
 			return SyncResult{From: from, To: "m1", Main: "main1", Overlap: []string{"a.go"}}
 		}
@@ -582,6 +586,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 			}
 			return ChecksResult{State: ChecksSuccess}
 		})
+		q.beforeQueueWaits()
 		q.sync = func(from string) SyncResult {
 			if from == "c1" {
 				return SyncResult{From: from, To: "m1", Main: "main1", Overlap: []string{"a.go"}}
@@ -636,6 +641,90 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 	})
 }
 
+// The card leaves the queue when its approval waits for a human, so the
+// cards behind it take their turns, and the approval takes a turn again
+// before the merge: EnterQueue and SyncWithMain after the approval, the
+// merge last. A main that did not move merges on the approval. A main
+// whose new commits share no file with the pull request merges the synced
+// head on the approval, the checks of the approved head holding for it. A
+// main that changed a file of the pull request runs the checks on the new
+// head and asks again, out of the queue, and the second approval's turn
+// merges. A refused merge waits for a new approval out of the queue too.
+// A run from before holds its entry through the wait.
+func TestApprovalLeavesAndReentersTheQueue(t *testing.T) {
+	for name, tc := range map[string]struct {
+		before   bool
+		second   SyncResult    // the turn after the first approval, from c1
+		merge    []MergeResult // nil: merged
+		steps    []string
+		checks   []string
+		merges   []string
+		checked  []string
+		requests int
+		turns    []time.Duration // when the approvals' turns entered the queue
+	}{
+		"main still": {second: SyncResult{From: "c1", To: "c1"},
+			steps:  []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 sebastian"}, checked: []string{""}, requests: 1, turns: []time.Duration{time.Hour}},
+		"main moved, no file in common": {second: SyncResult{From: "c1", To: "m2", Main: "main2", Base: "main1"},
+			steps:  []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 m2 sebastian"}, checked: []string{"c1"}, requests: 1, turns: []time.Duration{time.Hour}},
+		"main moved, a file in common": {second: SyncResult{From: "c1", To: "m2", Main: "main2", Base: "main1", Overlap: []string{"a.go"}},
+			steps: []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1",
+				"approval m2", "leave", "sync m2", "merge", "leave"},
+			checks: []string{"c1", "m2"}, merges: []string{"9 m2 sebastian"}, checked: []string{""}, requests: 2,
+			turns: []time.Duration{time.Hour, 2 * time.Hour}},
+		"a refused merge": {second: SyncResult{From: "c1", To: "c1"}, merge: []MergeResult{{Refusal: "the approvals are not enough"}, {Merged: true}},
+			steps: []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge",
+				"leave", "sync c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 sebastian", "9 c1 sebastian"}, checked: []string{"", ""}, requests: 1,
+			turns: []time.Duration{time.Hour, 2 * time.Hour}},
+		"a run from before": {before: true, second: SyncResult{From: "c1", To: "m2", Main: "main2", Base: "main1"},
+			steps:  []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "merge", "leave"},
+			checks: []string{"c1"}, merges: []string{"9 c1 sebastian"}, checked: []string{""}, requests: 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			q := newQueueHarness(t, policy.QueueProject, green)
+			if tc.before {
+				q.beforeQueueWaits()
+			}
+			if tc.merge != nil {
+				q.merge = tc.merge
+			}
+			q.sync = func(from string) SyncResult {
+				if len(q.syncs) == 2 {
+					return tc.second
+				}
+				return SyncResult{From: from, To: from}
+			}
+			q.onSessions(pushed("s1", "c1"))
+			q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if len(tc.turns) == 2 {
+				q.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			}
+			if final := q.run(t); final != "done" {
+				t.Fatalf("final = %q", final)
+			}
+			if !slices.Equal(q.steps, tc.steps) {
+				t.Fatalf("steps = %v, want %v", q.steps, tc.steps)
+			}
+			if !slices.Equal(q.checks, tc.checks) || !slices.Equal(q.merges, tc.merges) || !slices.Equal(q.checkedHeads, tc.checked) {
+				t.Fatalf("checks on %v, merges %v, checked heads %v; want %v, %v, %v", q.checks, q.merges, q.checkedHeads, tc.checks, tc.merges, tc.checked)
+			}
+			if len(q.approvals) != tc.requests {
+				t.Fatalf("approval requests = %d, want %d", len(q.approvals), tc.requests)
+			}
+			// the first turn before the request, then one per approval
+			if len(q.enters) != len(tc.turns)+1 || q.enters[0] >= time.Hour || !slices.Equal(q.enters[1:], tc.turns) {
+				t.Fatalf("EnterQueue ran at %v, want once before the request, then at %v", q.enters, tc.turns)
+			}
+			if !tc.before && q.leaves[0] != approvalWaitLeft {
+				t.Fatalf("the first leave's why = %q, want %q", q.leaves[0], approvalWaitLeft)
+			}
+		})
+	}
+}
+
 // The queue's sync only re-runs the checks on the head it made; the
 // approval stage reads that new head itself before its request
 // (versionApprovalGreen), so the request a human sees names a head whose
@@ -644,6 +733,7 @@ func TestSyncRerunsChecksOnNewHead(t *testing.T) {
 // asks on the green one, without a pass through the agent.
 func TestQueueSyncedHeadIsReadBeforeTheRequest(t *testing.T) {
 	q := newQueueHarness(t, policy.QueueProject, green)
+	q.beforeQueueWaits()
 	q.sync = func(from string) SyncResult {
 		if from == "c1" {
 			return SyncResult{From: from, To: "m1", Main: "main1", Overlap: []string{"a.go"}}
@@ -683,6 +773,7 @@ func TestQueueSyncedHeadIsReadBeforeTheRequest(t *testing.T) {
 // the queue.
 func TestSyncConflictGoesToAgent(t *testing.T) {
 	q := newQueueHarness(t, policy.QueueProject, green)
+	q.beforeQueueWaits()
 	q.sync = func(from string) SyncResult {
 		if from == "c1" {
 			return SyncResult{From: from, Main: "main1", Conflict: "the branch conflicts with its base: status 409"}
@@ -759,8 +850,84 @@ func TestQueueRedHeadIsReStaged(t *testing.T) {
 		}
 	})
 
+	// the approval waits out of the queue: its turn merges main in, which
+	// shares no file with the pull request, and the merge of the synced
+	// head reads red; the re-stage starts from that head, on which main has
+	// not moved since, and the green head asks again
+	t.Run("a fixed main, the approval out of the queue", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, green)
+		q.ahead = func(call int) int { return map[int]int{2: 1}[call] }
+		q.sync = func(from string) SyncResult {
+			if len(q.syncs) == 1 {
+				return SyncResult{From: from, To: from, Main: "main1"}
+			}
+			return SyncResult{From: from, To: "m1", Main: "main2", Base: "main1"}
+		}
+		q.merge = []MergeResult{redAtMerge, {Merged: true}}
+		q.onSessions(pushed("s1", "c1"))
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		q.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q (%v)", final, q.finals)
+		}
+		if want := []time.Duration{0, time.Hour, time.Hour + queueRecheck, time.Hour + queueRecheck, 2 * time.Hour}; !slices.Equal(q.enters, want) {
+			t.Fatalf("EnterQueue ran at %v, want %v", q.enters, want)
+		}
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge",
+			"withdraw", "sync m1", "criteria m1", "approval m1", "leave", "sync m1", "merge", "leave"}; !slices.Equal(q.steps, want) {
+			t.Fatalf("steps = %v, want %v", q.steps, want)
+		}
+		if len(q.reruns) != 0 || !slices.Equal(q.checks, []string{"c1", "m1"}) || !slices.Equal(q.headChecks, []string{"c1", "m1"}) {
+			t.Fatalf("reruns %v, checks on %v, head reads %v; want the synced head's own checks, no re-run", q.reruns, q.checks, q.headChecks)
+		}
+		if !slices.Equal(q.merges, []string{"9 m1 sebastian", "9 m1 sebastian"}) || !slices.Equal(q.checkedHeads, []string{"c1", ""}) || len(q.sessions) != 1 {
+			t.Fatalf("merges %v on checked heads %v, %d sessions", q.merges, q.checkedHeads, len(q.sessions))
+		}
+	})
+
+	// main moves under each approval without a file in common: each turn
+	// merges the synced head on the approval and its checked head's green,
+	// each red merge re-stages from the head it merged, and the head whose
+	// own checks ran green holds for the next synced one
+	t.Run("main moves under each approval", func(t *testing.T) {
+		q := newQueueHarness(t, policy.QueueProject, green)
+		q.sync = func(from string) SyncResult {
+			to := map[int]string{1: from, 2: "m1", 3: "m1", 4: "m2"}[len(q.syncs)]
+			if to == "" {
+				to = "m2"
+			}
+			if to == from {
+				return SyncResult{From: from, To: to}
+			}
+			return SyncResult{From: from, To: to, Main: "main-" + to, Base: "main-" + from}
+		}
+		q.merge = []MergeResult{redAtMerge, redAtMerge, {Merged: true}}
+		q.onSessions(pushed("s1", "c1"))
+		for _, at := range []time.Duration{time.Hour, 2 * time.Hour, 3 * time.Hour} {
+			q.signalAfter(at, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}
+		if final := q.run(t); final != "done" {
+			t.Fatalf("final = %q (%v)", final, q.finals)
+		}
+		if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge",
+			"withdraw", "sync m1", "criteria m1", "approval m1", "leave", "sync m1", "merge",
+			"withdraw", "sync m2", "criteria m2", "approval m2", "leave", "sync m2", "merge", "leave"}; !slices.Equal(q.steps, want) {
+			t.Fatalf("steps = %v, want %v", q.steps, want)
+		}
+		if want := []string{"9 m1 sebastian", "9 m2 sebastian", "9 m2 sebastian"}; !slices.Equal(q.merges, want) || !slices.Equal(q.checkedHeads, []string{"c1", "m1", ""}) {
+			t.Fatalf("merges %v on checked heads %v; want %v on c1, m1 and m2's own", q.merges, q.checkedHeads, want)
+		}
+		if want := []string{"c1", "m1", "m2"}; len(q.reruns) != 0 || !slices.Equal(q.checks, want) || !slices.Equal(q.headChecks, want) {
+			t.Fatalf("reruns %v, checks on %v, head reads %v; want %v, no re-run", q.reruns, q.checks, q.headChecks, want)
+		}
+		if want := []time.Duration{0, time.Hour, time.Hour, 2 * time.Hour, 2 * time.Hour, 3 * time.Hour}; !slices.Equal(q.enters, want) {
+			t.Fatalf("EnterQueue ran at %v, want %v", q.enters, want)
+		}
+	})
+
 	t.Run("a fixed main", func(t *testing.T) {
 		q := newQueueHarness(t, policy.QueueProject, green)
+		q.beforeQueueWaits()
 		q.ahead = func(call int) int { return map[int]int{2: 1}[call] }
 		q.sync = func(from string) SyncResult {
 			if len(q.syncs) == 1 {
@@ -807,6 +974,7 @@ func TestQueueRedHeadLeavesTheQueueAfterThreeReruns(t *testing.T) {
 			"c1-rerun-rerun":       {redTest("c1-rerun-rerun")},
 			"c1-rerun-rerun-rerun": last,
 		}))
+		q.beforeQueueWaits()
 		q.merge = []MergeResult{redAtMerge, {Merged: true}}
 		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
 		return q
@@ -1146,31 +1314,47 @@ func TestCheckedHeadEndsWithItsPass(t *testing.T) {
 
 // Every way out of the turn leaves the queue: the merge, a return to the
 // agent, a failure, a close while waiting; Finish leaves it too and wakes
-// the new head.
+// the new head. A card whose approval waits out of the queue leaves it
+// before each wait too, and a run from before only on its way out.
 func TestQueueReleasedOnEveryExit(t *testing.T) {
+	const merged, waits = "pull request merged by factory-merge after sebastian's approval", approvalWaitLeft
 	for _, c := range []struct {
 		name   string
+		before bool
 		ahead  func(int) int
 		signal func(q *queueHarness)
 		final  string
 		leaves []string
 	}{
-		{"merge", nil, func(q *queueHarness) {
+		{"merge", false, nil, func(q *queueHarness) {
 			q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-		}, "done", []string{"pull request merged by factory-merge after sebastian's approval"}},
-		{"back to the agent", nil, func(q *queueHarness) {
+		}, "done", []string{waits, merged}},
+		{"back to the agent", false, nil, func(q *queueHarness) {
 			q.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
 			q.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
-		}, "done", []string{"changes requested", "pull request merged by factory-merge after sebastian's approval"}},
-		{"failure", nil, func(q *queueHarness) {
+		}, "done", []string{waits, "changes requested", waits, merged}},
+		{"failure", false, nil, func(q *queueHarness) {
 			q.signalAfter(time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
-		}, "failed", []string{"pull request closed without merge"}},
-		{"close while waiting", func(int) int { return 2 }, func(q *queueHarness) {
+		}, "failed", []string{waits, "pull request closed without merge"}},
+		{"close while waiting", false, func(int) int { return 2 }, func(q *queueHarness) {
 			q.signalAfter(time.Minute, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 		}, "closed", []string{ReasonIssueClosed + " without merge"}},
+		{"merge, a run from before", true, nil, func(q *queueHarness) {
+			q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{merged}},
+		{"back to the agent, a run from before", true, nil, func(q *queueHarness) {
+			q.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", PR: 9, Body: "rename it"})
+			q.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		}, "done", []string{"changes requested", merged}},
+		{"failure, a run from before", true, nil, func(q *queueHarness) {
+			q.signalAfter(time.Hour, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+		}, "failed", []string{"pull request closed without merge"}},
 	} {
 		t.Run(c.name, func(t *testing.T) {
 			q := newQueueHarness(t, policy.QueueProject, green)
+			if c.before {
+				q.beforeQueueWaits()
+			}
 			if c.ahead != nil {
 				q.ahead = c.ahead
 			}

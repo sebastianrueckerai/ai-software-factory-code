@@ -491,8 +491,9 @@ func (r *Roller) poll(ctx context.Context) error {
 	if stuck {
 		r.escalateRolls(ctx)
 	}
-	// the queue before the groups: a plan card leaves the queue only once
-	// it merged, so one that merges between the two reads counts in one
+	// the queue before the groups: a plan card's merge leaves the queue
+	// only once it merged, so one that merges between the two reads counts
+	// in one (the approval wait's leave comes before any merge)
 	queued, err := r.Store.QueuedPlans(ctx, r.Repo.String())
 	if err != nil {
 		return err

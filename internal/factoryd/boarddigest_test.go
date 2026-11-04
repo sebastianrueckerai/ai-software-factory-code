@@ -85,7 +85,6 @@ func (g boardRig) digest(t *testing.T) BoardDigest {
 
 func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
-	admitted := func(t *Task) { at := boardNow.Add(-20 * time.Hour); t.AdmittedAt = &at }
 	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
 	g.card("t1300", 1300, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "closed-plan" })
 	g.store.closed = map[string]time.Time{"t1300": boardNow.Add(-48 * time.Hour)}
@@ -93,7 +92,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.card("t1441", 1441, "done", "", 2, child("k1441"))
 	g.card("t1451", 1451, "failed", "", 3, child("k1451"))
 
-	g.card("t1410", 1410, "in-review", GateApproval, 10, admitted)
+	g.card("t1410", 1410, "in-review", GateApproval, 10, nil)
 	g.moved("t1410", "in-review", GateApproval, 9*time.Hour+40*time.Minute)
 	g.line(t, "t1410", 10*time.Hour, "model_review", map[string]any{"verdict": "concerns", "findings": []string{findingA}, "round": 1})
 	for _, ago := range []time.Duration{9*time.Hour + 59*time.Minute, 9*time.Hour + 50*time.Minute} {
@@ -104,7 +103,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseBudgetFloor, StateKey: "k-floor", Status: CaseAtHuman,
 		Money: &CaseMoney{Kind: string(CaseBudgetFloor), BudgetEUR: 5, SpentEUR: 4.9}}}
 
-	g.card("t1452", 1452, "waiting-deps", "", 11, func(t *Task) { child("k1452")(t); admitted(t) })
+	g.card("t1452", 1452, "waiting-deps", "", 11, child("k1452"))
 	g.moved("t1452", "waiting-deps", "", 3*time.Hour+2*time.Minute)
 	g.card("t1472", 1472, "running", GateSession, 12, child("k1472"))
 	g.moved("t1472", "queued", GateIntake, 13*time.Minute)
@@ -116,9 +115,9 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.store.deps = map[string][]string{"t1452": {"t1451"}, "t1453": {"t1451"}}
 	g.store.enforced = policy.Enforced{Day: 12.4, Month: 544}
 
-	want := "cards 6 live · slots 3 of 3 · queue 3\n" +
-		"#1410  in-review, approval   9h40m    slot  flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings, slot_held_by_wait(approval)\n" +
-		"#1452  waiting-deps          3h02m    slot  flags dependency_failed(#1451), slot_held_by_wait(waiting-deps)\n" +
+	want := "cards 6 live · slots 1 of 3 · queue 3\n" +
+		"#1410  in-review, approval   9h40m          flags finding_confirmed_twice(" + idA + "), money_ask_hides_findings\n" +
+		"#1452  waiting-deps          3h02m          flags dependency_failed(#1451)\n" +
 		"#1472  running, session      0h12m    slot\n" +
 		"queue:\n" +
 		"#1414  work bound 3 of 3 for 2h\n" +

@@ -253,7 +253,10 @@ func TestChatRequestImageAdmission(t *testing.T) {
 		`Filed tool card #50 t-tool "Add ffmpeg to image ffmpeg". After it merges, the factory builds, signs and pins the image; cards can then name it in image. It cannot be undone.`})
 	before := r.events.count()
 
-	// t-m, t-r and t-e, none admitted, fill a cap of 3
+	// t-m and two more queued cards, none admitted, fill a cap of 3
+	for _, id := range []string{"t-q1", "t-q2"} {
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: id, Kind: "agent", Status: "queued", Track: policy.TrackDirect, Repository: "sf/code"}})
+	}
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", MergeRule: policy.MergeHuman, QueueCap: 3}}
 	code, msg := refused(t, r, "request_image", toolInput{Tool: "ffmpeg", Need: "cut"})
 	equal(t, "an ask past the queue cap", []any{code, msg}, []any{http.StatusConflict,

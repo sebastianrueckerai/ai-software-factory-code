@@ -1664,7 +1664,7 @@ func (a *AcceptanceRig) CountAdmitted(_ context.Context, repository string) (int
 		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
+		if slices.Contains([]string{"running", "closing"}, t.Status) || (t.Status == "in-review" && t.Gate != factoryd.GateApproval) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}
@@ -1678,10 +1678,9 @@ func (a *AcceptanceRig) CountQueue(_ context.Context, repository string) (int, e
 	n := 0
 	for _, bt := range a.tasks {
 		t := bt.Task
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil || factoryd.Final(t.Status) {
-			continue
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil {
+			n++
 		}
-		n++
 	}
 	return n, nil
 }

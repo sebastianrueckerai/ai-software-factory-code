@@ -214,6 +214,10 @@ func (t *taskRun) runStages(commit string) verdict {
 				v = t.approval(commit, g, review, reviewed, capped, card, covered)
 			}
 			if v.restage {
+				if t.waitsOutOfQueue() {
+					// the head the approval's turn merged on
+					commit = t.head
+				}
 				v = t.restage(commit, g, review, reviewed, capped, card, covered)
 			}
 			t.leaveQueue(cmp.Or(v.reason, v.final))
@@ -1157,7 +1161,9 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 // run again at a human's word (versionFactoryPRActions): an empty commit
 // on its head (RerunChecks), the checks stage waits for them, and the new
 // head comes back here. A refused switch to the plan track asks for the
-// approval again (versionReplan).
+// approval again (versionReplan). A queued card leaves its merge queue
+// before the wait, and a head its approval's turn moved runs its checks
+// and asks again (versionQueueWaits).
 func (t *taskRun) approve(commit string, g GateResults, review Review, earlier []Review, card, covered []string) verdict {
 	t.head = commit
 	v, stop, red := t.headGreen(commit, g, &card)
@@ -1192,11 +1198,17 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 		}
 		t.approvalRequested = workflow.Now(t.ctx)
-		if v = t.awaitApproval(commit, g, covered); !v.reask {
+		if t.waitsOutOfQueue() {
+			t.leaveQueue(approvalWaitLeft)
+		}
+		v = t.awaitApproval(commit, g, covered)
+		// the head the approval's turn merged on (versionQueueWaits)
+		commit = t.head
+		if !v.reask {
 			break
 		}
 	}
-	if !v.rerun && !v.moved && !v.recheck {
+	if !v.rerun && !v.moved && !v.recheck && !v.synced {
 		return v
 	}
 	if v.recheck {
@@ -1204,6 +1216,17 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		// (versionCompanions): the gates read again from the first stage,
 		// so the merge follows the pins it sees now
 		return t.verify(commit)
+	}
+	if v.synced {
+		// the approval's turn merged in main's commits, which change a file
+		// of the pull request, so Forgejo dismissed the approval: the head
+		// the sync made runs its checks, holding the turn as before the
+		// first request, and asks again (versionQueueWaits)
+		commit, t.rerunHead, t.syncedHead, t.checkedHead, g.ChecksPassed = v.head, v.head, v.head, "", false
+		if _, v, stop := t.runStage(policy.StageChecks, &commit, &g, &review); stop {
+			return v
+		}
+		return t.approve(commit, g, review, earlier, card, covered)
 	}
 	if v.moved {
 		// the merge was refused on a head the agent moved past its gates

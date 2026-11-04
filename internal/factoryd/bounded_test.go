@@ -425,6 +425,97 @@ func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
 	}
 }
 
+// A card frees its slot the moment it waits on a person's approval or on
+// a dependency: entering the wait clears its admission and pulls the next
+// queued card of the project into the slot. The bound of 2 is full with
+// the waiting card and its running dependency until then.
+func TestEnteringAWaitPullsTheNextQueuedCard(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status, gate, activity string
+		args                   []any
+	}{
+		"approval": {"in-review", GateChecks, ActivityRequestApproval,
+			[]any{"t1", ApprovalInput{PR: PullRequest{Number: 9, URL: "https://git.example/sf/repo/pulls/9"}, Commit: "c1"}}},
+		"dependency": {"queued", GateIntake, ActivityDependencies, []any{"t1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			ctx := context.Background()
+			card := Task{ID: "t1", Repository: "sf/repo", Kind: "agent", Track: "direct", Status: tc.status, Gate: tc.gate, IssueNumber: 4, PRNumber: 9}
+			r, store, _ := newActivityRunner(t, card, &prForgejo{})
+			store.CreateTask(ctx, Task{ID: "t-dep", Repository: "sf/repo", Kind: "agent", Track: "direct", Status: "running", IssueNumber: 3})
+			store.CreateTask(ctx, Task{ID: "t-q", Repository: "sf/repo", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 5})
+			if err := store.AddTaskDeps(ctx, "t1", []string{"t-dep"}); err != nil {
+				t.Fatal(err)
+			}
+			if err := store.SetAdmitted(ctx, "t1"); err != nil {
+				t.Fatal(err)
+			}
+			rec := &recordingWorkflows{}
+			r.cfg.Workflows = BoundedWorkflows{Workflows: rec, Store: store, Policy: func() policy.Tree {
+				return policy.Tree{Projects: map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo", WorkInProgress: 2}}}
+			}}
+			if err := r.cfg.Workflows.Start(ctx, "t-q"); err != nil || len(rec.starts) != 0 {
+				t.Fatalf("start at the full bound: %v, starts %v; want none", err, rec.starts)
+			}
+			if _, err := execActivity(t, r, tc.activity, tc.args...); err != nil {
+				t.Fatal(err)
+			}
+			if w, _, _ := store.Task(ctx, "t1"); w.AdmittedAt != nil {
+				t.Fatalf("the waiting card is %s in gate %s, admitted at %v: want its admission cleared", w.Status, w.Gate, w.AdmittedAt)
+			}
+			if q, _, _ := store.Task(ctx, "t-q"); !slices.Equal(rec.starts, []string{"t-q"}) || q.AdmittedAt == nil {
+				t.Fatalf("starts %v, admitted at %v: want the waiting card's slot to start the queued one", rec.starts, q.AdmittedAt)
+			}
+		})
+	}
+}
+
+// A card takes its slot again when it resumes, over the bound, as an
+// answered card does: the approved card back in its merge queue turn and
+// the card whose dependency is done (MarkStarted) count again though the
+// running card fills the bound of 1. The resumed card is stamped admitted
+// again and its queue reason cleared, and the queued card stays out.
+func TestApprovedCardResumesOverTheBound(t *testing.T) {
+	ctx := context.Background()
+	since := time.Now().Add(-time.Hour)
+	store, rec, bounded := boundedFixture(t, 1,
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
+		Task{ID: "t-appr", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "in-review", Gate: GateApproval, IssueNumber: 2},
+		Task{ID: "t-deps", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "waiting-deps", Gate: GateDependencies, IssueNumber: 3,
+			QueueReason: "waits on #1", QueueSince: &since},
+		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 4})
+	count := func(step string, want int) {
+		t.Helper()
+		if n, err := store.CountAdmitted(ctx, "demo/app"); err != nil || n != want {
+			t.Fatalf("%s: admitted = %d (err %v), want %d", step, n, err, want)
+		}
+	}
+	count("the two waits", 1)
+	if err := bounded.Signal(ctx, "t-appr", SignalApproved, TaskSignal{Author: "sebastian"}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetGate(ctx, "t-appr", GateMergeQueue, time.Now()); err != nil {
+		t.Fatal(err)
+	}
+	count("the approved card in its turn", 2)
+	if err := store.MarkStarted(ctx, "t-deps"); err != nil {
+		t.Fatal(err)
+	}
+	count("the dependency done", 3)
+	if d, _, _ := store.Task(ctx, "t-deps"); d.Status != "running" || d.AdmittedAt == nil || d.QueueReason != "" || d.QueueSince != nil {
+		t.Fatalf("the resumed card is %s, admitted at %v, queue reason %q since %v; want running, stamped, no reason", d.Status, d.AdmittedAt, d.QueueReason, d.QueueSince)
+	}
+	if err := bounded.Start(ctx, "t-q"); err != nil {
+		t.Fatal(err)
+	}
+	if q, _, _ := store.Task(ctx, "t-q"); len(rec.starts) != 0 || q.QueueReason != "work bound 3 of 1" {
+		t.Fatalf("starts %v, queue reason %q: want the queued card out at work bound 3 of 1", rec.starts, q.QueueReason)
+	}
+	if !slices.Equal(rec.signals, []string{"t-appr"}) {
+		t.Fatalf("signals = %v, want the approval through the bound", rec.signals)
+	}
+}
+
 // A plan files its card row first and its issue last; in between a sweep
 // must not start the half-made card: the bound declines it without
 // failing, and the next sweep starts it once its issue is filed.

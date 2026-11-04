@@ -243,8 +243,10 @@ func holdsSlot(t Task) bool {
 		return false
 	}
 	switch t.Status {
-	case "waiting-deps", "running", "in-review", "closing":
+	case "running", "closing":
 		return true
+	case "in-review":
+		return t.Gate != GateApproval
 	}
 	return t.Status == "queued" && t.AdmittedAt != nil
 }

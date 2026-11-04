@@ -188,13 +188,6 @@ func digestFlags(d CardDigest, t Task, events []Event, cases []Case, deps []Depe
 			add("issue_open_after_end", string(c.Kind))
 		}
 	}
-	switch {
-	case !holdsSlot(t):
-	case t.Status == "waiting-deps" && t.AdmittedAt != nil:
-		add("slot_held_by_wait", t.Status)
-	case t.Status == "in-review" && t.Gate == GateApproval:
-		add("slot_held_by_wait", t.Gate)
-	}
 	for _, dep := range deps {
 		if dep.Status == "failed" {
 			add("dependency_failed", fmt.Sprintf("#%d", dep.Issue))

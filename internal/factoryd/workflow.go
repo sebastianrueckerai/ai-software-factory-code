@@ -635,6 +635,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.raiseReload = workflow.GetVersion(ctx, "raise-reload", workflow.DefaultVersion, versionRaiseReload)
 	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	run.cases = workflow.GetVersion(ctx, "cases", workflow.DefaultVersion, versionCases)
+	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	final, err := run.program()
 	run.endTrips()
 	drainSignals(ctx)
@@ -1318,6 +1319,14 @@ const (
 	// replacement is a trip. A run from before asks through Escalate and
 	// takes none of it.
 	versionCases workflow.Version = 1
+	// versionQueueWaits (change id "queue-waits"): a card in a project's
+	// merge queue leaves it when its approval waits for a human, and an
+	// approval takes a turn again before the merge: main merged in, the
+	// merge on the approval when main's new commits share no file with the
+	// pull request, else the checks on the new head and a new request. A
+	// run from before holds its entry through the approval wait and the
+	// merge.
+	versionQueueWaits workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
 	// started from; the answer to a share stop with the pull request open
@@ -1552,6 +1561,9 @@ type taskRun struct {
 	// changesBy is the writer of the newest change request drained, whose
 	// session a change request at the cap draws (versionCases)
 	changesBy string
+	// queueWaits: the approval wait is out of the merge queue
+	// (versionQueueWaits)
+	queueWaits workflow.Version
 }
 
 // verdict is how one pushed commit ended: a final state, or the findings
@@ -1591,6 +1603,10 @@ type verdict struct {
 	// conflict: the findings are Forgejo's refusal to merge main into the
 	// pull request (versionConflictFact)
 	conflict bool
+	// synced: the turn an approval took merged in main's commits, which
+	// change a file of the pull request; head is the head the sync made
+	// (versionQueueWaits)
+	synced bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -3302,8 +3318,13 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 // task, a reviewer requests changes, a member re-runs a factory pull
 // request's checks (versionFactoryPRActions), a person's replan sends a
 // direct card to the planner (versionReplan), or an approval merges the
-// pull request as factory-merge. An approval over findings the card
-// showed adjudicates them (versionAdjudicated). A merge Forgejo refuses
+// pull request as factory-merge. A queued card waits out of its merge
+// queue, and an approval takes a turn first (versionQueueWaits): a head
+// the turn moved merges on the approval when main's new commits share no
+// file with the pull request (the cheap turn), else it goes back to
+// approve as synced. A failed merge keeps the turn through its retries,
+// and a new approval wait leaves the queue again. An approval over
+// findings the card showed adjudicates them (versionAdjudicated). A merge Forgejo refuses
 // keeps the wait, but a queue head's red checks take it back through its
 // turn while re-runs are left (versionRedHeadRestage); one that fails
 // otherwise keeps the approval and is tried again after mergeRetryAfter
@@ -3398,6 +3419,22 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 				continue
 			}
 		}
+		if signalled && t.waitsOutOfQueue() {
+			sync, v, stop := t.turn(commit)
+			if stop {
+				return v
+			}
+			if sync.To != commit {
+				if t.cheapTurn < versionCheapTurn || len(sync.Overlap) > 0 {
+					return verdict{synced: true, head: sync.To}
+				}
+				// the cheap turn: main's new commits share no file with the
+				// pull request, so Forgejo keeps the approval on the head
+				// the sync made, and the checks that held for commit hold
+				t.checkedHead = cmp.Or(t.checkedHead, commit)
+				commit, t.syncedHead, t.head = sync.To, sync.To, sync.To
+			}
+		}
 		opts := finishOptions()
 		if t.v8 >= versionGatesPinned {
 			opts = mergeOptions()
@@ -3448,6 +3485,9 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			if t.v11 >= versionGateStarted {
 				t.approvalRequested = workflow.Now(t.ctx)
 			}
+			if t.waitsOutOfQueue() {
+				t.leaveQueue(approvalWaitLeft)
+			}
 		case res.Failed != "" && t.v9 >= versionMergeFailureReported:
 			failures++
 			timerCtx, cancel := workflow.WithCancel(t.ctx)
@@ -3467,6 +3507,9 @@ func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) 
 			approver = ""
 			if t.v11 >= versionGateStarted {
 				t.approvalRequested = workflow.Now(t.ctx)
+			}
+			if t.waitsOutOfQueue() {
+				t.leaveQueue(approvalWaitLeft)
 			}
 		}
 	}

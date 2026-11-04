@@ -894,6 +894,9 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
 	}
 	t.Status = to
+	if to == "waiting-deps" {
+		t.AdmittedAt = nil
+	}
 	if !Final(to) {
 		delete(s.settled, id)
 	}
@@ -921,6 +924,11 @@ func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status = "running"
+	if t.AdmittedAt == nil && t.Kind == "agent" && !t.Unbound() {
+		now := time.Now()
+		t.AdmittedAt = &now
+	}
+	t.QueueReason, t.QueueSince = "", nil
 	s.tasks[id] = t
 	s.started[id] = true
 	return nil
@@ -961,11 +969,7 @@ func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now t
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
-			continue
-		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "closing"}, t.Status) ||
-			(t.Status == "queued" && t.AdmittedAt != nil) {
+		if t.Repository == repository && t.Kind == "agent" && holdsSlot(t) {
 			n++
 		}
 	}
@@ -975,10 +979,7 @@ func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, 
 func (s *fakeStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	n := 0
 	for _, t := range s.tasks {
-		if t.Repository != repository || t.Kind != "agent" || t.Unbound() || t.AdmittedAt != nil {
-			continue
-		}
-		if !factorydFinal(t.Status) {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.AdmittedAt == nil {
 			n++
 		}
 	}
@@ -1765,6 +1766,9 @@ func (s *fakeStore) SetGate(ctx context.Context, id, gate string, since time.Tim
 		return nil
 	}
 	t.Gate, t.GateSince = gate, &since
+	if gate == GateApproval {
+		t.AdmittedAt = nil
+	}
 	s.tasks[id] = t
 	s.gates = append(s.gates, id+" "+gate+" "+since.UTC().Format(time.RFC3339Nano))
 	return nil

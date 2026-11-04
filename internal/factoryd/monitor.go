@@ -246,8 +246,7 @@ var eventFlags = []string{"checkin_cut", "session_no_push", "grant_bought_nothin
 // adds, and ok false for a flag that opens no case. An ended card opens
 // one only for what it left open where Finish closes it, until its
 // issue's close is among its events, and a merged or closing card none. A
-// slot held by a wait is a record, and a failed dependency is its run's,
-// whose own trip takes it. A wait keys on its kind and start, with its
+// failed dependency is its run's, whose own trip takes it. A wait keys on its kind and start, with its
 // owner and its bound: one wait opens one case, so queued_over_bound takes
 // the queue's and wait_over_bound leaves it. An event flag keys on its
 // detail, and any other flag, about the head's state, on the head.
@@ -257,7 +256,7 @@ func flagCase(d CardDigest, f DigestFlag) (string, map[string]any, bool) {
 		if f.Name != "issue_open_after_end" || !d.issueCloses || d.issueClosed {
 			return "", nil, false
 		}
-	case status == "merged", status == "closing", f.Name == "slot_held_by_wait", f.Name == "dependency_failed":
+	case status == "merged", status == "closing", f.Name == "dependency_failed":
 		return "", nil, false
 	}
 	switch {

@@ -22,12 +22,17 @@ import (
 // the bound leaves out (Task.Unbound: a roll, a factory pull request, a
 // screening), a card past its start (every status but queued) and a queued
 // card already admitted (its workflow died before running) start as
-// before: no slot is taken, or the one it holds is its own. A card parked
-// on a person — waiting-human for an answer, waiting-poster for a fund
-// after a cap — or on its image (waiting-image) holds no slot (roadmap
-// 233): the bound counts only what runs, and a person's answer or the
-// image resumes the card as running even at the bound, an overshoot of one
-// gate pass that touches only the card just unblocked.
+// before: no slot is taken, or the one it holds is its own. A card holds
+// a slot while it runs or closes, while in review in any gate but the
+// approval's, and while queued with its admission stamped (CountAdmitted,
+// holdsSlot). A card parked on a person — waiting-human for an answer,
+// waiting-poster for a fund after a cap, the approval gate for the merge —
+// on a dependency (waiting-deps) or on its image (waiting-image) holds no
+// slot (roadmap 233): the bound counts only what runs. Entering the
+// approval gate or waiting-deps clears the admission stamp and pulls the
+// next queued card. A person's answer or approval, the dependency or the
+// image resumes the card even at the bound, an overshoot of one gate pass
+// that touches only the card just unblocked.
 type BoundedWorkflows struct {
 	Workflows
 	// Store reads the card, its dependencies and its project's spend, and

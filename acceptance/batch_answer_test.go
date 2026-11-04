@@ -131,7 +131,7 @@ func (s *accBatchTasks) CountAdmitted(_ context.Context, repository string) (int
 		if t.Repository != repository || t.Kind != "agent" || t.Unbound() {
 			continue
 		}
-		if slices.Contains([]string{"waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "closing"}, t.Status) ||
+		if slices.Contains([]string{"running", "closing"}, t.Status) || (t.Status == "in-review" && t.Gate != factoryd.GateApproval) ||
 			(t.Status == "queued" && t.AdmittedAt != nil) {
 			n++
 		}

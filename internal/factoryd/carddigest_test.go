@@ -136,7 +136,7 @@ func skeletonRig(t *testing.T) digestRig {
 
 func TestCardDigestRendersTheSkeleton(t *testing.T) {
 	d := skeletonRig(t).digest(t)
-	want := "#1410 · plan #1344 session-metrics · budget 5.00 spent 4.92 holds 0.00 EUR · slot held · in-review, approval\n" +
+	want := "#1410 · plan #1344 session-metrics · budget 5.00 spent 4.92 holds 0.00 EUR · in-review, approval\n" +
 		"   1 +0:00   filed by planner       → revision 2, depends on #1402 (done)\n" +
 		"   2 +0:41   session 1 small        → pushed a1b2c3d, 0.41 EUR, 23 calls\n" +
 		"   3 +0:58   review                 → concerns, findings " + idA + " " + idB + "\n" +
@@ -144,7 +144,7 @@ func TestCardDigestRendersTheSkeleton(t *testing.T) {
 		"   5 +2:10   ask                    → session_cap: Card 1410 asks: grant one more session?\n" +
 		"   6 +9:40   answer by sebastian    → Grant one session\n" +
 		"   7 +9:41   session 4 small        → no push ×2\n" +
-		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4), slot_held_by_wait(approval)\n"
+		"flags: grant_bought_nothing(session 4), money_ask_hides_findings, session_no_push(session 4)\n"
 	if got := d.Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
 	}
@@ -314,12 +314,6 @@ func TestCardDigestFlagsTheOtherPatterns(t *testing.T) {
 			g.session(t, 25, 30, 3, "no_push")
 			g.session(t, 35, 40, 4, "no_push")
 		}, nil},
-		{"waiting on dependencies with its slot", func(c *Task) {
-			c.Status, c.AdmittedAt = "waiting-deps", &digestStart
-		}, nil, []DigestFlag{{"slot_held_by_wait", "waiting-deps"}}},
-		{"waiting on dependencies before its admission", func(c *Task) { c.Status = "waiting-deps" }, nil, nil},
-		{"at the merge approval", func(c *Task) { c.Status, c.Gate = "in-review", GateApproval }, nil,
-			[]DigestFlag{{"slot_held_by_wait", "approval"}}},
 		{"a failed dependency", nil, func(t *testing.T, g digestRig) {
 			g.store.tasks["t7"] = Task{ID: "t7", Kind: "agent", Repository: "sf/app", IssueNumber: 7, Status: "failed"}
 			g.store.tasks["t8"] = Task{ID: "t8", Kind: "agent", Repository: "sf/app", IssueNumber: 8, Status: "done"}
@@ -748,8 +742,7 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 			c.Status, c.Gate, c.GateSince = "in-review", GateReview, &gateStart
 		}, moved(30, "in-review", GateChecks), 6*60 + 41,
 			ownedWait{"gate", 0, gateStart}, true, []DigestFlag{{"wait_over_bound", "gate since +0:40"}}},
-		{"at the approval", inReview(GateApproval), moved(30, "in-review", GateApproval), 6*60 + 31, ownedWait{}, false,
-			[]DigestFlag{{"slot_held_by_wait", GateApproval}}},
+		{"at the approval", inReview(GateApproval), moved(30, "in-review", GateApproval), 6*60 + 31, ownedWait{}, false, nil},
 		{"a failed merge with its retry pending", inReview(GateMerge), func(t *testing.T, g digestRig) {
 			moved(30, "in-review", GateMerge)(t, g)
 			g.line(t, 50, "merge_failed", map[string]any{"pr": 12, "commit": "c1", "error": "forgejo is down"})

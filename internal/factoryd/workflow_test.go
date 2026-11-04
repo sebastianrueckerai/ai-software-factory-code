@@ -413,6 +413,13 @@ func (h *workflowHarness) beforeCases() {
 	h.env.OnGetVersion("cases", workflow.DefaultVersion, versionCases).Return(workflow.DefaultVersion)
 }
 
+// beforeQueueWaits runs the workflow as a run from before
+// versionQueueWaits: a queued card holds its entry through the approval
+// wait and the merge.
+func (h *workflowHarness) beforeQueueWaits() {
+	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
+}
+
 func (h *workflowHarness) signalAfter(d time.Duration, name string, sig TaskSignal) {
 	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(name, sig) }, d)
 }
