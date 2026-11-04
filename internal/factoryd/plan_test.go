@@ -4581,6 +4581,29 @@ func TestPlanLoopRefusalBeforeTheChange(t *testing.T) {
 	}
 }
 
+// A revision's records name what it does to the revision before it: a
+// replacement only when that revision holds the replaced id, so a
+// criterion that comes back unchanged with its old replaces marker, after
+// a revision that dropped it, is added, not a replacement again.
+func TestCriteriaDeltaRecordsWhatTheRevisionDoes(t *testing.T) {
+	x := PlanCriterion{ID: "x_crud", Kind: CriterionInvariant, Suite: "./..."}
+	y := PlanCriterion{ID: "y_crud", Kind: CriterionInvariant, Suite: "./internal/...", Replaces: "x_crud"}
+	z := PlanCriterion{ID: "z_page", Kind: CriterionHuman, Claim: "c", Evidence: "e"}
+	for name, tc := range map[string]struct {
+		old, next []PlanCriterion
+		want      []string
+	}{
+		"a replacement":          {[]PlanCriterion{x, z}, []PlanCriterion{y, z}, []string{"y_crud replaces x_crud"}},
+		"back after a drop":      {[]PlanCriterion{z}, []PlanCriterion{y, z}, []string{"y_crud added"}},
+		"one added, one removed": {[]PlanCriterion{x}, []PlanCriterion{z}, []string{"x_crud removed", "z_page added"}},
+		"held, marker and all":   {[]PlanCriterion{y}, []PlanCriterion{y}, nil},
+	} {
+		if got := criteriaDelta(Plan{Criteria: tc.old}, Plan{Criteria: tc.next}); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: criteriaDelta = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
 // What a criterion names is the fields its kind uses: a test's claim,
 // inputs and expected numbers, an invariant's suite, a judgement's or a
 // human criterion's claim.

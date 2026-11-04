@@ -2864,7 +2864,7 @@ func (r *Runner) recordCriteria(ctx context.Context, taskID string, revision int
 }
 
 // criteriaDelta is what next does to old's criteria, sorted: "<id>
-// added", "<id> replaces <old>" and "<id> removed".
+// added", "<id> replaces <old>" for an id old holds, and "<id> removed".
 func criteriaDelta(old, next Plan) []string {
 	prev := map[string]bool{}
 	for _, c := range old.Criteria {
@@ -2878,7 +2878,7 @@ func criteriaDelta(old, next Plan) []string {
 	for _, c := range next.Criteria {
 		switch {
 		case prev[c.ID]:
-		case c.Replaces != "":
+		case c.Replaces != "" && prev[c.Replaces]:
 			details = append(details, c.ID+" replaces "+c.Replaces)
 		default:
 			details = append(details, c.ID+" added")
