@@ -62,8 +62,9 @@ func copiesBudget(t Task, events []Event) bool {
 
 // digestFlags are the patterns the card's life shows, by name: one pass
 // over the steps, then the cases, the row, the dependencies and a plan's
-// proofs, all read from rows.
-func digestFlags(rows cardRows, steps []DigestStep, budget float64, now time.Time) []DigestFlag {
+// proofs, all read from rows. Unproven are the plan's criteria no verdict
+// row holds.
+func digestFlags(rows cardRows, steps []DigestStep, budget float64, now time.Time, unproven []string) []DigestFlag {
 	t, cases, deps := rows.task, rows.cases, rows.deps
 	var flags []DigestFlag
 	add := func(name, detail string) { flags = append(flags, DigestFlag{name, detail}) }
@@ -125,6 +126,38 @@ func digestFlags(rows cardRows, steps []DigestStep, budget float64, now time.Tim
 	}
 	if granted && afterNoPush != "" {
 		add("grant_bought_nothing", afterNoPush)
+	}
+	redAt := map[string]map[string]bool{}
+	newest := -1
+	for i, s := range steps {
+		if s.Kind != "proofs" || len(s.gate) == 0 {
+			continue
+		}
+		newest = i
+		for _, p := range s.gate {
+			if p.State != proofOpen || p.Met {
+				continue
+			}
+			if redAt[p.ID] == nil {
+				redAt[p.ID] = map[string]bool{}
+			}
+			redAt[p.ID][s.commit] = true
+		}
+	}
+	for id, heads := range redAt {
+		if len(heads) > 1 {
+			add("opened_proof_red_twice", id)
+		}
+	}
+	if newest >= 0 {
+		for _, p := range steps[newest].gate {
+			if p.Changed {
+				add("opened_proof_changed", p.ID+" "+p.Path)
+			}
+		}
+	}
+	for _, id := range unproven {
+		add("criterion_unproven", id)
 	}
 	for _, c := range cases {
 		if c.Status != CaseOpen && c.Status != CaseAtHuman {

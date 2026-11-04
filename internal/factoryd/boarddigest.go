@@ -24,15 +24,17 @@ type BoardDigest struct {
 
 // BoardDigestCard is a live card: its status and gate, the time since its
 // newest status event, whether it holds a work slot, and its digest's
-// flags. Unreadable is why its digest could not be read, "" when it
-// could.
+// flags. Blind and Criteria count its plan's criteria a blind gate row
+// met, of all the plan's, for an integration card. Unreadable is why its
+// digest could not be read, "" when it could.
 type BoardDigestCard struct {
-	Issue        int
-	Status, Gate string
-	Age          time.Duration
-	SlotHeld     bool
-	Flags        []DigestFlag
-	Unreadable   string
+	Issue           int
+	Status, Gate    string
+	Age             time.Duration
+	SlotHeld        bool
+	Flags           []DigestFlag
+	Unreadable      string
+	Blind, Criteria int
 }
 
 // BoardDigestQueued is a queued card, by issue and task id (the one name
@@ -143,7 +145,7 @@ func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (B
 		}
 	}
 	return BoardDigestCard{Issue: d.Head.Issue, Status: d.Head.Status, Gate: d.Head.Gate, Age: max(now.Sub(moved), 0),
-		SlotHeld: d.Head.SlotHeld, Flags: d.Flags}, nil
+		SlotHeld: d.Head.SlotHeld, Flags: d.Flags, Blind: d.Head.Blind, Criteria: d.Head.Criteria}, nil
 }
 
 // boardPlans are repository's open plans, each with its cards counted by
@@ -205,7 +207,11 @@ func (b BoardDigest) Render() string {
 			flags = "flags " + flagsText(c.Flags)
 		}
 		age := fmt.Sprintf("%dh%02dm", int(c.Age/time.Hour), int(c.Age%time.Hour/time.Minute))
-		line := fmt.Sprintf("%-6s %-21s %-7s  %-4s  %s", fmt.Sprintf("#%d", c.Issue), statusText(c.Status, c.Gate), age, slot, flags)
+		line := fmt.Sprintf("%-6s %-21s %-7s  %-4s", fmt.Sprintf("#%d", c.Issue), statusText(c.Status, c.Gate), age, slot)
+		if c.Criteria > 0 {
+			line += fmt.Sprintf("  blind %d of %d", c.Blind, c.Criteria)
+		}
+		line += "  " + flags
 		s.WriteString(strings.TrimRight(line, " ") + "\n")
 	}
 	if len(b.Queue) > 0 {

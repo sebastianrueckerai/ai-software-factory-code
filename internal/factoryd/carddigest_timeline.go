@@ -33,6 +33,14 @@ type timelineLine struct {
 	Handover    string                  `json:"handover"`
 	Proofs      json.RawMessage         `json:"proofs"`
 	StartFailed string                  `json:"start_failed"`
+	Criterion   string                  `json:"criterion"`
+	Artifact    string                  `json:"artifact"`
+	PromptHash  string                  `json:"prompt_hash"`
+	Reason      string                  `json:"reason"`
+	Head        string                  `json:"head"`
+	Cost        float64                 `json:"cost"`
+	Criteria    json.RawMessage         `json:"criteria"`
+	Opened      json.RawMessage         `json:"opened"`
 }
 
 // digestSession is one session the timeline records: its start, its end,
@@ -114,6 +122,12 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 				continue
 			}
 			step = proofsStep(step, l)
+		case "judgement":
+			step.Kind, step.Actor = "judgement", aliasOf(l.Model)
+			step.Outcome, step.CostEUR = cmp.Or(l.Verdict, "no verdict")+": "+digestText(l.Reason), l.Cost
+		case "proofs_at_main":
+			step.Kind, step.Actor, step.commit = "proofs", "runner", l.Head
+			step.Outcome = mainStepOutcome(l)
 		case "model_review":
 			step.Kind, step.Findings, step.state = "review", findingIDs(l.Findings), l.Verdict
 			step.Outcome = withFindings(cmp.Or(l.Verdict, "no verdict"), step.Findings)
@@ -197,6 +211,7 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 }
 
 // proofsStep is a gate_criteria line's step: actor gate, its head, the
+// blind and open counts of a run whose entries carry a state, else the
 // test criteria met and unmet, each invariant's state, the findings' ids.
 // It stands at the gate's start, as the gate writes its verdict rows
 // before its line.
@@ -208,33 +223,111 @@ func proofsStep(step DigestStep, l timelineLine) DigestStep {
 	if l.StartFailed == "" {
 		var proofs []gateProof
 		_ = json.Unmarshal(l.Proofs, &proofs)
-		var parts, invariants []string
-		met, unmet := 0, 0
-		for _, p := range proofs {
-			switch {
-			case p.Kind == CriterionInvariant:
-				state := cmp.Or(p.Outcome, "not run")
-				if p.Met {
-					state = "green"
-				}
-				invariants = append(invariants, "invariant "+cmp.Or(p.Suite, p.ID)+" "+state)
-			case p.Met:
-				met++
-			default:
-				unmet++
-			}
+		step.gate = proofs
+		if slices.ContainsFunc(proofs, func(p gateProof) bool { return p.State != "" }) {
+			outcome = strings.Join(gateParts(proofs), ", ")
+		} else {
+			outcome = strings.Join(unstatedParts(proofs), ", ")
 		}
-		if met+unmet > 0 {
-			parts = append(parts, fmt.Sprintf("%d met, %d unmet", met, unmet))
-		}
-		parts = append(parts, invariants...)
-		if len(proofs) == 0 {
-			parts = append(parts, "no criterion ran")
-		}
-		outcome = strings.Join(parts, ", ")
 	}
 	step.Outcome = withFindings("at "+l.Commit[:min(7, len(l.Commit))]+": "+outcome, step.Findings)
 	return step
+}
+
+// gateParts are a stateful gate run's parts: the blind try's counts with
+// its opened proofs, the opened proofs' counts, the held runs, each
+// invariant's state.
+func gateParts(proofs []gateProof) []string {
+	var parts []string
+	for _, g := range []struct{ state, unmetWord string }{{proofBlind, "opened"}, {proofOpen, "unmet"}} {
+		met, other := 0, 0
+		for _, p := range proofs {
+			if p.Kind == CriterionTest && !p.Holdout && p.State == g.state {
+				if p.Met {
+					met++
+				} else {
+					other++
+				}
+			}
+		}
+		var terms []string
+		if met > 0 {
+			terms = append(terms, fmt.Sprintf("%d met", met))
+		}
+		if other > 0 {
+			terms = append(terms, fmt.Sprintf("%d %s", other, g.unmetWord))
+		}
+		if len(terms) > 0 {
+			parts = append(parts, g.state+" "+strings.Join(terms, " "))
+		}
+	}
+	held := 0
+	for _, p := range proofs {
+		if p.State == "" && p.Outcome == "" {
+			held++
+		}
+	}
+	if held > 0 {
+		parts = append(parts, fmt.Sprintf("%d held", held))
+	}
+	return append(parts, invariantParts(proofs)...)
+}
+
+// unstatedParts are a gate run's parts when no entry carries a state.
+func unstatedParts(proofs []gateProof) []string {
+	var parts []string
+	met, unmet := 0, 0
+	for _, p := range proofs {
+		switch {
+		case p.Kind == CriterionInvariant:
+		case p.Met:
+			met++
+		default:
+			unmet++
+		}
+	}
+	if met+unmet > 0 {
+		parts = append(parts, fmt.Sprintf("%d met, %d unmet", met, unmet))
+	}
+	parts = append(parts, invariantParts(proofs)...)
+	if len(proofs) == 0 {
+		parts = append(parts, "no criterion ran")
+	}
+	return parts
+}
+
+// invariantParts are the run's invariants, each with its state.
+func invariantParts(proofs []gateProof) []string {
+	var invariants []string
+	for _, p := range proofs {
+		if p.Kind != CriterionInvariant {
+			continue
+		}
+		state := cmp.Or(p.Outcome, "not run")
+		if p.Met {
+			state = "green"
+		}
+		invariants = append(invariants, "invariant "+cmp.Or(p.Suite, p.ID)+" "+state)
+	}
+	return invariants
+}
+
+// mainStepOutcome is a proofs_at_main line's outcome: how many of its
+// criteria passed, or why its sandbox never started.
+func mainStepOutcome(l timelineLine) string {
+	at := l.Head[:min(7, len(l.Head))]
+	if l.StartFailed != "" {
+		return fmt.Sprintf("at main %s: the sandbox did not start: %s", at, digestText(l.StartFailed))
+	}
+	var entries []mainOutcome
+	_ = json.Unmarshal(l.Criteria, &entries)
+	met := 0
+	for _, c := range entries {
+		if c.Outcome == proofPassed {
+			met++
+		}
+	}
+	return fmt.Sprintf("at main %s: %d of %d met", at, met, len(entries))
 }
 
 // withFindings is outcome followed by the finding ids, if any.

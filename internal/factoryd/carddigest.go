@@ -40,6 +40,7 @@ type DigestHead struct {
 	SlotHeld                      bool
 	Status, Gate                  string
 	Since                         time.Time
+	Blind, Criteria               int
 }
 
 // DigestStep is one step of the card's life. Actor is who acted; for a
@@ -66,6 +67,8 @@ type DigestStep struct {
 	calls int
 	// commit is the head a checks, proofs, review or audit line judged
 	commit string
+	// gate is a gate run's entries
+	gate []gateProof
 }
 
 // DigestRef names the rows a step was read from, whichever apply: its
@@ -107,6 +110,7 @@ type cardRows struct {
 	timeline                   []byte
 	proofsStored, proofsWanted int
 	proverDue                  time.Time
+	criteria                   []PlanCriterion
 }
 
 // readCard reads task taskID's rows; ErrNotFound when there is no such
@@ -135,6 +139,15 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	}
 	if rows.timeline, err = r.objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl"); err != nil {
 		return cardRows{}, fmt.Errorf("read the timeline: %w", err)
+	}
+	if t.Source == SourcePlan && t.Parent != "" {
+		p, _, err := planOfStore(ctx, r.store, t.Parent, taskID)
+		if err != nil {
+			return cardRows{}, err
+		}
+		if roleOf(p, t.PlanKey) == RoleIntegration {
+			rows.criteria = p.Criteria
+		}
 	}
 	if t.Track != policy.TrackPlan {
 		return rows, nil
@@ -168,6 +181,13 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 		return CardDigest{}, err
 	}
 	head.ProofsStored, head.ProofsWanted = rows.proofsStored, rows.proofsWanted
+	head.Criteria = len(rows.criteria)
+	for _, c := range rows.criteria {
+		if v, ok := StandingRow(rows.verdicts, c); ok && v.Verdict == "met" && v.Source == CriteriaSourceGate &&
+			strings.HasPrefix(v.Evidence, proofBlind+": ") {
+			head.Blind++
+		}
+	}
 	lines, err := r.timelineSteps(ctx, t.ID, rows.timeline)
 	if err != nil {
 		return CardDigest{}, err
@@ -183,7 +203,13 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	flags := digestFlags(rows, steps, budget, r.clock())
+	var unproven []string
+	if t.Gate == GateApproval {
+		for _, c := range neverJudged(Plan{Criteria: rows.criteria}, rows.verdicts) {
+			unproven = append(unproven, c.ID)
+		}
+	}
+	flags := digestFlags(rows, steps, budget, r.clock(), unproven)
 	return CardDigest{Head: head, Steps: steps, Flags: flags}, nil
 }
 
@@ -306,6 +332,13 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 			s.Kind, s.Outcome = "cut", fmt.Sprintf("revision %d into %s at session %d", number("revision"), strings.Join(issues, ", "), number("session"))
 		case EventProofsFiled, EventProofsStored:
 			s = proofsEventStep(s, e)
+		case EventProofOpened:
+			s = openedStep(s, e)
+		case EventCriterionDecided:
+			if word("verb") != "not_met" {
+				continue
+			}
+			s.Kind, s.Outcome = "criteria", word("criterion")+" not met"
 		case EventDependencySet:
 			s.Kind, s.Outcome = "dependency", "depends on "+issueOf(word("depends_on"))
 			if removed, _ := e.Detail["removed"].(bool); removed {
@@ -346,6 +379,45 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 		out = append(out, s)
 	}
 	return out
+}
+
+// openedStep is a proof_opened event's step: the criterion that opened,
+// why, at the head the gate judged, its failure on one line.
+func openedStep(s DigestStep, e Event) DigestStep {
+	word := func(k string) string { v, _ := e.Detail[k].(string); return v }
+	outcome := word("outcome")
+	if outcome == proofFailed {
+		outcome = "red"
+	}
+	s.Kind, s.Actor = "opened", "gate"
+	s.Outcome = fmt.Sprintf("%s: %s at %s", word("criterion"), outcome, word("head")[:min(7, len(word("head")))])
+	if line := failureLine(word("message")); line != "" {
+		s.Outcome += ": " + line
+	}
+	return s
+}
+
+// failureLine is a proof's message as one line: its first line that is
+// not a go test's banner, a leading "<file>.go:<n>: " cut.
+func failureLine(message string) string {
+	for _, line := range strings.Split(message, "\n") {
+		line = strings.TrimSpace(line)
+		if line == "" || line == "Failed" || strings.HasPrefix(line, "=== RUN") ||
+			strings.HasPrefix(line, "--- FAIL") || strings.HasPrefix(line, "--- SKIP") {
+			continue
+		}
+		if file, rest, ok := strings.Cut(line, ": "); ok && goTestFile(file) {
+			line = rest
+		}
+		return line
+	}
+	return ""
+}
+
+// goTestFile says whether s is a go test's "<file>.go:<n>".
+func goTestFile(s string) bool {
+	i := strings.LastIndex(s, ".go:")
+	return i > 0 && s[i+len(".go:"):] != "" && strings.Trim(s[i+len(".go:"):], "0123456789") == ""
 }
 
 // proofsEvent is a proofs_filed or proofs_stored event's detail.
@@ -477,7 +549,16 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 		} else {
 			out[i].Outcome += ", "
 		}
-		out[i].Outcome += v.Criterion + " " + cmp.Or(v.Verdict, "undecided")
+		word := cmp.Or(v.Verdict, "undecided")
+		if v.Verdict == "met" {
+			for _, state := range []string{proofBlind, proofOpen} {
+				if strings.HasPrefix(v.Evidence, state+": ") {
+					word += " (" + state + ")"
+					break
+				}
+			}
+		}
+		out[i].Outcome += v.Criterion + " " + word
 	}
 	return out
 }
