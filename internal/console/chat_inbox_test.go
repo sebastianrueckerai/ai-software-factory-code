@@ -141,6 +141,78 @@ func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 	equal(t, "the ask after the press", ask().Settled, true)
 }
 
+// A failed card's Retry and Leave it stand while they still apply: the
+// thread read past the poke, a read again, the failure's events before
+// its row and a comment after it leave it open with its buttons, where
+// the poke without choices beside it reads seen, and the inbox read lists
+// it open. The human's press settles it at the press's time, and so does
+// the first event after it that moves the card on, with its word, actor
+// and time.
+func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
+	moved := func(kind, actor string, min int) *factoryd.Event {
+		return &factoryd.Event{Kind: kind, Actor: actor, At: at.Add(time.Duration(min) * time.Minute)}
+	}
+	for _, c := range []struct {
+		name   string
+		move   *factoryd.Event // nil: the human presses Leave it at 09:50
+		reason string
+	}{
+		{"a press of Leave it", nil, "answered by sebastian · 09:50"},
+		{"a retry from the drawer", moved(factoryd.EventCardRetried, "sebastian", 10), "moved on by sebastian · 09:40"},
+		{"a close", moved(factoryd.EventCardClosed, "sebastian", 15), "answered by sebastian · 09:45"},
+		{"a status change", moved(factoryd.EventTaskStatus, factoryd.FactoryDecider, 20), "moved on by factoryd · 09:50"},
+		{"the task's end", moved(factoryd.EventTaskEnded, factoryd.FactoryDecider, 25), "moved on by factoryd · 09:55"},
+	} {
+		r, chat, g := newChatRig(t)
+		ck, s := r.loggedIn(t)
+		ctx := t.Context()
+		r.tasks.mu.Lock()
+		r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed",
+			Repository: "sf/code", IssueNumber: 21}})
+		r.tasks.mu.Unlock()
+		record := func(e factoryd.Event) {
+			t.Helper()
+			e.Repository, e.TaskID = "sf/code", "t-f"
+			if _, err := r.events.Record(ctx, e); err != nil {
+				t.Fatal(err)
+			}
+		}
+		record(factoryd.Event{Kind: factoryd.EventTaskStatus, Actor: factoryd.FactoryDecider, At: at})
+		record(factoryd.Event{Kind: factoryd.EventTaskEnded, Actor: factoryd.FactoryDecider, At: at})
+		ids := inboxRows(t, chat, "sebastian", poke("#21 started.", "t-f"),
+			factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, TaskID: "t-f",
+				Content: "#21 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}})
+		record(factoryd.Event{Kind: factoryd.EventCardCommented, Actor: "sebastian", At: at.Add(5 * time.Minute)})
+		inbox, err := chat.EnsureInbox(ctx, "sf/code", "sebastian")
+		if err != nil {
+			t.Fatal(err)
+		}
+		path := chatPath + "?conversation=" + strconv.FormatInt(inbox, 10)
+		chatRead(t, r, ck, path)
+		msgs := chatRead(t, r, ck, path).Messages
+		equal(t, c.name+": the inbox read again", []any{msgs[0].Settled, msgs[0].Reason, msgs[1].Settled, msgs[1].Reason, msgs[1].Choices},
+			[]any{true, "seen", false, "", []string{"Retry", "Leave it"}})
+		equal(t, c.name+": the inbox tool", reads(t, r, g, "inbox", `{}`)[0], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
+			"%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n"+
+			"%d 10-11 09:30Z poke #21: #21 started. (seen)\n"+
+			"That is the whole window.", ids[1], ids[0]))
+		if c.move != nil {
+			record(*c.move)
+		} else {
+			chat.mu.Lock()
+			chat.now = func() time.Time { return at.Add(20 * time.Minute) }
+			chat.mu.Unlock()
+			g.replies = [][]string{{say("It stays failed.")}}
+			if code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+				"message": {strconv.FormatInt(ids[1], 10)}, "choice": {"Leave it"}}); code != http.StatusOK {
+				t.Fatalf("%s: the press = %d %v", c.name, code, events)
+			}
+		}
+		msgs = chatRead(t, r, ck, path).Messages
+		equal(t, c.name+": the poke after", []any{msgs[1].Settled, msgs[1].Reason}, []any{true, c.reason})
+	}
+}
+
 // An open ask leads the first page whatever its age, then the rest newest
 // first: #13 waits on a human, the two pokes about #11 nobody has read. A
 // page below before leaves the ask out, though it is older.

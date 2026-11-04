@@ -464,24 +464,27 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// askFacts reads the settle rule's wait facts for the cards named: the
-// board's Needs-you fact, the card's status waiting-human, with its
-// events. A card in a final state settled its asks already, so its
-// events are not read. One query per fact, whatever the cards' number.
-func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, map[string][]factoryd.Event) {
+// askFacts reads the settle rule's facts for the cards named: of each
+// card in asks the board's Needs-you fact, the card's status
+// waiting-human, with its events, and of each card in pokes, named by a
+// poke with choices, its events. A card in a final state settled its
+// asks already, so its events are read only when a poke with choices
+// names it: its buttons stand until an event moves the card on. One
+// query per fact, whatever the cards' number.
+func askFacts(ctx context.Context, c *Console, asks, pokes []string) (map[string]bool, map[string][]factoryd.Event) {
 	waits, events := map[string]bool{}, map[string][]factoryd.Event{}
-	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
+	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, asks)
 	if err != nil {
 		log.Printf("console: the cards' statuses: %v", err)
 	}
-	var live []string
-	for _, id := range ids {
+	read := slices.Clone(pokes)
+	for _, id := range asks {
 		waits[id] = statuses[id] == "waiting-human"
-		if statuses[id] != "" && !factoryd.Final(statuses[id]) {
-			live = append(live, id)
+		if statuses[id] != "" && !factoryd.Final(statuses[id]) && !slices.Contains(pokes, id) {
+			read = append(read, id)
 		}
 	}
-	if evs, err := c.cfg.Events.TaskEventsFor(ctx, live, startEvents); err != nil {
+	if evs, err := c.cfg.Events.TaskEventsFor(ctx, read, startEvents); err != nil {
 		log.Printf("console: the cards' events: %v", err)
 	} else {
 		events = evs
@@ -509,8 +512,9 @@ func (t *turn) attachRows(ctx context.Context, msgs []factoryd.ChatMessage) {
 
 // settleRows stamps each poke row's derived state onto the log of
 // login's thread conv (the notification-settling concept): an ask past
-// its settling event or its wait facts gets its reason line, a poke the
-// member has read recedes, and a fund row settles by the chat's stop.
+// its settling event or its wait facts gets its reason line, a poke with
+// choices settles by choiceSettle, another poke the human has read
+// recedes, and a fund row settles by the chat's stop.
 // Nothing is written; the state derives at read, seenUpto the thread's
 // seen marker before this read.
 func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, login string, conv int64, seenUpto int64, stop chatStop) {
@@ -518,13 +522,17 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 	if err != nil {
 		log.Printf("console: the approval requests: %v", err)
 	}
-	var ids []string
+	var ids, pokes []string
 	for _, m := range msgs {
-		if m.Kind == factoryd.MessageEscalation && m.TaskID != "" && !slices.Contains(ids, m.TaskID) {
+		switch {
+		case m.TaskID == "":
+		case m.Kind == factoryd.MessageEscalation && !slices.Contains(ids, m.TaskID):
 			ids = append(ids, m.TaskID)
+		case m.Kind == factoryd.MessagePoke && len(m.Choices) > 0 && !slices.Contains(pokes, m.TaskID):
+			pokes = append(pokes, m.TaskID)
 		}
 	}
-	waits, events := askFacts(ctx, t.c, ids)
+	waits, events := askFacts(ctx, t.c, ids, pokes)
 	// a card's own thread (the card door): an open ask row names it,
 	// whosever binding it carries
 	threads, whose := map[string]int64{}, map[string]string{}
@@ -564,8 +572,11 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			continue
 		}
 		if factoryd.AskFamily(m) == "" {
-			if msgs[i].Settled = m.ID <= seenUpto; msgs[i].Settled {
-				msgs[i].Reason = "seen"
+			switch {
+			case len(m.Choices) > 0:
+				msgs[i].Settled, msgs[i].Reason = choiceSettle(m, msgs[i+1:], events[m.TaskID], login)
+			case m.ID <= seenUpto:
+				msgs[i].Settled, msgs[i].Reason = true, "seen"
 			}
 			continue
 		}
@@ -575,6 +586,37 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			msgs[i].Thread, msgs[i].ThreadOwner = n, whose[m.TaskID]
 		}
 	}
+}
+
+// cardMoves are the events that move a card on: a status or gate
+// change, its end, a retry filing its replacement, a close.
+var cardMoves = []string{factoryd.EventTaskStatus, factoryd.EventTaskEnded, factoryd.EventCardRetried, factoryd.EventCardClosed}
+
+// choiceSettle is poke row m's state when it offers choices (the
+// notification-settling concept), later the rows after it in login's
+// thread and events its card's: its buttons stand while their action
+// still applies. The human's press or words after it settle it, "answered
+// by <login> · 15:04", and so does the first event at or after it that
+// moves its card on, with the event's word, actor and time; whichever
+// came first.
+func choiceSettle(m factoryd.ChatMessage, later []factoryd.ChatMessage, events []factoryd.Event, login string) (bool, string) {
+	var first factoryd.Event
+	for _, e := range events {
+		if e.At.Before(m.At) || !slices.Contains(cardMoves, e.Kind) {
+			continue
+		}
+		if first.ID == 0 || e.At.Before(first.At) || e.At.Equal(first.At) && e.ID < first.ID {
+			first = e
+		}
+	}
+	press := slices.IndexFunc(later, func(n factoryd.ChatMessage) bool { return n.Role == "user" && n.BirthKind == "" })
+	switch {
+	case press >= 0 && (first.ID == 0 || later[press].At.Before(first.At)):
+		return true, factoryd.ReasonLine(factoryd.PokeSettle{Word: "answered", By: login, At: later[press].At})
+	case first.ID != 0:
+		return true, factoryd.ReasonLine(factoryd.PokeSettle{Word: factoryd.SettleWord(first.Kind), By: first.Actor, At: first.At})
+	}
+	return false, ""
 }
 
 // settleCounts splits each thread's unread turns for the switcher's badge
@@ -605,7 +647,7 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 			ids = append(ids, m.TaskID)
 		}
 	}
-	waits, events := askFacts(ctx, c, ids)
+	waits, events := askFacts(ctx, c, ids, nil)
 	waiting := make([]map[string]bool, len(list))
 	for _, m := range asks {
 		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Login == login && th.Number == m.Conversation })

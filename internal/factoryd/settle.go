@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"slices"
 	"time"
 )
@@ -69,6 +70,10 @@ var settleWords = map[string]string{
 	EventMergeDenied:       "rejected", EventPlanChangesRequested: "rejected",
 	EventTaskEnded: "moved on", EventApprovalRequested: "superseded",
 }
+
+// SettleWord is event kind's word in a settled row's reason line: the
+// table's, else "moved on".
+func SettleWord(kind string) string { return cmp.Or(settleWords[kind], "moved on") }
 
 // SettleOf derives ask row m's state from its card's events and the wait
 // fact of its family: a question's card in Needs you, an approval's
