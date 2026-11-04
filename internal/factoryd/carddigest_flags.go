@@ -154,7 +154,7 @@ func digestFlags(rows cardRows, steps []DigestStep, budget float64, now time.Tim
 	}
 	switch since := now.Sub(rows.proverDue); {
 	case rows.proofsStored > 0 && rows.proofsStored < rows.proofsWanted:
-		add("proofs_missing", fmt.Sprintf("%d of %d wanted have no stored proof", rows.proofsWanted-rows.proofsStored, rows.proofsWanted))
+		add("proofs_missing", fmt.Sprintf("%d of %d wanted proofs without a store", rows.proofsWanted-rows.proofsStored, rows.proofsWanted))
 	case rows.proofsStored == 0 && !rows.proverDue.IsZero() && since > time.Hour:
 		add("proofs_missing", textutil.Plural(int(since/time.Hour), "hour", "hours"))
 	}

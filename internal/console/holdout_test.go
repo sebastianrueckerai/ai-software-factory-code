@@ -48,9 +48,9 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 		`<p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>`,
 		`<legend>Hold-out 1: The door stays shut until a key that fits turns the lock</legend>`,
 		`<p class="meta">Inputs: POST /doors/1/open with key 9<br>Expected: 403 and the door row still shut</p>`,
-		"proposed: okay keeps it out of the plan, and the prover writes its test later, hidden from the agent",
+		"proposed: okay keeps it out of the plan. The prover writes its test, hidden from the agent, unless it filed before the okay.",
 		`<legend>Hold-out 2: Every key turn lands in the log</legend>`,
-		"kept out: once the plan&#39;s foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent",
+		"kept out: once the plan&#39;s foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out okayed after the prover files gets no test.",
 		`<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">`,
 		`<input type="hidden" name="revision" value="2"><input type="hidden" name="index" value="2">`,
 		`<button type="submit" name="verb" value="okay">Okay</button>`,
@@ -112,7 +112,7 @@ func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 		!slices.ContainsFunc(r.events.rows, func(e factoryd.Event) bool { return e.Kind == factoryd.EventHoldoutDecided }) {
 		t.Fatalf("okay: %d to %q, calls %v, comments %v; body %s", rec.Code, rec.Header().Get("Location"), r.fg.calls, r.fg.comments, rec.Body)
 	}
-	if card := board(); !strings.Contains(card, "kept out: once the plan&#39;s foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent") ||
+	if card := board(); !strings.Contains(card, "kept out: once the plan&#39;s foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out okayed after the prover files gets no test.") ||
 		strings.Count(card, `action="/tasks/t-plan/plan/holdout"`) != 2 {
 		t.Errorf("the card after the okay:\n%s", card)
 	}

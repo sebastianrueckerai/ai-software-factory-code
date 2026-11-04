@@ -668,6 +668,10 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	if err != nil {
 		return err
 	}
+	budget := dryRunBudget(time.Until(activity.GetInfo(ctx).Deadline))
+	if budget <= 0 {
+		return errors.New("the dry run's activity ends in under a minute, too soon for its pod")
+	}
 	done, err := r.reproSandbox(ctx, &t, repo)
 	if err != nil {
 		return err
@@ -676,10 +680,6 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	entries := make([]harness.Proof, len(filed))
 	for i, pp := range filed {
 		entries[i] = storedProof(pp)
-	}
-	budget := dryRunBudget(time.Until(activity.GetInfo(ctx).Deadline))
-	if budget <= 0 {
-		return errors.New("the dry run's activity ends in under a minute, too soon for its pod")
 	}
 	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries, budget)
 	if err != nil {
@@ -821,24 +821,27 @@ func planProofCounts(p Plan, rows []PlanProof) (stored, wanted int) {
 	return stored, len(due)
 }
 
-// proofState is a plan's newest revision, when it was made, and the
-// plan's proofs by it (planProofCounts).
+// proofState is a plan's newest revision and the plan's proofs by it
+// (planProofCounts).
 type proofState struct {
 	plan           Plan
-	revised        time.Time
 	stored, wanted int
 }
 
+// errUnreadableRevision is a plan revision that does not decode.
+var errUnreadableRevision = errors.New("unreadable")
+
 // planProofState is plan task id's proofState; a plan with no revision
-// owes none.
+// owes none, and one whose revision does not decode is
+// errUnreadableRevision.
 func (r *Runner) planProofState(ctx context.Context, id string) (proofState, error) {
 	rev, ok, err := r.store.PlanRevision(ctx, id, 0)
 	if err != nil || !ok {
 		return proofState{}, err
 	}
-	s := proofState{revised: rev.CreatedAt}
+	var s proofState
 	if err := json.Unmarshal(rev.Plan, &s.plan); err != nil {
-		return proofState{}, fmt.Errorf("plan %s revision %d: %w", id, rev.Revision, err)
+		return proofState{}, fmt.Errorf("plan %s revision %d is %w: %w", id, rev.Revision, errUnreadableRevision, err)
 	}
 	rows, err := r.store.PlanProofs(ctx, id)
 	if err != nil {

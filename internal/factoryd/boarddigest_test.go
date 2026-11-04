@@ -232,7 +232,8 @@ func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
 }
 
 // A plan whose revision does not decode is one line that says so, and the
-// digest goes on, as it does past a card it cannot read.
+// digest goes on, as it does past a card it cannot read. A store read
+// that fails is the digest's error.
 func TestBoardDigestNamesAnUnreadablePlan(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
 	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
@@ -249,5 +250,10 @@ func TestBoardDigestNamesAnUnreadablePlan(t *testing.T) {
 	}
 	if want := "\nplans:\n#1344 session-metrics  no cards · proofs 0 of 3 stored\n#1345 door-keys  unreadable\ncaps:\n"; !strings.Contains(b.Render(), want) {
 		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+	// a store read that fails is the digest's error: a retry may read it
+	g.r.store = &proofsUnread{g.store}
+	if _, err := g.r.BoardDigest(context.Background(), "sf/app"); err == nil || !strings.Contains(err.Error(), "plan_proofs: connection reset") {
+		t.Fatalf("BoardDigest with the proofs unread = %v, want the read's error", err)
 	}
 }

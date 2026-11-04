@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"math"
 	"slices"
@@ -50,7 +51,7 @@ type BoardDigestSlots struct{ Held, Bound int }
 
 // BoardDigestPlan is an open plan: its issue, its name, its cards by
 // status, and its proofs stored or opened of those its prover owes.
-// Unreadable says its newest revision could not be read.
+// Unreadable says its newest revision does not decode.
 type BoardDigestPlan struct {
 	Issue                      int
 	Name                       string
@@ -147,7 +148,7 @@ func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (B
 
 // boardPlans are repository's open plans, each with its cards counted by
 // status and its proofs by its newest revision, or unreadable when that
-// revision cannot be read.
+// revision does not decode. A store read that fails is the error.
 func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDigestPlan, error) {
 	plans, err := r.store.OpenPlans(ctx, repository)
 	if err != nil {
@@ -161,9 +162,12 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 		}
 		out[i] = BoardDigestPlan{Issue: int(p.IssueNumber), Name: p.PlanName, Children: map[string]int{}}
 		s, err := r.planProofState(ctx, p.ID)
-		if err != nil {
+		if errors.Is(err, errUnreadableRevision) {
 			out[i].Unreadable = true
 			continue
+		}
+		if err != nil {
+			return nil, err
 		}
 		out[i].ProofsStored, out[i].ProofsWanted = s.stored, s.wanted
 		for _, c := range cards {

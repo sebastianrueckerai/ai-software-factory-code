@@ -95,9 +95,9 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 // events oldest first, its dependencies, its cases, its criteria verdicts
 // and its timeline object, nil when it has none; a plan task's proofs
 // (planProofCounts) and since when its prover is due: its foundation
-// card's end done, or the newest revision's time for a plan without a
-// foundation card; zero while the foundation is not done or the plan owes
-// no proof.
+// card's end done, or for a plan without a foundation card its first
+// card's filing, at its confirmation; zero while the foundation is not
+// done, no card is filed or the plan owes no proof.
 type cardRows struct {
 	task                       Task
 	events                     []Event
@@ -145,11 +145,17 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	}
 	rows.proofsStored, rows.proofsWanted = s.stored, s.wanted
 	card, named, err := r.foundationCard(ctx, taskID, s.plan)
-	switch {
-	case !named:
-		rows.proverDue = s.revised
-	case card.Status == "done" && card.FinishedAt != nil:
-		rows.proverDue = *card.FinishedAt
+	if err != nil || named {
+		if card.Status == "done" && card.FinishedAt != nil {
+			rows.proverDue = *card.FinishedAt
+		}
+		return rows, err
+	}
+	cards, err := r.store.PlanCards(ctx, taskID)
+	for _, c := range cards {
+		if rows.proverDue.IsZero() || c.CreatedAt.Before(rows.proverDue) {
+			rows.proverDue = c.CreatedAt
+		}
 	}
 	return rows, err
 }

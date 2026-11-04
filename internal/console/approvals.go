@@ -125,8 +125,8 @@ type planHoldout struct {
 
 // holdoutBlurbs are the hold-out states' one lines.
 var holdoutBlurbs = map[string]string{
-	factoryd.ProofProposed: "proposed: okay keeps it out of the plan, and the prover writes its test later, hidden from the agent",
-	factoryd.ProofOkayed:   "kept out: once the plan's foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent",
+	factoryd.ProofProposed: "proposed: okay keeps it out of the plan. The prover writes its test, hidden from the agent, unless it filed before the okay.",
+	factoryd.ProofOkayed:   "kept out: once the plan's foundation is on main, or at once when the plan has none, the prover writes its test, hidden from the agent. A hold-out okayed after the prover files gets no test.",
 	factoryd.ProofDropped:  "dropped",
 }
 

@@ -99,7 +99,7 @@ func (r *Runner) RunReport(ctx context.Context, taskID, model string, pin int64)
 				if summary, err := r.proverSummary(ctx, t); err == nil {
 					return summary
 				}
-				return "the prover's session ended, and its filing could not be read"
+				return "the prover's session ended, and factoryd could not read its filing"
 			}}
 		}
 		if session {
