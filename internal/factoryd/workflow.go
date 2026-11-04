@@ -123,6 +123,7 @@ const (
 	ActivityHeadChecks                  = "HeadChecks"
 	ActivityPullRequestMerged           = "PullRequestMerged"
 	ActivityRecordStep                  = "RecordStep"
+	ActivityRecordNotRun                = "RecordNotRun"
 	ActivityFinish                      = "Finish"
 	ActivityReconcile                   = "Reconcile"
 	ActivityEscalate                    = "Escalate"
@@ -3538,6 +3539,7 @@ func (t *taskRun) rejudge(commit string, g GateResults, approver string) (v verd
 	}
 	if err != nil {
 		review = Review{Note: "model review failed: " + errMessage(err)}
+		t.notRunRow(policy.StageReview, t.pr.Number, commit, len(t.reviews)+1, errMessage(err))
 		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "note": review.Note, "round": len(t.reviews) + 1}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "model_review", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record the failed review", "error", err)

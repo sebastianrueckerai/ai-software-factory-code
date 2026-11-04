@@ -728,6 +728,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		}
 		if err != nil {
 			*review = Review{Note: "model review failed: " + errMessage(err)}
+			t.notRunRow(policy.StageReview, t.pr.Number, commit, len(t.reviews)+1, errMessage(err))
 			// the activity recorded nothing: a restart rebuilds the
 			// reviews from the timeline
 			detail := map[string]any{"pr": t.pr.Number, "commit": commit, "note": review.Note, "round": len(t.reviews) + 1}
@@ -752,6 +753,20 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		return t.audit(commit, g)
 	}
 	return nil, verdict{}, false
+}
+
+// notRunRow records that the review or the audit of kind failed for good
+// on commit, at round, for reason: its activity wrote no row, so the
+// workflow writes the one the monitor's review_refused_not_run reads,
+// beside its own failure ask. A run from before queue-waits records
+// none, so its history stands (the call sits under that gate alone).
+func (t *taskRun) notRunRow(kind string, pr int64, commit string, round int, reason string) {
+	if !t.waitsOutOfQueue() {
+		return
+	}
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordNotRun, t.taskID, kind, pr, commit, round, reason).Get(t.ctx, nil); err != nil {
+		workflow.GetLogger(t.ctx).Warn("record the "+kind+" that did not run", "task", t.taskID, "error", err)
+	}
 }
 
 // remarked: the review answered concerns and named no finding
@@ -1054,6 +1069,7 @@ func (t *taskRun) audit(commit string, g *GateResults) (findings []string, v ver
 	}
 	if err != nil {
 		a = AuditResult{Verdict: AuditFindings, Findings: []AuditFinding{{Item: auditNoVerdict, Why: "the audit failed: " + errMessage(err)}}}
+		t.notRunRow(policy.StageAudit, t.pr.Number, commit, t.round, "the audit failed: "+errMessage(err))
 		detail := map[string]any{"pr": t.pr.Number, "commit": commit, "verdict": a.Verdict, "findings": a.Findings}
 		if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "audit", detail).Get(t.ctx, nil); err != nil {
 			workflow.GetLogger(t.ctx).Warn("record the failed audit", "error", err)

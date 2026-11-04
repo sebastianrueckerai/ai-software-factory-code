@@ -26,6 +26,7 @@ type gateHarness struct {
 	merges       []string   // "pr commit approver"
 	checkedHeads []string   // Merge's checkedHead per call
 	mergeMet     [][]string // Merge's met conditions per call
+	notRun       []string   // RecordNotRun's rows as "kind commit round reason"
 	gate         PolicyGate
 	gateSeq      []PolicyGate // in order, the last repeating; empty: gate
 	policyErrs   []error      // GatePolicy's error per call, in order; nil or short = none
@@ -182,6 +183,13 @@ func newGateHarnessWith(t *testing.T, wf TaskWorkflow, setup ...func(*gateHarnes
 			g.mu.Lock()
 			defer g.mu.Unlock()
 			g.judged = append(g.judged, verdict)
+			return nil
+		})
+	g.env.OnActivity(ActivityRecordNotRun, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID, kind string, pr int64, commit string, round int, reason string) error {
+			g.mu.Lock()
+			defer g.mu.Unlock()
+			g.notRun = append(g.notRun, fmt.Sprintf("%s %s %d %s", kind, commit, round, reason))
 			return nil
 		})
 	g.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(

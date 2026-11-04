@@ -1589,3 +1589,40 @@ func TestQueueChangeRequestAtTheCapDrawsThePool(t *testing.T) {
 		t.Fatalf("grants drawn = %q, want %q", grants, want)
 	}
 }
+
+// A review that fails for good still rides the run's own ask, and a
+// queue-waits run records the did-not-run row beside it: a pre-gate run
+// records none, so its history stands.
+func TestAReviewThatFailsForGoodRecordsItsNotRunRow(t *testing.T) {
+	run := func(pre bool) *queueHarness {
+		q := newQueueHarness(t, policy.QueueProject, green, func(g *gateHarness) {
+			g.reviewErr = terminalError("litellm down")
+			if pre {
+				g.beforeQueueWaits()
+			}
+		})
+		q.onSessions(pushed("s1", "c1"))
+		q.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		return q
+	}
+	gated := run(false)
+	if final := gated.run(t); final != "done" {
+		t.Fatalf("final = %q (%v), want done", final, gated.finals)
+	}
+	if want := []string{"review c1 1 litellm down"}; !slices.Equal(gated.notRun, want) {
+		t.Fatalf("did-not-run rows = %q, want %q", gated.notRun, want)
+	}
+	if want := []string{"policy", "repro c1", "review c1", "sync c1", "criteria c1", "approval c1", "leave", "sync c1", "merge", "leave"}; !slices.Equal(gated.steps, want) {
+		t.Fatalf("steps = %q, want the run's own ask beside the row", gated.steps)
+	}
+	if note := gated.approvals[0].Review.Note; !strings.Contains(note, "litellm down") {
+		t.Fatalf("the approval's review note = %q, want the failure", note)
+	}
+	pre := run(true)
+	if final := pre.run(t); final != "done" {
+		t.Fatalf("a pre-gate run: final = %q (%v), want done", final, pre.finals)
+	}
+	if len(pre.notRun) != 0 {
+		t.Fatalf("a pre-gate run recorded did-not-run rows %q, want none", pre.notRun)
+	}
+}

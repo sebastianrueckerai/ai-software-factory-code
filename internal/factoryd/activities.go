@@ -92,6 +92,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityBranchHead:                  r.BranchHead,
 		ActivityPullRequestMerged:           r.PullRequestMerged,
 		ActivityRecordStep:                  r.RecordStep,
+		ActivityRecordNotRun:                r.RecordNotRun,
 		ActivityFinish:                      r.Finish,
 		ActivityReconcile:                   r.Reconcile,
 		ActivityEscalate:                    r.Escalate,
@@ -1516,6 +1517,26 @@ func (r *Runner) Timeline() *Timeline { return r.timeline }
 // timeline.
 func (r *Runner) RecordStep(ctx context.Context, taskID, step string, detail map[string]any) error {
 	return r.timeline.Append(ctx, taskID, step, detail)
+}
+
+// RecordNotRun writes the review's or the audit's did-not-run row (kind
+// policy.StageReview or policy.StageAudit) when its activity failed for
+// good, with the failure's reason: the row the monitor's
+// review_refused_not_run reads, in the shape the run activity writes for
+// a call that never started. The workflow calls it beside its own failure
+// ask, under the queue-waits gate.
+func (r *Runner) RecordNotRun(ctx context.Context, taskID, kind string, pr int64, commit string, round int, reason string) error {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	if kind == policy.StageAudit {
+		res := AuditResult{Model: r.callModel(t, policy.PurposeAudit),
+			Findings: []AuditFinding{{Item: auditNoVerdict, Why: reason}}}
+		return r.auditFact(ctx, t, PullRequest{Number: pr}, commit, round, res)
+	}
+	fact := ReviewAttemptFact{PR: pr, Commit: commit, Round: round, Model: r.callModel(t, policy.PurposeReview), Note: reviewNotStarted + reason}
+	return r.reviewFact(ctx, t, fact)
 }
 
 // ProviderWait records that the task waits w.Backoff on the model

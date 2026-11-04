@@ -43,7 +43,8 @@ func newDigestRig(change func(*Task)) digestRig {
 		change(&card)
 	}
 	store.tasks[card.ID] = card
-	return digestRig{r: &Runner{store: store, objects: objects, cfg: testRunnerConfig(), now: func() time.Time { return digestStart }},
+	return digestRig{r: &Runner{store: store, objects: objects, cfg: testRunnerConfig(), now: func() time.Time { return digestStart },
+		timeline: &Timeline{Objects: objects, Events: store, Store: store}},
 		store: store, tl: &Timeline{Objects: objects}}
 }
 
@@ -632,6 +633,37 @@ func TestWaitOverBoundOnAQuietRun(t *testing.T) {
 // auditRefused is the reason the audit's row records when the gateway
 // refused its call.
 const auditRefused = "the audit call was refused by the gateway (refused_budget): the card's budget is spent"
+
+// The activity the workflow calls when a review or an audit failed for
+// good writes the row itself: the flag fires on it by stage and reason,
+// and a later row that ran on the same head resets it.
+func TestTheNotRunActivitysRowFiresTheFlag(t *testing.T) {
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate = "in-review", GateChecks })
+	g.event(10, EventSessionPushed, FactoryDecider, map[string]any{"session": "s-1", "attempt": 1})
+	if err := g.r.RecordNotRun(context.Background(), "t1410", policy.StageReview, 9, "c1", 1, "litellm down"); err != nil {
+		t.Fatal(err)
+	}
+	want := []DigestFlag{{"review_refused_not_run", "review: litellm down"}}
+	if got := g.digest(t).Flags; !slices.Equal(got, want) {
+		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+	if err := g.r.RecordNotRun(context.Background(), "t1410", policy.StageAudit, 9, "c1", 2, "the audit failed: sandbox down"); err != nil {
+		t.Fatal(err)
+	}
+	want = []DigestFlag{{"review_refused_not_run", "audit: the audit failed: sandbox down"},
+		{"review_refused_not_run", "review: litellm down"}}
+	if got := g.digest(t).Flags; !slices.Equal(got, want) {
+		t.Fatalf("Flags after the audit's row = %v, want %v", got, want)
+	}
+	g.event(30, EventModelReview, FactoryDecider, map[string]any{"commit": "c1", "round": 2, "verdict": "approve", "reviewed": true})
+	if got, wantReset := g.digest(t).Flags, want[:1]; !slices.Equal(got, wantReset) {
+		t.Fatalf("Flags after a reviewed row on the same head = %v, want %v", got, wantReset)
+	}
+	g.event(31, EventGateAudit, FactoryDecider, map[string]any{"commit": "c1", "ran": true, "verdict": AuditClear})
+	if got := g.digest(t).Flags; len(got) != 0 {
+		t.Fatalf("Flags after an audit that ran = %v, want none", got)
+	}
+}
 
 // The newest model_review and gate_audit rows since the newest push each
 // flag the in-review card when they did not run, by their stage and their
