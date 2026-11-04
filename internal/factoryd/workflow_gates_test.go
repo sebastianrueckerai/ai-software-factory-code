@@ -1063,11 +1063,6 @@ func rejudgeHarnessWith(t *testing.T, wf TaskWorkflow, never [][]string, kinds [
 	return g, unjudged, holds
 }
 
-// beforeBlindProofs pins g's run to before versionBlindProofs.
-func beforeBlindProofs(g *gateHarness) {
-	g.env.OnGetVersion("blind-proofs", workflow.DefaultVersion, versionBlindProofs).Return(workflow.DefaultVersion)
-}
-
 const refusedMonthNote = "model review refused by the gateway (refused_month_cap): month headroom 0.00 EUR"
 
 // A press on an integration card whose criteria no review judged runs the
@@ -1075,7 +1070,7 @@ const refusedMonthNote = "model review refused by the gateway (refused_month_cap
 // that judges merges on the one press, as its approver.
 func TestWorkflowPressReviewsAnUnjudgedCardBeforeItsMerge(t *testing.T) {
 	g, unjudged, holds := rejudgeHarness(t, [][]string{{"c1", "c3"}}, nil, Review{Verdict: "approve", Summary: "judged"})
-	beforeBlindProofs(g)
+	g.beforeBlindProofs()
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1099,7 +1094,7 @@ func TestWorkflowPressReviewsAnUnjudgedCardBeforeItsMerge(t *testing.T) {
 // holds, asking again with the note, and the approval waits on.
 func TestWorkflowPressHoldsWhileTheReviewStillDoesNotRun(t *testing.T) {
 	g, _, holds := rejudgeHarness(t, [][]string{{"c1"}}, nil, Review{Note: refusedMonthNote})
-	beforeBlindProofs(g)
+	g.beforeBlindProofs()
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1121,7 +1116,7 @@ func TestWorkflowPressReviewConcernsGoBackToTheSessions(t *testing.T) {
 	finding := "criterion c1 not met (unmet): no test of a"
 	g, _, _ := rejudgeHarness(t, [][]string{{"c1"}, nil}, nil,
 		Review{Verdict: "concerns", Summary: "a gap", Findings: []string{finding}}, Review{Verdict: "approve", Summary: "judged"})
-	beforeBlindProofs(g)
+	g.beforeBlindProofs()
 	g.onSessions(pushed("s1", "c1"), pushed("s2", "c2"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1142,7 +1137,7 @@ func TestWorkflowPressReviewConcernsGoBackToTheSessions(t *testing.T) {
 func TestWorkflowBeforeReviewHoldsMergeMergesOnThePress(t *testing.T) {
 	g, unjudged, _ := rejudgeHarness(t, [][]string{{"c1"}}, nil)
 	g.env.OnGetVersion("review-holds-merge", workflow.DefaultVersion, versionReviewHoldsMerge).Return(workflow.DefaultVersion)
-	beforeBlindProofs(g)
+	g.beforeBlindProofs()
 	g.onSessions(pushed("s1", "c1"))
 	g.onChecks(ChecksResult{State: ChecksSuccess})
 	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1454,7 +1449,7 @@ func TestWorkflowBeforeBlindProofsKeepsTheOldPaths(t *testing.T) {
 		g := newGateHarness(t, func(g *gateHarness) {
 			g.criteria = []CriteriaResult{{Findings: []string{finding}, Stand: stand}}
 		})
-		beforeBlindProofs(g)
+		g.beforeBlindProofs()
 		g.onSessions(pushed("s1", "c1"))
 		g.onChecks(ChecksResult{State: ChecksSuccess})
 		g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
@@ -1473,7 +1468,7 @@ func TestWorkflowBeforeBlindProofsKeepsTheOldPaths(t *testing.T) {
 	})
 	t.Run("the press runs the review", func(t *testing.T) {
 		g, unjudged, holds := rejudgeHarness(t, [][]string{{"c1"}}, nil, Review{Note: refusedMonthNote})
-		beforeBlindProofs(g)
+		g.beforeBlindProofs()
 		g.criteria = []CriteriaResult{{Stand: stand}}
 		g.onSessions(pushed("s1", "c1"))
 		g.onChecks(ChecksResult{State: ChecksSuccess})

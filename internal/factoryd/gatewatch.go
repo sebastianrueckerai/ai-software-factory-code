@@ -79,6 +79,7 @@ var activityGates = map[string]string{
 	ActivityHoldoutSettlement: GateSession,
 	ActivityAwaitSessionGap:   GateMerge,
 	ActivityProviderWait:      GateProvider,
+	ActivityProofsAtMain:      GateSession,
 }
 
 // defaultBoundActivities are the activities policy.BoundActivities does

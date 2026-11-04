@@ -157,6 +157,39 @@ func TestRunSessionCarriesAnAcceptanceGreenHome(t *testing.T) {
 	}
 }
 
+// A session under versionBlindProofs reads no acceptance command: the
+// same green run carries nothing home and records nothing on the trail.
+func TestRunSessionUnderBlindProofsReadsNoAcceptance(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Source: SourcePlan, Parent: "t-plan", PlanKey: "check",
+		Objective: "add a README line", Repository: "sf/ai-software-factory-code", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	objects := &fakeObjectStore{}
+	runner, _, store := newTestRunner(t, task, newFakeKube(), objects)
+	(&fakeWorkerEndpoint{status: http.StatusNoContent}).start(t, runner)
+	if err := store.CreateTask(context.Background(), Task{ID: "t-plan", Status: "in-review",
+		Repository: "sf/ai-software-factory-code", Objective: "a plan", Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	plan, _ := json.Marshal(Plan{Summary: "the work", Cards: []PlanCard{{Key: "check", Title: "a card", Brief: "its brief",
+		Acceptance: []PlanItem{{Text: "bash check"}}}}})
+	if _, err := store.AddPlanRevision(context.Background(), "t-plan", plan, "sha1"); err != nil {
+		t.Fatal(err)
+	}
+	logs := envLine(harness.Event{Kind: harness.EventCommand, Time: time.Now(),
+		Detail: map[string]any{"command": "bash check", "exit": 0}}) + "\n" +
+		resultLine(false, "out of time")
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small", BlindProofs: true}, nil, logs)
+	if err != nil {
+		t.Fatalf("RunSession: %v", err)
+	}
+	if res.Outcome != OutcomeNoPush || res.Acceptance != nil {
+		t.Fatalf("result = %s %+v, want no_push and no acceptance", res.Outcome, res.Acceptance)
+	}
+	trail, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	if strings.Contains(string(trail), EventAcceptancePassed) {
+		t.Fatalf("the trail holds an acceptance green: %s", trail)
+	}
+}
+
 // Roadmap 201: a session whose acceptance command is a step of an &&
 // chain, past the line's first 512 bytes, carries the green home with the
 // whole line: the worker's adapter keeps the command whole, and only a
@@ -235,12 +268,14 @@ func TestRunSessionAcceptanceOnlyWhereTheExitIsTheCommands(t *testing.T) {
 	}
 }
 
-// The workflow closes a card done on the session's acceptance green
-// without another session and without a human's answer, whatever the
-// session's own verdict; without a green it ends as it always did.
+// A run from before versionBlindProofs closes a card done on the
+// session's acceptance green without another session and without a
+// human's answer, whatever the session's own verdict. Without a green it
+// ends as it always did.
 func TestWorkflowClosesOnAnAcceptanceGreen(t *testing.T) {
 	t.Run("no push", func(t *testing.T) {
 		h := newWorkflowHarness(t)
+		h.beforeBlindProofs()
 		h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "the checks pass here",
 			Acceptance: &AcceptanceHit{Command: "bash check", Exit: 0, Session: "s1"}})
 		if final := h.run(t); final != "done" {
@@ -255,6 +290,7 @@ func TestWorkflowClosesOnAnAcceptanceGreen(t *testing.T) {
 	})
 	t.Run("escalate", func(t *testing.T) {
 		h := newWorkflowHarness(t)
+		h.beforeBlindProofs()
 		h.onSessions(SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Reason: "the supervisor worries",
 			Acceptance: &AcceptanceHit{Command: "go test ./acceptance/ passes", Exit: 0, Session: "s2"}})
 		if final := h.run(t); final != "done" {
@@ -266,6 +302,7 @@ func TestWorkflowClosesOnAnAcceptanceGreen(t *testing.T) {
 	})
 	t.Run("no green", func(t *testing.T) {
 		h := newWorkflowHarness(t)
+		h.beforeBlindProofs()
 		h.env.OnGetVersion("session-cap", workflow.DefaultVersion, versionSessionCap).Return(workflow.DefaultVersion)
 		h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "out of time"})
 		if final := h.run(t); final != "failed" {
@@ -277,6 +314,7 @@ func TestWorkflowClosesOnAnAcceptanceGreen(t *testing.T) {
 	})
 	t.Run("pushed keeps its verification", func(t *testing.T) {
 		h := newWorkflowHarness(t)
+		h.beforeBlindProofs()
 		h.onSessions(SessionResult{Outcome: OutcomePushed, SessionID: "s1", Commit: "c1", Summary: "pushed",
 			Acceptance: &AcceptanceHit{Command: "bash check", Exit: 0, Session: "s1"}})
 		h.onChecks(ChecksResult{State: ChecksSuccess})

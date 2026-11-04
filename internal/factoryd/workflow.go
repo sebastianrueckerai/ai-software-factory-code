@@ -176,6 +176,7 @@ const (
 	ActivityReplanChild                 = "ReplanChild"
 	ActivitySupersedeApproval           = "SupersedeApproval"
 	ActivityReplanStopped               = "ReplanStopped"
+	ActivityProofsAtMain                = "ProofsAtMain"
 )
 
 // errTerminal marks an activity error no retry can fix; the workflow fails
@@ -373,7 +374,8 @@ type SessionInput struct {
 	LastGates *GateResults `json:",omitempty"`
 	// Handover is the note the session's brief opens with (a mid-session
 	// handover); "" for the plain brief.
-	Handover string `json:",omitempty"`
+	Handover    string `json:",omitempty"`
+	BlindProofs bool   `json:",omitempty"` // the run is under versionBlindProofs: the session end reads no acceptance command
 }
 
 type SessionResult struct {
@@ -1327,7 +1329,9 @@ const (
 	// agent as a stage's do, to the card at the cap; a press whose
 	// never-judged criteria are the gate's runs the gate again, and one
 	// whose missing rows are a human's holds the merge, no model review
-	// run. A run from before keeps the old paths.
+	// run. A plan card's session that ends without a push closes on its
+	// proofs at main, and the session end reads no acceptance command. A
+	// run from before keeps the old paths.
 	versionBlindProofs workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
@@ -2231,6 +2235,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
+			BlindProofs: t.blindProofs >= versionBlindProofs,
 		}
 		checkinPending := (t.gateFindings || t.deadFrom != "") && t.cfg.Task.CheckIn > 0
 		var gates *GateResults
@@ -2282,8 +2287,8 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		// at versionCapWait a month's or a project's cap takes the day
 		// cap's path, before the escalation its outcome is
-		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil && res.Acceptance == nil &&
-			(res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
+		capped := t.dayCap >= versionDayCap && err == nil && !decided && res.Capped != nil &&
+			(t.blindProofs >= versionBlindProofs || res.Acceptance == nil) && (res.Outcome == OutcomeDayCap || t.capWaits >= versionCapWait)
 		if capped && !res.Capped.Allowed {
 			// refused at its first call: no attempt, the same input after
 			if final, why := held(t.awaitCap(*res.Capped, model)); final != "" {
@@ -2352,7 +2357,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				}
 			}
 		}
-		if res.Acceptance != nil && res.Outcome != OutcomePushed {
+		if t.blindProofs < versionBlindProofs && res.Acceptance != nil && res.Outcome != OutcomePushed {
 			// the session ran one of the plan's acceptance commands and it
 			// exited 0 (roadmap 208): the fact closes the card, no model
 			// verdict, no further session and no answer owed. A pushed
@@ -2392,6 +2397,16 @@ func (t *taskRun) lifecycle() (string, error) {
 			} else if midNote {
 				handoverNote = res.CheckIn.Handover
 			}
+		}
+		if t.blindProofs >= versionBlindProofs && t.source == SourcePlan && res.Outcome == OutcomeNoPush {
+			var atMain ProofsAtMain
+			if err := workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reproOptions()), ActivityProofsAtMain, t.taskID).Get(t.ctx, &atMain); err != nil {
+				workflow.GetLogger(t.ctx).Warn("proofs at main", "task", t.taskID, "error", err)
+			}
+			if atMain.Met {
+				return t.finish("done", atMain.Reason)
+			}
+			own = append(own, atMain.Findings...)
 		}
 		if capped {
 			// it made calls before the cap refused one: an attempt

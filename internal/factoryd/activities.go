@@ -157,6 +157,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityReplanChild:                 r.ReplanChild,
 		ActivitySupersedeApproval:           r.SupersedeApproval,
 		ActivityReplanStopped:               r.ReplanStopped,
+		ActivityProofsAtMain:                r.ProofsAtMain,
 	} {
 		w.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -1122,7 +1123,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 	}
 	events := r.sessionTranscript(ctx, t.ID, s.id)
-	if res.Outcome != OutcomePushed {
+	if res.Outcome != OutcomePushed && !in.BlindProofs {
 		// the session may have proven the card itself (roadmap 208): one
 		// of its plan's acceptance commands run green. A read that fails
 		// costs the card nothing: it ends as it always did.
