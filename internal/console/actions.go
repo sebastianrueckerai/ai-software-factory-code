@@ -817,32 +817,29 @@ func batchLines(batch []factoryd.PlanAnswer) []string {
 // id's newest revision: factoryd stores the decision. Nothing is posted
 // on the issue: the agent reads it, and the hold-outs stay hidden from
 // the agent by routing; the event feed carries the decision.
-func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revision, idx int, verb string) (string, error) {
+func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revision, idx int, verb string) error {
 	if verb != "okay" && verb != "drop" {
-		return "", refuse(http.StatusBadRequest, "okay or drop is required")
+		return refuse(http.StatusBadRequest, "okay or drop is required")
 	}
 	t, err := c.planIn(ctx, a, id)
 	if err != nil {
-		return "", err
+		return err
 	}
 	var stale factoryd.ErrStalePlan
 	switch err := c.cfg.DecideHoldout(ctx, t.ID, revision, idx, verb, a.s.user); {
 	case errors.As(err, &stale):
-		return "", refuse(http.StatusConflict, stale.Error())
+		return refuse(http.StatusConflict, stale.Error())
 	case errors.Is(err, factoryd.ErrAnswered):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The confirmation of plan #%d is answered already; its hold-outs are settled.", t.IssueNumber))
+		return refuse(http.StatusConflict, fmt.Sprintf("The confirmation of plan #%d is answered already; its hold-outs are settled.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrHoldoutClick), errors.Is(err, factoryd.ErrNoHoldout):
-		return "", refuse(http.StatusConflict, err.Error())
+		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %v. Reload the board and press Okay or Drop again.", err))
+		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %v. Reload the board and press Okay or Drop again.", err))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
-	if verb == "okay" {
-		return fmt.Sprintf("Hold-out %d of plan #%d kept out; its test is written later, hidden from the agent.", idx, t.IssueNumber), nil
-	}
-	return fmt.Sprintf("Hold-out %d of plan #%d dropped.", idx, t.IssueNumber), nil
+	return nil
 }
 
 // doRequestChanges posts a writer's change request on plan id's issue

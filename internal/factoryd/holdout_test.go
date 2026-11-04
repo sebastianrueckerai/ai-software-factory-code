@@ -110,11 +110,12 @@ func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 
 // The bounds, one proposal each: an id off the charset, an empty field
 // and a claim past 200 runes are dropped, and an id a plan criterion
-// holds gains _h. The bound counts runes, not bytes.
+// holds gains _h. The bound counts runes, not bytes, and a proposal that
+// cites a past failure decodes.
 func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
 	r, _, _ := newTestRunner(t, holdoutPlanTask(), newFakeKube(), &fakeObjectStore{})
 	answer, _ := json.Marshal(map[string]any{"holdouts": []map[string]string{
-		{"id": "door_state", "claim": "The door stays shut", "inputs": "key 9", "expected": "403"},
+		{"id": "door_state", "claim": "The door stays shut", "inputs": "key 9", "expected": "403", "from": "the slug broke on BAD000"},
 		{"id": "Bad Id", "claim": "c", "inputs": "i", "expected": "e"},
 		{"id": "no_expected", "claim": "c", "inputs": "i", "expected": ""},
 		{"id": "long_claim", "claim": strings.Repeat("é", 201), "inputs": "i", "expected": "e"},

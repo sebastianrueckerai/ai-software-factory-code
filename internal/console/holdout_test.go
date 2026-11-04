@@ -1,7 +1,6 @@
 package console
 
 import (
-	"context"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -33,18 +32,22 @@ func holdoutsRig(r *rig, confirmation factoryd.PlanQuestion) {
 // its state's one line, and an Okay and a Drop on a proposed one; the
 // forms carry the row's own index, the number the gate and factoryd know
 // it by, and the confirmation stays the card's only open question. A
-// proof's code never reaches the card, and an okayed row takes no click.
+// proof's code never reaches the card, an okayed or stored row takes no
+// click, and a state without a line shows none.
 func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
 	r.tasks.proofs["t-plan"][2].State = factoryd.ProofOkayed
+	r.tasks.proofs["t-plan"] = append(r.tasks.proofs["t-plan"], factoryd.PlanProof{Idx: 4, Round: 2, ID: "lock_log",
+		Origin: factoryd.ProofOriginHoldout, Claim: "Every lock turn lands in the log", Inputs: "one turn", Expected: "one row",
+		State: factoryd.ProofStored, Path: "proofs/lock_log/lock_log_test.go", Suite: "./proofs/lock_log", Name: "TestLockLog", Code: "func TestLockLog(t *testing.T) {}"})
 	ck, _ := r.loggedIn(t)
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	for _, want := range []string{
 		`<div class="holdouts">`,
 		`<p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>`,
 		`<legend>Hold-out 1: The door stays shut until a key that fits turns the lock</legend>`,
-		`<p class="meta">Inputs: POST /doors/1/open with key 9. Expected: 403 and the door row still shut.</p>`,
+		`<p class="meta">Inputs: POST /doors/1/open with key 9<br>Expected: 403 and the door row still shut</p>`,
 		"proposed: okay keeps it out of the plan, and its test is written later, hidden from the agent",
 		`<legend>Hold-out 2: Every key turn lands in the log</legend>`,
 		"kept out: its test is written once the plan&#39;s foundation is on main, hidden from the agent",
@@ -57,7 +60,7 @@ func TestPlanCardHoldsTheHoldoutZone(t *testing.T) {
 			t.Errorf("plan card lacks %q:\n%s", want, card)
 		}
 	}
-	for _, leak := range []string{"TestSecret", "The old round", `name="index" value="3"`} {
+	for _, leak := range []string{"TestSecret", "TestLockLog", "The old round", `name="index" value="3"`, `name="index" value="4"`, `<p class="meta"></p>`} {
 		if strings.Contains(card, leak) {
 			t.Errorf("the card holds %q:\n%s", leak, card)
 		}
@@ -91,19 +94,12 @@ func TestPlanCardHoldoutsSettleWithTheConfirmation(t *testing.T) {
 
 // The okay and the drop store the decision and show the board again: the
 // row's line turns, nothing is posted on the issue, and the event feed
-// carries the click. The okay's answer says the test comes later. A second
-// click on the row, one on no row, one on a stale revision and a verb that
-// is neither okay nor drop are refused.
+// carries the click. A second click on the row, one on no row, one on a
+// stale revision and a verb that is neither okay nor drop are refused.
 func TestPlanHoldoutClicksDecideTheRound(t *testing.T) {
 	r := newRig(t)
 	holdoutsRig(r, factoryd.PlanQuestion{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"})
-	r.tasks.proofs["t-plan"] = append(r.tasks.proofs["t-plan"], factoryd.PlanProof{Idx: 4, Round: 2, ID: "lock_log",
-		Origin: factoryd.ProofOriginHoldout, Claim: "Every lock turn lands in the log", State: factoryd.ProofProposed})
 	ck, s := r.loggedIn(t)
-	if msg, err := r.c.doDecideHoldout(context.Background(), actor{s: s, via: "chat"}, "t-plan", 2, 4, "okay"); err != nil ||
-		msg != "Hold-out 4 of plan #1 kept out; its test is written later, hidden from the agent." {
-		t.Fatalf("okay answers %q, %v", msg, err)
-	}
 	board := func() string {
 		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	}

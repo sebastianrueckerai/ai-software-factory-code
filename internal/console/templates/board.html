@@ -278,18 +278,18 @@
 {{end}}{{end}}{{if .Holdouts}}<div class="holdouts">
 <p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
 {{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Claim}}</legend>
-<p class="meta">Inputs: {{$h.Inputs}}. Expected: {{$h.Expected}}.</p>
-<p class="meta">{{$h.Blurb}}</p>
-{{if or $h.CanOkay $h.CanDrop}}<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
-{{if $h.CanOkay}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
+<p class="meta">Inputs: {{$h.Inputs}}<br>Expected: {{$h.Expected}}</p>
+{{with $h.Blurb}}<p class="meta">{{.}}</p>
+{{end}}{{if $h.Decides}}<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
+<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
 <button type="submit" name="verb" value="okay">Okay</button>
 </form>
-{{end}}{{if $h.CanDrop}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
+<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$h.Idx}}">
 <button type="submit" name="verb" value="drop" class="deny">Drop</button>
 </form>
-{{end}}</div>{{end}}
+</div>{{end}}
 </fieldset>
 {{end}}</div>{{end}}<p class="meta">{{with .Open}}{{.}}. {{end}}The answers go to the planner; its next revision with no open question files the cards.</p>
 {{if not .Confirming}}<form method="post" action="/tasks/{{.TaskID}}/plan/changes" hx-post="/tasks/{{.TaskID}}/plan/changes" data-to="running">

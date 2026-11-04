@@ -120,8 +120,7 @@ type planHoldout struct {
 	Index int
 	factoryd.PlanProof
 	Blurb   string
-	CanOkay bool
-	CanDrop bool
+	Decides bool
 }
 
 // holdoutBlurbs are the hold-out states' one lines.
@@ -276,8 +275,8 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 			continue
 		}
 		i++
-		decides := confirming && ho.State == factoryd.ProofProposed
-		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, PlanProof: ho, Blurb: holdoutBlurbs[ho.State], CanOkay: decides, CanDrop: decides})
+		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, PlanProof: ho, Blurb: holdoutBlurbs[ho.State],
+			Decides: confirming && ho.State == factoryd.ProofProposed})
 	}
 	return nil
 }
