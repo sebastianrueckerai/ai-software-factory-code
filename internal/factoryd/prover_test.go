@@ -139,7 +139,7 @@ func TestProofFindingsCheckTheShape(t *testing.T) {
 		pages.Outcome, pages.Artifact = onMainGreen, "pages_ok.txt"
 		return []FiledProof{filedEntry("size_bound", "TestSizeBound"), calm, pages, filedEntry("key_log", "TestKeyLog")}
 	}
-	if got := proofFindings(due, valid()); got != nil {
+	if got := proofFindings(due, valid(), false); got != nil {
 		t.Fatalf("the valid filing = %q, want no finding", got)
 	}
 	const path = `file_proofs: size_bound: path `
@@ -189,7 +189,7 @@ func TestProofFindingsCheckTheShape(t *testing.T) {
 			[]string{"file_proofs: pages_ok: a human criterion names the file its test writes under CHECK_ARTIFACTS: pages_ok or pages_ok.<ext>"}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			if got := proofFindings(due, tc.change(valid())); !slices.Equal(got, tc.want) {
+			if got := proofFindings(due, tc.change(valid()), false); !slices.Equal(got, tc.want) {
 				t.Fatalf("findings =\n%q\nwant\n%q", got, tc.want)
 			}
 		})
@@ -198,13 +198,13 @@ func TestProofFindingsCheckTheShape(t *testing.T) {
 		f := valid()
 		f[1].Artifact = artifact
 		want := []string{"file_proofs: reads_calm: a judgement criterion names the file its test writes under CHECK_ARTIFACTS: reads_calm or reads_calm.<ext>"}
-		if got := proofFindings(due, f); !slices.Equal(got, want) {
+		if got := proofFindings(due, f, false); !slices.Equal(got, want) {
 			t.Errorf("artifact %q: findings = %q, want %q", artifact, got, want)
 		}
 	}
 	f := valid()
 	f[1].Artifact = "reads_calm"
-	if got := proofFindings(due, f); got != nil {
+	if got := proofFindings(due, f, false); got != nil {
 		t.Errorf("the artifact named by the criterion alone = %q, want no finding", got)
 	}
 }
@@ -217,7 +217,7 @@ func TestProofFindingsLogAHoldoutByItsEntryAlone(t *testing.T) {
 	f[0].Path = f[1].Path
 	f[1].Path, f[1].Suite, f[1].Name, f[1].Outcome = "proofs/key_log/key_log.go", "-key_log", "TestKeyLog?", "green-ish key_log"
 	var logged []string
-	for _, x := range checkProofs(due, append(f, f[1])) {
+	for _, x := range checkProofs(due, append(f, f[1]), false) {
 		logged = append(logged, x.logged)
 	}
 	want := []string{
@@ -232,11 +232,11 @@ func TestProofFindingsLogAHoldoutByItsEntryAlone(t *testing.T) {
 	}
 	f = []FiledProof{filedEntry("size_bound", "TestSizeBound"), filedEntry("key_log", "TestKeyLog")}
 	f[1].Path = f[0].Path
-	got := checkProofs(due, f)
+	got := checkProofs(due, f, false)
 	if len(got) != 1 || got[0].logged != "file_proofs: holdout-4: path is size_bound's too" {
 		t.Fatalf("a hold-out on a criterion's path = %+v", got)
 	}
-	got = checkProofs(due, f[:1])
+	got = checkProofs(due, f[:1], false)
 	if len(got) != 1 || got[0].text != "file_proofs: no proof for key_log" || got[0].logged != "file_proofs: no proof for holdout-4" {
 		t.Fatalf("a missing hold-out = %+v", got)
 	}
@@ -424,6 +424,7 @@ func TestProverGuideHoldsTheCriteriaTheSurfaceAndTheRun(t *testing.T) {
 		"The foundation card foundation is on main. Its brief named the contracts every card builds on; read them there:\nLay out internal/server.New, ",
 		"mkdir -p /tmp/art && CHECK_REPORT=/tmp/<id>.xml CHECK_ARTIFACTS=/tmp/art bash check test <suite> <name>",
 		"three filings at most; the last filing stands",
+		"the third filing takes a test still green or unrunnable on main, which factoryd flags",
 	} {
 		if !strings.Contains(g, want) {
 			t.Errorf("guide lacks %q:\n%s", want, g)
@@ -628,6 +629,37 @@ func TestRunReportOfTheProverDryRunsTheFilingOnMain(t *testing.T) {
 	}
 }
 
+// A dry run whose pod reports no run, only its closing error (main moved
+// before the fetch), stores nothing: the activity runs again and reads
+// main's head again.
+func TestRunReportOfTheProverStoresNothingFromADryRunWithNoRun(t *testing.T) {
+	kube := newFakeKube()
+	task := proverTask()
+	task.AgentSummary = "filed 1 proof, filing 1"
+	r, _, store := newProverRunner(t, task, kube, &fakeObjectStore{})
+	proofsWorker(t, r)
+	row := PlanProof{Idx: 1, Round: 1, ID: "size_bound", Origin: ProofOriginCriterion, Criterion: "size_bound", State: ProofFiled,
+		Path: "proofs/size_bound/size_bound_test.go", Suite: "./proofs/size_bound", Name: "TestSizeBound", Code: "package size_bound"}
+	seedProver(t, store, proverPlan(), row)
+	closing, _ := json.Marshal(harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "fetch: FETCH_HEAD is m2, not m0"}})
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small")
+		done <- err
+	}()
+	scriptReproPods(kube, string(closing))
+	err := <-done
+	if err == nil || isTerminal(err) || !strings.Contains(err.Error(), "FETCH_HEAD is m2, not m0") {
+		t.Fatalf("RunReport = %v, want a plain error that names the pod's", err)
+	}
+	if rows, _ := store.PlanProofs(context.Background(), "t-plan"); !slices.Equal(rows, []PlanProof{row}) {
+		t.Fatalf("rows = %+v, want them filed as they were", rows)
+	}
+	if n := len(planEvents(store, EventProofsStored)); n != 0 {
+		t.Fatalf("proofs_stored events = %d, want none", n)
+	}
+}
+
 // A store that went through before its event landed is not stored twice:
 // the retry finds no filed row, stored ones, and ends with no pod.
 func TestRunReportOfTheProverKeepsAStoreWhoseEventDidNotLand(t *testing.T) {
@@ -808,6 +840,66 @@ func TestFileProofsCapNamesNoFilingThatPassed(t *testing.T) {
 	if want := (ProofsFiled{Filing: 3, Findings: []string{"file_proofs: three filings are this session's limit, and none of them passed: end the session"}}); err != nil ||
 		!reflect.DeepEqual(got, want) {
 		t.Fatalf("the fourth = %+v, %v; want %+v", got, err, want)
+	}
+}
+
+// The third filing takes a test green or unrunnable on main as the prover
+// reports it, every other check as before: the dry run then flags it.
+func TestProofFindingsOfTheThirdFilingAdmitGreenAndUnrunnable(t *testing.T) {
+	due := []proofDue{{"size_bound", CriterionTest, 0}, {"reads_calm", CriterionJudgement, 0}, {"key_log", CriterionTest, 4}}
+	f := []FiledProof{filedEntry("size_bound", "TestSizeBound"), filedEntry("reads_calm", "TestReadsCalm"), filedEntry("key_log", "TestKeyLog")}
+	f[0].Outcome, f[1].Outcome, f[1].Artifact, f[2].Outcome = onMainGreen, onMainUnrunnable, "reads_calm.html", onMainUnrunnable
+	if got := proofFindings(due, f, true); got != nil {
+		t.Fatalf("the third filing = %q, want no finding", got)
+	}
+	if got := proofFindings(due, f, false); len(got) != 3 {
+		t.Fatalf("an earlier filing = %q, want the three outcomes refused", got)
+	}
+	f[0].Outcome, f[1].Artifact = "passed", "page.html"
+	want := []string{`file_proofs: size_bound: outcome "passed": red, green or unrunnable`,
+		"file_proofs: reads_calm: a judgement criterion names the file its test writes under CHECK_ARTIFACTS: reads_calm or reads_calm.<ext>"}
+	if got := proofFindings(due, f, true); !slices.Equal(got, want) {
+		t.Fatalf("the third filing's shape = %q, want %q", got, want)
+	}
+}
+
+// A test the prover reports green on main is refused on its first
+// filing and stands on its third, filed; the dry run stores it flagged.
+func TestFileProofsStoresAThirdFilingGreenOnMainFlagged(t *testing.T) {
+	ctx := context.Background()
+	kube := newFakeKube()
+	r, _, store := newProverRunner(t, proverTask(), kube, &fakeObjectStore{})
+	proofsWorker(t, r)
+	p := Plan{Summary: "s", Criteria: []PlanCriterion{proverPlan().Criteria[0], proverPlan().Criteria[3]}}
+	seedProver(t, store, p)
+	green := filedEntry("size_bound", "TestSizeBound")
+	green.Outcome = onMainGreen
+	refused := []string{"file_proofs: size_bound: your run on main was green: a test of kind test must fail there, where the feature is not built yet"}
+	for n := 1; n <= 2; n++ {
+		if got, err := r.FileProofs(ctx, "t-prove", []FiledProof{green}); err != nil || !slices.Equal(got.Findings, refused) {
+			t.Fatalf("filing %d = %+v, %v; want %q", n, got, err, refused)
+		}
+	}
+	if got, err := r.FileProofs(ctx, "t-prove", []FiledProof{green}); err != nil || !reflect.DeepEqual(got, ProofsFiled{Filing: 3}) {
+		t.Fatalf("filing 3 = %+v, %v; want it accepted", got, err)
+	}
+	if rows, _ := store.PlanProofs(ctx, "t-plan"); len(rows) != 1 || rows[0].State != ProofFiled {
+		t.Fatalf("rows = %+v, want size_bound filed", rows)
+	}
+	prover := store.tasks["t-prove"]
+	prover.AgentSummary = "filed 1 proof, filing 3"
+	store.tasks["t-prove"] = prover
+	done := make(chan error)
+	go func() {
+		_, err := execActivity(t, r, ActivityRunReport, "t-prove", "factory/small")
+		done <- err
+	}()
+	scriptReproPods(kube, proofLines(harness.ProofRun{ID: "size_bound", Report: junitGz(t, wrap(`<testcase name="TestSizeBound"></testcase>`))}))
+	if err := <-done; err != nil {
+		t.Fatalf("RunReport: %v", err)
+	}
+	if rows, _ := store.PlanProofs(ctx, "t-plan"); len(rows) != 1 || rows[0].State != ProofStored || rows[0].Flag != ProofFlagGreen {
+		t.Fatalf("rows = %+v, want size_bound stored, flagged green on main", rows)
 	}
 }
 

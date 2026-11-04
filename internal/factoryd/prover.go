@@ -140,15 +140,17 @@ func holdoutWords(due []proofDue, proofs []FiledProof) func(FiledProof) bool {
 // proofFindings are the refusals of a filing of proofs against due, the
 // shape alone: per entry in filing order, then the proofs missing in due
 // order. No test runs here; the dry run after the session is the check.
-func proofFindings(due []proofDue, proofs []FiledProof) []string {
+// The last filing takes an outcome on main of green or unrunnable as the
+// prover reports it, which the dry run then flags.
+func proofFindings(due []proofDue, proofs []FiledProof, last bool) []string {
 	var out []string
-	for _, f := range checkProofs(due, proofs) {
+	for _, f := range checkProofs(due, proofs, last) {
 		out = append(out, f.text)
 	}
 	return out
 }
 
-func checkProofs(due []proofDue, proofs []FiledProof) []proofFinding {
+func checkProofs(due []proofDue, proofs []FiledProof, last bool) []proofFinding {
 	var out []proofFinding
 	owed := map[string]proofDue{}
 	for _, d := range due {
@@ -230,6 +232,7 @@ func checkProofs(due []proofDue, proofs []FiledProof) []proofFinding {
 		}
 		ran := "your run on main was " + e.Outcome + ": "
 		switch {
+		case last:
 		case d.kind == CriterionTest && e.Outcome == onMainGreen:
 			refuse(ran+"a test of kind test must fail there, where the feature is not built yet", ran+"a test of kind test must fail there, where the feature is not built yet")
 		case d.kind == CriterionTest && e.Outcome == onMainUnrunnable:
@@ -310,13 +313,13 @@ func (r *Runner) FileProofs(ctx context.Context, taskID string, proofs []FiledPr
 		return ProofsFiled{Filing: filings, Findings: []string{limit}}, nil
 	}
 	due := proofsDue(p, rows)
-	found := checkProofs(due, proofs)
+	filing := filings + 1
+	found := checkProofs(due, proofs, filing == maxFilings)
 	if len(found) == 0 {
 		if err := r.store.FilePlanProofs(ctx, t.Parent, filedRows(p, revision, due, proofs)); err != nil {
 			return ProofsFiled{}, err
 		}
 	}
-	filing := filings + 1
 	r.timeline.recordEvent(ctx, t.Parent, EventProofsFiled, filingDetail(t.ID, filing, due, proofs, found))
 	res := ProofsFiled{Filing: filing, Left: maxFilings - filing}
 	for _, f := range found {
@@ -542,7 +545,8 @@ const (
 		"A test of kind test, and every hold-out, must fail on main for the feature's absence: a test green before the feature exists proves nothing. " +
 		"A judgement or human test must run on main and write its artifact. Then file the whole set with file_proofs: per criterion its id, path, suite, name, code, " +
 		"your run's outcome on main and, for judgement and human, the artifact's file name. " +
-		"A refusal names what to fix; file again, three filings at most; the last filing stands. You push nothing."
+		"A refusal names what to fix; file again, three filings at most; the last filing stands. " +
+		"Report each outcome as your run saw it: the third filing takes a test still green or unrunnable on main, which factoryd flags. You push nothing."
 )
 
 // sentence is s trimmed and ending in a full stop, unless it ends in one
@@ -620,8 +624,9 @@ func (r *Runner) proverBrief(ctx context.Context, plan Task) (string, error) {
 // plan with stored rows and none filed stores nothing again, whether or
 // not its event landed. Else a plan closed meanwhile stores nothing, its
 // line on the prover's timeline saying so, and no row filed is a terminal
-// error in factoryd's words. A pod that cannot start or ends early returns
-// its error, and the activity runs again.
+// error in factoryd's words. A pod that cannot start, ends early or runs
+// no proof returns its error, and the activity runs again at main's head
+// then.
 func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) error {
 	rows, err := r.store.PlanProofs(ctx, plan.ID)
 	if err != nil {
@@ -674,6 +679,9 @@ func (r *Runner) storeProofs(ctx context.Context, t Task, repo Repo, plan Task) 
 	runs, runErr, err := r.proofRuns(ctx, t, repo, branchRef(branch), head, t.SHA, entries)
 	if err != nil {
 		return err
+	}
+	if len(runs) == 0 && runErr != "" {
+		return fmt.Errorf("the dry run on main ran no proof: %s", runErr)
 	}
 	flags := map[int]string{}
 	ids := make([]string, 0, len(filed))
