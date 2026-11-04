@@ -1291,7 +1291,8 @@ var _ Store = (*fakeStore)(nil)
 
 // OpenCase opens c as PGStore.OpenCase does: unless a live case of its
 // task, kind and key exists, which it answers with false, it inserts c
-// with the next id, open when it names no status.
+// with the next id, open when it names no status, owned by rung 3 with no
+// wake.
 func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	live := func(o Case) bool { return o.Status == CaseOpen || o.Status == CaseAtHuman }
 	if i := slices.IndexFunc(s.cases, func(o Case) bool {
@@ -1304,16 +1305,21 @@ func (s *fakeStore) OpenCase(ctx context.Context, c Case) (Case, bool, error) {
 	}
 	c.ID++
 	c.Status = cmp.Or(c.Status, CaseOpen)
+	c.OwnerRung, c.NextWakeAt, c.WakeOn = 3, nil, []string{}
 	s.cases = append(s.cases, c)
 	return c, true, nil
 }
 
+// AppendCaseStep appends st as PGStore.AppendCaseStep does: started now,
+// in progress when it names no outcome. Its id counts its case's steps.
 func (s *fakeStore) AppendCaseStep(ctx context.Context, st CaseStep) (int64, error) {
 	if s.caseSteps == nil {
 		s.caseSteps = map[int64][]CaseStep{}
 	}
+	st.ID = int64(len(s.caseSteps[st.CaseID]) + 1)
+	st.StartedAt, st.Outcome = time.Now(), cmp.Or(st.Outcome, StepInProgress)
 	s.caseSteps[st.CaseID] = append(s.caseSteps[st.CaseID], st)
-	return int64(len(s.caseSteps[st.CaseID])), nil
+	return st.ID, nil
 }
 
 func (s *fakeStore) EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error {
@@ -1327,6 +1333,47 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	}
 	s.cases[i].Status = status
 	return nil
+}
+
+// SetCaseWake sets live case id's wake as PGStore.SetCaseWake does.
+func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	s.cases[i].OwnerRung, s.cases[i].WakeOn, s.cases[i].NextWakeAt = rung, nonNil(on), at
+	return nil
+}
+
+// DueCases are the live cases whose wake is at or before now, the oldest
+// wake first, at most limit, as PGStore.DueCases reads them.
+func (s *fakeStore) DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error) {
+	var out []Case
+	for _, c := range s.cases {
+		if (c.Status == CaseOpen || c.Status == CaseAtHuman) && c.NextWakeAt != nil && !c.NextWakeAt.After(now) {
+			out = append(out, c)
+		}
+	}
+	slices.SortFunc(out, func(a, b Case) int { return cmp.Or(a.NextWakeAt.Compare(*b.NextWakeAt), cmp.Compare(a.ID, b.ID)) })
+	return out[:min(limit, len(out))], nil
+}
+
+// ExpireSteps hands up the in-progress steps due before now as
+// PGStore.ExpireSteps does, by case and id.
+func (s *fakeStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error) {
+	var out []CaseStep
+	for _, id := range slices.Sorted(maps.Keys(s.caseSteps)) {
+		for i, st := range s.caseSteps[id] {
+			if st.Outcome != StepInProgress || st.DueAt == nil || !st.DueAt.Before(now) {
+				continue
+			}
+			ended := time.Now()
+			st.Outcome, st.Found, st.EndedAt = StepHandedUp, stepExpired(st.StartedAt, *st.DueAt), &ended
+			s.caseSteps[id][i] = st
+			out = append(out, st)
+		}
+	}
+	return out, nil
 }
 
 // ResolveCase records its call in resolved and ends case id of cases by r

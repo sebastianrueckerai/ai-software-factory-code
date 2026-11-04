@@ -1344,6 +1344,18 @@ func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
 
+func (s *acceptanceStore) SetCaseWake(context.Context, int64, int, []string, *time.Time) error {
+	return nil
+}
+
+func (s *acceptanceStore) DueCases(context.Context, time.Time, int) ([]factoryd.Case, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) ExpireSteps(context.Context, time.Time) ([]factoryd.CaseStep, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep) error {
 	return nil
 }

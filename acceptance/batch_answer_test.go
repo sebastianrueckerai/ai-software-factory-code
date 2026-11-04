@@ -690,6 +690,15 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, foun
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
+	panic("unused")
+}
+func (s *accBatchStore) DueCases(ctx context.Context, now time.Time, limit int) ([]factoryd.Case, error) {
+	panic("unused")
+}
+func (s *accBatchStore) ExpireSteps(ctx context.Context, now time.Time) ([]factoryd.CaseStep, error) {
+	panic("unused")
+}
 func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep) error {
 	panic("unused")
 }

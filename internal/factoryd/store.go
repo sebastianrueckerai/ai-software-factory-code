@@ -803,6 +803,15 @@ type Store interface {
 	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
 	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
 	SetCaseStatus(ctx context.Context, id int64, status string) error
+	// SetCaseWake sets who owns the next move on case id, the events that
+	// end its wait, and when the sweep wakes it if none does.
+	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
+	// DueCases lists the live cases whose next_wake_at passed, oldest
+	// first.
+	DueCases(ctx context.Context, now time.Time, limit int) ([]Case, error)
+	// ExpireSteps ends every in-progress step past its due_at as handed
+	// up, Found naming the bound its rung did not answer within.
+	ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error)
 	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)
