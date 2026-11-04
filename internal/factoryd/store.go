@@ -746,19 +746,12 @@ type Store interface {
 	CriteriaVerdictTasks(ctx context.Context) ([]string, error)
 	// The plan's hold-outs (the spec-intake concept, piece 6): rows by
 	// round, the undecided count of one round, the human's okay or drop,
-	// the sweep of a closing round, the audit's verdict, its refused
-	// rewrite, its rewrite that holds, the red count of an opened one,
-	// the opening of a real gap, and the project's past reverts.
+	// the sweep of a closing round, and the project's past reverts.
 	PutPlanHoldouts(ctx context.Context, id string, round int, drafts []Holdout) (bool, error)
 	PlanHoldouts(ctx context.Context, id string) ([]Holdout, error)
 	UndecidedHoldouts(ctx context.Context, id string, round int) (int, error)
 	DecidePlanHoldout(ctx context.Context, id string, round, idx int, state string) error
 	SweepPlanHoldouts(ctx context.Context, id string) error
-	SetHoldoutAudit(ctx context.Context, id string, idx int, verdict, reason, rewrite string) error
-	ClearHoldoutAudit(ctx context.Context, id string, idx int) error
-	SetHoldoutTest(ctx context.Context, id string, idx int, code, verdict, output string) error
-	BumpHoldoutRed(ctx context.Context, id string, idx int) (int, error)
-	OpenHoldout(ctx context.Context, id string, idx int) (string, error)
 	PastReverts(ctx context.Context, repository string) ([]string, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its
 	// key, and returns the plan's card of that key.

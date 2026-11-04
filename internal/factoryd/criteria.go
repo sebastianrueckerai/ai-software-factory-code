@@ -29,9 +29,8 @@ type CriteriaResult struct {
 	Skipped  string   `json:",omitempty"`
 	Findings []string `json:",omitempty"`
 	Escalate string   `json:",omitempty"`
-	// Holdouts are the plan's hold-outs that ran red or unrunnable at
-	// this head, for the settlement activity; the card and the comment
-	// never see them.
+	// Holdouts is read by the workflow; the gate leaves it empty, since
+	// no audit settles a hold-out.
 	Holdouts []HoldoutGateResult `json:",omitempty"`
 }
 
@@ -209,7 +208,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	// the plan's stored hold-outs run here too, after the criteria, so no
 	// criterion's run sees a hold-out's file: their outcomes never reach
 	// the card's findings, the comment or a verdict row (blind by routing
-	// and storage), they go to the settlement as Holdouts
+	// and storage); only their verdicts reach the timeline line
 	hos := r.gateHoldouts(ctx, t.Parent)
 	var entries []harness.Proof
 	for _, c := range runs {
@@ -259,14 +258,10 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if len(p.Criteria) == 0 {
 		findings = append(findings, "criteria gate: the plan names no criteria")
 	}
-	var holdouts []HoldoutGateResult
 	holdoutEntries := make([]map[string]any, 0, len(hos))
 	for _, h := range hos {
-		dry, ev := holdoutDryVerdict(outcomes[holdoutEntry(h.Idx)])
+		dry, _ := holdoutDryVerdict(outcomes[holdoutEntry(h.Idx)])
 		holdoutEntries = append(holdoutEntries, map[string]any{"id": holdoutEntry(h.Idx), "verdict": dry})
-		if dry == "red" || dry == HoldoutUnrunnable {
-			holdouts = append(holdouts, HoldoutGateResult{Idx: h.Idx, ID: h.ID, Verdict: dry, Evidence: ev})
-		}
 	}
 	if err := r.store.PutCriteriaVerdicts(ctx, t.ID, CriteriaSourceGate, FactoryDecider, gateRows(proofs)); err != nil {
 		return CriteriaResult{}, err
@@ -281,7 +276,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	}
 	r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit,
 		"proofs": proofs, "holdouts": holdoutEntries, "findings": findings}))
-	return CriteriaResult{Findings: findings, Holdouts: holdouts}, nil
+	return CriteriaResult{Findings: findings}, nil
 }
 
 // criteriaComment is the gate's comment on the pull request: the head, how

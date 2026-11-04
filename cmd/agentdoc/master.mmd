@@ -22,7 +22,6 @@ graph LR
     security-audit["security-audit"]
     holdout-proposer["holdout-proposer"]
     holdout-redrafter["holdout-redrafter"]
-    holdout-audit["holdout-audit"]
     gate-supervisor["gate-supervisor"]
   end
   subgraph the-human["the human's page"]
@@ -46,11 +45,8 @@ graph LR
   checkin -.-> coding
   model-review --> gate-supervisor
   security-audit --> gate-supervisor
-  holdout-audit --> gate-supervisor
   review-criteria -.-> model-review
   review-behaviours -.-> model-review
-  holdout-proposer -.-> holdout-audit
-  holdout-redrafter -.-> holdout-audit
   model-review -.-> delta-planner
   delta-planner -.-> coding
   gate-supervisor -->|approve| deploy

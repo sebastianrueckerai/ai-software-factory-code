@@ -41,7 +41,6 @@ var registry = []Agent{
 	{ID: "screening", Pkg: "internal/factoryd", Family: "A", Job: "Reads an issue pre-code, answers clear/suspect JSON", Runs: "agent-worker, report mode", Loop: true},
 	{ID: "sizing", Pkg: "internal/factoryd", Family: "A", Job: "Sizes a card small/medium/large before first session", Runs: "agent-worker, report mode", Loop: true},
 	{ID: "planner", Pkg: "internal/factoryd", Family: "A", Job: "Reads repo, files a plan via the file_plan MCP tool", Runs: "agent-worker, report mode", Loop: true},
-	{ID: "holdout-audit", Pkg: "internal/factoryd", Family: "A", Job: "Judges one hold-out criterion, files file_verdict", Runs: "agent-worker, report mode", Loop: true},
 	{ID: "message-responder", Pkg: "internal/factoryd", Family: "A", Job: "Answers POST /message pushes mid-session", Runs: "agent-worker, the session's next turn in the sandbox", Loop: true},
 	{ID: "opencode-subagents", Pkg: "internal/factoryd", Family: "A", Job: "opencode-internal task and explore delegation", Runs: "inside opencode, under the session config's agent block", Config: true},
 	{ID: "checkin", Pkg: "internal/factoryd", Family: "B", Job: "Decides continue, message, handover, human or replan on a session trip", Runs: "factoryd, in-process loop, tools executed in the sandbox", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},

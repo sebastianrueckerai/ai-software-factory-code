@@ -1109,10 +1109,7 @@ const (
 	ToolRequestStatus  = "resource_request_status"
 	ToolRequestInfo    = "request_info"
 	ToolFilePlan       = "file_plan"
-	// ToolFileVerdict is an audit session's verdict on a red hold-out
-	// (the spec-intake concept, piece 6).
-	ToolFileVerdict = "file_verdict"
-	ToolManual      = "manual"
+	ToolManual         = "manual"
 	// ToolDeploymentHealth reads a Deployment of the task's project as
 	// factoryd sees it: its pods, restarts, last terminations and the last
 	// hour's events, never a log or a Secret.
@@ -1172,7 +1169,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileVerdict, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

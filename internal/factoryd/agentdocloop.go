@@ -21,16 +21,16 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The loop's six modes are one session shape — the same brief builder, the
+// The loop's five modes are one session shape — the same brief builder, the
 // same sandbox facts, the same markers — with the guide swapped: a coding
-// session works, the four report sessions read, the responder answers a
+// session works, the three report sessions read, the responder answers a
 // writer. Each mode is one page of the map; these fixtures build the brief
 // each mode's session really reads, and the capture drives the real
 // opencode loop on it.
 
-// AgentDocLoopIDs are the loop's six modes.
+// AgentDocLoopIDs are the loop's five modes.
 func AgentDocLoopIDs() []string {
-	return []string{"coding", "screening", "sizing", "planner", "holdout-audit", "message-responder"}
+	return []string{"coding", "screening", "sizing", "planner", "message-responder"}
 }
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
@@ -108,25 +108,8 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 		b.Report = sizingGuide(sizeLines(v.Document.Risk.LargeLines))
 	case "planner":
 		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
-	case "holdout-audit":
-		b.Report = auditGuide(agentDocPlan(), agentDocLoopHoldout(),
-			"came back red: it wanted the skipped row counted, it got 0")
 	}
 	return b
-}
-
-// agentDocLoopHoldout is the fixture plan's one hold-out as its audit
-// session reads it: red at the gate, the audit to say why.
-func agentDocLoopHoldout() Holdout {
-	return Holdout{
-		Idx: 1, Round: 1, ID: "h1", Origin: "the spec",
-		Criterion: "The counter counts a row the query skips.",
-		State:     "audit",
-		DryHead:   "main-0123abc", DryVerdict: "red", DryOutput: "the count was 0, want 1",
-		TestName: "TestCounterCountsSkippedRow",
-		TestCode: "package holdout\n\nimport \"testing\"\n\nfunc TestCounterCountsSkippedRow(t *testing.T) {\n" +
-			"\tif got := count([]row{{skip: true}}); got != 1 {\n\t\tt.Fatalf(\"count = %d, want 1\", got)\n\t}\n}\n",
-	}
 }
 
 // agentDocLoopSpans tiles the mode's brief — the session's first user
@@ -157,10 +140,9 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		guide = workGuide(b.Tools, b.Image)
 	} else {
 		symbol = map[string]string{
-			"screening":     "(*Runner).reportGuide",
-			"sizing":        "sizingGuide",
-			"planner":       "planGuide",
-			"holdout-audit": "auditGuide",
+			"screening": "(*Runner).reportGuide",
+			"sizing":    "sizingGuide",
+			"planner":   "planGuide",
 		}[id]
 	}
 	s := []agentdoc.Span{

@@ -1,13 +1,10 @@
 package factoryd
 
 import (
-	"cmp"
 	"context"
-	"database/sql"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/http"
 	"regexp"
 	"slices"
 	"strings"
@@ -24,14 +21,11 @@ import (
 // repository beside the project's past revert reasons, and the dry run
 // on the main head before the form closes: red before, green after.
 // Stored hold-outs run at the criteria gate of the plan's integration
-// card; a red one goes to an audit session, never to the card, and the
-// plan's close waits until the audit, the builder or the human settles
-// it.
+// card, their verdicts on the gate's timeline line alone.
 
 // The hold-out states: a proposal waits for the human's okay or drop;
 // unrunnable is a draft that never ran, whose only click is drop; stored
-// runs at the criteria gate; opened is one an audit ruled a real gap,
-// its criterion public.
+// runs at the criteria gate; opened is one whose criterion is public.
 const (
 	HoldoutProposed   = "proposed"
 	HoldoutDropped    = "dropped"
@@ -40,22 +34,11 @@ const (
 	HoldoutOpened     = "opened"
 )
 
-// Hold-out origins, the audit's three verdicts, the catch ledger's kinds
-// and finders (the recording rule, roadmap 285).
+// Hold-out origins.
 const (
 	HoldoutDrafted    = "drafted"
 	HoldoutMechanical = "mechanical"
-	AuditWrongTest    = "wrong_test"
-	AuditRealGap      = "real_gap"
-	AuditSpecQuestion = "spec_question"
-	CatchHoldoutRed   = "holdout_red"
-	CatchAudit        = "audit"
-	FinderGate        = "gate"
-	FinderAuditor     = "auditor"
 )
-
-// thenAudit is the way on an audit sandbox that could not start.
-const thenAudit = "then answer to run the hold-out audit again, or close the card"
 
 // Holdout is one hold-out criterion of a plan task, as stored: round is
 // the plan revision whose confirmation proposed it, idx its number on
@@ -75,15 +58,8 @@ type Holdout struct {
 	DryHead    string `json:"dry_head"`
 	DryVerdict string `json:"dry_verdict"`
 	DryOutput  string `json:"dry_output"`
-	// AuditVerdict and AuditReason hold what an audit made of a red one at
-	// the gate, Rewrite the test its rewrite filed; RedCycles counts its
-	// reds at the gate after the audit opened it.
-	AuditVerdict string `json:"audit_verdict"`
-	AuditReason  string `json:"audit_reason"`
-	Rewrite      string `json:"rewrite"`
-	RedCycles    int    `json:"red_cycles"`
-	TestName     string `json:"test_name"`
-	TestCode     string `json:"test_code"`
+	TestName   string `json:"test_name"`
+	TestCode   string `json:"test_code"`
 }
 
 // ErrHoldoutsOpen refuses a confirmation answer while its round's
@@ -131,9 +107,9 @@ func holdoutProof(h Holdout) harness.Proof {
 }
 
 // holdoutDryVerdict judges one draft's outcome: red is a hold-out's shape
-// (the test runs and fails), green already passes (a guard to keep, or a
-// wrong test the audit settles later), unrunnable is anything else (no
-// such test, a build that fails, a skip, no report).
+// (the test runs and fails), green already passes (a guard to keep),
+// unrunnable is anything else (no such test, a build that fails, a skip,
+// no report).
 func holdoutDryVerdict(o proofOutcome) (dry, evidence string) {
 	ev := shortenEvidence(o.Message)
 	switch o.Outcome {
@@ -452,215 +428,9 @@ func DecideHoldout(ctx context.Context, store Store, taskID string, round, idx i
 	return store.DecidePlanHoldout(ctx, taskID, round, idx, state)
 }
 
-// holdoutAudit is what an audit session made of a red hold-out.
-type holdoutAudit struct {
-	Verdict  string
-	Reason   string
-	Rewrite  string
-	Escalate string
-}
-
-// startAudit marks the audit of idx running on the task, which alone may
-// take its verdict; endAudit clears it.
-func (r *Runner) startAudit(taskID string, idx int) {
-	r.liveMu.Lock()
-	defer r.liveMu.Unlock()
-	if r.audits == nil {
-		r.audits = map[string]int{}
-	}
-	r.audits[taskID] = idx
-}
-
-func (r *Runner) endAudit(taskID string) {
-	r.liveMu.Lock()
-	defer r.liveMu.Unlock()
-	delete(r.audits, taskID)
-}
-
-// auditHoldout runs one audit session on the integration card's task: a
-// report-mode sandbox of its own with a small brief, the criterion, the
-// test and its output, the spec, one question; everything else by tool.
-// It writes no code and holds no workspace; the verdict arrives through
-// the file_verdict tool, and the row keeps it.
-func (r *Runner) auditHoldout(ctx context.Context, t Task, repo Repo, pin int64, ho Holdout, evidence string) (holdoutAudit, error) {
-	defer beatUntilDone(ctx, "holdout-audit")()
-	p, err := r.filedPlan(ctx, t.Parent, t.ID)
-	if err != nil {
-		return holdoutAudit{}, err
-	}
-	r.startAudit(t.ID, ho.Idx)
-	defer r.endAudit(t.ID)
-	end, err := r.reportSession(ctx, t, repo, t.ModelAlias, t.Standing(), false, pin, auditGuide(p, ho, evidence), nil, nil, reportExtra{})
-	if err != nil {
-		return holdoutAudit{}, err
-	}
-	if end.start != nil {
-		return holdoutAudit{Escalate: end.start.escalation(thenAudit)}, nil
-	}
-	if end.escalate != "" {
-		return holdoutAudit{Escalate: end.escalate}, nil
-	}
-	rows, err := r.store.PlanHoldouts(ctx, t.Parent)
-	if err != nil {
-		return holdoutAudit{}, err
-	}
-	for _, row := range rows {
-		if row.Idx != ho.Idx {
-			continue
-		}
-		if row.AuditVerdict == "" {
-			why := cmp.Or(end.report, end.why)
-			return holdoutAudit{Escalate: fmt.Sprintf("the audit session of hold-out %s ended without a verdict: %s. Read its words and settle the hold-out on the issue; an answer runs the gate again.",
-				ho.ID, textutil.Truncate(strings.TrimSpace(why), 500))}, nil
-		}
-		return holdoutAudit{Verdict: row.AuditVerdict, Reason: row.AuditReason, Rewrite: row.Rewrite}, nil
-	}
-	return holdoutAudit{}, ErrNoHoldout
-}
-
-// auditGuide is the audit's whole brief: the criterion, the test and what
-// it did at the gate, the spec, and the one question with its three
-// answers.
-func auditGuide(p Plan, ho Holdout, evidence string) string {
-	var b strings.Builder
-	b.WriteString("You audit one hold-out criterion of this card's plan. You change no code; read whatever else you need with your tools.\n\n")
-	fmt.Fprintf(&b, "Hold-out idx %d (file_verdict names it): %s\n", ho.Idx, ho.Criterion)
-	fmt.Fprintf(&b, "The test (dry-run on main head %s: %s):\n%s\n", ho.DryHead, ho.DryVerdict, fenced(ho.TestCode))
-	fmt.Fprintf(&b, "At this card's gate it: %s\n", evidence)
-	if p.Spec != nil {
-		if o := strings.TrimSpace(p.Spec.Outcome); o != "" {
-			fmt.Fprintf(&b, "\nThe spec's outcome: %s\n", o)
-		}
-		if len(p.Spec.Glossary) > 0 {
-			fmt.Fprintf(&b, "Glossary: %s\n", strings.Join(p.Spec.Glossary, "; "))
-		}
-	}
-	b.WriteString("\nIs this test the right one for the spec? Answer exactly one verdict with the file_verdict tool:\n")
-	b.WriteString("- wrong_test: it does not test the spec's sentence. File it with no test_code to drop it, or with test_code: the rewrite's complete Go code (package holdout, standard library only), which must still fail on the base head, and a quote of the spec sentence it tests (quote, at least 20 characters).\n")
-	b.WriteString("- real_gap: the feature truly misses the spec; the criterion becomes public and the builder works it.\n")
-	b.WriteString("- spec_question: the spec itself cannot settle it; the reason is the question for the human.\n")
-	return b.String()
-}
-
-// HoldoutVerdict is the audit session's filing of one hold-out's verdict
-// through the gateway, as FilePlan is the planner's filing of its plan.
-type HoldoutVerdict struct {
-	TaskID   string `json:"task_id"`
-	Idx      int    `json:"idx"`
-	Verdict  string `json:"verdict"`
-	Reason   string `json:"reason"`
-	Quote    string `json:"quote"`
-	TestCode string `json:"test_code"`
-}
-
-// FileVerdict stores an audit session's verdict on the hold-out it
-// audited: only the audit of that idx running on that task may file (the
-// in-flight marker), once (a second filing is ErrAnswered). A rewrite
-// must quote the spec sentence it tests and keep its test's name; a real
-// gap or a spec question files no code. Findings name what to correct;
-// the agent files again.
-func (r *Runner) FileVerdict(ctx context.Context, in HoldoutVerdict) ([]string, error) {
-	t, _, err := r.task(ctx, in.TaskID)
-	if err != nil {
-		return nil, err
-	}
-	if in.Verdict != AuditWrongTest && in.Verdict != AuditRealGap && in.Verdict != AuditSpecQuestion {
-		return []string{"file_verdict: the verdict is one of wrong_test, real_gap, spec_question"}, nil
-	}
-	reason := strings.Join(strings.Fields(in.Reason), " ")
-	if len(reason) > 2*maxHoldoutText {
-		return []string{fmt.Sprintf("file_verdict: the reason is longer than %d characters", 2*maxHoldoutText)}, nil
-	}
-	if in.Verdict == AuditSpecQuestion && reason == "" {
-		return []string{"file_verdict: a spec question carries its question as the reason"}, nil
-	}
-	rows, err := r.store.PlanHoldouts(ctx, t.Parent)
-	if err != nil {
-		return nil, err
-	}
-	var ho *Holdout
-	for i := range rows {
-		if rows[i].Idx == in.Idx {
-			ho = &rows[i]
-		}
-	}
-	if ho == nil || (ho.State != HoldoutStored && ho.State != HoldoutOpened) {
-		return []string{"file_verdict: the card holds no such hold-out"}, nil
-	}
-	r.liveMu.Lock()
-	live := r.audits[t.ID] == in.Idx
-	r.liveMu.Unlock()
-	if !live {
-		return []string{"file_verdict: no audit of this hold-out is running"}, nil
-	}
-	rewrite := ""
-	if in.Verdict == AuditWrongTest {
-		rewrite = strings.TrimSpace(in.TestCode)
-		if rewrite != "" {
-			var findings []string
-			if len(rewrite) > maxHoldoutCode {
-				findings = append(findings, fmt.Sprintf("file_verdict: the rewrite is longer than %d characters", maxHoldoutCode))
-			}
-			if !strings.Contains(rewrite, "func "+ho.TestName+"(") {
-				findings = append(findings, fmt.Sprintf("file_verdict: the rewrite keeps its test's name %s", ho.TestName))
-			}
-			quote := strings.TrimSpace(in.Quote)
-			if len(quote) < 20 {
-				findings = append(findings, "file_verdict: the quote of the spec sentence is at least 20 characters")
-			} else {
-				p, err := r.filedPlan(ctx, t.Parent, t.ID)
-				if err != nil {
-					return nil, err
-				}
-				spec := ""
-				if p.Spec != nil {
-					spec = p.Spec.Outcome + "\n" + strings.Join(p.Spec.Glossary, "\n")
-				}
-				if !strings.Contains(spec, quote) {
-					findings = append(findings, "file_verdict: the quote is not the spec's words; quote the sentence of the outcome or the glossary the rewrite tests")
-				}
-			}
-			if len(findings) > 0 {
-				return findings, nil
-			}
-		}
-	} else if strings.TrimSpace(in.TestCode) != "" || strings.TrimSpace(in.Quote) != "" {
-		return []string{fmt.Sprintf("file_verdict: a %s files no test and no quote", in.Verdict)}, nil
-	}
-	if err := r.store.SetHoldoutAudit(ctx, t.Parent, in.Idx, in.Verdict, reason, rewrite); err != nil {
-		return nil, err
-	}
-	return nil, nil
-}
-
-// AuditVerdictHandler is the gateway's way in to FileVerdict, as
-// PlanFileHandler is its way in to FilePlan: a filed verdict answers
-// filed true, findings answer what the agent corrects.
-func (r *Runner) AuditVerdictHandler(w http.ResponseWriter, req *http.Request) {
-	var in HoldoutVerdict
-	if err := json.NewDecoder(http.MaxBytesReader(w, req.Body, 64<<10)).Decode(&in); err != nil {
-		http.Error(w, "holdout verdict: "+err.Error(), http.StatusBadRequest)
-		return
-	}
-	if in.TaskID == "" || in.Idx == 0 {
-		http.Error(w, "holdout verdict: task_id and idx are required", http.StatusBadRequest)
-		return
-	}
-	findings, err := r.FileVerdict(req.Context(), in)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.Header().Set("Content-Type", "application/json")
-	json.NewEncoder(w).Encode(struct {
-		Filed    bool     `json:"filed"`
-		Findings []string `json:"findings"`
-	}{len(findings) == 0, findings}) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
-}
-
-// HoldoutGateResult is one hold-out the criteria gate reports red or
-// unrunnable at the card's head, for the settlement; its evidence is one
-// line of the run.
+// HoldoutGateResult is one hold-out a criteria gate reported red or
+// unrunnable at the card's head, as a workflow history may hold it; its
+// evidence is one line of the run.
 type HoldoutGateResult struct {
 	Idx      int    `json:"idx"`
 	ID       string `json:"id"`
@@ -668,136 +438,20 @@ type HoldoutGateResult struct {
 	Evidence string `json:"evidence"`
 }
 
-// HoldoutSettlement is what settling the gate's red hold-outs came to:
-// Ask an escalation for the human (a spec question, a rewrite that bends,
-// a hold-out that stayed red after its criterion was opened, an audit
-// without a verdict) whose answer runs the gate again; Findings route
-// the card back to a session; else the hold-outs are settled and the
-// gate runs again.
+// HoldoutSettlement is what settling the gate's red hold-outs came to,
+// as the workflow reads it: Ask an escalation for the human whose answer
+// runs the gate again; Findings route the card back to a session; else
+// the hold-outs are settled and the gate runs again.
 type HoldoutSettlement struct {
 	Ask      string   `json:",omitempty"`
 	Findings []string `json:",omitempty"`
 	Settled  bool
 }
 
-// SettleHoldouts settles the hold-outs the criteria gate reported red or
-// unrunnable on the integration card: each goes to one audit session,
-// whose verdict drops the test or rewrites it (a rewrite dry-runs on the
-// base head first: green there is bending, and the hold-out keeps its
-// own test), opens the criterion as a real gap, or asks the human the
-// spec question. A hold-out the audit opened that stays red asks the
-// human. Every red and every audit verdict lands in the recording rule's
-// ledger. One activity: the store, the sandbox and the session all run
-// here, so the workflow stays deterministic.
+// SettleHoldouts settles at once: no audit runs. The workflow's criteria
+// loop calls it only for a history that recorded Holdouts.
 func (r *Runner) SettleHoldouts(ctx context.Context, taskID string, pin int64, pr int64, commit string, reds []HoldoutGateResult) (HoldoutSettlement, error) {
-	// the audit sessions and the dry runs take minutes
-	defer beatUntilDone(ctx, "holdouts")()
-	t, repo, err := r.task(ctx, taskID)
-	if err != nil {
-		return HoldoutSettlement{}, err
-	}
-	rows, err := r.store.PlanHoldouts(ctx, t.Parent)
-	if err != nil {
-		return HoldoutSettlement{}, err
-	}
-	byIdx := make(map[int]Holdout, len(rows))
-	for _, h := range rows {
-		byIdx[h.Idx] = h
-	}
-	var findings []string
-	for _, red := range reds {
-		ho, holds := byIdx[red.Idx]
-		if !holds {
-			continue // decided away while the gate ran
-		}
-		if ho.State == HoldoutOpened {
-			// red again after the audit opened it: the human decides, and
-			// the cycle lands in the ledger
-			if _, err := r.store.BumpHoldoutRed(ctx, t.Parent, ho.Idx); err != nil {
-				return HoldoutSettlement{}, err
-			}
-			if _, err := r.store.PutPlanCatches(ctx, t.Parent, ho.Round, CatchHoldoutRed, FinderGate,
-				[]string{fmt.Sprintf("hold-out %s red at the gate again: %s", ho.ID, red.Evidence)}); err != nil {
-				return HoldoutSettlement{}, err
-			}
-			return HoldoutSettlement{Ask: fmt.Sprintf("hold-out %s (%s) stayed red after its criterion was opened: %s. Close the card, or answer on the issue; an answer runs the gate again.", ho.ID, ho.Criterion, red.Evidence)}, nil
-		}
-		if ho.State != HoldoutStored {
-			continue // dropped or waiting: not the gate's to settle
-		}
-		if _, err := r.store.PutPlanCatches(ctx, t.Parent, ho.Round, CatchHoldoutRed, FinderGate,
-			[]string{fmt.Sprintf("hold-out %s %s at the gate: %s", ho.ID, red.Verdict, red.Evidence)}); err != nil {
-			return HoldoutSettlement{}, err
-		}
-		res, err := r.auditHoldout(ctx, t, repo, pin, ho, red.Evidence)
-		if err != nil {
-			return HoldoutSettlement{}, err
-		}
-		if res.Escalate != "" {
-			return HoldoutSettlement{Ask: res.Escalate}, nil
-		}
-		switch res.Verdict {
-		case AuditWrongTest:
-			if res.Rewrite == "" {
-				continue // dropped: the row keeps the verdict
-			}
-			// the bending guard: the rewrite must fail on the base head,
-			// the head the hold-out's own draft ran on
-			rw := ho
-			rw.TestCode = res.Rewrite
-			dry, ev, err := r.rewriteOnBase(ctx, t, repo, pr, commit, rw)
-			var f *startFailure
-			if errors.As(err, &f) {
-				return HoldoutSettlement{Ask: f.escalation(thenCriteria)}, nil
-			}
-			if err != nil {
-				return HoldoutSettlement{}, err
-			}
-			if dry != "red" {
-				// bending: the rewrite is refused, the hold-out keeps its
-				// own test, and the audit fields clear for the next audit
-				if err := r.store.ClearHoldoutAudit(ctx, t.Parent, ho.Idx); err != nil {
-					return HoldoutSettlement{}, err
-				}
-				return HoldoutSettlement{Ask: fmt.Sprintf("the audit's rewrite of hold-out %s %s on the base head (%s), so it tests nothing: kept out, the hold-out keeps its own test. Okay runs the gate again; request changes sends the audit's words to the builder, or close the card.", ho.ID, dry, ev)}, nil
-			}
-			if err := r.store.SetHoldoutTest(ctx, t.Parent, ho.Idx, res.Rewrite, dry, ev); err != nil {
-				return HoldoutSettlement{}, err
-			}
-		case AuditRealGap:
-			if _, err := r.store.OpenHoldout(ctx, t.Parent, ho.Idx); err != nil {
-				return HoldoutSettlement{}, err
-			}
-			detail := fmt.Sprintf("hold-out %s: the audit found a real gap: %s", ho.ID, res.Reason)
-			if _, err := r.store.PutPlanCatches(ctx, t.Parent, ho.Round, CatchAudit, FinderAuditor, []string{detail}); err != nil {
-				return HoldoutSettlement{}, err
-			}
-			findings = append(findings, fmt.Sprintf("%s (hold-out %s): the audit found a real gap the spec names and the plan's proof does not cover; work the criterion.", ho.Criterion, ho.ID))
-		case AuditSpecQuestion:
-			return HoldoutSettlement{Ask: fmt.Sprintf("hold-out %s asks a question the spec cannot settle: %s. Answer on the issue; a comment starts a new planner round, an answer here runs the gate again.", ho.ID, res.Reason)}, nil
-		}
-	}
-	if len(findings) > 0 {
-		return HoldoutSettlement{Findings: findings}, nil
-	}
 	return HoldoutSettlement{Settled: true}, nil
-}
-
-// rewriteOnBase dry-runs the audit's rewrite at the base head the
-// hold-out's draft ran on, inside the pull request's history: red is a
-// rewrite that holds, anything else bends.
-func (r *Runner) rewriteOnBase(ctx context.Context, t Task, repo Repo, pr int64, commit string, ho Holdout) (string, string, error) {
-	done, err := r.reproSandbox(ctx, &t, repo)
-	if err != nil {
-		return "", "", err
-	}
-	defer done()
-	outcomes, err := r.runProofs(ctx, t, repo, pullRef(pr), commit, ho.DryHead, []harness.Proof{holdoutProof(ho)})
-	if err != nil {
-		return "", "", err
-	}
-	dry, ev := holdoutDryVerdict(outcomes[holdoutEntry(ho.Idx)])
-	return dry, ev, nil
 }
 
 // PutPlanHoldouts stores round's hold-out rows, the proposals with their
@@ -823,7 +477,7 @@ func (s *PGStore) PutPlanHoldouts(ctx context.Context, id string, round int, dra
 // PlanHoldouts are task id's hold-out rows in idx order, every round's.
 func (s *PGStore) PlanHoldouts(ctx context.Context, id string) ([]Holdout, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT idx, round, id, origin, criterion, state, test_name, test_code,
-		dry_head, dry_verdict, dry_output, audit_verdict, audit_reason, rewrite, red_cycles FROM plan_holdouts
+		dry_head, dry_verdict, dry_output FROM plan_holdouts
 		WHERE task_id = $1 ORDER BY idx`, id)
 	if err != nil {
 		return nil, err
@@ -833,7 +487,7 @@ func (s *PGStore) PlanHoldouts(ctx context.Context, id string) ([]Holdout, error
 	for rows.Next() {
 		var h Holdout
 		if err := rows.Scan(&h.Idx, &h.Round, &h.ID, &h.Origin, &h.Criterion, &h.State, &h.TestName, &h.TestCode,
-			&h.DryHead, &h.DryVerdict, &h.DryOutput, &h.AuditVerdict, &h.AuditReason, &h.Rewrite, &h.RedCycles); err != nil {
+			&h.DryHead, &h.DryVerdict, &h.DryOutput); err != nil {
 			return nil, err
 		}
 		out = append(out, h)
@@ -882,78 +536,6 @@ func (s *PGStore) SweepPlanHoldouts(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE plan_holdouts SET state = 'dropped', decided_at = now()
 		WHERE task_id = $1 AND state IN ('proposed', 'unrunnable')`, id)
 	return err
-}
-
-// SetHoldoutAudit keeps an audit's verdict on hold-out idx: a verdict
-// there already is ErrAnswered, a row the task does not hold
-// ErrNoHoldout. A wrong test without a rewrite drops the hold-out with
-// its verdict.
-func (s *PGStore) SetHoldoutAudit(ctx context.Context, id string, idx int, verdict, reason, rewrite string) error {
-	res, err := s.db.ExecContext(ctx, `UPDATE plan_holdouts SET audit_verdict = $3, audit_reason = $4, rewrite = $5,
-		state = CASE WHEN $3 = 'wrong_test' AND $5 = '' THEN 'dropped' ELSE state END,
-		decided_at = CASE WHEN $3 = 'wrong_test' AND $5 = '' THEN now() ELSE decided_at END
-		WHERE task_id = $1 AND idx = $2 AND audit_verdict = '' AND state IN ('stored', 'opened')`,
-		id, idx, verdict, reason, rewrite)
-	if err != nil {
-		return err
-	}
-	n, err := res.RowsAffected()
-	switch {
-	case err != nil:
-		return err
-	case n > 0:
-		return nil
-	}
-	var holds bool
-	if err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM plan_holdouts WHERE task_id = $1 AND idx = $2)`, id, idx).Scan(&holds); err != nil {
-		return err
-	}
-	if holds {
-		return ErrAnswered
-	}
-	return ErrNoHoldout
-}
-
-// ClearHoldoutAudit empties the audit fields of hold-out idx: a rewrite
-// the bending guard refused, so the next audit files anew.
-func (s *PGStore) ClearHoldoutAudit(ctx context.Context, id string, idx int) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE plan_holdouts SET audit_verdict = '', audit_reason = '', rewrite = ''
-		WHERE task_id = $1 AND idx = $2`, id, idx)
-	return err
-}
-
-// SetHoldoutTest replaces hold-out idx's test with an audit's rewrite
-// that failed on the base head, and clears the audit fields: the gate
-// runs the rewrite, a later red audits anew.
-func (s *PGStore) SetHoldoutTest(ctx context.Context, id string, idx int, code, verdict, output string) error {
-	_, err := s.db.ExecContext(ctx, `UPDATE plan_holdouts SET test_code = $3, dry_verdict = $4, dry_output = $5,
-		audit_verdict = '', audit_reason = '', rewrite = '' WHERE task_id = $1 AND idx = $2`,
-		id, idx, code, verdict, output)
-	return err
-}
-
-// BumpHoldoutRed counts hold-out idx's reds at the gate after the audit
-// opened it.
-func (s *PGStore) BumpHoldoutRed(ctx context.Context, id string, idx int) (int, error) {
-	var cycles int
-	err := s.db.QueryRowContext(ctx, `UPDATE plan_holdouts SET red_cycles = red_cycles + 1
-		WHERE task_id = $1 AND idx = $2 RETURNING red_cycles`, id, idx).Scan(&cycles)
-	if errors.Is(err, sql.ErrNoRows) {
-		return 0, ErrNoHoldout
-	}
-	return cycles, err
-}
-
-// OpenHoldout publishes hold-out idx's criterion: the audit found a real
-// gap, and the builder works it.
-func (s *PGStore) OpenHoldout(ctx context.Context, id string, idx int) (string, error) {
-	var hid string
-	err := s.db.QueryRowContext(ctx, `UPDATE plan_holdouts SET state = 'opened'
-		WHERE task_id = $1 AND idx = $2 AND state IN ('stored', 'opened') RETURNING id`, id, idx).Scan(&hid)
-	if errors.Is(err, sql.ErrNoRows) {
-		return "", ErrNoHoldout
-	}
-	return hid, err
 }
 
 // PastReverts are the project's last revert objectives, one line each:

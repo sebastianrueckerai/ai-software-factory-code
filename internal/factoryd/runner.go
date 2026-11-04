@@ -164,9 +164,6 @@ type Runner struct {
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica)
 	caseLocks sync.Map
-	// audits is the hold-out an audit session audits, by task: only it
-	// may file that hold-out's verdict (the file_verdict tool)
-	audits map[string]int
 	// now and sleep are the roll gap's and the roll hold's clock; nil is
 	// the wall clock
 	now   func() time.Time

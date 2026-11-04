@@ -51,7 +51,6 @@ classes:
       request_info: {}
       delegate: {}
       request_tool: {}
-      file_verdict: {}
       request_cut: {}
       manual: {}
   analyzer:
@@ -111,6 +110,13 @@ func agentDocLoopPolicy() policy.Version {
 	return policy.Version{Commit: "fixture", Tree: tree}
 }
 
+// The loop's modes: the hold-out audit is none of them.
+func TestAgentDocLoopIDs(t *testing.T) {
+	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "planner", "message-responder"}; !slices.Equal(got, want) {
+		t.Fatalf("AgentDocLoopIDs() = %q, want %q", got, want)
+	}
+}
+
 // Every loop mode's first user turn — the brief — is labelled by the
 // builders that render it, and tiles with no unlabelled byte.
 func TestAgentDocLoopBriefLabelsTheUserTurn(t *testing.T) {
@@ -159,7 +165,7 @@ func TestAgentDocLoopSizingCarriesThePolicyBound(t *testing.T) {
 	}
 }
 
-// The six modes share the fixture's facts shape: a coding session names
+// The five modes share the fixture's facts shape: a coding session names
 // its attempt, a report session does not.
 func TestAgentDocLoopFactsFollowTheMode(t *testing.T) {
 	v := agentDocLoopPolicy()
@@ -349,8 +355,6 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			switch id {
 			case "planner":
 				want = "factory-tools_file_plan"
-			case "holdout-audit":
-				want = "factory-tools_file_verdict"
 			}
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)

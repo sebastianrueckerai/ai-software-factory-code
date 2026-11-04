@@ -488,24 +488,6 @@ func (s *accBatchStore) DecidePlanHoldout(context.Context, string, int, int, str
 
 func (s *accBatchStore) SweepPlanHoldouts(context.Context, string) error { return nil }
 
-func (s *accBatchStore) SetHoldoutAudit(context.Context, string, int, string, string, string) error {
-	return nil
-}
-
-func (s *accBatchStore) ClearHoldoutAudit(context.Context, string, int) error { return nil }
-
-func (s *accBatchStore) SetHoldoutTest(context.Context, string, int, string, string, string) error {
-	return nil
-}
-
-func (s *accBatchStore) BumpHoldoutRed(context.Context, string, int) (int, error) {
-	return 0, nil
-}
-
-func (s *accBatchStore) OpenHoldout(context.Context, string, int) (string, error) {
-	return "", nil
-}
-
 func (s *accBatchStore) PastReverts(context.Context, string) ([]string, error) {
 	return nil, nil
 }

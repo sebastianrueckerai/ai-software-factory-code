@@ -6,7 +6,6 @@ changes.
 - screening: Reads a fresh issue before any code exists and answers clear or suspect as JSON. Only work it understands becomes a card.
 - sizing: Reads a clear issue and sizes the card small, medium or large before the first session starts.
 - planner: Reads the repository and files a plan through the file_plan tool before the session writes code.
-- holdout-audit: Reads one hold-out criterion against the finished work and files a verdict the gates read.
 - message-responder: Answers a writer's message pushed into a running session. The message becomes the loop's next turn.
 - opencode-subagents: opencode's own general and explore subagents, set by the agent block in our session config. Their prompts live inside the pinned binary; the config sets their model and step cap.
 - checkin: Reads a session that stopped at a checkpoint short of done and answers one of continue, message, handover, human or replan.

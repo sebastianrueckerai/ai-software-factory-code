@@ -497,8 +497,6 @@ func main() {
 	mux.Handle("POST /internal/deployment-health", requireBearer(gatewayToken, factoryd.DeploymentHealthHandler(store, kube, time.Now)))
 	// the gateway's hand-over of a planner's file_plan
 	mux.Handle("POST /internal/plans", requireBearer(gatewayToken, factoryd.PlanFileHandler(runner)))
-	// the gateway's hand-over of an audit session's hold-out verdict
-	mux.Handle("POST /internal/holdout-verdict", requireBearer(gatewayToken, runner.AuditVerdictHandler))
 	// the gateway's hand-over of a session's analyze_image: the chat's look,
 	// on the card's account
 	operator := &factoryd.OperatorModel{GatewayURL: gatewayURL, Token: gatewayToken}

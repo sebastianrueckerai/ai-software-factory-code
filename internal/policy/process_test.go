@@ -98,6 +98,17 @@ func TestShippedTreePasses(t *testing.T) {
 	}
 }
 
+// file_verdict went with the hold-out audit: a class that lists it lists
+// an unknown tool.
+func TestFileVerdictIsNoTool(t *testing.T) {
+	files := fixtureTree(t)
+	edit(t, files, "policy.yaml", "      escalate: {}\n      # the factory manual", "      escalate: {}\n      file_verdict: {}\n      # the factory manual")
+	_, err := ParseTree(files)
+	if err == nil || !strings.Contains(err.Error(), `policy: class coder lists unknown tool "file_verdict"`) {
+		t.Fatalf("ParseTree error = %v, want the unknown tool", err)
+	}
+}
+
 // The premium class: the chat and the planner on
 // premium under its month cap; every list a key is minted from holds big
 // beside premium, the alias a premium call falls back to.

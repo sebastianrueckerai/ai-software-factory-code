@@ -8,7 +8,7 @@ import (
 )
 
 // The registry is hand-maintained; this keeps its shape honest: every
-// entry has exactly one driver, the six loop modes are all present in the
+// entry has exactly one driver, the five loop modes are all present in the
 // map, and no entry ships without its descriptive lines.
 func TestRegistryShape(t *testing.T) {
 	ids := make([]string, 0, len(registry))

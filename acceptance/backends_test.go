@@ -1190,24 +1190,6 @@ func (s *acceptanceStore) DecidePlanHoldout(context.Context, string, int, int, s
 
 func (s *acceptanceStore) SweepPlanHoldouts(context.Context, string) error { return nil }
 
-func (s *acceptanceStore) SetHoldoutAudit(context.Context, string, int, string, string, string) error {
-	return nil
-}
-
-func (s *acceptanceStore) ClearHoldoutAudit(context.Context, string, int) error { return nil }
-
-func (s *acceptanceStore) SetHoldoutTest(context.Context, string, int, string, string, string) error {
-	return nil
-}
-
-func (s *acceptanceStore) BumpHoldoutRed(context.Context, string, int) (int, error) {
-	return 0, nil
-}
-
-func (s *acceptanceStore) OpenHoldout(context.Context, string, int) (string, error) {
-	return "", nil
-}
-
 func (s *acceptanceStore) PastReverts(context.Context, string) ([]string, error) {
 	return nil, nil
 }

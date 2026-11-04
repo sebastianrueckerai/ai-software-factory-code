@@ -4354,32 +4354,6 @@ func TestWorkerOffersRequestCutOnlyWhereTheCardCanBeCut(t *testing.T) {
 	}
 }
 
-// A report session is not cut, even on a card that can be: the hold-out
-// audit runs on a plan's integration card, and its check-in is offered no
-// replan.
-func TestRunSessionOfAReportOffersNoReplan(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	card := store.tasks["t1"]
-	card.BudgetEUR = 2 // the check-in's share of it pays the conversation
-	store.tasks["t1"] = card
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
-	r.checkin = chat
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	if _, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock"},
-		loopFailure(1)+loopFailure(2)+loopFailure(3)+sessionLog("the test names the hinge")); err != nil {
-		t.Fatal(err)
-	}
-	if chat.calls != 1 {
-		t.Fatalf("chat = %d calls %+v, want the audit's check-in on same_failure", chat.calls, chat.gots)
-	}
-	if got := chat.gots[0]; strings.Contains(got.System, "|replan") || strings.Contains(got.Input, "- replan:") {
-		t.Fatalf("a report's check-in is offered replan:\n%s\n%s", got.System, got.Input)
-	}
-}
-
 // A direct card whose project's process has no plan track cannot be cut:
 // its size trip still asks the check-in, which is offered no replan, and a
 // replan answer is refused and asked again.

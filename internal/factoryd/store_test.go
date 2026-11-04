@@ -3313,8 +3313,7 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 
 // The plan_holdouts table on a real Postgres (the spec-intake concept,
 // piece 6): a round's drafts store once, the human's okay and drop decide
-// only the states they take, the sweep drops what no click can reach, the
-// audit fields and the rewrite move as the audit sessions drive them, and
+// only the states they take, the sweep drops what no click can reach, and
 // the past reverts are the project's own last failures, one line each.
 func TestPGStoreHoldouts(t *testing.T) {
 	ctx := context.Background()
@@ -3348,7 +3347,7 @@ func TestPGStoreHoldouts(t *testing.T) {
 	}
 	if r := rows[0]; r.Round != 1 || r.ID != "door_state" || r.Origin != HoldoutDrafted || r.State != HoldoutProposed ||
 		r.TestName != "TestDoorShut" || r.TestCode != "package holdout" || r.DryHead != "abc" ||
-		r.DryVerdict != "red" || r.DryOutput != "--- FAIL: TestDoorShut (0.01s)" || r.AuditVerdict != "" || r.RedCycles != 0 {
+		r.DryVerdict != "red" || r.DryOutput != "--- FAIL: TestDoorShut (0.01s)" {
 		t.Fatalf("row 1 = %+v; want the draft as stored", r)
 	}
 	if n, err := s.UndecidedHoldouts(ctx, "t-ho", 1); err != nil || n != 2 {
@@ -3380,70 +3379,6 @@ func TestPGStoreHoldouts(t *testing.T) {
 	}
 	if n, err := s.UndecidedHoldouts(ctx, "t-ho", 1); err != nil || n != 0 {
 		t.Fatalf("undecided after the clicks = %d, %v; want 0", n, err)
-	}
-
-	// The audit fields on the stored row: filed once, ErrAnswered after;
-	// opened is public and idempotent; the clear lets a new audit file; a
-	// rewrite rides on the row until the gate runs it as the test.
-	if err := s.SetHoldoutAudit(ctx, "t-ho", 1, AuditRealGap, "the log never lands", ""); err != nil {
-		t.Fatalf("first audit: %v", err)
-	}
-	if err := s.SetHoldoutAudit(ctx, "t-ho", 1, AuditRealGap, "again", ""); !errors.Is(err, ErrAnswered) {
-		t.Errorf("second audit = %v, want ErrAnswered", err)
-	}
-	if id, err := s.OpenHoldout(ctx, "t-ho", 1); err != nil || id != "door_state" {
-		t.Fatalf("open = %q, %v; want door_state", id, err)
-	}
-	if id, err := s.OpenHoldout(ctx, "t-ho", 1); err != nil || id != "door_state" {
-		t.Fatalf("open again = %q, %v; want door_state again", id, err)
-	}
-	if err := s.ClearHoldoutAudit(ctx, "t-ho", 1); err != nil {
-		t.Fatalf("clear: %v", err)
-	}
-	if err := s.SetHoldoutAudit(ctx, "t-ho", 1, AuditWrongTest, "the test names the hinge", "package holdout\nfunc TestDoorShut2(t *testing.T)"); err != nil {
-		t.Fatalf("audit after the clear: %v", err)
-	}
-	if rows, _ = s.PlanHoldouts(ctx, "t-ho"); rows[0].State != HoldoutOpened || rows[0].Rewrite == "" {
-		t.Fatalf("row 1 after the rewrite = %+v; want still opened with the rewrite", rows[0])
-	}
-	if err := s.SetHoldoutTest(ctx, "t-ho", 1, "package holdout v2", "red", "FAIL: the hinge moved"); err != nil {
-		t.Fatalf("set the rewrite as the test: %v", err)
-	}
-	if rows, _ = s.PlanHoldouts(ctx, "t-ho"); rows[0].TestCode != "package holdout v2" || rows[0].DryOutput != "FAIL: the hinge moved" ||
-		rows[0].AuditVerdict != "" || rows[0].Rewrite != "" {
-		t.Fatalf("row 1 after the set = %+v; want the rewrite as the test, audit fields empty", rows[0])
-	}
-	for i := 1; i <= 2; i++ {
-		if n, err := s.BumpHoldoutRed(ctx, "t-ho", 1); err != nil || n != i {
-			t.Fatalf("red cycle %d = %d, %v", i, n, err)
-		}
-	}
-	for _, fn := range []struct {
-		name string
-		call func() error
-	}{
-		{"bump", func() error { _, err := s.BumpHoldoutRed(ctx, "t-ho", 9); return err }},
-		{"open", func() error { _, err := s.OpenHoldout(ctx, "t-ho", 9); return err }},
-		{"audit", func() error { return s.SetHoldoutAudit(ctx, "t-ho", 9, AuditRealGap, "", "") }},
-	} {
-		if err := fn.call(); !errors.Is(err, ErrNoHoldout) {
-			t.Errorf("%s on no row = %v, want ErrNoHoldout", fn.name, err)
-		}
-	}
-
-	// A wrong test with no rewrite drops the hold-out with its verdict.
-	if ok, err := s.PutPlanHoldouts(ctx, "t-ho", 2, []Holdout{{Idx: 3, ID: "late", Criterion: "A late one",
-		State: HoldoutProposed, TestName: "TestLate", DryVerdict: "green"}}); err != nil || !ok {
-		t.Fatalf("round 2 put: %v %v", ok, err)
-	}
-	if err := s.DecidePlanHoldout(ctx, "t-ho", 2, 3, HoldoutStored); err != nil {
-		t.Fatalf("okay the late one: %v", err)
-	}
-	if err := s.SetHoldoutAudit(ctx, "t-ho", 3, AuditWrongTest, "no rewrite drops it", ""); err != nil {
-		t.Fatalf("wrong test: %v", err)
-	}
-	if rows, _ = s.PlanHoldouts(ctx, "t-ho"); rows[2].State != HoldoutDropped || rows[2].AuditVerdict != AuditWrongTest {
-		t.Fatalf("row 3 = %+v; want dropped with its verdict", rows[2])
 	}
 
 	// The sweep drops every undecided row of the task, and the past reverts
@@ -4455,66 +4390,6 @@ func (s *fakeStore) SweepPlanHoldouts(ctx context.Context, id string) error {
 		}
 	}
 	return nil
-}
-
-func (s *fakeStore) SetHoldoutAudit(ctx context.Context, id string, idx int, verdict, reason, rewrite string) error {
-	for i, h := range s.holdouts[id] {
-		if h.Idx != idx {
-			continue
-		}
-		if h.AuditVerdict != "" || (h.State != HoldoutStored && h.State != HoldoutOpened) {
-			return ErrAnswered
-		}
-		s.holdouts[id][i].AuditVerdict, s.holdouts[id][i].AuditReason, s.holdouts[id][i].Rewrite = verdict, reason, rewrite
-		if verdict == AuditWrongTest && rewrite == "" {
-			s.holdouts[id][i].State = HoldoutDropped
-		}
-		return nil
-	}
-	return ErrNoHoldout
-}
-
-func (s *fakeStore) ClearHoldoutAudit(ctx context.Context, id string, idx int) error {
-	for i, h := range s.holdouts[id] {
-		if h.Idx == idx {
-			s.holdouts[id][i].AuditVerdict, s.holdouts[id][i].AuditReason, s.holdouts[id][i].Rewrite = "", "", ""
-		}
-	}
-	return nil
-}
-
-func (s *fakeStore) SetHoldoutTest(ctx context.Context, id string, idx int, code, verdict, output string) error {
-	for i, h := range s.holdouts[id] {
-		if h.Idx == idx {
-			s.holdouts[id][i].TestCode, s.holdouts[id][i].DryVerdict, s.holdouts[id][i].DryOutput = code, verdict, output
-			s.holdouts[id][i].AuditVerdict, s.holdouts[id][i].AuditReason, s.holdouts[id][i].Rewrite = "", "", ""
-		}
-	}
-	return nil
-}
-
-func (s *fakeStore) BumpHoldoutRed(ctx context.Context, id string, idx int) (int, error) {
-	for i := range s.holdouts[id] {
-		if s.holdouts[id][i].Idx == idx {
-			s.holdouts[id][i].RedCycles++
-			return s.holdouts[id][i].RedCycles, nil
-		}
-	}
-	return 0, ErrNoHoldout
-}
-
-func (s *fakeStore) OpenHoldout(ctx context.Context, id string, idx int) (string, error) {
-	for i, h := range s.holdouts[id] {
-		if h.Idx != idx {
-			continue
-		}
-		if h.State != HoldoutStored && h.State != HoldoutOpened {
-			return "", ErrNoHoldout
-		}
-		s.holdouts[id][i].State = HoldoutOpened
-		return h.ID, nil
-	}
-	return "", ErrNoHoldout
 }
 
 func (s *fakeStore) PastReverts(ctx context.Context, repository string) ([]string, error) {
