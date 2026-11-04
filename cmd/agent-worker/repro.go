@@ -204,10 +204,6 @@ func runProofs(log func(string, ...any), initErr error, probe func(workerEnv) eg
 // against the run's budget. A var, so a test can shorten it.
 var proofsListWait = 12 * time.Minute
 
-// maxProofsList bounds the list factoryd posts: the prover files at most
-// 512 KiB of code, which JSON escaping may grow sixfold.
-const maxProofsList = 4 << 20
-
 // awaitProofs takes the list factoryd posts to POST /proofs on the message
 // port, under the bearer whose hash is MESSAGE_TOKEN_SHA256, within
 // proofsListWait. The list stays in memory, never on disk or in the
@@ -250,8 +246,8 @@ func proofsHandler(tokenSHA256 [32]byte, lists chan<- []harness.Proof) http.Hand
 			return
 		}
 		var list []harness.Proof
-		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProofsList)).Decode(&list); err != nil {
-			http.Error(w, fmt.Sprintf("want the proofs list as JSON, at most %d MiB: %v", maxProofsList>>20, err), http.StatusBadRequest)
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, harness.MaxProofsList)).Decode(&list); err != nil {
+			http.Error(w, fmt.Sprintf("want the proofs list as JSON, at most %d MiB: %v", harness.MaxProofsList>>20, err), http.StatusBadRequest)
 			return
 		}
 		select {

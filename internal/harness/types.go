@@ -86,6 +86,11 @@ type PriorState struct {
 // ReportFile is one full subagent report the worker writes beside the brief.
 type ReportFile struct{ Name, Text string }
 
+// MaxProofsList is the largest proofs list the worker takes on POST
+// /proofs: the prover files at most 512 KiB of code, which JSON escaping
+// may grow sixfold.
+const MaxProofsList = 4 << 20
+
 // MaxBriefPush is the largest BriefPush body the worker takes: the largest
 // factoryd builds is about 2.4 MB of JSON.
 const MaxBriefPush = 4 << 20

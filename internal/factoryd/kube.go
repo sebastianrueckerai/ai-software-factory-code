@@ -503,16 +503,33 @@ func (k *InClusterKube) PodStatus(ctx context.Context, namespace, name string) (
 	return pod.Status.Phase, exitCode, nil
 }
 
+// errPodEnded is a pod whose phase is Succeeded or Failed: nothing serves
+// at its address, which the cluster may give another pod.
+var errPodEnded = errors.New("it has ended, and its address may be another pod's")
+
+// podEnded is PodIP's refusal of a pod in phase, nil while it may run.
+func podEnded(namespace, name, phase string) error {
+	if phase == "Succeeded" || phase == "Failed" {
+		return fmt.Errorf("pod %s/%s is %s: %w", namespace, name, phase, errPodEnded)
+	}
+	return nil
+}
+
 // PodIP is the running pod's cluster address, ErrNotFound until it has
-// one. The session's post to its worker's endpoint, the message push and
-// a workspace file read all address the pod by it.
+// one, errPodEnded once it ended. The session's post to its worker's
+// endpoint, the message push and a workspace file read all address the
+// pod by it.
 func (k *InClusterKube) PodIP(ctx context.Context, namespace, name string) (string, error) {
 	var pod struct {
 		Status struct {
+			Phase string `json:"phase"`
 			PodIP string `json:"podIP"`
 		} `json:"status"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods/"+name, &pod); err != nil {
+		return "", err
+	}
+	if err := podEnded(namespace, name, pod.Status.Phase); err != nil {
 		return "", err
 	}
 	if pod.Status.PodIP == "" {

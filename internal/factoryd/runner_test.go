@@ -90,8 +90,13 @@ func (r ctxReader) Read([]byte) (int, error) {
 }
 
 type fakePod struct {
-	ns, name        string
-	phase           string
+	ns, name string
+	phase    string
+	// logEnded is a phase Succeeded set by the scripted log's end: that
+	// log ends at once, before the runner has handled its lines, while a
+	// live pod's container runs on as they are read, so PodIP still
+	// answers for it
+	logEnded        bool
 	reason, message string // status.reason, status.message (Evicted's)
 	logs            string
 	logsReady       chan struct{} // closed when scriptPods has assigned the body
@@ -325,13 +330,17 @@ func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (strin
 	return p.phase, 0, nil
 }
 
-// PodIP answers loopback for every existing pod: a test's worker
-// endpoint listens there.
+// PodIP answers loopback for every existing pod that has not ended (as
+// logEnded says): a test's worker endpoint listens there.
 func (k *fakeKube) PodIP(ctx context.Context, namespace, name string) (string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if _, ok := k.pods[namespace+"/"+name]; !ok {
+	p, ok := k.pods[namespace+"/"+name]
+	if !ok {
 		return "", ErrNotFound
+	}
+	if err := podEnded(namespace, name, p.phase); err != nil && !p.logEnded {
+		return "", err
 	}
 	return "127.0.0.1", nil
 }
@@ -400,7 +409,7 @@ func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadC
 	return io.NopCloser(&exitReader{r: r, exited: func() {
 		k.mu.Lock()
 		defer k.mu.Unlock()
-		p.phase = "Succeeded"
+		p.phase, p.logEnded = "Succeeded", true
 		if p.deleted && !k.keepDeleted {
 			delete(k.pods, namespace+"/"+name)
 		}

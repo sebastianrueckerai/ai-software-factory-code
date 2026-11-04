@@ -564,20 +564,74 @@ func (proofsUnread) PlanProofs(context.Context, string) ([]PlanProof, error) {
 }
 
 // A proofs pod that does not take its list fails the gate, and the
-// activity runs again: nothing ran, so nothing lands.
+// activity runs again; nothing ran, so nothing lands. A worker that fails
+// (5xx) is asked again within the wait; one that refuses the list (4xx),
+// or a pod that has ended, is asked once or not at all, since no retry
+// changes its answer.
 func TestGateCriteriaFailsWhenThePodTakesNoList(t *testing.T) {
-	kube := newFakeKube()
-	objects := &fakeObjectStore{}
-	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
-	(&fakeWorkerEndpoint{status: http.StatusInternalServerError}).start(t, r)
-	seedProofRows(t, store)
-	_, err := runCriteria(t, r)
-	if err == nil || !strings.Contains(err.Error(), "hand the proofs pod its list: worker answered 500") {
-		t.Fatalf("err = %v, want the failed post", err)
+	const wait = 2 * time.Second
+	for _, tc := range []struct {
+		name   string
+		status int
+		ended  bool
+		want   string
+		posts  func(int) bool
+		final  bool // given up before the wait
+	}{
+		{"a failing worker", http.StatusInternalServerError, false, "worker answered 500", func(n int) bool { return n > 1 }, false},
+		{"a bad list", http.StatusBadRequest, false, "worker answered 400", func(n int) bool { return n == 1 }, true},
+		{"a wrong bearer", http.StatusUnauthorized, false, "worker answered 401", func(n int) bool { return n == 1 }, true},
+		{"an ended pod", http.StatusNoContent, true, "is Succeeded: it has ended", func(n int) bool { return n == 0 }, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kube := newFakeKube()
+			if tc.ended {
+				kube.onCreatePod = func() { kube.podOrder[len(kube.podOrder)-1].phase = "Succeeded" }
+			}
+			objects := &fakeObjectStore{}
+			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+			r.endpointWait, r.startPoll = wait, 50*time.Millisecond
+			worker := &fakeWorkerEndpoint{status: tc.status}
+			worker.start(t, r)
+			seedProofRows(t, store)
+			began := time.Now()
+			_, err := runCriteria(t, r)
+			if took := time.Since(began); tc.final == (took >= wait) {
+				t.Fatalf("the gate took %s against a %s wait, want final %v", took, wait, tc.final)
+			}
+			if err == nil || !strings.Contains(err.Error(), "hand the proofs pod its list: ") || !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("err = %v, want the failed post: %s", err, tc.want)
+			}
+			if !tc.posts(len(worker.lists)) {
+				t.Fatalf("%d posts of the list", len(worker.lists))
+			}
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 || len(hub.comments) != 0 ||
+				strings.Contains(timeline(t, objects), `"step":"gate_criteria"`) {
+				t.Fatalf("rows %+v, comments %q: want nothing landed", rows, hub.comments)
+			}
+		})
 	}
-	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(rows) != 0 || len(hub.comments) != 0 ||
-		strings.Contains(timeline(t, objects), `"step":"gate_criteria"`) {
-		t.Fatalf("rows %+v, comments %q: want nothing landed", rows, hub.comments)
+}
+
+// A list past the worker's bound would be refused at every try: the gate
+// fails for good, naming the size, and no pod starts.
+func TestGateCriteriaRefusesAListPastTheWorkersBound(t *testing.T) {
+	kube := newFakeKube()
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+	worker := proofsWorker(t, r)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"size_bound","kind":"test","claim":"c","inputs":"i","expected":"e"}`)
+	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{{Idx: 1, Origin: ProofOriginCriterion, Criterion: "size_bound",
+		ID: "size_bound", Suite: "proofs/size_bound", Name: "TestSizeBound", Path: "proofs/size_bound/size_bound_test.go",
+		Code: strings.Repeat("a", harness.MaxProofsList), State: ProofStored}}); err != nil {
+		t.Fatal(err)
+	}
+	_, err := runCriteria(t, r)
+	if !isTerminal(err) || !strings.Contains(err.Error(), "the proofs list is ") || !strings.Contains(err.Error(), " bytes, past the 4 MiB the worker takes") {
+		t.Fatalf("err = %v, want the terminal refusal naming the size", err)
+	}
+	if len(kube.podOrder) != 0 || len(worker.lists) != 0 {
+		t.Fatalf("pods %d, posts %d; want none", len(kube.podOrder), len(worker.lists))
 	}
 }
 

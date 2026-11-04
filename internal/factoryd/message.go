@@ -62,9 +62,13 @@ func (r *Runner) answerPush(ctx context.Context, t Task, s sessionSpec, ns, pod 
 }
 
 // postWorker posts body as JSON to path on the running worker's endpoint
-// (harness.MessagePort) with the session's bearer.
+// (harness.MessagePort) with the session's bearer. A pod that has ended is
+// harness.ErrNotRunning, and gets no post.
 func (r *Runner) postWorker(ctx context.Context, ns, pod, bearer, path string, body any) error {
 	ip, err := r.kube.PodIP(ctx, ns, pod)
+	if errors.Is(err, errPodEnded) {
+		return fmt.Errorf("%w: %w", harness.ErrNotRunning, err)
+	}
 	if err != nil {
 		return fmt.Errorf("pod address: %w", err)
 	}
@@ -92,7 +96,23 @@ func (r *Runner) postWorker(ctx context.Context, ns, pod, bearer, path string, b
 	case http.StatusConflict:
 		return harness.ErrNotRunning
 	}
-	return fmt.Errorf("worker answered %d: %s", resp.StatusCode, textutil.Truncate(string(bytes.TrimSpace(answer)), 300))
+	return &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(answer)), 300)}
+}
+
+// workerAnswer is the worker's answer to a post it did not take.
+type workerAnswer struct {
+	code int
+	text string
+}
+
+func (a *workerAnswer) Error() string { return fmt.Sprintf("worker answered %d: %s", a.code, a.text) }
+
+// postFinal reports whether a post's err holds for every retry: the
+// worker refused it (a 4xx answer), or no session runs (its 409, or a pod
+// that has ended).
+func postFinal(err error) bool {
+	var a *workerAnswer
+	return errors.Is(err, harness.ErrNotRunning) || errors.As(err, &a) && a.code >= 400 && a.code < 500
 }
 
 func (r *Runner) messagePort() int {

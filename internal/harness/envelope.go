@@ -30,8 +30,8 @@ type Repro struct {
 }
 
 // Proof is one entry of the proofs mode's list: the check script's suite,
-// the one test's name when given, and a file the worker writes into the
-// tree first.
+// the one test's name when given, and a file the worker puts in the tree
+// for this entry's own run alone.
 type Proof struct {
 	ID    string     `json:"id"`
 	Suite string     `json:"suite"`

@@ -382,6 +382,36 @@ func TestListNamespacesByLabelReportsTerminatingState(t *testing.T) {
 
 // SecretsByLabels selects with every label, sorted, and answers each
 // Secret's name, type and decoded data.
+// A pod's address is its running one alone: none before it has one, and
+// none once it ended, since the cluster may give that address to another
+// pod.
+func TestInClusterKubePodIPOfARunningPodAlone(t *testing.T) {
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		phase, ip, _ := strings.Cut(strings.TrimPrefix(r.URL.Path, "/api/v1/namespaces/ns/pods/"), "-")
+		fmt.Fprintf(w, `{"status":{"phase":%q,"podIP":%q}}`, phase, ip)
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	oldDir := saDir
+	saDir = dir
+	t.Cleanup(func() { saDir = oldDir })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	if ip, err := k.PodIP(context.Background(), "ns", "Running-10.0.0.7"); err != nil || ip != "10.0.0.7" {
+		t.Fatalf("running: %q, %v", ip, err)
+	}
+	if _, err := k.PodIP(context.Background(), "ns", "Pending-"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("pending: %v, want ErrNotFound", err)
+	}
+	for _, phase := range []string{"Succeeded", "Failed"} {
+		if ip, err := k.PodIP(context.Background(), "ns", phase+"-10.0.0.7"); !errors.Is(err, errPodEnded) || ip != "" {
+			t.Fatalf("%s: %q, %v; want errPodEnded", phase, ip, err)
+		}
+	}
+}
+
 func TestInClusterKubeSecretsByLabels(t *testing.T) {
 	b64 := func(s string) string { return base64.StdEncoding.EncodeToString([]byte(s)) }
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {

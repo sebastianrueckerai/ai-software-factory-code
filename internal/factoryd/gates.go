@@ -908,15 +908,23 @@ const proofsBudget = reproActivityTimeout - 15*time.Minute
 // worker's POST /proofs once the pod runs, under a bearer of this run
 // whose hash alone is in the pod's spec: the list is in no spec, no
 // environment and no file before its entries run. It returns each entry's
-// run by its id, and why the pod reported none when it says. A sandbox
+// run by its id, and why the pod reported none when it says. A list past
+// harness.MaxProofsList is a terminal error, before any pod; a sandbox
 // that cannot start is a *startFailure; a pod that does not take the list
 // is an error; a log that ends before the closing line keeps the runs
 // read, with errLogEnded.
 func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (runs map[string]harness.ProofRun, runErr string, err error) {
+	list, err := json.Marshal(entries)
+	if err != nil {
+		return nil, "", err
+	}
+	if len(list) > harness.MaxProofsList {
+		return nil, "", terminalError("the proofs list is %d bytes, past the %d MiB the worker takes", len(list), harness.MaxProofsList>>20)
+	}
 	bearer := rand.Text()
 	var read []harness.ProofRun
 	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, bearer), func(ns, podName string) error {
-		if err := r.postWorkerUntil(ctx, nil, ns, podName, bearer, "/proofs", entries, r.endpointWait); err != nil {
+		if err := r.postWorkerUntil(ctx, nil, ns, podName, bearer, "/proofs", json.RawMessage(list), r.endpointWait); err != nil {
 			return fmt.Errorf("hand the proofs pod its list: %w", err)
 		}
 		var err error

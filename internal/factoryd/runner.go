@@ -1267,13 +1267,14 @@ func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, task
 // postWorkerUntil posts to the worker's message endpoint until it answers:
 // the endpoint comes up only once the pod's clone and prepare are done, so
 // a first post can meet connection refused. It gives up at ctx's end, a
-// stopping factoryd, or wait after the first try, with the last error said.
+// stopping factoryd, a post no retry changes (postFinal), or wait after
+// the first try, with the last error said.
 func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}, ns, pod, token, path string, body any, wait time.Duration) error {
 	end := time.Now().Add(wait)
 	var err error
 	for {
-		if err = r.postWorker(ctx, ns, pod, token, path, body); err == nil {
-			return nil
+		if err = r.postWorker(ctx, ns, pod, token, path, body); err == nil || postFinal(err) {
+			return err
 		}
 		pause := min(r.startPoll, time.Until(end))
 		if pause <= 0 {

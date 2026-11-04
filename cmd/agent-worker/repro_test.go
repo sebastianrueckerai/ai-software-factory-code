@@ -972,7 +972,11 @@ func TestProofsEndWhenNoListArrives(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the check ran: %v", err)
 	}
-	messagePortFree(t)
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
+	if err != nil {
+		t.Fatalf("the port is still held: %v", err)
+	}
+	ln.Close()
 }
 
 // The wait for the list counts against the run's budget, so the pod's
