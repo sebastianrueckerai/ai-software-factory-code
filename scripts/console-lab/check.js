@@ -1697,8 +1697,12 @@ async function text(page) {
         await row.getByRole("button", { name: "Postgres" }).click();
         await p.page.waitForTimeout(800);
         if (await row.isVisible()) fails.push("escalation: the answer row stays after a choice");
-        const log = await p.page.locator("#chat-log").innerText();
-        if (!log.includes("Answered #603")) fails.push("escalation: the factory's row on the answer is missing");
+        // under the human's choice, the factory's row on #603 with what came of it
+        const tail = await p.page.evaluate(() => Array.from(document.querySelectorAll("#chat-log .msg")).slice(-2).map((m) =>
+          ({ you: m.classList.contains("you"), poke: m.classList.contains("poke"), card: m.dataset.card || "", said: (m.querySelector(".said") || m).innerText.trim() })));
+        const [you, factory] = tail;
+        if (!you || !you.you || you.said !== "Postgres" || !factory || !factory.poke || factory.card !== labID(603) || !factory.said || factory.said.startsWith("The answer did not land"))
+          fails.push("escalation: the factory's row on the answer is missing: " + JSON.stringify(tail));
       }
       // the note's New thread opens a thread of the human's own, the box back and in focus
       if (await note.isVisible()) {
