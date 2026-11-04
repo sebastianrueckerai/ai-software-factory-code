@@ -296,8 +296,8 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact, life string
 		case s.RedChecks:
 			acts = "The pull request cannot merge while its checks are red: send it back to the agent with what to change (Return), or close it (Close)."
 		case len(criteria) > 0:
-			acts = "Settle each criterion row first: Met or Not met on a human criterion, Waive on any row. " +
-				"Approve opens once every criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason."
+			acts = "Settle each human criterion row first: Met or Not met on a human criterion, Waive on any row. " +
+				"Approve opens once every human criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason."
 		default:
 			acts = "Approve merges the pull request into main; Deny refuses it with the human's reason, posted on the pull request as them."
 		}

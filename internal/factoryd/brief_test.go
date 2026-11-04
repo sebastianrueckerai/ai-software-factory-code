@@ -610,8 +610,8 @@ func TestTheMergeBriefCarriesThePlansRows(t *testing.T) {
 	if err := json.Unmarshal(raw, &got); err != nil || fmt.Sprint(got) != fmt.Sprint(want) {
 		t.Errorf("the merge brief's criteria = %s (%v)\nwant %v", raw, err, want)
 	}
-	if got := sent[0]["buttons"]; got != "Settle each criterion row first: Met or Not met on a human criterion, Waive on any row. "+
-		"Approve opens once every criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason." {
+	if got := sent[0]["buttons"]; got != "Settle each human criterion row first: Met or Not met on a human criterion, Waive on any row. "+
+		"Approve opens once every human criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason." {
 		t.Errorf("the merge brief's buttons = %q", got)
 	}
 	if _, ok := sent[1]["criteria"]; ok || sent[1]["buttons"] != "Approve merges the pull request into main; Deny refuses it with the human's reason, posted on the pull request as them." {
