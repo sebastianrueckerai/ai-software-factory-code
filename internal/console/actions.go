@@ -2134,7 +2134,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 
 // factoryMergeRefusal answers the agent's approval of a GitHub sync's
 // pull request.
-const factoryMergeRefusal = "A human approves a factory pull request that carries GitHub commits."
+const factoryMergeRefusal = "A human approves a factory pull request that carries GitHub commits: record what you found with attach_analysis."
 
 // revisionDrops tells whether plan card t's newest plan revision drops
 // its key, and that revision's number.

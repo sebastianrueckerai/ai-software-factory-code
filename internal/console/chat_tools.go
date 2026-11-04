@@ -610,7 +610,11 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", err
 		}
 		if first.ID != "" {
-			desc += fmt.Sprintf(", same cause as #%d %s %q, which closes #%d", first.IssueNumber, first.ID, factoryd.CardTitle(first), own.IssueNumber)
+			same := first.ID
+			if first.IssueNumber > 0 {
+				same = fmt.Sprintf("#%d %s", first.IssueNumber, first.ID)
+			}
+			desc += fmt.Sprintf(", same cause as %s %q, which closes %s", same, factoryd.CardTitle(first), issueRef(own.ID, own.IssueNumber))
 		}
 	}
 	if tool.name == "promote_resource" || tool.name == "release_resource" {
@@ -738,6 +742,15 @@ func (t *turn) answer(in toolInput) (string, error) {
 		return "", wrongState(k, t.c.capFactsOf(ctx, k), "an open plan question")
 	}
 	return t.c.doAnswer(ctx, t.a, in.TaskID, in.Text)
+}
+
+// issueRef names card id as the agent reads it: #issue when it has one,
+// else its task id.
+func issueRef(id string, issue int64) string {
+	if issue > 0 {
+		return fmt.Sprintf("#%d", issue)
+	}
+	return id
 }
 
 // cardLine is t on one line for the agent.

@@ -3480,7 +3480,7 @@ func TestAlertVerdictSameCauseClosesTheSecondCard(t *testing.T) {
 	before = r.events.count()
 	note, err = r.c.doAlertVerdict(ctx, a, 9, factoryd.VerdictSameCause, "t-m")
 	equal(t, "the answer to a failed close", []any{note, err},
-		[]any{"Alert 9 is judged same_cause, the same cause as #5, but its card #11 stays open: Forgejo refused to close the issue: edit refused", nil})
+		[]any{"Alert 9 is judged same_cause, the same cause as #5, but its card #11 stays open: Forgejo refused to close the issue: edit refused; close it with close once that is fixed", nil})
 	equal(t, "the verdicts", r.alerts.verdicts, []string{"8 same_cause sebastian map[same_as:t-m]", "9 same_cause agent map[same_as:t-m]"})
 	equal(t, "the note on #11", r.fg.comments["/api/v1/repos/sf/code/issues/11/comments"], "Same cause as #5.")
 	equal(t, "the patches", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/13 {"state":"closed"}`})
@@ -3499,12 +3499,14 @@ func TestAlertVerdictSameCauseRefusals(t *testing.T) {
 	_, s := r.loggedIn(t)
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-demo", Kind: "agent", Status: "queued",
-		Repository: "demo-app/demo-app", IssueNumber: 3, Objective: "Add the demo."}})
+		Repository: "demo-app/demo-app", IssueNumber: 3, Objective: "Add the demo."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-n", Kind: "agent", Status: "queued", Repository: "sf/code", Objective: "Tidy the docs."}})
 	r.tasks.mu.Unlock()
 	r.alerts.rows = []factoryd.Alert{
 		{ID: 8, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-e"},
 		{ID: 9, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-r", Verdict: factoryd.VerdictUnjudged, ResolvedBy: factoryd.FactoryDecider},
 		{ID: 10, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-demo"},
+		{ID: 11, Kind: factoryd.AlertEscalation, Source: "agent", TaskID: "t-n"},
 	}
 	a := actor{s: s, via: factoryd.ViaChat, repository: "sf/code"}
 	r.repoWriters["demo-app/demo-app"] = []string{"sebastian", "alice"}
@@ -3524,6 +3526,8 @@ func TestAlertVerdictSameCauseRefusals(t *testing.T) {
 		{"another project's card", s, 8, "same_cause", "t-demo", http.StatusNotFound, "There is no card t-demo in this project."},
 		{"the alert's own card", s, 8, "same_cause", "t-e", http.StatusBadRequest,
 			"#13 is alert 8's own card: same_cause names the other card, the one the same cause raised first"},
+		{"the alert's own card without an issue", s, 11, "same_cause", "t-n", http.StatusBadRequest,
+			"t-n is alert 11's own card: same_cause names the other card, the one the same cause raised first"},
 		{"an alert of another project's card", s, 10, "same_cause", "t-m", http.StatusNotFound, "There is no card t-demo in this project."},
 		{"no alert", s, 99, "same_cause", "t-m", http.StatusNotFound, "There is no alert 99."},
 		{"a human who may not close the card", alice, 8, "same_cause", "t-m", http.StatusForbidden, "you write no project of task t-e"},

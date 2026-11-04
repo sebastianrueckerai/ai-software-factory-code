@@ -3003,8 +3003,8 @@ func TestChatApplyRefusalFeedsTurn(t *testing.T) {
 
 // The ask tool questions the conversation's human in place: one row of
 // the thread, kind ask with its choices, the turn ending on it. Their
-// answer, pressed or typed, is the member's next message, and any row
-// after it settles the ask.
+// answer, pressed or typed, is the member's next message, and it settles
+// the ask.
 func TestChatAskOffersChoices(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)

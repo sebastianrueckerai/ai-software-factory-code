@@ -77,7 +77,7 @@ func (c *Console) alertsText(ctx context.Context, a actor, state string) (string
 				b.WriteString(" by " + al.ResolvedBy)
 			}
 			if first, _ := al.Detail["same_as"].(string); first != "" {
-				b.WriteString(", same cause as " + first)
+				b.WriteString(", same cause as " + issueRef(first, c.issueOf(ctx, first)))
 			}
 			if s := alertSupervisor(al); s.Action != "" {
 				b.WriteString(", " + s.Action + ": " + s.Diagnosis)
@@ -455,13 +455,15 @@ func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v, card
 	if first.ID == "" {
 		return fmt.Sprintf("Alert %d is judged %s.", id, v), nil
 	}
-	judged := fmt.Sprintf("Alert %d is judged %s, the same cause as #%d", id, v, first.IssueNumber)
+	same := issueRef(first.ID, first.IssueNumber)
+	judged := fmt.Sprintf("Alert %d is judged %s, the same cause as %s", id, v, same)
 	// the close comes after the verdict: the card's end judges an open
 	// escalation unjudged
-	closed, err := c.doClose(ctx, a, own.ID, fmt.Sprintf("Same cause as #%d.", first.IssueNumber))
+	closed, err := c.doClose(ctx, a, own.ID, "Same cause as "+same+".")
 	if err != nil {
 		log.Printf("console: %s judged alert %d same_cause; its card %s stays open: %v", a.s.user, id, own.ID, err)
-		return fmt.Sprintf("%s, but its card #%d stays open: %s", judged, own.IssueNumber, errSentence(a, err)), nil
+		return fmt.Sprintf("%s, but its card %s stays open: %s; close it with close once that is fixed",
+			judged, issueRef(own.ID, own.IssueNumber), strings.TrimSuffix(errSentence(a, err), ".")), nil
 	}
 	return judged + ". " + closed, nil
 }
@@ -493,7 +495,7 @@ func (c *Console) verdictCards(ctx context.Context, a actor, id int64, v, card s
 		return factoryd.Task{}, own, refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", id))
 	case al.TaskID == first.ID:
 		return factoryd.Task{}, own, refuse(http.StatusBadRequest,
-			fmt.Sprintf("#%d is alert %d's own card: same_cause names the other card, the one the same cause raised first", first.IssueNumber, id))
+			fmt.Sprintf("%s is alert %d's own card: same_cause names the other card, the one the same cause raised first", issueRef(first.ID, first.IssueNumber), id))
 	}
 	if own, err = c.cardIn(ctx, a, al.TaskID); err != nil {
 		return factoryd.Task{}, factoryd.Task{}, err

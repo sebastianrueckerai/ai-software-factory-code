@@ -94,10 +94,7 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 				n = t.c.issueOf(ctx, m.TaskID)
 				issues[m.TaskID] = n
 			}
-			card = " " + m.TaskID
-			if n > 0 {
-				card = fmt.Sprintf(" #%d", n)
-			}
+			card = " " + issueRef(m.TaskID, n)
 		}
 		fmt.Fprintf(&b, "%d %s %s%s: %s%s\n", m.ID, m.At.UTC().Format("01-02 15:04Z"), inboxKind(m), card,
 			textutil.Truncate(inboxSaid(m), excerptSide), inboxState(m))

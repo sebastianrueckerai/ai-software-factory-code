@@ -547,11 +547,14 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			continue
 		}
 		if m.Kind == factoryd.MessageAsk {
-			// an ask stands open while it is the thread's newest row: any
-			// row after it, the member's press or reply or another turn's,
-			// answers it. A bound ask stands while its binding lives: the
-			// press that takes it or its expiry answers it, no row between.
-			msgs[i].Settled = i < len(msgs)-1
+			// an ask stands open until a later row answers it: a human's
+			// press or typed message, or another ask. A poke, an escalation,
+			// a budget row or a wake's row answers nothing. A bound ask
+			// stands while its binding lives: the press that takes it or its
+			// expiry answers it, no row between.
+			msgs[i].Settled = slices.ContainsFunc(msgs[i+1:], func(n factoryd.ChatMessage) bool {
+				return n.Role == "user" && n.BirthKind == "" || n.Kind == factoryd.MessageAsk
+			})
 			if live[m.Proposal] {
 				msgs[i].Settled = false
 			}

@@ -465,24 +465,37 @@ func (w *Waker) cardText(ctx context.Context, e Event) string {
 	return fmt.Sprintf("The watched card %s moved: read the card and act on where it stands.", cardRef(e, t))
 }
 
-// askText is the wake's text: every ask of the batch with its card ref,
-// then what the turn does with them; fund is named where the woken login
-// holds the tool, an approver. A batch with a merge row closes on one
-// merge sentence: approve_merge and deny_merge where the approver may
-// merge, at merge rule auto, else that a human approves merges.
+// askText is the wake's text: the asks and the merge rows of the batch
+// counted apart, each with its card ref, then what the turn does with
+// them; fund is named where the woken login holds the tool, an approver.
+// A batch with a merge row closes on one merge sentence: approve_merge
+// and deny_merge where the approver may merge, at merge rule auto, else
+// that a human approves merges.
 func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []string, login, mergeRule string) string {
-	var b strings.Builder
-	if len(asks) == 1 {
-		b.WriteString("Wake: 1 ask waits for a human.")
-	} else {
-		fmt.Fprintf(&b, "Wake: %d asks wait for a human.", len(asks))
+	merges := 0
+	for _, a := range asks {
+		if isMergeRow(a.e) {
+			merges++
+		}
 	}
-	anyMerge := false
+	head := plural(len(asks)-merges, "ask")
+	switch {
+	case merges == len(asks):
+		head = plural(merges, "merge")
+	case merges > 0:
+		head += " and " + plural(merges, "merge")
+	}
+	verb := "wait"
+	if len(asks) == 1 {
+		verb = "waits"
+	}
+	var b strings.Builder
+	fmt.Fprintf(&b, "Wake: %s %s for a human.", head, verb)
 	for _, a := range asks {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
 		line := askSentence(a.e)
 		if isMergeRow(a.e) {
-			anyMerge, line = true, mergeLine(a.e)
+			line = mergeLine(a.e, t)
 		}
 		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), line)
 	}
@@ -493,9 +506,9 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	}
 	b.WriteString(" For what stays the human's, record what you found with attach_analysis. An ask already answered is done.")
 	switch {
-	case anyMerge && approver && mergeRule == policy.MergeAuto:
+	case merges > 0 && approver && mergeRule == policy.MergeAuto:
 		b.WriteString(" A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis.")
-	case anyMerge:
+	case merges > 0:
 		b.WriteString(" A human approves merges here.")
 	}
 	return b.String()
@@ -508,13 +521,17 @@ func isMergeRow(e Event) bool {
 }
 
 // mergeLine is a merge approval row's line on the wake: its pull request,
-// its risk class, and its red checks.
-func mergeLine(e Event) string {
+// its risk class, its red checks, and a human's approval when card t is
+// a GitHub sync, which no agent approves.
+func mergeLine(e Event, t Task) string {
 	pr, _ := toInt(e.Detail["pr"])
 	class, _ := e.Detail["class"].(string)
 	line := fmt.Sprintf("merge of PR #%d, %s risk", pr, class)
 	if red, _ := e.Detail["red_checks"].(bool); red {
 		line += ", checks red"
+	}
+	if t.Source == SourceGitHubSync {
+		line += ", a human approves"
 	}
 	return line
 }

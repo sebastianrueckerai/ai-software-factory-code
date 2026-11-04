@@ -734,7 +734,7 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 			r := factoryRig(t, factoryd.SourceGitHubSync)
 			_, err := r.c.doApprove(t.Context(), tc.actor(t, r), 4)
 			var no *refusal
-			if !errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != "A human approves a factory pull request that carries GitHub commits." {
+			if !errors.As(err, &no) || no.status != http.StatusForbidden || no.msg != "A human approves a factory pull request that carries GitHub commits: record what you found with attach_analysis." {
 				t.Fatalf("the agent's approval = %v, want 403 naming the human", err)
 			}
 			if q := r.approvals.get(4); q.Status != "pending" || len(r.fg.calls) != 0 {

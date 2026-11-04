@@ -3,6 +3,9 @@ package console
 import (
 	"fmt"
 	"net/http"
+	"net/url"
+	"slices"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -70,20 +73,72 @@ func TestChatInboxReadsTheVenueMembersInbox(t *testing.T) {
 		"No inbox serves ai-software-factory-code: its policy names no notify list and no approvers for the factory to poke.")
 }
 
-// A human nothing has poked has no inbox, and the read makes none.
+// A human nothing has poked has no inbox, and the read makes none: the
+// reader's own, or the venue human's when the project pokes another.
 func TestChatInboxNamesNoInboxYet(t *testing.T) {
+	for _, c := range []struct {
+		notify []string
+		whose  string
+	}{
+		{nil, "sebastian"},
+		{[]string{"alice"}, "alice"},
+	} {
+		r, chat, g := newChatRig(t)
+		r.projects.rows[0].Notify = c.notify
+		out := reads(t, r, g, "inbox", `{}`)
+		equal(t, "the read of "+c.whose+"'s inbox", out[0], "No inbox exists yet for "+c.whose+" on ai-software-factory-code: nothing has poked it.")
+		for _, login := range []string{"sebastian", "alice"} {
+			list, err := chat.Conversations(t.Context(), "sf/code", login)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if slices.ContainsFunc(list, func(th factoryd.ChatConversation) bool { return th.Inbox }) {
+				t.Fatalf("the read of %s's inbox made one for %s: %+v", c.whose, login, list)
+			}
+		}
+	}
+}
+
+// A wake's ask in the inbox stands past the rows that answer nothing, a
+// poke here: the inbox shows it open with its choices and the inbox read
+// lists it open. A press answers it.
+func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 	r, chat, g := newChatRig(t)
-	out := reads(t, r, g, "inbox", `{}`)
-	equal(t, "the read", out[0], "No inbox exists yet for sebastian on ai-software-factory-code: nothing has poked it.")
-	list, err := chat.Conversations(t.Context(), "sf/code", "sebastian")
+	ck, s := r.loggedIn(t)
+	inbox, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
 	if err != nil {
 		t.Fatal(err)
 	}
-	for _, th := range list {
-		if th.Inbox {
-			t.Fatalf("the read made an inbox: %+v", list)
-		}
+	g.replies = [][]string{{call(1, "ask", `{"ask":"Snapshots nightly?","choices":["Yes","No"]}`)}}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", inbox, "wake_ask", "#13 asks about snapshots."); err != nil {
+		t.Fatalf("StartWake: %v", err)
 	}
+	pokeID := inboxRows(t, chat, "sebastian", poke("#11 merged.", "t-r"))[0]
+	path := chatPath + "?conversation=" + strconv.FormatInt(inbox, 10)
+	ask := func() factoryd.ChatMessage {
+		t.Helper()
+		msgs := chatRead(t, r, ck, path).Messages
+		i := slices.IndexFunc(msgs, func(m factoryd.ChatMessage) bool { return m.Kind == factoryd.MessageAsk })
+		if i < 0 {
+			t.Fatalf("the inbox holds no ask: %+v", msgs)
+		}
+		return msgs[i]
+	}
+	row := ask()
+	equal(t, "the ask past the poke", []any{row.Settled, row.Choices}, []any{false, []string{"Yes", "No"}})
+	out := reads(t, r, g, "inbox", `{}`)
+	equal(t, "the inbox read", out[0], fmt.Sprintf("The inbox of sebastian on ai-software-factory-code:\n"+
+		"%d 10-11 09:30Z ask: Snapshots nightly? (open)\n"+
+		"%d 10-11 09:30Z poke #11: #11 merged. (seen)\n"+
+		"%d 10-11 09:30Z wake turn: #13 asks about snapshots.\n"+
+		"That is the whole window.", row.ID, pokeID, row.ID-1))
+
+	g.replies = [][]string{{say("Nightly, then.")}}
+	if code, events, _ := chatPost(t, r, ck, s, chatPath+"/answer", url.Values{"conversation": {strconv.FormatInt(inbox, 10)},
+		"message": {strconv.FormatInt(row.ID, 10)}, "choice": {"Yes"}}); code != http.StatusOK {
+		t.Fatalf("the press = %d %v", code, events)
+	}
+	equal(t, "the ask after the press", ask().Settled, true)
 }
 
 // An open ask leads the first page whatever its age, then the rest newest

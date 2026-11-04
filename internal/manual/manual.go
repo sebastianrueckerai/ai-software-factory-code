@@ -40,6 +40,6 @@ func Text() string {
 		fmt.Fprintf(&b, "  %s: %s\n", g, GateMeaning(g))
 	}
 	b.WriteString("\nSandbox images:\n" + Images + "\n")
-	b.WriteString("\nA writer of your project can message you through the card's chat. Ask for a decision with escalate; ask the issue's author with request_info. A code session asks to cut a card that is too big with request_cut. The project agent's ask tool questions the thread's human in place: a press or their next message answers it, and a bound choice's press runs the tool call the ask carries.\n")
+	b.WriteString("\nA writer of your project can message you through the card's chat. Ask for a decision with escalate; ask the issue's author with request_info. A code session asks to cut a card that is too big with request_cut. The project agent's ask tool questions the thread's human in place: a press answers it, in a thread of their own so does their next message, and a bound choice's press runs the tool call the ask carries.\n")
 	return b.String()
 }
