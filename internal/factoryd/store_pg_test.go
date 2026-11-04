@@ -112,3 +112,38 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 		})
 	}
 }
+
+// A re-filed issue can hold two cards, one final one live, since the
+// live-card index binds (repository, issue_number) to live cards alone:
+// the read prefers the live card, and once both are final the newest
+// answers.
+func TestTaskByIssuePrefersTheLiveCard(t *testing.T) {
+	for name, open := range bothStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+			card := func(id, status string, created time.Time) Task {
+				return Task{ID: id, Repository: "sf/r", Kind: "agent", Track: "direct", Status: status,
+					Objective: "b", IssueNumber: 7, CreatedAt: created}
+			}
+			if err := s.CreateTask(ctx, card("t-old", "done", at)); err != nil {
+				t.Fatal(err)
+			}
+			if err := s.CreateTask(ctx, card("t-live", "in-review", at.Add(time.Hour))); err != nil {
+				t.Fatal(err)
+			}
+			read := func(step, want string) {
+				t.Helper()
+				got, ok, err := s.TaskByIssue(ctx, "sf/r", 7)
+				if err != nil || !ok || got.ID != want {
+					t.Fatalf("%s: TaskByIssue = %q ok %v (err %v), want %q", step, got.ID, ok, err, want)
+				}
+			}
+			read("a final and a live card", "t-live")
+			if err := s.TransitionTask(ctx, "t-live", []string{"in-review"}, "done"); err != nil {
+				t.Fatal(err)
+			}
+			read("two final cards", "t-live")
+		})
+	}
+}

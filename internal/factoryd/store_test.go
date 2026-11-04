@@ -748,13 +748,28 @@ func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) 
 	return "", false, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
+	var held []Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
-			return t, true, nil
+			held = append(held, t)
 		}
 	}
-	return Task{}, false, nil
+	slices.SortFunc(held, func(a, b Task) int {
+		if da, db := factorydFinal(a.Status), factorydFinal(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 func (s *fakeStore) TaskByPR(ctx context.Context, repository string, pr int64) (Task, bool, error) {

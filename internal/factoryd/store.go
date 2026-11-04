@@ -385,8 +385,9 @@ type Store interface {
 	// settled task is never listed again.
 	SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error)
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
-	// webhook redelivery idempotency; false means no task is linked to that
-	// issue yet.
+	// webhook redelivery idempotency, preferring the live card when a
+	// re-filed issue holds a final one beside it; false means no task is
+	// linked to that issue yet.
 	TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error)
 	// TaskByPR looks up a task by the pull request factoryd opened outside
 	// any card's workflow (roadmap 187); false means no task is linked to
@@ -1105,7 +1106,7 @@ func (s *PGStore) OpenReportTask(ctx context.Context, t Task) (Task, error) {
 // unique index holds one report task per parent and source, so the read
 // answers one row or none.
 func (s *PGStore) ReportOf(ctx context.Context, parent, source string) (Task, bool, error) {
-	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, parent, source)
+	return s.oneTask(ctx, `parent_task = $1 AND source = $2`, "", parent, source)
 }
 
 // PlanCards are the cards plan filed (source plan) that hold their key,
@@ -1266,12 +1267,14 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 	return t, nil
 }
 
-// oneTask reads the first task WHERE where — every key point read in
-// store.go (Task, TaskByIssue, …), the routine's, the roll's, a plan's
-// and the chain-poll's. No row answers ok false; a key the table does
-// not bind (a unique key) is what makes the one row the right one.
-func (s *PGStore) oneTask(ctx context.Context, where string, args ...any) (Task, bool, error) {
-	t, err := scanTask(s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE `+where, args...).Scan)
+// oneTask reads the first task WHERE where, ordered by order ("" for
+// none) — every key point read in store.go (Task, TaskByIssue, …), the
+// routine's, the roll's, a plan's and the chain-poll's. No row answers
+// ok false; a key the table does not bind (a unique key) is what makes
+// the one row the right one, and where it does not (TaskByIssue) order
+// picks it.
+func (s *PGStore) oneTask(ctx context.Context, where, order string, args ...any) (Task, bool, error) {
+	t, err := scanTask(s.db.QueryRowContext(ctx, `SELECT `+taskColumns+` FROM tasks WHERE `+where+order, args...).Scan)
 	if errors.Is(err, sql.ErrNoRows) {
 		return Task{}, false, nil
 	}
@@ -1285,7 +1288,7 @@ func (s *PGStore) oneTask(ctx context.Context, where string, args ...any) (Task,
 // board, chat, wake and actions), the gateway's tool surface, the merge
 // and poster queues, the sweep and the handout read cards through it.
 func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
-	return s.oneTask(ctx, `id = $1`, id)
+	return s.oneTask(ctx, `id = $1`, "", id)
 }
 
 // TaskStatuses reads many cards' statuses at once, keyed by id: a card
@@ -1314,9 +1317,12 @@ func (s *PGStore) TaskStatuses(ctx context.Context, ids []string) (map[string]st
 // TaskByIssue is repository's card on issue issueNumber; no row answers
 // ok false. The intake's webhooks, the month cap's count and the
 // console's chat byTaskID read it. (repository, issue_number) is unique
-// among live cards only — insertTask's guard holds one at a time.
+// among live cards only — insertTask's guard holds one at a time — so a
+// re-filed issue can hold a final card beside the live one: the live
+// card answers, and among final ones the newest.
 func (s *PGStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
-	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`, repository, issueNumber)
+	return s.oneTask(ctx, `repository = $1 AND issue_number = $2`,
+		` ORDER BY status IN ('done', 'failed', 'closed'), created_at DESC, id DESC`, repository, issueNumber)
 }
 
 // TaskByPR is the newest card whose row links pull request number on

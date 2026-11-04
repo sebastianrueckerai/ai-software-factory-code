@@ -1775,6 +1775,30 @@ func TestIntakeIssueClosedSignalsWorkflow(t *testing.T) {
 	}
 }
 
+// A re-filed issue holds two cards, one final one live: the close
+// webhook reaches the live one, and its issue_closed row lands on it.
+func TestIntakeIssueClosedSignalsTheLiveCardOfARefiledIssue(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	at := time.Date(2026, 11, 4, 9, 0, 0, 0, time.UTC)
+	store.tasks["t-old"] = Task{ID: "t-old", Repository: "sf/ai-software-factory-code", Status: "done", Kind: "agent", IssueNumber: 4, CreatedAt: at}
+	store.tasks["t-live"] = Task{ID: "t-live", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent", IssueNumber: 4, CreatedAt: at.Add(time.Hour)}
+	body, _ := json.Marshal(map[string]any{
+		"action":     "closed",
+		"issue":      map[string]any{"number": 4, "user": map[string]string{"login": "factory-agent"}},
+		"repository": map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":     map[string]string{"login": "sebastian"},
+	})
+	if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	if got := workflowsOf(in).signals; len(got) != 1 || got[0] != "t-live issue_closed sebastian #0: " {
+		t.Fatalf("signals = %q, want the live card's", got)
+	}
+	if rows := store.intakeEvents; len(rows) != 1 || rows[0].TaskID != "t-live" || rows[0].Kind != "issue_closed" {
+		t.Fatalf("intake events = %+v, want the close on the live card", rows)
+	}
+}
+
 // A human-lane task has no workflow: its issue closing by someone trusted
 // finishes it as done, mirrored on the label; a stranger's close is
 // ignored.
