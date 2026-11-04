@@ -657,6 +657,8 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 				add("kind invariant names its suite")
 			case !suitePath.MatchString(c.Suite):
 				add("suite %q: a package path such as ./...", c.Suite)
+			case slices.Contains(strings.Split(c.Suite, "/"), ".."):
+				add("suite %q: a package path inside the repository, with no .. segment", c.Suite)
 			}
 			if c.Inputs != "" || c.Expected != "" || c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
 				add("kind invariant carries no inputs, expected numbers, claim, prompt or evidence")
@@ -2744,7 +2746,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		return PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate}, nil
 	}
 	if st.newest != nil {
-		found = revisionFindings(*st.newest, p)
+		revisions, err := r.planRevisions(ctx, taskID, st.revision, st.read)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		found = revisionFindings(revisions, p)
 	}
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
@@ -2788,28 +2794,56 @@ func (r *Runner) namePlan(ctx context.Context, t Task, p Plan) {
 	r.Namer.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
 }
 
-// revisionFindings judges an amendment against the revision it changes
-// (piece 10): an id never changes meaning, so a changed criterion files
-// under a new id that names the old one in replaces. A removed
+// planRevisions are plan task id's revisions 1 to n, revision i at
+// index i-1, each read from the store unless read holds it already; a
+// revision the store does not hold is an empty plan.
+func (r *Runner) planRevisions(ctx context.Context, id string, n int, read map[int]*Plan) ([]Plan, error) {
+	out := make([]Plan, n)
+	for i := range out {
+		p, held := read[i+1]
+		if !held {
+			var err error
+			if p, _, err = r.planAt(ctx, id, i+1); err != nil {
+				return nil, err
+			}
+		}
+		if p != nil {
+			out[i] = *p
+		}
+	}
+	return out, nil
+}
+
+// revisionFindings judges an amendment against the plan's revisions,
+// revision i at index i-1, the last the one it changes (piece 10): an id
+// never changes meaning, in any revision, so a changed criterion files
+// under a new id that names the old one in replaces, and an id an earlier
+// revision dropped comes back only with its old definition. A removed
 // criterion's citation goes with it; the coverage rules carry that.
-func revisionFindings(old, next Plan) []string {
-	prev := map[string]PlanCriterion{}
-	for _, c := range old.Criteria {
-		prev[c.ID] = c
+func revisionFindings(revisions []Plan, next Plan) []string {
+	prev := map[string]bool{}
+	if len(revisions) > 0 {
+		for _, c := range revisions[len(revisions)-1].Criteria {
+			prev[c.ID] = true
+		}
 	}
 	var found []string
 	for _, c := range next.Criteria {
-		o, held := prev[c.ID]
-		if held && c != o {
-			found = append(found, "criterion "+c.ID+": the previous revision holds this id with another definition; a changed criterion files under a new id")
+		known := false
+		for i := len(revisions) - 1; i >= 0; i-- {
+			if slices.ContainsFunc(revisions[i].Criteria, func(e PlanCriterion) bool { return e.ID == c.ID && e != c }) {
+				found = append(found, fmt.Sprintf("criterion %s: revision %d holds this id with another definition; a changed criterion files under a new id", c.ID, i+1))
+				break
+			}
+			known = known || slices.Contains(revisions[i].Criteria, c)
 		}
-		// a criterion the previous revision holds with this definition
+		// a criterion an earlier revision holds with this definition
 		// carries its replaces marker as history, not as a replacement
 		// it is making now
-		if c.Replaces == "" || (held && c == o) {
+		if c.Replaces == "" || known {
 			continue
 		}
-		if _, ok := prev[c.Replaces]; !ok {
+		if !prev[c.Replaces] {
 			found = append(found, "criterion "+c.ID+": replaces "+c.Replaces+", an id the previous revision does not hold")
 		}
 	}

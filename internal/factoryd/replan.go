@@ -910,7 +910,9 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 // in the revision it started against by key, the pending cut's card and
 // whether its branch holds a commit past its base, and the old cards with
 // a merge commit, those of them taken off main, and those that are the
-// integration card of the revision they ran against, by id.
+// integration card of the revision they ran against, by id; read holds
+// the revisions it read, by number, so a later read of the plan's
+// history reads each revision once.
 type replanState struct {
 	prev        *Plan
 	newest      *Plan
@@ -924,6 +926,7 @@ type replanState struct {
 	merged      map[string]bool
 	reverted    map[string]bool
 	integration map[string]bool
+	read        map[int]*Plan
 }
 
 // replanState reads plan p's record for replanFindings of its revision
@@ -938,6 +941,7 @@ func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (re
 		return replanState{}, err
 	}
 	revisions := map[int]*Plan{0: nil, st.revision: st.newest}
+	st.read = revisions
 	at := func(n int) (*Plan, error) {
 		plan, read := revisions[n]
 		if !read {

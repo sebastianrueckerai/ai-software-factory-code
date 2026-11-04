@@ -232,6 +232,7 @@ func TestValidatePlan(t *testing.T) {
 		"invariant incomplete": {change(func(p *Plan) { p.Criteria[2].Suite = "" }), []string{"plan: criterion all_green: kind invariant names its suite"}},
 		"invariant suite":      {change(func(p *Plan) { p.Criteria[2].Suite = "go test ./... passes" }), []string{`plan: criterion all_green: suite "go test ./... passes": a package path such as ./...`}},
 		"invariant flag":       {change(func(p *Plan) { p.Criteria[2].Suite = "-race" }), []string{`plan: criterion all_green: suite "-race": a package path such as ./...`}},
+		"invariant outside":    {change(func(p *Plan) { p.Criteria[2].Suite = "../proofs" }), []string{`plan: criterion all_green: suite "../proofs": a package path inside the repository, with no .. segment`}},
 		"invariant overfull":   {change(func(p *Plan) { p.Criteria[2].Expected = "no failures" }), []string{"plan: criterion all_green: kind invariant carries no inputs, expected numbers, claim, prompt or evidence"}},
 		"judgement incomplete": {change(func(p *Plan) {
 			p.Criteria = append(p.Criteria, PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the chat reads calm", Inputs: "the seeded issues"})
