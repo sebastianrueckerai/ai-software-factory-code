@@ -103,10 +103,11 @@
   asks, one token only); the worker waits 30 s at most and pushes
   `factory/<id>` to the fork `factory-agent/<repo>`.
   The sandbox image (`Dockerfile.sandbox`) carries opencode, git, ripgrep,
-  the Go toolchain (the same pin as the runner image) and
-  PostgreSQL 17's server for `scripts/pg-test.sh`; its stage
-  `base`, pushed as `sf/sandbox-base`, is the same without the harness,
-  Go and Node, apt's dated sources kept for the images built on it; its
+  the Go toolchain (the same pin as the runner image), PostgreSQL 17's
+  server for `scripts/pg-test.sh` and gotestsum for `bash check test`;
+  its stage `base`, pushed as `sf/sandbox-base`, is the same without the
+  harness, Go and Node and keeps gotestsum, apt's dated sources kept
+  for the images built on it; its
   egress (`workerEgressSpec`) is default-deny plus the
   gateway, the in-cluster Forgejo, the Go module proxy and checksum DB,
   and `storage.googleapis.com` (proxy.golang.org redirects zip downloads

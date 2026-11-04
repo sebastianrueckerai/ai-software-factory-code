@@ -150,6 +150,7 @@ func checkRun(t *testing.T, args ...string) (log string, err error) {
 		"scripts/affected-packages.sh": string(script),
 		"scripts/pg-test.sh":           "echo \"pg-test.sh $*\" >>\"$LOG\"\n",
 		"Dockerfile.runner":            "ARG GOSEC_VERSION=0\n",
+		"Dockerfile.sandbox":           "ARG GOTESTSUM_VERSION=1.13.0\n",
 	})
 	write(t, bin, map[string]string{
 		"go":   "[ \"$1\" = list ] && exec " + realGo + " \"$@\"\necho \"go $1\" >>\"$LOG\"\n",
@@ -168,10 +169,17 @@ func checkRun(t *testing.T, args ...string) (log string, err error) {
 	} else {
 		args = args[1:]
 	}
+	if len(args) > 0 && args[0] == "with-gotestsum" {
+		write(t, bin, map[string]string{"gotestsum": "echo \"gotestsum $*\" >>\"$LOG\"\n"})
+		if err := os.Chmod(filepath.Join(bin, "gotestsum"), 0o755); err != nil {
+			t.Fatal(err)
+		}
+		args = args[1:]
+	}
 	write(t, dir, map[string]string{"a/a.go": "package a\n\nconst X = 1\n"})
 	cmd := exec.Command("bash", append([]string{"check"}, args...)...)
 	cmd.Dir = dir
-	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+logFile, "TMPDIR="+t.TempDir())
+	cmd.Env = append(os.Environ(), "PATH="+bin+":"+os.Getenv("PATH"), "LOG="+logFile, "TMPDIR="+t.TempDir(), "CHECK_REPORT=r.xml")
 	out, err := cmd.CombinedOutput()
 	raw, _ := os.ReadFile(logFile)
 	if err != nil {
@@ -196,6 +204,31 @@ func TestCheckModes(t *testing.T) {
 		if log != tt.want {
 			t.Errorf("bash check %v ran %q, want %q", tt.args, log, tt.want)
 		}
+	}
+}
+
+// checkRun(t, "with-gotestsum", "test", "./a", "TestA/sub") logs
+// "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -run ^TestA$/^sub$ ./a\n";
+// with no gotestsum on PATH (t.Skip when exec.LookPath("gotestsum") finds
+// the host's), checkRun(t, "test", "./a") logs
+// "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 ./a\n".
+func TestCheckTestRunsTheImagesGotestsum(t *testing.T) {
+	log, err := checkRun(t, "with-gotestsum", "test", "./a", "TestA/sub")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "pg-test.sh gotestsum --junitfile r.xml -- -count=1 -run ^TestA$/^sub$ ./a\n"; log != want {
+		t.Errorf("bash check test with gotestsum ran %q, want %q", log, want)
+	}
+	if _, err := exec.LookPath("gotestsum"); err == nil {
+		t.Skip("the host's PATH carries gotestsum, so check cannot fall back to go run")
+	}
+	log, err = checkRun(t, "test", "./a")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := "pg-test.sh go run gotest.tools/gotestsum@v1.13.0 --junitfile r.xml -- -count=1 ./a\n"; log != want {
+		t.Errorf("bash check test without gotestsum ran %q, want %q", log, want)
 	}
 }
 

@@ -19,7 +19,10 @@ request's selection by the base's copy of the same script, so a pull
 request cannot pick its own tests. `CHECK_REPORT=<file> bash check test
 <suite> [<name>]` runs one package, or the one named test in it, under
 `scripts/pg-test.sh`, and writes a JUnit XML report to the file: the
-criteria gate's runner reads that report and no test output. `.githooks/pre-push` runs `bash check static` on the
+criteria gate's runner reads that report and no test output. gotestsum
+is the sandbox image's binary (`GOTESTSUM_VERSION` of
+`Dockerfile.sandbox`), and `go run` builds that version where none is
+installed. `.githooks/pre-push` runs `bash check static` on the
 commit a push to `main` carries and refuses the push on a finding, so a
 push from a clone with the hook on cannot turn `main` red on vet, gofmt or
 gosec (`git push --no-verify` skips it). Turn it on once per clone:

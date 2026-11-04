@@ -164,9 +164,9 @@ func buildVMsTarball(t *testing.T) (path, sha string) {
 // store from the list, so a download no line names has no store copy to
 // read, and a sha256 that differs pins bytes the line does not name.
 // Hand-derived from the two Dockerfiles and buildvm.go as they stand:
-// nine lines, the runner image's eight downloads (its buildkit tarball
-// also the build VM's) and opencode's; node and the PGDG key serve both
-// images.
+// ten lines, the runner image's eight downloads (its buildkit tarball
+// also the build VM's) and the sandbox's two, opencode and gotestsum;
+// node and the PGDG key serve both images.
 func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 	listed := readUpstreamFiles(t)
 	if len(listed) == 0 {
@@ -190,8 +190,8 @@ func TestUpstreamFilesNameEveryDownload(t *testing.T) {
 		t.Fatalf("the build VM's %s is pinned at two sha256", path)
 	}
 	want[path] = sha
-	if len(want) != 9 {
-		t.Errorf("the builds download %d files, want the nine of the two Dockerfiles and the build VM", len(want))
+	if len(want) != 10 {
+		t.Errorf("the builds download %d files, want the ten of the two Dockerfiles and the build VM", len(want))
 	}
 	seen := map[string]bool{}
 	for _, l := range listed {
