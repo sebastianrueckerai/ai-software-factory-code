@@ -498,6 +498,8 @@ func (s *accBatchStore) FilePlanProofs(context.Context, string, []factoryd.PlanP
 
 func (s *accBatchStore) StorePlanProofs(context.Context, string, map[int]string) error { return nil }
 
+func (s *accBatchStore) OpenPlanProof(context.Context, string, int) (bool, error) { return false, nil }
+
 func (s *accBatchStore) PlansWithoutProver(context.Context) ([]string, error) { return nil, nil }
 
 func (s *accBatchStore) PastReverts(context.Context, string) ([]string, error) {
@@ -597,6 +599,9 @@ func (s *accBatchStore) SpendAndCallsBetween(context.Context, string, time.Time,
 func (s *accBatchStore) NewestCallAt(context.Context, string) (time.Time, error) {
 	panic("unused")
 }
+func (s *accBatchStore) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
+	panic("unused")
+}
 func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
 	panic("unused")
 }
@@ -659,6 +664,9 @@ func (s *accBatchStore) SetTaskUsage(ctx context.Context, id string, u factoryd.
 	panic("unused")
 }
 func (s *accBatchStore) ResetTaskUsage(ctx context.Context, id string) error {
+	panic("unused")
+}
+func (s *accBatchStore) SetTaskProofLines(ctx context.Context, id string, lines int) error {
 	panic("unused")
 }
 func (s *accBatchStore) SetTaskSizeBudget(ctx context.Context, id, size string, heldCents int64, eur float64) error {
@@ -866,6 +874,10 @@ func (s *accBatchStore) UpdatePlanCardBrief(context.Context, string, factoryd.Ta
 }
 
 func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) DeleteVerdictsButApprover(context.Context, string, string) error {
 	panic("unused")
 }
 

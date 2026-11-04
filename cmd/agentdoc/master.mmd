@@ -17,7 +17,7 @@ graph LR
     opencode-subagents["opencode subagents"]
   end
   subgraph verification["verification"]
-    review-criteria["review-criteria"]
+    judgement["judgement"]
     review-behaviours["review-behaviours"]
     model-review["model-review"]
     security-audit["security-audit"]
@@ -47,7 +47,7 @@ graph LR
   checkin -.-> coding
   model-review --> gate-supervisor
   security-audit --> gate-supervisor
-  review-criteria -.-> model-review
+  judgement --> gate-supervisor
   review-behaviours -.-> model-review
   model-review -.-> delta-planner
   delta-planner -.-> coding

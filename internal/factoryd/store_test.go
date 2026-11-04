@@ -117,6 +117,10 @@ type fakeStore struct {
 	catches          map[string][]string           // the recording rule's ledger, by "task revision kind finder"
 	criteriaVerdicts map[string][]CriterionVerdict // rows by task, every source's
 	proofs           map[string][]PlanProof        // the plan proof rows, idx order, by task
+	openErr          error                         // answered once by OpenPlanProof
+	spendSince       float64                       // TaskSpendSince's answer
+	spendFrom        time.Time                     // TaskSpendSince's last since
+	spendErr         error                         // TaskSpendSince's error
 	queue            []queueEntry                  // the merge queues, oldest first
 	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
@@ -1116,9 +1120,19 @@ func (s *fakeStore) SetTaskUsage(ctx context.Context, id string, u TaskUsage) er
 	if !ok {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
 	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) SetTaskProofLines(ctx context.Context, id string, lines int) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+	}
+	t.Usage.ProofLines = lines
 	s.tasks[id] = t
 	return nil
 }
@@ -2469,6 +2483,23 @@ func TestPGStore(t *testing.T) {
 	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.SessionsAdded() != 2 {
 		t.Fatalf("usage after the raise and a snapshot = %+v, want %+v: the snapshot keeps the raise", got.Usage, raised)
 	}
+	// the opened proofs' lines are set, not added, and a snapshot keeps
+	// them too
+	for range 2 {
+		if err := s.SetTaskProofLines(ctx, "t1", 300); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.SetTaskUsage(ctx, "t1", usage); err != nil {
+		t.Fatal(err)
+	}
+	raised.ProofLines = 300
+	if got, _, _ := s.Task(ctx, "t1"); got.Usage != raised || got.Usage.LinesAdded() != 450 {
+		t.Fatalf("usage after the proof lines and a snapshot = %+v, want %+v and 450 lines added", got.Usage, raised)
+	}
+	if err := s.SetTaskProofLines(ctx, "nope", 300); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetTaskProofLines unknown task = %v, want ErrNotFound", err)
+	}
 	if err := s.ResetTaskUsage(ctx, "t1"); err != nil {
 		t.Fatal(err)
 	}
@@ -3550,6 +3581,31 @@ func TestPGStoreProofs(t *testing.T) {
 		t.Fatalf("round 3 put beside a criterion's proof: %v %v, want true", ok, err)
 	}
 
+	// A stored row opens once; a row in any other state does not open.
+	if _, err := s.db.ExecContext(ctx, `UPDATE plan_proofs SET state = 'stored', path = 'proofs/door_state/door_state_test.go',
+		suite = './proofs/door_state', name = 'TestDoorState', code = 'package door_state' WHERE task_id = 't-ho' AND idx = 1`); err != nil {
+		t.Fatal(err)
+	}
+	for i, want := range []bool{true, false} {
+		if ok, err := s.OpenPlanProof(ctx, "t-ho", 1); err != nil || ok != want {
+			t.Fatalf("open %d of a stored row = %v, %v; want %v", i+1, ok, err, want)
+		}
+	}
+	before, err := s.PlanProofs(ctx, "t-ho")
+	if err != nil || before[0].Idx != 1 || before[0].State != ProofOpened {
+		t.Fatalf("rows after the open = %+v, %v; want idx 1 opened", before, err)
+	}
+	filed := slices.IndexFunc(before, func(pp PlanProof) bool { return pp.State == ProofFiled })
+	if filed < 0 {
+		t.Fatalf("rows = %+v, want a filed one", before)
+	}
+	if ok, err := s.OpenPlanProof(ctx, "t-ho", before[filed].Idx); err != nil || ok {
+		t.Fatalf("open of a filed row = %v, %v; want false", ok, err)
+	}
+	if after, err := s.PlanProofs(ctx, "t-ho"); err != nil || !slices.Equal(after, before) {
+		t.Fatalf("rows after the open of a filed row = %+v, %v; want them as they were", after, err)
+	}
+
 	// A stored proof holds its test; a criterion's proof names its criterion.
 	for constraint, insert := range map[string]string{
 		"plan_proofs_file_check": `INSERT INTO plan_proofs (task_id, idx, round, id, origin, claim, state, suite, name, code)
@@ -4504,6 +4560,16 @@ func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by 
 	return nil
 }
 
+func (s *fakeStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
+	if s.criteriaVerdicts == nil {
+		return nil
+	}
+	s.criteriaVerdicts[taskID] = slices.DeleteFunc(s.criteriaVerdicts[taskID], func(v CriterionVerdict) bool {
+		return v.Source != CriteriaSourceApprover && v.Criterion == criterion
+	})
+	return nil
+}
+
 func (s *fakeStore) CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error) {
 	return s.criteriaVerdicts[taskID], nil
 }
@@ -4708,6 +4774,25 @@ func (s *fakeStore) StorePlanProofs(ctx context.Context, id string, flags map[in
 		}
 	}
 	return nil
+}
+
+func (s *fakeStore) TaskSpendSince(ctx context.Context, id string, since time.Time) (float64, error) {
+	s.spendFrom = since
+	return s.spendSince, s.spendErr
+}
+
+func (s *fakeStore) OpenPlanProof(ctx context.Context, id string, idx int) (bool, error) {
+	if err := s.openErr; err != nil {
+		s.openErr = nil
+		return false, err
+	}
+	for i, pp := range s.proofs[id] {
+		if pp.Idx == idx && pp.State == ProofStored {
+			s.proofs[id][i].State = ProofOpened
+			return true, nil
+		}
+	}
+	return false, nil
 }
 
 func (s *fakeStore) PlansWithoutProver(ctx context.Context) ([]string, error) {

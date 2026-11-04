@@ -73,6 +73,20 @@ func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
 	if ids, err := s.CriteriaVerdictTasks(ctx); err != nil || !slices.Equal(ids, []string{"t1"}) {
 		t.Fatalf("CriteriaVerdictTasks = %v, %v; want [t1]", ids, err)
 	}
+	// a delete takes every row of one criterion but the approver's: c3's
+	// review and judgement rows go, its waiver stands, c1 is untouched
+	if err := s.PutCriteriaVerdicts(ctx, "t1", "judgement", FactoryDecider, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}}); err != nil {
+		t.Fatalf("PutCriteriaVerdicts judgement: %v", err)
+	}
+	if err := s.DeleteVerdictsButApprover(ctx, "t1", "c3"); err != nil {
+		t.Fatalf("DeleteVerdictsButApprover: %v", err)
+	}
+	if err := s.DeleteVerdictsButApprover(ctx, "t1", "c9"); err != nil {
+		t.Fatalf("DeleteVerdictsButApprover of no row: %v", err)
+	}
+	if rows, err := s.CriteriaVerdicts(ctx, "t1"); err != nil || len(rows) != 2 || rows[0].Criterion != "c1" || rows[1].Criterion != "c3" || rows[1].Source != "approver" {
+		t.Fatalf("rows after the delete = %+v, %v; want c1's and c3's waiver", rows, err)
+	}
 
 	// the catches: filed under a plan revision, deduped on their key
 	plan, _ := json.Marshal(Plan{Summary: "s"})

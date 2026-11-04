@@ -53,9 +53,12 @@ const (
 	// the actor is the member, detail {"thread"}, the stopped turn's
 	// thread.
 	EventChatStopped = "chat_stopped"
-	// EventCriterionDecided records an approver's grant or waiver on a
-	// plan's criterion (the spec-intake concept, pieces 7 and 8): detail
-	// {"approval", "criteria", "verb"} or {"criterion", "verdict"}.
+	// EventCriterionDecided records an approver's decision on a plan's
+	// criteria (the spec-intake concept, pieces 7 and 8): detail
+	// {"approval", "criteria", "verb"} for a grant (granted) or a
+	// confirmation (met), {"approval", "verb"} for a denial (denied), or
+	// {"approval", "criterion", "verb", "reason"} for one row: met,
+	// not_met or waived.
 	EventCriterionDecided = "criterion_decided"
 	// EventPlanClosed records a plan's close (the spec-intake concept,
 	// piece 8): every criterion met or waived, or, for a plan without
@@ -92,6 +95,15 @@ const (
 	// "stored": [ids], "flagged": [{"criterion", "flag"}]}, a hold-out by
 	// holdoutEntry.
 	EventProofsStored = "proofs_stored"
+	// EventProofOpened records a stored proof the gate opened, on the gated
+	// card and on the plan task: its blind try did not pass, or wrote no
+	// artifact even where its test passed, or its dry run flagged it and it
+	// had no try. Detail {"criterion", "head", "outcome" (a proof* word,
+	// "no artifact", or "flagged"), "message" (the output the builder got,
+	// or the flag), "path", "suite", "name", "code", and "holdout", the
+	// claim with its inputs and expected numbers, for a hold-out}. The test
+	// is public from here on.
+	EventProofOpened = "proof_opened"
 )
 
 // StepEvent is the timeline step every event is recorded under.
@@ -113,16 +125,24 @@ func (tl *Timeline) recordEvent(ctx context.Context, taskID, event string, detai
 	tl.RecordRow(ctx, taskID, event, FactoryDecider, ViaFactoryd, detail)
 }
 
-// hasEvent tells whether taskID's timeline holds event. An unreadable
-// timeline reads as no.
-func (tl *Timeline) hasEvent(ctx context.Context, taskID, event string) bool {
+// hasEvent tells whether taskID's timeline holds event on a line that
+// holds every value of match; a nil match takes any line of the event. An
+// unreadable timeline reads as no.
+func (tl *Timeline) hasEvent(ctx context.Context, taskID, event string, match map[string]string) bool {
 	body, err := tl.Objects.Get(ctx, "sessions/"+taskID+"/timeline.jsonl")
 	if err != nil {
 		return false
 	}
 	for _, line := range bytes.Split(body, []byte("\n")) {
 		var e map[string]any
-		if json.Unmarshal(line, &e) == nil && e["step"] == StepEvent && e["event"] == event {
+		if json.Unmarshal(line, &e) != nil || e["step"] != StepEvent || e["event"] != event {
+			continue
+		}
+		held := true
+		for k, v := range match {
+			held = held && e[k] == v
+		}
+		if held {
 			return true
 		}
 	}

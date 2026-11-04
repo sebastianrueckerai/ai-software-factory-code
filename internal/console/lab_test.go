@@ -80,25 +80,23 @@ func TestLab(t *testing.T) {
 	t.Cleanup(model.Close)
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
-	// a waiver stands as the approver's row on the plan's integration card,
-	// of the criterion's kind in the plan, as factoryd.DecideCriterion writes it
-	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
-		r.tasks.mu.Lock()
-		defer r.tasks.mu.Unlock()
-		var p factoryd.Plan
-		if revs := r.tasks.plans[id]; len(revs) > 0 {
-			if err := json.Unmarshal(revs[len(revs)-1].Plan, &p); err != nil {
-				return err
-			}
+	// a decision stands as the approver's row of its criterion's kind on
+	// the plan's integration card
+	r.c.cfg.DecideCriterion = func(ctx context.Context, id, cid, verdict, by, reason string) error {
+		_, p, _, err := r.c.planTable(ctx, id, 0)
+		if err != nil {
+			return err
 		}
 		i := slices.IndexFunc(p.Criteria, func(c factoryd.PlanCriterion) bool { return c.ID == cid })
 		if i < 0 {
 			return factoryd.ErrNoCriterion
 		}
+		r.tasks.mu.Lock()
+		defer r.tasks.mu.Unlock()
 		for _, t := range r.tasks.tasks {
 			if t.Parent == id && t.PlanKey == "integration" {
-				r.tasks.criteria[t.ID] = append(r.tasks.criteria[t.ID], factoryd.CriterionVerdict{
-					Criterion: cid, Verdict: verdict, Evidence: reason, Kind: p.Criteria[i].Kind, Source: "approver", DecidedBy: by})
+				r.tasks.criteria[t.ID] = append(r.tasks.criteria[t.ID], factoryd.CriterionVerdict{Criterion: cid, Verdict: verdict,
+					Evidence: reason, Kind: p.Criteria[i].Kind, Source: factoryd.CriteriaSourceApprover, DecidedBy: by})
 				return nil
 			}
 		}
@@ -394,7 +392,8 @@ type labScene struct {
 
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
-	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene}
+	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene,
+	"human": humanScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -645,7 +644,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics or tokens", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria or human", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -1513,6 +1512,14 @@ func criteriaScene(now time.Time) labScene {
 			Reason: "criteria not met with the plan's cards done: size_bound_escape, window_and_existing_figures, ledger_retry_integrity",
 			Spec:   json.RawMessage(`{"revision":0,"task":"` + integ.ID + `"}`), CreatedAt: now.Add(-3 * time.Minute)}},
 	}
+}
+
+// humanScene is humanRig's board, pages_ok's artifact one unbroken line
+// of 300 characters.
+func humanScene(time.Time) labScene {
+	s := humanBoard()
+	s.objects[factoryd.ArtifactKey("t-int", "pages_ok")] = pagesOK(strings.Repeat("smallmediumlarge", 19)[:300])
+	return s
 }
 
 // historyScene is the idle board after a busy week: 320 more cards

@@ -20,6 +20,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The console's actions: one function each, which a button's handler and
@@ -2400,9 +2401,10 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // pull request, and only once Forgejo has it is the workflow signalled,
 // which merges as factory-merge. An approval the agent decided is the
 // factory's own, decided as factoryd.ChatUser (a.approver), whoever is
-// online: no review is posted and no human criterion is met, and the merge
-// posts the merge gate's approval on the merge rule auto and refuses on
-// any other. A red-checks merge request merges only once the same head's
+// online: no review is posted, and the merge posts the merge gate's
+// approval on the merge rule auto and refuses on any other. A plan's
+// integration or delta card merges once every human criterion row has a
+// verdict. A red-checks merge request merges only once the same head's
 // checks turned green again (#1013: a re-run); still red, its approval
 // refuses naming what fits the card. The agent never approves a GitHub
 // sync's pull request: a human approves the GitHub commits it carries.
@@ -2486,6 +2488,16 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge: deny the merge (deny_merge).", newest, t.PlanKey))
 			}
 		}
+		_, open, _, _, err := c.planVerdicts(ctx, t)
+		switch {
+		case err != nil:
+			log.Printf("console: the criterion rows of %s: %v", t.ID, err)
+			return "", refuse(http.StatusInternalServerError, "Cannot read the card's criterion rows. Approve again.")
+		case len(open) == 1:
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s has no verdict yet: settle its row on the card first.", open[0]))
+		case len(open) > 1:
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Criteria %s have no verdict yet: settle each row on the card first.", textutil.AndList(open)))
+		}
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
@@ -2496,14 +2508,6 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, unsignalled)
-		}
-		// a human-verification criterion waits for a person
-		if c.cfg.RecordHumanCriteria != nil && !agent {
-			if n, err := c.cfg.RecordHumanCriteria(ctx, q.TaskID, a.s.user); err != nil {
-				log.Printf("console: %s approved PR #%d of %s, the human criteria failed to record: %v", a.s.user, q.PRNumber, q.TaskID, err)
-			} else if n > 0 {
-				c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"pr": q.PRNumber, "criteria": n, "verb": "met"})
-			}
 		}
 		log.Printf("console: %s approved PR #%d of %s at %s via %s", a.s.user, q.PRNumber, q.TaskID, spec.HeadSHA, a.via)
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"pr": q.PRNumber})
@@ -2614,35 +2618,99 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	return fmt.Sprintf("Denied pull request #%d (%s).", q.PRNumber, strings.ReplaceAll(action, "_", " ")), nil
 }
 
-// doWaive records the member's waiver of criterion cid of the plan of
-// criteria approval request id, with their one-line reason: the criterion
-// no longer holds the plan open.
-func (c *Console) doWaive(ctx context.Context, a actor, id int64, cid, reason string) (string, error) {
+// noRows refuses a criterion press on a request whose card holds no
+// criterion rows.
+const noRows = "This card has no criterion rows."
+
+// doDecide records a's verb on criterion cid of the pending request id: on
+// the merge request of a plan's integration or delta card (planRows), met
+// on a human criterion with a's words beside the artifact they saw,
+// not_met on a human criterion, which sends the card back to its agent
+// with a's words, or waived on any row with a's one-line reason; on a
+// criteria or criteria_rerun request, waived alone.
+func (c *Console) doDecide(ctx context.Context, a actor, id int64, cid, verb, reason string) (string, error) {
 	reason = strings.TrimSpace(reason)
-	if reason == "" || len(reason) > 2000 {
-		return "", refuse(http.StatusBadRequest, "a one-line reason of up to 2000 characters is required")
+	switch {
+	case verb != "met" && verb != "not_met" && verb != "waived":
+		return "", refuse(http.StatusBadRequest, "Choose Met, Not met or Waive: the verb is met, not_met or waived.")
+	case verb != "met" && (reason == "" || len(reason) > 2000):
+		return "", refuse(http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive")
 	}
 	q, err := c.pendingRequest(ctx, a, id)
 	if err != nil {
 		return "", err
 	}
-	if q.Kind != factoryd.ApprovalCriteria && q.Kind != factoryd.ApprovalCriteriaRerun {
-		return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which waives nothing", q.ID, q.Kind))
+	plan := q.TaskID
+	var row *criterionRow
+	switch q.Kind {
+	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
+		if verb != "waived" {
+			return "", refuse(http.StatusConflict, noRows)
+		}
+	case factoryd.ApprovalMerge:
+		t, _, err := c.cfg.Tasks.Task(ctx, q.TaskID)
+		if err != nil {
+			log.Printf("console: task %s: %v", q.TaskID, err)
+			return "", refuse(http.StatusInternalServerError, "cannot read the task")
+		}
+		rows, _, ok, err := c.planRows(ctx, t)
+		switch {
+		case err != nil:
+			log.Printf("console: the criterion rows of %s: %v", t.ID, err)
+			return "", refuse(http.StatusInternalServerError, "Cannot read the card's criterion rows. Press again.")
+		case !ok:
+			return "", refuse(http.StatusConflict, noRows)
+		}
+		i := slices.IndexFunc(rows, func(r criterionRow) bool { return r.ID == cid })
+		switch {
+		case i < 0:
+			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s. Reload the board.", cid))
+		case verb != "waived" && rows[i].Kind != factoryd.CriterionHuman:
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is the gate's to judge.", cid))
+		case rows[i].Verdict == "met":
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is met already. Reload the board.", cid))
+		}
+		plan, row = t.Parent, &rows[i]
+	default:
+		return "", refuse(http.StatusConflict, noRows)
 	}
-	switch err := c.cfg.DecideCriterion(ctx, q.TaskID, cid, "waived", a.s.user, reason); {
-	case errors.Is(err, factoryd.ErrNoCriterion):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s; reload the board.", cid))
-	case errors.Is(err, factoryd.ErrCriterionMet):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is met already; reload the board.", cid))
-	case errors.Is(err, factoryd.ErrNotFound):
-		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
-	case err != nil:
-		log.Printf("console: %s waives %s of %s: %v", a.s.user, cid, q.TaskID, err)
-		return "", refuse(http.StatusInternalServerError, "the waiver could not be recorded; see the factoryd log")
+	if verb == "met" {
+		seen := "the criterion's evidence"
+		if row.Artifact != nil {
+			seen = row.Artifact.Name + " at " + row.Artifact.Head[:min(7, len(row.Artifact.Head))]
+		}
+		reason = fmt.Sprintf("%s (%s)", cmp.Or(reason, "met"), seen)
+		if len(reason) > 2000 {
+			return "", refuse(http.StatusBadRequest, fmt.Sprintf("Met takes up to %d characters of words beside what you saw.", 2000-len(seen)-3))
+		}
 	}
-	log.Printf("console: %s waived criterion %s of %s via %s", a.s.user, cid, q.TaskID, a.via)
-	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criterion": cid, "verdict": "waived"})
-	return fmt.Sprintf("Criterion %s waived.", cid), nil
+	if verb == "not_met" {
+		if _, err := c.doDeny(ctx, a, id, "request_changes", fmt.Sprintf("criterion %s not met: %s", cid, reason)); err != nil {
+			return "", err
+		}
+	} else {
+		switch err := c.cfg.DecideCriterion(ctx, plan, cid, verb, a.s.user, reason); {
+		case errors.Is(err, factoryd.ErrNoCriterion):
+			return "", refuse(http.StatusConflict, fmt.Sprintf("The plan holds no criterion %s. Reload the board.", cid))
+		case errors.Is(err, factoryd.ErrCriterionMet):
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is met already. Reload the board.", cid))
+		case errors.Is(err, factoryd.ErrNotHuman):
+			return "", refuse(http.StatusConflict, fmt.Sprintf("Criterion %s is the gate's to judge.", cid))
+		case errors.Is(err, factoryd.ErrNotFound):
+			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", plan))
+		case err != nil:
+			log.Printf("console: %s decides %s of %s %s: %v", a.s.user, cid, plan, verb, err)
+			return "", refuse(http.StatusInternalServerError, "The decision could not be recorded. See the factoryd log.")
+		}
+	}
+	log.Printf("console: %s decided criterion %s of %s %s via %s", a.s.user, cid, plan, verb, a.via)
+	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided,
+		map[string]any{"approval": q.ID, "criterion": cid, "verb": verb, "reason": reason})
+	return fmt.Sprintf(map[string]string{
+		"met":     "Criterion %s met.",
+		"not_met": "Criterion %s is not met. The card goes back to its agent with your words.",
+		"waived":  "Criterion %s waived.",
+	}[verb], cid), nil
 }
 
 // doConfirmCriteria records the human's confirmation that the plan's

@@ -447,6 +447,17 @@ func (s *PGStore) StorePlanProofs(ctx context.Context, id string, flags map[int]
 	return err
 }
 
+// OpenPlanProof moves stored row idx of plan id to opened: true when it
+// did, false when the row was not stored.
+func (s *PGStore) OpenPlanProof(ctx context.Context, id string, idx int) (bool, error) {
+	res, err := s.db.ExecContext(ctx, `UPDATE plan_proofs SET state = 'opened' WHERE task_id = $1 AND idx = $2 AND state = 'stored'`, id, idx)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n == 1, err
+}
+
 // PlansWithoutProver are the open plans, by id, whose cards are filed and
 // which have no prover task yet.
 func (s *PGStore) PlansWithoutProver(ctx context.Context) ([]string, error) {

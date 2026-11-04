@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -17,13 +18,20 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 )
 
-// criterionRow is one criterion of a criteria approval card: the
+// criterionRow is one criterion of a criteria or merge approval card: the
 // criterion, its standing verdict and the evidence behind it.
 type criterionRow struct {
 	factoryd.PlanCriterion
 	Verdict  string
 	Evidence string
+	Word     string                 // "blind" or "open" for a met gate row, from its evidence
+	Artifact *factoryd.GateArtifact // a human criterion's artifact as the gate's newest run wrote it; nil without one
+	CutLine  string                 // "the first 8 KiB of <n> KiB" when the card shows the artifact's first maxCardArtifact bytes
+	Human    bool                   // Met and Not met are offered: a human criterion on a merge card
 }
+
+// maxCardArtifact is the most of an artifact a merge card shows.
+const maxCardArtifact = 8 << 10
 
 // approvalCard is a pending approval request with what its kind needs.
 type approvalCard struct {
@@ -56,6 +64,10 @@ type approvalCard struct {
 	Criteria     []criterionRow
 	Delivered    bool
 	Grantable    bool
+	// Unsettled: a merge card's human criteria with no verdict, which hold
+	// its Approve. A gate criterion without a row does not: the press
+	// reaches the workflow, which runs the gate again.
+	Unsettled []string
 	// a plan: its revision, the summary, the cards in filing order and the
 	// keys it takes off main
 	PlanSpec    factoryd.PlanSpec
@@ -82,6 +94,19 @@ type approvalCard struct {
 	// Writer: the viewer writes the project, so the card's title opens
 	// its task's drawer, which holds the card's facts in full
 	Writer bool
+	// Opened is the drawer copy of a plan card's merge card alone: the
+	// plan's opened proofs, each beside the pull request's version.
+	// OpenedUnread: they could not be read, and the card says so.
+	Opened       []openedView
+	OpenedUnread bool
+}
+
+// openedView is an opened proof as the drawer shows it: the original
+// code, and the pull request's version at the request's head when it
+// differs. Missing: the pull request holds no file at the path.
+type openedView struct {
+	Criterion, Path, Original, Repository string
+	Missing, Changed                      bool
 }
 
 // Waiting is how long the request has waited for a member, in minutes
@@ -169,6 +194,17 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 				}
 			}
 		}
+		if err == nil && !face {
+			if k.Opened, err = c.openedOf(ctx, act, t, a.Project, k.Merge.HeadSHA); err != nil {
+				k.OpenedUnread = true
+			}
+		}
+		if rows, open, ok, rerr := c.planRows(ctx, t); rerr != nil {
+			log.Printf("console: approval request %d: %v", a.ID, rerr)
+			k.Problem = "The console could not read the criterion rows. See the factoryd log."
+		} else if ok {
+			k.Criteria, k.Unsettled = rows, open
+		}
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
@@ -196,12 +232,52 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		for i, f := range k.Merge.Review.Findings {
 			k.Merge.Review.Findings[i] = faceLine(f, 200)
 		}
-		for i := range k.Merge.Review.Criteria {
-			k.Merge.Review.Criteria[i].Evidence = faceLine(k.Merge.Review.Criteria[i].Evidence, 200)
-		}
 		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
 	return k
+}
+
+// openedOf are the opened proofs of plan card t's plan when t is its
+// integration card or a delta card, each read at head in project as a's
+// human; nil for any other card.
+func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]openedView, error) {
+	if t.Source != factoryd.SourcePlan || t.Parent == "" || head == "" {
+		return nil, nil
+	}
+	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
+	if err != nil || !ok || !factoryd.CriteriaCard(p, t.PlanKey) {
+		return nil, err
+	}
+	rows, err := c.cfg.Tasks.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return nil, fmt.Errorf("proofs of %s: %w", t.Parent, err)
+	}
+	var out []openedView
+	for _, pp := range rows {
+		if pp.State != factoryd.ProofOpened {
+			continue
+		}
+		if a.s == nil {
+			return nil, errors.New("the actor carries no session, so the pull request's files were not read")
+		}
+		route, err := rawRoute(project, pp.Path, head)
+		if err != nil {
+			return nil, err
+		}
+		v := openedView{Criterion: cmp.Or(pp.Criterion, pp.ID), Path: pp.Path, Original: pp.Code}
+		var raw []byte
+		err = c.as(ctx, a.s, http.MethodGet, route, nil, http.StatusOK, &raw)
+		switch ae := (*apiError)(nil); {
+		case errors.As(err, &ae) && ae.status == http.StatusNotFound:
+			v.Missing = true
+		case err != nil:
+			return nil, &forgejoRefusal{"read " + pp.Path + " at " + head, err}
+		case string(raw) != pp.Code:
+			v.Changed, v.Repository = true, string(raw)
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // criteriaOf fills the criteria gap card k from its request's spec: the
@@ -234,6 +310,76 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	}
 	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })
 	return nil
+}
+
+// planRows are planVerdicts' rows as the merge card shows them: a met
+// gate row's blind or open moved from its evidence to its Word, and each
+// human criterion's with its artifact, cut to maxCardArtifact bytes.
+func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, ok bool, err error) {
+	rows, open, home, ok, err := c.planVerdicts(ctx, t)
+	if err != nil || !ok {
+		return nil, nil, ok, err
+	}
+	for i, row := range rows {
+		if row.Verdict == "met" && (row.Kind == factoryd.CriterionTest || row.Kind == factoryd.CriterionInvariant) {
+			for _, w := range []string{"blind", "open"} {
+				if rest, cut := strings.CutPrefix(row.Evidence, w+": "); cut {
+					rows[i].Word, rows[i].Evidence = w, rest
+				}
+			}
+		}
+		if row.Kind != factoryd.CriterionHuman {
+			continue
+		}
+		rows[i].Human = true
+		b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, row.ID))
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
+		}
+		if b == nil {
+			continue
+		}
+		a := &factoryd.GateArtifact{}
+		if err := json.Unmarshal(b, a); err != nil {
+			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
+		}
+		if len(a.Content) > maxCardArtifact {
+			rows[i].CutLine = fmt.Sprintf("the first %d KiB of %d KiB", maxCardArtifact>>10, (len(a.Content)+1023)>>10)
+			a.Content = strings.ToValidUTF8(a.Content[:maxCardArtifact], "")
+		}
+		rows[i].Artifact = a
+	}
+	return rows, open, true, nil
+}
+
+// planVerdicts are plan card t's plan's criteria with their standing rows
+// on its integration card home, and open, the human criteria with no
+// verdict, which hold the card's Approve; ok false when t is not the
+// integration card or a delta card of a plan with criteria.
+func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, home string, ok bool, err error) {
+	if t.Source != factoryd.SourcePlan || t.Parent == "" {
+		return nil, nil, "", false, nil
+	}
+	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
+	if err != nil || !ok || len(p.Criteria) == 0 || !factoryd.CriteriaCard(p, t.PlanKey) {
+		return nil, nil, "", false, err
+	}
+	integration, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, t.Parent, p)
+	if err != nil {
+		return nil, nil, "", false, err
+	}
+	verdicts, err := c.cfg.Tasks.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return nil, nil, "", false, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
+	}
+	for _, pc := range p.Criteria {
+		v, _ := factoryd.StandingRow(verdicts, pc)
+		rows = append(rows, criterionRow{PlanCriterion: pc, Verdict: v.Verdict, Evidence: v.Evidence})
+		if v.Verdict == "" && pc.Kind == factoryd.CriterionHuman {
+			open = append(open, pc.ID)
+		}
+	}
+	return rows, open, integration.ID, true, nil
 }
 
 // planOf fills plan card k from its request's revision.
@@ -308,11 +454,11 @@ func (c *Console) deny(w http.ResponseWriter, r *http.Request) {
 	})
 }
 
-// waive records the member's waiver of one criterion of the criteria
-// request the path names, with their one-line reason (doWaive).
-func (c *Console) waive(w http.ResponseWriter, r *http.Request) {
+// decideCriterion answers POST /approvals/{id}/criterion: doDecide with
+// the form's criterion, verb and reason, through decideButton.
+func (c *Console) decideCriterion(w http.ResponseWriter, r *http.Request) {
 	c.decideButton(w, r, func(ctx context.Context, a actor, id int64) (string, error) {
-		return c.doWaive(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("reason"))
+		return c.doDecide(ctx, a, id, r.PostFormValue("criterion"), r.PostFormValue("verb"), r.PostFormValue("reason"))
 	})
 }
 

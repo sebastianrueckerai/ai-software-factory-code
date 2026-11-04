@@ -644,6 +644,96 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 	}
 }
 
+// The review of a plan's integration card reads each opened proof's path
+// and whether the pull request's file there is the original, the
+// original's code when it is not, and the agent's summary, which may say
+// why the test changed. Its first call's prompt says what to make of
+// them. A card of a plan with no opened proof gets none of it.
+func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
+	const summary = "TestGroupOpen read the hours in UTC; the spec says local time, so the test changed."
+	const original = "package acceptance // group_open v1"
+	opened := PlanProof{Idx: 2, Origin: ProofOriginCriterion, Criterion: "group_open", ID: "group_open", Suite: "./acceptance", Name: "TestGroupOpen",
+		Path: "acceptance/group_open_test.go", Code: original, State: ProofOpened}
+	review := func(t *testing.T, raw map[string]string, rows ...PlanProof) (map[string]any, string, *gateForgejo) {
+		t.Helper()
+		fj := &gateForgejo{diff: "diff --git a/acceptance/group_open_test.go b/acceptance/group_open_test.go\n+x\n", raw: raw}
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey, task.AgentSummary = SourcePlan, "t-plan", "integration", summary
+		r, store, _ := newGateRunner(t, task, fj)
+		b, _ := json.Marshal(Plan{Summary: "the plan", Criteria: []PlanCriterion{{ID: "group_open", Kind: CriterionTest, Claim: "a group opens at its hour",
+			Inputs: "a group of 9:00 local", Expected: "open at 9:00"}}, Cards: []PlanCard{{Key: "feature", Role: RoleFeature, Title: "Feature"},
+			{Key: "integration", Role: RoleIntegration, Title: "Integration"}}})
+		if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+			t.Fatal(err)
+		}
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+		store.proofs = map[string][]PlanProof{"t-plan": rows}
+		ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+		r.supervisor = testSupervisorModel(ll.srv(t).URL)
+		if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+			t.Fatal(err)
+		}
+		// the plan's criterion adds its own calls: the first part's call
+		// is the one on the review prompt
+		var first []any
+		for _, c := range ll.chats {
+			if msgs := c["messages"].([]any); strings.HasPrefix(msgs[0].(map[string]any)["content"].(string), "You review a pull request an autonomous") {
+				first = append(first, msgs)
+			}
+		}
+		if len(first) != 1 {
+			t.Fatalf("calls on the review prompt = %d of %d, want one", len(first), len(ll.chats))
+		}
+		msgs := first[0].([]any)
+		var in map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
+			t.Fatal(err)
+		}
+		return in, msgs[0].(map[string]any)["content"].(string), fj
+	}
+	stored := PlanProof{Idx: 1, Origin: ProofOriginCriterion, Criterion: "size_bound", ID: "size_bound", Path: "proofs/size_bound/size_bound_test.go",
+		Code: "package size_bound", State: ProofStored}
+	for _, tc := range []struct {
+		name    string
+		raw     map[string]string
+		changed bool
+	}{
+		{"changed", map[string]string{"sf/repo/raw/acceptance/group_open_test.go": "package acceptance // group_open v2"}, true},
+		{"the original", map[string]string{"sf/repo/raw/acceptance/group_open_test.go": original}, false},
+		{"gone", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, system, fj := review(t, tc.raw, stored, opened)
+			proof := map[string]any{"criterion": "group_open", "path": "acceptance/group_open_test.go", "changed": tc.changed}
+			if tc.changed {
+				proof["original"] = original
+			}
+			want := []any{proof}
+			if !reflect.DeepEqual(in["opened_proofs"], want) || in["agent_summary"] != summary {
+				t.Fatalf("opened_proofs = %v, agent_summary %v; want %v and the summary", in["opened_proofs"], in["agent_summary"], want)
+			}
+			if !strings.HasSuffix(system, reviewOpenedProofs) {
+				t.Fatalf("system prompt ends %q, want reviewOpenedProofs", system[max(0, len(system)-200):])
+			}
+			if !slices.Equal(fj.rawRefs, []string{"c1"}) {
+				t.Fatalf("raw reads at %q, want the one at the head", fj.rawRefs)
+			}
+		})
+	}
+	t.Run("no opened proof", func(t *testing.T) {
+		in, system, _ := review(t, nil, stored)
+		if _, ok := in["opened_proofs"]; ok {
+			t.Fatalf("input has opened_proofs: %v", in["opened_proofs"])
+		}
+		if _, ok := in["agent_summary"]; ok {
+			t.Fatalf("input has agent_summary: %v", in["agent_summary"])
+		}
+		if strings.Contains(system, reviewOpenedProofs) {
+			t.Fatal("the prompt names the opened proofs of a plan that has none")
+		}
+	})
+}
+
 // Roadmap 278: the review judges the change, not who merges it. Its
 // prompt and its input name no merge rule, so a human merge rule gives the
 // model no reason for concerns about a change it finds sound.
@@ -1483,8 +1573,8 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and no model review judged c3", 1, base},
 		{"the review's alone", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}}, "the merge is held: 1 criterion was never judged, the model review did not run (" + note + ")", 2, named},
 		{"the review's alone, judged", "", base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}}, "the merge is held: 1 criterion was never judged by a model review", 1, base},
-		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
-		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}, "", 1, base},
+		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionHuman}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
+		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionHuman}}, "", 1, base},
 	} {
 		task := gateTask
 		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
@@ -1493,7 +1583,7 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		ctx := context.Background()
 		// c1 is the gate's, c3 the review's
 		p := criteriaPlan()
-		p.Criteria[2].Kind = CriterionJudgement
+		p.Criteria[2].Kind = CriterionHuman
 		b, _ := json.Marshal(p)
 		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 			t.Fatal(err)
@@ -1558,7 +1648,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	r, store, _ := newGateRunner(t, task, fj)
 	// c3 is the review's, so the hold names its note
 	p := criteriaPlan()
-	p.Criteria[2].Kind = CriterionJudgement
+	p.Criteria[2].Kind = CriterionHuman
 	b, _ := json.Marshal(p)
 	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
 		t.Fatal(err)
@@ -1594,7 +1684,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 	// rows that landed between the read and the hold leave nothing held:
 	// the ask says so and asks for the press again
-	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}); err != nil {
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionHuman}}); err != nil {
 		t.Fatal(err)
 	}
 	comments := len(fj.comments)
@@ -1604,6 +1694,139 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	if pending, _ = store.ApprovalRequests(ctx, "pending"); len(pending) != 1 || len(fj.comments) != comments ||
 		pending[0].DecisionNote != "waiting: every criterion has a verdict row now: approve again to merge" {
 		t.Fatalf("pending %+v, %d comments more: want the ask asking for the press again", pending, len(fj.comments)-comments)
+	}
+}
+
+// The press's read under versionBlindProofs splits the integration card's
+// criteria without a row by who settles them: test, invariant and
+// judgement are the gate's, human ones the human's; a feature card has
+// none.
+func TestUnjudgedSplitsTheGatesFromTheHumans(t *testing.T) {
+	ctx := context.Background()
+	task := gateTask
+	task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+	r, store, _ := newGateRunner(t, task, &gateForgejo{mergeStatus: []int{http.StatusOK}})
+	p := criteriaPlan()
+	p.Criteria = []PlanCriterion{
+		{ID: "size_bound", Kind: CriterionTest, Claim: "a size over the bound is refused", Inputs: "3.75", Expected: "400"},
+		{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the page reads calm", Inputs: "the page's text"},
+		{ID: "pages_ok", Kind: CriterionHuman, Claim: "the pages look right", Evidence: "a screenshot"},
+		{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
+	}
+	b, _ := json.Marshal(p)
+	if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+		t.Fatal(err)
+	}
+	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+	store.tasks["t-found"] = Task{ID: "t-found", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation"}
+	if err := store.PutCriteriaVerdicts(ctx, "t1", CriteriaSourceGate, FactoryDecider, []CriterionVerdict{{Criterion: "all_green", Verdict: "met", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	val, err := execActivity(t, r, ActivityUnjudged, "t1")
+	if got, want := getInto[Unjudged](t, val, err), (Unjudged{Gate: []string{"size_bound", "reads_calm"}, Human: []string{"pages_ok"}}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("unjudged = %+v, want %+v", got, want)
+	}
+	val, err = execActivity(t, r, ActivityUnjudged, "t-found")
+	if got := getInto[Unjudged](t, val, err); !reflect.DeepEqual(got, Unjudged{}) {
+		t.Fatalf("a feature card's unjudged = %+v, want none", got)
+	}
+}
+
+// Under versionBlindProofs the held merge names who settles each
+// criterion without a row: the human on this card first, then the
+// criteria gate, which the next approval runs again. It reads no review
+// note and files no ask of its own: the workflow's press runs the gate
+// and asks.
+func TestHoldMergeUnderBlindProofsNamesWhoSettles(t *testing.T) {
+	ctx := context.Background()
+	pagesOK := PlanCriterion{ID: "pages_ok", Kind: CriterionHuman}
+	pageLinks := PlanCriterion{ID: "page_links", Kind: CriterionHuman}
+	sizeBound := PlanCriterion{ID: "size_bound", Kind: CriterionTest}
+	readsCalm := PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement}
+	for _, c := range []struct {
+		name    string
+		never   []PlanCriterion
+		refusal string
+	}{
+		{"the human's", []PlanCriterion{pagesOK, pageLinks},
+			"the merge is held: 2 criteria were never judged: pages_ok and page_links are yours to settle on this card."},
+		{"the gate's", []PlanCriterion{sizeBound},
+			"the merge is held: 1 criterion was never judged: the criteria gate has not settled size_bound. Approving again runs it again."},
+		{"both", []PlanCriterion{readsCalm, pagesOK},
+			"the merge is held: 2 criteria were never judged: pages_ok is yours to settle on this card. The criteria gate has not settled reads_calm. Approving again runs it again."},
+	} {
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		r, store, _ := newGateRunner(t, task, fj)
+		r.record(ctx, "t1", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": refusedMonthNote})
+		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1"})
+		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
+			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+			t.Fatal(err)
+		}
+		tk, repo, err := r.task(ctx, "t1")
+		if err != nil {
+			t.Fatal(err)
+		}
+		res := r.holdMerge(ctx, tk, repo, 9, "c1", "sebastian", c.never, true)
+		if res.Merged || res.Refusal != c.refusal {
+			t.Errorf("%s: result %+v, want the refusal %q", c.name, res, c.refusal)
+		}
+		if len(fj.comments) != 1 || fj.comments[0] != "factoryd: "+c.refusal {
+			t.Errorf("%s: comments %q", c.name, fj.comments)
+		}
+		for _, body := range fj.comments {
+			if strings.Contains(body, "model review") {
+				t.Errorf("%s: comment %q names the model review", c.name, body)
+			}
+		}
+		pending, _ := store.ApprovalRequests(ctx, "pending")
+		if len(store.approvals) != 1 || len(pending) != 1 || pending[0].DecisionNote != "waiting: "+c.refusal {
+			t.Errorf("%s: %d merge requests, pending %+v: want the pressed one alone, noted with the hold", c.name, len(store.approvals), pending)
+		}
+	}
+}
+
+// The merge's own guard of a run under versionBlindProofs holds in the
+// new words and files no ask to a model review; one scheduled before the
+// deploy, its blindProofs missing, keeps the old words.
+func TestMergeGuardUnderBlindProofsHoldsInTheNewWords(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name    string
+		args    []any
+		refusal string
+		asks    int
+	}{
+		{"blind proofs", []any{"t1", int64(9), "c1", "sebastian", "", []string(nil), true},
+			"the merge is held: 1 criterion was never judged: c2 is yours to settle on this card.", 1},
+		{"scheduled before", []any{"t1", int64(9), "c1", "sebastian", ""},
+			"the merge is held: 1 criterion was never judged, the model review did not run (" + refusedMonthNote + ")", 2},
+	} {
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
+		fj := &gateForgejo{mergeStatus: []int{http.StatusOK}}
+		r, store, _ := newGateRunner(t, task, fj)
+		p := criteriaPlan()
+		p.Criteria = p.Criteria[1:2]
+		b, _ := json.Marshal(p)
+		if _, err := store.AddPlanRevision(ctx, "t-plan", b, "sha"); err != nil {
+			t.Fatal(err)
+		}
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+		r.record(ctx, "t1", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": refusedMonthNote})
+		spec, _ := json.Marshal(MergeSpec{RiskClass: "normal", HeadSHA: "c1", Review: Review{Verdict: "approve", Summary: "fine"}})
+		id, _ := store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalMerge, TaskID: "t1", Project: "sf/repo", PRNumber: 9, Spec: spec,
+			Reason: "pull request #9 at c1 is on the card (risk class normal): a human decides the merge"})
+		if err := store.DecideApproval(ctx, id, ApprovalMerge, "approved", "sebastian", consoleApproved); err != nil {
+			t.Fatal(err)
+		}
+		val, err := execActivity(t, r, ActivityMerge, c.args...)
+		if res := getInto[MergeResult](t, val, err); res.Merged || res.Refusal != c.refusal || len(fj.merges) != 0 || len(store.approvals) != c.asks {
+			t.Errorf("%s: result %+v, merges %d, asks %d: want the refusal %q and %d asks", c.name, res, len(fj.merges), len(store.approvals), c.refusal, c.asks)
+		}
 	}
 }
 
@@ -2625,10 +2848,10 @@ func TestMergeFailureOnTheLastAttempt(t *testing.T) {
 	task := gateTask
 	since := time.Date(2026, 9, 28, 10, 0, 0, 0, time.UTC)
 	task.Gate, task.GateSince = GateMerge, &since
-	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", nil, false); err == nil {
+	if _, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", nil, false, false); err == nil {
 		t.Fatal("a transient failure before the last attempt was not an error")
 	}
-	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", nil, true)
+	res, err := r.mergeAttempt(ctx, task, Repo{"sf", "repo"}, 9, "c1", "sebastian", "", nil, false, true)
 	if err != nil || res.Merged || !strings.Contains(res.Failed, "502") {
 		t.Fatalf("last attempt = %+v, %v", res, err)
 	}
@@ -3200,8 +3423,8 @@ func TestCriteriaMetProveAFeature(t *testing.T) {
 
 // A card whose plan's criteria are all the gate's carries no review rows:
 // its why line names the criteria the auto merge does not read from the
-// gate, never a missing reproduction. A delta card's says the gate runs
-// on the integration card alone.
+// gate, never a missing reproduction. A delta card's says a person
+// decides the merge.
 func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 	g, rv := fullAutoGates("api")
 	g.Reproduction = ReproResult{}
@@ -3210,7 +3433,7 @@ func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{gate}) {
 		t.Fatalf("ok %v, unmet %q; want %q", ok, unmet, gate)
 	}
-	delta := "the criteria gate runs on the plan's integration card alone, and a person decides this merge"
+	delta := "the auto merge does not read the criteria gate's verdicts on a delta card, and a person decides this merge"
 	rv.GateCriteria.Integration = false
 	if ok, _, unmet := AutoMerge(g, rv, SourcePlan); ok || !slices.Equal(unmet, []string{delta}) {
 		t.Fatalf("a delta card: ok %v, unmet %q; want %q", ok, unmet, delta)
@@ -3224,15 +3447,12 @@ func TestGateCriteriaNameTheGateNotAReproduction(t *testing.T) {
 }
 
 // An integration card's review names the criteria it leaves to the gate
-// whether it ran or not: unfunded, a part or a criterion call left
+// whether it ran or not: unfunded, a part or the behaviours call left
 // without an answer, or a review that ran. The why line then names them,
 // and no missing reproduction.
 func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 	valid := func(user string) string {
-		switch callOf(user) {
-		case "c2":
-			return `{"verdict":"","evidence":"read the list page"}`
-		case "behaviours":
+		if callOf(user) == "behaviours" {
 			return `{"behaviours":["a request answers"]}`
 		}
 		return `{"verdict":"approve","summary":"ok"}`
@@ -3244,12 +3464,12 @@ func TestIntegrationReviewNamesTheGatesCriteria(t *testing.T) {
 	}{
 		"unfunded":                 {0.01, valid, "model review not run: "},
 		"a part without an answer": {100, func(string) string { return "LGTM" }, "model review answer invalid"},
-		"a criterion call without an answer": {100, func(user string) string {
-			if callOf(user) == "c2" {
+		"the behaviours call without an answer": {100, func(user string) string {
+			if callOf(user) == "behaviours" {
 				return "LGTM"
 			}
 			return valid(user)
-		}, "criterion c2, part 1 of 4: model review answer invalid"},
+		}, "behaviours: model review answer invalid"},
 		"a review that ran": {100, valid, ""},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -3318,6 +3538,41 @@ func TestAutoMergeNamesWhatItFoundMet(t *testing.T) {
 				t.Fatalf("ok %v, unmet %q, met %q; want met %q", ok, unmet, met, tc.met)
 			}
 		})
+	}
+}
+
+// With the gate's stand set the auto merge proves a plan card on its rows
+// and never on the review's criteria, and an open criterion holds it
+// whatever the reproduction says; with no stand it reads the review's.
+func TestAutoMergeReadsTheGatesStand(t *testing.T) {
+	yes := true
+	rv := Review{Verdict: "approve", Summary: "does what the brief asks", StrictImprovement: &yes}
+	g := GateResults{Policy: PolicyGate{Class: policy.ClassNormal, Outcome: policy.OutcomeAuto, MergeRule: policy.MergeAuto, PolicyVersion: 7}, ChecksPassed: true}
+	g.Criteria = &CriteriaStand{IDs: []string{"size_bound", "pages_ok"}}
+	if ok, met, unmet := AutoMerge(g, rv, SourcePlan); !ok || !slices.Contains(met, "the plan's criteria all stand met or waived: size_bound, pages_ok") {
+		t.Fatalf("ok %v, met %q, unmet %q: want the stand met", ok, met, unmet)
+	}
+	const one = "the plan's criterion pages_ok does not stand met or waived"
+	for name, rp := range map[string]ReproResult{
+		"no reproduction":  {},
+		"not reproduced":   {Ran: true, Command: "make repro"},
+		"a fault recorded": {NotReproduced: "the cache key ignored the locale"},
+		"reproduced":       {Ran: true, Command: "make repro", BaseExit: 2},
+	} {
+		g.Criteria.Open, g.Reproduction = []string{"pages_ok"}, rp
+		ok, _, unmet := AutoMerge(g, rv, SourcePlan)
+		if ok || !slices.Contains(unmet, one) || strings.Contains(strings.Join(unmet, "\n"), "review's criteria") {
+			t.Fatalf("%s: ok %v, unmet %q: want %q, not the review's", name, ok, unmet, one)
+		}
+	}
+	g.Criteria.Open, g.Reproduction = []string{"size_bound", "pages_ok"}, ReproResult{}
+	if _, _, unmet := AutoMerge(g, rv, SourcePlan); !slices.Contains(unmet, "the plan's criteria size_bound and pages_ok do not stand met or waived") {
+		t.Fatalf("unmet %q, want both open criteria named", unmet)
+	}
+	g.Criteria = nil
+	rv.Criteria = []CriterionVerdict{{Criterion: "c1", Verdict: "met"}}
+	if ok, met, unmet := AutoMerge(g, rv, SourcePlan); !ok || !slices.Contains(met, "the review's criteria are all met or waived") {
+		t.Fatalf("ok %v, met %q, unmet %q: want the review's criteria with no stand", ok, met, unmet)
 	}
 }
 

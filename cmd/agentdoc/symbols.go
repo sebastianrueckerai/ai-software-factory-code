@@ -21,7 +21,8 @@ type location struct {
 }
 
 // symbolTable maps declaration names — "Foo" for top-level symbols,
-// "Recv.Method" for methods — to where they are declared, sorted by file.
+// "Recv.Method" for methods, "Type.Field" for struct fields — to where
+// they are declared, sorted by file.
 type symbolTable struct {
 	names map[string][]location
 }
@@ -74,6 +75,13 @@ func loadSymbols(root string) (*symbolTable, error) {
 						}
 					case *ast.TypeSpec:
 						record(s.Name.Name, fset.Position(s.Pos()).Line)
+						if st, ok := s.Type.(*ast.StructType); ok {
+							for _, f := range st.Fields.List {
+								for _, n := range f.Names {
+									record(s.Name.Name+"."+n.Name, fset.Position(n.Pos()).Line)
+								}
+							}
+						}
 					}
 				}
 			}

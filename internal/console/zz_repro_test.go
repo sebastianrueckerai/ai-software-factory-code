@@ -36,8 +36,7 @@ func TestMergeFaceWhispers(t *testing.T) {
 	r.approvals.rows = []factoryd.ApprovalRequest{{
 		ID: 4, Kind: "merge", TaskID: "t-m", Project: "sf/code", PRNumber: 9, Status: "pending",
 		Spec: json.RawMessage(`{"risk_class":"normal","verdict_summary":"the change is safe. ` + deep("SUMMARY_TAIL_MARKER") + `",` +
-			`"review":{"verdict":"approve","findings":["a finding. ` + deep("FINDING_TAIL_MARKER") + `","second. ` + deep("F2") + `","third. ` + deep("F3") + `","fourth. ` + deep("F4_TAIL_MARKER") + `"],` +
-			`"criteria":[{"kind":"human","criterion":"no data loss","evidence":"the migration keeps every row. ` + deep("EVIDENCE_TAIL_MARKER") + `"}]},` +
+			`"review":{"verdict":"approve","findings":["a finding. ` + deep("FINDING_TAIL_MARKER") + `","second. ` + deep("F2") + `","third. ` + deep("F3") + `","fourth. ` + deep("F4_TAIL_MARKER") + `"]},` +
 			`"recommendation":` + strconv.Quote(reco) + `,"why_human":["a human decides this merge. ` + deep("WHY_TAIL_MARKER") + `"]}`),
 	}}
 	ck, _ := r.loggedIn(t)
@@ -50,13 +49,13 @@ func TestMergeFaceWhispers(t *testing.T) {
 	if s := askline(reco); strings.Contains(face, s[:40]) {
 		t.Errorf("FAULT STILL PRESENT: the face carries the recommendation's first line:\n%s", face)
 	}
-	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "EVIDENCE_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```"} {
+	for _, tail := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER", "```"} {
 		if strings.Contains(face, tail) {
 			t.Errorf("FAULT STILL PRESENT: the face carries %s:\n%s", tail, face)
 		}
 	}
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, whole := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "EVIDENCE_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER"} {
+	for _, whole := range []string{"RECO_TAIL_MARKER", "SUMMARY_TAIL_MARKER", "FINDING_TAIL_MARKER", "WHY_TAIL_MARKER", "F4_TAIL_MARKER"} {
 		if !strings.Contains(drawer, whole) {
 			t.Errorf("FIX MISSING: the drawer lost the whole text (%s):\n%s", whole, drawer)
 		}

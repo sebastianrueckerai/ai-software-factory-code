@@ -922,7 +922,7 @@ func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) Quest
 		AtSessionCap(reason) || strings.HasPrefix(reason, "check-in: ") {
 		if r.cfg.Policy != nil {
 			f.SessionCap = SessionCap(t, r.cfg.Policy().Document.Limits.Sessions) + t.Usage.SessionsAdded()
-			f.LineBound = EffectiveLineBound(t.Size, r.cfg.Policy().Document.Risk.LargeLines, t.Usage.ExtraLines)
+			f.LineBound = EffectiveLineBound(t.Size, r.cfg.Policy().Document.Risk.LargeLines, t.Usage)
 			f.GrantTime = answerSlice(policy.SizeAgentTime(t.Size, r.cfg.Policy().Document.Limits.AgentTime))
 		}
 		f.SessionGrants = t.Usage.SessionsAdded()

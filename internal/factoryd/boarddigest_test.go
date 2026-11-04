@@ -87,6 +87,9 @@ func (g boardRig) digest(t *testing.T) BoardDigest {
 func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
 	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{}), "r1"); err != nil {
+		t.Fatal(err)
+	}
 	g.card("t1300", 1300, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "closed-plan" })
 	g.store.closed = map[string]time.Time{"t1300": boardNow.Add(-48 * time.Hour)}
 	g.card("t1440", 1440, "done", "", 1, child("k1440"))
@@ -131,6 +134,60 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 		"month 544.00 of 600.00 EUR · day 12.40 of 150.00 EUR\n"
 	if got := g.digest(t).Render(); got != want {
 		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+}
+
+// The integration card's line counts its blind-met criteria of all the
+// plan's; a feature card's line counts none.
+func TestBoardDigestCountsTheBlindRows(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.store.tasks["plan1"] = Task{ID: "plan1", Repository: "sf/app", IssueNumber: 1340, Kind: "agent", Track: policy.TrackPlan,
+		Status: "done", PlanName: "blind proofs"}
+	var criteria []PlanCriterion
+	for _, id := range []string{"t_a", "t_b", "t_c", "t_d", "t_e", "t_f", "group_open", "size_bound", "door"} {
+		criteria = append(criteria, PlanCriterion{ID: id, Kind: CriterionTest})
+	}
+	plan := Plan{Criteria: criteria, Cards: []PlanCard{{Key: "integ", Role: RoleIntegration}, {Key: "sizes", Role: RoleFeature}}}
+	if _, err := g.store.AddPlanRevision(context.Background(), "plan1", mustJSON(plan), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	g.card("t1346", 1346, "in-review", GateApproval, 5, func(t *Task) { t.Source, t.Parent, t.PlanKey = SourcePlan, "plan1", "integ" })
+	g.moved("t1346", "in-review", GateApproval, 2*time.Hour)
+	at := boardNow.Add(-3 * time.Hour)
+	var rows []CriterionVerdict
+	for _, id := range []string{"t_a", "t_b", "t_c", "t_d", "t_e", "t_f"} {
+		rows = append(rows, CriterionVerdict{Criterion: id, Verdict: "met", Evidence: "blind: criterion " + id + " met",
+			Kind: CriterionTest, CreatedAt: at})
+	}
+	rows = append(rows,
+		CriterionVerdict{Criterion: "group_open", Verdict: "met", Evidence: "open: criterion group_open met", Kind: CriterionTest, CreatedAt: at},
+		CriterionVerdict{Criterion: "size_bound", Verdict: "unmet", Evidence: "blind: criterion size_bound red", Kind: CriterionTest, CreatedAt: at},
+		CriterionVerdict{Criterion: "door", Verdict: "unmet", Evidence: "open: criterion door red", Kind: CriterionTest, CreatedAt: at})
+	if err := g.store.PutCriteriaVerdicts(context.Background(), "t1346", CriteriaSourceGate, FactoryDecider, rows); err != nil {
+		t.Fatal(err)
+	}
+	g.card("t1472", 1472, "running", GateSession, 6, func(t *Task) { t.Source, t.Parent, t.PlanKey = SourcePlan, "plan1", "sizes" })
+	g.moved("t1472", "running", GateSession, time.Hour)
+	var integration, feature string
+	for _, line := range strings.Split(g.digest(t).Render(), "\n") {
+		switch {
+		case strings.HasPrefix(line, "#1346"):
+			integration = line
+		case strings.HasPrefix(line, "#1472"):
+			feature = line
+		}
+	}
+	if integration == "" || feature == "" {
+		t.Fatalf("Render holds no lines for #1346 and #1472")
+	}
+	if !strings.Contains(integration, "blind 6 of 9") {
+		t.Fatalf("#1346's line %q wants blind 6 of 9", integration)
+	}
+	if strings.Contains(integration, "slot") {
+		t.Fatalf("#1346's line %q wants no slot at the approval wait", integration)
+	}
+	if strings.Contains(feature, "blind") {
+		t.Fatalf("#1472's line %q wants no blind", feature)
 	}
 }
 

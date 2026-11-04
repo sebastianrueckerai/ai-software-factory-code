@@ -106,6 +106,9 @@ func skeletonRig(t *testing.T) digestRig {
 	v.Projects["app"] = policy.ProjectConfig{Repository: "sf/app", Waits: &policy.Waits{NoPushSessions: 2}}
 	g.r.cfg.Policy = func() policy.Version { return v }
 	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics"}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{}), "r1"); err != nil {
+		t.Fatal(err)
+	}
 	g.store.tasks["t1402"] = Task{ID: "t1402", Kind: "agent", Repository: "sf/app", IssueNumber: 1402, Status: "done"}
 	g.store.deps = map[string][]string{"t1410": {"t1402"}}
 	first := g.session(t, 41, 55, 1, "pushed")
@@ -769,6 +772,264 @@ func storedKeyLog() PlanProof {
 	h := keyLog()
 	h.State, h.Path, h.Suite, h.Name, h.Code = ProofStored, "proofs/key_log/key_log_test.go", "./proofs/key_log", "TestKeyLog", "package key_log"
 	return h
+}
+
+// digestPlan is blindPlan's plan with the human criterion pages_ok, an
+// integration card integ and a feature card sizes.
+func digestPlan() Plan {
+	p := blindPlan()
+	p.Criteria = append(p.Criteria, PlanCriterion{ID: "pages_ok", Kind: CriterionHuman, Claim: "The help page names every panel",
+		Inputs: "the help page", Expected: "every panel"})
+	p.Cards = []PlanCard{{Key: "integ", Role: RoleIntegration, Title: "integrate", Brief: "b"},
+		{Key: "sizes", Role: RoleFeature, Title: "sizes", Brief: "b"}}
+	return p
+}
+
+// digestPlanRig is the digest rig with t1410 plan1's card under key and
+// plan1's revision digestPlan's.
+func digestPlanRig(t *testing.T, key string) digestRig {
+	t.Helper()
+	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "plan1", key })
+	g.store.tasks["plan1"] = Task{ID: "plan1", Repository: "sf/app", IssueNumber: 1340, Kind: "agent", Track: policy.TrackPlan,
+		Status: "done", PlanName: "blind proofs"}
+	if _, err := g.store.AddPlanRevision(context.Background(), "plan1", mustJSON(digestPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	return g
+}
+
+// The gate's line with states counts blind and open, a proof's opening is
+// a step with its failure, and a met gate row names the state it met in.
+func TestCardDigestShowsTheBlindTryAndTheOpening(t *testing.T) {
+	g := digestPlanRig(t, "integ")
+	blindMet := func(id string) gateProof {
+		return gateProof{ID: id, Kind: CriterionTest, Suite: "./" + id, Name: "Test" + id, Outcome: proofPassed, Met: true,
+			State: proofBlind, Line: "criterion " + id + ": Test" + id + " in ./" + id + " passed"}
+	}
+	g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "8e3a1b0c9d",
+		"proofs": []gateProof{blindMet("t_a"), blindMet("t_b"), blindMet("t_c"), blindMet("t_d"), blindMet("t_e"), blindMet("t_f"),
+			{ID: "size_bound", Kind: CriterionTest, Suite: "./proofs/size_bound", Name: "TestSizeBound", Outcome: proofFailed,
+				State: proofBlind, Line: "criterion size_bound: TestSizeBound in ./proofs/size_bound failed: want 3.75, got 3.5",
+				Message: sizeBoundMsg},
+			{ID: "door", Kind: CriterionTest, Suite: "./proofs/door", Name: "TestDoor", Outcome: proofFailed, State: proofBlind,
+				Line: "criterion door: TestDoor in ./proofs/door failed", Message: "Failed\n--- FAIL: TestDoor (0.00s)"},
+			{ID: "group_open", Kind: CriterionTest, Suite: "./acceptance", Name: "TestGroupOpen", Outcome: proofPassed, Met: true,
+				State: proofOpen, Changed: true, Path: "acceptance/group_open_test.go",
+				Line: "criterion group_open: TestGroupOpen in ./acceptance passed"},
+			{ID: "all_green", Kind: CriterionInvariant, Suite: "./...", Outcome: proofPassed, Met: true,
+				Line: "criterion all_green: suite ./... passed"}},
+		"opened": []string{"size_bound", "door"}})
+	g.event(31, EventProofOpened, FactoryDecider, map[string]any{"criterion": "size_bound", "head": "8e3a1b0c9d", "outcome": proofFailed,
+		"message": sizeBoundMsg, "path": "proofs/size_bound/size_bound_test.go", "suite": "./proofs/size_bound",
+		"name": "TestSizeBound", "code": sizeBoundCode})
+	g.event(32, EventProofOpened, FactoryDecider, map[string]any{"criterion": "reads_calm", "head": "8e3a1b0c9d",
+		"outcome": proofNoArtifact, "message": "Failed\npanic: no page", "path": "proofs/reads_calm/reads_calm_test.go",
+		"suite": "./proofs/reads_calm", "name": "TestReadsCalm", "code": "package reads_calm"})
+	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": {
+		{Criterion: "size_bound", Verdict: "unmet", Evidence: "blind: criterion size_bound: TestSizeBound in ./proofs/size_bound failed: want 3.75, got 3.5",
+			Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider, CreatedAt: digestAt(31)},
+		{Criterion: "group_open", Verdict: "met", Evidence: "open: criterion group_open: TestGroupOpen in ./acceptance passed",
+			Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider, CreatedAt: digestAt(31)},
+		{Criterion: "t_a", Verdict: "met", Evidence: "blind: criterion t_a: Testt_a in ./t_a passed",
+			Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider, CreatedAt: digestAt(31)},
+	}}
+	d := g.digest(t)
+	if got, want := d.Steps[1].Outcome, "at 8e3a1b0: blind 6 met 2 opened, open 1 met, invariant ./... green"; got != want {
+		t.Fatalf("proofs outcome = %q, want %q", got, want)
+	}
+	if d.Steps[1].commit != "8e3a1b0c9d" {
+		t.Fatalf("proofs commit = %q, want the line's head 8e3a1b0c9d", d.Steps[1].commit)
+	}
+	for i, w := range []DigestStep{
+		{Kind: "opened", Actor: "gate", Outcome: "size_bound: red at 8e3a1b0: want 3.75, got 3.5"},
+		{Kind: "criteria", Actor: "gate", Outcome: "size_bound unmet, group_open met (open), t_a met (blind)"},
+		{Kind: "opened", Actor: "gate", Outcome: "reads_calm: no artifact at 8e3a1b0: panic: no page"},
+	} {
+		if s := d.Steps[i+2]; s.Kind != w.Kind || s.Actor != w.Actor || s.Outcome != w.Outcome {
+			t.Fatalf("step %d = %+v, want %+v", i+3, s, w)
+		}
+	}
+	for _, w := range []string{"size_bound unmet", "group_open met (open)", "t_a met (blind)"} {
+		if !strings.Contains(d.Steps[3].Outcome, w) {
+			t.Fatalf("criteria outcome %q wants %q", d.Steps[3].Outcome, w)
+		}
+	}
+	opened, err := g.r.CardStep(context.Background(), "t1410", 3, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(3): %v", err)
+	}
+	for _, w := range []string{"size_bound opened at 8e3a1b0c9d: failed\n" +
+		"TestSizeBound in ./proofs/size_bound at proofs/size_bound/size_bound_test.go\ncode:\n  package size_bound\n",
+		"output:\n  Failed\n  === RUN   TestSizeBound\n"} {
+		if !strings.Contains(opened, w) {
+			t.Fatalf("CardStep(3) =\n%s\nwant it to hold\n%s", opened, w)
+		}
+	}
+	proofs, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(2): %v", err)
+	}
+	if w := "group_open met (open) changed: criterion group_open: TestGroupOpen in ./acceptance passed"; !strings.Contains(proofs, w) {
+		t.Fatalf("CardStep(2) =\n%s\nwant it to hold\n%s", proofs, w)
+	}
+}
+
+// A failed proof's package output can name a passing sibling before the
+// failing test. The failure line is the failing test's line.
+func TestFailureLineNamesTheFailingTestNotAPassingSibling(t *testing.T) {
+	message := "Failed\n--- PASS: TestOther (0.01s)\n--- FAIL: TestDoor (0.00s)\n    door_test.go:12: the door did not open"
+	if got, want := failureLine(message), "the door did not open"; got != want {
+		t.Fatalf("failureLine = %q, want %q", got, want)
+	}
+}
+
+// The judgement call, the proofs at main and a human's not met are steps;
+// a met row and its event make one step alone.
+func TestCardDigestShowsTheJudgementTheProofsAtMainAndTheHumansNotMet(t *testing.T) {
+	g := digestPlanRig(t, "integ")
+	g.line(t, 40, "judgement", map[string]any{"criterion": "reads_calm", "artifact": "reads_calm.html", "model": "factory/big",
+		"prompt_hash": "6b2355d78a19", "verdict": "met", "reason": "the page names every panel's proof", "cost": 0.04})
+	ids := []string{"size_bound", "group_open", "door", "no_proof", "all_green", "judged", "pages_ok", "t_a", "t_b"}
+	atMain := make([]mainOutcome, len(ids))
+	for i, id := range ids {
+		atMain[i] = mainOutcome{ID: id, Outcome: proofPassed}
+	}
+	g.line(t, 41, "proofs_at_main", map[string]any{"head": "29b0d33aa", "criteria": atMain})
+	g.event(42, EventCriterionDecided, "sebastian", map[string]any{"approval": 31, "criterion": "pages_ok", "verb": "not_met",
+		"reason": "The help page has no links yet."})
+	g.event(43, EventCriterionDecided, "sebastian", map[string]any{"approval": 32, "criterion": "pages_ok", "verb": "met"})
+	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": {
+		{Criterion: "pages_ok", Verdict: "met", Evidence: "met (pages_ok.txt at 8e3a1b0)", Kind: CriterionHuman,
+			Source: CriteriaSourceApprover, DecidedBy: "sebastian", CreatedAt: digestAt(43)},
+	}}
+	d := g.digest(t)
+	for i, w := range []DigestStep{
+		{Kind: "judgement", Actor: "big", Outcome: "met: the page names every panel's proof", CostEUR: 0.04},
+		{Kind: "proofs", Actor: "runner", Outcome: "at main 29b0d33: 9 of 9 met"},
+		{Kind: "criteria", Actor: "sebastian", Outcome: "pages_ok not met"},
+		{Kind: "criteria", Actor: "sebastian", Outcome: "pages_ok met"},
+	} {
+		if s := d.Steps[i+1]; s.Kind != w.Kind || s.Actor != w.Actor || s.Outcome != w.Outcome || s.CostEUR != w.CostEUR {
+			t.Fatalf("step %d = %+v, want %+v", i+2, s, w)
+		}
+	}
+	if d.Steps[2].commit != "29b0d33aa" {
+		t.Fatalf("proofs at main commit = %q, want the line's head 29b0d33aa", d.Steps[2].commit)
+	}
+	pages, met := 0, 0
+	for _, s := range d.Steps {
+		if s.Kind != "criteria" || !strings.HasPrefix(s.Outcome, "pages_ok") {
+			continue
+		}
+		pages++
+		if s.Outcome == "pages_ok met" {
+			met++
+		}
+	}
+	if pages != 2 || met != 1 {
+		t.Fatalf("pages_ok made %d criteria steps, %d of them met, want 2 with 1 met: the row and its event make one step", pages, met)
+	}
+	judged, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(2): %v", err)
+	}
+	if w := "criterion reads_calm, artifact reads_calm.html\nmodel big, prompt 6b2355d78a19, cost 0.04 EUR\n" +
+		"reason: the page names every panel's proof\n"; !strings.Contains(judged, w) {
+		t.Fatalf("CardStep(2) =\n%s\nwant it to hold\n%s", judged, w)
+	}
+	atMainStep, err := g.r.CardStep(context.Background(), "t1410", 3, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(3): %v", err)
+	}
+	for _, w := range []string{"main at 29b0d33aa\n", "size_bound passed\n"} {
+		if !strings.Contains(atMainStep, w) {
+			t.Fatalf("CardStep(3) =\n%s\nwant it to hold\n%s", atMainStep, w)
+		}
+	}
+	notMet, err := g.r.CardStep(context.Background(), "t1410", 4, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep(4): %v", err)
+	}
+	if w := "reason: The help page has no links yet."; !strings.Contains(notMet, w) {
+		t.Fatalf("CardStep(4) =\n%s\nwant it to hold\n%s", notMet, w)
+	}
+}
+
+// An opened proof red at two heads flags; one the builder changed in the
+// newest run flags with its path.
+func TestCardDigestFlagsTheOpenedProofs(t *testing.T) {
+	open := func(changed bool) gateProof {
+		p := gateProof{ID: "group_open", Kind: CriterionTest, Suite: "./acceptance", Name: "TestGroupOpen", Outcome: proofFailed,
+			State: proofOpen, Path: "acceptance/group_open_test.go", Line: "criterion group_open: TestGroupOpen in ./acceptance failed"}
+		if changed {
+			p.Changed, p.Met, p.Outcome, p.Line = true, true, proofPassed, "criterion group_open: TestGroupOpen in ./acceptance passed"
+		}
+		return p
+	}
+	for _, tc := range []struct {
+		name string
+		run  func(t *testing.T, g digestRig)
+		want []DigestFlag
+	}{
+		{"red at two heads", func(t *testing.T, g digestRig) {
+			g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "c1c1c1c1c1", "proofs": []gateProof{open(false)}})
+			g.line(t, 35, "gate_criteria", map[string]any{"pr": 12, "commit": "c2c2c2c2c2", "proofs": []gateProof{open(false)}})
+		}, []DigestFlag{{"opened_proof_red_twice", "group_open"}}},
+		{"red at one head", func(t *testing.T, g digestRig) {
+			g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "c1c1c1c1c1", "proofs": []gateProof{open(false)}})
+		}, nil},
+		{"red twice at one head", func(t *testing.T, g digestRig) {
+			g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "c1c1c1c1c1", "proofs": []gateProof{open(false)}})
+			g.line(t, 35, "gate_criteria", map[string]any{"pr": 12, "commit": "c1c1c1c1c1", "proofs": []gateProof{open(false)}})
+		}, nil},
+		{"changed in the newest run", func(t *testing.T, g digestRig) {
+			g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "c1c1c1c1c1", "proofs": []gateProof{open(true)}})
+		}, []DigestFlag{{"opened_proof_changed", "group_open acceptance/group_open_test.go"}}},
+		{"changed only in an older run", func(t *testing.T, g digestRig) {
+			g.line(t, 30, "gate_criteria", map[string]any{"pr": 12, "commit": "c1c1c1c1c1", "proofs": []gateProof{open(true)}})
+			g.line(t, 35, "gate_criteria", map[string]any{"pr": 12, "commit": "c2c2c2c2c2", "proofs": []gateProof{open(false)}})
+		}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newDigestRig(nil)
+			tc.run(t, g)
+			if got := g.digest(t).Flags; !slices.Equal(got, tc.want) {
+				t.Fatalf("flags = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
+}
+
+// At the approval a criterion no row holds flags; not at another gate,
+// not on a card that is not the plan's integration card.
+func TestCardDigestFlagsACriterionNoRowHolds(t *testing.T) {
+	var rows []CriterionVerdict
+	for _, c := range digestPlan().Criteria {
+		if c.ID == "pages_ok" {
+			continue
+		}
+		rows = append(rows, CriterionVerdict{Criterion: c.ID, Verdict: "met", Kind: c.Kind, Source: CriteriaSourceGate,
+			DecidedBy: FactoryDecider, CreatedAt: digestAt(30)})
+	}
+	for _, tc := range []struct {
+		key, gate string
+		want      []DigestFlag
+	}{
+		{"integ", GateApproval, []DigestFlag{{"criterion_unproven", "pages_ok"}}},
+		{"integ", GateReview, nil},
+		{"sizes", GateApproval, nil},
+	} {
+		t.Run(tc.key+" at "+tc.gate, func(t *testing.T) {
+			g := digestPlanRig(t, tc.key)
+			c := g.store.tasks["t1410"]
+			c.Status, c.Gate = "in-review", tc.gate
+			g.store.tasks["t1410"] = c
+			g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": rows}
+			if got := g.digest(t).Flags; !slices.Equal(got, tc.want) {
+				t.Fatalf("flags = %+v, want %+v", got, tc.want)
+			}
+		})
+	}
 }
 
 func TestCardDigestShowsTheProversFilingsAndTheStore(t *testing.T) {

@@ -169,10 +169,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityPullRequestMerged: func(ctx context.Context, taskID string, number int64) (bool, error) { return false, nil },
 		ActivityRecordStep:        func(ctx context.Context, taskID, step string, detail map[string]any) error { return nil },
 		ActivityUnjudgedCriteria:  func(ctx context.Context, taskID string) ([]string, error) { return nil, nil },
-		ActivityHoldMerge:         func(ctx context.Context, taskID string, pr int64, commit, approver string) error { return nil },
-		ActivityFinish:            func(ctx context.Context, taskID, final, reason string) error { return nil },
-		ActivityReconcile:         func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
-		ActivityEscalate:          func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
+		ActivityUnjudged:          func(ctx context.Context, taskID string) (Unjudged, error) { return Unjudged{}, nil },
+		ActivityHoldMerge: func(ctx context.Context, taskID string, pr int64, commit, approver string, blindProofs bool) error {
+			return nil
+		},
+		ActivityFinish:    func(ctx context.Context, taskID, final, reason string) error { return nil },
+		ActivityReconcile: func(ctx context.Context, taskID string) (RunState, error) { return RunState{}, nil },
+		ActivityEscalate:  func(ctx context.Context, taskID, reason string, choices []string) (int64, error) { return 0, nil },
 		ActivityRecordUsage: func(ctx context.Context, taskID string, u TaskUsage) error {
 			h.rowUsage = u
 			return nil
@@ -211,7 +214,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 			return ReportResult{}, nil
 		},
 		ActivityRequestApproval: func(ctx context.Context, taskID string, in ApprovalInput) error { return nil },
-		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
+		ActivityMerge: func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
 			return MergeResult{}, nil
 		},
 		ActivityReportMergeFailure:          func(ctx context.Context, taskID string, pr int64, commit, approver, reason string) error { return nil },
@@ -279,6 +282,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		},
 		ActivityReplanStopped:     func(ctx context.Context, planID string) (ReplanWait, error) { return ReplanWait{Stopped: true}, nil },
 		ActivitySupersedeApproval: func(ctx context.Context, taskID, reason string) error { return nil },
+		ActivityProofsAtMain:      func(ctx context.Context, taskID string) (ProofsAtMain, error) { return ProofsAtMain{}, nil },
 	} {
 		h.env.RegisterActivityWithOptions(fn, activity.RegisterOptions{Name: name})
 	}
@@ -384,6 +388,18 @@ func (h *workflowHarness) onSessions(results ...SessionResult) {
 		})
 }
 
+// onProofsAtMain answers ProofsAtMain with res and err, recording the
+// task of each call.
+func (h *workflowHarness) onProofsAtMain(res ProofsAtMain, err error) *[]string {
+	calls := &[]string{}
+	h.env.OnActivity(ActivityProofsAtMain, mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string) (ProofsAtMain, error) {
+			*calls = append(*calls, taskID)
+			return res, err
+		})
+	return calls
+}
+
 // onChecks answers WaitChecks in order with results, behind a PR #9 that
 // every OpenPullRequest reuses.
 func (h *workflowHarness) onChecks(results ...ChecksResult) {
@@ -421,6 +437,11 @@ func (h *workflowHarness) beforeCases() {
 // wait and the merge.
 func (h *workflowHarness) beforeQueueWaits() {
 	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
+}
+
+// beforeBlindProofs pins the run to before versionBlindProofs.
+func (h *workflowHarness) beforeBlindProofs() {
+	h.env.OnGetVersion("blind-proofs", workflow.DefaultVersion, versionBlindProofs).Return(workflow.DefaultVersion)
 }
 
 func (h *workflowHarness) signalAfter(d time.Duration, name string, sig TaskSignal) {
@@ -5783,8 +5804,8 @@ func TestReplanBeforeAnAutoMerge(t *testing.T) {
 		h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
 			Review{Verdict: "approve", Summary: "fine", StrictImprovement: &yes}, nil)
 		merges := 0
-		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
-			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string) (MergeResult, error) {
+		h.env.OnActivity(ActivityMerge, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+			func(ctx context.Context, taskID string, pr int64, commit, approver, checkedHead string, met []string, blindProofs bool) (MergeResult, error) {
 				merges++
 				return MergeResult{Merged: true}, nil
 			})
@@ -5947,5 +5968,117 @@ func TestRaiseDuringASessionReachesTheCapCheck(t *testing.T) {
 	}
 	if last := h.usage[len(h.usage)-1]; last.Attempts != 4 || last.ExtraAttempts != 0 {
 		t.Fatalf("usage = %+v, want four attempts and no grant: the raise bought the fourth", last)
+	}
+}
+
+// A plan card's session that ends without a push closes done on its
+// proofs at main: one call, no further session.
+func TestWorkflowClosesOnItsProofsAtMain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "main holds the work"})
+	calls := h.onProofsAtMain(ProofsAtMain{Head: "29b0d33aa", Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	if final := h.run(t); final != "done" || h.finals[0][1] != "proofs met at 29b0d33: size_bound" {
+		t.Fatalf("finals %v, want done on the proofs", h.finals)
+	}
+	if !slices.Equal(*calls, []string{"t1"}) || len(h.sessions) != 1 || !h.sessions[0].BlindProofs {
+		t.Fatalf("calls %q, sessions %+v; want one call on t1 and one session under the version", *calls, h.sessions)
+	}
+}
+
+// Under versionBlindProofs a session's acceptance green closes nothing:
+// the proofs at main judge the card, and when they are not met it runs
+// its next session.
+func TestWorkflowUnderBlindProofsTakesNoAcceptanceClose(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state.Source = SourcePlan
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "the checks pass here",
+		Acceptance: &AcceptanceHit{Command: "bash check", Exit: 0, Session: "s1"}}, pushed("s2", "c2"))
+	calls := h.onProofsAtMain(ProofsAtMain{}, nil)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v, want s2's push merged", h.finals)
+	}
+	if len(*calls) != 1 || len(h.sessions) != 2 {
+		t.Fatalf("calls %q, sessions %d; want one call and s2", *calls, len(h.sessions))
+	}
+}
+
+// The criteria not met at main reach the next session as a finding. A
+// run that fails is logged and the card goes on with none.
+func TestWorkflowCarriesTheProofsNotMetToTheNextSession(t *testing.T) {
+	const notMet = "the proof of size_bound is not met at main 29b0d33"
+	for name, tc := range map[string]struct {
+		res  ProofsAtMain
+		err  error
+		want bool
+	}{
+		"not met":          {ProofsAtMain{Head: "29b0d33aa", Findings: []string{notMet}}, nil, true},
+		"a run that fails": {ProofsAtMain{}, errors.New("the proofs pod took no list"), false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.state.Source = SourcePlan
+			h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2"))
+			h.onProofsAtMain(tc.res, tc.err)
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("finals %v", h.finals)
+			}
+			if len(h.sessions) != 2 || slices.Contains(h.sessions[1].Findings, notMet) != tc.want {
+				t.Fatalf("sessions %+v; want s2 with the finding %v", h.sessions, tc.want)
+			}
+			if tc.err != nil && !strings.Contains(h.logs.String(), "the proofs pod took no list") {
+				t.Fatalf("logs = %s, want the failed run", h.logs.String())
+			}
+		})
+	}
+}
+
+// A direct card's session that ends without a push, and a plan card's
+// that pushed, run no proofs at main.
+func TestWorkflowRunsNoProofsAtMainOffAPlanCardOrAfterAPush(t *testing.T) {
+	for name, tc := range map[string]struct {
+		source   string
+		sessions []SessionResult
+	}{
+		"a direct card":      {"", []SessionResult{{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2")}},
+		"a plan card's push": {SourcePlan, []SessionResult{pushed("s1", "c1")}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.state.Source = tc.source
+			h.onSessions(tc.sessions...)
+			calls := h.onProofsAtMain(ProofsAtMain{Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+				t.Fatalf("finals %v, want the push merged", h.finals)
+			}
+			if len(*calls) != 0 || len(h.sessions) != len(tc.sessions) {
+				t.Fatalf("calls %q, sessions %d; want none and %d", *calls, len(h.sessions), len(tc.sessions))
+			}
+		})
+	}
+}
+
+// A run from before versionBlindProofs runs no proofs at main and asks
+// its sessions for the acceptance read: a plan card's session that ends
+// without a push buys the next one.
+func TestWorkflowBeforeBlindProofsRunsNoProofsAtMain(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.beforeBlindProofs()
+	h.state.Source = SourcePlan
+	h.onSessions(SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "nothing to push"}, pushed("s2", "c2"))
+	calls := h.onProofsAtMain(ProofsAtMain{Met: true, Reason: "proofs met at 29b0d33: size_bound"}, nil)
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	if final := h.run(t); final != "done" || h.finals[0][1] != "pull request merged" {
+		t.Fatalf("finals %v, want s2's push merged", h.finals)
+	}
+	if len(*calls) != 0 || len(h.sessions) != 2 || h.sessions[0].BlindProofs {
+		t.Fatalf("calls %q, sessions %+v; want none, two, and s1 without BlindProofs", *calls, h.sessions)
 	}
 }

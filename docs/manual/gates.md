@@ -166,10 +166,13 @@ by submitting the human's APPROVED review through the human's own OAuth
 token, then calling `factoryd.ApproveMerge` (a pending merge request of
 that task and pull request is required), which signals `approved` with
 signal-with-start like the webhook path. An approval the project agent
-decides (in a wake, or unconfirmed in a member's turn at full auto) is the
-factory's own, whoever is online: the console posts no review and meets
-no human criterion, and every approval request, plan answer and signal
-it decides names `factory-chat`. `Merge` treats approver `factory-chat` as the merge gate's own
+decides (in a wake, or unconfirmed in a human's turn at full auto) is the
+factory's own, whoever is online: the console posts no review, and every
+approval request, plan answer and signal it decides names `factory-chat`.
+A plan's integration or delta card merges only once every human
+criterion has a verdict: the human settles each one on the card with Met
+or Not met, and Not met sends the card back to its agent with their
+words. `Merge` treats approver `factory-chat` as the merge gate's own
 decision: on the merge rule `auto` it approves the head as `factory-gate`
 with `factoryd: the project agent approved <head> on the project's merge
 rule auto`; on any other rule, or without a gate token, it refuses as
@@ -185,7 +188,7 @@ Forgejo itself refuses the merge without the human or, on the merge rule
 `factory/forgejo-gate`; a registered project's `projects.gate_token`),
 which may approve but neither merge nor push (405; a moved head or a
 conflict is 409). The intake ignores factory-gate's reviews as it does
-the bot's: they are factoryd's own, no member's decision. The trust gate
+the bot's: they are factoryd's own, no human's decision. The trust gate
 never trusts factory-gate, a writer on the repository, so its comments
 steer no task. A refusal is commented with what fits and the
 wait goes on: a refused auto merge goes to a human, whom the next merge

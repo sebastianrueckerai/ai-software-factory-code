@@ -579,6 +579,8 @@ type forgejoHub struct {
 	// branches are the heads of the fork's branches by name, which answer
 	// before branchHead
 	branches map[string]string
+	// files are the raw files by "<ref>:<path>", unlisted: 404
+	files map[string]string
 }
 
 func (h *forgejoHub) minted() []string {
@@ -616,6 +618,14 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.calls = append(h.calls, fmt.Sprintf("mint %s %s %s", body.Name, strings.Join(body.Scopes, ","), strings.Join(repos, ",")))
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d,"sha1":"tok-%s"}`, h.nextID, body.Name)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/raw/"):
+			_, file, _ := strings.Cut(r.URL.Path, "/raw/")
+			body, ok := h.files[r.URL.Query().Get("ref")+":"+file]
+			if !ok {
+				http.NotFound(w, r)
+				return
+			}
+			io.WriteString(w, body)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.Count(r.URL.Path, "/") == 5:
 			fmt.Fprint(w, `{"default_branch":"main"}`)
 		case r.Method == "GET" && strings.HasPrefix(r.URL.Path, "/api/v1/repos/factory-agent/") && strings.Count(r.URL.Path, "/") == 5:
@@ -4981,6 +4991,88 @@ func TestRunSessionPushesTheInputHandoverAsTheBrief(t *testing.T) {
 	defer worker.mu.Unlock()
 	if !slices.Equal(worker.texts, []string{"POST /brief stop polishing the linter, commit the handler fix"}) {
 		t.Fatalf("worker got %q, want the input's handover as the brief", worker.texts)
+	}
+}
+
+// The plan's integration card's session pushes the plan's opened proofs
+// with its brief, each file the row's code, a hold-out's among them, and
+// no stored proof; a feature card of the same plan pushes none.
+func TestRunSessionPushesThePlansOpenedProofs(t *testing.T) {
+	ctx := context.Background()
+	opened := []harness.ProofFile{{Path: "proofs/size_bound/size_bound_test.go", Content: sizeBoundCode},
+		{Path: "proofs/key_log/key_log_test.go", Content: "package key_log"}}
+	for _, tc := range []struct {
+		key  string
+		want []harness.ProofFile
+	}{{"integration", opened}, {"links-api", nil}} {
+		t.Run(tc.key, func(t *testing.T) {
+			card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+				IssueNumber: 4, Source: SourcePlan, Parent: "plan1", PlanKey: tc.key, Author: "sebastian", AuthorWriter: true,
+				RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests"}
+			runner, _, store := newTestRunner(t, card, newFakeKube(), &fakeObjectStore{})
+			worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+			worker.start(t, runner)
+			store.CreateTask(ctx, Task{ID: "plan1", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener", Track: "direct"})
+			raw, sha, _ := planSHA(testPlan())
+			store.AddPlanRevision(ctx, "plan1", raw, sha)
+			store.proofs = map[string][]PlanProof{"plan1": {
+				{Idx: 1, Origin: ProofOriginCriterion, Criterion: "size_bound", ID: "size_bound", Suite: "proofs/size_bound", Name: "TestSizeBound",
+					Path: "proofs/size_bound/size_bound_test.go", Code: sizeBoundCode, State: ProofOpened},
+				{Idx: 2, Origin: ProofOriginCriterion, Criterion: "door", ID: "door", Suite: "proofs/door", Name: "TestDoor",
+					Path: "proofs/door/door_test.go", Code: "package door", State: ProofStored},
+				{Idx: 3, Origin: ProofOriginHoldout, ID: "key_log", Suite: "proofs/key_log", Name: "TestKeyLog",
+					Path: "proofs/key_log/key_log_test.go", Code: "package key_log", State: ProofOpened},
+			}}
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
+				resultLine(true, "built")); err != nil {
+				t.Fatal(err)
+			}
+			b := onlyBrief(t, worker)
+			if !slices.Equal(b.Proofs, tc.want) {
+				t.Fatalf("pushed proofs = %+v, want %+v", b.Proofs, tc.want)
+			}
+			if strings.Contains(worker.briefs[0], "package door") || tc.want == nil && strings.Contains(worker.briefs[0], `"proofs"`) {
+				t.Fatalf("brief push = %s", worker.briefs[0])
+			}
+		})
+	}
+}
+
+// The opened proofs a session's clone gets are new files of the card's
+// pull request, so their lines raise the card's line bound: a small
+// integration card, bound 300 at large_lines 1000, with three opened
+// proofs of 100 lines each, is bound at 600. A second session sets the
+// same raise again and does not add it twice.
+func TestRunSessionRaisesTheBoundByTheOpenedProofsLines(t *testing.T) {
+	ctx := context.Background()
+	card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+		IssueNumber: 4, Source: SourcePlan, Parent: "plan1", PlanKey: "integration", Author: "sebastian", AuthorWriter: true, Size: "small",
+		RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests"}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+	worker.start(t, runner)
+	store.CreateTask(ctx, Task{ID: "plan1", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener", Track: "direct"})
+	raw, sha, _ := planSHA(testPlan())
+	store.AddPlanRevision(ctx, "plan1", raw, sha)
+	hundred := strings.Repeat("// a line\n", 100)
+	store.proofs = map[string][]PlanProof{"plan1": {
+		{Idx: 1, Origin: ProofOriginCriterion, Criterion: "links_crud", ID: "links_crud", Path: "acceptance/links_test.go", Code: hundred, State: ProofOpened},
+		{Idx: 2, Origin: ProofOriginCriterion, Criterion: "redirect_302", ID: "redirect_302", Path: "acceptance/redirect_test.go", Code: hundred, State: ProofOpened},
+		{Idx: 3, Origin: ProofOriginHoldout, ID: "key_log", Path: "proofs/key_log/key_log_test.go", Code: hundred, State: ProofOpened},
+		{Idx: 4, Origin: ProofOriginCriterion, Criterion: "door", ID: "door", Path: "proofs/door/door_test.go", Code: hundred, State: ProofStored},
+	}}
+	for i := range 2 {
+		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: i + 1, Model: "factory/small"}, nil,
+			resultLine(true, "built")); err != nil {
+			t.Fatal(err)
+		}
+		if got := store.tasks["t1"].Usage.ProofLines; got != 300 {
+			t.Fatalf("session %d: proof lines = %d, want 300", i+1, got)
+		}
+		if got := podEnv(kube.podAt(i))["LINE_BOUND"]; got != "600" {
+			t.Fatalf("session %d: LINE_BOUND = %q, want 600: 300 for size small and 300 for the proofs", i+1, got)
+		}
 	}
 }
 

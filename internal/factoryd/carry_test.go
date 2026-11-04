@@ -296,9 +296,9 @@ func TestWorkingStateListsThirtyFilesAndCountsTheRest(t *testing.T) {
 
 // The largest brief factoryd can push fits the worker's cap: eight reports
 // at the record's cap, a todo list, excerpts, a stop reason and 30 changed
-// paths at PATH_MAX past their bounds, and a handover at the policy's
-// largest checkin_handover_chars (8000), all of "<", which JSON escapes to
-// six bytes.
+// paths at PATH_MAX past their bounds, a handover at the policy's largest
+// checkin_handover_chars (8000) and opened proofs of the 512 KiB of code
+// the prover files, all of "<", which JSON escapes to six bytes.
 func TestTheLargestBriefPushFitsTheWorkersCap(t *testing.T) {
 	lt := func(n int) string { return strings.Repeat("<", n) }
 	var todos [][2]string
@@ -318,7 +318,11 @@ func TestTheLargestBriefPushFitsTheWorkersCap(t *testing.T) {
 	if c == nil || len(c.Files) != carryMaxReports {
 		t.Fatalf("state = %+v", c)
 	}
-	b, err := json.Marshal(harness.BriefPush{Handover: cutHandover(lt(10000), 8000), Prior: &c.Prior, Files: c.Files})
+	var proofs []harness.ProofFile
+	for i := range (512 << 10) / maxProofCode {
+		proofs = append(proofs, harness.ProofFile{Path: fmt.Sprintf("proofs/criterion_%02d/criterion_%02d_test.go", i, i), Content: lt(maxProofCode)})
+	}
+	b, err := json.Marshal(harness.BriefPush{Handover: cutHandover(lt(10000), 8000), Prior: &c.Prior, Files: c.Files, Proofs: proofs})
 	if err != nil {
 		t.Fatal(err)
 	}

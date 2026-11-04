@@ -1368,12 +1368,15 @@ func TestNeedsYouMergeFaceStaysSmall(t *testing.T) {
 		`<p class="why">second why</p>`,
 		`<p class="info"><b>Model review</b> approve: adds the column</p>`,
 		`<p class="finding">0018_x.sql: add a default</p>`,
-		`<p class="need-line">Criterion no schema migration: yours to judge at this merge. the diff moves the column</p>`,
 		`<p class="recommendation">Recommendation: ` + long + `</p>`,
 	} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}
+	}
+	// a human criterion is a row of the plan's merge card, not a line of the review's
+	if strings.Contains(drawer, "yours to judge") {
+		t.Errorf("the merge drawer carries the review's human criterion line")
 	}
 }
 

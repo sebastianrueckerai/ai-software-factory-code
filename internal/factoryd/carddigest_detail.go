@@ -51,7 +51,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead st
 	switch {
 	case s.Kind == "filed":
 		filedDetail(&b, s.Actor, rows.task, d.Head, rows.deps)
-	case s.Kind == "criteria":
+	case s.Kind == "criteria" && s.Ref.Event == "":
 		criteriaDetail(&b, s, rows.verdicts)
 	case s.Kind == "session" && rows.task.Source == SourceProver:
 		// a prover's transcript holds its tests: no read points at it
@@ -66,12 +66,20 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead st
 		if i := eventIndex(rows.events, s.Ref.Event); i >= 0 {
 			proofsEventDetail(&b, rows.events[i])
 		}
+	case s.Kind == "opened":
+		if i := eventIndex(rows.events, s.Ref.Event); i >= 0 {
+			openedDetail(&b, rows.events[i])
+		}
 	case s.Ref.Event != "":
 		if i := eventIndex(rows.events, s.Ref.Event); i >= 0 {
 			writeFields(&b, rows.events[i].Detail)
 		}
 	case s.Kind == "checkin":
 		checkinDetail(&b, lines[line-1])
+	case s.Kind == "judgement":
+		judgementDetail(&b, lines[line-1])
+	case s.Kind == "proofs" && s.Actor == "runner":
+		mainDetail(&b, lines[line-1])
 	case s.Kind == "proofs":
 		proofsDetail(&b, lines[line-1])
 	default:
@@ -282,8 +290,8 @@ func checkinDetail(b *strings.Builder, raw []byte) {
 }
 
 // proofsDetail is a gate_criteria line in full: the pull request and the
-// head, every criterion's line with its message, the findings no line
-// holds, the start failure. Never the hold-outs.
+// head, every criterion's line with its message and its state, the
+// findings no line holds, the start failure. Never the hold-outs.
 func proofsDetail(b *strings.Builder, raw []byte) {
 	var l struct {
 		PR          int64       `json:"pr"`
@@ -299,6 +307,12 @@ func proofsDetail(b *strings.Builder, raw []byte) {
 		if p.Met {
 			verdict = "met"
 		}
+		if p.State != "" {
+			verdict += " (" + p.State + ")"
+		}
+		if p.Changed {
+			verdict += " changed"
+		}
 		fmt.Fprintf(b, "%s %s: %s\n", p.ID, verdict, p.Line)
 		for line := range strings.Lines(p.Message) {
 			b.WriteString("  " + strings.TrimSuffix(line, "\n") + "\n")
@@ -311,6 +325,56 @@ func proofsDetail(b *strings.Builder, raw []byte) {
 	}
 	if l.StartFailed != "" {
 		b.WriteString("start failed: " + l.StartFailed + "\n")
+	}
+}
+
+// openedDetail is a proof_opened event in full: what opened at the head,
+// its proof, its hold-out's claim, its code and its output.
+func openedDetail(b *strings.Builder, e Event) {
+	word := func(k string) string { v, _ := e.Detail[k].(string); return v }
+	fmt.Fprintf(b, "%s opened at %s: %s\n", word("criterion"), word("head"), word("outcome"))
+	if word("name") != "" {
+		fmt.Fprintf(b, "%s in %s at %s\n", word("name"), word("suite"), word("path"))
+	}
+	if hold := word("holdout"); hold != "" {
+		b.WriteString("hold-out: " + hold + "\n")
+	}
+	b.WriteString("code:\n")
+	for line := range strings.Lines(word("code")) {
+		b.WriteString("  " + strings.TrimSuffix(line, "\n") + "\n")
+	}
+	if word("message") != "" {
+		b.WriteString("output:\n")
+		for line := range strings.Lines(word("message")) {
+			b.WriteString("  " + strings.TrimSuffix(line, "\n") + "\n")
+		}
+	}
+}
+
+// judgementDetail is a judgement line in full: its criterion and
+// artifact, its model, prompt and cost, its reason.
+func judgementDetail(b *strings.Builder, raw []byte) {
+	var l timelineLine
+	if json.Unmarshal(raw, &l) != nil {
+		return
+	}
+	fmt.Fprintf(b, "criterion %s, artifact %s\n", l.Criterion, l.Artifact)
+	fmt.Fprintf(b, "model %s, prompt %s, cost %.2f EUR\n", aliasOf(l.Model), l.PromptHash, l.Cost)
+	b.WriteString("reason: " + l.Reason + "\n")
+}
+
+// mainDetail is a proofs_at_main line in full: its head and each
+// criterion's outcome.
+func mainDetail(b *strings.Builder, raw []byte) {
+	var l timelineLine
+	if json.Unmarshal(raw, &l) != nil {
+		return
+	}
+	fmt.Fprintf(b, "main at %s\n", l.Head)
+	var entries []mainOutcome
+	_ = json.Unmarshal(l.Criteria, &entries)
+	for _, c := range entries {
+		fmt.Fprintf(b, "%s %s\n", c.ID, c.Outcome)
 	}
 }
 

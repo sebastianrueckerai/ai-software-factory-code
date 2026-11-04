@@ -783,6 +783,10 @@ func briefText(brief harness.TaskBrief, tag string) string {
 		fmt.Fprintf(&b, "\n\nThe spec and the plan: this card is one of a plan's. Between the lines %s and %s stand the spec, the plan's issue as a writer wrote it, "+
 			"and the plan's summary as the planner wrote it: the whole application, of which this card builds its own part only.\n%s\n%s\n%s", sopen, sclose, sopen, brief.Spec, sclose)
 	}
+	if len(brief.Proofs) > 0 {
+		fmt.Fprintf(&b, "\n\nOpened proofs: your clone holds these tests at their paths: %s. Each proves one of the plan's criteria, ran once at the gate without passing, and is yours to see now. "+
+			"Keep each at its path and make it pass: fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold.", textutil.AndList(brief.Proofs))
+	}
 	if len(brief.PosterInfo) > 0 {
 		b.WriteString("\n\nPoster information (oldest first):")
 		for _, p := range brief.PosterInfo {

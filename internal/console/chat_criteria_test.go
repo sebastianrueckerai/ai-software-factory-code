@@ -2,7 +2,10 @@ package console
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -40,9 +43,51 @@ func TestChatWaivesACriterionOnTheHumansWord(t *testing.T) {
 		t.Errorf("calls = %q, want %q", calls, want)
 	}
 	chatRows(t, r.events, before, "sebastian", factoryd.Event{Repository: "sf/code", TaskID: "t-plan", IssueNumber: 3,
-		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criterion": "c3", "verdict": "waived"}})
+		Kind: factoryd.EventCriterionDecided, Detail: map[string]any{"approval": int64(30), "criterion": "c3", "verb": "waived", "reason": "the timeout is the provider's SLA"}})
 	if a := r.approvals.get(30); a.Status != "pending" {
 		t.Errorf("the waiver decided the request itself: %+v", a)
+	}
+}
+
+// The chat settles the integration card's rows on the human's word: Met
+// and Waive on its merge request, and Not met, which sends the card back
+// to its agent with the human's words.
+func TestChatDecidesAHumanRowOnTheHumansWord(t *testing.T) {
+	r, _, g := newChatRig(t)
+	calls := humanRig(r)
+	r.ledger.chat = &policy.ChatConfig{MonthlyEUR: 4, Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	met := `{"task_id":"t-int","action":"met","criterion":"pages_ok"}`
+	waive := `{"task_id":"t-int","action":"waive","criterion":"all_green","reason":"CI covers it."}`
+	notMet := `{"task_id":"t-int","action":"not_met","criterion":"page_links","reason":"The help page has no links yet."}`
+	g.replies = [][]string{{call(1, "answer_criteria", met)}, {call(2, "answer_criteria", waive)}, {call(3, "answer_criteria", notMet)}, {say("Done.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"pages_ok reads well, page_links does not: the help page has no links yet"}})
+	back := "Criterion page_links is not met. The card goes back to its agent with your words."
+	equal(t, "stream", events, []string{
+		`tool {"arguments":` + met + `,"duration_ms":0,"name":"answer_criteria","result":"Criterion pages_ok met."}`,
+		`applied {"result":"Criterion pages_ok met.","tool":"answer_criteria"}`,
+		`tool {"arguments":` + waive + `,"duration_ms":0,"name":"answer_criteria","result":"Criterion all_green waived."}`,
+		`applied {"result":"Criterion all_green waived.","tool":"answer_criteria"}`,
+		`tool {"arguments":` + notMet + `,"duration_ms":0,"name":"answer_criteria","result":"` + back + `"}`,
+		`applied {"result":"` + back + `","tool":"answer_criteria"}`,
+		`text {"text":"Done."}`, `done {}`})
+	equal(t, "the calls", *calls, []string{
+		"t-plan pages_ok met by sebastian: met (pages_ok.txt at 8e3a1b0)",
+		"t-plan all_green waived by sebastian: CI covers it.",
+	})
+	const words = "criterion page_links not met: The help page has no links yet."
+	chatRows(t, r.events, before, "sebastian",
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventCriterionDecided,
+			Detail: map[string]any{"approval": int64(31), "criterion": "pages_ok", "verb": "met", "reason": "met (pages_ok.txt at 8e3a1b0)"}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventCriterionDecided,
+			Detail: map[string]any{"approval": int64(31), "criterion": "all_green", "verb": "waived", "reason": "CI covers it."}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventMergeDenied,
+			Detail: map[string]any{"pr": int64(12), "action": "request_changes"}},
+		factoryd.Event{Repository: "sf/code", TaskID: "t-int", IssueNumber: 5, Kind: factoryd.EventCriterionDecided,
+			Detail: map[string]any{"approval": int64(31), "criterion": "page_links", "verb": "not_met", "reason": "The help page has no links yet."}})
+	if q := r.approvals.get(31); q.Status != "denied" || q.DecidedBy != "sebastian" || q.DecisionNote != "changes requested: "+words {
+		t.Errorf("the merge request = %+v, want it denied by sebastian with %q", q, words)
 	}
 }
 
@@ -211,5 +256,47 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if len(calls) != 0 || criteria != 1 {
 		t.Fatalf("a wake over an older line of the human's decided something: calls %v, %d verdict rows", calls, criteria)
+	}
+}
+
+// onceFailingApprovals fails its first read of the requests.
+type onceFailingApprovals struct {
+	*fakeApprovals
+	failed bool
+}
+
+func (a *onceFailingApprovals) ApprovalRequests(ctx context.Context, status string) ([]factoryd.ApprovalRequest, error) {
+	if !a.failed {
+		a.failed = true
+		return nil, errors.New("pg: connection reset")
+	}
+	return a.fakeApprovals.ApprovalRequests(ctx, status)
+}
+
+// The chat's press on a row falls to the plan's criteria request only
+// when the card has no pending merge request: a read that fails answers
+// as the failure, and nothing is decided.
+func TestChatRowPressAnswersAFailedRead(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	calls := humanRig(r)
+	_, s := r.loggedIn(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "waive all_green: CI covers it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.c.cfg.Approvals = &onceFailingApprovals{fakeApprovals: r.approvals}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	tool, _ := r.c.chatTool("answer_criteria")
+	_, _, err = tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, upto: line, conv: conv, owner: "sebastian"},
+		toolInput{TaskID: "t-int", Action: "waive", Criterion: "all_green", Reason: "CI covers it."})
+	refusedAs(t, err, http.StatusInternalServerError, "cannot read the approval requests")
+	if len(*calls) != 0 || len(decided(r)) != 0 {
+		t.Errorf("the failed read decided calls %q and events %v", *calls, decided(r))
 	}
 }

@@ -21,6 +21,7 @@ import (
 	"syscall"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -477,7 +478,8 @@ func listed(proofs ...harness.Proof) func() ([]harness.Proof, error) {
 
 // The proofs mode runs bash check test with the entry's suite, and its
 // name only when given, each with a report path and an artifacts
-// directory of its own outside the tree, and returns what the check left.
+// directory of its own outside the tree, and returns what the check left,
+// each run started whatever its exit.
 func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	ws, repo := proofsWorkspace(t, proofsCheck)
 	proofsEnvs(t)
@@ -500,7 +502,7 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 		{"none", "argc=2 test ./none", "", 2, nil},
 	} {
 		r := runs[i]
-		if r.ID != want.id || r.Exit != want.exit || strings.SplitN(r.Output, "\n", 2)[0] != want.first {
+		if r.ID != want.id || r.Exit != want.exit || !r.Started || strings.SplitN(r.Output, "\n", 2)[0] != want.first {
 			t.Errorf("run %d = %+v, want id %s, exit %d, first line %q", i, r, want.id, want.exit, want.first)
 		}
 		if want.report == "" && r.Report != nil {
@@ -561,7 +563,7 @@ func TestProofsWriteTheEntrysFileForItsRunAlone(t *testing.T) {
 }
 
 // A file the tree cannot hold, by a parent step, an absolute path or a
-// link out of it, is not written, and its entry does not run.
+// link out of it, is not written, and its entry does not start.
 func TestProofsRefuseAFileOutsideTheTree(t *testing.T) {
 	ws, repo := proofsWorkspace(t, "touch ran")
 	outside := t.TempDir()
@@ -574,7 +576,7 @@ func TestProofsRefuseAFileOutsideTheTree(t *testing.T) {
 		proofs = append(proofs, harness.Proof{ID: path, Suite: "./x", File: &harness.ProofFile{Path: path, Content: "package x\n"}})
 	}
 	for _, r := range proofRuns(t, ws, proofs...) {
-		if r.Exit != -1 || !strings.HasPrefix(r.Output, "proofs mode: write ") {
+		if r.Exit != -1 || r.Started || !strings.HasPrefix(r.Output, "proofs mode: write ") {
 			t.Errorf("run = %+v", r)
 		}
 	}
@@ -602,9 +604,26 @@ echo x >"$CHECK_ARTIFACTS/sub/x"
 	}
 }
 
+// A text cut at 256 KiB through a character keeps no part of it: the
+// artifact stays valid text. One that ends at the cap is kept whole.
+func TestProofsCutAnArtifactOnACharacterBoundary(t *testing.T) {
+	ws, _ := proofsWorkspace(t, `head -c 262143 /dev/zero | tr '\0' a >"$CHECK_ARTIFACTS/cut.txt"
+printf '\303\251b' >>"$CHECK_ARTIFACTS/cut.txt"
+head -c 262142 /dev/zero | tr '\0' a >"$CHECK_ARTIFACTS/whole.txt"
+printf '\303\251' >>"$CHECK_ARTIFACTS/whole.txt"
+`)
+	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a"})[0]
+	if cut := r.Artifacts["cut.txt"]; len(cut) != 262143 || !utf8.Valid(cut) {
+		t.Fatalf("cut.txt: %d bytes, valid %v; want the 262143 bytes before the cut character", len(cut), utf8.Valid(cut))
+	}
+	if whole := r.Artifacts["whole.txt"]; len(whole) != 262144 || !utf8.Valid(whole) {
+		t.Fatalf("whole.txt: %d bytes, valid %v; want all 262144", len(whole), utf8.Valid(whole))
+	}
+}
+
 // Three artifacts at their cap would pass the 1 MiB that factoryd reads
 // of one log line, which would lose the report with them: those past the
-// line's room are left out and named.
+// line's room are left out and named in Dropped.
 func TestProofsLeaveOutArtifactsPastTheLine(t *testing.T) {
 	ws, _ := proofsWorkspace(t, `for f in a b c; do head -c 300000 /dev/zero >"$CHECK_ARTIFACTS/$f.bin"; done
 printf '<testsuites></testsuites>' >"$CHECK_REPORT"
@@ -615,8 +634,8 @@ printf '<testsuites></testsuites>' >"$CHECK_REPORT"
 	if len(r.Artifacts) != 2 || len(r.Artifacts["a.bin"]) != 262144 || len(r.Artifacts["b.bin"]) != 262144 {
 		t.Fatalf("artifacts: %d keys, a.bin %d bytes, b.bin %d bytes", len(r.Artifacts), len(r.Artifacts["a.bin"]), len(r.Artifacts["b.bin"]))
 	}
-	if r.Exit != 0 || r.Report == nil || !strings.HasSuffix(r.Output, "\nproofs mode: one log line has no room for these artifacts: c.bin") {
-		t.Fatalf("exit %d, a report: %v, output %q", r.Exit, r.Report != nil, r.Output)
+	if r.Exit != 0 || r.Report == nil || !slices.Equal(r.Dropped, []string{"c.bin"}) {
+		t.Fatalf("exit %d, a report: %v, dropped %q", r.Exit, r.Report != nil, r.Dropped)
 	}
 	if line, err := json.Marshal(got[0]); err != nil || len(line) >= 1<<20 {
 		t.Fatalf("line of %d bytes, %v", len(line), err)
@@ -683,7 +702,7 @@ func TestProofsNeverBlockOnAFIFO(t *testing.T) {
 }
 
 // An entry's own directory is new: one a process left there, with a
-// report planted in it, fails the entry before the check runs.
+// report planted in it, fails the entry before the check starts.
 func TestProofsRefuseAnEntryDirectoryThatExists(t *testing.T) {
 	ws, repo := proofsWorkspace(t, "touch ran\n")
 	planted := filepath.Join(ws, "proofs", "0")
@@ -694,7 +713,7 @@ func TestProofsRefuseAnEntryDirectoryThatExists(t *testing.T) {
 		t.Fatal(err)
 	}
 	r := proofRuns(t, ws, harness.Proof{ID: "a", Suite: "./a", Name: "TestA"})[0]
-	if r.Exit != -1 || r.Report != nil || !strings.HasPrefix(r.Output, "proofs mode: mkdir ") {
+	if r.Exit != -1 || r.Started || r.Report != nil || !strings.HasPrefix(r.Output, "proofs mode: mkdir ") {
 		t.Fatalf("run = %+v", r)
 	}
 	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
@@ -743,24 +762,26 @@ printf '</testsuites>\n'
 }
 
 // Each entry has its timeout, and all share the run's budget: an entry
-// the budget cuts short says so, and one it does not reach does not
-// start.
+// its own timeout ends had its try; one the budget cuts short says so and
+// had none, as one it does not reach, which does not start. An entry the
+// budget shortens that ends before the deadline had its try.
 func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 	list := []harness.Proof{{ID: "slow", Suite: "./slow"}, {ID: "fast", Suite: "./a", Name: "TestA"}}
 	for _, tc := range []struct {
 		timeout, budget time.Duration
 		slow            string
+		slowStarted     bool
 		fast            harness.ProofRun
 	}{
-		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", harness.ProofRun{ID: "fast", Exit: 0}},
-		{time.Minute, 300 * time.Millisecond, "\n(the run's 300ms ran out)", harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
+		{300 * time.Millisecond, time.Minute, "\n(timed out after 300ms)", true, harness.ProofRun{ID: "fast", Exit: 0, Started: true}},
+		{time.Minute, 300 * time.Millisecond, "\n(the run's 300ms ran out)", false, harness.ProofRun{ID: "fast", Exit: -1, Output: "proofs mode: the run's 300ms ran out before this entry"}},
 	} {
 		ws, _ := proofsWorkspace(t, "if [ \"$2\" = ./slow ]; then sleep 30; fi\n")
 		began := time.Now()
 		var got emitted
 		runProofList(proofsEnv{proofs: list, timeout: tc.timeout, budget: tc.budget}, ws, time.Now(), got.emit)
 		runs := got.runs(t)
-		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !strings.HasSuffix(runs[0].Output, tc.slow) {
+		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || runs[0].Started != tc.slowStarted || !strings.HasSuffix(runs[0].Output, tc.slow) {
 			t.Fatalf("timeout %s, budget %s: runs = %+v", tc.timeout, tc.budget, runs)
 		}
 		if !reflect.DeepEqual(runs[1], tc.fast) {
@@ -769,6 +790,12 @@ func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 		if took := time.Since(began); took > 10*time.Second {
 			t.Errorf("timeout %s, budget %s: took %s", tc.timeout, tc.budget, took)
 		}
+	}
+	ws, _ := proofsWorkspace(t, "exit 1\n")
+	var got emitted
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "short", Suite: "./a"}}, timeout: time.Minute, budget: 30 * time.Second}, ws, time.Now(), got.emit)
+	if r := got.runs(t)[0]; r.Exit != 1 || !r.Started {
+		t.Errorf("an entry the budget shortens, ended before the deadline = %+v, want exit 1 and started", r)
 	}
 }
 

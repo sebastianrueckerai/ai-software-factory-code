@@ -33,7 +33,7 @@ var agentDocClasses = []string{"coder"}
 // AgentDocDirectIDs lists the direct factoryd agents the map captures.
 func AgentDocDirectIDs() []string {
 	return []string{"checkin", "model-review", "security-audit", "gate-supervisor",
-		"review-criteria", "review-behaviours", "delta-planner", "holdout-proposer",
+		"judgement", "review-behaviours", "delta-planner", "holdout-proposer",
 		"answer-screener", "brief-writer", "title"}
 }
 
@@ -50,8 +50,8 @@ func AgentDocDirect(ctx context.Context, id, gwURL string, v policy.Version, hc 
 		return agentDocAudit(ctx, gwURL, v, hc)
 	case "gate-supervisor":
 		return agentDocGateSupervisor(ctx, gwURL, v, hc)
-	case "review-criteria":
-		return agentDocCriterion(ctx, gwURL, v, hc)
+	case "judgement":
+		return agentDocJudgement(ctx, gwURL, v, hc)
 	case "review-behaviours":
 		return agentDocBehaviours(ctx, gwURL, v, hc)
 	case "delta-planner":
@@ -267,8 +267,8 @@ func agentDocGateSupervisor(ctx context.Context, gwURL string, v policy.Version,
 	}, nil
 }
 
-// agentDocPlan is the fixture plan the criteria, behaviours, delta and
-// hold-out captures share.
+// agentDocPlan is the fixture plan the behaviours, delta and hold-out
+// captures share.
 func agentDocPlan() Plan {
 	return Plan{
 		Spec:    &Spec{Outcome: "The counter counts every row the query returns, skipped ones included."},
@@ -284,34 +284,31 @@ func agentDocPlan() Plan {
 	}
 }
 
-// agentDocCriterion drives the review's criterion call on a judgement
-// criterion of its own: the fixture plan's one criterion is of kind test,
-// which the review leaves to the criteria gate.
-func agentDocCriterion(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
+// agentDocJudgement drives the judgement call (judgementCall) on a
+// judgement criterion and the artifact its proof wrote, through callAll
+// as the gate makes it.
+func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
 	m, alias, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
 	if err != nil {
 		return nil, err
 	}
-	c := PlanCriterion{ID: "c2", Kind: CriterionJudgement, Claim: "the counter's name says it counts the skipped rows too",
-		Inputs: "the diff of internal/foo/bar.go", Prompt: "Does the name of the new counter say it counts skipped rows?"}
-	files := agentDocFiles()
-	diff := joinFiles(files)
-	in := criterionInput{Objective: agentDocObjective().Objective, Criterion: c, Cards: []string{"f1"}, Diff: diff}
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout,
-		reviewCriterionPrompt, in); err != nil {
+	c := PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "The sizes page reads calm", Inputs: "the sizes page with three sizes",
+		Prompt: "Does the page read calm? Answer met or unmet."}
+	a := GateArtifact{Criterion: c.ID, Name: "reads_calm.html", Head: "fixture-head-sha", Content: "<main><h1>Sizes</h1><p>S, M and L</p></main>"}
+	call := judgementCall(c, a)
+	results, err := (&Runner{supervisor: m}).callAll(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, time.Time{}, []reviewCall{call})
+	if err != nil {
+		return nil, err
+	}
+	if err := results[0].Err; err != nil {
 		return nil, err
 	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the criterion prompt", Symbol: "factoryd.reviewCriterionPrompt", Kind: agentdoc.KindBuilder,
-			Place: agentdoc.PlaceSystem, Text: reviewCriterionPrompt},
-		{Name: "the criterion call's facts", Symbol: "factoryd.criterionInput", Kind: agentdoc.KindBuilder,
-			Place: agentdoc.PlaceUser, Text: marshalled(in)},
-		{Name: "the objective", Symbol: "factoryd.InboundBrief", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: agentDocJSON(in.Objective)},
-		{Name: "the criterion", Symbol: "factoryd.PlanCriterion", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: marshalled(c)},
-		{Name: "the diff", Symbol: "factoryd.joinFiles", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: agentDocJSON(diff)},
+		{Name: "the judgement prompt", Symbol: "factoryd.judgementCall", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: call.Prompt},
+		{Name: "the criterion's prompt", Symbol: "factoryd.PlanCriterion.Prompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: c.Prompt},
+		{Name: "the answer's form", Symbol: "factoryd.judgementAnswer", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: judgementAnswer},
+		{Name: "the artifact", Symbol: "factoryd.GateArtifact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(call.Input())},
 	}, nil
 }
 

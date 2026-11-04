@@ -306,7 +306,8 @@ func (t *taskRun) runStages(commit string) verdict {
 // review findings the card shows, which an approval over it adjudicates
 // (versionAdjudicated). The criteria gate runs first, once, on the head
 // the request will name; its findings are card findings, for the human
-// (versionCriteriaGate).
+// (versionCriteriaGate). From versionBlindProofs on its stand rides g and
+// its findings go to the agent as a stage's do, to the card at the cap.
 func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed bool, capped, card, covered []string) verdict {
 	t.head = commit
 	if t.criteriaGate >= versionCriteriaGate {
@@ -318,7 +319,17 @@ func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed
 		if decided {
 			return v
 		}
-		card = append(card, res.Findings...)
+		if t.blindProofs < versionBlindProofs {
+			card = append(card, res.Findings...)
+		} else {
+			g.Criteria = res.Stand
+			if len(res.Findings) > 0 {
+				if v, stop := t.onFindings(criteriaStage, g, res.Findings, &capped, &card); stop {
+					return v
+				}
+			}
+		}
+		card = append(card, res.Card...)
 	}
 	earlier := t.reviews
 	if reviewed {
@@ -334,6 +345,11 @@ func (t *taskRun) approval(commit string, g GateResults, review Review, reviewed
 	}
 	return t.approve(commit, g, review, slices.Clone(earlier), card, covered)
 }
+
+// criteriaStage is the criteria gate as a stage whose findings go to the
+// agent (versionBlindProofs): the approval stage runs the gate, so no
+// policy stage names it.
+var criteriaStage = policy.Stage{Name: "criteria", OnFindings: policy.FindingsAgent}
 
 // overruled: whether an approval has adjudicated the review finding f
 // (versionAdjudicated, roadmap 192).
@@ -1209,10 +1225,12 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 		for workflow.GetSignalChannel(t.ctx, SignalApproved).ReceiveAsync(&sig) {
 			t.recordIgnored(SignalApproved, sig, "sent before this approval request")
 		}
-		if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
-			Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}).Get(t.ctx, nil); err != nil {
+		in := ApprovalInput{PR: t.pr, Commit: commit, Gates: g,
+			Review: review, EarlierReviews: earlier, WhyHuman: whyHuman, RedChecks: red, Factory: t.factoryActions()}
+		if err := workflow.ExecuteActivity(t.short, ActivityRequestApproval, t.taskID, in).Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "request approval: " + errMessage(err)}
 		}
+		t.asked, t.askedCard = in, card
 		t.approvalRequested = workflow.Now(t.ctx)
 		if t.waitsOutOfQueue() {
 			t.leaveQueue(approvalWaitLeft)

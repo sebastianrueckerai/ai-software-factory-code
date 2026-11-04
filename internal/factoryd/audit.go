@@ -11,6 +11,7 @@ import (
 	"slices"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -210,7 +211,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		stopBeats()
 		return r.recordAudit(ctx, t, pr, commit, round, gates.Beside, res, scrub)
 	}
-	results, err := r.callAll(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, calls)
+	results, err := r.callAll(ctx, t.ID, res.Model, policy.PurposeAudit, v.Document.Limits.SupervisorTimeout, time.Time{}, calls)
 	if err != nil {
 		return AuditResult{}, err
 	}

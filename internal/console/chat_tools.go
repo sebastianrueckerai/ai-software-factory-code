@@ -890,46 +890,45 @@ func (in toolInput) limit() int {
 	return min(in.N, 100)
 }
 
-// mergeRequest is the pending merge approval request of card id in the
-// chat's project.
-func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
+// pending is the pending approval request of card in's in the chat's
+// project whose kind is one of kinds, the card, and whether one pends.
+func (t *turn) pending(in toolInput, kinds ...string) (factoryd.ApprovalRequest, factoryd.Task, bool, error) {
 	k, err := t.card(in)
 	if err != nil {
-		return factoryd.ApprovalRequest{}, err
+		return factoryd.ApprovalRequest{}, k, false, err
 	}
 	all, err := t.c.cfg.Approvals.ApprovalRequests(t.r.Context(), "pending")
 	if err != nil {
 		log.Printf("console: approvals: %v", err)
-		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
+		return factoryd.ApprovalRequest{}, k, false, refuse(http.StatusInternalServerError, "cannot read the approval requests")
 	}
 	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalMerge && q.Project == t.p.Repository
+		return q.TaskID == k.ID && slices.Contains(kinds, q.Kind) && q.Project == t.p.Repository
 	})
 	if i < 0 {
-		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending merge request")
+		return factoryd.ApprovalRequest{}, k, false, nil
 	}
-	return all[i], nil
+	return all[i], k, true, nil
+}
+
+// mergeRequest is the pending merge approval request of card id in the
+// chat's project.
+func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
+	q, k, ok, err := t.pending(in, factoryd.ApprovalMerge)
+	if err == nil && !ok {
+		err = wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending merge request")
+	}
+	return q, err
 }
 
 // criteriaRequest is the pending criteria or criteria_rerun approval
 // request of plan id in the chat's project.
 func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
-	k, err := t.card(in)
-	if err != nil {
-		return factoryd.ApprovalRequest{}, err
+	q, k, ok, err := t.pending(in, factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun)
+	if err == nil && !ok {
+		err = wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
 	}
-	all, err := t.c.cfg.Approvals.ApprovalRequests(t.r.Context(), "pending")
-	if err != nil {
-		log.Printf("console: approvals: %v", err)
-		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
-	}
-	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && (q.Kind == factoryd.ApprovalCriteria || q.Kind == factoryd.ApprovalCriteriaRerun) && q.Project == t.p.Repository
-	})
-	if i < 0 {
-		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
-	}
-	return all[i], nil
+	return q, err
 }
 
 // humanAnswerLine is the line this turn answers, when the human typed it
@@ -1628,13 +1627,13 @@ var tools = []chatTool{
 			note, err := t.c.doRerun(t.r.Context(), t.a, q.ID)
 			return note, nil, err
 		}},
-	{name: "answer_criteria", title: "Answer a criteria gap", write: true,
+	{name: "answer_criteria", title: "Answer a plan's criteria", write: true,
 		params: map[string]any{"task_id": taskParam,
-			"action":    enum("waive unmet, grant one more card, or confirm delivered", "waive", "grant", "confirm"),
-			"criterion": str("the criterion the waiver names, cN"),
-			"reason":    str("the waiver's one-line reason")},
+			"action":    enum("met or not_met on a human row, waive any row, grant, confirm", "waive", "grant", "confirm", "met", "not_met"),
+			"criterion": str("the criterion a waive, met or not_met names"),
+			"reason":    str("a waive's or a not_met's reason, or a met's words")},
 		required: []string{"task_id", "action"},
-		about:    "Decide a plan's criteria ask on the human's word: waive, grant, or confirm.",
+		about:    "Decide a plan's criteria on the human's word: the plan's ask, or its integration card's merge.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			line, ok, err := t.humanAnswerLine()
 			if err != nil {
@@ -1643,14 +1642,25 @@ var tools = []chatTool{
 			if !ok {
 				return "", nil, refuse(http.StatusConflict, "This turn runs on no line the human typed, so their word decides no criteria: give them choices with ask, or let them answer on the board's card, and answer_criteria runs on their word.")
 			}
-			q, err := t.criteriaRequest(in)
+			var q factoryd.ApprovalRequest
+			switch in.Action {
+			case "waive", "met", "not_met":
+				if q, _, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
+					q, err = t.criteriaRequest(in)
+				}
+			default:
+				q, err = t.criteriaRequest(in)
+			}
 			if err != nil {
 				return "", nil, err
 			}
 			t.a.decider = "member"
 			switch in.Action {
 			case "waive":
-				note, err := t.c.doWaive(t.r.Context(), t.a, q.ID, in.Criterion, in.Reason)
+				note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, "waived", in.Reason)
+				return note, nil, err
+			case "met", "not_met":
+				note, err := t.c.doDecide(t.r.Context(), t.a, q.ID, in.Criterion, in.Action, in.Reason)
 				return note, nil, err
 			case "grant":
 				note, err := t.c.doApprove(t.r.Context(), t.a, q.ID)
@@ -1659,7 +1669,7 @@ var tools = []chatTool{
 				note, err := t.c.doConfirmCriteria(t.r.Context(), t.a, q.ID, line)
 				return note, nil, err
 			}
-			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant or confirm.")
+			return "", nil, refuse(http.StatusBadRequest, "The action must be waive, grant, confirm, met or not_met.")
 		}},
 	{name: "set_summary", title: "Set a card's summary", write: true,
 		params:   map[string]any{"task_id": taskParam, "summary": str("one line, empty restores the generated title")},

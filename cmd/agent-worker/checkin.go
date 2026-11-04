@@ -16,12 +16,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -53,22 +55,39 @@ type checkinServe struct {
 	wait     time.Duration          // how long oc.Run's start holds for /brief
 	timeout  time.Duration          // a run tool's cap
 	handover chan harness.BriefPush // exactly one send: the pushed brief, or the zero push at the deadline
+	log      func(string, ...any)
+	// closed: the wait ended, with a brief or without one, so a later push
+	// lands nothing in a clone whose conversation runs
+	mu     sync.Mutex
+	closed bool
 }
 
-func newCheckinServe(ws string) *checkinServe {
-	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinRunTimeout, handover: make(chan harness.BriefPush, 1)}
+func newCheckinServe(ws string, log func(string, ...any)) *checkinServe {
+	return &checkinServe{ws: ws, wait: checkinWait, timeout: checkinRunTimeout, handover: make(chan harness.BriefPush, 1), log: log}
 }
 
 // waitBrief holds the conversation's start for the check-in's handover:
 // the push when it arrived within the wait, the zero push when none did.
+// Either way the wait is closed after it.
 func (c *checkinServe) waitBrief(log func(string, ...any)) harness.BriefPush {
 	select {
 	case push := <-c.handover:
+		c.mu.Lock()
+		c.closed = true
+		c.mu.Unlock()
 		return push
 	case <-time.After(c.wait):
-		log("no check-in handover within %s; the conversation starts without one", c.wait)
-		return harness.BriefPush{}
 	}
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	c.closed = true
+	select {
+	case push := <-c.handover: // it landed as the wait ended
+		return push
+	default:
+	}
+	log("no check-in handover within %s; the conversation starts without one", c.wait)
+	return harness.BriefPush{}
 }
 
 // serve mounts the check-in's three endpoints under the /message bearer:
@@ -112,16 +131,32 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 		}
 		var in harness.BriefPush
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, harness.MaxBriefPush)).Decode(&in); err != nil {
-			http.Error(w, `want {"handover": "...", "prior": {...}, "files": [...]}`, http.StatusBadRequest)
+			http.Error(w, `want {"handover": "...", "prior": {...}, "files": [...], "proofs": [...]}`, http.StatusBadRequest)
+			return
+		}
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		if c.closed {
+			http.Error(w, "the conversation started: its wait for a brief ended, and a later push lands nothing", http.StatusConflict)
+			return
+		}
+		due, held, err := c.sortProofs(in.Proofs)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
 		if err := c.landPrior(&in); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		if err := landProofs(c.repo(), due); err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		in.InClone = held
 		select {
 		case c.handover <- in:
-		default: // a retry, or a push past the wait: the first brief stands
+		default: // a retry before the wait took the first: the first brief stands
 		}
 		w.WriteHeader(http.StatusNoContent)
 	})
@@ -184,6 +219,46 @@ func (c *checkinServe) landPrior(in *harness.BriefPush) error {
 		}
 	}
 	in.Prior.Dir, in.Prior.Reports = dir, names
+	return nil
+}
+
+// sortProofs takes the push's proofs in order: due are the ones to write,
+// whose path holds no file, and held the paths of every proof the clone
+// will hold, the due ones and those whose path holds a file already. A
+// path that leaves the tree refuses the push whole. A path whose Lstat
+// fails otherwise, such as under a file, is left out with a log line.
+func (c *checkinServe) sortProofs(proofs []harness.ProofFile) (due []harness.ProofFile, held []string, err error) {
+	if len(proofs) == 0 {
+		return nil, nil, nil
+	}
+	tree, err := os.OpenRoot(c.repo())
+	if err != nil {
+		return nil, nil, err
+	}
+	defer tree.Close() // read only
+	for _, p := range proofs {
+		if !filepath.IsLocal(p.Path) {
+			return nil, nil, fmt.Errorf("proof %q: %w", p.Path, errOutside)
+		}
+		switch _, err := tree.Lstat(p.Path); {
+		case errors.Is(err, fs.ErrNotExist):
+			due = append(due, p)
+		case err != nil:
+			c.log("opened proof %s is not in the clone: %v", p.Path, err)
+			continue
+		}
+		held = append(held, p.Path)
+	}
+	return due, held, nil
+}
+
+// landProofs writes each proof into repo at its path.
+func landProofs(repo string, proofs []harness.ProofFile) error {
+	for _, p := range proofs {
+		if err := writeRegular(repo, p.Path, p.Content); err != nil {
+			return fmt.Errorf("write proof %q: %w", p.Path, err)
+		}
+	}
 	return nil
 }
 

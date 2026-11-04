@@ -211,14 +211,11 @@ type Config struct {
 	// plan's newest revision (factoryd.DecideHoldout).
 	DecideHoldout func(ctx context.Context, taskID string, round, idx int, verb, by string) error
 	// GrantCriteria records an approver's grant of one more bounded card
-	// for a plan's open criteria (factoryd.GrantCriteria); DecideCriterion
-	// records their waiver of one criterion with their one-line reason
-	// (factoryd.DecideCriterion); RecordHumanCriteria records the
-	// approver's met on every human criterion of the plan whose
-	// integration card's merge they approved (factoryd.RecordHumanCriteria).
-	GrantCriteria       func(ctx context.Context, id, by string, approval int64) (int, error)
-	DecideCriterion     func(ctx context.Context, id, cid, verdict, by, reason string) error
-	RecordHumanCriteria func(ctx context.Context, taskID, approver string) (int, error)
+	// for a plan's open criteria (factoryd.GrantCriteria). DecideCriterion
+	// records their met on one human criterion, or their waiver of any
+	// one, with their words (factoryd.DecideCriterion).
+	GrantCriteria   func(ctx context.Context, id, by string, approval int64) (int, error)
+	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.
@@ -553,7 +550,7 @@ func (c *Console) postRoutes() []postRoute {
 		{"POST /projects/{name}/deploy-now", http.HandlerFunc(c.deployNow), nil},
 		{"POST /approvals/{id}/approve", http.HandlerFunc(c.approve), nil},
 		{"POST /approvals/{id}/deny", http.HandlerFunc(c.deny), nil},
-		{"POST /approvals/{id}/waive", http.HandlerFunc(c.waive), nil},
+		{"POST /approvals/{id}/criterion", http.HandlerFunc(c.decideCriterion), nil},
 		{"POST /approvals/{id}/confirm", http.HandlerFunc(c.confirm), nil},
 		{"POST /approvals/{id}/rerun", http.HandlerFunc(c.rerun), nil},
 		{"POST /resources/{id}/promote", c.resourceButton(c.doPromoteResource), nil},

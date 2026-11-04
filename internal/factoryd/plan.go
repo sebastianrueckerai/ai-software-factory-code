@@ -1301,12 +1301,13 @@ func cardLineBound(size string, largeLines int) (lines int, sized bool) {
 }
 
 // EffectiveLineBound is the card's line bound: what its size plans under
-// the policy plus the raises its extend answers added. The worker's push
-// rule, the gate's check and the supervisor's trip all read this one
-// number, so a raise lifts them at once.
-func EffectiveLineBound(size string, largeLines, extraLines int) int {
+// the policy plus every line its usage added (TaskUsage.LinesAdded), the
+// raises its extend answers made and its opened proofs' lines. The
+// worker's push rule, the gate's check and the supervisor's trip all read
+// this one number, so a raise lifts them at once.
+func EffectiveLineBound(size string, largeLines int, u TaskUsage) int {
 	lines, _ := cardLineBound(size, largeLines)
-	return lines + extraLines
+	return lines + u.LinesAdded()
 }
 
 // PlanAnswerComment is the console's comment, as the member, on the plan's
@@ -3810,25 +3811,24 @@ func (r *Runner) filedPlan(ctx context.Context, parent, child string) (Plan, err
 	return p, nil
 }
 
-// planOf is plan card t's section "The spec and the plan" (its plan's
-// issue text and the plan's summary), its role and its plan row's
-// directories; "" and none for a task no plan filed.
-func (r *Runner) planOf(ctx context.Context, t Task) (spec, role string, dirs []string, err error) {
+// planOf is plan card t's plan, its section "The spec and the plan" (its
+// plan's issue text and the plan's summary), its role and its plan row's
+// directories; the zero plan, "" and none for a task no plan filed.
+func (r *Runner) planOf(ctx context.Context, t Task) (p Plan, spec, role string, dirs []string, err error) {
 	if t.Source != SourcePlan || t.Parent == "" {
-		return "", "", nil, nil
+		return Plan{}, "", "", nil, nil
 	}
 	plan, _, err := r.task(ctx, t.Parent)
 	if err != nil {
-		return "", "", nil, err
+		return Plan{}, "", "", nil, err
 	}
-	p, err := r.filedPlan(ctx, t.Parent, t.ID)
-	if err != nil {
-		return "", "", nil, err
+	if p, err = r.filedPlan(ctx, t.Parent, t.ID); err != nil {
+		return Plan{}, "", "", nil, err
 	}
 	role = RoleFeature
 	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 {
 		role, dirs = p.Cards[i].Role, p.Cards[i].Directories
 	}
 	spec = plan.Objective + "\n\nThe plan's summary: " + strings.TrimSpace(p.Summary)
-	return spec, role, dirs, nil
+	return p, spec, role, dirs, nil
 }

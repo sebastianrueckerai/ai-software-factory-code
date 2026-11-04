@@ -43,15 +43,24 @@ type callResult struct {
 // such a refusal; the first refusal there gives the rest the same refusal
 // without a call. It bounds the running activity by its waves of calls
 // (boundByParts), and again before the retries with one wave for each of
-// them. Returns ctx.Err() when ctx ended.
-func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, timeout time.Duration, calls []reviewCall) ([]callResult, error) {
+// them. end, when set, cuts each call by callTimeout, and a call with no
+// time left is not made: its result is context.DeadlineExceeded. Returns
+// ctx.Err() when ctx ended.
+func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, timeout time.Duration, end time.Time, calls []reviewCall) ([]callResult, error) {
 	waves := (len(calls) + reviewParallel - 1) / reviewParallel
 	boundByParts(ctx, waves)
 	results := make([]callResult, len(calls))
 	ran := make([]bool, len(calls))
 	call := func(i int) {
 		ran[i] = true
-		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, timeout, calls[i].Prompt, calls[i].Input())
+		limit := timeout
+		if !end.IsZero() {
+			if limit = callTimeout(time.Now(), end, timeout); limit <= 0 {
+				results[i] = callResult{Err: context.DeadlineExceeded}
+				return
+			}
+		}
+		content, deployment, err := r.supervisor.Chat(ctx, taskID, model, purpose, limit, calls[i].Prompt, calls[i].Input())
 		results[i] = callResult{content, deployment, err}
 	}
 	next := make(chan int, len(calls))
@@ -105,6 +114,12 @@ func (r *Runner) callAll(ctx context.Context, taskID, model, purpose string, tim
 		return nil, ctx.Err()
 	}
 	return results, nil
+}
+
+// callTimeout is the timeout of a call made at now that must end a minute
+// before deadline: timeout, or less.
+func callTimeout(now, deadline time.Time, timeout time.Duration) time.Duration {
+	return min(timeout, deadline.Sub(now)-time.Minute)
 }
 
 // unfunded says why the card's free headroom cannot pay for calls, before

@@ -28,6 +28,29 @@ func TestRecordEventLeavesOneFactorydRow(t *testing.T) {
 	}
 }
 
+// hasEvent finds an event whose line holds every value of match; a nil
+// match takes any line of the event.
+func TestHasEventMatchesTheDetail(t *testing.T) {
+	ctx := context.Background()
+	tl := &Timeline{Objects: &fakeObjectStore{}}
+	tl.recordEvent(ctx, "t1", EventProofOpened, map[string]any{"criterion": "size_bound", "head": "c1", "outcome": proofFailed})
+	for _, tc := range []struct {
+		event string
+		match map[string]string
+		want  bool
+	}{
+		{EventProofOpened, map[string]string{"criterion": "size_bound", "head": "c1"}, true},
+		{EventProofOpened, map[string]string{"criterion": "size_bound", "head": "c2"}, false},
+		{EventProofOpened, map[string]string{"criterion": "door", "head": "c1"}, false},
+		{EventProofOpened, nil, true},
+		{EventPlanClosed, nil, false},
+	} {
+		if got := tl.hasEvent(ctx, "t1", tc.event, tc.match); got != tc.want {
+			t.Errorf("hasEvent(t1, %s, %v) = %v, want %v", tc.event, tc.match, got, tc.want)
+		}
+	}
+}
+
 // Each of the four events is one timeline line of step event on the task
 // it concerns, recorded where it happens.
 func TestEventsRecorded(t *testing.T) {

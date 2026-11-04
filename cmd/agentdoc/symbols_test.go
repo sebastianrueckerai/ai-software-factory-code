@@ -36,6 +36,11 @@ const askConst = "ask"
 
 // buildOpencodeConfig builds.
 func buildOpencodeConfig() {}
+
+// S holds a field.
+type S struct {
+	Field string
+}
 `), 0o640); err != nil {
 		t.Fatal(err)
 	}
@@ -66,6 +71,7 @@ func TestLoadSymbolsResolvesMethodsAndQualifiedNames(t *testing.T) {
 		{"internal/fixture", "fixture.Bar", "internal/fixture/a.go:15"},
 		{"internal/fixture", "other.Guide", "internal/other/b.go:4"},
 		{"internal/fixture", "fixture.Bar+scrubbed", "internal/fixture/a.go:15"},
+		{"internal/fixture", "fixture.S.Field", "internal/fixture/a.go:24"},
 		{"internal/fixture", "Nope", ""},
 	} {
 		rel, line, ok := syms.locate(tc.dir, tc.symbol)

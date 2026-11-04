@@ -558,6 +558,10 @@ type sessionSpec struct {
 	// place of a parent's working state: the old cards' records, the work
 	// so far; nil for none
 	record *carryState
+	// proofs are the plan's opened proofs the brief push carries into the
+	// clone, each file the row's code: an integration or delta card's
+	// alone
+	proofs []harness.ProofFile
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -643,7 +647,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	} else {
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
-			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, ExtraLines: t.Usage.ExtraLines}.Line()
+			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
@@ -707,7 +711,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return out, nil
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord))
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord), s.proofs)
 		}
 	}
 
@@ -717,7 +721,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
 	if sizeBounded(t, s) {
-		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines)
+		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 	}
 	if s.attempt == 1 && r.canClimb(s) {
 		supCfg.CheapCap = r.cheapCap
@@ -1097,7 +1101,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
 	brief := func(note string) {
-		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord))
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord), s.proofs)
 	}
 	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -1111,7 +1115,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		if ask.Gates != nil {
 			lines = ask.Gates.Policy.Lines
 		}
-		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines)
+		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
 		var parent []byte
 		if s.parent != "" {
@@ -1252,10 +1256,11 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 }
 
 // pushBrief delivers the session's brief: its handover note, "" for none,
-// and the parent's working state when carry holds one. The worker holds
-// its conversation's start for it.
-func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState) {
-	push := harness.BriefPush{Handover: handover}
+// the parent's working state when carry holds one, and the opened proofs
+// the worker writes into the clone. The worker holds its conversation's
+// start for it.
+func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState, proofs []harness.ProofFile) {
+	push := harness.BriefPush{Handover: handover, Proofs: proofs}
 	if carry != nil {
 		push.Prior, push.Files = &carry.Prior, carry.Files
 	}
@@ -2196,7 +2201,7 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 	}
 	// the worker's push rule reads the card's line bound: the same
 	// effective number the gate and the supervisor check
-	env = append(env, map[string]any{"name": "LINE_BOUND", "value": strconv.Itoa(EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage.ExtraLines))})
+	env = append(env, map[string]any{"name": "LINE_BOUND", "value": strconv.Itoa(EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage))})
 	if r.cfg.OTLPEndpoint != "" {
 		env = append(env, map[string]any{"name": "OTEL_EXPORTER_OTLP_ENDPOINT", "value": r.cfg.OTLPEndpoint})
 	}

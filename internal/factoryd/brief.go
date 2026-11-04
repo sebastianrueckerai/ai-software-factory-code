@@ -49,6 +49,8 @@ type BriefStore interface {
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 	// CriteriaVerdicts are task's verdict rows, in criterion order.
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
+	// PlanCards are plan's cards.
+	PlanCards(ctx context.Context, plan string) ([]Task, error)
 	// BrieflessApprovals are the pending approval requests without a
 	// brief, oldest first, at most limit: a row a failure once marked
 	// retries, unless the card's own budget refused it or the failure was
@@ -147,10 +149,14 @@ func (b *BriefWriter) write(ctx context.Context, a ApprovalRequest) error {
 // card's life, as the user message, a JSON answer of a brief and a detail.
 func (b *BriefWriter) ask(ctx context.Context, a ApprovalRequest, t Task, alias string) (brief, detail string, err error) {
 	var criteria []criterionFact
-	if a.Kind == ApprovalCriteria || a.Kind == ApprovalCriteriaRerun {
-		if criteria, err = b.criteriaFacts(ctx, a); err != nil {
-			return "", "", err
-		}
+	switch a.Kind {
+	case ApprovalCriteria, ApprovalCriteriaRerun:
+		criteria, err = b.criteriaFacts(ctx, a)
+	case ApprovalMerge:
+		criteria, err = b.mergeFacts(ctx, t)
+	}
+	if err != nil {
+		return "", "", err
 	}
 	life, err := b.CardDigest(ctx, t.ID)
 	if err != nil {
@@ -175,18 +181,51 @@ func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]c
 	if err := json.Unmarshal(a.Spec, &s); err != nil {
 		return nil, terminalError("the criteria request's spec does not parse: %v", err)
 	}
-	rev, ok, err := b.Store.PlanRevision(ctx, a.TaskID, 0)
+	p, err := b.newestPlan(ctx, a.TaskID)
 	if err != nil {
 		return nil, err
 	}
+	return b.criterionFacts(ctx, p, s.Task)
+}
+
+// mergeFacts are the criteria of plan card t's plan with their standing
+// verdicts on its integration card, when t is that card or a delta card;
+// none for any other card.
+func (b *BriefWriter) mergeFacts(ctx context.Context, t Task) ([]criterionFact, error) {
+	if t.Source != SourcePlan || t.Parent == "" {
+		return nil, nil
+	}
+	p, err := b.newestPlan(ctx, t.Parent)
+	if err != nil || len(p.Criteria) == 0 || !CriteriaCard(p, t.PlanKey) {
+		return nil, err
+	}
+	home, err := IntegrationCard(ctx, b.Store, t.Parent, p)
+	if err != nil {
+		return nil, err
+	}
+	return b.criterionFacts(ctx, p, home.ID)
+}
+
+// newestPlan is plan task id's newest revision's plan.
+func (b *BriefWriter) newestPlan(ctx context.Context, id string) (Plan, error) {
+	rev, ok, err := b.Store.PlanRevision(ctx, id, 0)
+	if err != nil {
+		return Plan{}, err
+	}
 	if !ok {
-		return nil, terminalError("plan %s has no revision", a.TaskID)
+		return Plan{}, terminalError("plan %s has no revision", id)
 	}
 	var p Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return nil, terminalError("plan %s revision %d: %v", a.TaskID, rev.Revision, err)
+		return Plan{}, terminalError("plan %s revision %d: %v", id, rev.Revision, err)
 	}
-	rows, err := b.Store.CriteriaVerdicts(ctx, s.Task)
+	return p, nil
+}
+
+// criterionFacts are p's criteria with their standing verdicts among the
+// verdict rows of task home.
+func (b *BriefWriter) criterionFacts(ctx context.Context, p Plan, home string) ([]criterionFact, error) {
+	rows, err := b.Store.CriteriaVerdicts(ctx, home)
 	if err != nil {
 		return nil, err
 	}
@@ -194,15 +233,15 @@ func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]c
 	for i, c := range p.Criteria {
 		out[i] = criterionFact{ID: c.ID, Kind: c.Kind, Text: criterionText(c), Verdict: "open"}
 		if v, ok := StandingRow(rows, c); ok {
-			out[i].Verdict, out[i].Evidence = v.Verdict, v.Evidence
+			out[i].Verdict, out[i].Evidence = cmp.Or(v.Verdict, "open"), v.Evidence
 		}
 	}
 	return out, nil
 }
 
-// criterionFact is one criterion of a criteria request as its brief reads
-// it: the criterion's words and its standing verdict, "open" when no row
-// holds one.
+// criterionFact is one criterion of a criteria or merge request as its
+// brief reads it: the criterion's words and its standing verdict, "open"
+// when no row holds one.
 type criterionFact struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
@@ -256,8 +295,14 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact, life string
 			acts = "Run the checks again (Re-run the checks), or close the pull request and its card with your words (Close)."
 		case s.RedChecks:
 			acts = "The pull request cannot merge while its checks are red: send it back to the agent with what to change (Return), or close it (Close)."
+		case len(criteria) > 0:
+			acts = "Settle each human criterion row first: Met or Not met on a human criterion, Waive on any row. " +
+				"Approve opens once every human criterion has a verdict, then merges the pull request into main; Deny refuses it with the human's reason."
 		default:
 			acts = "Approve merges the pull request into main; Deny refuses it with the human's reason, posted on the pull request as them."
+		}
+		if len(criteria) > 0 {
+			m["criteria"] = criteria
 		}
 		m["buttons"] = acts
 	case ApprovalResource:

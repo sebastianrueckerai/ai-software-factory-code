@@ -542,6 +542,10 @@ func (s *acceptanceStore) NewestCallAt(context.Context, string) (time.Time, erro
 	return time.Time{}, nil
 }
 
+func (s *acceptanceStore) TaskSpendSince(context.Context, string, time.Time) (float64, error) {
+	return 0, nil
+}
+
 // BoardTasks, OpenPlans and Enforced: the acceptance store reads no board.
 func (s *acceptanceStore) BoardTasks(context.Context, string) ([]factoryd.BoardTask, error) {
 	return nil, nil
@@ -637,7 +641,7 @@ func (s *acceptanceStore) SetTaskUsage(_ context.Context, id string, u factoryd.
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	t := s.tasks[id]
-	u.RaisedSessions, u.RaisedTime, u.ExtraLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines
+	u.RaisedSessions, u.RaisedTime, u.ExtraLines, u.ProofLines = t.Usage.RaisedSessions, t.Usage.RaisedTime, t.Usage.ExtraLines, t.Usage.ProofLines
 	u.ExtraCheckinShare = max(u.ExtraCheckinShare, t.Usage.ExtraCheckinShare)
 	t.Usage = u
 	s.tasks[id] = t
@@ -649,6 +653,15 @@ func (s *acceptanceStore) ResetTaskUsage(_ context.Context, id string) error {
 	defer s.mu.Unlock()
 	t := s.tasks[id]
 	t.Usage = factoryd.TaskUsage{}
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *acceptanceStore) SetTaskProofLines(_ context.Context, id string, lines int) error {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	t := s.tasks[id]
+	t.Usage.ProofLines = lines
 	s.tasks[id] = t
 	return nil
 }
@@ -1001,6 +1014,10 @@ func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, s
 	return nil
 }
 
+func (s *acceptanceStore) DeleteVerdictsButApprover(context.Context, string, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }
@@ -1229,6 +1246,10 @@ func (s *acceptanceStore) FilePlanProofs(context.Context, string, []factoryd.Pla
 }
 
 func (s *acceptanceStore) StorePlanProofs(context.Context, string, map[int]string) error { return nil }
+
+func (s *acceptanceStore) OpenPlanProof(context.Context, string, int) (bool, error) {
+	return false, nil
+}
 
 func (s *acceptanceStore) PlansWithoutProver(context.Context) ([]string, error) { return nil, nil }
 
