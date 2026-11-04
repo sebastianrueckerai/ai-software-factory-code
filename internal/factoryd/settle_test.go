@@ -68,7 +68,11 @@ func TestSettleOf(t *testing.T) {
 		{"a withdrawn question leaves an approval open", approval, []Event{ev(12, 1, EventQuestionWithdrawn, FactoryDecider)}, false, true, open},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			got := SettleOf(tt.m, tt.events, tt.cardWaits, tt.apprWaits)
+			status := "running"
+			if tt.cardWaits {
+				status = "waiting-human"
+			}
+			got := SettleOf(tt.m, tt.events, status, tt.apprWaits)
 			if !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("settleOf =\n%+v\nwant\n%+v", got, tt.want)
 			}
@@ -91,10 +95,10 @@ func TestSettleOf(t *testing.T) {
 // An ask row settles on what ends its case, as the events writer routes
 // it: its birth, the question_asked row the Poker wrote it from, names the
 // case. The card's own ask settles on a row naming its case or none, and
-// one that names no case on any row but a monitor case's. A monitor's ask
-// settles on a row naming its case alone and stays open while the case
-// lives, whatever the card's status. Two asks written in one pass each
-// find their own birth by their words.
+// one that names no case on any row but a monitor case's. A newer ask of
+// the card's own moves it on. A monitor's ask settles on a row naming its
+// case alone and stays open while the case lives, until its card ends.
+// Two asks written in one pass each find their own birth by their words.
 func TestSettleOfByCase(t *testing.T) {
 	at := time.Date(2026, 11, 4, 10, 0, 0, 0, time.UTC)
 	ev := func(id int64, sec int, kind, actor string, detail map[string]any) Event {
@@ -116,31 +120,37 @@ func TestSettleOfByCase(t *testing.T) {
 	monAnswer := ev(33, 240, EventQuestionAnswered, "sebastian", map[string]any{"case_id": float64(12), "action": ActNote})
 	another := ev(34, 300, EventQuestionAnswered, "sebastian", map[string]any{"case_id": float64(6), "action": ActContinue})
 	closed := ev(35, 360, EventCardClosed, "sebastian", nil)
+	const waiting, running = "waiting-human", "running"
+	newer := ev(36, 150, EventQuestionAsked, FactoryDecider, map[string]any{"question": "Which port?"})
 	open := PokeSettle{Open: true}
 	by := func(e Event, word string) PokeSettle { return PokeSettle{Word: word, By: e.Actor, At: e.At, Event: e} }
 	for _, tt := range []struct {
-		name      string
-		m         ChatMessage
-		events    []Event
-		cardWaits bool
-		want      PokeSettle
+		name   string
+		m      ChatMessage
+		events []Event
+		status string
+		want   PokeSettle
 	}{
-		{"the monitor's withdrawal settles its ask", mon, []Event{withdrawn, monAsk, ownAsk}, true, by(withdrawn, "withdrawn")},
-		{"and leaves the card's own open", own, []Event{withdrawn, monAsk, ownAsk}, true, open},
-		{"an answer naming the card's own case settles its ask", own, []Event{answered, monAsk, ownAsk}, true, by(answered, "answered")},
-		{"and leaves the monitor's open on a card that runs", mon, []Event{answered, monAsk, ownAsk}, false, open},
-		{"an answer naming the monitor's case settles its ask", mon, []Event{monAnswer, answered, monAsk, ownAsk}, false, by(monAnswer, "answered")},
-		{"an answer between the ask and its row settles it", mon, []Event{early, monAsk, ownAsk}, false, by(early, "answered")},
-		{"an answer naming no case leaves the monitor's ask open", mon, []Event{webhook, closed, monAsk, ownAsk}, false, open},
-		{"an own ask naming its case settles on an answer naming none", own, []Event{webhook, withdrawn, monAsk, ownAsk5}, true, by(webhook, "answered")},
-		{"and not on one naming another case", own, []Event{another, monAnswer, monAsk, ownAsk5}, true, open},
+		{"the monitor's withdrawal settles its ask", mon, []Event{withdrawn, monAsk, ownAsk}, waiting, by(withdrawn, "withdrawn")},
+		{"and leaves the card's own open", own, []Event{withdrawn, monAsk, ownAsk}, waiting, open},
+		{"an answer naming the card's own case settles its ask", own, []Event{answered, monAsk, ownAsk}, waiting, by(answered, "answered")},
+		{"and leaves the monitor's open on a card that runs", mon, []Event{answered, monAsk, ownAsk}, running, open},
+		{"an answer naming the monitor's case settles its ask", mon, []Event{monAnswer, answered, monAsk, ownAsk}, running, by(monAnswer, "answered")},
+		{"an answer between the ask and its row settles it", mon, []Event{early, monAsk, ownAsk}, running, by(early, "answered")},
+		{"an answer naming no case leaves the monitor's ask open", mon, []Event{webhook, closed, monAsk, ownAsk}, running, open},
+		{"an own ask naming its case settles on an answer naming none", own, []Event{webhook, withdrawn, monAsk, ownAsk5}, waiting, by(webhook, "answered")},
+		{"and not on one naming another case", own, []Event{another, monAnswer, monAsk, ownAsk5}, waiting, open},
 		{"a row with no words finds its birth by its time", ChatMessage{At: monAsk.At, Kind: MessageEscalation, BirthKind: EventQuestionAsked},
-			[]Event{withdrawn, monAsk, ownAsk}, false, by(withdrawn, "withdrawn")},
-		{"a card with one ask and no case ids settles as before", own, []Event{webhook, ownAsk}, true, by(webhook, "answered")},
-		{"and moves on with its card", own, []Event{ownAsk}, false, PokeSettle{Word: "moved on", At: own.At}},
+			[]Event{withdrawn, monAsk, ownAsk}, running, by(withdrawn, "withdrawn")},
+		{"a card with one ask and no case ids settles as before", own, []Event{webhook, ownAsk}, waiting, by(webhook, "answered")},
+		{"and moves on with its card", own, []Event{ownAsk}, running, PokeSettle{Word: "moved on", At: own.At}},
+		{"a newer ask of the card's own moves its row on", own, []Event{newer, monAsk, ownAsk5}, waiting, PokeSettle{Word: "moved on", At: newer.At}},
+		{"an answer before the newer ask settles it first", own, []Event{newer, answered, monAsk, ownAsk}, waiting, by(answered, "answered")},
+		{"a newer ask of the card's own leaves the monitor's open", mon, []Event{newer, monAsk, ownAsk}, waiting, open},
+		{"a monitor's ask moves on when its card ended", mon, []Event{monAsk, ownAsk}, "done", PokeSettle{Word: "moved on", At: mon.At}},
 	} {
 		t.Run(tt.name, func(t *testing.T) {
-			if got := SettleOf(tt.m, tt.events, tt.cardWaits, false); !reflect.DeepEqual(got, tt.want) {
+			if got := SettleOf(tt.m, tt.events, tt.status, false); !reflect.DeepEqual(got, tt.want) {
 				t.Fatalf("SettleOf =\n%+v\nwant\n%+v", got, tt.want)
 			}
 		})

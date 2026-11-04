@@ -844,15 +844,17 @@ func TestATypedAnswerWithNoWordsPostsItsSentence(t *testing.T) {
 // is not steered, a close with no words among them. A number that names no
 // live case of the card is refused before Act, saying why and naming the
 // card's live cases with their kinds: a case unknown or another project's,
-// a case of the card that ended, a case of another card. Without case_id,
-// waiting card t-e's answer finds its own ask, case 5, the newer monitor
-// case 12 beside it aside. Case 5 named meets the answer's gates and posts
-// the human's comment, and a merge's or a plan question's case named is
-// refused with its own door.
+// a case of the card that ended, a case of another card, and on a card
+// with none, that it has none. Without case_id, waiting card t-e's answer
+// finds its own ask, case 5, the newer monitor case 12 beside it aside.
+// Case 5 named meets the answer's gates and posts the human's comment,
+// and a merge's or a plan question's case named is refused with its own
+// door.
 func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	r := newRig(t)
 	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-run", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 11}},
-		{Task: factoryd.Task{ID: "t-other", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14}}}
+		{Task: factoryd.Task{ID: "t-other", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 14}},
+		{Task: factoryd.Task{ID: "t-idle", Kind: "agent", Status: "running", Repository: "sf/code", IssueNumber: 15}}}
 	r.openCases = map[string][]factoryd.Case{"t-run": {{ID: 7, TaskID: "t-run", Repository: "sf/code", Kind: factoryd.CaseMonitorFlag, Status: factoryd.CaseAtHuman}},
 		"t-other": {{ID: 5, TaskID: "t-other", Repository: "sf/code", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}},
 		"t-far":   {{ID: 3, TaskID: "t-far", Repository: "sf/else", Kind: factoryd.CaseAgentEscalate, Status: factoryd.CaseAtHuman}}}
@@ -883,6 +885,7 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	refused("t-run", 3, "Card #11 has no case 3."+live)
 	refused("t-run", 6, "Case 6 ended."+live)
 	refused("t-run", 5, "Case 5 is #14's."+live)
+	refused("t-idle", 7, "Case 7 is #11's. Card #15 has no live case.")
 	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActClose}); err != nil {
 		t.Fatal(err)
 	}

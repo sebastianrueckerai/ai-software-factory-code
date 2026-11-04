@@ -472,7 +472,8 @@ func TestPGStorePokeLevelChangeTellsTheOthers(t *testing.T) {
 // The card's own ask and a monitor's reach the inbox in one pass, both
 // rows written after both asks: the monitor's withdrawal names its case,
 // so it settles that row alone, read through either inbox read and the
-// messenger's copy, and its own row names the case.
+// messenger's copy, and its own row names the case. A monitor's ask on a
+// card that ends moves on.
 func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	s, err := OpenStore(t.Context(), schematest.DSN(t, "factoryd_poke_cases"))
 	if err != nil {
@@ -535,7 +536,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	for read, got := range map[string][]ChatMessage{"ChatMessages": rows[:2], "ChatAsks": asks[:2]} {
 		var words []string
 		for _, m := range got {
-			words = append(words, SettleOf(m, events, true, false).Word)
+			words = append(words, SettleOf(m, events, "waiting-human", false).Word)
 		}
 		if !slices.Equal(words, []string{"", "withdrawn"}) {
 			t.Fatalf("%s: the asks settle as %q, want the card's own open and the monitor's withdrawn", read, words)
@@ -552,5 +553,35 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	}
 	if !slices.Equal(copies, []string{"", "withdrawn"}) {
 		t.Fatalf("the messenger's copies settle as %q, want the card's own open and the monitor's withdrawn", copies)
+	}
+
+	// a monitor's ask on a card that ends moves on, though no row names its case
+	ended, _, err := s.OpenCase(ctx, Case{TaskID: "t-1", Repository: "sf/code", Kind: CaseMonitorFlag, StateKey: "issue_open_after_end|x",
+		Problem: "Monitor flag: issue_open_after_end"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	record(EventQuestionAsked, map[string]any{"question": fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", ended.ID),
+		"case_id": ended.ID, "case_kind": string(CaseMonitorFlag)})
+	if err := p.Pass(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if rows, err = s.ChatMessages(ctx, "sf/code", "sebastian", inbox, 10); err != nil || len(rows) != 4 {
+		t.Fatalf("the inbox = %+v, %v; want the new ask as its fourth row", rows, err)
+	}
+	var words []string
+	for _, status := range []string{"running", "done"} {
+		if _, err := s.db.Exec(`UPDATE tasks SET status = $1, finished_at = CASE WHEN $1 = 'done' THEN now() END WHERE id = 't-1'`, status); err != nil {
+			t.Fatal(err)
+		}
+		m := rows[3]
+		st, err := (&Sender{Store: s}).settleState(ctx, Delivery{Kind: m.Kind, BirthKind: m.BirthKind, TaskID: m.TaskID, At: m.At, Content: m.Content})
+		if err != nil {
+			t.Fatal(err)
+		}
+		words = append(words, st.Word)
+	}
+	if !slices.Equal(words, []string{"", "moved on"}) {
+		t.Fatalf("the messenger's copy of the ended card's monitor ask settles as %q, want open while it runs and moved on once done", words)
 	}
 }

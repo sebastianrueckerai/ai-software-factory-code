@@ -71,19 +71,23 @@ var settleWords = map[string]string{
 	EventTaskEnded: "moved on", EventApprovalRequested: "superseded",
 }
 
-// SettleOf derives ask row m's state from its card's events and the wait
-// fact of its family: a question's card in Needs you, an approval's
-// pending request, a poke's card in Needs you. The first settling event
-// at or after the row's birth, the ask that wrote it, settles it with the
-// event's word, actor and time, when it ends the birth's case (caseEnds);
-// none, and the fact gone, settles it as moved on; the fact still there,
-// the row is open. A monitor's ask waits on its case alone, which only a
-// row naming it ends. A row's repeats move its time, so a bumped row asks
-// again after an answer that preceded it.
-func SettleOf(m ChatMessage, events []Event, cardWaits, approvalWaits bool) PokeSettle {
+// SettleOf derives ask row m's state from its card's events and its
+// card's status, with the wait fact of its family: a question's card in
+// Needs you, an approval's pending request, a poke's card in Needs you.
+// The first settling event at or after the row's birth, the ask that
+// wrote it, settles it with the event's word, actor and time, when it
+// ends the birth's case (caseEnds); a newer ask of the card's own before
+// any moves the row on, as askAnswer reads it; none, and the fact gone,
+// settles it as moved on; the fact still there, the row is open. A
+// monitor's ask waits on its case alone, which only a row naming it ends,
+// until its card ends. A row's repeats move its time, so a bumped row
+// asks again after an answer that preceded it.
+func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) PokeSettle {
 	family := AskFamily(m)
+	cardWaits := status == "waiting-human"
 	birth := birthOf(m, events)
 	ends := caseEnds(birth, events)
+	monitor := birth.Detail["case_kind"] == string(CaseMonitorFlag)
 	from := m.At
 	if birth.ID != 0 {
 		from = birth.At
@@ -96,17 +100,21 @@ func SettleOf(m ChatMessage, events []Event, cardWaits, approvalWaits bool) Poke
 		if last.ID == 0 || e.ID > last.ID {
 			last = e
 		}
-		if !settles(e.Kind, family) || !ends(e) {
+		next := birth.ID != 0 && !monitor && e.Kind == EventQuestionAsked && e.ID > birth.ID && e.Detail["case_kind"] != string(CaseMonitorFlag)
+		if !next && (!settles(e.Kind, family) || !ends(e)) {
 			continue
 		}
 		if first.ID == 0 || e.At.Before(first.At) || e.At.Equal(first.At) && e.ID < first.ID {
 			first = e
 		}
 	}
+	if first.Kind == EventQuestionAsked {
+		return PokeSettle{Word: "moved on", At: first.At}
+	}
 	if first.ID != 0 {
 		return PokeSettle{Word: settleWords[first.Kind], By: first.Actor, At: first.At, Event: first}
 	}
-	if birth.Detail["case_kind"] == string(CaseMonitorFlag) {
+	if monitor && !Final(status) {
 		return PokeSettle{Open: true}
 	}
 	if cardWaits && (family == "question" || family == "" && m.Kind == MessagePoke) || approvalWaits && family == "approval" {

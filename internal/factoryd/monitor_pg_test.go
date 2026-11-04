@@ -730,7 +730,7 @@ func TestMonitorWithdrawsACaseWhoseFlagNoLongerHolds(t *testing.T) {
 	if err != nil || len(asks) != 1 {
 		t.Fatalf("asks %+v, %v; want the queue's one", asks, err)
 	}
-	if settled := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: asks[0].At}, events, false, false); settled.Word != "withdrawn" {
+	if settled := SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: asks[0].At}, events, "queued", false); settled.Word != "withdrawn" {
 		t.Fatalf("the queue's ask settles as %+v, want withdrawn", settled)
 	}
 }

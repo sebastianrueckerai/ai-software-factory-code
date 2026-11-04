@@ -1198,14 +1198,16 @@ func (s *PGStore) AttachAnalysis(ctx context.Context, taskID, found, recommendat
 		default:
 			continue
 		}
-		rest := append(append([]Event{}, events[:i]...), events[i+1:]...) // an ask never settles itself
 		var st PokeSettle
 		if family == "question" {
+			// the question is its own birth among the events: it settles
+			// nothing
 			st = SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventQuestionAsked, At: e.At},
-				rest, t.Status == "waiting-human", false)
+				events, t.Status, false)
 		} else {
+			rest := append(append([]Event{}, events[:i]...), events[i+1:]...) // a request never supersedes itself
 			st = SettleOf(ChatMessage{Kind: MessageEscalation, BirthKind: EventApprovalRequested, At: e.At},
-				rest, false, ApprovalWaits(pending, taskID))
+				rest, t.Status, ApprovalWaits(pending, taskID))
 		}
 		if newest == nil {
 			newest, newestState = e, st

@@ -464,19 +464,18 @@ func (c *Console) chatAttachment(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
-// askFacts reads the settle rule's wait facts for the cards named: the
-// board's Needs-you fact, the card's status waiting-human, with its
-// events. A card in a final state settled its asks already, so its
-// events are not read. One query per fact, whatever the cards' number.
-func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, map[string][]factoryd.Event) {
-	waits, events := map[string]bool{}, map[string][]factoryd.Event{}
+// askFacts reads the settle rule's facts for the cards named: the card's
+// status, which tells the board's Needs-you fact, with its events. A card
+// in a final state settled its asks already, so its events are not read.
+// One query per fact, whatever the cards' number.
+func askFacts(ctx context.Context, c *Console, ids []string) (map[string]string, map[string][]factoryd.Event) {
+	events := map[string][]factoryd.Event{}
 	statuses, err := c.cfg.Tasks.TaskStatuses(ctx, ids)
 	if err != nil {
 		log.Printf("console: the cards' statuses: %v", err)
 	}
 	var live []string
 	for _, id := range ids {
-		waits[id] = statuses[id] == "waiting-human"
 		if statuses[id] != "" && !factoryd.Final(statuses[id]) {
 			live = append(live, id)
 		}
@@ -486,7 +485,7 @@ func askFacts(ctx context.Context, c *Console, ids []string) (map[string]bool, m
 	} else {
 		events = evs
 	}
-	return waits, events
+	return statuses, events
 }
 
 // attachRows lays the conversation's images under their message rows, for
@@ -524,7 +523,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			ids = append(ids, m.TaskID)
 		}
 	}
-	waits, events := askFacts(ctx, t.c, ids)
+	statuses, events := askFacts(ctx, t.c, ids)
 	// a card's own thread (the card door): an open ask row names it,
 	// whosever binding it carries
 	threads, whose := map[string]int64{}, map[string]string{}
@@ -569,7 +568,7 @@ func (t *turn) settleRows(ctx context.Context, msgs []factoryd.ChatMessage, logi
 			}
 			continue
 		}
-		if s := factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
+		if s := factoryd.SettleOf(m, events[m.TaskID], statuses[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)); !s.Open {
 			msgs[i].Settled, msgs[i].Reason = true, factoryd.ReasonLine(s)
 		} else if n := threads[m.TaskID]; n != 0 {
 			msgs[i].Thread, msgs[i].ThreadOwner = n, whose[m.TaskID]
@@ -605,14 +604,14 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 			ids = append(ids, m.TaskID)
 		}
 	}
-	waits, events := askFacts(ctx, c, ids)
+	statuses, events := askFacts(ctx, c, ids)
 	waiting := make([]map[string]bool, len(list))
 	for _, m := range asks {
 		i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Login == login && th.Number == m.Conversation })
 		if i < 0 {
 			continue
 		}
-		if !factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
+		if !factoryd.SettleOf(m, events[m.TaskID], statuses[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID)).Open {
 			continue
 		}
 		if waiting[i] == nil {

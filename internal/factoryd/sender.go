@@ -240,11 +240,9 @@ func (s *Sender) editPass(ctx context.Context, names map[string]string) {
 // settleState derives one row's ask state from what the settle rule
 // reads.
 func (s *Sender) settleState(ctx context.Context, d Delivery) (PokeSettle, error) {
-	var cardWaits bool
-	if t, ok, err := s.Store.Task(ctx, d.TaskID); err != nil {
+	t, _, err := s.Store.Task(ctx, d.TaskID)
+	if err != nil {
 		return PokeSettle{}, err
-	} else if ok {
-		cardWaits = t.Status == "waiting-human"
 	}
 	events, err := s.Store.TaskEvents(ctx, d.TaskID, startEvents)
 	if err != nil {
@@ -254,7 +252,7 @@ func (s *Sender) settleState(ctx context.Context, d Delivery) (PokeSettle, error
 	if err != nil {
 		return PokeSettle{}, err
 	}
-	return SettleOf(d.message(), events, cardWaits, ApprovalWaits(pending, d.TaskID)), nil
+	return SettleOf(d.message(), events, t.Status, ApprovalWaits(pending, d.TaskID)), nil
 }
 
 // message is the row's inbox half, as the settle rule reads it.

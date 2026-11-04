@@ -3503,7 +3503,7 @@ func (c *Console) seedCardAsk(ctx context.Context, bt factoryd.BoardTask, who st
 		return
 	}
 	if s := factoryd.SettleOf(factoryd.ChatMessage{Kind: factoryd.MessageEscalation,
-		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status == "waiting-human", false); !s.Open {
+		BirthKind: factoryd.EventQuestionAsked, At: ask.At}, events, bt.Status, false); !s.Open {
 		return
 	}
 	question, _ := ask.Detail["ask"].(string) // the wake path writes "ask", older rows "question"

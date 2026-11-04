@@ -164,7 +164,7 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 	}
 	fmt.Fprintf(b, "Ask: %s\nWhy: %s\nInfo: %s\nRecommendation: %s\nChoices: %s\n", cmp.Or(askSentence(e), "none"), word("why"), word("info"),
 		word("recommendation"), cmp.Or(strings.Join(choices, "; "), "none"))
-	b.WriteString(askAnswer(e, rows.events[i+1:]) + "\n")
+	b.WriteString(askAnswer(rows.events, i) + "\n")
 	c := slices.IndexFunc(rows.cases, func(c Case) bool { return strconv.FormatInt(c.ID, 10) == s.Ref.Case })
 	if c < 0 {
 		return nil
@@ -196,13 +196,15 @@ func (r *Runner) askDetail(ctx context.Context, b *strings.Builder, s DigestStep
 // question's is the plan answer of its revision and index, past the
 // questions asked with it, until a later revision asks again; any other
 // ask's is the answer or grant before the next such ask, among the rows
-// that end its case (caseEnds). A monitor's ask and the card's own pass
-// each other: the next ask of a monitor's is one on its case, of the
-// card's own any but a monitor's.
-func askAnswer(ask Event, events []Event) string {
+// that end its case (caseEnds over all of the card's rows, a monitor's
+// ask before it among them). A monitor's ask and the card's own pass each
+// other: the next ask of a monitor's is one on its case, of the card's
+// own any but a monitor's.
+func askAnswer(rows []Event, i int) string {
+	ask, events := rows[i], rows[i+1:]
 	revision, _ := toInt(ask.Detail["revision"])
 	index, _ := toInt(ask.Detail["index"])
-	ends := caseEnds(ask, events)
+	ends := caseEnds(ask, rows)
 	own, _ := toInt(ask.Detail["case_id"])
 	beside := func(e Event) bool { return e.Detail["case_kind"] == string(CaseMonitorFlag) }
 	mine := func(e Event) bool {
