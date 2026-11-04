@@ -1352,7 +1352,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		return err
 	}
 	if confirming {
-		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+		if open, err := store.UndecidedProofs(ctx, taskID, revision); err != nil || open > 0 {
 			if err == nil {
 				err = ErrHoldoutsOpen
 			}
@@ -1363,7 +1363,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		return err
 	}
 	if confirming {
-		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
+		if err := store.SweepPlanProofs(ctx, taskID); err != nil {
 			return err
 		}
 	}
@@ -1444,7 +1444,7 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 	}
 	confirming := hasConfirm && slices.ContainsFunc(answers, func(a PlanAnswer) bool { return a.Idx == ci })
 	if confirming {
-		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+		if open, err := store.UndecidedProofs(ctx, taskID, revision); err != nil || open > 0 {
 			if err == nil {
 				err = ErrHoldoutsOpen
 			}
@@ -1455,7 +1455,7 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 		return err
 	}
 	if confirming {
-		return store.SweepPlanHoldouts(ctx, taskID)
+		return store.SweepPlanProofs(ctx, taskID)
 	}
 	return nil
 }
@@ -3060,9 +3060,9 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
 		return PlanRef{}, terminalError("task %s: plan revision %d: %v", taskID, rev.Revision, err)
 	}
-	// the round's hold-outs are drafted before a question is stored, a
-	// review model call and dry runs of minutes: the questions, the
-	// confirmation and the zone then reach Needs you as the plan waits
+	// the round's hold-outs are proposed before a question is stored, a
+	// review model call: the questions, the confirmation and the zone then
+	// reach Needs you as the plan waits
 	if confirm, _, err := r.confirms(ctx, t, p); err != nil {
 		return PlanRef{}, err
 	} else if confirm {

@@ -1172,23 +1172,23 @@ func (s *acceptanceStore) ConfirmationIndex(context.Context, string, int) (int, 
 	return 0, false, nil
 }
 
-func (s *acceptanceStore) PutPlanHoldouts(context.Context, string, int, []factoryd.Holdout) (bool, error) {
+func (s *acceptanceStore) PutPlanProofs(context.Context, string, int, []factoryd.PlanProof) (bool, error) {
 	return false, nil
 }
 
-func (s *acceptanceStore) PlanHoldouts(context.Context, string) ([]factoryd.Holdout, error) {
+func (s *acceptanceStore) PlanProofs(context.Context, string) ([]factoryd.PlanProof, error) {
 	return nil, nil
 }
 
-func (s *acceptanceStore) UndecidedHoldouts(context.Context, string, int) (int, error) {
+func (s *acceptanceStore) UndecidedProofs(context.Context, string, int) (int, error) {
 	return 0, nil
 }
 
-func (s *acceptanceStore) DecidePlanHoldout(context.Context, string, int, int, string) error {
+func (s *acceptanceStore) DecidePlanProof(context.Context, string, int, int, string) error {
 	return nil
 }
 
-func (s *acceptanceStore) SweepPlanHoldouts(context.Context, string) error { return nil }
+func (s *acceptanceStore) SweepPlanProofs(context.Context, string) error { return nil }
 
 func (s *acceptanceStore) PastReverts(context.Context, string) ([]string, error) {
 	return nil, nil

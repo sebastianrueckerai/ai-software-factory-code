@@ -160,8 +160,8 @@ func TestAgentDocDirectSendsThePurpose(t *testing.T) {
 		"security-audit": policy.PurposeAudit, "gate-supervisor": policy.PurposeGateSupervisor,
 		"review-criteria": policy.PurposeReview, "review-behaviours": policy.PurposeReview,
 		"delta-planner": policy.PurposeReview, "holdout-proposer": policy.PurposeReview,
-		"holdout-redrafter": policy.PurposeReview, "answer-screener": policy.PurposeReview,
-		"brief-writer": policy.PurposeBrief, "title": policy.PurposeTitle,
+		"answer-screener": policy.PurposeReview, "brief-writer": policy.PurposeBrief,
+		"title": policy.PurposeTitle,
 	}
 	for _, id := range AgentDocDirectIDs() {
 		t.Run(id, func(t *testing.T) {

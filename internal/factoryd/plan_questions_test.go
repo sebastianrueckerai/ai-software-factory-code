@@ -776,7 +776,7 @@ func TestIntakeKnowsAWakesPlanAnswerByTheChatBot(t *testing.T) {
 	}
 }
 
-// The round's hold-outs are drafted before a question is stored: the
+// The round's hold-outs are proposed before a question is stored: the
 // review model's proposal call finds no question of the revision yet, so
 // the questions, the confirmation and the zone reach Needs you together,
 // as the plan waits for their answers, and no answer comes too early.

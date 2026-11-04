@@ -98,8 +98,7 @@ func TestShippedTreePasses(t *testing.T) {
 	}
 }
 
-// file_verdict went with the hold-out audit: a class that lists it lists
-// an unknown tool.
+// A class that lists file_verdict lists an unknown tool.
 func TestFileVerdictIsNoTool(t *testing.T) {
 	files := fixtureTree(t)
 	edit(t, files, "policy.yaml", "      escalate: {}\n      # the factory manual", "      escalate: {}\n      file_verdict: {}\n      # the factory manual")

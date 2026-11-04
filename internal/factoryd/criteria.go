@@ -241,7 +241,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		// unmet; a hold-out it did not reach is no verdict, so the
 		// activity fails and runs again
 		var ended *proofsEnded
-		if errors.As(err, &ended) && !slices.ContainsFunc(hos, func(h Holdout) bool { return slices.Contains(ended.unreached, holdoutEntry(h.Idx)) }) {
+		if errors.As(err, &ended) && !slices.ContainsFunc(hos, func(h PlanProof) bool { return slices.Contains(ended.unreached, holdoutEntry(h.Idx)) }) {
 			err = nil
 		}
 		if err != nil {

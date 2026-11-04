@@ -98,9 +98,9 @@ type Tasks interface {
 	PlanRevision(ctx context.Context, id string, n int) (factoryd.PlanRevision, bool, error)
 	// PlanQuestions are revision's questions of plan task id, in order.
 	PlanQuestions(ctx context.Context, id string, revision int) ([]factoryd.PlanQuestion, error)
-	// PlanHoldouts are plan task id's hold-out criteria, every round's, in
-	// idx order; a round's rows carry its number.
-	PlanHoldouts(ctx context.Context, id string) ([]factoryd.Holdout, error)
+	// PlanProofs are plan task id's blind proofs, every round's, in idx
+	// order; a round's rows carry its number.
+	PlanProofs(ctx context.Context, id string) ([]factoryd.PlanProof, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
 	// CriteriaVerdicts are task's criteria verdict rows (the spec-intake

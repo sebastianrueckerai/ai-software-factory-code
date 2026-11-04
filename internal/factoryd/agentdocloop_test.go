@@ -110,7 +110,8 @@ func agentDocLoopPolicy() policy.Version {
 	return policy.Version{Commit: "fixture", Tree: tree}
 }
 
-// The loop's modes: the hold-out audit is none of them.
+// The loop's modes: coding, screening, sizing, the planner and the
+// message responder.
 func TestAgentDocLoopIDs(t *testing.T) {
 	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "planner", "message-responder"}; !slices.Equal(got, want) {
 		t.Fatalf("AgentDocLoopIDs() = %q, want %q", got, want)

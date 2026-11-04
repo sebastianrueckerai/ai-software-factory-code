@@ -307,7 +307,7 @@ func (s *acceptTasks) PlanQuestions(_ context.Context, _ string, _ int) ([]facto
 	return nil, nil
 }
 
-func (s *acceptTasks) PlanHoldouts(_ context.Context, _ string) ([]factoryd.Holdout, error) {
+func (s *acceptTasks) PlanProofs(_ context.Context, _ string) ([]factoryd.PlanProof, error) {
 	return nil, nil
 }
 

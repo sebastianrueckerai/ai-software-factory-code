@@ -389,8 +389,8 @@ type fakeTasks struct {
 	plans map[string][]factoryd.PlanRevision // by task, oldest first
 	// questions are the plans' questions by "task revision"
 	questions map[string][]factoryd.PlanQuestion
-	// holdouts are the plans' hold-out rows by task, idx order
-	holdouts map[string][]factoryd.Holdout
+	// proofs are the plans' proof rows by task, idx order
+	proofs map[string][]factoryd.PlanProof
 	// criteria are the criteria verdict rows by task
 	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
@@ -518,10 +518,10 @@ func (s *fakeTasks) PlanQuestions(_ context.Context, id string, revision int) ([
 	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
 }
 
-func (s *fakeTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdout, error) {
+func (s *fakeTasks) PlanProofs(_ context.Context, id string) ([]factoryd.PlanProof, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return slices.Clone(s.holdouts[id]), nil
+	return slices.Clone(s.proofs[id]), nil
 }
 
 // answer is factoryd.AnswerPlanQuestion on the fake's questions: the
@@ -560,26 +560,23 @@ func (s *fakeTasks) decide(id string, round, idx int, verb, by string) error {
 			return factoryd.ErrAnswered
 		}
 	}
-	state := map[string]string{"okay": factoryd.HoldoutStored, "drop": factoryd.HoldoutDropped}[verb]
+	state := map[string]string{"okay": factoryd.ProofOkayed, "drop": factoryd.ProofDropped}[verb]
 	if state == "" {
 		return fmt.Errorf("%w: %s", factoryd.ErrHoldoutClick, verb)
 	}
-	for i, h := range s.holdouts[id] {
-		if h.Round != round || h.Idx != idx {
+	holds := false
+	for i, p := range s.proofs[id] {
+		if p.Idx != idx || p.Origin != factoryd.ProofOriginHoldout {
 			continue
 		}
-		takes := (state == factoryd.HoldoutDropped && (h.State == factoryd.HoldoutProposed || h.State == factoryd.HoldoutUnrunnable)) ||
-			(state == factoryd.HoldoutStored && h.State == factoryd.HoldoutProposed && (h.DryVerdict == "red" || h.DryVerdict == "green"))
-		if !takes {
-			return factoryd.ErrHoldoutClick
+		holds = true
+		if p.Round == round && p.State == factoryd.ProofProposed {
+			s.proofs[id][i].State = state
+			return nil
 		}
-		s.holdouts[id][i].State = state
-		return nil
 	}
-	for _, h := range s.holdouts[id] {
-		if h.Idx == idx {
-			return factoryd.ErrHoldoutClick
-		}
+	if holds {
+		return factoryd.ErrHoldoutClick
 	}
 	return factoryd.ErrNoHoldout
 }

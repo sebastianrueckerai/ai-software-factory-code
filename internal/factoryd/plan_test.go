@@ -2269,12 +2269,12 @@ type sweepFails struct {
 	fails int
 }
 
-func (s *sweepFails) SweepPlanHoldouts(ctx context.Context, id string) error {
+func (s *sweepFails) SweepPlanProofs(ctx context.Context, id string) error {
 	if s.fails > 0 {
 		s.fails--
 		return errors.New("the store is down")
 	}
-	return s.fakeStore.SweepPlanHoldouts(ctx, id)
+	return s.fakeStore.SweepPlanProofs(ctx, id)
 }
 
 // The identical re-file's answer row survives a retry: the first filing

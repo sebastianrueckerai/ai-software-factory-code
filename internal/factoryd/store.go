@@ -744,14 +744,15 @@ type Store interface {
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
 	CriteriaVerdictTasks(ctx context.Context) ([]string, error)
-	// The plan's hold-outs (the spec-intake concept, piece 6): rows by
-	// round, the undecided count of one round, the human's okay or drop,
-	// the sweep of a closing round, and the project's past reverts.
-	PutPlanHoldouts(ctx context.Context, id string, round int, drafts []Holdout) (bool, error)
-	PlanHoldouts(ctx context.Context, id string) ([]Holdout, error)
-	UndecidedHoldouts(ctx context.Context, id string, round int) (int, error)
-	DecidePlanHoldout(ctx context.Context, id string, round, idx int, state string) error
-	SweepPlanHoldouts(ctx context.Context, id string) error
+	// The plan's blind proofs (the spec-intake concept, piece 6): a round's
+	// hold-out proposals, every row, the undecided count of one round, the
+	// human's okay or drop, the sweep of a closing round, and the
+	// project's past reverts.
+	PutPlanProofs(ctx context.Context, id string, round int, proposals []PlanProof) (bool, error)
+	PlanProofs(ctx context.Context, id string) ([]PlanProof, error)
+	UndecidedProofs(ctx context.Context, id string, round int) (int, error)
+	DecidePlanProof(ctx context.Context, id string, round, idx int, state string) error
+	SweepPlanProofs(ctx context.Context, id string) error
 	PastReverts(ctx context.Context, repository string) ([]string, error)
 	// CreatePlanCard inserts plan card t unless its plan has a card of its
 	// key, and returns the plan's card of that key.

@@ -113,13 +113,12 @@ type planQuestion struct {
 	factoryd.PlanQuestion
 }
 
-// planHoldout is a plan's hold-out criterion as its card shows it: the
-// criterion, its state's one line, and whether its okay and drop work
-// (the round's confirmation unanswered; an unrunnable draft takes no
-// okay).
+// planHoldout is a plan's hold-out as its card shows it: the claim with
+// its inputs and expected numbers, its state's one line, and whether its
+// okay and drop work (a proposal, the round's confirmation unanswered).
 type planHoldout struct {
 	Index int
-	factoryd.Holdout
+	factoryd.PlanProof
 	Blurb   string
 	CanOkay bool
 	CanDrop bool
@@ -127,11 +126,9 @@ type planHoldout struct {
 
 // holdoutBlurbs are the hold-out states' one lines.
 var holdoutBlurbs = map[string]string{
-	factoryd.HoldoutProposed:   "drafted; okay keeps it out of the plan and runs it at the gate, hidden from the agent",
-	factoryd.HoldoutStored:     "kept out; it runs at the gate, hidden from the agent",
-	factoryd.HoldoutUnrunnable: "its draft did not run; drop discards it",
-	factoryd.HoldoutDropped:    "dropped",
-	factoryd.HoldoutOpened:     "published: the audit found a real gap; the builder works it",
+	factoryd.ProofProposed: "proposed: okay keeps it out of the plan, and its test is written later, hidden from the agent",
+	factoryd.ProofOkayed:   "kept out: its test is written once the plan's foundation is on main, hidden from the agent",
+	factoryd.ProofDropped:  "dropped",
 }
 
 func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, act actor, tasks map[string]factoryd.Task, csrf string, approver, face bool) approvalCard {
@@ -269,20 +266,18 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if open > 0 {
 		k.Open = fmt.Sprintf("%d %s open", open, plural(open, "question"))
 	}
-	hos, err := c.cfg.Tasks.PlanHoldouts(ctx, k.TaskID)
+	proofs, err := c.cfg.Tasks.PlanProofs(ctx, k.TaskID)
 	if err != nil {
 		return fmt.Errorf("hold-outs of %s: %w", k.TaskID, err)
 	}
 	i := 0
-	for _, ho := range hos {
-		if ho.Round != k.PlanSpec.Revision {
+	for _, ho := range proofs {
+		if ho.Origin != factoryd.ProofOriginHoldout || ho.Round != k.PlanSpec.Revision {
 			continue
 		}
 		i++
-		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, Holdout: ho,
-			Blurb:   holdoutBlurbs[ho.State],
-			CanOkay: confirming && ho.State == factoryd.HoldoutProposed,
-			CanDrop: confirming && (ho.State == factoryd.HoldoutProposed || ho.State == factoryd.HoldoutUnrunnable)})
+		decides := confirming && ho.State == factoryd.ProofProposed
+		k.Holdouts = append(k.Holdouts, planHoldout{Index: i, PlanProof: ho, Blurb: holdoutBlurbs[ho.State], CanOkay: decides, CanDrop: decides})
 	}
 	return nil
 }

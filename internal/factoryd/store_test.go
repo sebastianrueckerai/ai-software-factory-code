@@ -116,7 +116,7 @@ type fakeStore struct {
 	kinds            map[string][]string           // each question's kind beside it, by "task revision"
 	catches          map[string][]string           // the recording rule's ledger, by "task revision kind finder"
 	criteriaVerdicts map[string][]CriterionVerdict // rows by task, every source's
-	holdouts         map[string][]Holdout          // the hold-out rows, idx order, by task
+	proofs           map[string][]PlanProof        // the plan proof rows, idx order, by task
 	queue            []queueEntry                  // the merge queues, oldest first
 	holds            map[string]RollHold
 	// routineStates and routineRuns (oldest first) are keyed by
@@ -3311,53 +3311,53 @@ func TestPGStoreIntakeAuto(t *testing.T) {
 	}
 }
 
-// The plan_holdouts table on a real Postgres (the spec-intake concept,
-// piece 6): a round's drafts store once, the human's okay and drop decide
-// only the states they take, the sweep drops what no click can reach, and
-// the past reverts are the project's own last failures, one line each.
-func TestPGStoreHoldouts(t *testing.T) {
+// The plan_proofs table on a real Postgres: a round's hold-out proposals
+// store once, the human's okay and drop decide only a proposal, the sweep
+// drops what no click can reach, the checks refuse a stored proof without
+// its test and a criterion's proof without its criterion, and the past
+// reverts are the project's own last failures, one line each.
+func TestPGStoreProofs(t *testing.T) {
 	ctx := context.Background()
 	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
 	if err != nil {
 		t.Fatal(err)
 	}
 	defer s.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, plan_questions, plan_holdouts CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, plan_questions, plan_proofs CASCADE`); err != nil {
 		t.Fatal(err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t-ho", Status: "queued", Objective: "o", Repository: "sf/r", Kind: "agent", Source: "issue", Track: "direct"}); err != nil {
 		t.Fatal(err)
 	}
-	drafts := []Holdout{
-		{Idx: 1, ID: "door_state", Origin: HoldoutDrafted, Criterion: "The door opens only for a key that fits",
-			State: HoldoutProposed, TestName: "TestDoorShut", TestCode: "package holdout", DryHead: "abc",
-			DryVerdict: "red", DryOutput: "--- FAIL: TestDoorShut (0.01s)"},
-		{Idx: 2, ID: "key_log", Criterion: "Every key turn lands in the log",
-			State: HoldoutUnrunnable, TestName: "TestKeyLog", DryVerdict: "unrunnable"},
+	proposals := []PlanProof{
+		{Idx: 1, ID: "door_state", Origin: ProofOriginHoldout, Claim: "The door stays shut until a key that fits turns the lock",
+			Inputs: "POST /doors/1/open with key 9", Expected: "403 and the door row still shut", State: ProofProposed},
+		{Idx: 2, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log",
+			Inputs: "three turns of key 7", Expected: "three log rows", State: ProofProposed},
 	}
-	if ok, err := s.PutPlanHoldouts(ctx, "t-ho", 1, drafts); err != nil || !ok {
+	if ok, err := s.PutPlanProofs(ctx, "t-ho", 1, proposals); err != nil || !ok {
 		t.Fatalf("first put: %v %v", ok, err)
 	}
-	if ok, err := s.PutPlanHoldouts(ctx, "t-ho", 1, drafts); err != nil || ok {
+	if ok, err := s.PutPlanProofs(ctx, "t-ho", 1, proposals); err != nil || ok {
 		t.Fatalf("put over a round with rows: %v %v, want false", ok, err)
 	}
-	rows, err := s.PlanHoldouts(ctx, "t-ho")
-	if err != nil || len(rows) != 2 || rows[0].Idx != 1 || rows[1].Idx != 2 {
-		t.Fatalf("rows = %v, %v; want two in idx order", rows, err)
+	rows, err := s.PlanProofs(ctx, "t-ho")
+	if err != nil || len(rows) != 2 {
+		t.Fatalf("rows = %v, %v; want two", rows, err)
 	}
-	if r := rows[0]; r.Round != 1 || r.ID != "door_state" || r.Origin != HoldoutDrafted || r.State != HoldoutProposed ||
-		r.TestName != "TestDoorShut" || r.TestCode != "package holdout" || r.DryHead != "abc" ||
-		r.DryVerdict != "red" || r.DryOutput != "--- FAIL: TestDoorShut (0.01s)" {
-		t.Fatalf("row 1 = %+v; want the draft as stored", r)
+	for i, want := range proposals {
+		want.Round = 1
+		if rows[i] != want {
+			t.Fatalf("row %d = %+v, want %+v", i, rows[i], want)
+		}
 	}
-	if n, err := s.UndecidedHoldouts(ctx, "t-ho", 1); err != nil || n != 2 {
+	if n, err := s.UndecidedProofs(ctx, "t-ho", 1); err != nil || n != 2 {
 		t.Fatalf("undecided = %d, %v; want 2", n, err)
 	}
 
-	// The clicks: okay takes a proposal with a dry verdict, drop takes a
-	// proposal and an unrunnable, and every other click on an existing row
-	// is ErrHoldoutClick, on no row ErrNoHoldout.
-	if err := s.DecidePlanHoldout(ctx, "t-ho", 1, 1, HoldoutStored); err != nil {
+	// The clicks: okay and drop take a proposal, every other click on an
+	// existing row is ErrHoldoutClick, on no row ErrNoHoldout.
+	if err := s.DecidePlanProof(ctx, "t-ho", 1, 1, ProofOkayed); err != nil {
 		t.Fatalf("okay door_state: %v", err)
 	}
 	for _, tc := range []struct {
@@ -3365,39 +3365,50 @@ func TestPGStoreHoldouts(t *testing.T) {
 		state      string
 		want       error
 	}{
-		{1, 1, HoldoutStored, ErrHoldoutClick},  // decided already
-		{1, 2, HoldoutStored, ErrHoldoutClick},  // unrunnable takes no okay
-		{2, 1, HoldoutDropped, ErrHoldoutClick}, // the idx belongs to round 1
-		{1, 9, HoldoutDropped, ErrNoHoldout},
+		{1, 1, ProofOkayed, ErrHoldoutClick},  // decided already
+		{1, 2, ProofStored, ErrHoldoutClick},  // a click stores nothing
+		{2, 1, ProofDropped, ErrHoldoutClick}, // the idx belongs to round 1
+		{1, 9, ProofDropped, ErrNoHoldout},
 	} {
-		if err := s.DecidePlanHoldout(ctx, "t-ho", tc.round, tc.idx, tc.state); !errors.Is(err, tc.want) {
+		if err := s.DecidePlanProof(ctx, "t-ho", tc.round, tc.idx, tc.state); !errors.Is(err, tc.want) {
 			t.Errorf("decide %d/%d %s = %v, want %v", tc.round, tc.idx, tc.state, err, tc.want)
 		}
 	}
-	if err := s.DecidePlanHoldout(ctx, "t-ho", 1, 2, HoldoutDropped); err != nil {
+	if err := s.DecidePlanProof(ctx, "t-ho", 1, 2, ProofDropped); err != nil {
 		t.Fatalf("drop key_log: %v", err)
 	}
-	if n, err := s.UndecidedHoldouts(ctx, "t-ho", 1); err != nil || n != 0 {
+	if n, err := s.UndecidedProofs(ctx, "t-ho", 1); err != nil || n != 0 {
 		t.Fatalf("undecided after the clicks = %d, %v; want 0", n, err)
 	}
 
-	// The sweep drops every undecided row of the task, and the past reverts
-	// are the repository's last three, first lines only, newest first.
-	if ok, err := s.PutPlanHoldouts(ctx, "t-ho", 3, []Holdout{
-		{Idx: 4, ID: "sweep_me", Criterion: "swept", State: HoldoutProposed, DryVerdict: "red"},
-		{Idx: 5, ID: "sweep_too", Criterion: "swept too", State: HoldoutUnrunnable},
+	// The sweep drops every proposal of the task and leaves the decided.
+	if ok, err := s.PutPlanProofs(ctx, "t-ho", 2, []PlanProof{
+		{Idx: 3, ID: "sweep_me", Origin: ProofOriginHoldout, Claim: "swept", Inputs: "i", Expected: "e", State: ProofProposed},
 	}); err != nil || !ok {
-		t.Fatalf("round 3 put: %v %v", ok, err)
+		t.Fatalf("round 2 put: %v %v", ok, err)
 	}
-	if err := s.SweepPlanHoldouts(ctx, "t-ho"); err != nil {
+	if err := s.SweepPlanProofs(ctx, "t-ho"); err != nil {
 		t.Fatalf("sweep: %v", err)
 	}
-	rows, _ = s.PlanHoldouts(ctx, "t-ho")
-	for _, r := range rows {
-		if r.State == HoldoutProposed || r.State == HoldoutUnrunnable {
-			t.Errorf("row %d still %s after the sweep", r.Idx, r.State)
+	rows, _ = s.PlanProofs(ctx, "t-ho")
+	if len(rows) != 3 || rows[0].State != ProofOkayed || rows[2].State != ProofDropped {
+		t.Fatalf("rows after the sweep = %+v; want idx 1 okayed, idx 3 dropped", rows)
+	}
+
+	// A stored proof holds its test; a criterion's proof names its criterion.
+	for constraint, insert := range map[string]string{
+		"plan_proofs_file_check": `INSERT INTO plan_proofs (task_id, idx, round, id, origin, claim, state, suite, name, code)
+			VALUES ('t-ho', 10, 1, 'no_path', 'hold-out', 'c', 'stored', './a', 'TestA', 'package a')`,
+		"plan_proofs_origin_check": `INSERT INTO plan_proofs (task_id, idx, round, id, origin, claim, state)
+			VALUES ('t-ho', 11, 1, 'no_criterion', 'criterion', 'c', 'proposed')`,
+	} {
+		if _, err := s.db.ExecContext(ctx, insert); err == nil || !strings.Contains(err.Error(), constraint) {
+			t.Errorf("insert = %v, want %s", err, constraint)
 		}
 	}
+
+	// The past reverts are the repository's last three, first lines only,
+	// newest first.
 	for i, o := range []string{"oldest revert stays out", "first revert line\nbody dropped", "second revert line",
 		"\nonly the second line"} {
 		if err := s.CreateTask(ctx, Task{ID: fmt.Sprintf("t-r%d", i), Status: "closed", Objective: o,
@@ -4332,61 +4343,58 @@ func (s *fakeStore) ConfirmationIndex(ctx context.Context, id string, revision i
 	return 0, false, nil
 }
 
-func (s *fakeStore) PutPlanHoldouts(ctx context.Context, id string, round int, drafts []Holdout) (bool, error) {
-	for _, h := range s.holdouts[id] {
-		if h.Round == round {
+func (s *fakeStore) PutPlanProofs(ctx context.Context, id string, round int, proposals []PlanProof) (bool, error) {
+	for _, p := range s.proofs[id] {
+		if p.Round == round {
 			return false, nil
 		}
 	}
-	if s.holdouts == nil {
-		s.holdouts = map[string][]Holdout{}
+	if s.proofs == nil {
+		s.proofs = map[string][]PlanProof{}
 	}
-	for _, h := range drafts {
-		h.Round = round
-		s.holdouts[id] = append(s.holdouts[id], h)
+	for _, p := range proposals {
+		p.Round = round
+		s.proofs[id] = append(s.proofs[id], p)
 	}
-	return len(drafts) > 0, nil
+	return len(proposals) > 0, nil
 }
 
-func (s *fakeStore) PlanHoldouts(ctx context.Context, id string) ([]Holdout, error) {
-	return slices.Clone(s.holdouts[id]), nil
+func (s *fakeStore) PlanProofs(ctx context.Context, id string) ([]PlanProof, error) {
+	return slices.Clone(s.proofs[id]), nil
 }
 
-func (s *fakeStore) UndecidedHoldouts(ctx context.Context, id string, round int) (int, error) {
+func (s *fakeStore) UndecidedProofs(ctx context.Context, id string, round int) (int, error) {
 	n := 0
-	for _, h := range s.holdouts[id] {
-		if h.Round == round && (h.State == HoldoutProposed || h.State == HoldoutUnrunnable) {
+	for _, p := range s.proofs[id] {
+		if p.Round == round && p.State == ProofProposed {
 			n++
 		}
 	}
 	return n, nil
 }
 
-func (s *fakeStore) DecidePlanHoldout(ctx context.Context, id string, round, idx int, state string) error {
-	for i, h := range s.holdouts[id] {
-		if h.Round != round || h.Idx != idx {
+func (s *fakeStore) DecidePlanProof(ctx context.Context, id string, round, idx int, state string) error {
+	holds := false
+	for i, p := range s.proofs[id] {
+		if p.Idx != idx || p.Origin != ProofOriginHoldout {
 			continue
 		}
-		takes := (state == HoldoutDropped && (h.State == HoldoutProposed || h.State == HoldoutUnrunnable)) ||
-			(state == HoldoutStored && h.State == HoldoutProposed && (h.DryVerdict == "red" || h.DryVerdict == "green"))
-		if !takes {
-			return ErrHoldoutClick
+		holds = true
+		if p.Round == round && p.State == ProofProposed && (state == ProofOkayed || state == ProofDropped) {
+			s.proofs[id][i].State = state
+			return nil
 		}
-		s.holdouts[id][i].State = state
-		return nil
 	}
-	for _, h := range s.holdouts[id] {
-		if h.Idx == idx {
-			return ErrHoldoutClick
-		}
+	if holds {
+		return ErrHoldoutClick
 	}
 	return ErrNoHoldout
 }
 
-func (s *fakeStore) SweepPlanHoldouts(ctx context.Context, id string) error {
-	for i, h := range s.holdouts[id] {
-		if h.State == HoldoutProposed || h.State == HoldoutUnrunnable {
-			s.holdouts[id][i].State = HoldoutDropped
+func (s *fakeStore) SweepPlanProofs(ctx context.Context, id string) error {
+	for i, p := range s.proofs[id] {
+		if p.State == ProofProposed {
+			s.proofs[id][i].State = ProofDropped
 		}
 	}
 	return nil

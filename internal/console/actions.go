@@ -813,7 +813,7 @@ func batchLines(batch []factoryd.PlanAnswer) []string {
 	return lines
 }
 
-// doDecideHoldout runs the member's okay or drop of hold-out idx of plan
+// doDecideHoldout runs a writer's okay or drop of hold-out idx of plan
 // id's newest revision: factoryd stores the decision. Nothing is posted
 // on the issue: the agent reads it, and the hold-outs stay hidden from
 // the agent by routing; the event feed carries the decision.
@@ -840,7 +840,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
 	if verb == "okay" {
-		return fmt.Sprintf("Hold-out %d of plan #%d kept out; it runs at the gate, hidden from the agent.", idx, t.IssueNumber), nil
+		return fmt.Sprintf("Hold-out %d of plan #%d kept out; its test is written later, hidden from the agent.", idx, t.IssueNumber), nil
 	}
 	return fmt.Sprintf("Hold-out %d of plan #%d dropped.", idx, t.IssueNumber), nil
 }

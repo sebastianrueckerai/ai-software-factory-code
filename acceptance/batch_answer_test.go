@@ -60,7 +60,7 @@ type accBatchTasks struct {
 	tasks     []factoryd.BoardTask
 	plans     map[string][]factoryd.PlanRevision
 	questions map[string][]factoryd.PlanQuestion
-	holdouts  map[string][]factoryd.Holdout
+	proofs    map[string][]factoryd.PlanProof
 }
 
 func newAccBatchTasks() *accBatchTasks {
@@ -279,10 +279,10 @@ func (s *accBatchTasks) PlanQuestions(_ context.Context, id string, revision int
 	return slices.Clone(s.questions[fmt.Sprintf("%s %d", id, revision)]), nil
 }
 
-func (s *accBatchTasks) PlanHoldouts(_ context.Context, id string) ([]factoryd.Holdout, error) {
+func (s *accBatchTasks) PlanProofs(_ context.Context, id string) ([]factoryd.PlanProof, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
-	return slices.Clone(s.holdouts[id]), nil
+	return slices.Clone(s.proofs[id]), nil
 }
 
 func (s *accBatchTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task, error) {
@@ -470,23 +470,23 @@ func (s *accBatchStore) ConfirmationIndex(context.Context, string, int) (int, bo
 	return 0, false, nil
 }
 
-func (s *accBatchStore) PutPlanHoldouts(context.Context, string, int, []factoryd.Holdout) (bool, error) {
+func (s *accBatchStore) PutPlanProofs(context.Context, string, int, []factoryd.PlanProof) (bool, error) {
 	return false, nil
 }
 
-func (s *accBatchStore) PlanHoldouts(ctx context.Context, id string) ([]factoryd.Holdout, error) {
-	return s.tasks.PlanHoldouts(ctx, id)
+func (s *accBatchStore) PlanProofs(ctx context.Context, id string) ([]factoryd.PlanProof, error) {
+	return s.tasks.PlanProofs(ctx, id)
 }
 
-func (s *accBatchStore) UndecidedHoldouts(context.Context, string, int) (int, error) {
+func (s *accBatchStore) UndecidedProofs(context.Context, string, int) (int, error) {
 	return 0, nil
 }
 
-func (s *accBatchStore) DecidePlanHoldout(context.Context, string, int, int, string) error {
+func (s *accBatchStore) DecidePlanProof(context.Context, string, int, int, string) error {
 	return nil
 }
 
-func (s *accBatchStore) SweepPlanHoldouts(context.Context, string) error { return nil }
+func (s *accBatchStore) SweepPlanProofs(context.Context, string) error { return nil }
 
 func (s *accBatchStore) PastReverts(context.Context, string) ([]string, error) {
 	return nil, nil

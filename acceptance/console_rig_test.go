@@ -859,7 +859,7 @@ func (a *AcceptanceRig) PlanQuestions(context.Context, string, int) ([]factoryd.
 	return nil, nil
 }
 
-func (a *AcceptanceRig) PlanHoldouts(context.Context, string) ([]factoryd.Holdout, error) {
+func (a *AcceptanceRig) PlanProofs(context.Context, string) ([]factoryd.PlanProof, error) {
 	return nil, nil
 }
 

@@ -51,7 +51,6 @@ var registry = []Agent{
 	{ID: "review-behaviours", Pkg: "internal/factoryd", Family: "B", Job: "Drafts the review behaviours text", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "delta-planner", Pkg: "internal/factoryd", Family: "B", Job: "Plans delta work between reviews", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "holdout-proposer", Pkg: "internal/factoryd", Family: "B", Job: "Proposes hold-out criteria", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
-	{ID: "holdout-redrafter", Pkg: "internal/factoryd", Family: "B", Job: "Rewrites a dropped hold-out criterion", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "answer-screener", Pkg: "internal/factoryd", Family: "B", Job: "Screens a late answer of the issue author", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "brief-writer", Pkg: "internal/factoryd", Family: "B", Job: "Writes the human approval brief", Runs: "factoryd direct", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},
 	{ID: "title", Pkg: "internal/factoryd", Family: "B", Job: "Names a chat thread from its first message", Runs: "the console's naming call, a factoryd direct client", Answer: `{"decision":"continue"}`, Capture: factoryd.AgentDocDirect},

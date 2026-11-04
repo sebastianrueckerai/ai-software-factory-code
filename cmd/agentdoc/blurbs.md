@@ -16,7 +16,6 @@ changes.
 - review-behaviours: Drafts the behaviours text the model reviews watch for.
 - delta-planner: Plans the delta work between one review and the next.
 - holdout-proposer: Proposes the hold-out criteria the finished work is judged by. The session that writes the work does not see them.
-- holdout-redrafter: Rewrites one hold-out criterion after the gates dropped it.
 - answer-screener: Screens a late answer from the issue's author before it changes the card.
 - brief-writer: Writes the approval brief a human reads to decide.
 - title: Names a chat thread from its first message. One cheap call.

@@ -277,7 +277,8 @@
 </form></fieldset>
 {{end}}{{end}}{{if .Holdouts}}<div class="holdouts">
 <p class="meta">Hold-out criteria, kept out of the plan and run at the gate, hidden from the agent.</p>
-{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Criterion}}</legend>
+{{range $h := .Holdouts}}<fieldset class="question"><legend>Hold-out {{$h.Index}}: {{$h.Claim}}</legend>
+<p class="meta">Inputs: {{$h.Inputs}}. Expected: {{$h.Expected}}.</p>
 <p class="meta">{{$h.Blurb}}</p>
 {{if or $h.CanOkay $h.CanDrop}}<div class="choices" role="group" aria-label="Keep the hold-out out or drop it">
 {{if $h.CanOkay}}<form method="post" action="/tasks/{{$.TaskID}}/plan/holdout" hx-post="/tasks/{{$.TaskID}}/plan/holdout">
