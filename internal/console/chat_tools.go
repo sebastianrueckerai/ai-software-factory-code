@@ -644,15 +644,7 @@ func mergeWarning(steps []map[string]any) string {
 		}
 	}
 	if m := newest(steps, "checks"); m != nil {
-		var failing []string
-		jobs, _ := m["jobs"].([]any)
-		for _, j := range jobs {
-			job, _ := j.(map[string]any)
-			if status, _ := job["status"].(string); status != "success" && status != "skipped" {
-				name, _ := job["name"].(string)
-				failing = append(failing, name)
-			}
-		}
+		failing := redJobs(m)
 		state, _ := m["state"].(string)
 		switch {
 		case len(failing) > 0:

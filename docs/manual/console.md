@@ -209,9 +209,9 @@ decimals: a task's model calls cost fractions of a cent.
   cannot be read; with a pointer to the read holding its reviews, audit,
   checks, plan and sessions; a pending merge request names its risk, the
   review's verdict and whether it found a strict improvement, its head's
-  first 7 characters and, on red checks, the jobs found red), `history`,
-  `card_history`, `card_step` (one step of the card's life in full, by
-  its number), `board_digest` (the
+  first 7 characters and, on red checks, the jobs found red, or green
+  since a re-run on the head), `history`, `card_history`, `card_step` (one
+  step of the card's life in full, by its number), `board_digest` (the
   board in a few lines: the live cards with their flags, a card whose
   life cannot be read with why, the queue with what holds each card, the
   work slots, the open plans and the caps), `costs`, `diff`, `plan` (a
@@ -294,11 +294,10 @@ decimals: a task's model calls cost fractions of a cent.
   trusts and signals and which blocks no later merge. At a merge rule
   other than auto the inbox decides no merge: a turn there refuses
   `approve_merge` and `deny_merge` before any proposal, naming
-  `attach_analysis`. The
-  agent never approves a GitHub sync's pull request: a human approves the
-  GitHub commits it carries. A project without a chat
-  token gets no wake; the refusal names `tokens.chat`. `steer` reaches a
-  running session on the supervisor's message path
+  `attach_analysis`. The agent never approves a GitHub sync's pull
+  request: a human approves the GitHub commits it carries. A project
+  without a chat token gets no wake; the refusal names `tokens.chat`.
+  `steer` reaches a running session on the supervisor's message path
   (`Runner.MessageSession`). The conversation
   is `chat_messages`, per project and human, each assistant row with its
   tool calls and their results; a turn's context is the project's status

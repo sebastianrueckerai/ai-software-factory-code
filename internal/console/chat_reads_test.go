@@ -278,13 +278,16 @@ func TestChatCardInFull(t *testing.T) {
 
 // The card's pending merge request names what a merge decision reads: the
 // review's verdict, whether it found the change a strict improvement, the
-// head's first 7 characters, and on red checks the jobs the head's checks
-// found red; a request without a review says so, and red checks whose head
-// no checks step names read red without names.
+// head's first 7 characters, and on red checks the jobs the head's newest
+// checks found red; a request without a review says so, red checks whose
+// head no checks step names read red without names, and red checks a
+// re-run on the same head turned green read green since.
 func TestCardMergeLineNamesTheReviewAndHead(t *testing.T) {
 	r, g := newReadsRig(t)
 	r.objects["sessions/t-r/timeline.jsonl"] = []byte(readsTimeline +
-		`{"step":"checks","time":"2026-10-11T10:00:00Z","commit":"c0ffee4aa11bb22","state":"failure","jobs":[{"name":"test","status":"failure"},{"name":"lint","status":"success"},{"name":"vet","status":"cancelled"},{"name":"deploy","status":"skipped"}]}` + "\n")
+		`{"step":"checks","time":"2026-10-11T10:00:00Z","commit":"c0ffee4aa11bb22","state":"failure","jobs":[{"name":"test","status":"failure"},{"name":"lint","status":"success"},{"name":"vet","status":"cancelled"},{"name":"deploy","status":"skipped"}]}` + "\n" +
+		`{"step":"checks","time":"2026-10-11T10:10:00Z","commit":"c0ffee5bb22cc33","state":"failure","jobs":[{"name":"test","status":"failure"}]}` + "\n" +
+		`{"step":"checks","time":"2026-10-11T10:20:00Z","commit":"c0ffee5bb22cc33","state":"success","jobs":[{"name":"test","status":"success"}]}` + "\n")
 	pending := r.approvals.rows
 	for _, tc := range []struct{ spec, want string }{
 		{`{"risk_class":"standard","head_sha":"c0ffee4aa11bb22","review":{"verdict":"approve","strict_improvement":true},"red_checks":true}`,
@@ -295,6 +298,8 @@ func TestCardMergeLineNamesTheReviewAndHead(t *testing.T) {
 			"merge request 6 pending for pull request #9, risk high, review approve, strict improvement no, head c0ffee4"},
 		{`{"risk_class":"low","head_sha":"0badc0de0badc0de","red_checks":true}`,
 			"merge request 6 pending for pull request #9, risk low, review none, head 0badc0d; checks red"},
+		{`{"risk_class":"low","head_sha":"c0ffee5bb22cc33","red_checks":true}`,
+			"merge request 6 pending for pull request #9, risk low, review none, head c0ffee5; checks red at open, green since"},
 	} {
 		r.approvals.rows = append(slices.Clip(pending), factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-r", Project: "sf/code",
 			PRNumber: 9, Status: "pending", Spec: json.RawMessage(tc.spec)})
