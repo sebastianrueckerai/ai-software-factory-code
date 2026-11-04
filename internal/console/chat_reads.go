@@ -510,6 +510,20 @@ const (
 	binarySniff = 8 << 10
 )
 
+// rawRoute is Forgejo's raw file route of path p at ref in repository
+// owner/name, every segment of p escaped.
+func rawRoute(repository, p, ref string) (string, error) {
+	repo, err := factoryd.SplitRepo(repository)
+	if err != nil {
+		return "", err
+	}
+	segments := strings.Split(p, "/")
+	for i, s := range segments {
+		segments[i] = url.PathEscape(s)
+	}
+	return fmt.Sprintf("/api/v1/repos/%s/%s/raw/%s?ref=%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), strings.Join(segments, "/"), url.QueryEscape(ref)), nil
+}
+
 // fileText is the file tool's answer: the file at a ref of the project's
 // repository, read raw as the member, its first 64 KiB with the line to
 // read on from, or its lines from..to as one numbered window under the
@@ -522,17 +536,12 @@ func (t *turn) fileText(in toolInput) (string, error) {
 	if p == "." || p == ".." || strings.HasPrefix(p, "../") {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The path %s leaves the repository.", in.Path))
 	}
-	repo, err := factoryd.SplitRepo(t.p.Repository)
+	route, err := rawRoute(t.p.Repository, p, in.Ref)
 	if err != nil {
 		return "", err
 	}
-	segments := strings.Split(p, "/")
-	for i, s := range segments {
-		segments[i] = url.PathEscape(s)
-	}
 	var raw []byte
-	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/raw/%s?ref=%s",
-		url.PathEscape(repo.Owner), url.PathEscape(repo.Name), strings.Join(segments, "/"), url.QueryEscape(in.Ref)), nil, http.StatusOK, &raw)
+	err = t.c.as(t.r.Context(), t.a.s, http.MethodGet, route, nil, http.StatusOK, &raw)
 	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no %s at %s.", p, in.Ref))
 	}

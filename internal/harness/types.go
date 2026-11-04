@@ -72,6 +72,8 @@ type TaskBrief struct {
 	// Prior is the previous session's working state, which factoryd copied
 	// from its record; nil for a first session.
 	Prior *PriorState `json:"prior,omitempty"`
+	// Proofs are the opened proofs the worker wrote into the clone, by path.
+	Proofs []string `json:"proofs,omitempty"`
 }
 
 // PriorState is the previous session's working state as factoryd copied it.
@@ -92,14 +94,17 @@ type ReportFile struct{ Name, Text string }
 const MaxProofsList = 4 << 20
 
 // MaxBriefPush is the largest BriefPush body the worker takes: the largest
-// factoryd builds is about 2.4 MB of JSON.
-const MaxBriefPush = 4 << 20
+// factoryd builds is about 5.6 MB of JSON, 3.2 MB of it the opened proofs
+// at the 512 KiB of code the prover files.
+const MaxBriefPush = 8 << 20
 
 // BriefPush is what factoryd pushes to a worker before the conversation begins.
 type BriefPush struct {
 	Handover string       `json:"handover"`
 	Prior    *PriorState  `json:"prior,omitempty"`
 	Files    []ReportFile `json:"files,omitempty"`
+	Proofs   []ProofFile  `json:"proofs,omitempty"` // the plan's opened proofs, which the worker writes into the clone where the path holds no file
+	Landed   []string     `json:"landed,omitempty"` // set by the worker: the paths it wrote
 }
 
 // Author standings.

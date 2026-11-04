@@ -4994,6 +4994,50 @@ func TestRunSessionPushesTheInputHandoverAsTheBrief(t *testing.T) {
 	}
 }
 
+// The plan's integration card's session pushes the plan's opened proofs
+// with its brief, each file the row's code, a hold-out's among them, and
+// no stored proof; a feature card of the same plan pushes none.
+func TestRunSessionPushesThePlansOpenedProofs(t *testing.T) {
+	ctx := context.Background()
+	opened := []harness.ProofFile{{Path: "proofs/size_bound/size_bound_test.go", Content: sizeBoundCode},
+		{Path: "proofs/key_log/key_log_test.go", Content: "package key_log"}}
+	for _, tc := range []struct {
+		key  string
+		want []harness.ProofFile
+	}{{"integration", opened}, {"links-api", nil}} {
+		t.Run(tc.key, func(t *testing.T) {
+			card := Task{ID: "t1", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "spec", Repository: "sf/r", SHA: "abc123",
+				IssueNumber: 4, Source: SourcePlan, Parent: "plan1", PlanKey: tc.key, Author: "sebastian", AuthorWriter: true,
+				RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Objective: "Integration: acceptance tests"}
+			runner, _, store := newTestRunner(t, card, newFakeKube(), &fakeObjectStore{})
+			worker := &fakeWorkerEndpoint{status: http.StatusNoContent}
+			worker.start(t, runner)
+			store.CreateTask(ctx, Task{ID: "plan1", Kind: "agent", Status: "done", Repository: "sf/r", IssueNumber: 1, Objective: "Link shortener", Track: "direct"})
+			raw, sha, _ := planSHA(testPlan())
+			store.AddPlanRevision(ctx, "plan1", raw, sha)
+			store.proofs = map[string][]PlanProof{"plan1": {
+				{Idx: 1, Origin: ProofOriginCriterion, Criterion: "size_bound", ID: "size_bound", Suite: "proofs/size_bound", Name: "TestSizeBound",
+					Path: "proofs/size_bound/size_bound_test.go", Code: sizeBoundCode, State: ProofOpened},
+				{Idx: 2, Origin: ProofOriginCriterion, Criterion: "door", ID: "door", Suite: "proofs/door", Name: "TestDoor",
+					Path: "proofs/door/door_test.go", Code: "package door", State: ProofStored},
+				{Idx: 3, Origin: ProofOriginHoldout, ID: "key_log", Suite: "proofs/key_log", Name: "TestKeyLog",
+					Path: "proofs/key_log/key_log_test.go", Code: "package key_log", State: ProofOpened},
+			}}
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "factory/small"}, nil,
+				resultLine(true, "built")); err != nil {
+				t.Fatal(err)
+			}
+			b := onlyBrief(t, worker)
+			if !slices.Equal(b.Proofs, tc.want) {
+				t.Fatalf("pushed proofs = %+v, want %+v", b.Proofs, tc.want)
+			}
+			if strings.Contains(worker.briefs[0], "package door") || tc.want == nil && strings.Contains(worker.briefs[0], `"proofs"`) {
+				t.Fatalf("brief push = %s", worker.briefs[0])
+			}
+		})
+	}
+}
+
 // prevRig is a session rig whose object store holds the record of the
 // stopped session s-prev: a todo list, one changed file, its last event at
 // 23:03:32 UTC.

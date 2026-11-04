@@ -913,6 +913,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if s.spec, s.cardRole, s.directories, err = r.planOf(ctx, t); err != nil {
 		return SessionResult{}, named("plan card", err)
 	}
+	opened, err := r.openedProofs(ctx, t)
+	if err != nil {
+		return SessionResult{}, named("opened proofs", err)
+	}
+	for _, pp := range opened {
+		s.proofs = append(s.proofs, harness.ProofFile{Path: pp.Path, Content: pp.Code})
+	}
 	// a carry card's pull request: its head reaches the clone as branch
 	// pull/<n>, and the spec says so, because the sandbox holds no git
 	// credential to fetch it mid-session

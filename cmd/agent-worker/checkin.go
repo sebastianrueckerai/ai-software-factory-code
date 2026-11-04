@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"net/http"
 	"os"
 	"os/exec"
@@ -112,13 +113,23 @@ func (c *checkinServe) serve(mux *http.ServeMux, authorized func(http.ResponseWr
 		}
 		var in harness.BriefPush
 		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, harness.MaxBriefPush)).Decode(&in); err != nil {
-			http.Error(w, `want {"handover": "...", "prior": {...}, "files": [...]}`, http.StatusBadRequest)
+			http.Error(w, `want {"handover": "...", "prior": {...}, "files": [...], "proofs": [...]}`, http.StatusBadRequest)
 			return
 		}
 		if err := c.landPrior(&in); err != nil {
 			http.Error(w, err.Error(), http.StatusBadRequest)
 			return
 		}
+		landed, err := landProofs(c.repo(), in.Proofs)
+		if err != nil {
+			status := http.StatusInternalServerError
+			if errors.Is(err, errUnfitProof) {
+				status = http.StatusBadRequest
+			}
+			http.Error(w, err.Error(), status)
+			return
+		}
+		in.Landed = landed
 		select {
 		case c.handover <- in:
 		default: // a retry, or a push past the wait: the first brief stands
@@ -185,6 +196,43 @@ func (c *checkinServe) landPrior(in *harness.BriefPush) error {
 	}
 	in.Prior.Dir, in.Prior.Reports = dir, names
 	return nil
+}
+
+// errUnfitProof refuses a push whose proof path leaves the clone or
+// cannot hold a file there.
+var errUnfitProof = errors.New("no file path in the clone")
+
+// landProofs writes each proof into repo at its path where the path holds no file; a path out of the tree refuses the push whole.
+func landProofs(repo string, proofs []harness.ProofFile) ([]string, error) {
+	if len(proofs) == 0 {
+		return nil, nil
+	}
+	tree, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, err
+	}
+	defer tree.Close() // read only
+	var due []harness.ProofFile
+	for _, p := range proofs {
+		_, err := tree.Lstat(p.Path)
+		if !filepath.IsLocal(p.Path) {
+			err = errOutside
+		}
+		switch {
+		case errors.Is(err, fs.ErrNotExist):
+			due = append(due, p)
+		case err != nil:
+			return nil, fmt.Errorf("proof %q: %w: %w", p.Path, errUnfitProof, err)
+		}
+	}
+	var landed []string
+	for _, p := range due {
+		if err := writeRegular(repo, p.Path, p.Content); err != nil {
+			return nil, fmt.Errorf("write proof %q: %w", p.Path, err)
+		}
+		landed = append(landed, p.Path)
+	}
+	return landed, nil
 }
 
 // badSession refuses a name that could leave its directory: a session id

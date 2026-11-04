@@ -1,6 +1,7 @@
 package console
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -82,6 +83,19 @@ type approvalCard struct {
 	// Writer: the viewer writes the project, so the card's title opens
 	// its task's drawer, which holds the card's facts in full
 	Writer bool
+	// Opened is the drawer copy of a plan card's merge card alone: the
+	// plan's opened proofs, each beside the pull request's version.
+	// OpenedUnread: they could not be read, and the card says so.
+	Opened       []openedView
+	OpenedUnread bool
+}
+
+// openedView is an opened proof as the drawer shows it: the original
+// code, and the pull request's version at the request's head when it
+// differs. Missing: the pull request holds no file at the path.
+type openedView struct {
+	Criterion, Path, Original, Repository string
+	Missing, Changed                      bool
 }
 
 // Waiting is how long the request has waited for a member, in minutes
@@ -169,6 +183,11 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 				}
 			}
 		}
+		if err == nil && !face {
+			if k.Opened, err = c.openedOf(ctx, act, t, a.Project, k.Merge.HeadSHA); err != nil {
+				k.OpenedUnread = true
+			}
+		}
 	case factoryd.ApprovalResource:
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
@@ -202,6 +221,49 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		k.Merge.Recommendation = faceLine(k.Merge.Recommendation, 300)
 	}
 	return k
+}
+
+// openedOf are the opened proofs of plan card t's plan when t is its
+// integration card or a delta card, each read at head in project as a's
+// human; nil for any other card.
+func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, project, head string) ([]openedView, error) {
+	if t.Source != factoryd.SourcePlan || t.Parent == "" || head == "" {
+		return nil, nil
+	}
+	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
+	if err != nil || !ok || !factoryd.CriteriaCard(p, t.PlanKey) {
+		return nil, err
+	}
+	rows, err := c.cfg.Tasks.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return nil, fmt.Errorf("proofs of %s: %w", t.Parent, err)
+	}
+	var out []openedView
+	for _, pp := range rows {
+		if pp.State != factoryd.ProofOpened {
+			continue
+		}
+		if a.s == nil {
+			return nil, errors.New("the actor carries no session, so the pull request's files were not read")
+		}
+		route, err := rawRoute(project, pp.Path, head)
+		if err != nil {
+			return nil, err
+		}
+		v := openedView{Criterion: cmp.Or(pp.Criterion, pp.ID), Path: pp.Path, Original: pp.Code}
+		var raw []byte
+		err = c.as(ctx, a.s, http.MethodGet, route, nil, http.StatusOK, &raw)
+		switch ae := (*apiError)(nil); {
+		case errors.As(err, &ae) && ae.status == http.StatusNotFound:
+			v.Missing = true
+		case err != nil:
+			return nil, &forgejoRefusal{"read " + pp.Path + " at " + head, err}
+		case string(raw) != pp.Code:
+			v.Changed, v.Repository = true, string(raw)
+		}
+		out = append(out, v)
+	}
+	return out, nil
 }
 
 // criteriaOf fills the criteria gap card k from its request's spec: the

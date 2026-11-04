@@ -892,6 +892,22 @@ func TestBriefCarriesTheRepositoryMap(t *testing.T) {
 	}
 }
 
+// The brief names the opened proofs the worker wrote into the clone right
+// after the spec, and says what to do with them; a brief without any has
+// no such section.
+func TestBriefTextNamesTheOpenedProofs(t *testing.T) {
+	got := briefText(harness.TaskBrief{Objective: "o", Spec: "s", Proofs: []string{"proofs/size_bound/size_bound_test.go", "proofs/key_log/key_log_test.go"}}, "x")
+	want := "SPEC-x>>>\n\nOpened proofs: factoryd wrote these tests into your clone at their paths: proofs/size_bound/size_bound_test.go and proofs/key_log/key_log_test.go. Each proves" +
+		" one of the plan's criteria, ran once at the gate without passing, and is yours to see now. " +
+		"Keep each at its path and make it pass: fix the implementation, or the test where it is wrong, or raise the question on the card when the criterion cannot hold."
+	if !strings.Contains(got, want) {
+		t.Fatalf("brief =\n%s\nwant it to hold\n%s", got, want)
+	}
+	if got := briefText(harness.TaskBrief{Objective: "o", Spec: "s"}, "x"); strings.Contains(got, "Opened proofs") {
+		t.Fatalf("brief without opened proofs =\n%s", got)
+	}
+}
+
 // The brief names the issue author's standing before the
 // author's text; the author's answers come under their own
 // heading as information. Every text of the author stands between

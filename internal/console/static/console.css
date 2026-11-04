@@ -419,6 +419,9 @@ form.inline button { margin: 0; }
    them whole */
 .column .approval .brief { display: -webkit-box; -webkit-line-clamp: 1; -webkit-box-orient: vertical; overflow: hidden; }
 .column .approval .why, .column .approval .info, .column .approval .finding, .column .approval .recommendation { display: -webkit-box; -webkit-line-clamp: 4; -webkit-box-orient: vertical; overflow: hidden; }
+/* an opened proof's code in the drawer's merge card: wrapped, and
+   scrolled past 24 lines' height */
+pre.proof { white-space: pre-wrap; overflow-wrap: anywhere; max-height: 24em; overflow: auto; }
 .fold { margin: 6px 0 0; font-size: 12px; }
 .fold > summary { cursor: pointer; color: var(--text-faint); }
 .fold > summary:hover, .fold > summary:focus-visible { color: var(--text-muted); }

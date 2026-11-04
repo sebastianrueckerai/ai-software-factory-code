@@ -59,6 +59,68 @@ func TestMergeDrawerRendersTheAskAndItsActions(t *testing.T) {
 	}
 }
 
+// The drawer's merge card of a plan's integration card shows each opened
+// proof of the plan: the original, and beside it the pull request's
+// version at the request's head when the two differ. No stored proof
+// reaches it, a feature card's shows none, and so does the board's
+// column copy of the card.
+func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		raw  map[string]string
+		fail bool
+		want []string
+		pres int
+	}{
+		{"changed", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}, false, []string{`<h5>group_open: acceptance/group_open_test.go, changed</h5>`,
+			`<pre class="proof original">v1 code</pre>`, `<pre class="proof repository">v2 code</pre>`}, 2},
+		{"unchanged", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v1 code"}, false, []string{`<h5>group_open: acceptance/group_open_test.go, unchanged</h5>`,
+			`<pre class="proof original">v1 code</pre>`}, 1},
+		{"not in the pull request", nil, false, []string{`<h5>group_open: acceptance/group_open_test.go, not in the pull request</h5>`,
+			`<pre class="proof original">v1 code</pre>`}, 1},
+		{"unread", nil, true, []string{`<p class="problem">The console could not read the opened proofs. See the factoryd log.</p>`}, 0},
+		{"a feature card", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}, false, nil, 0},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			plan, _ := json.Marshal(factoryd.Plan{Summary: "The opening hours", Cards: []factoryd.PlanCard{
+				{Key: "hours", Role: factoryd.RoleFeature, Title: "Hours"},
+				{Key: "integration", Role: factoryd.RoleIntegration, Title: "Integration"},
+			}})
+			r.tasks.set("",
+				factoryd.Task{ID: "t-plan", Kind: "agent", Status: "done", Process: "spec", Objective: "Opening hours", Repository: "sf/code", IssueNumber: 3},
+				factoryd.Task{ID: "t-int", Kind: "agent", Status: "in-review", Repository: "sf/code", IssueNumber: 12, Parent: "t-plan",
+					Source: factoryd.SourcePlan, PlanKey: map[bool]string{true: "hours", false: "integration"}[tc.name == "a feature card"], PlanRevision: 1, PRNumber: 14})
+			r.tasks.plans = map[string][]factoryd.PlanRevision{"t-plan": {{TaskID: "t-plan", Revision: 1, Plan: plan, SHA256: "sha-1"}}}
+			r.tasks.proofs = map[string][]factoryd.PlanProof{"t-plan": {
+				{Idx: 1, Origin: factoryd.ProofOriginCriterion, Criterion: "size_bound", ID: "size_bound", Path: "proofs/size_bound/size_bound_test.go",
+					Code: "package size_bound", State: factoryd.ProofStored},
+				{Idx: 2, Origin: factoryd.ProofOriginCriterion, Criterion: "group_open", ID: "group_open", Path: "acceptance/group_open_test.go",
+					Code: "v1 code", State: factoryd.ProofOpened},
+			}}
+			r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 41, Kind: factoryd.ApprovalMerge, TaskID: "t-int",
+				Project: "sf/code", PRNumber: 14, Status: "pending", Spec: json.RawMessage(`{"risk_class":"normal","head_sha":"8e3a1b0c"}`)})
+			r.fg.rawAt = tc.raw
+			ck, _ := r.loggedIn(t)
+			r.fg.failAPI = tc.fail
+			body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-int/drawer?tab=overview", nil), ck).Body.String()
+			r.fg.failAPI = false
+			for _, w := range tc.want {
+				if !strings.Contains(body, w) {
+					t.Fatalf("the drawer lacks %s:\n%s", w, body)
+				}
+			}
+			if got := strings.Count(body, `<pre class="proof`); got != tc.pres || strings.Contains(body, "size_bound") {
+				t.Fatalf("the drawer holds %d proof blocks, want %d, and no stored proof:\n%s", got, tc.pres, body)
+			}
+			board := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+			if !strings.Contains(board, `data-card="t-int"`) || strings.Contains(board, `class="proof`) {
+				t.Fatal("the board's column copy of the merge card shows an opened proof, or no card")
+			}
+		})
+	}
+}
+
 // The drawer's pill reads the card's state like the face's: a merged
 // card's drawer says merged, a done card's says done.
 func TestDrawerPillReadsTheState(t *testing.T) {

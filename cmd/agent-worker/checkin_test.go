@@ -197,24 +197,11 @@ func TestBriefWait(t *testing.T) {
 	}
 	// start() binds the worker's one fixed message port
 	messagePortFree(t)
-	ready := func(t *testing.T) {
-		t.Helper()
-		setRequiredEnv(t)
-		t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
-		// the seeded repo is its own base; an ambient REPO_SHA from the
-		// harness names a commit it does not carry
-		t.Setenv("REPO_SHA", "")
-		home := t.TempDir()
-		t.Setenv("HOME", home)
-		if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
-			t.Fatal(err)
-		}
-	}
 	old := checkinWait
 	t.Cleanup(func() { checkinWait = old })
 
 	t.Run("no push", func(t *testing.T) {
-		ready(t)
+		readyToStart(t)
 		checkinWait = 50 * time.Millisecond
 		var logs []string
 		s, err := start(context.Background(), func(f string, a ...any) { logs = append(logs, fmt.Sprintf(f, a...)) },
@@ -239,32 +226,11 @@ func TestBriefWait(t *testing.T) {
 	})
 
 	t.Run("push inside the wait", func(t *testing.T) {
-		ready(t)
+		readyToStart(t)
 		checkinWait = 10 * time.Second
 		const note = "the finding is false; build and test as usual"
-		answered := make(chan int, 1)
-		go func() {
-			// start() binds port 8091 somewhere in its clone and checkpoint
-			// phases; the push retries until the listener answers
-			body, _ := json.Marshal(map[string]string{"handover": note})
-			var code int
-			for deadline := time.Now().Add(5 * time.Second); ; {
-				req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:8091/brief", bytes.NewReader(body))
-				req.Header.Set("Authorization", "Bearer session-secret")
-				resp, err := http.DefaultClient.Do(req)
-				if err == nil {
-					resp.Body.Close()
-					code = resp.StatusCode
-					break
-				}
-				if time.Now().After(deadline) {
-					code = http.StatusInternalServerError
-					break
-				}
-				time.Sleep(5 * time.Millisecond)
-			}
-			answered <- code
-		}()
+		body, _ := json.Marshal(map[string]string{"handover": note})
+		answered := pushWhileStarting(body)
 		s, err := start(context.Background(), nolog, seedCheckinRepo(t), nil, func(workerEnv) egressProbe { return closedSandbox(t) })
 		if err != nil {
 			t.Fatal(err)
@@ -278,6 +244,49 @@ func TestBriefWait(t *testing.T) {
 			t.Fatalf("brief handover = %q, want %q", s.brief.Handover, note)
 		}
 	})
+}
+
+// readyToStart sets the environment start() reads for a session on a
+// seeded repo.
+func readyToStart(t *testing.T) {
+	t.Helper()
+	setRequiredEnv(t)
+	t.Setenv("OTEL_EXPORTER_OTLP_ENDPOINT", "")
+	// the seeded repo is its own base; an ambient REPO_SHA from the
+	// harness names a commit it does not carry
+	t.Setenv("REPO_SHA", "")
+	home := t.TempDir()
+	t.Setenv("HOME", home)
+	if err := os.MkdirAll(filepath.Join(home, ".config", "opencode"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// pushWhileStarting posts body to the message port's POST /brief until
+// the listener answers: start() binds port 8091 somewhere in its clone and
+// checkpoint phases. The channel gets the answer's status.
+func pushWhileStarting(body []byte) <-chan int {
+	answered := make(chan int, 1)
+	go func() {
+		var code int
+		for deadline := time.Now().Add(5 * time.Second); ; {
+			req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:8091/brief", bytes.NewReader(body))
+			req.Header.Set("Authorization", "Bearer session-secret")
+			resp, err := http.DefaultClient.Do(req)
+			if err == nil {
+				resp.Body.Close()
+				code = resp.StatusCode
+				break
+			}
+			if time.Now().After(deadline) {
+				code = http.StatusInternalServerError
+				break
+			}
+			time.Sleep(5 * time.Millisecond)
+		}
+		answered <- code
+	}()
+	return answered
 }
 
 // The parent session's record lands in the workspace where the design
@@ -568,5 +577,99 @@ func TestBriefEndpointTakesPushesUpToTheCap(t *testing.T) {
 		if rec.Code != tc.status {
 			t.Errorf("a body of %d bytes: status %d, want %d", len(body), rec.Code, tc.status)
 		}
+	}
+}
+
+// The brief's opened proofs land in the clone before the conversation's
+// brief is released, each where its path holds no file, and the brief
+// names the ones written; a path out of the tree refuses the push, which
+// writes none of its files.
+func TestBriefPushWritesTheOpenedProofsIntoTheClone(t *testing.T) {
+	const push = `{"proofs":[{"path":"proofs/size_bound/size_bound_test.go","content":"package size_bound"},` +
+		`{"path":"acceptance/group_open_test.go","content":"v1"}]}`
+	landed := []string{"proofs/size_bound/size_bound_test.go"}
+	keep := func(t *testing.T, repo string) {
+		t.Helper()
+		if err := os.MkdirAll(filepath.Join(repo, "acceptance"), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(filepath.Join(repo, "acceptance", "group_open_test.go"), []byte("v2"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	files := func(t *testing.T, repo string) {
+		t.Helper()
+		if b, err := os.ReadFile(filepath.Join(repo, "proofs", "size_bound", "size_bound_test.go")); err != nil || string(b) != "package size_bound" {
+			t.Fatalf("size_bound_test.go = %q, %v, want the proof's code", b, err)
+		}
+		if b, err := os.ReadFile(filepath.Join(repo, "acceptance", "group_open_test.go")); err != nil || string(b) != "v2" {
+			t.Fatalf("group_open_test.go = %q, %v, want the clone's own v2", b, err)
+		}
+	}
+	post := func(h http.Handler, body string) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/brief", strings.NewReader(body))
+		req.Header.Set("Authorization", "Bearer session-secret")
+		rec := httptest.NewRecorder()
+		h.ServeHTTP(rec, req)
+		return rec
+	}
+	t.Run("lands", func(t *testing.T) {
+		ws := t.TempDir()
+		repo := filepath.Join(ws, "repo")
+		keep(t, repo)
+		ck := newCheckinServe(ws)
+		if rec := post(checkinHandler(t, ck), push); rec.Code != http.StatusNoContent {
+			t.Fatalf("status %d %q, want 204", rec.Code, rec.Body.String())
+		}
+		files(t, repo)
+		if got := ck.waitBrief(t.Logf); !slices.Equal(got.Landed, landed) {
+			t.Fatalf("landed = %q, want %q", got.Landed, landed)
+		}
+	})
+	t.Run("the run's brief", func(t *testing.T) {
+		if _, err := exec.LookPath("git"); err != nil {
+			t.Skip("no git binary")
+		}
+		messagePortFree(t)
+		readyToStart(t)
+		old := checkinWait
+		t.Cleanup(func() { checkinWait = old })
+		checkinWait = 10 * time.Second
+		ws := seedCheckinRepo(t)
+		repo := filepath.Join(ws, "repo")
+		keep(t, repo)
+		answered := pushWhileStarting([]byte(push))
+		s, err := start(context.Background(), nolog, ws, nil, func(workerEnv) egressProbe { return closedSandbox(t) })
+		if err != nil {
+			t.Fatal(err)
+		}
+		defer s.closeTelemetry()
+		s.stopMessages()
+		if code := <-answered; code != http.StatusNoContent {
+			t.Fatalf("POST /brief answered %d, want 204", code)
+		}
+		files(t, repo)
+		if !slices.Equal(s.brief.Proofs, landed) {
+			t.Fatalf("brief proofs = %q, want %q", s.brief.Proofs, landed)
+		}
+	})
+	for _, out := range []string{"../x_test.go", "proofs/../../x_test.go", "/x_test.go"} {
+		t.Run("a path out of the tree: "+out, func(t *testing.T) {
+			ws := t.TempDir()
+			repo := filepath.Join(ws, "repo")
+			if err := os.MkdirAll(repo, 0o750); err != nil {
+				t.Fatal(err)
+			}
+			rec := post(checkinHandler(t, newCheckinServe(ws)),
+				`{"proofs":[{"path":"proofs/size_bound/size_bound_test.go","content":"package size_bound"},{"path":"`+out+`","content":"x"}]}`)
+			if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), out) {
+				t.Fatalf("status %d %q, want 400 naming the path", rec.Code, rec.Body.String())
+			}
+			for _, p := range []string{filepath.Join(repo, "proofs"), filepath.Join(ws, "x_test.go")} {
+				if _, err := os.Lstat(p); !os.IsNotExist(err) {
+					t.Fatalf("a refused push wrote %s: %v", p, err)
+				}
+			}
+		})
 	}
 }

@@ -644,6 +644,83 @@ func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
 	}
 }
 
+// The review of a plan's integration card reads each opened proof's
+// original code with whether the pull request's file at its path is
+// that original, and the agent's summary, which may say why the test
+// changed; its prompt says what to make of them. A card of a plan with
+// no opened proof gets neither.
+func TestModelReviewReadsTheOpenedProofsOriginals(t *testing.T) {
+	const summary = "TestGroupOpen read the hours in UTC; the spec says local time, so the test changed."
+	const original = "package acceptance // group_open v1"
+	opened := PlanProof{Idx: 2, Origin: ProofOriginCriterion, Criterion: "group_open", ID: "group_open", Suite: "./acceptance", Name: "TestGroupOpen",
+		Path: "acceptance/group_open_test.go", Code: original, State: ProofOpened}
+	review := func(t *testing.T, raw map[string]string, rows ...PlanProof) (map[string]any, string, *gateForgejo) {
+		t.Helper()
+		fj := &gateForgejo{diff: "diff --git a/acceptance/group_open_test.go b/acceptance/group_open_test.go\n+x\n", raw: raw}
+		task := gateTask
+		task.Source, task.Parent, task.PlanKey, task.AgentSummary = SourcePlan, "t-plan", "integration", summary
+		r, store, _ := newGateRunner(t, task, fj)
+		b, _ := json.Marshal(Plan{Summary: "the plan", Cards: []PlanCard{{Key: "feature", Role: RoleFeature, Title: "Feature"},
+			{Key: "integration", Role: RoleIntegration, Title: "Integration"}}})
+		if _, err := store.AddPlanRevision(context.Background(), "t-plan", b, "sha"); err != nil {
+			t.Fatal(err)
+		}
+		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
+		store.proofs = map[string][]PlanProof{"t-plan": rows}
+		ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+		r.supervisor = testSupervisorModel(ll.srv(t).URL)
+		if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+			t.Fatal(err)
+		}
+		if len(ll.chats) != 1 {
+			t.Fatalf("calls = %d, want the one review call", len(ll.chats))
+		}
+		msgs := ll.chats[0]["messages"].([]any)
+		var in map[string]any
+		if err := json.Unmarshal([]byte(strings.TrimPrefix(msgs[1].(map[string]any)["content"].(string), chatInputLead)), &in); err != nil {
+			t.Fatal(err)
+		}
+		return in, msgs[0].(map[string]any)["content"].(string), fj
+	}
+	stored := PlanProof{Idx: 1, Origin: ProofOriginCriterion, Criterion: "size_bound", ID: "size_bound", Path: "proofs/size_bound/size_bound_test.go",
+		Code: "package size_bound", State: ProofStored}
+	for _, tc := range []struct {
+		name    string
+		raw     map[string]string
+		changed bool
+	}{
+		{"changed", map[string]string{"sf/repo/raw/acceptance/group_open_test.go": "package acceptance // group_open v2"}, true},
+		{"the original", map[string]string{"sf/repo/raw/acceptance/group_open_test.go": original}, false},
+		{"gone", nil, true},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			in, system, fj := review(t, tc.raw, stored, opened)
+			want := []any{map[string]any{"criterion": "group_open", "path": "acceptance/group_open_test.go", "original": original, "changed": tc.changed}}
+			if !reflect.DeepEqual(in["opened_proofs"], want) || in["agent_summary"] != summary {
+				t.Fatalf("opened_proofs = %v, agent_summary %v; want %v and the summary", in["opened_proofs"], in["agent_summary"], want)
+			}
+			if !strings.HasSuffix(system, reviewOpenedProofs) {
+				t.Fatalf("system prompt ends %q, want reviewOpenedProofs", system[max(0, len(system)-200):])
+			}
+			if !slices.Equal(fj.rawRefs, []string{"c1"}) {
+				t.Fatalf("raw reads at %q, want the one at the head", fj.rawRefs)
+			}
+		})
+	}
+	t.Run("no opened proof", func(t *testing.T) {
+		in, system, _ := review(t, nil, stored)
+		if _, ok := in["opened_proofs"]; ok {
+			t.Fatalf("input has opened_proofs: %v", in["opened_proofs"])
+		}
+		if _, ok := in["agent_summary"]; ok {
+			t.Fatalf("input has agent_summary: %v", in["agent_summary"])
+		}
+		if strings.Contains(system, reviewOpenedProofs) {
+			t.Fatal("the prompt names the opened proofs of a plan that has none")
+		}
+	})
+}
+
 // Roadmap 278: the review judges the change, not who merges it. Its
 // prompt and its input name no merge rule, so a human merge rule gives the
 // model no reason for concerns about a change it finds sound.

@@ -388,6 +388,26 @@ func gateRows(proofs []gateProof) []CriterionVerdict {
 	return rows
 }
 
+// CriteriaCard says whether the card of key answers plan p's criteria:
+// p's integration card, or a delta card, whose key p does not hold.
+func CriteriaCard(p Plan, key string) bool {
+	i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == key })
+	return i < 0 || p.Cards[i].Role == RoleIntegration
+}
+
+// openedProofs are t's plan's proofs in state opened when t is its integration card or a delta card; nil for any other task.
+func (r *Runner) openedProofs(ctx context.Context, t Task) ([]PlanProof, error) {
+	if t.Source != SourcePlan || t.Parent == "" {
+		return nil, nil
+	}
+	p, err := r.filedPlan(ctx, t.Parent, t.ID)
+	if err != nil || !CriteriaCard(p, t.PlanKey) {
+		return nil, err
+	}
+	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	return slices.DeleteFunc(rows, func(pp PlanProof) bool { return pp.State != ProofOpened }), err
+}
+
 // proofAtHead reads path at commit: present false when the path holds no
 // file.
 func (r *Runner) proofAtHead(ctx context.Context, repo Repo, commit, path string) (content []byte, present bool, err error) {
@@ -429,7 +449,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	if err != nil {
 		return CriteriaResult{}, err
 	}
-	if i := slices.IndexFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }); i >= 0 && p.Cards[i].Role != RoleIntegration {
+	if !CriteriaCard(p, t.PlanKey) {
 		const skipped = "not the plan's integration card or a delta card"
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": skipped}))
 		return CriteriaResult{Skipped: skipped}, nil

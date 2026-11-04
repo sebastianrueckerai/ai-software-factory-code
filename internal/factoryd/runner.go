@@ -558,6 +558,10 @@ type sessionSpec struct {
 	// place of a parent's working state: the old cards' records, the work
 	// so far; nil for none
 	record *carryState
+	// proofs are the plan's opened proofs the brief push carries into the
+	// clone, each file the row's code: an integration or delta card's
+	// alone
+	proofs []harness.ProofFile
 }
 
 // sessionOutcome is how one sandbox session ended: a clean adapter verdict,
@@ -707,7 +711,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return out, nil
 			}
 		} else {
-			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord))
+			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord), s.proofs)
 		}
 	}
 
@@ -1097,7 +1101,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	ask := *s.checkInAsk
 	ask.ParentSession = s.parent
 	brief := func(note string) {
-		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord))
+		r.pushBrief(ctx, workerStop, t.ID, ns, pod, s.messageToken, note, priorState(s, parentRecord), s.proofs)
 	}
 	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
@@ -1252,10 +1256,11 @@ func (r *Runner) checkinBudget(ctx context.Context, t Task, limits policy.Limits
 }
 
 // pushBrief delivers the session's brief: its handover note, "" for none,
-// and the parent's working state when carry holds one. The worker holds
-// its conversation's start for it.
-func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState) {
-	push := harness.BriefPush{Handover: handover}
+// the parent's working state when carry holds one, and the opened proofs
+// the worker writes into the clone. The worker holds its conversation's
+// start for it.
+func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, taskID, ns, pod, token, handover string, carry *carryState, proofs []harness.ProofFile) {
+	push := harness.BriefPush{Handover: handover, Proofs: proofs}
 	if carry != nil {
 		push.Prior, push.Files = &carry.Prior, carry.Files
 	}

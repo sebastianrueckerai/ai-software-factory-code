@@ -107,6 +107,9 @@ type fakeForgejo struct {
 	// tarball answers by ref
 	trees    map[string]string
 	archives map[string][]byte
+	// rawAt are files at refs other than main, "<ref> <escaped path>" to
+	// the content
+	rawAt map[string]string
 }
 
 // asset is an upload as Forgejo's asset endpoints read it: the query's name
@@ -274,6 +277,10 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			http.Error(w, `{"message":"The target couldn't be found."}`, http.StatusNotFound)
 		}
 	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/"):
+		if body, ok := f.rawAt[r.URL.Query().Get("ref")+" "+strings.TrimPrefix(r.URL.EscapedPath(), "/api/v1/repos/sf/code/raw/")]; ok {
+			io.WriteString(w, body)
+			return
+		}
 		// the files at main, by their escaped paths
 		files := map[string]string{"README.md": strings.Repeat("r", 1200), "bin/x": "\x00" + strings.Repeat("b", 99),
 			"docs/a%20b.md": "spaced", "big.txt": strings.Repeat("g", 70<<10), "huge.txt": strings.Repeat("h", 1<<20+1),

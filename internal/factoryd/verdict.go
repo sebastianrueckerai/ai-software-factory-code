@@ -1344,7 +1344,7 @@ func (r *Runner) criteriaContext(ctx context.Context, t Task) *criteriaContext {
 	if len(p.Criteria) == 0 {
 		return nil
 	}
-	if roleOf(p, t.PlanKey) != RoleIntegration && slices.ContainsFunc(p.Cards, func(c PlanCard) bool { return c.Key == t.PlanKey }) {
+	if !CriteriaCard(p, t.PlanKey) {
 		return nil
 	}
 	return &criteriaContext{plan: p, revision: revision}
