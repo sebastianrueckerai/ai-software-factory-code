@@ -2,7 +2,10 @@ package console
 
 import (
 	"context"
+	"errors"
 	"fmt"
+	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"testing"
 
@@ -253,5 +256,47 @@ func TestChatRefusesTheWakeOverAnOlderHumanLine(t *testing.T) {
 	r.tasks.mu.Unlock()
 	if len(calls) != 0 || criteria != 1 {
 		t.Fatalf("a wake over an older line of the human's decided something: calls %v, %d verdict rows", calls, criteria)
+	}
+}
+
+// onceFailingApprovals fails its first read of the requests.
+type onceFailingApprovals struct {
+	*fakeApprovals
+	failed bool
+}
+
+func (a *onceFailingApprovals) ApprovalRequests(ctx context.Context, status string) ([]factoryd.ApprovalRequest, error) {
+	if !a.failed {
+		a.failed = true
+		return nil, errors.New("pg: connection reset")
+	}
+	return a.fakeApprovals.ApprovalRequests(ctx, status)
+}
+
+// The chat's press on a row falls to the plan's criteria request only
+// when the card has no pending merge request: a read that fails answers
+// as the failure, and nothing is decided.
+func TestChatRowPressAnswersAFailedRead(t *testing.T) {
+	r, chat, _ := newChatRig(t)
+	calls := humanRig(r)
+	_, s := r.loggedIn(t)
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	line, err := chat.AddChatMessage(t.Context(), "sf/code", "sebastian", factoryd.ChatMessage{Conversation: conv, Role: "user", Content: "waive all_green: CI covers it"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.c.cfg.Approvals = &onceFailingApprovals{fakeApprovals: r.approvals}
+	req := httptest.NewRequest(http.MethodGet, "/", nil)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	tool, _ := r.c.chatTool("answer_criteria")
+	_, _, err = tool.run(&turn{c: r.c, r: req, a: actor{s: s, repository: "sf/code", via: factoryd.ViaChat},
+		p: factoryd.Project{Name: "ai-software-factory-code", Repository: "sf/code"}, upto: line, conv: conv, owner: "sebastian"},
+		toolInput{TaskID: "t-int", Action: "waive", Criterion: "all_green", Reason: "CI covers it."})
+	refusedAs(t, err, http.StatusInternalServerError, "cannot read the approval requests")
+	if len(*calls) != 0 || len(decided(r)) != 0 {
+		t.Errorf("the failed read decided calls %q and events %v", *calls, decided(r))
 	}
 }

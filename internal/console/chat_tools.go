@@ -883,46 +883,45 @@ func (in toolInput) limit() int {
 	return min(in.N, 100)
 }
 
-// mergeRequest is the pending merge approval request of card id in the
-// chat's project.
-func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
+// pending is the pending approval request of card in's in the chat's
+// project whose kind is one of kinds, the card, and whether one pends.
+func (t *turn) pending(in toolInput, kinds ...string) (factoryd.ApprovalRequest, factoryd.Task, bool, error) {
 	k, err := t.card(in)
 	if err != nil {
-		return factoryd.ApprovalRequest{}, err
+		return factoryd.ApprovalRequest{}, k, false, err
 	}
 	all, err := t.c.cfg.Approvals.ApprovalRequests(t.r.Context(), "pending")
 	if err != nil {
 		log.Printf("console: approvals: %v", err)
-		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
+		return factoryd.ApprovalRequest{}, k, false, refuse(http.StatusInternalServerError, "cannot read the approval requests")
 	}
 	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && q.Kind == factoryd.ApprovalMerge && q.Project == t.p.Repository
+		return q.TaskID == k.ID && slices.Contains(kinds, q.Kind) && q.Project == t.p.Repository
 	})
 	if i < 0 {
-		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending merge request")
+		return factoryd.ApprovalRequest{}, k, false, nil
 	}
-	return all[i], nil
+	return all[i], k, true, nil
+}
+
+// mergeRequest is the pending merge approval request of card id in the
+// chat's project.
+func (t *turn) mergeRequest(in toolInput) (factoryd.ApprovalRequest, error) {
+	q, k, ok, err := t.pending(in, factoryd.ApprovalMerge)
+	if err == nil && !ok {
+		err = wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending merge request")
+	}
+	return q, err
 }
 
 // criteriaRequest is the pending criteria or criteria_rerun approval
 // request of plan id in the chat's project.
 func (t *turn) criteriaRequest(in toolInput) (factoryd.ApprovalRequest, error) {
-	k, err := t.card(in)
-	if err != nil {
-		return factoryd.ApprovalRequest{}, err
+	q, k, ok, err := t.pending(in, factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun)
+	if err == nil && !ok {
+		err = wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
 	}
-	all, err := t.c.cfg.Approvals.ApprovalRequests(t.r.Context(), "pending")
-	if err != nil {
-		log.Printf("console: approvals: %v", err)
-		return factoryd.ApprovalRequest{}, refuse(http.StatusInternalServerError, "cannot read the approval requests")
-	}
-	i := slices.IndexFunc(all, func(q factoryd.ApprovalRequest) bool {
-		return q.TaskID == k.ID && (q.Kind == factoryd.ApprovalCriteria || q.Kind == factoryd.ApprovalCriteriaRerun) && q.Project == t.p.Repository
-	})
-	if i < 0 {
-		return factoryd.ApprovalRequest{}, wrongState(k, t.c.capFactsOf(t.r.Context(), k), "a pending criteria request")
-	}
-	return all[i], nil
+	return q, err
 }
 
 // humanAnswerLine is the line this turn answers, when the human typed it
@@ -1637,7 +1636,7 @@ var tools = []chatTool{
 			var q factoryd.ApprovalRequest
 			switch in.Action {
 			case "waive", "met", "not_met":
-				if q, err = t.mergeRequest(in); err != nil {
+				if q, _, ok, err = t.pending(in, factoryd.ApprovalMerge); err == nil && !ok {
 					q, err = t.criteriaRequest(in)
 				}
 			default:

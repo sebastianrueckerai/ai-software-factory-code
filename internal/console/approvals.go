@@ -299,47 +299,59 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	return nil
 }
 
-// planRows are plan card t's plan's criteria with their standing rows on
-// its integration card, each human criterion's with its artifact, and the
-// ids with no verdict; ok false when t is not the plan's integration card
-// or a delta card.
+// planRows are planVerdicts' rows, each human criterion's with its
+// artifact.
 func (c *Console) planRows(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, ok bool, err error) {
+	rows, open, home, ok, err := c.planVerdicts(ctx, t)
+	if err != nil || !ok {
+		return nil, nil, ok, err
+	}
+	for i, row := range rows {
+		if row.Kind != factoryd.CriterionHuman {
+			continue
+		}
+		b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home, row.ID))
+		if err != nil {
+			return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
+		}
+		if b != nil {
+			rows[i].Artifact = &factoryd.GateArtifact{}
+			if err := json.Unmarshal(b, rows[i].Artifact); err != nil {
+				return nil, nil, false, fmt.Errorf("the artifact of %s: %w", row.ID, err)
+			}
+		}
+	}
+	return rows, open, true, nil
+}
+
+// planVerdicts are plan card t's plan's criteria with their standing rows
+// on its integration card home, and open, the human criteria with no
+// verdict, which hold the card's Approve; ok false when t is not the
+// integration card or a delta card of a plan with criteria.
+func (c *Console) planVerdicts(ctx context.Context, t factoryd.Task) (rows []criterionRow, open []string, home string, ok bool, err error) {
 	if t.Source != factoryd.SourcePlan || t.Parent == "" {
-		return nil, nil, false, nil
+		return nil, nil, "", false, nil
 	}
 	_, p, ok, err := c.planTable(ctx, t.Parent, 0)
-	if err != nil || !ok || !factoryd.CriteriaCard(p, t.PlanKey) {
-		return nil, nil, false, err
+	if err != nil || !ok || len(p.Criteria) == 0 || !factoryd.CriteriaCard(p, t.PlanKey) {
+		return nil, nil, "", false, err
 	}
-	home, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, t.Parent, p)
+	integration, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, t.Parent, p)
 	if err != nil {
-		return nil, nil, false, err
+		return nil, nil, "", false, err
 	}
-	verdicts, err := c.cfg.Tasks.CriteriaVerdicts(ctx, home.ID)
+	verdicts, err := c.cfg.Tasks.CriteriaVerdicts(ctx, integration.ID)
 	if err != nil {
-		return nil, nil, false, fmt.Errorf("verdicts of %s: %w", home.ID, err)
+		return nil, nil, "", false, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
 	}
 	for _, pc := range p.Criteria {
 		v, _ := factoryd.StandingRow(verdicts, pc)
-		row := criterionRow{PlanCriterion: pc, Verdict: v.Verdict, Evidence: v.Evidence}
-		if v.Verdict == "" {
+		rows = append(rows, criterionRow{PlanCriterion: pc, Verdict: v.Verdict, Evidence: v.Evidence})
+		if v.Verdict == "" && pc.Kind == factoryd.CriterionHuman {
 			open = append(open, pc.ID)
 		}
-		if pc.Kind == factoryd.CriterionHuman {
-			b, err := c.cfg.Timelines.Get(ctx, factoryd.ArtifactKey(home.ID, pc.ID))
-			if err != nil {
-				return nil, nil, false, fmt.Errorf("the artifact of %s: %w", pc.ID, err)
-			}
-			if b != nil {
-				row.Artifact = &factoryd.GateArtifact{}
-				if err := json.Unmarshal(b, row.Artifact); err != nil {
-					return nil, nil, false, fmt.Errorf("the artifact of %s: %w", pc.ID, err)
-				}
-			}
-		}
-		rows = append(rows, row)
 	}
-	return rows, open, true, nil
+	return rows, open, integration.ID, true, nil
 }
 
 // planOf fills plan card k from its request's revision.

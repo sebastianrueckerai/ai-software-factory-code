@@ -507,6 +507,11 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		if q := r.approvals.get(31); q.Status != "denied" || !strings.Contains(q.DecisionNote, words) {
 			t.Errorf("the merge request = %+v, want it denied with %q", q, words)
 		}
+		_, err := press(t, r, 31, "pages_ok", "met", "")
+		refusedAs(t, err, http.StatusConflict, "approval request 31 is not pending (any more); reload the board")
+		if len(*calls) != 0 || len(decided(r)) != 1 {
+			t.Errorf("a press on the decided request took calls %q and events %v", *calls, decided(r))
+		}
 	})
 	t.Run("waive", func(t *testing.T) {
 		r := newRig(t)
@@ -531,6 +536,7 @@ func TestTheHumanRowsPresses(t *testing.T) {
 			{31, "pages_ok", "not_met", "", http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive"},
 			{31, "pages_ok", "waived", " ", http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive"},
 			{31, "pages_ok", "maybe", "", http.StatusBadRequest, "Choose Met, Not met or Waive: the verb is met, not_met or waived."},
+			{31, "pages_ok", "met", strings.Repeat("x", 2001), http.StatusBadRequest, "Met takes up to 1974 characters of words beside what you saw."},
 			{31, "c9", "waived", "no such one", http.StatusConflict, "The plan holds no criterion c9. Reload the board."},
 			{32, "pages_ok", "waived", "x", http.StatusConflict, "This card has no criterion rows."},
 			{3, "pages_ok", "waived", "x", http.StatusConflict, "This card has no criterion rows."},
@@ -605,5 +611,56 @@ func TestTheHumanRowsPresses(t *testing.T) {
 		if after != rows || len(decided(r)) != 0 {
 			t.Errorf("the approve wrote %d rows and the events %v, want none", after-rows, decided(r))
 		}
+	})
+	// settled is humanRig's board with both human rows met by the approver.
+	settled := func(r *rig) {
+		r.tasks.mu.Lock()
+		defer r.tasks.mu.Unlock()
+		for _, cid := range []string{"pages_ok", "page_links"} {
+			r.tasks.criteria["t-int"] = append(r.tasks.criteria["t-int"], factoryd.CriterionVerdict{Criterion: cid, Verdict: "met",
+				Evidence: "met (the criterion's evidence)", Kind: factoryd.CriterionHuman, Source: factoryd.CriteriaSourceApprover, DecidedBy: "sebastian"})
+		}
+	}
+	approved := func(t *testing.T, r *rig) {
+		t.Helper()
+		_, s := r.loggedIn(t)
+		r.fg.calls = nil
+		if note, err := r.c.doApprove(t.Context(), actor{s: s, via: factoryd.ViaButton}, 31); err != nil || note != "Approved pull request #12; factoryd merges it." {
+			t.Fatalf("approve = %q, %v", note, err)
+		}
+		if !slices.Contains(r.fg.calls, "SIGNAL approved t-int #12 by sebastian") {
+			t.Errorf("the approve did not signal the merge: %q", r.fg.calls)
+		}
+	}
+	t.Run("a gate criterion with no row", func(t *testing.T) {
+		r := newRig(t)
+		humanRig(r)
+		settled(r)
+		r.tasks.mu.Lock()
+		r.tasks.criteria["t-int"] = slices.DeleteFunc(r.tasks.criteria["t-int"], func(v factoryd.CriterionVerdict) bool { return v.Criterion == "reads_calm" })
+		r.tasks.mu.Unlock()
+		approved(t, r)
+	})
+	t.Run("approve reads no artifact", func(t *testing.T) {
+		r := newRig(t)
+		humanRig(r)
+		settled(r)
+		r.c.cfg.Timelines = failingObjects{}
+		approved(t, r)
+	})
+	t.Run("a plan with no criteria", func(t *testing.T) {
+		r := newRig(t)
+		calls := humanRig(r)
+		plan, _ := json.Marshal(factoryd.Plan{Summary: "The sizes and doors pages", Cards: []factoryd.PlanCard{
+			{Key: "sizes", Role: factoryd.RoleFeature, Title: "The sizes page"},
+			{Key: "integration", Role: factoryd.RoleIntegration, Title: "The pages together"},
+		}})
+		r.tasks.plans["t-plan"][0].Plan = plan
+		_, err := press(t, r, 31, "pages_ok", "waived", "x")
+		refusedAs(t, err, http.StatusConflict, "This card has no criterion rows.")
+		if len(*calls) != 0 {
+			t.Errorf("the press took calls %q", *calls)
+		}
+		approved(t, r)
 	})
 }

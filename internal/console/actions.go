@@ -2306,7 +2306,7 @@ func (c *Console) issueOf(ctx context.Context, id string) int64 {
 // factory's own, decided as factoryd.ChatUser (a.approver), whoever is
 // online: no review is posted, and the merge posts the merge gate's
 // approval on the merge rule auto and refuses on any other. A plan's
-// integration or delta card merges once every criterion row has a
+// integration or delta card merges once every human criterion row has a
 // verdict. A red-checks merge request merges only once the same head's
 // checks turned green again (#1013: a re-run); still red, its approval
 // refuses naming what fits the card. The agent never approves a GitHub
@@ -2391,7 +2391,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 				return "", refuse(http.StatusConflict, fmt.Sprintf("The plan's revision %d drops the card %s, so it cannot merge: deny the merge (deny_merge).", newest, t.PlanKey))
 			}
 		}
-		_, open, _, err := c.planRows(ctx, t)
+		_, open, _, _, err := c.planVerdicts(ctx, t)
 		switch {
 		case err != nil:
 			log.Printf("console: the criterion rows of %s: %v", t.ID, err)
@@ -2536,7 +2536,7 @@ func (c *Console) doDecide(ctx context.Context, a actor, id int64, cid, verb, re
 	switch {
 	case verb != "met" && verb != "not_met" && verb != "waived":
 		return "", refuse(http.StatusBadRequest, "Choose Met, Not met or Waive: the verb is met, not_met or waived.")
-	case len(reason) > 2000 || verb != "met" && reason == "":
+	case verb != "met" && (reason == "" || len(reason) > 2000):
 		return "", refuse(http.StatusBadRequest, "a one-line reason of up to 2000 characters is required for Not met and Waive")
 	}
 	q, err := c.pendingRequest(ctx, a, id)
