@@ -37,8 +37,8 @@ func TestCombineReviewsOffsetsClaims(t *testing.T) {
 
 func TestLastReviewCarriesNoClaimsOrDrops(t *testing.T) {
 	last, _ := lastReview([]Review{{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}, Claims: []Claim{{0, ClaimUndefined, "X"}},
-		Dropped: []Dropped{{Finding: "y"}}}}, [][]fileDiff{nil})
-	if last.Claims != nil || last.Dropped != nil {
+		Dropped: []Dropped{{Finding: "y"}}, GateCriteria: &GateLeft{IDs: []string{"c1"}, Integration: true}}}, [][]fileDiff{nil})
+	if last.Claims != nil || last.Dropped != nil || last.GateCriteria != nil {
 		t.Fatalf("last review = %+v", last)
 	}
 }

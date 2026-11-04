@@ -189,9 +189,18 @@ type Review struct {
 	// review's own calls (planCalls), never from a review answer.
 	Criteria   []CriterionVerdict `json:"criteria,omitempty"`
 	Behaviours []string           `json:"behaviours,omitempty"`
-	// GateCriteria are the ids of the plan's criteria the same review
-	// leaves to the criteria gate (gateJudged).
-	GateCriteria []string `json:"gate_criteria,omitempty"`
+	// GateCriteria are the plan's criteria that review (criteriaContext)
+	// leaves to the criteria gate (gateJudged), whether it ran or not; nil
+	// for any other review.
+	GateCriteria *GateLeft `json:"gate_criteria,omitempty"`
+}
+
+// GateLeft are the ids of a plan's criteria of kind test and invariant, as
+// the review of one of its cards names them; Integration: the card is the
+// plan's integration card, the one card the criteria gate runs on.
+type GateLeft struct {
+	IDs         []string `json:"ids"`
+	Integration bool     `json:"integration,omitempty"`
 }
 
 // AutoMerge decides the merge outcome auto by who wrote the change (spec
@@ -301,15 +310,18 @@ func AutoMerge(g GateResults, rv Review, source string) (ok bool, met, unmet []s
 }
 
 // criteriaUnmet is why the plan's criteria do not prove the change: the
-// review's are not all met, or they are the criteria gate's, whose
-// verdicts the auto merge does not read; "" for a card the plan's
-// criteria do not judge.
+// review's are not all met; or they are the criteria gate's, whose
+// verdicts the auto merge does not read on the integration card and which
+// the gate never runs on a delta card; "" for a card the plan's criteria
+// do not judge.
 func criteriaUnmet(rv Review) string {
 	switch {
 	case len(rv.Criteria) > 0:
 		return "the review's criteria are not all met"
-	case len(rv.GateCriteria) > 0:
-		return "the auto merge does not read the criteria gate's verdicts on " + strings.Join(rv.GateCriteria, ", ")
+	case rv.GateCriteria != nil && rv.GateCriteria.Integration:
+		return "the auto merge does not read the criteria gate's verdicts on " + strings.Join(rv.GateCriteria.IDs, ", ")
+	case rv.GateCriteria != nil:
+		return "the criteria gate runs on the plan's integration card alone, and a person decides this merge"
 	}
 	return ""
 }
@@ -1353,7 +1365,7 @@ func lastReview(earlier []Review, parts [][]fileDiff) (*Review, [][]string) {
 	}
 	last := found[0]
 	last.Summary, last.Adjudicated, last.Claims, last.Dropped = textutil.Truncate(last.Summary, maxReviewSummary), nil, nil, nil
-	last.Criteria, last.Behaviours = nil, nil
+	last.Criteria, last.Behaviours, last.GateCriteria = nil, nil, nil
 	for _, f := range last.Findings {
 		k := partOf(f, parts)
 		byPart[k] = append(byPart[k], f)
@@ -1410,6 +1422,9 @@ func parseReview(content string) Review {
 	}
 	if rv.Behaviours != nil {
 		return invalid("behaviours is not an answer field")
+	}
+	if rv.GateCriteria != nil {
+		return invalid("gate_criteria is not an answer field")
 	}
 	if rv.Summary = textutil.Truncate(strings.TrimSpace(rv.Summary), maxReviewSummary); rv.Summary == "" {
 		return invalid("no summary")
@@ -1598,8 +1613,13 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		return Review{}, err
 	}
 	model := r.callModel(t, policy.PurposeReview)
+	criteria := r.criteriaContext(ctx, t)
+	var gate *GateLeft
+	if criteria != nil {
+		gate = gateLeft(criteria.plan, t.PlanKey)
+	}
 	notRun := func(why string) (Review, error) {
-		rv := Review{Note: reviewNotStarted + why}
+		rv := Review{Note: reviewNotStarted + why, GateCriteria: gate}
 		r.comment(ctx, t, repo, pr.Number, reviewComment(model, commit, rv, ""))
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note, "round": round}))
 		if err := r.reviewFact(ctx, t, ReviewAttemptFact{PR: pr.Number, Commit: commit, Round: round, Model: model, Note: rv.Note}); err != nil {
@@ -1620,7 +1640,6 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
-	criteria := r.criteriaContext(ctx, t)
 	var feature []featureCard
 	if criteria != nil {
 		feature, err = r.featureCards(ctx, t, repo, criteria.plan, diffBytes(prFiles))
@@ -1726,6 +1745,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		read += "."
 	}
+	rv.GateCriteria = gate
 	stopBeats()
 	if ctx.Err() != nil {
 		return Review{}, ctx.Err()

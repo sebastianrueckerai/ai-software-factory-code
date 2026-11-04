@@ -399,6 +399,21 @@ func gateJudged(kind string) bool {
 	return kind == CriterionTest || kind == CriterionInvariant
 }
 
+// gateLeft are the criteria of p the review of card key leaves to the
+// criteria gate; nil when p has none.
+func gateLeft(p Plan, key string) *GateLeft {
+	var ids []string
+	for _, c := range p.Criteria {
+		if gateJudged(c.Kind) {
+			ids = append(ids, c.ID)
+		}
+	}
+	if ids == nil {
+		return nil
+	}
+	return &GateLeft{IDs: ids, Integration: roleOf(p, key) == RoleIntegration}
+}
+
 // allGateJudged: every criterion of cs is the criteria gate's.
 func allGateJudged(cs []PlanCriterion) bool {
 	return !slices.ContainsFunc(cs, func(c PlanCriterion) bool { return !gateJudged(c.Kind) })
@@ -637,11 +652,10 @@ func normalizeCriteria(p Plan, answer []CriterionVerdict, behaviours []string) (
 }
 
 // reviewCriteriaStep is the review's criteria half (piece 7), run when the
-// reviewed task is the plan's integration card: it names the criteria it
-// leaves to the gate, stores the verdict rows, turns an unmet criterion
-// that belongs to this card into a finding, hands one too large for it to
-// the planner as a delta due, and notes the feature's behaviours as
-// records that notify no one.
+// reviewed task is the plan's integration card: it stores the verdict rows,
+// turns an unmet criterion that belongs to this card into a finding, hands
+// one too large for it to the planner as a delta due, and notes the
+// feature's behaviours as records that notify no one.
 func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Plan, revision, round int, rv *Review) {
 	planned := map[string]bool{}
 	for _, c := range p.Cards {
@@ -650,11 +664,6 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 	if len(p.Criteria) == 0 || t.Parent == "" || (roleOf(p, t.PlanKey) != RoleIntegration && planned[t.PlanKey]) {
 		rv.Criteria, rv.Behaviours = nil, nil
 		return
-	}
-	for _, c := range p.Criteria {
-		if gateJudged(c.Kind) {
-			rv.GateCriteria = append(rv.GateCriteria, c.ID)
-		}
 	}
 	integration, err := integrationCard(ctx, r.store, t.Parent, p)
 	if err != nil {

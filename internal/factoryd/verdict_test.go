@@ -797,9 +797,6 @@ func TestReviewCriteriaStepFilesDuesAndFindings(t *testing.T) {
 	if len(rows) != 2 || rows[0].Criterion != "c2" || rows[1].Criterion != "c3" {
 		t.Fatalf("rows = %v, want c2 and c3", rows)
 	}
-	if !slices.Equal(rv.GateCriteria, []string{"c1"}) {
-		t.Errorf("gate criteria = %v, want c1", rv.GateCriteria)
-	}
 	catches, _ := s.PlanCatches(ctx, "t-plan")
 	var deltas []PlanCatch
 	behaviours := 0
