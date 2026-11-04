@@ -519,15 +519,18 @@ func TestChatSettlesRows(t *testing.T) {
 }
 
 // Clear old (the chat's sweep): the marker hides the thread's old rows
-// from the member's view, the record keeps them, and an open ask stays
-// whatever the marker says, so nothing that needs the member disappears.
+// from the member's view, the record keeps them, and an open ask or a
+// poke whose buttons still apply stays whatever the marker says, so
+// nothing that needs the member disappears; once its card moved on, the
+// poke goes with the rest.
 func TestChatClearsOldRows(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	ctx := t.Context()
 	r.tasks.mu.Lock()
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-w", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}})
+		Repository: "sf/code", IssueNumber: 15, Objective: "Which port?"}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed", Repository: "sf/code", IssueNumber: 21}})
 	r.tasks.mu.Unlock()
 	inbox, _ := chat.EnsureInbox(ctx, "sf/code", "sebastian")
 	say := func(m factoryd.ChatMessage) {
@@ -541,6 +544,8 @@ func TestChatClearsOldRows(t *testing.T) {
 	say(factoryd.ChatMessage{Role: "assistant", Content: "#15 closed.", Conversation: inbox})
 	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessageEscalation, Content: "#15 needs you: Which port?",
 		Choices: []string{"8080", "80"}, TaskID: "t-w", Conversation: inbox})
+	say(factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded, Content: "#21 failed: checks: the checks failed on c1.",
+		Choices: []string{"Retry", "Leave it"}, TaskID: "t-f", Conversation: inbox})
 	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventQuestionAnswered,
 		Actor: "sebastian", Via: factoryd.ViaButton}); err != nil {
 		t.Fatal(err)
@@ -559,15 +564,20 @@ func TestChatClearsOldRows(t *testing.T) {
 	}
 	answer := read()
 	answer = read() // the seen marker passes the plain row, it settles too
-	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{3, 0, 3})
+	equal(t, "before the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{4, 0, 4})
 	if code, body, _ := chatPost(t, r, ck, s, chatPath+"/clear", url.Values{"conversation": {strconv.FormatInt(inbox, 10)}}); code != http.StatusNoContent {
 		t.Fatalf("POST clear = %d: %s", code, body)
 	}
 	answer = read()
-	equal(t, "the sweep keeps the open ask alone", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{1, 2, 0})
-	if answer.Messages[0].TaskID != "t-w" || answer.Messages[0].Settled {
-		t.Fatalf("the kept row = %+v, want t-w's open ask", answer.Messages[0])
+	equal(t, "the sweep keeps the open ask and the open choices", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{2, 2, 0})
+	equal(t, "the kept rows", []any{answer.Messages[0].TaskID, answer.Messages[0].Settled, answer.Messages[1].TaskID, answer.Messages[1].Settled, answer.Messages[1].Choices},
+		[]any{"t-w", false, "t-f", false, []string{"Retry", "Leave it"}})
+	if _, err := r.events.Record(ctx, factoryd.Event{Repository: "sf/code", TaskID: "t-f", Kind: factoryd.EventCardRetried,
+		Actor: "sebastian", Via: factoryd.ViaButton, Detail: map[string]any{"replacement": 22}}); err != nil {
+		t.Fatal(err)
 	}
+	answer = read()
+	equal(t, "the retried card's poke goes with the sweep", []int{len(answer.Messages), int(answer.Thread.Cleared), int(answer.Thread.Unswept)}, []int{1, 3, 0})
 	say(factoryd.ChatMessage{Role: "assistant", Content: "#16 merged.", Conversation: inbox})
 	answer = read()
 	equal(t, "a row after the sweep is the next sweep's", []int{len(answer.Messages), int(answer.Thread.Unswept)}, []int{2, 1})

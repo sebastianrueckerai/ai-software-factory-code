@@ -148,9 +148,10 @@ type Chat interface {
 	ChatAttachments(ctx context.Context, repository, login string, conversation int64) ([]factoryd.ChatAttachment, error)
 	ChatAttachmentByID(ctx context.Context, repository string, id int64) (factoryd.ChatAttachment, bool, error)
 	// ChatAsks are login's ask and poke rows on repository, every
-	// thread's, the settle rule's read for the switcher's badge and the
-	// tab title's count (the notification-settling concept)
-	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatMessage, error)
+	// thread's, with their choices and a poke with choices' press, the
+	// settle rule's read for the switcher's badge and the tab title's
+	// count (the notification-settling concept)
+	ChatAsks(ctx context.Context, repository, login string) ([]factoryd.ChatAsk, error)
 	CurrentConversation(ctx context.Context, repository, login string) (int64, error)
 	NewConversation(ctx context.Context, repository, login string) (int64, error)
 	// SideConversation makes a thread titled title that never becomes

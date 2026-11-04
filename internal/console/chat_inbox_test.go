@@ -1,8 +1,10 @@
 package console
 
 import (
+	"encoding/json"
 	"fmt"
 	"net/http"
+	"net/http/httptest"
 	"net/url"
 	"slices"
 	"strconv"
@@ -144,10 +146,11 @@ func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 // A failed card's Retry and Leave it stand while they still apply: the
 // thread read past the poke, a read again, the failure's events before
 // its row and a comment after it leave it open with its buttons, where
-// the poke without choices beside it reads seen, and the inbox read lists
-// it open. The human's press settles it at the press's time, and so does
-// the first event after it that moves the card on, with its word, actor
-// and time.
+// the poke without choices beside it reads seen, the inbox read lists it
+// open and the switcher's badge counts its card waiting on the human. The
+// human's press settles it at the press's time, and so does the first
+// event after it that moves the card on, with its word, actor and time;
+// the badge counts it no more.
 func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 	moved := func(kind, actor string, min int) *factoryd.Event {
 		return &factoryd.Event{Kind: kind, Actor: actor, At: at.Add(time.Duration(min) * time.Minute)}
@@ -188,6 +191,19 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			t.Fatal(err)
 		}
 		path := chatPath + "?conversation=" + strconv.FormatInt(inbox, 10)
+		waitsYou := func() int64 {
+			t.Helper()
+			rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
+			var list []factoryd.ChatConversation
+			if err := json.Unmarshal(rec.Body.Bytes(), &list); err != nil {
+				t.Fatal(rec.Code, err)
+			}
+			i := slices.IndexFunc(list, func(th factoryd.ChatConversation) bool { return th.Inbox })
+			if i < 0 {
+				t.Fatalf("the list = %+v, want the inbox", list)
+			}
+			return list[i].WaitsYou
+		}
 		chatRead(t, r, ck, path)
 		msgs := chatRead(t, r, ck, path).Messages
 		equal(t, c.name+": the inbox read again", []any{msgs[0].Settled, msgs[0].Reason, msgs[1].Settled, msgs[1].Reason, msgs[1].Choices},
@@ -196,6 +212,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			"%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n"+
 			"%d 10-11 09:30Z poke #21: #21 started. (seen)\n"+
 			"That is the whole window.", ids[1], ids[0]))
+		equal(t, c.name+": the badge's cards waiting", waitsYou(), int64(1))
 		if c.move != nil {
 			record(*c.move)
 		} else {
@@ -210,6 +227,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		}
 		msgs = chatRead(t, r, ck, path).Messages
 		equal(t, c.name+": the poke after", []any{msgs[1].Settled, msgs[1].Reason}, []any{true, c.reason})
+		equal(t, c.name+": the badge's cards waiting after", waitsYou(), int64(0))
 	}
 }
 
