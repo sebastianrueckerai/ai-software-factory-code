@@ -358,7 +358,7 @@ func (c *Console) chatGet(w http.ResponseWriter, r *http.Request) {
 	// an open ask, fund row or poke with choices stays whatever the
 	// marker says, and the record keeps every row. Past the summary's fold
 	// the answer carries no summary either: no summary card over rows the
-	// member swept, while the stored thread keeps its summary for the
+	// human swept, while the stored thread keeps its summary for the
 	// turns.
 	if th.ClearedUpto > 0 {
 		kept := make([]factoryd.ChatMessage, 0, len(msgs))
@@ -639,11 +639,11 @@ func choiceSettle(m factoryd.ChatMessage, pressed time.Time, events []factoryd.E
 }
 
 // settleCounts splits each thread's unread turns for the switcher's badge
-// (the notification-settling concept): the asks still open are its
-// needs-you side, the unread rows past the seen marker that are no open
-// ask its new side, and the thread's distinct cards with an open ask or
-// poke row are its waits-you side, the tab title's count. A read that
-// fails leaves the counts as they fall.
+// (the notification-settling concept): the asks and the pokes with
+// choices still open are its needs-you side, read or not, the unread rows
+// past the seen marker that are neither its new side, and the thread's
+// distinct cards with an open ask or poke row are its waits-you side, the
+// tab title's count. A read that fails leaves the counts as they fall.
 func (c *Console) settleCounts(ctx context.Context, repository, login string, list []factoryd.ChatConversation) {
 	asks, err := c.cfg.Chat.ChatAsks(ctx, repository, login)
 	if err != nil {
@@ -677,9 +677,11 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 		if i < 0 {
 			continue
 		}
-		s := factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID))
+		var s factoryd.PokeSettle
 		if choicePoke(m) {
 			s = choiceSettle(m, a.Pressed, events[m.TaskID], login)
+		} else {
+			s = factoryd.SettleOf(m, events[m.TaskID], waits[m.TaskID], factoryd.ApprovalWaits(pending, m.TaskID))
 		}
 		if !s.Open {
 			continue
@@ -688,7 +690,7 @@ func (c *Console) settleCounts(ctx context.Context, repository, login string, li
 			waiting[i] = map[string]bool{}
 		}
 		waiting[i][m.TaskID] = true
-		if m.Kind != factoryd.MessageEscalation {
+		if m.Kind != factoryd.MessageEscalation && !choicePoke(m) {
 			continue
 		}
 		list[i].NeedsYou++

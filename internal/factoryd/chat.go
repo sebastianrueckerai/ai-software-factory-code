@@ -242,8 +242,8 @@ type ChatConversation struct {
 	NeedsYou int64     `json:"needs_you,omitempty"`
 	NewRows  int64     `json:"new_rows,omitempty"`
 	// WaitsYou is the thread's distinct cards with an open ask or poke
-	// row, the tab title's count: what waits for the member now, unlike
-	// NeedsYou, which counts open asks only.
+	// row, the tab title's count: what waits for the human now, unlike
+	// NeedsYou, which counts the open asks and pokes with choices only.
 	WaitsYou int64 `json:"waits_you,omitempty"`
 	SeenUpto int64 `json:"-"`
 	// ClearedUpto is the member's cleared marker: the console's Clear old

@@ -519,9 +519,9 @@ func TestChatSettlesRows(t *testing.T) {
 }
 
 // Clear old (the chat's sweep): the marker hides the thread's old rows
-// from the member's view, the record keeps them, and an open ask or a
+// from the human's view, the record keeps them, and an open ask or a
 // poke whose buttons still apply stays whatever the marker says, so
-// nothing that needs the member disappears; once its card moved on, the
+// nothing that needs the human disappears; once its card moved on, the
 // poke goes with the rest.
 func TestChatClearsOldRows(t *testing.T) {
 	r, chat, _ := newChatRig(t)

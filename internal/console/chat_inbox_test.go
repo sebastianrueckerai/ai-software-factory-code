@@ -147,10 +147,10 @@ func TestChatInboxAskStandsPastAPoke(t *testing.T) {
 // thread read past the poke, a read again, the failure's events before
 // its row and a comment after it leave it open with its buttons, where
 // the poke without choices beside it reads seen, the inbox read lists it
-// open and the switcher's badge counts its card waiting on the human. The
-// human's press settles it at the press's time, and so does the first
-// event after it that moves the card on, with its word, actor and time;
-// the badge counts it no more.
+// open, and the switcher's badge counts it once as needing the human,
+// read or not, and its card as waiting. The human's press settles it at
+// the press's time, and so does the first event after it that moves the
+// card on, with its word, actor and time; the badge counts it no more.
 func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 	moved := func(kind, actor string, min int) *factoryd.Event {
 		return &factoryd.Event{Kind: kind, Actor: actor, At: at.Add(time.Duration(min) * time.Minute)}
@@ -191,7 +191,8 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			t.Fatal(err)
 		}
 		path := chatPath + "?conversation=" + strconv.FormatInt(inbox, 10)
-		waitsYou := func() int64 {
+		// the badge's needs-you, new and waits-you sides
+		badge := func() []int64 {
 			t.Helper()
 			rec := r.do(httptest.NewRequest(http.MethodGet, chatPath+"/conversations", nil), ck)
 			var list []factoryd.ChatConversation
@@ -202,8 +203,9 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			if i < 0 {
 				t.Fatalf("the list = %+v, want the inbox", list)
 			}
-			return list[i].WaitsYou
+			return []int64{list[i].NeedsYou, list[i].NewRows, list[i].WaitsYou}
 		}
+		equal(t, c.name+": the unread inbox's badge", badge(), []int64{1, 1, 1})
 		chatRead(t, r, ck, path)
 		msgs := chatRead(t, r, ck, path).Messages
 		equal(t, c.name+": the inbox read again", []any{msgs[0].Settled, msgs[0].Reason, msgs[1].Settled, msgs[1].Reason, msgs[1].Choices},
@@ -212,7 +214,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 			"%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n"+
 			"%d 10-11 09:30Z poke #21: #21 started. (seen)\n"+
 			"That is the whole window.", ids[1], ids[0]))
-		equal(t, c.name+": the badge's cards waiting", waitsYou(), int64(1))
+		equal(t, c.name+": the read inbox's badge", badge(), []int64{1, 0, 1})
 		if c.move != nil {
 			record(*c.move)
 		} else {
@@ -227,7 +229,7 @@ func TestChatInboxChoicePokeStandsUntilItsCardMovesOn(t *testing.T) {
 		}
 		msgs = chatRead(t, r, ck, path).Messages
 		equal(t, c.name+": the poke after", []any{msgs[1].Settled, msgs[1].Reason}, []any{true, c.reason})
-		equal(t, c.name+": the badge's cards waiting after", waitsYou(), int64(0))
+		equal(t, c.name+": the badge after", badge(), []int64{0, 0, 0})
 	}
 }
 
@@ -275,10 +277,18 @@ func TestChatInboxFiltersByQuery(t *testing.T) {
 
 // A page holds 20 rows besides the open asks and names the id the next
 // one reads below; the last page says the window ends, and a page below
-// the oldest row is empty. The open asks, 25 of them between 23 pokes,
-// fill the first page whole and never show again.
+// the oldest row is empty. A failed card's open Retry and Leave it, older
+// than 25 pokes, leads the first page as an open ask does and never shows
+// again. The open asks, 25 of them between 23 pokes, fill the first page
+// whole and never show again.
 func TestChatInboxPagesWithBefore(t *testing.T) {
 	r, chat, g := newChatRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-f", Kind: "agent", Status: "failed",
+		Repository: "sf/code", IssueNumber: 21}})
+	r.tasks.mu.Unlock()
+	failed := inboxRows(t, chat, "sebastian", factoryd.ChatMessage{Role: "assistant", Kind: factoryd.MessagePoke, BirthKind: factoryd.EventTaskEnded,
+		TaskID: "t-f", Content: "#21 failed: checks: the checks failed on c1.", Choices: []string{"Retry", "Leave it"}})[0]
 	var rows []factoryd.ChatMessage
 	for i := range 25 {
 		rows = append(rows, poke(fmt.Sprintf("poke %d", i), ""))
@@ -294,7 +304,8 @@ func TestChatInboxPagesWithBefore(t *testing.T) {
 	}
 	head := "The inbox of sebastian on ai-software-factory-code:\n"
 	out := reads(t, r, g, "inbox", `{}`)
-	equal(t, "page one", out[0], head+strings.Join(first, "\n")+fmt.Sprintf("\nbefore=%d reads on.", ids[5]))
+	equal(t, "page one", out[0], head+fmt.Sprintf("%d 10-11 09:30Z poke #21: #21 failed: checks: the checks failed on c1. (open)\n", failed)+
+		strings.Join(first, "\n")+fmt.Sprintf("\nbefore=%d reads on.", ids[5]))
 	out = reads(t, r, g, "inbox", fmt.Sprintf(`{"before":%d}`, ids[5]), "inbox", fmt.Sprintf(`{"before":%d}`, ids[0]))
 	equal(t, "page two", out[0], head+strings.Join(second, "\n")+"\nThat is the whole window.")
 	equal(t, "below the oldest row", out[1], head+fmt.Sprintf("no row older than row %d\nThat is the whole window.", ids[0]))

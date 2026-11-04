@@ -832,7 +832,7 @@ func (f *acceptChat) SideConversation(_ context.Context, repository, login, _ st
 	return highest + 1, nil
 }
 
-func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatAsk, error) {
 	return nil, nil
 }
 
