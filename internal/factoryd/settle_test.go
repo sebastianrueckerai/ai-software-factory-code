@@ -144,6 +144,8 @@ func TestSettleOfByCase(t *testing.T) {
 		"case_id": float64(14), "case_kind": string(CaseMonitorFlag), "flag": "issue_open_after_end"})
 	issueRow := ChatMessage{At: issueAsk.At, Kind: MessageEscalation, BirthKind: EventQuestionAsked}
 	issueClosed := ev(45, 700, EventQuestionWithdrawn, FactoryDecider, map[string]any{"case_id": float64(14), "reason": "the issue is closed"})
+	// the console's answer to the revision's first question
+	planAnswer := ev(46, 450, EventPlanQuestionAnswered, "sebastian", map[string]any{"revision": float64(2), "index": float64(1), "answer": "postgres"})
 	open := PokeSettle{Open: true}
 	by := func(e Event, word string) PokeSettle { return PokeSettle{Word: word, By: e.Actor, At: e.At, Event: e} }
 	for _, tt := range []struct {
@@ -176,6 +178,10 @@ func TestSettleOfByCase(t *testing.T) {
 		{"a later revision moves its first question on", planRow("Which DB?"), append([]Event{later}, revision...), waiting,
 			PokeSettle{Word: "moved on", At: later.At}},
 		{"and its confirmation", planRow("Confirm the plan?"), append([]Event{later}, revision...), waiting, PokeSettle{Word: "moved on", At: later.At}},
+		{"the question's answer settles its row", planRow("Which DB?"), append([]Event{planAnswer}, revision...), waiting, by(planAnswer, "answered")},
+		{"and not its sibling's", planRow("Which cache?"), append([]Event{planAnswer}, revision...), waiting, open},
+		{"nor its confirmation's", planRow("Confirm the plan?"), append([]Event{planAnswer}, revision...), waiting, open},
+		{"a plan answer leaves the card's own ask open", own, append(append(slices.Clone(revision), ownAsk), planAnswer), waiting, open},
 		{"a plan question leaves the card's own ask open", own, append(slices.Clone(revision), ownAsk), waiting, open},
 		{"the ask of an ended card's open issue stays open", issueRow, []Event{issueAsk}, "done", open},
 		{"until a row names its case", issueRow, []Event{issueClosed, issueAsk}, "done", by(issueClosed, "withdrawn")},

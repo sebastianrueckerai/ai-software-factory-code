@@ -65,9 +65,9 @@ func settles(kind, family string) bool {
 // settleWords are a settling event's reason word (the concept's table).
 var settleWords = map[string]string{
 	EventQuestionAnswered: "answered", EventSessionGranted: "answered", EventCardClosed: "answered",
-	EventQuestionWithdrawn: "withdrawn",
-	EventMergeApproved:     "approved",
-	EventMergeDenied:       "rejected", EventPlanChangesRequested: "rejected",
+	EventPlanQuestionAnswered: "answered", EventQuestionWithdrawn: "withdrawn",
+	EventMergeApproved: "approved",
+	EventMergeDenied:   "rejected", EventPlanChangesRequested: "rejected",
 	EventTaskEnded: "moved on", EventApprovalRequested: "superseded",
 }
 
@@ -102,7 +102,11 @@ func SettleOf(m ChatMessage, events []Event, status string, approvalWaits bool) 
 			last = e
 		}
 		next := birth.ID != 0 && e.ID > birth.ID && movesOn(birth, e)
-		if !next && (!settles(e.Kind, family) || !ends(e)) {
+		settling := settles(e.Kind, family)
+		if e.Kind == EventPlanQuestionAnswered {
+			settling = family == "question" && answersPlan(birth, e)
+		}
+		if !next && (!settling || !ends(e)) {
 			continue
 		}
 		if first.ID == 0 || e.At.Before(first.At) || e.At.Equal(first.At) && e.ID < first.ID {
@@ -168,6 +172,17 @@ func movesOn(ask, e Event) bool {
 		return named == own
 	}
 	return rev == 0 && !beside(e)
+}
+
+// answersPlan reports whether answer e answers plan question ask: the
+// same revision and the same index. One question's answer settles its
+// row alone, not its siblings'.
+func answersPlan(ask, e Event) bool {
+	revision, _ := toInt(ask.Detail["revision"])
+	index, _ := toInt(ask.Detail["index"])
+	rev, _ := toInt(e.Detail["revision"])
+	idx, _ := toInt(e.Detail["index"])
+	return revision > 0 && rev == revision && idx == index
 }
 
 // caseEnds reports which of events end ask's case, as the events writer
