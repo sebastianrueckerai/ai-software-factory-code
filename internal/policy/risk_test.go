@@ -115,14 +115,15 @@ const infraRisk = `risk:
   classes:
     - {name: forbidden, outcome: forbidden}
     - {name: migration, outcome: requires_approval, migration: true}
+    - {name: runner, outcome: requires_approval}
     - {name: high, outcome: requires_approval}
     - {name: normal, outcome: auto}
   rules:
     - {class: forbidden, paths: [".forgejo/**", ".gitea/**", ".github/**"]}
     - {class: migration, paths: ["**/migrations/**", "internal/policy/schema.sql"]}
+    - {class: runner, paths: ["check", "scripts/pg-test.sh"]}
     - class: high
       paths: ["k8s/**", "deploy/**", "**/Dockerfile*",
-        "check", "scripts/pg-test.sh",
         "**/go.mod", "**/go.sum", "**/go.work", "**/go.work.sum",
         "**/package.json", "**/package-lock.json", "**/npm-shrinkwrap.json", "**/yarn.lock", "**/pnpm-lock.yaml",
         "**/Cargo.toml", "**/Cargo.lock",
@@ -162,8 +163,10 @@ func TestInfraRiskIsTheCopy(t *testing.T) {
 }
 
 // Manifests and lockfiles of every common ecosystem, agent instruction
-// files, CODEOWNERS and every top-level dot directory are protected: class
-// high, at any depth for the files.
+// files, CODEOWNERS and Dockerfiles at any depth, and at the root k8s/,
+// deploy/ and every dot directory or file, are protected: class high.
+// The root's check and scripts/pg-test.sh, the criteria runner's entry
+// point, are class runner; the same names deeper down are not.
 func TestClassifyProtectedFilesHigh(t *testing.T) {
 	base, rest := valid[:strings.Index(valid, "risk:")], valid[strings.Index(valid, "envelope_default:"):]
 	d, err := Parse([]byte(base + infraRisk + rest))
@@ -184,7 +187,6 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		".husky/pre-commit", ".vscode/settings.json", ".devcontainer/devcontainer.json", ".config/x/y.toml",
 		".gitignore", ".golangci.yml",
 		"k8s/factoryd.yaml", "deploy/prod/app.yaml", "cmd/x/Dockerfile",
-		"check", "scripts/pg-test.sh",
 	} {
 		if c := d.Risk.Classify([]string{p, "README.md"}, 0); c.Class.Name != "high" || !slices.Equal(c.Paths, []string{p}) {
 			t.Errorf("Classify(%s) = %s %v, want high on %s", p, c.Class.Name, c.Paths, p)
@@ -203,6 +205,10 @@ func TestClassifyProtectedFilesHigh(t *testing.T) {
 		"src/Gemfile.example":        "normal",
 		"internal/check/x.go":        "normal",
 		"scripts/other.sh":           "normal",
+		"check":                      "runner",
+		"scripts/pg-test.sh":         "runner",
+		"web/check":                  "normal",
+		"web/scripts/pg-test.sh":     "normal",
 	} {
 		if c := d.Risk.Classify([]string{p}, 0); c.Class.Name != want {
 			t.Errorf("Classify(%s) = %s, want %s", p, c.Class.Name, want)

@@ -3118,6 +3118,24 @@ func TestAForbiddenChangeAlwaysAsksAHuman(t *testing.T) {
 	}
 }
 
+// A diff touching check, the criteria runner's entry point, is class
+// runner above class high, and asks a person at full auto with a clean
+// audit: it takes no merge on the audit as class high does.
+func TestARunnerChangeAlwaysAsksAHuman(t *testing.T) {
+	yaml := strings.Replace(testPolicyYAML, "    - {name: high,", "    - {name: runner, outcome: requires_approval}\n    - {name: high,", 1)
+	yaml = strings.Replace(yaml, "    - {class: high,", "    - {class: runner, paths: [check, scripts/pg-test.sh]}\n    - {class: high,", 1)
+	c := testTree(yaml).Document.Risk.Classify([]string{"check", "go.mod"}, 2)
+	if c.Class.Name != "runner" || c.Class.Outcome != policy.OutcomeRequiresApproval || !slices.Equal(c.Paths, []string{"check"}) {
+		t.Fatalf("Classify = %+v, want class runner, requires_approval, on check", c)
+	}
+	g, rv := fullAutoGates("api")
+	g.Policy.Class, g.Policy.Outcome, g.Audit = c.Class.Name, c.Class.Outcome, &AuditResult{Verdict: AuditClear}
+	want := []string{"risk class runner is requires_approval"}
+	if ok, _, unmet := AutoMerge(g, rv, "api"); ok || !slices.Equal(unmet, want) {
+		t.Fatalf("ok %v, unmet %q, want %q", ok, unmet, want)
+	}
+}
+
 // A reproduction that ran but did not fail at the base proves nothing, and
 // unmet criteria say so beside it.
 func TestUnreproducedWithUnmetCriteriaNamesThem(t *testing.T) {
