@@ -26,15 +26,16 @@ import (
 )
 
 // fakeWorkerEndpoint is a worker's message endpoint answering status. It
-// records POST /message's text and POST /push's token; onPush runs at
-// each POST /push, and a token taken (204) lets a log held at tokenLogs
-// go on.
+// records POST /message's text, POST /push's token and POST /proofs's
+// list; onPush runs at each POST /push, and a token taken (204) lets a
+// log held at tokenLogs go on.
 type fakeWorkerEndpoint struct {
 	mu     sync.Mutex
 	status int
 	auth   []string
 	texts  []string
 	briefs []string // the raw body of each POST /brief
+	lists  []string // the raw body of each POST /proofs
 	onPush func()
 	// onTool answers POST /tool with its status and body; tools records
 	// every ask as the tool's name with its args
@@ -59,8 +60,11 @@ func (f *fakeWorkerEndpoint) start(t *testing.T, r *Runner) {
 		f.mu.Lock()
 		f.auth = append(f.auth, req.Header.Get("Authorization"))
 		f.texts = append(f.texts, req.Method+" "+req.URL.Path+" "+in.Text+in.Token+in.Session+in.Record+in.Handover+in.Name)
-		if req.URL.Path == "/brief" {
+		switch req.URL.Path {
+		case "/brief":
 			f.briefs = append(f.briefs, string(b))
+		case "/proofs":
+			f.lists = append(f.lists, string(b))
 		}
 		status := f.status
 		f.mu.Unlock()

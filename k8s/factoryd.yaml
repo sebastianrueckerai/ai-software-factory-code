@@ -909,8 +909,9 @@ spec:
         component: server
     toPorts:
     - ports: [{port: "8200", protocol: TCP}]
-  # a running agent session's message endpoint (harness.MessagePort), for
-  # the loop nudge; the task namespace's worker policy admits only factoryd
+  # a worker's message endpoint (harness.MessagePort): a session's nudges
+  # and its push token, a proofs pod's list; the task namespace's worker
+  # policy admits only factoryd
   - toEndpoints:
     - matchLabels:
         app.kubernetes.io/name: opencode-worker

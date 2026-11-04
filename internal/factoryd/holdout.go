@@ -10,7 +10,6 @@ import (
 	"strings"
 	"unicode/utf8"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -94,7 +93,6 @@ var holdoutID = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
 const (
 	maxHoldouts    = 5
 	maxHoldoutText = 200
-	holdoutPkg     = "holdout"
 )
 
 // pullRef is a pull request's head ref: what a repro pod fetches.
@@ -103,14 +101,6 @@ func pullRef(pr int64) string { return fmt.Sprintf("refs/pull/%d/head", pr) }
 // holdoutEntry is a hold-out's id in the runner's list: criterionID
 // admits no hyphen, so it never meets a criterion's.
 func holdoutEntry(idx int) string { return fmt.Sprintf("holdout-%d", idx) }
-
-// holdoutProof is the run of one hold-out's test: its file written into a
-// scratch package of its own inside the repository, its test run there.
-func holdoutProof(h PlanProof) harness.Proof {
-	dir := fmt.Sprintf(".%s%d", holdoutPkg, h.Idx)
-	return harness.Proof{ID: holdoutEntry(h.Idx), Suite: "./" + dir, Name: h.Name,
-		File: &harness.ProofFile{Path: dir + "/holdout_test.go", Content: "package " + holdoutPkg + "\n" + h.Code + "\n"}}
-}
 
 // holdoutDryVerdict judges one hold-out's outcome: red is a hold-out's
 // shape (the test runs and fails), green already passes (a guard to
@@ -183,24 +173,6 @@ func (r *Runner) askHoldouts(ctx context.Context, t Task, revision int, p Plan) 
 	}
 	r.record(ctx, t.ID, "holdouts_proposed", map[string]any{"round": revision, "holdouts": ids})
 	return nil
-}
-
-// gateHoldouts are the plan task's hold-outs the criteria gate runs: the
-// stored ones and the opened ones, in idx order. A read that fails runs
-// the gate without them and names itself in the timeline.
-func (r *Runner) gateHoldouts(ctx context.Context, parent string) []PlanProof {
-	rows, err := r.store.PlanProofs(ctx, parent)
-	if err != nil {
-		r.record(ctx, parent, "gate_criteria", map[string]any{"holdouts_unread": err.Error()})
-		return nil
-	}
-	var out []PlanProof
-	for _, h := range rows {
-		if h.Origin == ProofOriginHoldout && (h.State == ProofStored || h.State == ProofOpened) {
-			out = append(out, h)
-		}
-	}
-	return out
 }
 
 // proposeHoldouts is the one model call: the confirmed spec, the plan's

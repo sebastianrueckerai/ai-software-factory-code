@@ -12,14 +12,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
-	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -197,13 +195,8 @@ func TestBriefWait(t *testing.T) {
 	if _, err := exec.LookPath("git"); err != nil {
 		t.Skip("no git binary")
 	}
-	// start() binds the worker's one fixed message port; inside a live
-	// worker pod that port is the pod's own, held for the session
-	if ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)); err != nil {
-		t.Skip("the worker's message port is held: " + err.Error())
-	} else {
-		ln.Close()
-	}
+	// start() binds the worker's one fixed message port
+	messagePortFree(t)
 	ready := func(t *testing.T) {
 		t.Helper()
 		setRequiredEnv(t)

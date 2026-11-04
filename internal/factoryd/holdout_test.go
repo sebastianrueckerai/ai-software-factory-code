@@ -13,17 +13,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// A hold-out's test is one proof of its own: its file written into a
-// scratch package inside the repository, its test run by name there.
-func TestHoldoutProofWritesTheDraftIntoItsOwnPackage(t *testing.T) {
-	got := holdoutProof(PlanProof{Idx: 2, Name: "TestKeyLog", Code: "func TestKeyLog(t *testing.T) {}"})
-	want := harness.Proof{ID: "holdout-2", Suite: "./.holdout2", Name: "TestKeyLog",
-		File: &harness.ProofFile{Path: ".holdout2/holdout_test.go", Content: "package holdout\nfunc TestKeyLog(t *testing.T) {}\n"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("proof = %+v %+v, want %+v %+v", got, got.File, want, want.File)
-	}
-}
-
 // The dry verdict, hand-derived one outcome at a time: a failure is red,
 // a pass green, and anything else (no such test, a build that fails, a
 // skip, no report) unrunnable; the evidence is one line, shortened.
@@ -387,96 +376,6 @@ func TestAnswerPlanWaitsForTheHoldoutDecisions(t *testing.T) {
 	}
 }
 
-// The criteria gate runs the plan's stored hold-outs beside its
-// criteria, blind to the agent: red or green, a hold-out is its verdict
-// on the timeline line alone, never the card's findings, its comment or
-// the result's Holdouts, which no audit settles. An okayed one holds no
-// test yet and does not run.
-func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
-	kube := newFakeKube()
-	objects := &fakeObjectStore{}
-	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
-	rows := []PlanProof{
-		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored,
-			Name: "TestDoorState", Code: "func TestDoorState(t *testing.T) {}"},
-		{Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, State: ProofStored,
-			Name: "TestKeyLog", Code: "func TestKeyLog(t *testing.T) {}"},
-		{Idx: 3, Round: 1, ID: "kept_out", Origin: ProofOriginHoldout, State: ProofOkayed},
-	}
-	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, rows); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	var res CriteriaResult
-	var err error
-	go func() {
-		defer close(done)
-		res, err = runCriteria(t, r)
-	}()
-	scriptReproPods(kube, proofLines(
-		harness.ProofRun{ID: "a_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
-		harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorState"><failure message="Failed">--- FAIL: TestDoorState (0.01s)</failure></testcase>`))},
-		harness.ProofRun{ID: "holdout-2", Report: junitGz(t, wrap(`<testcase name="TestKeyLog"></testcase>`))},
-	))
-	<-done
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Findings) != 0 || res.Skipped != "" || res.Escalate != "" {
-		t.Fatalf("result = %+v, want the criteria met", res)
-	}
-	if res.Holdouts != nil {
-		t.Fatalf("holdouts = %+v, want none while holdout-1 failed", res.Holdouts)
-	}
-	if len(kube.podOrder) != 1 || len(hub.minted()) != 1 {
-		t.Fatalf("pods %d, mints %v", len(kube.podOrder), hub.minted())
-	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "1 of 1 criteria met") {
-		t.Fatalf("comments = %q", hub.comments)
-	}
-	var list []harness.Proof
-	if err := json.Unmarshal([]byte(podEnv(kube.podOrder[0])["PROOFS"]), &list); err != nil || len(list) != 3 {
-		t.Fatalf("PROOFS = %+v (%v), want the criterion and the two hold-outs", list, err)
-	}
-	for i, h := range rows[:2] {
-		if want := holdoutProof(h); !reflect.DeepEqual(list[1+i], want) || list[1+i].File == nil {
-			t.Fatalf("entry %d = %+v, want %+v with its file", 1+i, list[1+i], want)
-		}
-	}
-	verdicts, _ := store.CriteriaVerdicts(context.Background(), "t1")
-	if len(verdicts) != 1 || verdicts[0].Criterion != "a_green" || verdicts[0].Verdict != "met" {
-		t.Fatalf("verdict rows = %+v, want a_green's alone", verdicts)
-	}
-	step := timelineStep(t, objects, "t1", "gate_criteria")
-	if proofs, _ := step["proofs"].([]any); len(proofs) != 1 {
-		t.Fatalf("timeline proofs = %v, want a_green's", step["proofs"])
-	}
-	for _, leak := range []string{"door_state", "key_log", "kept_out", "TestDoorState"} {
-		for surface, text := range map[string]string{
-			"the comment":         hub.comments[0],
-			"a row":               verdicts[0].Evidence,
-			"the timeline line":   string(mustJSON(step)),
-			"the card's findings": strings.Join(res.Findings, "\n"),
-		} {
-			if strings.Contains(text, leak) {
-				t.Fatalf("%s carries the hold-out %q: %s", surface, leak, text)
-			}
-		}
-	}
-	entries, _ := step["holdouts"].([]any)
-	if len(entries) != 2 {
-		t.Fatalf("timeline holdouts = %v", step["holdouts"])
-	}
-	for i, want := range []struct{ id, verdict string }{{"holdout-1", "red"}, {"holdout-2", "green"}} {
-		e, _ := entries[i].(map[string]any)
-		if e["id"] != want.id || e["verdict"] != want.verdict {
-			t.Fatalf("entry %d = %v, want %s %s", i, e, want.id, want.verdict)
-		}
-	}
-}
-
 // A pod that ends before it reaches the hold-outs fails the gate, so the
 // activity runs again: an unreached hold-out has no verdict, and the
 // settlement never reads one as unrunnable. Nothing lands: no row, no
@@ -485,10 +384,12 @@ func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
 	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
 		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
 	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{
-		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored, Name: "TestDoorState", Code: "func TestDoorState(t *testing.T) {}"},
+		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored, Suite: "proofs/door_state", Name: "TestDoorState",
+			Path: "proofs/door_state/door_state_test.go", Code: "package door_state"},
 	}); err != nil {
 		t.Fatal(err)
 	}

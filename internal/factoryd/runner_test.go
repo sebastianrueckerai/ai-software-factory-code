@@ -1113,7 +1113,7 @@ func TestSandboxPodsTakeTheHarnessFromAnInitContainer(t *testing.T) {
 			"reg/worker@sha256:abc", []string{"harness", "fetch"}},
 		"repro on a project image": {r.reproPodSpec(project, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""),
 			"reg/project@sha256:def", []string{"harness", "fetch"}},
-		"proofs": {r.proofsPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", "", []byte("[]")),
+		"proofs": {r.proofsPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", "", "bearer-x"),
 			"reg/worker@sha256:abc", []string{"harness", "fetch"}},
 	} {
 		spec := c.pod["spec"].(map[string]any)

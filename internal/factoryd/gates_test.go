@@ -2433,6 +2433,36 @@ func scriptReproPods(kube *fakeKube, bodies ...string) {
 	}
 }
 
+// The proofs pod's spec carries no list: the worker takes it over the
+// message port, under the bearer whose hash its env holds, and no
+// container of the pod mounts more than the repro pod's.
+func TestProofsPodTakesItsListOverTheMessagePort(t *testing.T) {
+	r := &Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}
+	task := Task{ID: "t1", Repository: "linkshort/linkshort", Track: "direct"}
+	repo := Repo{Owner: "linkshort", Name: "linkshort"}
+	spec := r.proofsPodSpec(task, repo, pullRef(1), "c1", "", "bearer-x")["spec"].(map[string]any)
+	worker := spec["containers"].([]any)[0].(map[string]any)
+	env := containerEnv(worker)
+	if env["MODE"] != "proofs" || env["PROOFS_BUDGET"] != "2100" || env["MESSAGE_TOKEN_SHA256"] != messageTokenHash("bearer-x") {
+		t.Fatalf("worker env = %v, want the proofs mode, its budget and the bearer's hash", env)
+	}
+	for _, name := range []string{"PROOFS", "PROOFS_FILE"} {
+		if _, ok := env[name]; ok {
+			t.Errorf("worker env holds %s", name)
+		}
+	}
+	fetch := initContainer(t, spec, "fetch")
+	if _, ok := containerEnv(fetch)["MESSAGE_TOKEN_SHA256"]; ok {
+		t.Error("the fetch container holds the bearer's hash")
+	}
+	repro := r.reproPodSpec(task, repo, pullRef(1), "c1", "")["spec"].(map[string]any)
+	if !reflect.DeepEqual(spec["volumes"], repro["volumes"]) ||
+		!reflect.DeepEqual(worker["volumeMounts"], repro["containers"].([]any)[0].(map[string]any)["volumeMounts"]) ||
+		!reflect.DeepEqual(fetch["volumeMounts"], initContainer(t, repro, "fetch")["volumeMounts"]) {
+		t.Fatalf("volumes %s, worker mounts %s, fetch mounts %s; want the repro pod's", mustJSON(spec["volumes"]), mustJSON(worker["volumeMounts"]), mustJSON(fetch["volumeMounts"]))
+	}
+}
+
 func reproLine(exit int, output string) string {
 	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "repro", Repro: &harness.Repro{Exit: exit, Output: output}})
 	return string(b)

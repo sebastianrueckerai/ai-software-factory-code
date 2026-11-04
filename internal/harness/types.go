@@ -189,8 +189,9 @@ type Harness interface {
 	Message(ctx context.Context, text string) error
 }
 
-// MessagePort is the worker's one listening port: factoryd's POST
-// /message, bearer-authenticated per session, into Harness.Message.
+// MessagePort is the worker's one listening port, where factoryd posts
+// under a bearer of the session or the run: a session's POST /message
+// into Harness.Message, and the proofs mode's POST /proofs, its list.
 const MessagePort = 8091
 
 // MessageTimeout bounds the worker's hand-over of one message to its

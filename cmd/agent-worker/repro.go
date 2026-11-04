@@ -12,11 +12,11 @@ import (
 	"fmt"
 	"io"
 	"io/fs"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"regexp"
-	"slices"
 	"strconv"
 	"strings"
 	"syscall"
@@ -43,8 +43,8 @@ type reproEnv struct {
 	timeout time.Duration
 }
 
-// proofsEnv is the proofs mode's: the list, each entry's timeout, and the
-// budget all the entries share.
+// proofsEnv is the proofs mode's: the list factoryd posts (awaitProofs),
+// each entry's timeout, and the budget all the entries share.
 type proofsEnv struct {
 	proofs          []harness.Proof
 	timeout, budget time.Duration
@@ -88,15 +88,11 @@ func loadReproEnv() (reproEnv, error) {
 	return reproEnv{command: v["REPRO_COMMAND"], timeout: timeout}, nil
 }
 
+// loadProofsEnv reads the timeout and the budget; the list is not in the
+// environment.
 func loadProofsEnv() (proofsEnv, error) {
-	v, err := required("PROOFS")
-	if err != nil {
-		return proofsEnv{}, err
-	}
 	var e proofsEnv
-	if err := json.Unmarshal([]byte(v["PROOFS"]), &e.proofs); err != nil {
-		return proofsEnv{}, fmt.Errorf("PROOFS: %w", err)
-	}
+	var err error
 	if e.timeout, err = reproTimeout(); err != nil {
 		return proofsEnv{}, err
 	}
@@ -186,8 +182,9 @@ func runRepro(log func(string, ...any), initErr error, probe func(workerEnv) egr
 }
 
 // runProofs is the worker's proofs mode: runRepro's, with a line for each
-// entry as it ends before the closing envelope. Each line goes out once
-// the processes its check left are dead, so none reaches the next entry.
+// entry as it ends before the closing envelope, its list taken over the
+// message port. Each line goes out once the processes its check left are
+// dead, so none reaches the next entry.
 func runProofs(log func(string, ...any), initErr error, probe func(workerEnv) egressProbe) int {
 	emit := func(env harness.WorkerEnvelope) {
 		if initErr == nil {
@@ -198,8 +195,72 @@ func runProofs(log func(string, ...any), initErr error, probe func(workerEnv) eg
 		line, _ := json.Marshal(env)
 		fmt.Println(string(line))
 	}
-	emit(proofsReport(context.Background(), workspace, initErr, probe, emit))
+	emit(proofsReport(context.Background(), workspace, initErr, probe, func() ([]harness.Proof, error) { return awaitProofs(log) }, emit))
 	return 0
+}
+
+// proofsListWait bounds the proofs mode's wait for its list: past the 10
+// minutes factoryd retries its post once the pod runs. The wait counts
+// against the run's budget. A var, so a test can shorten it.
+var proofsListWait = 12 * time.Minute
+
+// maxProofsList bounds the list factoryd posts: the prover files at most
+// 512 KiB of code, which JSON escaping may grow sixfold.
+const maxProofsList = 4 << 20
+
+// awaitProofs takes the list factoryd posts to POST /proofs on the message
+// port, under the bearer whose hash is MESSAGE_TOKEN_SHA256, within
+// proofsListWait. The list stays in memory, never on disk or in the
+// environment, and the port is closed before any check runs.
+func awaitProofs(log func(string, ...any)) ([]harness.Proof, error) {
+	hash, err := parseHash(os.Getenv("MESSAGE_TOKEN_SHA256"))
+	if err != nil {
+		return nil, err
+	}
+	// every check inherits this process's environment
+	os.Unsetenv("MESSAGE_TOKEN_SHA256")
+	lists := make(chan []harness.Proof, 1)
+	stop, err := servePort(proofsHandler(hash, lists), log)
+	if err != nil {
+		return nil, fmt.Errorf("message endpoint: %w", err)
+	}
+	select {
+	case list := <-lists:
+		stop()
+		return list, nil
+	case <-time.After(proofsListWait):
+		stop()
+		// a list taken while the port closed was answered 204
+		select {
+		case list := <-lists:
+			return list, nil
+		default:
+			return nil, fmt.Errorf("no proofs list from factoryd within %s", proofsListWait)
+		}
+	}
+}
+
+// proofsHandler takes factoryd's POST /proofs, the list as JSON, under the
+// bearer whose hash is tokenSHA256, into lists: the first list stands, so
+// a retry changes nothing.
+func proofsHandler(tokenSHA256 [32]byte, lists chan<- []harness.Proof) http.Handler {
+	mux := http.NewServeMux()
+	mux.HandleFunc("POST /proofs", func(w http.ResponseWriter, r *http.Request) {
+		if !bearer(tokenSHA256, w, r) {
+			return
+		}
+		var list []harness.Proof
+		if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, maxProofsList)).Decode(&list); err != nil {
+			http.Error(w, fmt.Sprintf("want the proofs list as JSON, at most %d MiB: %v", maxProofsList>>20, err), http.StatusBadRequest)
+			return
+		}
+		select {
+		case lists <- list:
+		default:
+		}
+		w.WriteHeader(http.StatusNoContent)
+	})
+	return mux
 }
 
 // reproEnvelope is the repro mode's report on ws: sandboxStarted's
@@ -213,15 +274,21 @@ func reproEnvelope(ctx context.Context, ws string, initErr error, probe func(wor
 	return harness.WorkerEnvelope{Type: "repro", Repro: &rep}
 }
 
-// proofsReport is the proofs mode's report on ws: sandboxStarted's
-// failure, else the closing envelope of proofs, which emits each entry's
-// run.
-func proofsReport(ctx context.Context, ws string, initErr error, probe func(workerEnv) egressProbe, emit func(harness.WorkerEnvelope)) harness.WorkerEnvelope {
+// proofsReport is the proofs mode's report on ws: list's list first, so
+// factoryd's post lands before any report, and the run's budget runs from
+// there; then sandboxStarted's failure, else the closing envelope of
+// proofs, which emits each entry's run.
+func proofsReport(ctx context.Context, ws string, initErr error, probe func(workerEnv) egressProbe, list func() ([]harness.Proof, error), emit func(harness.WorkerEnvelope)) harness.WorkerEnvelope {
+	began := time.Now()
+	entries, err := list()
+	if err != nil {
+		return proofsFailed(err.Error())
+	}
 	if err := sandboxStarted(ctx, ws, initErr, probe); err != nil {
 		res := startFailed(err)
 		return harness.WorkerEnvelope{Type: "result", Result: &res}
 	}
-	return proofs(ws, emit)
+	return proofs(ws, entries, began, emit)
 }
 
 // sandboxStarted is the start failure, a startError, of a worker that is
@@ -352,27 +419,30 @@ func runBounded(dir string, env []string, timeout time.Duration, late, name stri
 	return harness.Repro{Exit: 0, Output: out.String()}
 }
 
-// proofs is the proofs mode's run on ws: the fetch's failure or a bad
-// environment ends it before any entry.
-func proofs(ws string, emit func(harness.WorkerEnvelope)) harness.WorkerEnvelope {
-	failed := func(why string) harness.WorkerEnvelope {
-		return harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: " + why}}
-	}
+// proofsFailed is the closing envelope of a run that ran no entry, and why.
+func proofsFailed(why string) harness.WorkerEnvelope {
+	return harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{Error: "proofs mode: " + why}}
+}
+
+// proofs is the proofs mode's run of list on ws, its budget from began:
+// the fetch's failure or a bad environment ends it before any entry.
+func proofs(ws string, list []harness.Proof, began time.Time, emit func(harness.WorkerEnvelope)) harness.WorkerEnvelope {
 	if b, err := os.ReadFile(fetchFailed(ws)); err == nil {
-		return failed(string(b))
+		return proofsFailed(string(b))
 	}
 	e, err := loadProofsEnv()
 	if err != nil {
-		return failed(err.Error())
+		return proofsFailed(err.Error())
 	}
-	runProofList(e, ws, emit)
+	e.proofs = list
+	runProofList(e, ws, began, emit)
 	return harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{}}
 }
 
-// runProofList runs e's entries in ws/repo in order, emitting one "proof"
-// envelope per entry as it ends.
-func runProofList(e proofsEnv, ws string, emit func(harness.WorkerEnvelope)) {
-	deadline := time.Now().Add(e.budget)
+// runProofList runs e's entries in ws/repo in order, within the budget
+// from began, emitting one "proof" envelope per entry as it ends.
+func runProofList(e proofsEnv, ws string, began time.Time, emit func(harness.WorkerEnvelope)) {
+	deadline := began.Add(e.budget)
 	for i, p := range e.proofs {
 		run := harness.ProofRun{ID: p.ID, Exit: -1, Output: fmt.Sprintf("proofs mode: the run's %s ran out before this entry", e.budget)}
 		if left := time.Until(deadline); left > 0 {
@@ -386,10 +456,10 @@ func runProofList(e proofsEnv, ws string, emit func(harness.WorkerEnvelope)) {
 	}
 }
 
-// runProof runs one entry in repo: its file first, then the tree's bash
-// check test, which runBounded ends at timeout with late; own is the
-// entry's own directory, outside the tree, for the report and the
-// artifacts.
+// runProof runs one entry in repo: its file first (placeFile), then the
+// tree's bash check test, which runBounded ends at timeout with late,
+// then the tree as it was; own is the entry's own directory, outside the
+// tree, for the report and the artifacts.
 func runProof(p harness.Proof, repo, own string, timeout time.Duration, late string) harness.ProofRun {
 	failed := func(err error) harness.ProofRun {
 		return harness.ProofRun{ID: p.ID, Exit: -1, Output: "proofs mode: " + err.Error()}
@@ -405,8 +475,9 @@ func runProof(p harness.Proof, repo, own string, timeout time.Duration, late str
 	if err != nil {
 		return failed(err)
 	}
+	undo := func() error { return nil }
 	if f := p.File; f != nil {
-		if err := writeRegular(repo, f.Path, f.Content); err != nil {
+		if undo, err = placeFile(repo, f.Path, f.Content); err != nil {
 			return failed(fmt.Errorf("write %s: %w", f.Path, err))
 		}
 	}
@@ -414,11 +485,12 @@ func runProof(p harness.Proof, repo, own string, timeout time.Duration, late str
 	if p.Name != "" {
 		args = append(args, p.Name)
 	}
-	// PROOFS holds every entry's file
-	env := append(slices.DeleteFunc(os.Environ(), func(kv string) bool { return strings.HasPrefix(kv, "PROOFS=") }),
-		"CHECK_REPORT="+filepath.Join(own, "report.xml"), "CHECK_ARTIFACTS="+filepath.Join(own, "artifacts"))
+	env := append(os.Environ(), "CHECK_REPORT="+filepath.Join(own, "report.xml"), "CHECK_ARTIFACTS="+filepath.Join(own, "artifacts"))
 	r := runBounded(repo, env, timeout, late, "/bin/bash", args...)
 	run := harness.ProofRun{ID: p.ID, Exit: r.Exit, Output: r.Output}
+	if err := undo(); err != nil {
+		run.Output += fmt.Sprintf("\nproofs mode: put back %s: %v", p.File.Path, err)
+	}
 	collect(&run, own)
 	return run
 }
@@ -502,6 +574,39 @@ func readRegular(root *os.Root, name string, max int64) ([]byte, error) {
 	}
 	defer f.Close()
 	return io.ReadAll(io.LimitReader(f, max))
+}
+
+// placeFile writes content to name in repo's tree for one entry's run, and
+// returns its undo: the tree's own file there back, or the file gone, so
+// a later entry, a suite above all, runs on the tree as pushed.
+func placeFile(repo, name, content string) (undo func() error, err error) {
+	tree, err := os.OpenRoot(repo)
+	if err != nil {
+		return nil, err
+	}
+	own, err := readRegular(tree, name, maxReport+1)
+	_ = tree.Close() // read only
+	switch {
+	case errors.Is(err, fs.ErrNotExist):
+		undo = func() error {
+			tree, err := os.OpenRoot(repo)
+			if err != nil {
+				return err
+			}
+			defer tree.Close()
+			return tree.Remove(name)
+		}
+	case err != nil:
+		return nil, err
+	case len(own) > maxReport:
+		return nil, fmt.Errorf("the tree's own file passes %d MiB", maxReport>>20)
+	default:
+		undo = func() error { return writeRegular(repo, name, string(own)) }
+	}
+	if err := writeRegular(repo, name, content); err != nil {
+		return nil, err
+	}
+	return undo, nil
 }
 
 // writeRegular writes content to name in dir's tree, a regular file, and

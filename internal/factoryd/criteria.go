@@ -14,11 +14,12 @@ import (
 
 // The criteria gate (the spec-intake concept, piece 4): on the plan's
 // integration card, at the approval, it runs the plan's invariant
-// criteria once against the head, writes each one's gate verdict row and
-// reports every one not met as a finding on the approval card. A test
-// criterion has no stored proof yet: its row is unmet, and no finding.
-// Judgement and human criteria are outside the gate: their proof is the
-// review's verdict or the approver's decision.
+// criteria and the stored proofs of its test criteria once against the
+// head, writes each one's gate verdict row and reports every one not met
+// as a finding on the approval card. A test criterion whose proof is not
+// stored yet, or is flagged, makes no run: its row is unmet and says why,
+// and no finding. Judgement and human criteria are outside the gate:
+// their proof is the review's verdict or the approver's decision.
 
 // CriteriaResult is GateCriteria's verdict: Skipped names why the gate did
 // not run (no plan filed, or the card is not the plan's integration
@@ -46,19 +47,52 @@ type criterionRun struct {
 	held        string             // the line of a criterion the gate cannot run: an unmet row, no finding
 }
 
-// gateRuns are the runs the gate makes for p's criteria, in plan order:
-// an invariant runs its suite through goPackage; a test criterion is held.
-func gateRuns(p Plan) []criterionRun {
-	var runs []criterionRun
+// gateRuns are the runs the gate makes for p's criteria on its proof
+// rows, in plan order: an invariant runs its suite through goPackage; a
+// test criterion runs its stored or opened proof, and is held while that
+// proof is flagged or missing. holdouts are the stored and opened
+// hold-outs with no flag, in idx order, which the gate runs blind.
+func gateRuns(p Plan, proofs []PlanProof) (runs []criterionRun, holdouts []PlanProof) {
+	runnable := func(pp PlanProof) bool { return pp.State == ProofStored || pp.State == ProofOpened }
 	for _, c := range p.Criteria {
 		switch c.Kind {
 		case CriterionInvariant:
 			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, suite: goPackage(c.Suite)})
 		case CriterionTest:
-			runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "criterion " + c.ID + ": no stored proof yet"})
+			i := slices.IndexFunc(proofs, func(pp PlanProof) bool {
+				return pp.Origin == ProofOriginCriterion && pp.Criterion == c.ID && runnable(pp)
+			})
+			switch {
+			case i < 0:
+				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "criterion " + c.ID + ": no stored proof yet"})
+			case proofs[i].Flag != "":
+				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, held: "criterion " + c.ID + ": its proof is flagged " + proofs[i].Flag + ": no blind run"})
+			default:
+				e := storedProof(proofs[i])
+				runs = append(runs, criterionRun{id: c.ID, kind: c.Kind, suite: e.Suite, name: e.Name, file: e.File})
+			}
 		}
 	}
-	return runs
+	for _, pp := range proofs {
+		if pp.Origin == ProofOriginHoldout && runnable(pp) && pp.Flag == "" {
+			holdouts = append(holdouts, pp)
+		}
+	}
+	return runs, holdouts
+}
+
+// storedProof is a proof row as a runner entry: its criterion's id, or
+// holdoutEntry(Idx) for a hold-out; its suite through goPackage; its file
+// for every state but opened, whose test the tree holds.
+func storedProof(pp PlanProof) harness.Proof {
+	e := harness.Proof{ID: pp.Criterion, Suite: goPackage(pp.Suite), Name: pp.Name}
+	if pp.Origin == ProofOriginHoldout {
+		e.ID = holdoutEntry(pp.Idx)
+	}
+	if pp.State != ProofOpened {
+		e.File = &harness.ProofFile{Path: pp.Path, Content: pp.Code}
+	}
+	return e
 }
 
 // goPackage reads a criterion's package as a directory of the repository:
@@ -177,10 +211,12 @@ func gateRows(proofs []gateProof) []CriterionVerdict {
 
 // GateCriteria runs the plan's criteria against the pull request head in a
 // fresh sandbox with no agent: one runner pod runs every gate run that is
-// not held and every stored hold-out through the tree's check test. Not the plan's
-// integration card: not run, the timeline says why. A plan that names no
-// criteria names no proof: that is a finding, for the human. The
-// namespace and the token go when it ends, however it ends.
+// not held and then every hold-out gateRuns names through the tree's
+// check test. Not the plan's integration card: not run, the timeline says
+// why. A read of the proof rows that fails is the activity's error, so it
+// runs again. A plan that names no criteria names no proof: that is a
+// finding, for the human. The namespace and the token go when it ends,
+// however it ends.
 func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
 	// the namespace wait, the image pull and the tests take minutes
 	defer beatUntilDone(ctx, "criteria")()
@@ -204,12 +240,15 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "skipped": "not the plan's integration card"}))
 		return CriteriaResult{Skipped: "not the plan's integration card"}, nil
 	}
-	runs := gateRuns(p)
-	// the plan's stored hold-outs run here too, after the criteria, so no
-	// criterion's run sees a hold-out's file: their outcomes never reach
-	// the card's findings, the comment or a verdict row (blind by routing
-	// and storage); only their verdicts reach the timeline line
-	hos := r.gateHoldouts(ctx, t.Parent)
+	rows, err := r.store.PlanProofs(ctx, t.Parent)
+	if err != nil {
+		return CriteriaResult{}, err
+	}
+	// the hold-outs run after the criteria, so no criterion's run sees a
+	// hold-out's file: their outcomes never reach the card's findings, the
+	// comment or a verdict row (blind by routing and storage); only their
+	// verdicts reach the timeline line, by entry id
+	runs, hos := gateRuns(p, rows)
 	var entries []harness.Proof
 	for _, c := range runs {
 		if c.held == "" {
@@ -217,7 +256,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		}
 	}
 	for _, h := range hos {
-		entries = append(entries, holdoutProof(h))
+		entries = append(entries, storedProof(h))
 	}
 	var outcomes map[string]proofOutcome
 	if len(entries) > 0 {

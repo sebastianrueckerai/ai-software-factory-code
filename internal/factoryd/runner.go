@@ -136,7 +136,8 @@ type Runner struct {
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
 	// endpointWait bounds how long the worker's message endpoint is given
-	// to come up for a brief or record delivery; a test shortens it
+	// to come up for a brief, record or proofs list delivery; a test
+	// shortens it
 	endpointWait time.Duration
 	stopWait     time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
