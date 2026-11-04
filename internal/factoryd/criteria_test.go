@@ -540,10 +540,11 @@ func TestGateCriteriaRunsOnADeltaCard(t *testing.T) {
 }
 
 // A plan that names no criteria names no proof: a finding for the human,
-// no sandbox. A plan whose gate criteria are all tests runs no sandbox
-// either: each test criterion, with no stored proof yet, is its unmet
-// gate row and no finding, so the plan's close never counts it unjudged
-// and the builder is never sent after a proof it cannot write.
+// no sandbox. A plan whose gate criteria are all tests or judgements runs
+// no sandbox either: each, with no stored proof yet, is its unmet row and
+// no finding, a test one's the gate's and a judgement one's with no
+// verdict, so the plan's close never counts it unjudged and the builder
+// is never sent after a proof it cannot write.
 func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 	const held = "criterion green_login: no stored proof yet"
 	for name, criteria := range map[string]string{
@@ -567,6 +568,9 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 			case "only test criteria":
 				wantRows = []CriterionVerdict{{Criterion: "green_login", Verdict: "unmet", Evidence: held, Kind: CriterionTest,
 					Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
+			case "judgement and human":
+				wantRows = []CriterionVerdict{{Criterion: "judged", Verdict: "unmet", Evidence: "no verdict: criterion judged: no stored proof yet", Kind: CriterionJudgement,
+					Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}
 			}
 			if !slices.Equal(res.Findings, want) || len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
 				t.Fatalf("result = %+v, pods %d, mints %v; want findings %q and no sandbox", res, len(kube.podOrder), hub.minted(), want)
@@ -677,9 +681,10 @@ func TestGateCriteriaWaitingRunsNoPod(t *testing.T) {
 }
 
 // A judgement criterion a later revision added after the prover filed is
-// held as a test criterion is: its line and a finding say so, and the
-// gate writes it no row. A plan of such criteria alone runs nothing and
-// says so on the pull request.
+// held as a test criterion is: its line and a finding say so, and its
+// row is an unmet judgement with no verdict, so it counts as judged. A
+// plan of such criteria alone runs nothing and says so on the pull
+// request.
 func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -695,8 +700,10 @@ func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
 	if err != nil || !slices.Equal(res.Findings, []string{late}) {
 		t.Fatalf("result = %+v, %v; want the late finding alone", res, err)
 	}
-	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(kube.podOrder) != 0 || len(rows) != 0 {
-		t.Fatalf("pods %d, rows %+v; want none", len(kube.podOrder), rows)
+	want := []CriterionVerdict{{Criterion: "late_calm", Verdict: "unmet", Evidence: "no verdict: " + late, Kind: CriterionJudgement,
+		Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}
+	if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(kube.podOrder) != 0 || !slices.Equal(rows, want) {
+		t.Fatalf("pods %d, rows %+v; want none and %+v", len(kube.podOrder), rows, want)
 	}
 	var proofs []gateProof
 	if err := json.Unmarshal(mustJSON(timelineStep(t, objects, "t1", "gate_criteria")["proofs"]), &proofs); err != nil ||
@@ -709,25 +716,31 @@ func TestGateCriteriaHoldsALateJudgementCriterion(t *testing.T) {
 }
 
 // A judgement or a human criterion's proof is the prover's too: a plan
-// with no test criterion waits for it as well, runs nothing and writes
-// no row.
+// with no test criterion waits for it as well and runs nothing. The
+// judgement criterion's row is unmet with no verdict, held; the human
+// one gets none.
 func TestGateCriteriaWaitsForAJudgementOrHumanProof(t *testing.T) {
-	for kind, criterion := range map[string]string{
-		CriterionJudgement: `{"id":"reads_calm","kind":"judgement","claim":"The sizes page reads calm","inputs":"the sizes page","prompt":"Calm?"}`,
-		CriterionHuman:     `{"id":"pages_ok","kind":"human","claim":"The pages read well","evidence":"Open /sizes"}`,
+	for kind, tc := range map[string]struct {
+		criterion string
+		rows      []CriterionVerdict
+	}{
+		CriterionJudgement: {`{"id":"reads_calm","kind":"judgement","claim":"The sizes page reads calm","inputs":"the sizes page","prompt":"Calm?"}`,
+			[]CriterionVerdict{{Criterion: "reads_calm", Verdict: "unmet", Evidence: "no verdict: criterion reads_calm: no stored proof yet", Kind: CriterionJudgement,
+				Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider}}},
+		CriterionHuman: {`{"id":"pages_ok","kind":"human","claim":"The pages read well","evidence":"Open /sizes"}`, nil},
 	} {
 		t.Run(kind, func(t *testing.T) {
 			kube := newFakeKube()
 			r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
 			r.cfg.Policy = proverPolicy
-			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, criterion+`,{"id":"all_green","kind":"invariant","suite":"./..."}`)
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, tc.criterion+`,{"id":"all_green","kind":"invariant","suite":"./..."}`)
 			store.tasks["t-prove"] = Task{ID: "t-prove", Status: "running", Repository: "sf/repo", Parent: "plan1", Source: SourceProver, Kind: "agent"}
 			res, err := runCriteria(t, r)
 			if err != nil || res.Escalate != proofsNotStored {
 				t.Fatalf("result = %+v, %v; want the escalation %q", res, err, proofsNotStored)
 			}
-			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(kube.podOrder) != 0 || len(hub.comments) != 0 || len(rows) != 0 {
-				t.Fatalf("pods %d, comments %q, rows %+v; want none", len(kube.podOrder), hub.comments, rows)
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); len(kube.podOrder) != 0 || len(hub.comments) != 0 || !slices.Equal(rows, tc.rows) {
+				t.Fatalf("pods %d, comments %q, rows %+v; want none and %+v", len(kube.podOrder), hub.comments, rows, tc.rows)
 			}
 		})
 	}
@@ -834,6 +847,7 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	wantRows := []CriterionVerdict{
 		gate("size_bound", "met", "blind: "+lines[0]), gate("group_open", "unmet", "open: "+lines[1]), gate("door", "unmet", "blind: "+lines[2]),
 		gate("no_proof", "unmet", lines[3]), gate("all_green", "met", lines[4]),
+		{Criterion: "judged", Verdict: "unmet", Evidence: "no verdict: " + lines[5], Kind: CriterionJudgement, Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider},
 	}
 	wantRows[4].Kind = CriterionInvariant
 	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
@@ -967,6 +981,7 @@ func TestGateCriteriaOpensTheBlindProofsThatAreNotGreen(t *testing.T) {
 		gate("size_bound", "unmet", "blind: "+lines[0], CriterionTest), gate("group_open", "met", "open: "+lines[1], CriterionTest),
 		gate("door", "unmet", "blind: "+lines[2], CriterionTest), gate("no_proof", "unmet", late, CriterionTest),
 		gate("all_green", "met", lines[4], CriterionInvariant),
+		{Criterion: "judged", Verdict: "unmet", Evidence: "no verdict: " + lateJudged, Kind: CriterionJudgement, Source: CriteriaSourceJudgement, DecidedBy: FactoryDecider},
 	}
 	rows, _ := store.CriteriaVerdicts(ctx, "t1")
 	if !slices.Equal(rows, wantRows) {

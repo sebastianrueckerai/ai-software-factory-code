@@ -1029,12 +1029,12 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		}
 		parts = append(parts, human+" "+verb+" yours to settle on this card")
 	}
-	why := strings.Join(parts, "; ")
+	why := strings.Join(parts, ". ")
 	ids, lines := criteriaLines(never, " — never judged")
 	reason := "criteria never judged: " + why
 	if len(unmet) > 0 {
 		more, unmetLines := criteriaLines(unmet, " — not met")
-		reason += "; not met: " + strings.Join(more, ", ")
+		reason += ". Not met: " + strings.Join(more, ", ")
 		ids, lines = append(ids, more...), append(lines, unmetLines...)
 	}
 	r.openPlanAsk(ctx, t, repo, ApprovalCriteriaRerun, reason,

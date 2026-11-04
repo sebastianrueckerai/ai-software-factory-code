@@ -23,12 +23,12 @@ import (
 // proof stays stored; any other outcome, or a flag from its dry run on
 // main, opens it, and its finding hands the builder its code and its
 // output. An opened proof runs from the repository. A test or judgement
-// criterion whose proof is not stored yet makes no run: a test one's row
-// is unmet and says why, and no finding; while the plan's prover may
+// criterion whose proof is not stored yet makes no run: its row is unmet
+// and says why, and no finding; while the plan's prover may
 // still store any criterion's proof, the gate asks the human to wait. A
 // test or judgement criterion the store left without a proof came after
-// the prover filed: its line is a finding, a test one's unmet row too,
-// and it never opens. A judgement or human criterion's proof runs as a
+// the prover filed: its line is a finding and its row unmet, and it never
+// opens. A judgement or human criterion's proof runs as a
 // test criterion's and writes an artifact, which the gate stores for the
 // console: one model call judges a judgement criterion's, the human
 // settles a human one. A proof that wrote no artifact has no verdict and
@@ -242,8 +242,8 @@ type gateReport struct {
 	opened    []openedProof
 	holdouts  []map[string]any // the blind hold-outs that stay stored, by entry id, each with its holdoutDryVerdict
 	artifacts []GateArtifact   // the judgement and human criteria's artifacts this run wrote, in plan order
-	// noVerdict are the unmet rows of the judgement criteria that ran and
-	// left the judgement nothing to read, each saying why
+	// noVerdict are the unmet rows of the judgement criteria held, or run
+	// with nothing left for the judgement to read, each saying why
 	noVerdict []CriterionVerdict
 }
 
@@ -259,8 +259,9 @@ type gateReport struct {
 // judgement or the human and keeps its output off every surface; one
 // that wrote no artifact opens, whatever its report says, and one whose
 // artifact did not fit the run's line is a finding and stays stored. A
-// judgement criterion that ran and left the judgement nothing to read is
-// an unmet row, so no earlier head's row stands. A blind hold-out that
+// judgement criterion held, or run with nothing left for the judgement to
+// read, is an unmet row, so it counts as judged and no earlier head's row
+// stands. A blind hold-out that
 // stays stored, green or never tried, is no line, no entry and no
 // finding: its verdict alone, on the hold-outs.
 func criteriaReport(p Plan, head string, runs []criterionRun, results map[string]gateResult) gateReport {
@@ -337,8 +338,11 @@ func criteriaReport(p Plan, head string, runs []criterionRun, results map[string
 				rep.findings = append(rep.findings, g.Line)
 			}
 		}
-		if c.kind == CriterionJudgement && c.held == "" && g.Artifact == "" {
-			why := strings.TrimSuffix(strings.TrimPrefix(g.Line, c.label()+": "), ": no verdict")
+		if c.kind == CriterionJudgement && g.Artifact == "" {
+			why := c.held
+			if why == "" {
+				why = strings.TrimSuffix(strings.TrimPrefix(g.Line, c.label()+": "), ": no verdict")
+			}
 			rep.noVerdict = append(rep.noVerdict, CriterionVerdict{Criterion: c.id, Verdict: "unmet", Evidence: "no verdict: " + why, Kind: c.kind})
 		}
 		if g.Met && !g.Holdout {
@@ -546,6 +550,9 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 		}
 		rep := criteriaReport(p, commit, held, nil)
 		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceGate, FactoryDecider, gateRows(rep.proofs)); err != nil {
+			return CriteriaResult{}, err
+		}
+		if err := r.store.PutCriteriaVerdicts(ctx, home.ID, CriteriaSourceJudgement, FactoryDecider, rep.noVerdict); err != nil {
 			return CriteriaResult{}, err
 		}
 		r.record(ctx, t.ID, "gate_criteria", gateEnd(t, GateCriteria, map[string]any{"pr": pr, "commit": commit, "proofs": rep.proofs, "escalate": proofsNotStored}))

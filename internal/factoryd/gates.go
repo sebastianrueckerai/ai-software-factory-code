@@ -1846,7 +1846,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		}
 		return notRun(why + remedy)
 	}
-	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, calls)
+	results, err := r.callAll(ctx, t.ID, model, policy.PurposeReview, pinned.Limits.SupervisorTimeout, time.Time{}, calls)
 	if err != nil {
 		return Review{}, err
 	}

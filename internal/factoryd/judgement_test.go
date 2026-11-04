@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"maps"
 	"net/http"
@@ -256,8 +257,9 @@ func TestJudgeArtifactsKeepsTheVerdictWithoutItsCost(t *testing.T) {
 }
 
 // judgedGate runs the gate on blindPlan with readsCalm and pagesOK, their
-// proofs stored, the judgement answering answer; reads_calm's run is run.
-func judgedGate(t *testing.T, answer string, readsCalmRun harness.ProofRun) (CriteriaResult, *fakeStore, *fakeObjectStore, *forgejoHub, *fakeWorkerEndpoint, *fakeLiteLLM) {
+// proofs stored, the judgement answering answer; reads_calm's run is
+// readsCalmRun, pages_ok's the one given or pagesOKWrote.
+func judgedGate(t *testing.T, answer string, readsCalmRun harness.ProofRun, pagesOKRun ...harness.ProofRun) (CriteriaResult, *fakeStore, *fakeObjectStore, *forgejoHub, *fakeWorkerEndpoint, *fakeLiteLLM) {
 	t.Helper()
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -269,13 +271,17 @@ func judgedGate(t *testing.T, answer string, readsCalmRun harness.ProofRun) (Cri
 	p := blindPlan()
 	p.Criteria = append(p.Criteria, readsCalm, pagesOK)
 	seedBlindPlan(t, store, p, append(blindRows(), artifactRows()...))
+	pages := harness.ProofRun{ID: "pages_ok", Started: true, Output: "pages_ok run output", Report: junitGz(t, wrap(`<testcase name="TestPagesOK"></testcase>`)),
+		Artifacts: map[string][]byte{"pages_ok.txt": []byte("sizes: 3 rows\ndoors: 2 rows")}}
+	if len(pagesOKRun) > 0 {
+		pages = pagesOKRun[0]
+	}
 	results, errs := runCriteriaWithPods(t, r, kube, proofLines(
 		harness.ProofRun{ID: "size_bound", Started: true, Exit: 1, Output: "=== RUN   TestSizeBound\n--- FAIL: TestSizeBound (0.00s)\n", Report: junitGz(t, sizeBoundFail)},
 		harness.ProofRun{ID: "group_open", Started: true, Report: junitGz(t, wrap(`<testcase name="TestGroupOpen"></testcase>`))},
 		harness.ProofRun{ID: "all_green", Started: true, Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
 		readsCalmRun,
-		harness.ProofRun{ID: "pages_ok", Started: true, Output: "pages_ok run output", Report: junitGz(t, wrap(`<testcase name="TestPagesOK"></testcase>`)),
-			Artifacts: map[string][]byte{"pages_ok.txt": []byte("sizes: 3 rows\ndoors: 2 rows")}},
+		pages,
 		harness.ProofRun{ID: "holdout-4", Started: true, Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))},
 		harness.ProofRun{ID: "holdout-5", Started: true, Report: junitGz(t, wrap(`<testcase name="TestLockLog"></testcase>`))},
 	))
@@ -491,5 +497,70 @@ func TestGateCriteriaFindsAnArtifactTooLargeForTheLine(t *testing.T) {
 	}
 	if got := string(mustJSON(timelineStep(t, objects, "t1", "gate_criteria")["opened"])); strings.Contains(got, "reads_calm") {
 		t.Fatalf("the line's opened = %s, want no reads_calm", got)
+	}
+}
+
+// A human criterion's artifact the line had no room for is a finding
+// alone: the human settles the row, and the gate writes none.
+func TestGateCriteriaFindsAHumanArtifactTooLargeForTheLine(t *testing.T) {
+	res, store, objects, _, _, _ := judgedGate(t, `{"verdict":"met","reason":"the page names every size"}`, readsCalmWrote(t),
+		harness.ProofRun{ID: "pages_ok", Started: true, Report: junitGz(t, wrap(`<testcase name="TestPagesOK"></testcase>`)), Dropped: []string{"pages_ok.txt"}})
+	if want := "criterion pages_ok: artifact pages_ok.txt was too large for the run's line"; !slices.Contains(res.Findings, want) {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+	if got := rowsOf(store, "pages_ok"); len(got) != 0 {
+		t.Fatalf("pages_ok rows = %+v, want none", got)
+	}
+	if b, _ := objects.Get(context.Background(), ArtifactKey("t1", "pages_ok")); b != nil {
+		t.Fatalf("the dropped artifact is stored: %q", b)
+	}
+}
+
+// The judgement calls share the review's fan-out: at most four wait on
+// the gateway at once, and every one gets its verdict.
+func TestJudgeArtifactsCallsFourAtOnce(t *testing.T) {
+	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+	ll := &fakeLiteLLM{delay: 100 * time.Millisecond, content: `{"verdict":"met","reason":"calm"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	var p Plan
+	var artifacts []GateArtifact
+	for i := range 6 {
+		c := readsCalm
+		c.ID = fmt.Sprintf("calm_%d", i)
+		p.Criteria = append(p.Criteria, c)
+		artifacts = append(artifacts, GateArtifact{Criterion: c.ID, Name: c.ID + ".html", Head: "c1", Content: sizesPage})
+	}
+	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", p, artifacts)
+	if err != nil || met != 6 || len(findings) != 0 {
+		t.Fatalf("judgeArtifacts = %q, %d, %v; want six met", findings, met, err)
+	}
+	if ll.peak != 4 || len(ll.chats) != 6 {
+		t.Fatalf("peak %d over %d calls, want 4 over 6", ll.peak, len(ll.chats))
+	}
+	rows, _ := store.CriteriaVerdicts(context.Background(), "t1")
+	if len(rows) != 6 || slices.ContainsFunc(rows, func(v CriterionVerdict) bool { return v.Verdict != "met" }) {
+		t.Fatalf("rows = %+v, want six met", rows)
+	}
+}
+
+// A call the gateway refused for the task's headroom while another ran
+// is made again alone, after the others, and gets its verdict.
+func TestJudgeArtifactsRetriesAHeadroomRefusalAlone(t *testing.T) {
+	r, _, store := newTestRunner(t, gateTask, newFakeKube(), &fakeObjectStore{})
+	ll := &fakeLiteLLM{delay: 100 * time.Millisecond, content: `{"verdict":"met","reason":"calm"}`, status: http.StatusTooManyRequests,
+		decision: policy.RefusedBudget, crowded: true}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	a, b := readsCalm, readsCalm
+	a.ID, b.ID = "a", "b"
+	findings, met, err := r.judgeArtifacts(context.Background(), gateTask, "t1", Plan{Criteria: []PlanCriterion{a, b}}, []GateArtifact{
+		{Criterion: "a", Name: "a.html", Head: "c1", Content: "<p>a</p>"}, {Criterion: "b", Name: "b.html", Head: "c1", Content: "<p>b</p>"}})
+	if err != nil || met != 2 || len(findings) != 0 {
+		t.Fatalf("judgeArtifacts = %q, %d, %v; want both met", findings, met, err)
+	}
+	if ll.peak != 2 || len(ll.chats) != 4 {
+		t.Fatalf("peak %d over %d calls: want both at once, refused, then each again alone", ll.peak, len(ll.chats))
+	}
+	if got := rowsOf(store, "b"); len(got) != 1 || got[0].Verdict != "met" {
+		t.Fatalf("b's rows = %+v, want met", got)
 	}
 }

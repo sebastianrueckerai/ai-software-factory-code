@@ -51,7 +51,7 @@ func TestCallAllRunsFourAtOnce(t *testing.T) {
 	ll := &fakeLiteLLM{delay: 100 * time.Millisecond, answer: echo}
 	calls := labelledCalls(8)
 	ctx, told := toldWaves()
-	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, calls)
+	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, calls)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -75,7 +75,7 @@ func TestCallAllRetriesHeadroomRefusalsOneByOne(t *testing.T) {
 		t.Run(decision, func(t *testing.T) {
 			ll := &fakeLiteLLM{delay: 100 * time.Millisecond, answer: echo, status: http.StatusTooManyRequests, decision: decision, crowded: true}
 			calls := labelledCalls(6)
-			results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, calls)
+			results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, calls)
 			if err != nil {
 				t.Fatal(err)
 			}
@@ -97,7 +97,7 @@ func TestCallAllRetriesHeadroomRefusalsOneByOne(t *testing.T) {
 func TestCallAllStopsAtTheFirstRefusalOfTheRetry(t *testing.T) {
 	ll := &fakeLiteLLM{status: http.StatusTooManyRequests, decision: policy.RefusedBudget}
 	ctx, told := toldWaves()
-	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, labelledCalls(5))
+	results, err := fanRunner(t, ll).callAll(ctx, "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -118,7 +118,7 @@ func TestCallAllStopsAtTheFirstRefusalOfTheRetry(t *testing.T) {
 // A failed call that no headroom refused is its result, not retried.
 func TestCallAllKeepsOtherErrors(t *testing.T) {
 	ll := &fakeLiteLLM{status: http.StatusBadGateway}
-	results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, labelledCalls(5))
+	results, err := fanRunner(t, ll).callAll(context.Background(), "t1", "big", policy.PurposeReview, time.Minute, time.Time{}, labelledCalls(5))
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -146,7 +146,7 @@ func TestCallAllCancelReturnsContextError(t *testing.T) {
 	}
 	done := make(chan outcome, 1)
 	go func() {
-		results, err := r.callAll(ctx, "t1", "big", policy.PurposeReview, time.Hour, labelledCalls(6))
+		results, err := r.callAll(ctx, "t1", "big", policy.PurposeReview, time.Hour, time.Time{}, labelledCalls(6))
 		done <- outcome{results, err}
 	}()
 	for deadline := time.Now().Add(5 * time.Second); ll.running() < 4; time.Sleep(5 * time.Millisecond) {
@@ -259,6 +259,18 @@ func TestReviewAndAuditHeapOfAnEightMiBDiff(t *testing.T) {
 		t.Logf("%s of a %d KiB diff: peak heap %d KiB above the base, %.1f times the diff", name, len(diff)>>10, peak>>10, float64(peak)/float64(len(diff)))
 		if peak > 4*uint64(len(diff)) {
 			t.Errorf("%s held %d KiB, over four times the %d KiB diff", name, peak>>10, len(diff)>>10)
+		}
+	}
+}
+
+// A call's timeout ends it a minute before the deadline it is given, or
+// at its own timeout when that comes first.
+func TestCallTimeoutKeepsAMinuteBeforeTheDeadline(t *testing.T) {
+	now := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
+	deadline := now.Add(10 * time.Minute)
+	for timeout, want := range map[time.Duration]time.Duration{15 * time.Minute: 9 * time.Minute, 6 * time.Minute: 6 * time.Minute} {
+		if got := callTimeout(now, deadline, timeout); got != want {
+			t.Errorf("callTimeout(%s before the deadline, %s) = %s, want %s", deadline.Sub(now), timeout, got, want)
 		}
 	}
 }

@@ -284,27 +284,31 @@ func agentDocPlan() Plan {
 	}
 }
 
-// agentDocJudgement drives judge's call on a judgement criterion and the
-// artifact its proof wrote.
+// agentDocJudgement drives the judgement call (judgementCall) on a
+// judgement criterion and the artifact its proof wrote, through callAll
+// as the gate makes it.
 func agentDocJudgement(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
-	m, _, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
+	m, alias, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
 	if err != nil {
 		return nil, err
 	}
 	c := PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "The sizes page reads calm", Inputs: "the sizes page with three sizes",
 		Prompt: "Does the page read calm? Answer met or unmet."}
 	a := GateArtifact{Criterion: c.ID, Name: "reads_calm.html", Head: "fixture-head-sha", Content: "<main><h1>Sizes</h1><p>S, M and L</p></main>"}
-	// the fixture answer is no verdict: the request on the wire is the capture
-	r := &Runner{cfg: RunnerConfig{Policy: func() policy.Version { return v }}, supervisor: m}
-	r.judge(ctx, Task{ID: agentDocTask, RequiredCapabilities: agentDocClasses}, c, a)
-	system := c.Prompt + "\n\n" + judgementAnswer
+	call := judgementCall(c, a)
+	results, err := (&Runner{supervisor: m}).callAll(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, time.Time{}, []reviewCall{call})
+	if err != nil {
+		return nil, err
+	}
+	if err := results[0].Err; err != nil {
+		return nil, err
+	}
 	return []agentdoc.Span{
 		agentDocInputLead,
-		{Name: "the judgement prompt", Symbol: "(*Runner).judge", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: system},
+		{Name: "the judgement prompt", Symbol: "factoryd.judgementCall", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: call.Prompt},
 		{Name: "the criterion's prompt", Symbol: "factoryd.PlanCriterion.Prompt", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: c.Prompt},
 		{Name: "the answer's form", Symbol: "factoryd.judgementAnswer", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: judgementAnswer},
-		{Name: "the artifact", Symbol: "factoryd.GateArtifact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
-			Text: marshalled(map[string]string{"artifact": a.Name, "content": a.Content})},
+		{Name: "the artifact", Symbol: "factoryd.GateArtifact", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(call.Input())},
 	}, nil
 }
 
