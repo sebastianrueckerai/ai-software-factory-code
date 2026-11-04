@@ -1447,8 +1447,12 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 	t.send("tool", event)
 }
 
-// sentence is err as the member and the agent read it.
-func (t *turn) sentence(err error) string {
+// sentence is errSentence for the turn's actor.
+func (t *turn) sentence(err error) string { return errSentence(t.a, err) }
+
+// errSentence is err as a's human and the agent read it, the cause of a
+// failure that is no refusal logged.
+func errSentence(a actor, err error) string {
 	var no *refusal
 	var fj *forgejoRefusal
 	var stale factoryd.ErrStalePlan
@@ -1457,15 +1461,15 @@ func (t *turn) sentence(err error) string {
 	case errors.As(err, &no):
 		return no.msg
 	case errors.As(err, &fj) && errors.As(fj.err, &api):
-		log.Printf("console: %s via chat: %v", t.a.s.user, err)
+		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 		return "Forgejo refused to " + fj.what + ": " + api.reason()
 	case errors.As(err, &fj):
-		log.Printf("console: %s via chat: %v", t.a.s.user, err)
+		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 		return "Forgejo refused to " + fj.what + "; see the factoryd log."
 	case errors.As(err, &stale):
 		return stale.Error()
 	}
-	log.Printf("console: %s via chat: %v", t.a.s.user, err)
+	log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 	return "The action failed; see the factoryd log."
 }
 

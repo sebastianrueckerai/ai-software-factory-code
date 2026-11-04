@@ -605,12 +605,12 @@ func (t *turn) describe(tool chatTool, in *toolInput) (string, error) {
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", in.ID))
 		}
 		desc += fmt.Sprintf(", alert %d %q", al.ID, alertTitle(al))
-		first, err := t.c.verdictCard(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
+		first, own, err := t.c.verdictCards(t.r.Context(), t.a, in.ID, in.Verdict, in.Card)
 		if err != nil {
 			return "", err
 		}
 		if first.ID != "" {
-			desc += fmt.Sprintf(", same cause as #%d %s %q, which closes card %s", first.IssueNumber, first.ID, factoryd.CardTitle(first), al.TaskID)
+			desc += fmt.Sprintf(", same cause as #%d %s %q, which closes #%d", first.IssueNumber, first.ID, factoryd.CardTitle(first), own.IssueNumber)
 		}
 	}
 	if tool.name == "promote_resource" || tool.name == "release_resource" {

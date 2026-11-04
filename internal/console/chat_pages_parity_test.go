@@ -243,7 +243,7 @@ func TestPageWriteToolsProduceProposals(t *testing.T) {
 		{"alert_verdict", `{"id":7,"verdict":"real"}`, `Judge an alert, verdict real, alert 7 \"t-r\"`, "Alert 7 is judged real.",
 			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-r", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 7, "verdict": "real"}}}},
 		{"alert_verdict", `{"id":8,"verdict":"same_cause","card":"t-m"}`,
-			`Judge an alert, verdict same_cause, alert 8 \"t-e\", same cause as #5 t-m \"Fix the cache. It drops entries.\", which closes card t-e`,
+			`Judge an alert, verdict same_cause, alert 8 \"t-e\", same cause as #5 t-m \"Fix the cache. It drops entries.\", which closes #13`,
 			"Alert 8 is judged same_cause, the same cause as #5. Closed #13; factoryd ends the card.",
 			[]factoryd.Event{{Repository: "sf/code", TaskID: "t-e", Kind: factoryd.EventAlertVerdict, Detail: map[string]any{"alert": 8, "same_as": "t-m", "verdict": "same_cause"}},
 				{Repository: "sf/code", TaskID: "t-e", IssueNumber: 13, Kind: factoryd.EventCardClosed, Detail: map[string]any{"note": "Same cause as #5."}}}},

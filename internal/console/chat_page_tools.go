@@ -416,9 +416,9 @@ func tailWords(parts []string) string {
 // escalation alert, the agent's own or a factory approver's confirmed one.
 // Only a human's counts as an intervention. same_cause links card, the
 // first card of the fault, then closes the alert's own card; a close that
-// fails leaves the verdict and says so.
+// fails after the verdict leaves it and names the failure.
 func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v, card string) (string, error) {
-	first, err := c.verdictCard(ctx, a, id, v, card)
+	first, own, err := c.verdictCards(ctx, a, id, v, card)
 	if err != nil {
 		return "", err
 	}
@@ -438,7 +438,10 @@ func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v, card
 		return "", refuse(http.StatusInternalServerError, "cannot record the verdict")
 	}
 	log.Printf("console: %s judged alert %d %s via %s", a.s.user, id, v, a.via)
-	repo, taskID := c.alertRepository(ctx, id)
+	repo, taskID := own.Repository, own.ID
+	if own.ID == "" {
+		repo, taskID = c.alertRepository(ctx, id)
+	}
 	if repo == "" {
 		log.Printf("console: alert %d: no project to record the verdict %s under", id, v)
 	} else {
@@ -455,46 +458,50 @@ func (c *Console) doAlertVerdict(ctx context.Context, a actor, id int64, v, card
 	judged := fmt.Sprintf("Alert %d is judged %s, the same cause as #%d", id, v, first.IssueNumber)
 	// the close comes after the verdict: the card's end judges an open
 	// escalation unjudged
-	err = c.admit(ctx, accessTable["close"], a, repo, "task "+taskID)
-	var closed string
-	if err == nil {
-		closed, err = c.doClose(ctx, a, taskID, fmt.Sprintf("Same cause as #%d.", first.IssueNumber))
-	}
+	closed, err := c.doClose(ctx, a, own.ID, fmt.Sprintf("Same cause as #%d.", first.IssueNumber))
 	if err != nil {
-		log.Printf("console: %s judged alert %d same_cause; its card %s stays open: %v", a.s.user, id, taskID, err)
-		return fmt.Sprintf("%s, but its card %s could not be closed: close it by hand.", judged, taskID), nil
+		log.Printf("console: %s judged alert %d same_cause; its card %s stays open: %v", a.s.user, id, own.ID, err)
+		return fmt.Sprintf("%s, but its card #%d stays open: %s", judged, own.IssueNumber, errSentence(a, err)), nil
 	}
 	return judged + ". " + closed, nil
 }
 
-// verdictCard is the first card a verdict v on alert id names in card:
-// none for real and noise, which take no card; for same_cause a card of
-// a's project other than the alert's own.
-func (c *Console) verdictCard(ctx context.Context, a actor, id int64, v, card string) (factoryd.Task, error) {
+// verdictCards are the cards a verdict v on alert id moves: none for real
+// and noise, which take no card; for same_cause the first card, named in
+// card, and the alert's own card, which a's close must reach, both of a's
+// project.
+func (c *Console) verdictCards(ctx context.Context, a actor, id int64, v, card string) (first, own factoryd.Task, err error) {
 	switch {
 	case v != factoryd.VerdictReal && v != factoryd.VerdictNoise && v != factoryd.VerdictSameCause:
-		return factoryd.Task{}, refuse(http.StatusBadRequest, "the verdict is real, noise or same_cause")
+		return first, own, refuse(http.StatusBadRequest, "the verdict is real, noise or same_cause")
 	case v != factoryd.VerdictSameCause && card != "":
-		return factoryd.Task{}, refuse(http.StatusBadRequest, "card goes with the verdict same_cause alone: judge "+v+" without it")
+		return first, own, refuse(http.StatusBadRequest, "card goes with the verdict same_cause alone: judge "+v+" without it")
 	case v != factoryd.VerdictSameCause:
-		return factoryd.Task{}, nil
+		return first, own, nil
 	case card == "":
-		return factoryd.Task{}, refuse(http.StatusBadRequest, "same_cause names in card the card the same cause raised first, by its task id or issue number")
+		return first, own, refuse(http.StatusBadRequest, "same_cause needs card: the task id or issue number of the card the same cause raised first")
 	}
-	first, err := c.cardIn(ctx, a, card)
-	if err != nil {
-		return factoryd.Task{}, err
+	if first, err = c.cardIn(ctx, a, card); err != nil {
+		return factoryd.Task{}, own, err
 	}
-	al, _, err := c.cfg.Alerts.AlertByID(ctx, id)
+	al, ok, err := c.cfg.Alerts.AlertByID(ctx, id)
 	switch {
 	case err != nil:
 		log.Printf("console: alert %d: %v", id, err)
-		return factoryd.Task{}, refuse(http.StatusInternalServerError, "cannot read the alert")
+		return factoryd.Task{}, own, refuse(http.StatusInternalServerError, "cannot read the alert")
+	case !ok:
+		return factoryd.Task{}, own, refuse(http.StatusNotFound, fmt.Sprintf("There is no alert %d.", id))
 	case al.TaskID == first.ID:
-		return factoryd.Task{}, refuse(http.StatusBadRequest,
+		return factoryd.Task{}, own, refuse(http.StatusBadRequest,
 			fmt.Sprintf("#%d is alert %d's own card: same_cause names the other card, the one the same cause raised first", first.IssueNumber, id))
 	}
-	return first, nil
+	if own, err = c.cardIn(ctx, a, al.TaskID); err != nil {
+		return factoryd.Task{}, factoryd.Task{}, err
+	}
+	if err := c.admit(ctx, accessTable["close"], a, own.Repository, "task "+own.ID); err != nil {
+		return factoryd.Task{}, factoryd.Task{}, err
+	}
+	return first, own, nil
 }
 
 // doPromoteResource is the resources page's Promote button: make the
