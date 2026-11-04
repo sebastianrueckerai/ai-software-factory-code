@@ -109,8 +109,9 @@ func TestStoredProofIsARunnerEntry(t *testing.T) {
 // The gate's runs of a plan's criteria, in plan order, on its proof rows:
 // an invariant runs its suite as a directory of the repository; a test
 // criterion runs its stored or opened proof, and is held when its proof
-// is flagged or not stored yet; judgement and human criteria are outside
-// the gate. The hold-outs it runs blind are the stored ones with no flag.
+// is flagged or not stored yet, or late, with a finding, when the store
+// happened without it; judgement and human criteria are outside the gate.
+// The hold-outs it runs blind are the stored ones with no flag.
 func TestGateRunsTakeTheSuiteAndHoldTheTests(t *testing.T) {
 	rows := proofRows()
 	runs, holdouts := gateRuns(proofRowsPlan(), rows)
@@ -119,7 +120,7 @@ func TestGateRunsTakeTheSuiteAndHoldTheTests(t *testing.T) {
 			file: &harness.ProofFile{Path: "proofs/size_bound/size_bound_test.go", Content: "package size_bound"}},
 		{id: "group_open", kind: CriterionTest, suite: "./acceptance", name: "TestGroupOpen"},
 		{id: "door", kind: CriterionTest, held: "criterion door: its proof is flagged green on main: no blind run"},
-		{id: "no_proof", kind: CriterionTest, held: "criterion no_proof: no stored proof yet"},
+		{id: "no_proof", kind: CriterionTest, held: "Criterion no_proof has no stored proof: the prover filed before it was added.", late: true},
 		{id: "all_green", kind: CriterionInvariant, suite: "./..."},
 	}
 	if !reflect.DeepEqual(runs, want) {
@@ -138,10 +139,12 @@ func TestGateRunsTakeTheSuiteAndHoldTheTests(t *testing.T) {
 // The report's verdicts, hand-derived one per outcome and kind: only a
 // pass meets its criterion; an outcome the run lost is no report (a gate
 // that runs and reports nothing does not pass); a held criterion is unmet
-// without a run and no finding, since the builder cannot act on it; the
-// evidence is one line of at most 200 characters.
+// without a run and no finding, since the builder cannot act on it, and
+// a late one is a finding too; the evidence is one line of at most 200
+// characters.
 func TestCriteriaReportVerdicts(t *testing.T) {
 	held := "criterion t_held: no stored proof yet"
+	late := "Criterion t_late has no stored proof: the prover filed before it was added."
 	runs := []criterionRun{
 		{id: "t_pass", kind: CriterionTest, suite: "./p", name: "TestPass"},
 		{id: "t_fail", kind: CriterionTest, suite: "./p", name: "TestFail"},
@@ -152,6 +155,7 @@ func TestCriteriaReportVerdicts(t *testing.T) {
 		{id: "t_lost", kind: CriterionTest, suite: "./p", name: "TestLost"},
 		{id: "t_long", kind: CriterionTest, suite: "./p", name: "TestLong"},
 		{id: "t_held", kind: CriterionTest, held: held},
+		{id: "t_late", kind: CriterionTest, held: late, late: true},
 		{id: "i_pass", kind: CriterionInvariant, suite: "./..."},
 		{id: "i_fail", kind: CriterionInvariant, suite: "./x"},
 		{id: "i_empty", kind: CriterionInvariant, suite: "./empty"},
@@ -181,6 +185,7 @@ func TestCriteriaReportVerdicts(t *testing.T) {
 		"criterion t_lost: TestLost in ./p: the run reported nothing",
 		"criterion t_long: TestLong in ./p failed: " + strings.Repeat("a", 200) + "...",
 		held,
+		late,
 		"criterion i_pass: suite ./... passed (3 passed, 1 skipped)",
 		"criterion i_fail: suite ./x failed: Failed FAIL ./x",
 		"criterion i_empty: suite ./empty ran no tests",
@@ -189,7 +194,7 @@ func TestCriteriaReportVerdicts(t *testing.T) {
 	if !slices.Equal(lines, wantLines) {
 		t.Fatalf("lines =\n%q\nwant\n%q", lines, wantLines)
 	}
-	wantFindings := slices.Concat(wantLines[1:8], wantLines[10:])
+	wantFindings := slices.Concat(wantLines[1:8], wantLines[9:10], wantLines[11:])
 	if !slices.Equal(findings, wantFindings) {
 		t.Fatalf("findings = %q, want %q", findings, wantFindings)
 	}
@@ -413,6 +418,45 @@ func TestGateCriteriaFindsAPlanWithoutARun(t *testing.T) {
 	}
 }
 
+// A test criterion whose proof the plan's prover has not stored yet asks
+// the human to wait, while the prover is open or still to open: the
+// rows the gate can write stand, and the answer runs the gate again. A
+// prover that ended without a store asks nothing.
+func TestGateCriteriaWaitsForAProverThatIsNotDone(t *testing.T) {
+	const held = "criterion green_login: no stored proof yet"
+	const login = `{"id":"green_login","kind":"test","claim":"a login answers 200","inputs":"POST /login","expected":"200"}`
+	for _, tc := range []struct {
+		name   string
+		prover string // the prover's status, "" for none filed
+		policy func() policy.Version
+		want   string
+	}{
+		{"a running prover", "running", proverPolicy, proofsNotStored},
+		{"a queued prover", "queued", proverPolicy, proofsNotStored},
+		{"a prover still to open", "", proverPolicy, proofsNotStored},
+		{"a prover that failed", "failed", proverPolicy, ""},
+		{"a policy that runs no prover", "", testPolicyVersion, ""},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			kube := newFakeKube()
+			r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+			r.cfg.Policy = tc.policy
+			seedPlan(t, store, map[string]string{"integ": RoleIntegration}, login)
+			if tc.prover != "" {
+				store.tasks["t-prove"] = Task{ID: "t-prove", Status: tc.prover, Repository: "sf/repo", Parent: "plan1", Source: SourceProver, Kind: "agent"}
+			}
+			res, err := runCriteria(t, r)
+			if err != nil || res.Escalate != tc.want || len(res.Findings) != 0 {
+				t.Fatalf("result = %+v, %v; want the escalation %q and no finding", res, err, tc.want)
+			}
+			want := []CriterionVerdict{{Criterion: "green_login", Verdict: "unmet", Evidence: held, Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}}
+			if rows, _ := store.CriteriaVerdicts(context.Background(), "t1"); !slices.Equal(rows, want) {
+				t.Fatalf("verdict rows = %+v, want %+v", rows, want)
+			}
+		})
+	}
+}
+
 // proofsWorker is a worker endpoint that takes the proofs pod's list.
 func proofsWorker(t *testing.T, r *Runner) *fakeWorkerEndpoint {
 	t.Helper()
@@ -438,10 +482,12 @@ func seedProofRows(t *testing.T, store *fakeStore) {
 // The gate runs the plan's stored proofs and invariants in one sandbox
 // pod, its list posted to the worker's message port under a bearer only
 // the pod's hash names, never in the pod's spec. A stored proof is
-// written first, an opened one runs from the tree; a flagged proof or a
-// missing one is an unmet row that says so, and no finding. The stored
-// hold-outs run last, blind: their verdicts are on the timeline line
-// alone, by entry id, and nothing the gate writes names one.
+// written first, an opened one runs from the tree; a flagged proof is an
+// unmet row that says so, and no finding. A criterion with no proof once
+// the store happened came after the prover filed: its unmet row says so,
+// and so does a finding. The stored hold-outs run last, blind: their
+// verdicts are on the timeline line alone, by entry id, and nothing the
+// gate writes names one.
 func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
@@ -494,11 +540,11 @@ func TestGateCriteriaRunsTheStoredProofs(t *testing.T) {
 		"criterion size_bound: TestSizeBound in ./proofs/size_bound passed",
 		"criterion group_open: TestGroupOpen in ./acceptance failed: Failed --- FAIL: TestGroupOpen (0.00s)",
 		"criterion door: its proof is flagged green on main: no blind run",
-		"criterion no_proof: no stored proof yet",
+		"Criterion no_proof has no stored proof: the prover filed before it was added.",
 		"criterion all_green: suite ./... passed (1 passed, 0 skipped)",
 	}
-	if !slices.Equal(res.Findings, lines[1:2]) || res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
-		t.Fatalf("result = %+v, want the finding %q", res, lines[1])
+	if !slices.Equal(res.Findings, []string{lines[1], lines[3]}) || res.Skipped != "" || res.Escalate != "" || res.Holdouts != nil {
+		t.Fatalf("result = %+v, want the findings %q and %q", res, lines[1], lines[3])
 	}
 	gate := func(id, verdict, line string) CriterionVerdict {
 		return CriterionVerdict{Criterion: id, Verdict: verdict, Evidence: line, Kind: CriterionTest, Source: CriteriaSourceGate, DecidedBy: FactoryDecider}

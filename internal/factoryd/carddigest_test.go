@@ -720,12 +720,23 @@ func TestCardDigestHeadCountsThePlansProofs(t *testing.T) {
 	}
 }
 
+// A plan's proofs are missing an hour after its prover is due, while no
+// row is stored: from its foundation card's end done, merged or not, or
+// from the revision that made its criteria when it has no foundation
+// card. Once rows are stored, the flag counts the proofs still owed. The
+// proofs_stored event alone stores nothing.
 func TestCardDigestFlagsAMissingProof(t *testing.T) {
-	foundation := func(key, merge string) func(g digestRig) {
+	foundation := func(key, status, merge string) func(g digestRig) {
 		return func(g digestRig) {
 			at := digestAt(0)
 			g.store.tasks["t1411"] = Task{ID: "t1411", Kind: "agent", Repository: "sf/app", IssueNumber: 1411, Source: SourcePlan, Parent: "t1410",
-				PlanKey: key, Status: "done", MergeCommit: merge, FinishedAt: &at}
+				PlanKey: key, Status: status, MergeCommit: merge, FinishedAt: &at}
+		}
+	}
+	revised := func(g digestRig) { g.store.plans["t1410"][0].CreatedAt = digestAt(0) }
+	stored := func(holdout PlanProof) func(g digestRig) {
+		return func(g digestRig) {
+			g.store.proofs["t1410"] = []PlanProof{proofRow(1, "size_bound", ProofStored), proofRow(2, "door", ProofStored), proofRow(3, "reads_calm", ProofStored), holdout}
 		}
 	}
 	noFoundation := proverPlan()
@@ -739,15 +750,21 @@ func TestCardDigestFlagsAMissingProof(t *testing.T) {
 		seed []func(g digestRig)
 		want []DigestFlag
 	}{
-		{"an hour and a minute after the merge", proverPlan(), 61, []func(digestRig){foundation("foundation", "abc")}, []DigestFlag{{"proofs_missing", "1 hour"}}},
-		{"three hours and a minute after", proverPlan(), 181, []func(digestRig){foundation("foundation", "abc")}, []DigestFlag{{"proofs_missing", "3 hours"}}},
-		{"under an hour after", proverPlan(), 59, []func(digestRig){foundation("foundation", "abc")}, nil},
-		{"the proofs stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "abc"), func(g digestRig) {
+		{"an hour and a minute after the merge", proverPlan(), 61, []func(digestRig){foundation("foundation", "done", "abc")}, []DigestFlag{{"proofs_missing", "1 hour"}}},
+		{"three hours and a minute after", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc")}, []DigestFlag{{"proofs_missing", "3 hours"}}},
+		{"exactly an hour after", proverPlan(), 60, []func(digestRig){foundation("foundation", "done", "abc")}, nil},
+		{"under an hour after", proverPlan(), 59, []func(digestRig){foundation("foundation", "done", "abc")}, nil},
+		{"a foundation done without a merge", proverPlan(), 61, []func(digestRig){foundation("foundation", "done", "")}, []DigestFlag{{"proofs_missing", "1 hour"}}},
+		{"every proof stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc"), stored(storedKeyLog())}, nil},
+		{"3 of 4 stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc"), stored(keyLog())},
+			[]DigestFlag{{"proofs_missing", "1 of 4 wanted have no stored proof"}}},
+		{"the store's event with no row stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc"), func(g digestRig) {
 			g.event(30, EventProofsStored, FactoryDecider, map[string]any{"prover": "t-prove", "commit": "m0", "stored": []any{"size_bound"}, "flagged": []any{}})
-		}}, nil},
-		{"a foundation not merged", proverPlan(), 181, []func(digestRig){foundation("foundation", "")}, nil},
-		{"a plan with no foundation card", noFoundation, 181, []func(digestRig){foundation("sizes", "abc")}, nil},
-		{"a plan that owes no proof", invariants, 181, []func(digestRig){foundation("foundation", "abc")}, nil},
+		}}, []DigestFlag{{"proofs_missing", "3 hours"}}},
+		{"a foundation not done", proverPlan(), 181, []func(digestRig){foundation("foundation", "in-review", "")}, nil},
+		{"a plan with no foundation card", noFoundation, 61, []func(digestRig){revised, foundation("sizes", "done", "abc")}, []DigestFlag{{"proofs_missing", "1 hour"}}},
+		{"a plan with no foundation card under an hour", noFoundation, 59, []func(digestRig){revised}, nil},
+		{"a plan that owes no proof", invariants, 181, []func(digestRig){foundation("foundation", "done", "abc")}, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			g := planRig(t, tc.plan)

@@ -62,8 +62,9 @@ func copiesBudget(t Task, events []Event) bool {
 
 // digestFlags are the patterns the card's life shows, by name: one pass
 // over the steps, then the cases, the row, the dependencies and a plan's
-// proofs, whose foundation card merged at foundationMerged, zero for none.
-func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, budget float64, foundationMerged, now time.Time) []DigestFlag {
+// proofs, all read from rows.
+func digestFlags(rows cardRows, steps []DigestStep, budget float64, now time.Time) []DigestFlag {
+	t, cases, deps := rows.task, rows.cases, rows.deps
 	var flags []DigestFlag
 	add := func(name, detail string) { flags = append(flags, DigestFlag{name, detail}) }
 	confirmed := map[string]int{}
@@ -72,14 +73,12 @@ func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, bu
 	// session after it that ended without a push
 	granted, afterNoPush := false, ""
 	run, runFirst := 0, ""
-	stored := false
 	for _, s := range steps {
 		switch s.Kind {
 		case "proofs":
 			if s.Actor != FactoryDecider {
 				continue
 			}
-			stored = true
 			for _, id := range strings.Fields(s.state) {
 				add("prover_refused_thrice", id)
 			}
@@ -153,7 +152,10 @@ func digestFlags(t Task, steps []DigestStep, cases []Case, deps []Dependency, bu
 			add("dependency_failed", fmt.Sprintf("#%d", d.Issue))
 		}
 	}
-	if since := now.Sub(foundationMerged); !foundationMerged.IsZero() && !stored && since > time.Hour {
+	switch since := now.Sub(rows.proverDue); {
+	case rows.proofsStored > 0 && rows.proofsStored < rows.proofsWanted:
+		add("proofs_missing", fmt.Sprintf("%d of %d wanted have no stored proof", rows.proofsWanted-rows.proofsStored, rows.proofsWanted))
+	case rows.proofsStored == 0 && !rows.proverDue.IsZero() && since > time.Hour:
 		add("proofs_missing", textutil.Plural(int(since/time.Hour), "hour", "hours"))
 	}
 	if defaultKind(t.Kind) == "agent" && Cents(t.BudgetEUR) != Cents(budget) {

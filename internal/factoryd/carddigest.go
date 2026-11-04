@@ -94,9 +94,10 @@ func (r *Runner) CardDigest(ctx context.Context, taskID string) (CardDigest, err
 // cardRows are the rows a card's digest is read from: the task, its
 // events oldest first, its dependencies, its cases, its criteria verdicts
 // and its timeline object, nil when it has none; a plan task's proofs
-// (planProofCounts) and its foundation card's merge, the card's finish,
-// zero when the plan has none, it has not merged or the plan owes no
-// proof.
+// (planProofCounts) and since when its prover is due: its foundation
+// card's end done, or the newest revision's time for a plan without a
+// foundation card; zero while the foundation is not done or the plan owes
+// no proof.
 type cardRows struct {
 	task                       Task
 	events                     []Event
@@ -105,7 +106,7 @@ type cardRows struct {
 	verdicts                   []CriterionVerdict
 	timeline                   []byte
 	proofsStored, proofsWanted int
-	foundationMerged           time.Time
+	proverDue                  time.Time
 }
 
 // readCard reads task taskID's rows; ErrNotFound when there is no such
@@ -138,14 +139,17 @@ func (r *Runner) readCard(ctx context.Context, taskID string) (cardRows, error) 
 	if t.Track != policy.TrackPlan {
 		return rows, nil
 	}
-	p, stored, wanted, err := r.planProofState(ctx, taskID)
-	if err != nil || wanted == 0 {
+	s, err := r.planProofState(ctx, taskID)
+	if err != nil || s.wanted == 0 {
 		return rows, err
 	}
-	rows.proofsStored, rows.proofsWanted = stored, wanted
-	card, _, err := r.foundationCard(ctx, taskID, p)
-	if card.MergeCommit != "" && card.FinishedAt != nil {
-		rows.foundationMerged = *card.FinishedAt
+	rows.proofsStored, rows.proofsWanted = s.stored, s.wanted
+	card, named, err := r.foundationCard(ctx, taskID, s.plan)
+	switch {
+	case !named:
+		rows.proverDue = s.revised
+	case card.Status == "done" && card.FinishedAt != nil:
+		rows.proverDue = *card.FinishedAt
 	}
 	return rows, err
 }
@@ -173,7 +177,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	flags := digestFlags(t, steps, rows.cases, rows.deps, budget, rows.foundationMerged, r.clock())
+	flags := digestFlags(rows, steps, budget, r.clock())
 	return CardDigest{Head: head, Steps: steps, Flags: flags}, nil
 }
 

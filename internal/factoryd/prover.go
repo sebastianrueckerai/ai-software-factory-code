@@ -21,7 +21,7 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
-// The prover (blind proofs): once a plan's foundation card is on main, or
+// The prover (blind proofs): once a plan's foundation card is done, or
 // at confirmation for a plan without one, the criteria sweep opens one
 // prover task, a report task of the plan at main's head. Its session
 // writes one test per criterion of kind test, judgement and human and per
@@ -726,7 +726,7 @@ func proofFlag(kind string, o proofOutcome, run harness.ProofRun, artifact strin
 }
 
 // proverPass opens the prover of each open plan that owes proofs, once its
-// foundation card has merged, or at once for a plan without one: one
+// foundation card is done, or at once for a plan without one: one
 // report task of the plan at main's head, its workflow started. A plan the
 // policy cannot serve, with no prover class of session report or one whose
 // agent time leaves the session too little, waits, its id on one log line.
@@ -770,21 +770,17 @@ func (r *Runner) proverPass(ctx context.Context) {
 }
 
 // proverDue tells whether plan owes proofs and its foundation card, when
-// it has one, has merged.
+// it has one, is done.
 func (r *Runner) proverDue(ctx context.Context, plan Task) (bool, error) {
 	if plan.Status == "closed" {
 		return false, nil
 	}
-	p, _, err := planOfStore(ctx, r.store, plan.ID, plan.ID)
-	if err != nil {
+	s, err := r.planProofState(ctx, plan.ID)
+	if err != nil || s.wanted == 0 {
 		return false, err
 	}
-	rows, err := r.store.PlanProofs(ctx, plan.ID)
-	if err != nil || len(proofsDue(p, rows)) == 0 {
-		return false, err
-	}
-	card, named, err := r.foundationCard(ctx, plan.ID, p)
-	return !named || card.MergeCommit != "", err
+	card, named, err := r.foundationCard(ctx, plan.ID, s.plan)
+	return !named || card.Status == "done", err
 }
 
 // foundationCard is plan id's first foundation card by p; named tells
@@ -819,22 +815,31 @@ func planProofCounts(p Plan, rows []PlanProof) (stored, wanted int) {
 	return stored, len(due)
 }
 
-// planProofState is plan task id's newest revision and its proofs by it
-// (planProofCounts); a plan with no revision owes none.
-func (r *Runner) planProofState(ctx context.Context, id string) (p Plan, stored, wanted int, err error) {
+// proofState is a plan's newest revision, when it was made, and the
+// plan's proofs by it (planProofCounts).
+type proofState struct {
+	plan           Plan
+	revised        time.Time
+	stored, wanted int
+}
+
+// planProofState is plan task id's proofState; a plan with no revision
+// owes none.
+func (r *Runner) planProofState(ctx context.Context, id string) (proofState, error) {
 	rev, ok, err := r.store.PlanRevision(ctx, id, 0)
 	if err != nil || !ok {
-		return Plan{}, 0, 0, err
+		return proofState{}, err
 	}
-	if err := json.Unmarshal(rev.Plan, &p); err != nil {
-		return Plan{}, 0, 0, fmt.Errorf("plan %s revision %d: %w", id, rev.Revision, err)
+	s := proofState{revised: rev.CreatedAt}
+	if err := json.Unmarshal(rev.Plan, &s.plan); err != nil {
+		return proofState{}, fmt.Errorf("plan %s revision %d: %w", id, rev.Revision, err)
 	}
 	rows, err := r.store.PlanProofs(ctx, id)
 	if err != nil {
-		return Plan{}, 0, 0, err
+		return proofState{}, err
 	}
-	stored, wanted = planProofCounts(p, rows)
-	return p, stored, wanted, nil
+	s.stored, s.wanted = planProofCounts(s.plan, rows)
+	return s, nil
 }
 
 // proverUnfit is why v cannot run a prover on repository: no prover class

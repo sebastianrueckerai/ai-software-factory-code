@@ -157,9 +157,11 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 			return nil, err
 		}
 		out[i] = BoardDigestPlan{Issue: int(p.IssueNumber), Name: p.PlanName, Children: map[string]int{}}
-		if _, out[i].ProofsStored, out[i].ProofsWanted, err = r.planProofState(ctx, p.ID); err != nil {
+		s, err := r.planProofState(ctx, p.ID)
+		if err != nil {
 			return nil, err
 		}
+		out[i].ProofsStored, out[i].ProofsWanted = s.stored, s.wanted
 		for _, c := range cards {
 			out[i].Children[c.Status]++
 		}

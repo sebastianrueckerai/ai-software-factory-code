@@ -745,14 +745,14 @@ func TestReportDeadlineKeepsTheReserve(t *testing.T) {
 	}
 }
 
-// seedProverCards files t-plan's card tasks for keys, the foundation's
-// merge commit merged.
-func seedProverCards(t *testing.T, store *fakeStore, merged string, keys ...string) {
+// seedProverCards files t-plan's card tasks for keys, queued, the
+// foundation's of status foundation.
+func seedProverCards(t *testing.T, store *fakeStore, foundation string, keys ...string) {
 	t.Helper()
 	for _, k := range keys {
 		c := Task{ID: "t-" + k, Status: "queued", Repository: "sf/r", Kind: "agent", Source: SourcePlan, Parent: "t-plan", PlanKey: k, Track: policy.TrackDirect}
 		if k == "foundation" {
-			c.MergeCommit = merged
+			c.Status = foundation
 		}
 		if err := store.CreateTask(context.Background(), c); err != nil {
 			t.Fatal(err)
@@ -760,20 +760,22 @@ func seedProverCards(t *testing.T, store *fakeStore, merged string, keys ...stri
 	}
 }
 
-func TestProverPassOpensTheProverOnceTheFoundationMerged(t *testing.T) {
+// The prover opens once the foundation card is done, merged or not: a
+// card done with no push (its work on main already) counts.
+func TestProverPassOpensTheProverOnceTheFoundationIsDone(t *testing.T) {
 	ctx := context.Background()
 	open := planTask()
 	open.Status = "done"
 	r, _, store := newProverRunner(t, open, newFakeKube(), &fakeObjectStore{})
 	seedProver(t, store, proverPlan())
-	seedProverCards(t, store, "", "foundation", "sizes", "integration")
+	seedProverCards(t, store, "in-review", "foundation", "sizes", "integration")
 	wf := r.cfg.Workflows.(*fakeWorkflows)
 	r.proverPass(ctx)
 	if _, ok, _ := store.ReportOf(ctx, "t-plan", SourceProver); ok || len(wf.started) != 0 {
-		t.Fatalf("a prover before the foundation merged; started %v", wf.started)
+		t.Fatalf("a prover before the foundation is done; started %v", wf.started)
 	}
 	found := store.tasks["t-foundation"]
-	found.MergeCommit = "abc"
+	found.Status = "done"
 	store.tasks["t-foundation"] = found
 	r.proverPass(ctx)
 	r.proverPass(ctx)
@@ -806,7 +808,7 @@ func TestProverPassLeavesAPlanItCannotServe(t *testing.T) {
 	invariants := proverPlan()
 	invariants.Criteria = invariants.Criteria[3:]
 	seedProver(t, store, invariants)
-	seedProverCards(t, store, "abc", "foundation", "sizes", "integration")
+	seedProverCards(t, store, "done", "foundation", "sizes", "integration")
 	r.proverPass(ctx)
 	if _, ok, _ := store.ReportOf(ctx, "t-plan", SourceProver); ok {
 		t.Fatal("a prover for a plan that owes no proof")
