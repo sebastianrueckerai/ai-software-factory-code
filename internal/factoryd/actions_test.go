@@ -517,3 +517,25 @@ func TestWithdrawIsOfferedToNoHumanAndNoChat(t *testing.T) {
 		}
 	}
 }
+
+// Rung 0 closes only what an ended card left open: it may close a card
+// that ended, and is refused on a live one, which rung 2 or the human
+// closes. Rung 1 closes neither.
+func TestRungZeroClosesOnlyAnEndedCard(t *testing.T) {
+	closing, _ := ActionByName(ActClose)
+	res := Resolution{Action: ActClose}
+	if got := closing.refusal(CaseFacts{Final: "done"}, 0, res); got != "" {
+		t.Errorf("rung 0's close of a done card = %q, want it taken", got)
+	}
+	for _, tc := range []struct {
+		rung  int
+		facts CaseFacts
+	}{{0, CaseFacts{}}, {1, CaseFacts{Final: "done"}}} {
+		if got, want := closing.refusal(tc.facts, tc.rung, res), fmt.Sprintf("rung %d may not pick close: rung 2 and the human may", tc.rung); got != want {
+			t.Errorf("rung %d's close of %+v = %q, want %q", tc.rung, tc.facts, got, want)
+		}
+	}
+	if got := offeredNames(CaseFacts{Final: "done"}, 0); !slices.Contains(got, ActClose) {
+		t.Errorf("rung 0 on a done card is offered %v, want close among them", got)
+	}
+}

@@ -260,7 +260,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if rung < 0 || rung > 3 {
 		return fmt.Sprintf("there is no rung %d", rung)
 	}
-	if !a.Rungs[rung] {
+	// rung 0 closes what an ended card left open, and no live card
+	ended := rung == 0 && a.Name == ActClose && f.Final != ""
+	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
 	if why := a.Applies(f, r); why != "" {

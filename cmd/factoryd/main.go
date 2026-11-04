@@ -382,6 +382,7 @@ func main() {
 	}
 	go routines.Loop(ctx, 10*time.Second)
 	releases := &factoryd.ReleaseKeeper{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Own: own.Repo(), Now: time.Now}
+	monitor := &factoryd.Monitor{Store: store, Runner: runner, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Now: time.Now}
 	go func() {
 		// nudged is the stale sweep's memory of its signals, task id → when
 		nudged := map[string]time.Time{}
@@ -394,6 +395,9 @@ func main() {
 			runner.ImpassePass(ctx)
 			if err := releases.Pass(ctx); err != nil {
 				log.Printf("release pass: %v", err)
+			}
+			if err := monitor.Sweep(ctx); err != nil {
+				log.Printf("monitor sweep: %v", err)
 			}
 			if now := time.Now(); now.Sub(lastBranchSweep) >= time.Hour {
 				lastBranchSweep = now
@@ -705,6 +709,9 @@ func main() {
 		log.Fatalf("console: %v", err)
 	}
 	go (&factoryd.Poker{Store: store, Current: policyLoader.Current, Line: consoleHandler}).Loop(ctx, 5*time.Second)
+	// the monitor: every board event recomputes its card's flags at once,
+	// and a flag new for its state opens a case
+	go monitor.Loop(ctx, 5*time.Second)
 	// the wake: an ask the project agent did not file wakes one turn of
 	// its own on the venue member's inbox; a queue under its refill mark
 	// pulls the roadmap

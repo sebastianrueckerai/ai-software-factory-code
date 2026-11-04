@@ -34,12 +34,14 @@ type CardDigest struct {
 	// the steps of the card's live cases, and at is when the digest was
 	// built, the time its waits are aged to. A running card's lastCallAt
 	// is its newest model call's time, and its retryDue the time the
-	// newest provider_refused line's backoff ends.
+	// newest provider_refused line's backoff ends. deps are the card's
+	// dependencies.
 	lastStep   string
 	caseSteps  []CaseStep
 	at         time.Time
 	lastCallAt time.Time
 	retryDue   time.Time
+	deps       []Dependency
 }
 
 // DigestHead is where the card stands: its issue, its plan's issue and
@@ -181,7 +183,7 @@ func (r *Runner) cardDigest(ctx context.Context, rows cardRows) (CardDigest, err
 	for i := range steps {
 		steps[i].N, steps[i].Offset, steps[i].Count = i+1, steps[i].At.Sub(steps[0].At), 1
 	}
-	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock()}
+	d := CardDigest{Head: head, Steps: steps, Waits: r.cfg.Policy().WaitsOf(t.Repository), caseSteps: rows.caseSteps, at: r.clock(), deps: rows.deps}
 	newest := newestLine(rows.timeline, "")
 	d.lastStep, d.LastStepAt = newest.Step, newest.Time
 	if t.Status == "running" {

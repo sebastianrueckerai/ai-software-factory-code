@@ -196,8 +196,10 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	}
 	beside(detail, in.Detail)
 	r.timeline.RecordRow(ctx, t.ID, kind, in.By, via, detail)
-	if t.Kind == "human" {
-		return out, nil // a human card runs no workflow: a signal would start one
+	if t.Kind == "human" || Final(t.Status) {
+		// a human card runs no workflow and an ended card's run is over: a
+		// signal would start one
+		return out, nil
 	}
 	r.signalRun(ctx, t.ID, SignalCaseResolved, TaskSignal{Author: in.By, Comment: out.Comment,
 		Case: &CaseSignal{CaseID: c.ID, Rung: in.Rung, By: in.By, Res: res, Comment: out.Comment}})
@@ -465,8 +467,11 @@ func (r *Runner) replanDependency(ctx context.Context, t Task, id string) ([]Cas
 // closeCard closes card t for in.By: its issue as factoryd's recorded
 // close, which the webhook then ends the card on, with factoryd's comment
 // unless the caller posts its own after the close, or with no issue a
-// signal to its run.
+// signal to its run. An ended card's close is closeEnded's.
 func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool) (CaseAction, error) {
+	if Final(t.Status) {
+		return r.closeEnded(ctx, t)
+	}
 	if t.IssueNumber == 0 {
 		if err := r.cfg.Workflows.Signal(ctx, t.ID, SignalIssueClosed, TaskSignal{Author: in.By}); err != nil {
 			return CaseAction{}, err
@@ -478,6 +483,30 @@ func (r *Runner) closeCard(ctx context.Context, t Task, in ActInput, posted bool
 		comment = r.answerComment(t, in.By, in.Res)
 	}
 	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, comment); err != nil {
+		return CaseAction{}, err
+	}
+	return CaseAction{Action: ActClose, Result: fmt.Sprintf("Closed #%d.", t.IssueNumber)}, nil
+}
+
+// closeEnded closes what ended card t left open: its issue, when Forgejo
+// reads it open, with factoryd's comment, as the heal closes an unconfirmed
+// close. It signals no run.
+func (r *Runner) closeEnded(ctx context.Context, t Task) (CaseAction, error) {
+	if t.IssueNumber == 0 {
+		return CaseAction{Action: ActClose, Result: fmt.Sprintf("Card %s has no issue to close.", cardName(t))}, nil
+	}
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return CaseAction{}, err
+	}
+	closed, err := r.forgejo.IssueClosed(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	if err != nil {
+		return CaseAction{}, err
+	}
+	if closed {
+		return CaseAction{Action: ActClose, Result: fmt.Sprintf("#%d was closed already.", t.IssueNumber)}, nil
+	}
+	if err := closeIssueAsFactory(ctx, r.store, r.forgejo, t, "factoryd: this card ended "+t.Status+", so its issue closes."); err != nil {
 		return CaseAction{}, err
 	}
 	return CaseAction{Action: ActClose, Result: fmt.Sprintf("Closed #%d.", t.IssueNumber)}, nil

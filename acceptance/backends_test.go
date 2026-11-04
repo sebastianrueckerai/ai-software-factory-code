@@ -1378,6 +1378,12 @@ func (s *acceptanceStore) ExpireSteps(context.Context, time.Time) ([]factoryd.Ca
 	return nil, nil
 }
 
+func (s *acceptanceStore) MonitorEvents(context.Context, int64, []string, int) ([]factoryd.Event, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) SetMonitorCursor(context.Context, int64) error { return nil }
+
 func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep) error {
 	return nil
 }

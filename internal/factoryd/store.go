@@ -828,6 +828,12 @@ type Store interface {
 	// ExpireSteps ends every in-progress step past its due_at as handed
 	// up, Found naming the bound its rung did not answer within.
 	ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep, error)
+	// MonitorEvents are the events of kinds past the monitor's cursor and
+	// past after, oldest first, at most limit. The first read plants the
+	// cursor at the newest event, so no history raises a flag.
+	MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error)
+	// SetMonitorCursor moves the monitor's cursor to eventID, never back.
+	SetMonitorCursor(ctx context.Context, eventID int64) error
 	ResolveCase(ctx context.Context, id int64, r CaseResolution, d *CaseDraw, st *CaseStep) error
 	WithdrawCase(ctx context.Context, id int64, reason string) error
 	CaseByID(ctx context.Context, id int64) (Case, error)

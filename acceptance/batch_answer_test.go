@@ -706,6 +706,12 @@ func (s *accBatchStore) DueCases(ctx context.Context, now time.Time, limit int) 
 func (s *accBatchStore) ExpireSteps(ctx context.Context, now time.Time) ([]factoryd.CaseStep, error) {
 	panic("unused")
 }
+func (s *accBatchStore) MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]factoryd.Event, error) {
+	panic("unused")
+}
+func (s *accBatchStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
+	panic("unused")
+}
 func (s *accBatchStore) ResolveCase(ctx context.Context, id int64, r factoryd.CaseResolution, d *factoryd.CaseDraw, st *factoryd.CaseStep) error {
 	panic("unused")
 }

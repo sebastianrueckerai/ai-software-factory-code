@@ -35,6 +35,12 @@ type TripInput struct {
 	// CheckinStop is the check-in spend stop the trip is (CheckinStop*),
 	// "" for any other stop: its repeat's ask no longer names it.
 	CheckinStop string
+	// Kind and StateKey are the case's for a caller that knows them, the
+	// monitor: with Kind set they stand in for the kind and the key the
+	// reason gives. Extra are facts the case carries beside the card's.
+	Kind     CaseKind
+	StateKey string
+	Extra    map[string]any
 }
 
 // The check-in's spend stops, which a check-in share case keeps in its
@@ -98,7 +104,7 @@ var rung0 = []resolver{
 		if f.Plan != "" || d == nil || d.RetryOf != "" {
 			return nil, nil
 		}
-		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
+		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed, CaseMonitorFlag}, Resolution{Action: ActRetry, Args: map[string]any{"task_id": d.TaskID}}), nil
 	}},
 	// inside a plan, the failed dependency's work goes to the plan's planner
 	{Name: "impasse", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
@@ -107,6 +113,23 @@ var rung0 = []resolver{
 			return nil, nil
 		}
 		return rungZeroTakes(c, f, []CaseKind{CaseDependencyFailed}, Resolution{Action: ActReplan, Args: map[string]any{"task_id": d.TaskID}}), nil
+	}},
+	// the monitor's issue_open_after_end: rung 0 closes what the ended card
+	// left open, its issue as the heal closes it
+	{Name: "close_ended", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		if c.Facts["flag"] != "issue_open_after_end" {
+			return nil, nil
+		}
+		return rungZeroTakes(c, f, []CaseKind{CaseMonitorFlag}, Resolution{Action: ActClose}), nil
+	}},
+	// the monitor's wait_over_bound on a rung that did not answer: its step
+	// ends as ExpireSteps ends it, and the case goes up
+	{Name: "expire_step", Fire: func(ctx context.Context, r *Runner, c Case, _ CaseFacts) (*Resolution, error) {
+		if c.Kind != CaseMonitorFlag || c.Facts["flag"] != "wait_over_bound" || c.Facts["wait"] != "rung_answer" {
+			return nil, nil
+		}
+		_, err := r.store.ExpireSteps(ctx, r.clock())
+		return nil, err
 	}},
 }
 
@@ -121,12 +144,17 @@ func rungZeroTakes(c Case, f CaseFacts, kinds []CaseKind, res Resolution) *Resol
 }
 
 // caseDep is the dependency a case of a dependency kind is about, the one
-// its state key names, and nil for any other case.
+// its state key names, or the monitor's dependency_failed case the one its
+// state names, and nil for any other case.
 func caseDep(c Case, f CaseFacts) *DepFact {
-	if c.Kind != CaseDependencyFailed && c.Kind != CaseDependencyClosed {
+	id := c.StateKey
+	switch {
+	case c.Kind == CaseMonitorFlag && c.Facts["flag"] == "dependency_failed":
+		id, _ = c.Facts["state"].(string)
+	case c.Kind != CaseDependencyFailed && c.Kind != CaseDependencyClosed:
 		return nil
 	}
-	i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == c.StateKey })
+	i := slices.IndexFunc(f.Dependencies, func(d DepFact) bool { return d.TaskID == id })
 	if i < 0 {
 		return nil
 	}
@@ -148,7 +176,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	if in.Reason == healedReason {
+	if in.Reason == healedReason && in.Kind == "" {
 		return r.healedTrip(ctx, t, in, at.ID)
 	}
 	f, err := r.tripFacts(ctx, t, in.Head)
@@ -348,11 +376,12 @@ func (r *Runner) waitsAtHuman(ctx context.Context, t Task, c Case, found string)
 
 // tripCase is the case trip in makes on card t with facts f, open until
 // its face is written, with the card's cases, for OpenCase to open. The kind is caseKindOf's
-// of the reason. The problem is the shaped question's ask where a
-// template names the decision, else the reason's first line. The facts
-// are f with the reason, its source and what the reason names, the money
-// the card's for a stop on its own budget, with what the next opening
-// needs at the floor. The case follows the card's newest ended one.
+// of the reason, or in's own with its key. The problem is the shaped
+// question's ask where a template names the decision, else the reason's
+// first line. The facts are f with the reason, its source, what the reason
+// names and in's extra facts, the money the card's for a stop on its own
+// budget, with what the next opening needs at the floor. The case follows
+// the card's newest ended one.
 func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput) (Case, []Case, error) {
 	cases, err := r.store.CasesOf(ctx, t.ID)
 	if err != nil {
@@ -360,6 +389,9 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	source := escalationSource(in.Reason)
 	kind, named := caseKindOf(source, in.Reason)
+	if in.Kind != "" {
+		kind, named = in.Kind, nil
+	}
 	if kind == CaseOther && t.Kind == "human" {
 		kind = CaseHumanCard
 	}
@@ -376,11 +408,16 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 		return Case{}, nil, err
 	}
 	maps.Copy(facts, named)
+	maps.Copy(facts, in.Extra)
 	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
 	if in.CheckinStop != "" {
 		facts["checkin_stop"] = in.CheckinStop
 	}
-	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: tripKey(kind, problem, f.Head, f),
+	key := tripKey(kind, problem, f.Head, f)
+	if in.Kind != "" {
+		key = in.StateKey
+	}
+	c := Case{TaskID: t.ID, Repository: t.Repository, Kind: kind, StateKey: key,
 		Status: CaseOpen, Problem: problem, Facts: facts, Money: tripMoney(kind, f)}
 	for _, e := range cases {
 		if e.Status != CaseOpen && e.Status != CaseAtHuman {

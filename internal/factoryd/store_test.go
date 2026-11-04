@@ -124,6 +124,8 @@ type fakeStore struct {
 	routineStates map[string]RoutineState
 	routineRuns   map[string][]RoutineRun
 	routineCursor int64
+	// monitorCursor is the monitor's cursor, nil until its first read
+	monitorCursor *int64
 	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
 	releases      map[string]Release
 	// afterRead runs once OpenGroups or QueuedPlans (the name) has read
@@ -1405,6 +1407,33 @@ func (s *fakeStore) ExpireSteps(ctx context.Context, now time.Time) ([]CaseStep,
 	}
 	slices.SortFunc(out, func(a, b CaseStep) int { return cmp.Compare(a.ID, b.ID) })
 	return out, nil
+}
+
+// MonitorEvents reads past the monitor's cursor and after as
+// PGStore.MonitorEvents does, an event's id its place in events, 1-based:
+// the first read plants the cursor at the newest event.
+func (s *fakeStore) MonitorEvents(ctx context.Context, after int64, kinds []string, limit int) ([]Event, error) {
+	if s.monitorCursor == nil {
+		n := int64(len(s.events))
+		s.monitorCursor = &n
+	}
+	var out []Event
+	for i, e := range s.events {
+		if id := int64(i + 1); id > max(after, *s.monitorCursor) && slices.Contains(kinds, e.Kind) && len(out) < limit {
+			e.ID = id
+			out = append(out, e)
+		}
+	}
+	return out, nil
+}
+
+// SetMonitorCursor moves a planted cursor to eventID, never back, as
+// PGStore.SetMonitorCursor does.
+func (s *fakeStore) SetMonitorCursor(ctx context.Context, eventID int64) error {
+	if s.monitorCursor != nil {
+		*s.monitorCursor = max(*s.monitorCursor, eventID)
+	}
+	return nil
 }
 
 // ResolveCase records its call in resolved and ends case id of cases by r
