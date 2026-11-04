@@ -489,7 +489,7 @@ func TestCardDigestShowsTheGatesRunAsAProofsStep(t *testing.T) {
 				Message: "Failed\n--- FAIL: TestState (0.01s)"},
 			{ID: "all_green", Kind: CriterionInvariant, Suite: "./...", Outcome: proofPassed, Met: true,
 				Line: "criterion all_green: suite ./... passed (1200 passed, 14 skipped)", Message: "1200 passed, 14 skipped"}},
-		"holdouts": []map[string]any{{"id": "door_state", "verdict": "red"}}, "findings": []string{stateGuardLine}})
+		"holdouts": []map[string]any{{"id": "holdout-1", "verdict": "red"}}, "findings": []string{stateGuardLine}})
 	g.store.criteriaVerdicts = map[string][]CriterionVerdict{"t1410": {
 		{Criterion: "green_login", Verdict: "met", Source: CriteriaSourceGate, DecidedBy: FactoryDecider, Evidence: loginLine, CreatedAt: digestAt(31)},
 		{Criterion: "state_guard", Verdict: "unmet", Source: CriteriaSourceGate, DecidedBy: FactoryDecider, Evidence: stateGuardLine, CreatedAt: digestAt(31)},
@@ -558,6 +558,9 @@ func TestCardDigestReadsEveryShapeOfTheGatesLine(t *testing.T) {
 	}
 	if want := []string{"filed", "proofs", "proofs"}; !slices.Equal(kinds, want) {
 		t.Fatalf("step kinds = %v, want %v", kinds, want)
+	}
+	if !d.Steps[1].At.Equal(digestAt(7)) || !d.Steps[2].At.Equal(digestAt(8)) {
+		t.Fatalf("proofs steps at %s and %s, want their lines' times with no started: +0:07 and +0:08", d.Steps[1].At, d.Steps[2].At)
 	}
 	for i, w := range []string{"at c2c2c2c: no criterion ran, findings 1f2887f692d5",
 		"at c3c3c3c: the sandbox did not start: image pull: container fetch waits with ErrImagePull"} {

@@ -931,8 +931,13 @@ func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, 
 	return out, nil
 }
 
+// buildFailedTail is how many of the output's last lines follow a
+// report's build failure: the compiler's errors, which the report lacks.
+const buildFailedTail = 20
+
 // proofResult is one entry's outcome: why the run reported none (ok
-// false), why check test wrote no report, or the report's reading.
+// false), why check test wrote no report, or the report's reading, with
+// the output's last lines when the package did not build.
 func proofResult(run harness.ProofRun, ok bool, runErr, name string) proofOutcome {
 	if !ok {
 		if runErr == "" {
@@ -942,16 +947,31 @@ func proofResult(run harness.ProofRun, ok bool, runErr, name string) proofOutcom
 	}
 	if run.Report == nil {
 		why := fmt.Sprintf("check test wrote no report (exit %d)", run.Exit)
-		lines := strings.Split(run.Output, "\n")
-		for i := len(lines) - 1; i >= 0; i-- {
-			if l := strings.TrimSpace(lines[i]); l != "" {
-				why += ": " + l
-				break
-			}
+		if last := lastLines(run.Output, 1); len(last) > 0 {
+			why += ": " + last[0]
 		}
 		return proofOutcome{proofNoReport, why}
 	}
-	return readReport(run.Report, name)
+	o := readReport(run.Report, name)
+	if o.Outcome != proofPassed && strings.Contains(o.Message, "[build failed]") {
+		if tail := lastLines(run.Output, buildFailedTail); len(tail) > 0 {
+			o.Message += "\n" + strings.Join(tail, "\n")
+		}
+	}
+	return o
+}
+
+// lastLines are the last n non-empty lines of s, each trimmed, in order.
+func lastLines(s string, n int) []string {
+	var out []string
+	lines := strings.Split(s, "\n")
+	for i := len(lines) - 1; i >= 0 && len(out) < n; i-- {
+		if l := strings.TrimSpace(lines[i]); l != "" {
+			out = append(out, l)
+		}
+	}
+	slices.Reverse(out)
+	return out
 }
 
 // runnerPod creates the runner pod of spec in the task's namespace, awaits
@@ -1034,14 +1054,23 @@ func (r *Runner) readRepro(ctx context.Context, ns, podName, taskID string) (har
 		rep = env.Repro
 		return rep != nil, rep != nil
 	})
+	if errors.Is(err, errLogEnded) {
+		return harness.Repro{}, errors.New("the reproduction pod exited without a report")
+	}
 	if err != nil {
 		return harness.Repro{}, err
 	}
 	return *rep, nil
 }
 
+// proofsEndedEarly is the outcome of an entry the proofs pod did not
+// reach: its log ended before the closing line, as when the pod is
+// killed, evicted or drained.
+const proofsEndedEarly = "the proofs pod ended early, before it reported this entry"
+
 // readProofs follows the proofs pod's log to its closing line: the runs
-// it reported, and why none ran when it says.
+// it reported, and why none ran when it says. A log that ends before the
+// closing line keeps the runs read, and the rest ended early.
 func (r *Runner) readProofs(ctx context.Context, ns, podName, taskID string) (runs []harness.ProofRun, runErr string, err error) {
 	err = r.readRunnerLog(ctx, ns, podName, taskID, func(env harness.WorkerEnvelope) (bool, bool) {
 		switch {
@@ -1054,15 +1083,23 @@ func (r *Runner) readProofs(ctx context.Context, ns, podName, taskID string) (ru
 		}
 		return false, false
 	})
+	if errors.Is(err, errLogEnded) {
+		return runs, proofsEndedEarly, nil
+	}
 	if err != nil {
 		return nil, "", err
 	}
 	return runs, runErr, nil
 }
 
+// errLogEnded is a runner pod's log ending before take is done: the pod
+// exited or is gone.
+var errLogEnded = errors.New("the runner pod's log ended before its report")
+
 // readRunnerLog follows a runner pod's log, handing each envelope to take
 // until take is done, or to the start failure its worker reported instead
-// (workerStartFailure). A line take does not read is logged.
+// (workerStartFailure), or errLogEnded. A line take does not read is
+// logged.
 func (r *Runner) readRunnerLog(ctx context.Context, ns, podName, taskID string, take func(harness.WorkerEnvelope) (read, done bool)) error {
 	logCtx, cancel := context.WithCancel(ctx)
 	defer cancel()
@@ -1076,7 +1113,7 @@ func (r *Runner) readRunnerLog(ctx context.Context, ns, podName, taskID string, 
 				if err := lines.err(); err != nil {
 					return err
 				}
-				return errors.New("the reproduction pod exited without a report")
+				return errLogEnded
 			}
 			var env harness.WorkerEnvelope
 			if json.Unmarshal(line, &env) == nil && env.Result != nil {

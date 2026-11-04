@@ -554,11 +554,14 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 		t.Fatalf("verdict rows = %+v, want a_green's alone", verdicts)
 	}
 	step := timelineStep(t, objects, "t1", "gate_criteria")
+	if proofs, _ := step["proofs"].([]any); len(proofs) != 1 {
+		t.Fatalf("timeline proofs = %v, want a_green's", step["proofs"])
+	}
 	for _, leak := range []string{"door_state", "key_log", "TestDoorState"} {
 		for surface, text := range map[string]string{
 			"the comment":         hub.comments[0],
 			"a row":               verdicts[0].Evidence,
-			"the timeline proofs": string(mustJSON(step["proofs"])),
+			"the timeline line":   string(mustJSON(step)),
 			"the card's findings": strings.Join(res.Findings, "\n"),
 		} {
 			if strings.Contains(text, leak) {
@@ -570,7 +573,7 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 	if len(entries) != 2 {
 		t.Fatalf("timeline holdouts = %v", step["holdouts"])
 	}
-	for i, want := range []struct{ id, verdict string }{{"door_state", "red"}, {"key_log", "green"}} {
+	for i, want := range []struct{ id, verdict string }{{"holdout-1", "red"}, {"holdout-2", "green"}} {
 		e, _ := entries[i].(map[string]any)
 		if e["id"] != want.id || e["verdict"] != want.verdict {
 			t.Fatalf("entry %d = %v, want %s %s", i, e, want.id, want.verdict)

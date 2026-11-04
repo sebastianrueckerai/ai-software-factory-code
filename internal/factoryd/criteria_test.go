@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -191,10 +192,19 @@ func TestShortenEvidenceCutsOnACharacterBoundary(t *testing.T) {
 
 // A run's outcome, or why there is none: the entry never reported (the
 // worker's own error first), check test wrote no report (its exit and the
-// output's last line say why), or the report's reading.
+// output's last line say why), or the report's reading. A package that
+// did not build is followed by the output's last 20 lines, the
+// compiler's errors among them.
 func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 	moved := "proofs mode: refs/pull/9/head is at c2, not the gated head c1: the pull request moved"
 	busy := "another bash check (pid 7) runs in this checkout: wait for it to end, then run this one again"
+	broken := junitGz(t, wrap(`<testcase classname="" name="TestMain"><failure message="Failed">FAIL&#x9;x/b [build failed]&#xA;</failure></testcase>`))
+	var noise []string
+	for i := range 25 {
+		noise = append(noise, fmt.Sprintf("go: downloading m%d v1.0.0", i))
+	}
+	compiler := "  ./b_test.go:5:2: undefined: Door  \n\nDONE 0 tests, 1 error in 0.4s\n"
+	built := strings.Join(noise[7:], "\n") + "\n./b_test.go:5:2: undefined: Door\nDONE 0 tests, 1 error in 0.4s"
 	for _, c := range []struct {
 		run    harness.ProofRun
 		ok     bool
@@ -208,6 +218,11 @@ func TestProofResultReadsTheRunOrSaysWhyThereIsNone(t *testing.T) {
 			proofOutcome{proofNoReport, "check test wrote no report (exit 1): " + busy}},
 		{harness.ProofRun{Exit: -1}, true, "", "", proofOutcome{proofNoReport, "check test wrote no report (exit -1)"}},
 		{harness.ProofRun{Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))}, true, "", "TestA", proofOutcome{proofPassed, ""}},
+		{harness.ProofRun{Exit: 1, Report: broken, Output: strings.Join(noise, "\n") + "\n" + compiler}, true, "", "TestB",
+			proofOutcome{proofMissing, "Failed\nFAIL\tx/b [build failed]\n" + built}},
+		{harness.ProofRun{Exit: 1, Report: broken}, true, "", "TestB", proofOutcome{proofMissing, "Failed\nFAIL\tx/b [build failed]"}},
+		{harness.ProofRun{Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestB"><failure message="Failed">want 3</failure></testcase>`)), Output: compiler},
+			true, "", "TestB", proofOutcome{proofFailed, "Failed\nwant 3"}},
 	} {
 		if got := proofResult(c.run, c.ok, c.runErr, c.name); got != c.want {
 			t.Errorf("proofResult(%+v, %v, %q, %q) = %+v, want %+v", c.run, c.ok, c.runErr, c.name, got, c.want)
@@ -424,6 +439,51 @@ func TestGateCriteriaRunsThePlanCriteriaInTheSandbox(t *testing.T) {
 		}
 	}
 	startedWithin(t, objects, "gate_criteria", from)
+}
+
+// A proofs pod whose log ends before its closing line (killed, evicted,
+// drained) keeps the runs it reported; the entry it did not reach is no
+// report, saying the pod ended early, and the gate does not fail.
+func TestGateCriteriaKeepsTheRunsOfAPodThatEndedEarly(t *testing.T) {
+	kube := newFakeKube()
+	objects := &fakeObjectStore{}
+	r, _, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}`+","+
+			`{"id":"state_guard","kind":"test","test":"TestState in ./internal/auth"}`+","+
+			`{"id":"db_guard","kind":"test","test":"TestDB in ./internal/store"}`)
+	done := make(chan struct{})
+	var res CriteriaResult
+	var err error
+	go func() {
+		defer close(done)
+		res, err = runCriteria(t, r)
+	}()
+	body := proofLines(
+		harness.ProofRun{ID: "green_login", Report: junitGz(t, wrap(`<testcase name="TestLogin"></testcase>`))},
+		harness.ProofRun{ID: "state_guard", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestState"><failure message="Failed">--- FAIL: TestState (0.01s)</failure></testcase>`))},
+	)
+	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
+	<-done
+	if err != nil {
+		t.Fatalf("the gate failed: %v", err)
+	}
+	want := []string{
+		"criterion state_guard: TestState in ./internal/auth failed: Failed --- FAIL: TestState (0.01s)",
+		"criterion db_guard: TestDB in ./internal/store: the proofs pod ended early, before it reported this entry",
+	}
+	if !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+	proofs, _ := timelineStep(t, objects, "t1", "gate_criteria")["proofs"].([]any)
+	if len(proofs) != 3 {
+		t.Fatalf("timeline proofs = %v, want three", proofs)
+	}
+	for i, outcome := range []string{proofPassed, proofFailed, proofNoReport} {
+		if e, _ := proofs[i].(map[string]any); e["outcome"] != outcome {
+			t.Fatalf("proof %d = %v, want outcome %s", i, e, outcome)
+		}
+	}
 }
 
 // runCriteria executes the GateCriteria activity in a test environment.

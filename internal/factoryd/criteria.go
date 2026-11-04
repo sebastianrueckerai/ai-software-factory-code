@@ -275,7 +275,7 @@ func (r *Runner) GateCriteria(ctx context.Context, taskID string, pr int64, comm
 	holdoutEntries := make([]map[string]any, 0, len(hos))
 	for _, h := range hos {
 		dry, ev := holdoutDryVerdict(outcomes[holdoutEntry(h.Idx)])
-		holdoutEntries = append(holdoutEntries, map[string]any{"id": h.ID, "verdict": dry})
+		holdoutEntries = append(holdoutEntries, map[string]any{"id": holdoutEntry(h.Idx), "verdict": dry})
 		if dry == "red" || dry == HoldoutUnrunnable {
 			holdouts = append(holdouts, HoldoutGateResult{Idx: h.Idx, ID: h.ID, Verdict: dry, Evidence: ev})
 		}
