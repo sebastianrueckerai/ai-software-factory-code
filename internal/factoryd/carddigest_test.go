@@ -800,6 +800,29 @@ func TestCardDigestFlagsAProofTheDryRunFlagged(t *testing.T) {
 	}
 }
 
+// A proofs event whose detail does not decode is a step that says so,
+// its filing's number kept, and its detail a line that says so too.
+func TestCardDigestReadsAnUnreadableProofsEvent(t *testing.T) {
+	g := planRig(t, proverPlan())
+	g.event(30, EventProofsFiled, FactoryDecider, map[string]any{"prover": "t-prove", "filing": 2, "proofs": "not a list"})
+	g.event(40, EventProofsStored, FactoryDecider, map[string]any{"prover": "t-prove", "stored": 4})
+	d := g.digest(t)
+	if len(d.Steps) != 3 {
+		t.Fatalf("Steps = %+v, want filed and the two proofs steps", d.Steps)
+	}
+	for i, want := range []string{"filing 2: unreadable detail", "unreadable detail"} {
+		if got := d.Steps[i+1].Outcome; got != want {
+			t.Fatalf("step %d outcome = %q, want %q", i+2, got, want)
+		}
+	}
+	for n := 2; n <= 3; n++ {
+		got, err := g.r.CardStep(context.Background(), "t1410", n, "card", readPointer)
+		if err != nil || !strings.Contains(got, "\nunreadable detail\n") {
+			t.Fatalf("CardStep(%d) = %q, %v; want the detail named unreadable", n, got, err)
+		}
+	}
+}
+
 // A report session records no attempt: the prover's reads by its role and
 // its model; a session without a role keeps the attempt.
 func TestCardDigestNamesTheProversSession(t *testing.T) {

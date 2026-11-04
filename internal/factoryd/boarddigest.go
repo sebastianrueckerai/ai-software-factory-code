@@ -50,11 +50,13 @@ type BoardDigestSlots struct{ Held, Bound int }
 
 // BoardDigestPlan is an open plan: its issue, its name, its cards by
 // status, and its proofs stored or opened of those its prover owes.
+// Unreadable says its newest revision could not be read.
 type BoardDigestPlan struct {
 	Issue                      int
 	Name                       string
 	Children                   map[string]int
 	ProofsStored, ProofsWanted int
+	Unreadable                 bool
 }
 
 // BoardDigestCap is a cap by name, the spend it counts and its size.
@@ -144,7 +146,8 @@ func (r *Runner) boardCard(ctx context.Context, taskID string, now time.Time) (B
 }
 
 // boardPlans are repository's open plans, each with its cards counted by
-// status and its proofs by its newest revision.
+// status and its proofs by its newest revision, or unreadable when that
+// revision cannot be read.
 func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDigestPlan, error) {
 	plans, err := r.store.OpenPlans(ctx, repository)
 	if err != nil {
@@ -159,7 +162,8 @@ func (r *Runner) boardPlans(ctx context.Context, repository string) ([]BoardDige
 		out[i] = BoardDigestPlan{Issue: int(p.IssueNumber), Name: p.PlanName, Children: map[string]int{}}
 		s, err := r.planProofState(ctx, p.ID)
 		if err != nil {
-			return nil, err
+			out[i].Unreadable = true
+			continue
 		}
 		out[i].ProofsStored, out[i].ProofsWanted = s.stored, s.wanted
 		for _, c := range cards {
@@ -214,6 +218,11 @@ func (b BoardDigest) Render() string {
 		s.WriteString("plans:\n")
 	}
 	for _, p := range b.Plans {
+		name := strings.TrimSpace(fmt.Sprintf("#%d %s", p.Issue, p.Name))
+		if p.Unreadable {
+			fmt.Fprintf(&s, "%s  unreadable\n", name)
+			continue
+		}
 		var counts []string
 		for _, status := range planStatusOrder {
 			if n := p.Children[status]; n > 0 {
@@ -224,7 +233,7 @@ func (b BoardDigest) Render() string {
 		if p.ProofsWanted > 0 {
 			line += fmt.Sprintf(" · proofs %d of %d stored", p.ProofsStored, p.ProofsWanted)
 		}
-		fmt.Fprintf(&s, "%s  %s\n", strings.TrimSpace(fmt.Sprintf("#%d %s", p.Issue, p.Name)), line)
+		fmt.Fprintf(&s, "%s  %s\n", name, line)
 	}
 	caps := make([]string, len(b.Caps))
 	for i, c := range b.Caps {

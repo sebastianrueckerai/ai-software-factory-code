@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -226,6 +227,27 @@ func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
 		t.Fatalf("Plans = %+v, want one plan with proofs 1 of 4", b.Plans)
 	}
 	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 1 of 4 stored\ncaps:\n"; !strings.Contains(b.Render(), want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+}
+
+// A plan whose revision does not decode is one line that says so, and the
+// digest goes on, as it does past a card it cannot read.
+func TestBoardDigestNamesAnUnreadablePlan(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	g.card("t1345", 1345, "done", "", 1, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "door-keys" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(proverPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1345", json.RawMessage(`{"criteria": 5}`), "r2"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := g.r.BoardDigest(context.Background(), "sf/app")
+	if err != nil {
+		t.Fatalf("BoardDigest: %v", err)
+	}
+	if want := "\nplans:\n#1344 session-metrics  no cards · proofs 0 of 3 stored\n#1345 door-keys  unreadable\ncaps:\n"; !strings.Contains(b.Render(), want) {
 		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
 	}
 }

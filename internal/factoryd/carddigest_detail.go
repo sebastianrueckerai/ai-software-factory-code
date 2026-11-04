@@ -308,9 +308,14 @@ func proofsDetail(b *strings.Builder, raw []byte) {
 
 // proofsEventDetail writes a proofs event's lines in full: a filing's
 // entries, each as the event logs it, a hold-out's by its id and outcome
-// alone, and its refusals; the store's ids, each with its flag.
+// alone, and its refusals; the store's ids, each with its flag; one line
+// for a detail that does not decode.
 func proofsEventDetail(b *strings.Builder, e Event) {
-	d := readProofsEvent(e)
+	d, ok := readProofsEvent(e)
+	if !ok {
+		b.WriteString("unreadable detail\n")
+		return
+	}
 	if e.Kind == EventProofsStored {
 		fmt.Fprintf(b, "prover %s at %s\n", d.Prover, d.Commit)
 		flags := map[string]string{}

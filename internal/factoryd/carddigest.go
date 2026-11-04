@@ -344,29 +344,49 @@ func eventSteps(t Task, events []Event, cases []Case, deps []Dependency) []Diges
 
 // proofsEvent is a proofs_filed or proofs_stored event's detail.
 type proofsEvent struct {
-	Prover, Commit string
-	Filing         int
-	Proofs         []struct{ Criterion, Path, Suite, Name, Outcome string }
-	Refusals       []string
-	Stored         []string
-	Flagged        []struct{ Criterion, Flag string }
+	Prover string `json:"prover"`
+	Commit string `json:"commit"`
+	Filing int    `json:"filing"`
+	Proofs []struct {
+		Criterion string `json:"criterion"`
+		Path      string `json:"path"`
+		Suite     string `json:"suite"`
+		Name      string `json:"name"`
+		Outcome   string `json:"outcome"`
+	} `json:"proofs"`
+	Refusals []string `json:"refusals"`
+	Stored   []string `json:"stored"`
+	Flagged  []struct {
+		Criterion string `json:"criterion"`
+		Flag      string `json:"flag"`
+	} `json:"flagged"`
 }
 
 // readProofsEvent is e's detail as a proofsEvent, as written or as its row
-// reads back.
-func readProofsEvent(e Event) proofsEvent {
-	var d proofsEvent
-	b, _ := json.Marshal(e.Detail)
-	_ = json.Unmarshal(b, &d)
-	return d
+// reads back; ok false for a detail that does not decode.
+func readProofsEvent(e Event) (d proofsEvent, ok bool) {
+	b, err := json.Marshal(e.Detail)
+	if err == nil {
+		err = json.Unmarshal(b, &d)
+	}
+	return d, err == nil
 }
 
 // proofsEventStep is a proofs_filed or proofs_stored event's step: a
 // filing's outcomes on main and its refusals, by the prover; the store's
-// count and its flags, by factoryd, the flagged ids its state.
+// count and its flags, by factoryd, the flagged ids its state; a detail
+// that does not decode says so.
 func proofsEventStep(s DigestStep, e Event) DigestStep {
-	d := readProofsEvent(e)
+	d, ok := readProofsEvent(e)
 	s.Kind = "proofs"
+	switch {
+	case !ok && e.Kind == EventProofsFiled:
+		s.Actor, s.Outcome = "prover", fmt.Sprintf("filing %d: unreadable detail", detailNumber(e.Detail["filing"]))
+		return s
+	case !ok:
+		s.Actor, s.Outcome = FactoryDecider, "unreadable detail"
+		return s
+	}
 	var parts []string
 	counted := func(n int, what string) {
 		if n > 0 {
