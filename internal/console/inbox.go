@@ -20,8 +20,9 @@ const inboxPage = 20
 // pokes them, else the inbox of the first human it pokes, whom the Waker
 // wakes. It reads the same window chat_search reads, settled as the page
 // settles it, and keeps the rows that hold the query. The first page
-// answers every open ask, then the newest inboxPage other rows; a page
-// below before answers only other rows, so no row shows twice.
+// answers every open ask and open poke with choices, then the newest
+// inboxPage other rows; a page below before answers only other rows, so
+// no row shows twice.
 func (t *turn) inboxText(in toolInput) (string, error) {
 	var re *regexp.Regexp
 	if in.Query != "" {
@@ -63,7 +64,7 @@ func (t *turn) inboxText(in toolInput) (string, error) {
 		if re != nil && !re.MatchString(m.Content) {
 			continue
 		}
-		if factoryd.AskFamily(m) != "" && !m.Settled {
+		if (factoryd.AskFamily(m) != "" || choicePoke(m)) && !m.Settled {
 			if !paging {
 				asks = append(asks, m)
 			}

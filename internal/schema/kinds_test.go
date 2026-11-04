@@ -3,6 +3,7 @@ package schema
 import (
 	"context"
 	"database/sql"
+	"fmt"
 	"go/ast"
 	"go/parser"
 	"go/token"
@@ -61,8 +62,8 @@ func kindConstants(t *testing.T, pattern string) map[string]string {
 // Every migration that adds a kind rewrites the whole check, so of two
 // parallel ones only the last applied keeps its kind: after all migrations,
 // every alert kind, alert verdict, approval kind, roll request state, case
-// kind, case status, case step outcome and criteria verdict source factoryd
-// names is accepted.
+// kind, case status, case step outcome, criteria verdict source and plan
+// proof state, origin and flag factoryd names is accepted.
 func TestKindChecksAccept(t *testing.T) {
 	db, err := sql.Open("pgx", schematest.DSN(t, "schema_kinds"))
 	if err != nil {
@@ -130,5 +131,29 @@ func TestKindChecksAccept(t *testing.T) {
 		if _, err := db.ExecContext(ctx, `INSERT INTO criteria_verdicts (task_id, criterion_id, kind, verdict, source) VALUES ('kinds-verdicts', $1, 'test', 'met', $1)`, source); err != nil {
 			t.Errorf("criteria verdict source %s (%q): %v", name, source, err)
 		}
+	}
+	if _, err := db.ExecContext(ctx, `DELETE FROM plan_proofs WHERE task_id = 'kinds-proofs'`); err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	proof := func(kind, name, value, origin, state, flag string) {
+		n++
+		id, criterion := fmt.Sprintf("p%d", n), ""
+		if origin == "criterion" {
+			criterion = id
+		}
+		if _, err := db.ExecContext(ctx, `INSERT INTO plan_proofs (task_id, idx, round, id, origin, criterion, claim, state, flag, path, suite, name, code)
+			VALUES ('kinds-proofs', $1, 1, $2, $3, $4, 'c', $5, $6, 'a/a_test.go', './a', 'TestA', 'package a')`, n, id, origin, criterion, state, flag); err != nil {
+			t.Errorf("plan proof %s %s (%q): %v", kind, name, value, err)
+		}
+	}
+	for name, state := range kindConstants(t, `^Proof(Proposed|Okayed|Dropped|Filed|Stored|Opened)$`) {
+		proof("state", name, state, "hold-out", state, "")
+	}
+	for name, origin := range kindConstants(t, `^ProofOrigin[A-Z]`) {
+		proof("origin", name, origin, origin, "stored", "")
+	}
+	for name, flag := range kindConstants(t, `^ProofFlag[A-Z]`) {
+		proof("flag", name, flag, "hold-out", "stored", flag)
 	}
 }

@@ -90,8 +90,13 @@ func (r ctxReader) Read([]byte) (int, error) {
 }
 
 type fakePod struct {
-	ns, name        string
-	phase           string
+	ns, name string
+	phase    string
+	// logEnded is a phase Succeeded set by the scripted log's end: that
+	// log ends at once, before the runner has handled its lines, while a
+	// live pod's container runs on as they are read, so PodIP still
+	// answers for it
+	logEnded        bool
 	reason, message string // status.reason, status.message (Evicted's)
 	logs            string
 	logsReady       chan struct{} // closed when scriptPods has assigned the body
@@ -325,13 +330,17 @@ func (k *fakeKube) PodStatus(ctx context.Context, namespace, name string) (strin
 	return p.phase, 0, nil
 }
 
-// PodIP answers loopback for every existing pod: a test's worker
-// endpoint listens there.
+// PodIP answers loopback for every existing pod that has not ended (as
+// logEnded says): a test's worker endpoint listens there.
 func (k *fakeKube) PodIP(ctx context.Context, namespace, name string) (string, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
-	if _, ok := k.pods[namespace+"/"+name]; !ok {
+	p, ok := k.pods[namespace+"/"+name]
+	if !ok {
 		return "", ErrNotFound
+	}
+	if err := podEnded(namespace, name, p.phase); err != nil && !p.logEnded {
+		return "", err
 	}
 	return "127.0.0.1", nil
 }
@@ -400,7 +409,7 @@ func (k *fakeKube) PodLog(ctx context.Context, namespace, name string) (io.ReadC
 	return io.NopCloser(&exitReader{r: r, exited: func() {
 		k.mu.Lock()
 		defer k.mu.Unlock()
-		p.phase = "Succeeded"
+		p.phase, p.logEnded = "Succeeded", true
 		if p.deleted && !k.keepDeleted {
 			delete(k.pods, namespace+"/"+name)
 		}
@@ -1113,7 +1122,7 @@ func TestSandboxPodsTakeTheHarnessFromAnInitContainer(t *testing.T) {
 			"reg/worker@sha256:abc", []string{"harness", "fetch"}},
 		"repro on a project image": {r.reproPodSpec(project, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", ""),
 			"reg/project@sha256:def", []string{"harness", "fetch"}},
-		"proofs": {r.proofsPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", "", []byte("[]")),
+		"proofs": {r.proofsPodSpec(task, Repo{Owner: "linkshort", Name: "linkshort"}, pullRef(1), "c1", "", "bearer-x", proofsBudget),
 			"reg/worker@sha256:abc", []string{"harness", "fetch"}},
 	} {
 		spec := c.pod["spec"].(map[string]any)
@@ -4351,32 +4360,6 @@ func TestWorkerOffersRequestCutOnlyWhereTheCardCanBeCut(t *testing.T) {
 		if got := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))["TOOLS"]; got != tc.want {
 			t.Errorf("%s: TOOLS = %s, want %s", name, got, tc.want)
 		}
-	}
-}
-
-// A report session is not cut, even on a card that can be: the hold-out
-// audit runs on a plan's integration card, and its check-in is offered no
-// replan.
-func TestRunSessionOfAReportOffersNoReplan(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	card := store.tasks["t1"]
-	card.BudgetEUR = 2 // the check-in's share of it pays the conversation
-	store.tasks["t1"] = card
-	chat := &scriptedChat{answers: []CheckinResponse{{Text: `{"decision":"continue","reason":"one failing command"}`}}}
-	r.checkin = chat
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	if _, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock"},
-		loopFailure(1)+loopFailure(2)+loopFailure(3)+sessionLog("the test names the hinge")); err != nil {
-		t.Fatal(err)
-	}
-	if chat.calls != 1 {
-		t.Fatalf("chat = %d calls %+v, want the audit's check-in on same_failure", chat.calls, chat.gots)
-	}
-	if got := chat.gots[0]; strings.Contains(got.System, "|replan") || strings.Contains(got.Input, "- replan:") {
-		t.Fatalf("a report's check-in is offered replan:\n%s\n%s", got.System, got.Input)
 	}
 }
 

@@ -607,9 +607,12 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		question = shaped.Ask
 		// the refusal the newest session ended on rides with the ask,
 		// verbatim: the blocker reaches the human with no agent-side
-		// reporting to lose it (card #1345)
-		if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
-			shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
+		// reporting to lose it (card #1345). A prover's refusals name its
+		// hold-outs, so its ask is factoryd's words alone.
+		if t.Source != SourceProver {
+			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
+				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
+			}
 		}
 	}
 	if reason == healedReason {

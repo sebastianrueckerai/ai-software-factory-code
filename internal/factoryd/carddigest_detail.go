@@ -27,7 +27,8 @@ func (e ErrNoStep) Error() string { return string(e) }
 type TranscriptPointer func(session string, n int) string
 
 // CardStep returns one step of the card's digest in full: a session's steps, a gate's full result,
-// a check-in's record with its calls, an ask's five parts and its answer, a funding event's detail.
+// a check-in's record with its calls, an ask's five parts and its answer, a prover's filing or
+// store, a funding event's detail.
 // n is the step's number before the fold; one the digest lacks is ErrNoStep, which names cardRead,
 // the caller's tool that reads the digest with its numbers.
 func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead string, transcript TranscriptPointer) (string, error) {
@@ -52,11 +53,18 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead st
 		filedDetail(&b, s.Actor, rows.task, d.Head, rows.deps)
 	case s.Kind == "criteria":
 		criteriaDetail(&b, s, rows.verdicts)
+	case s.Kind == "session" && rows.task.Source == SourceProver:
+		// a prover's transcript holds its tests: no read points at it
+		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At, func(string, int) string { return "" })
 	case s.Kind == "session":
 		sessionDetail(&b, s.Ref.Session, lines, d.Steps[0].At, transcript)
 	case s.Kind == "ask":
 		if err := r.askDetail(ctx, &b, s, rows); err != nil {
 			return "", err
+		}
+	case s.Kind == "proofs" && s.Ref.Event != "":
+		if i := eventIndex(rows.events, s.Ref.Event); i >= 0 {
+			proofsEventDetail(&b, rows.events[i])
 		}
 	case s.Ref.Event != "":
 		if i := eventIndex(rows.events, s.Ref.Event); i >= 0 {
@@ -303,6 +311,44 @@ func proofsDetail(b *strings.Builder, raw []byte) {
 	}
 	if l.StartFailed != "" {
 		b.WriteString("start failed: " + l.StartFailed + "\n")
+	}
+}
+
+// proofsEventDetail writes a proofs event's lines in full: a filing's
+// entries, each as the event logs it, a hold-out's by its id and outcome
+// alone, and its refusals; the store's ids, each with its flag; one line
+// for a detail that does not decode.
+func proofsEventDetail(b *strings.Builder, e Event) {
+	d, ok := readProofsEvent(e)
+	if !ok {
+		b.WriteString("unreadable detail\n")
+		return
+	}
+	if e.Kind == EventProofsStored {
+		fmt.Fprintf(b, "prover %s at %s\n", d.Prover, d.Commit)
+		flags := map[string]string{}
+		for _, f := range d.Flagged {
+			flags[f.Criterion] = f.Flag
+		}
+		for _, id := range d.Stored {
+			line := id + " stored"
+			if f := flags[id]; f != "" {
+				line += ", flagged " + f
+			}
+			b.WriteString(line + "\n")
+		}
+		return
+	}
+	fmt.Fprintf(b, "prover %s, filing %d\n", d.Prover, d.Filing)
+	for _, p := range d.Proofs {
+		line := cmp.Or(p.Criterion, "(no criterion)") + " " + p.Outcome + " on main"
+		if p.Path != "" {
+			line += fmt.Sprintf(": %s in %s at %s", p.Name, p.Suite, p.Path)
+		}
+		b.WriteString(line + "\n")
+	}
+	for _, r := range d.Refusals {
+		b.WriteString("refused: " + r + "\n")
 	}
 }
 

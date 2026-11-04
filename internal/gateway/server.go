@@ -84,8 +84,8 @@ type ServerOptions struct {
 	Escalator Escalator
 	// PlanFiler is the file_plan tool's hand-over to factoryd.
 	PlanFiler PlanFiler
-	// HoldoutVerdicter is the file_verdict tool's hand-over to factoryd.
-	HoldoutVerdicter HoldoutVerdicter
+	// ProofsFiler is the file_proofs tool's hand-over to factoryd.
+	ProofsFiler ProofsFiler
 	// DeploymentReader is the deployment_health tool's read at factoryd.
 	DeploymentReader DeploymentReader
 	// ImageLooker is the analyze_image tool's look at factoryd.

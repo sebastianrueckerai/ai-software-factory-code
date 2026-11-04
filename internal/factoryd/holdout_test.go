@@ -4,27 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
-
-// A draft is one proof of its own: its file written into a scratch
-// package inside the repository, its test run by name there.
-func TestHoldoutProofWritesTheDraftIntoItsOwnPackage(t *testing.T) {
-	got := holdoutProof(Holdout{Idx: 2, TestName: "TestKeyLog", TestCode: "func TestKeyLog(t *testing.T) {}"})
-	want := harness.Proof{ID: "holdout-2", Suite: "./.holdout2", Name: "TestKeyLog",
-		File: &harness.ProofFile{Path: ".holdout2/holdout_test.go", Content: "package holdout\nfunc TestKeyLog(t *testing.T) {}\n"}}
-	if !reflect.DeepEqual(got, want) {
-		t.Fatalf("proof = %+v %+v, want %+v %+v", got, got.File, want, want.File)
-	}
-}
 
 // The dry verdict, hand-derived one outcome at a time: a failure is red,
 // a pass green, and anything else (no such test, a build that fails, a
@@ -37,9 +24,9 @@ func TestHoldoutDryVerdict(t *testing.T) {
 	}{
 		"red":           {proofOutcome{proofFailed, "Failed\n--- FAIL: TestX (0.00s)"}, "red", "Failed --- FAIL: TestX (0.00s)"},
 		"green":         {proofOutcome{proofPassed, ""}, "green", ""},
-		"build failed":  {proofOutcome{proofMissing, "Failed\nFAIL\tsf/repo/.holdout2 [build failed]"}, HoldoutUnrunnable, "Failed FAIL sf/repo/.holdout2 [build failed]"},
-		"skipped":       {proofOutcome{proofSkipped, "no db"}, HoldoutUnrunnable, "no db"},
-		"no report":     {proofOutcome{proofNoReport, "check test wrote no report (exit 1)"}, HoldoutUnrunnable, "check test wrote no report (exit 1)"},
+		"build failed":  {proofOutcome{proofMissing, "Failed\nFAIL\tsf/repo/.holdout2 [build failed]"}, "unrunnable", "Failed FAIL sf/repo/.holdout2 [build failed]"},
+		"skipped":       {proofOutcome{proofSkipped, "no db"}, "unrunnable", "no db"},
+		"no report":     {proofOutcome{proofNoReport, "check test wrote no report (exit 1)"}, "unrunnable", "check test wrote no report (exit 1)"},
 		"long evidence": {proofOutcome{proofFailed, strings.Repeat("a", 250)}, "red", strings.Repeat("a", 200) + "..."},
 	} {
 		t.Run(name, func(t *testing.T) {
@@ -58,94 +45,87 @@ func holdoutPlanTask() Task {
 		Process: "maintenance", RequiredCapabilities: []string{policy.ClassCoder}, BudgetEUR: 2, Track: "direct"}
 }
 
-// askHoldouts runs the whole round: the review model proposes two
-// hold-outs beside the project's past failures, the drafts dry-run on
-// the main head in a sandbox of their own, the one that cannot run is
-// rewritten once and runs again, and the round lands proposed with its
-// verdicts. A rewritten draft never lands without its own run.
-func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
+// holdoutCriteriaPlan is the plan a proposal reads: the spec's outcome
+// and one criterion.
+func holdoutCriteriaPlan() Plan {
+	return Plan{Spec: &Spec{Outcome: "The door opens only for a key that fits the lock", Glossary: []string{"the lock"}},
+		Criteria: []PlanCriterion{{ID: "green_login", Kind: "test", Claim: "a login answers 200", Inputs: "POST /login", Expected: "200"}}}
+}
+
+// askHoldouts runs the whole round in one model call: the review model
+// proposes two claims beside the plan's criteria and the project's past
+// failures, its fenced answer decodes, and the round lands proposed. No
+// code is drafted and nothing runs: no sandbox, no token.
+func TestAskHoldoutsProposesClaimsWithoutCode(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, holdoutPlanTask(), kube, objects)
 	store.tasks["r1"] = Task{ID: "r1", Repository: "sf/repo", Source: SourceRevert, Objective: "the slug broke on BAD000\nsecond line"}
-	proposal := `{"holdouts":[` +
-		`{"id":"door_state","criterion":"The door stays shut until a key that fits turns the lock","test_name":"TestDoorShut","test_code":"func TestDoorShut(t *testing.T) {\n\tt.Fatal(\"shut\")\n}"},` +
-		`{"id":"key_log","criterion":"Every key turn lands in the log","test_name":"TestKeyLog","test_code":"func TestKeyLog(t *testing.T) {\n\tt.Logx(\"log\")\n}","from":"the slug broke on BAD000"}` +
-		`]}`
-	redraft := `{"holdouts":[{"id":"key_log","test_code":"func TestKeyLog(t *testing.T) {\n\tt.Fatal(\"log\")\n}"}]}`
-	ll := &fakeLiteLLM{contents: []string{proposal, redraft}}
+	ll := &fakeLiteLLM{contents: []string{"```json\n{\"holdouts\":[{\"id\":\"door_state\",\"claim\":\"The door stays shut until a key that fits turns the lock\",\"inputs\":\"POST /doors/1/open with key 9\",\"expected\":\"403 and the door row still shut\"}," +
+		"{\"id\":\"key_log\",\"claim\":\"Every key turn lands in the log\",\"inputs\":\"three turns of key 7\",\"expected\":\"three log rows\"}]}\n```"}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	p := Plan{Spec: &Spec{Outcome: "The door opens only for a key that fits the lock", Glossary: []string{"the lock"}},
-		Criteria: []PlanCriterion{{ID: "green_login", Kind: "test", Test: "TestLogin in ./internal/auth"}}}
-	done := make(chan error, 1)
-	go func() {
-		done <- r.askHoldouts(context.Background(), holdoutPlanTask(), 1, p)
-	}()
-	scriptReproPods(kube,
-		proofLines(
-			harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorShut"><failure message="Failed">--- FAIL: TestDoorShut (0.00s)</failure></testcase>`))},
-			harness.ProofRun{ID: "holdout-2", Exit: 1, Report: junitGz(t, wrap(`<testcase classname="" name="TestMain"><failure message="Failed">FAIL&#x9;sf/repo/.holdout2 [build failed]</failure></testcase>`))}),
-		proofLines(
-			harness.ProofRun{ID: "holdout-2", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestKeyLog"><failure message="Failed">--- FAIL: TestKeyLog (0.00s)</failure></testcase>`))}))
-	if err := <-done; err != nil {
+	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, holdoutCriteriaPlan()); err != nil {
 		t.Fatal(err)
 	}
-	rows, err := store.PlanHoldouts(context.Background(), "plan1")
-	if err != nil || len(rows) != 2 {
-		t.Fatalf("rows = %+v, %v", rows, err)
+	rows, err := store.PlanProofs(context.Background(), "plan1")
+	want := []PlanProof{
+		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, Claim: "The door stays shut until a key that fits turns the lock",
+			Inputs: "POST /doors/1/open with key 9", Expected: "403 and the door row still shut", State: ProofProposed},
+		{Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log",
+			Inputs: "three turns of key 7", Expected: "three log rows", State: ProofProposed},
 	}
-	want1 := Holdout{Idx: 1, Round: 1, ID: "door_state", Origin: HoldoutDrafted,
-		Criterion: "The door stays shut until a key that fits turns the lock", State: HoldoutProposed,
-		DryHead: "base", DryVerdict: "red", DryOutput: "Failed --- FAIL: TestDoorShut (0.00s)",
-		TestName: "TestDoorShut", TestCode: "func TestDoorShut(t *testing.T) {\n\tt.Fatal(\"shut\")\n}"}
-	want2 := Holdout{Idx: 2, Round: 1, ID: "key_log", Origin: HoldoutMechanical,
-		Criterion: "Every key turn lands in the log", State: HoldoutProposed,
-		DryHead: "base", DryVerdict: "red", DryOutput: "Failed --- FAIL: TestKeyLog (0.00s)",
-		TestName: "TestKeyLog", TestCode: "func TestKeyLog(t *testing.T) {\n\tt.Fatal(\"log\")\n}"}
-	if rows[0] != want1 || rows[1] != want2 {
-		t.Fatalf("rows =\n%+v\n%+v\nwant\n%+v\n%+v", rows[0], rows[1], want1, want2)
+	if err != nil || !slices.Equal(rows, want) {
+		t.Fatalf("rows = %+v, %v\nwant %+v", rows, err, want)
 	}
-	if len(kube.podOrder) != 2 {
-		t.Fatalf("pods %d, want the dry run and the corrective one", len(kube.podOrder))
+	if len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
+		t.Fatalf("pods %d, mints %v; want none", len(kube.podOrder), hub.minted())
 	}
-	// the second pass runs the redrafted draft alone
-	for i, want := range [][]string{{"holdout-1", "holdout-2"}, {"holdout-2"}} {
-		var list []harness.Proof
-		if err := json.Unmarshal([]byte(podEnv(kube.podOrder[i])["PROOFS"]), &list); err != nil {
-			t.Fatal(err)
-		}
-		var ids []string
-		for _, p := range list {
-			ids = append(ids, p.ID)
-		}
-		if !slices.Equal(ids, want) {
-			t.Fatalf("pod %d runs %v, want %v", i, ids, want)
-		}
-	}
-	// the planner's sandbox went with its session: the dry runs build
-	// their own, with a read token, and tear it down
-	if mints := hub.minted(); !slices.Equal(mints, []string{"task-plan1-base"}) || !slices.Contains(kube.deletedNs, "factory-agents-plan1") {
-		t.Fatalf("minted %v, deleted namespaces %v; want one read token and the sandbox gone", mints, kube.deletedNs)
-	}
-	if len(ll.chats) != 2 || ll.chats[0]["model"] != "big" || !slices.Equal(ll.purposes, []string{"review", "review"}) {
+	if len(ll.chats) != 1 || ll.chats[0]["model"] != "big" || !slices.Equal(ll.purposes, []string{"review"}) {
 		t.Fatalf("chats %v, purposes %v", ll.chats, ll.purposes)
 	}
-	first, second := userMessage(ll.chats[0]), userMessage(ll.chats[1])
-	for _, want := range []string{"the slug broke on BAD000", "green_login", "The door opens only for a key that fits the lock"} {
-		if !strings.Contains(first, want) {
-			t.Fatalf("the proposal call lacks %q: %s", want, first)
-		}
-	}
-	for _, want := range []string{"TestKeyLog", "build failed"} {
-		if !strings.Contains(second, want) {
-			t.Fatalf("the redraft call lacks %q: %s", want, second)
+	in := userMessage(ll.chats[0])
+	for _, want := range []string{"green_login", "the slug broke on BAD000", "The door opens only for a key that fits the lock"} {
+		if !strings.Contains(in, want) {
+			t.Fatalf("the proposal call lacks %q: %s", want, in)
 		}
 	}
 	tl := string(objGet(objects, "sessions/plan1/timeline.jsonl"))
-	for _, want := range []string{`"step":"holdouts_proposed"`, `"round":1`, `"verdicts":{"door_state":"red","key_log":"red"}`} {
+	for _, want := range []string{`"step":"holdouts_proposed"`, `"round":1`, `"holdouts":["holdout-1","holdout-2"]`} {
 		if !strings.Contains(tl, want) {
 			t.Fatalf("timeline lacks %s: %s", want, tl)
 		}
+	}
+	if strings.Contains(tl, "door_state") || strings.Contains(tl, "key_log") {
+		t.Fatalf("the timeline names a hold-out by the model's id: %s", tl)
+	}
+}
+
+// The bounds, one proposal each: an id off the charset, an empty field
+// and a claim past 200 runes are dropped, and an id a plan criterion
+// holds gains _h. The bound counts runes, not bytes, and a proposal that
+// cites a past failure decodes.
+func TestProposeHoldoutsKeepsWhatTheBoundsAdmit(t *testing.T) {
+	r, _, _ := newTestRunner(t, holdoutPlanTask(), newFakeKube(), &fakeObjectStore{})
+	answer, _ := json.Marshal(map[string]any{"holdouts": []map[string]string{
+		{"id": "door_state", "claim": "The door stays shut", "inputs": "key 9", "expected": "403", "from": "the slug broke on BAD000"},
+		{"id": "Bad Id", "claim": "c", "inputs": "i", "expected": "e"},
+		{"id": "no_expected", "claim": "c", "inputs": "i", "expected": ""},
+		{"id": "long_claim", "claim": strings.Repeat("é", 201), "inputs": "i", "expected": "e"},
+		{"id": "green_login", "claim": strings.Repeat("é", 200), "inputs": "i", "expected": "e"},
+	}})
+	ll := &fakeLiteLLM{contents: []string{string(answer)}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	task := holdoutPlanTask()
+	rows, err := r.proposeHoldouts(context.Background(), task, 1, holdoutCriteriaPlan(), r.callModel(task, policy.PurposeReview), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, h := range rows {
+		ids = append(ids, h.ID)
+	}
+	if !slices.Equal(ids, []string{"door_state", "green_login_h"}) {
+		t.Fatalf("ids = %v, want door_state and green_login_h", ids)
 	}
 }
 
@@ -155,75 +135,62 @@ func TestAskHoldoutsRecordsARefusalAndLeavesTheRoundEmpty(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, _, store := newTestRunner(t, holdoutPlanTask(), kube, objects)
-	ll := &fakeLiteLLM{contents: []string{"not the json"}}
+	ll := &fakeLiteLLM{contents: []string{"the model wrote prose"}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, Plan{}); err != nil {
 		t.Fatal(err)
 	}
-	if rows, _ := store.PlanHoldouts(context.Background(), "plan1"); len(rows) != 0 {
+	if rows, _ := store.PlanProofs(context.Background(), "plan1"); len(rows) != 0 {
 		t.Fatalf("rows = %+v, want none", rows)
 	}
 	if len(kube.podOrder) != 0 || len(ll.chats) != 1 {
 		t.Fatalf("pods %d, chats %d", len(kube.podOrder), len(ll.chats))
 	}
-	if tl := string(objGet(objects, "sessions/plan1/timeline.jsonl")); !strings.Contains(tl, `"step":"holdouts_not_drafted"`) || !strings.Contains(tl, "the answer is not the hold-outs json") {
-		t.Fatalf("timeline = %s", tl)
-	}
-}
-
-// A dry-run pod that ends before it reports every draft leaves the round
-// empty and the timeline names why: an unreached draft is not one that
-// cannot run, so nothing goes to the redraft.
-func TestAskHoldoutsLeavesTheRoundEmptyWhenTheDryRunEndsEarly(t *testing.T) {
-	kube := newFakeKube()
-	objects := &fakeObjectStore{}
-	r, _, store := newTestRunner(t, holdoutPlanTask(), kube, objects)
-	proposal := `{"holdouts":[` +
-		`{"id":"door_state","criterion":"The door stays shut until a key that fits turns the lock","test_name":"TestDoorShut","test_code":"func TestDoorShut(t *testing.T) {}"},` +
-		`{"id":"key_log","criterion":"Every key turn lands in the log","test_name":"TestKeyLog","test_code":"func TestKeyLog(t *testing.T) {}"}` +
-		`]}`
-	ll := &fakeLiteLLM{contents: []string{proposal}}
-	r.supervisor = testSupervisorModel(ll.srv(t).URL)
-	done := make(chan error, 1)
-	go func() {
-		done <- r.askHoldouts(context.Background(), holdoutPlanTask(), 1, Plan{Spec: &Spec{Outcome: "The door opens only for a key that fits the lock"}})
-	}()
-	body := proofLines(harness.ProofRun{ID: "holdout-1", Exit: 1,
-		Report: junitGz(t, wrap(`<testcase name="TestDoorShut"><failure message="Failed">--- FAIL: TestDoorShut (0.00s)</failure></testcase>`))})
-	scriptReproPods(kube, body[:strings.LastIndex(body, "\n")])
-	if err := <-done; err != nil {
-		t.Fatal(err)
-	}
-	if rows, _ := store.PlanHoldouts(context.Background(), "plan1"); len(rows) != 0 {
-		t.Fatalf("rows = %+v, want none", rows)
-	}
-	if len(kube.podOrder) != 1 || len(ll.chats) != 1 {
-		t.Fatalf("pods %d, chats %d; want the one dry run and no redraft", len(kube.podOrder), len(ll.chats))
-	}
-	if tl := string(objGet(objects, "sessions/plan1/timeline.jsonl")); !strings.Contains(tl, `"step":"holdouts_not_drafted"`) ||
-		!strings.Contains(tl, "dry run: the proofs pod ended early: 1 of 2 entries unreported") {
-		t.Fatalf("timeline = %s", tl)
+	if reason, _ := timelineStep(t, objects, "plan1", "holdouts_not_drafted")["reason"].(string); !strings.HasPrefix(reason, "the answer is not the hold-outs json: ") {
+		t.Fatalf("reason = %q", reason)
 	}
 }
 
 // A round asks once: rows of the round mean an activity retry, no
-// second model call, no second sandbox.
+// second model call.
 func TestAskHoldoutsAsksOnceARound(t *testing.T) {
 	kube := newFakeKube()
 	r, _, store := newTestRunner(t, holdoutPlanTask(), kube, &fakeObjectStore{})
-	seeded := []Holdout{{Idx: 1, Round: 1, ID: "door_state", State: HoldoutProposed, DryVerdict: "red"}}
-	if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 1, seeded); err != nil {
+	seeded := []PlanProof{{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, Claim: "c", Inputs: "i", Expected: "e", State: ProofProposed}}
+	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, seeded); err != nil {
 		t.Fatal(err)
 	}
+	ll := &fakeLiteLLM{contents: []string{`{"holdouts":[]}`}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, Plan{}); err != nil {
 		t.Fatal(err)
 	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
+	rows, _ := store.PlanProofs(context.Background(), "plan1")
 	if len(rows) != 1 || rows[0] != seeded[0] {
 		t.Fatalf("rows = %+v, want the round's own untouched", rows)
 	}
-	if len(kube.podOrder) != 0 {
-		t.Fatalf("pods %d, want none", len(kube.podOrder))
+	if len(ll.chats) != 0 || len(kube.podOrder) != 0 {
+		t.Fatalf("chats %d, pods %d; want none", len(ll.chats), len(kube.podOrder))
+	}
+}
+
+// A criterion's proof the prover filed at a round is no hold-out of it:
+// the round's hold-outs are asked still, numbered after the row.
+func TestAskHoldoutsAsksARoundThatHoldsOnlyACriterionsProof(t *testing.T) {
+	r, _, store := newTestRunner(t, holdoutPlanTask(), newFakeKube(), &fakeObjectStore{})
+	filed := PlanProof{Idx: 1, Round: 1, ID: "green_login", Origin: ProofOriginCriterion, Criterion: "green_login", State: ProofFiled,
+		Path: "proofs/green_login/green_login_test.go", Suite: "./proofs/green_login", Name: "TestGreenLogin", Code: "package green_login"}
+	store.proofs = map[string][]PlanProof{"plan1": {filed}}
+	ll := &fakeLiteLLM{contents: []string{`{"holdouts":[{"id":"key_log","claim":"Every key turn lands in the log","inputs":"three turns of key 7","expected":"three log rows"}]}`}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, holdoutCriteriaPlan()); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := store.PlanProofs(context.Background(), "plan1")
+	want := []PlanProof{filed, {Idx: 2, Round: 1, ID: "key_log", Origin: ProofOriginHoldout, Claim: "Every key turn lands in the log",
+		Inputs: "three turns of key 7", Expected: "three log rows", State: ProofProposed}}
+	if len(ll.chats) != 1 || !slices.Equal(rows, want) {
+		t.Fatalf("chats %d, rows %+v; want one call and %+v", len(ll.chats), rows, want)
 	}
 }
 
@@ -232,8 +199,8 @@ func TestAskHoldoutsAsksOnceARound(t *testing.T) {
 func TestAskHoldoutsSweepsThePreviousRoundsProposals(t *testing.T) {
 	kube := newFakeKube()
 	r, _, store := newTestRunner(t, holdoutPlanTask(), kube, &fakeObjectStore{})
-	if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 0,
-		[]Holdout{{Idx: 1, Round: 0, ID: "old_gap", State: HoldoutProposed, DryVerdict: "red"}}); err != nil {
+	if _, err := store.PutPlanProofs(context.Background(), "plan1", 0,
+		[]PlanProof{{Idx: 1, Round: 0, ID: "old_gap", Origin: ProofOriginHoldout, State: ProofProposed}}); err != nil {
 		t.Fatal(err)
 	}
 	ll := &fakeLiteLLM{contents: []string{`{"holdouts":[]}`}}
@@ -241,8 +208,8 @@ func TestAskHoldoutsSweepsThePreviousRoundsProposals(t *testing.T) {
 	if err := r.askHoldouts(context.Background(), holdoutPlanTask(), 1, Plan{}); err != nil {
 		t.Fatal(err)
 	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if len(rows) != 1 || rows[0].State != HoldoutDropped || rows[0].ID != "old_gap" {
+	rows, _ := store.PlanProofs(context.Background(), "plan1")
+	if len(rows) != 1 || rows[0].State != ProofDropped || rows[0].ID != "old_gap" {
 		t.Fatalf("rows = %+v, want the round 0 proposal dropped", rows)
 	}
 	if len(ll.chats) != 1 || len(kube.podOrder) != 0 {
@@ -251,9 +218,8 @@ func TestAskHoldoutsSweepsThePreviousRoundsProposals(t *testing.T) {
 }
 
 // DecideHoldout takes the console's okay or drop: only the newest round
-// while its confirmation stands unanswered, only a click the row's state
-// takes (an okay needs a verdict of red or green; unrunnable takes only
-// drop), and each click lands once.
+// while its confirmation stands unanswered, only on a proposal, and each
+// click lands once.
 func TestDecideHoldout(t *testing.T) {
 	ctx := context.Background()
 	newStore := func(t *testing.T) *fakeStore {
@@ -265,8 +231,8 @@ func TestDecideHoldout(t *testing.T) {
 		store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
 		return store
 	}
-	proposed := func() []Holdout {
-		return []Holdout{{Idx: 1, Round: 1, ID: "door_state", State: HoldoutProposed, DryVerdict: "red"}}
+	proposed := func() []PlanProof {
+		return []PlanProof{{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofProposed}}
 	}
 	t.Run("no plan waiting", func(t *testing.T) {
 		store := newFakeStore()
@@ -309,7 +275,7 @@ func TestDecideHoldout(t *testing.T) {
 	})
 	t.Run("no such verb", func(t *testing.T) {
 		store := newStore(t)
-		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 1, proposed()); err != nil {
+		if _, err := store.PutPlanProofs(ctx, "t-plan", 1, proposed()); err != nil {
 			t.Fatal(err)
 		}
 		err := DecideHoldout(ctx, store, "t-plan", 1, 1, "maybe", "sebastian")
@@ -323,20 +289,32 @@ func TestDecideHoldout(t *testing.T) {
 			t.Fatalf("missing row: %v", err)
 		}
 	})
-	t.Run("okay stores a red proposal", func(t *testing.T) {
+	t.Run("okay keeps a proposal", func(t *testing.T) {
 		store := newStore(t)
-		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 1, proposed()); err != nil {
+		if _, err := store.PutPlanProofs(ctx, "t-plan", 1, proposed()); err != nil {
 			t.Fatal(err)
 		}
 		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); err != nil {
 			t.Fatal(err)
 		}
-		rows, _ := store.PlanHoldouts(ctx, "t-plan")
-		if rows[0].State != HoldoutStored {
+		rows, _ := store.PlanProofs(ctx, "t-plan")
+		if rows[0].State != ProofOkayed {
 			t.Fatalf("row = %+v", rows[0])
 		}
 		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "drop", "sebastian"); !errors.Is(err, ErrHoldoutClick) {
 			t.Fatalf("a second click: %v", err)
+		}
+	})
+	t.Run("drop drops a proposal", func(t *testing.T) {
+		store := newStore(t)
+		if _, err := store.PutPlanProofs(ctx, "t-plan", 1, proposed()); err != nil {
+			t.Fatal(err)
+		}
+		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "drop", "sebastian"); err != nil {
+			t.Fatal(err)
+		}
+		if rows, _ := store.PlanProofs(ctx, "t-plan"); rows[0].State != ProofDropped {
+			t.Fatalf("row = %+v", rows[0])
 		}
 	})
 	t.Run("a confirmation asked again", func(t *testing.T) {
@@ -357,13 +335,13 @@ func TestDecideHoldout(t *testing.T) {
 		confirm(2)
 		third := proposed()
 		third[0].Round = 3
-		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 3, third); err != nil {
+		if _, err := store.PutPlanProofs(ctx, "t-plan", 3, third); err != nil {
 			t.Fatal(err)
 		}
 		if err := DecideHoldout(ctx, store, "t-plan", 3, 1, "okay", "sebastian"); err != nil {
 			t.Fatalf("revision 2 confirmed, round 3's hold-out: %v", err)
 		}
-		if rows, _ := store.PlanHoldouts(ctx, "t-plan"); rows[0].State != HoldoutStored {
+		if rows, _ := store.PlanProofs(ctx, "t-plan"); rows[0].State != ProofOkayed {
 			t.Fatalf("row = %+v", rows[0])
 		}
 		confirm(3)
@@ -371,112 +349,6 @@ func TestDecideHoldout(t *testing.T) {
 			t.Fatalf("revision 3 confirmed: %v", err)
 		}
 	})
-	t.Run("unrunnable takes only drop", func(t *testing.T) {
-		store := newStore(t)
-		if _, err := store.PutPlanHoldouts(ctx, "t-plan", 1,
-			[]Holdout{{Idx: 1, Round: 1, ID: "door_state", State: HoldoutUnrunnable}}); err != nil {
-			t.Fatal(err)
-		}
-		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "okay", "sebastian"); !errors.Is(err, ErrHoldoutClick) {
-			t.Fatalf("okay on unrunnable: %v", err)
-		}
-		if err := DecideHoldout(ctx, store, "t-plan", 1, 1, "drop", "sebastian"); err != nil {
-			t.Fatal(err)
-		}
-		rows, _ := store.PlanHoldouts(ctx, "t-plan")
-		if rows[0].State != HoldoutDropped {
-			t.Fatalf("row = %+v", rows[0])
-		}
-	})
-}
-
-// The audit's filing of its verdict, one refused arm at a time: only
-// the audit of that hold-out running on that task files, once; a
-// rewrite keeps its test's name, stays inside the bounds and quotes
-// the spec's words; a real gap or a spec question files no code.
-func TestFileVerdict(t *testing.T) {
-	ctx := context.Background()
-	card := seedCriteriaPlan(t)
-	card.Process, card.ModelAlias = "maintenance", "factory/small"
-	r, _, store := newTestRunner(t, card, newFakeKube(), &fakeObjectStore{})
-	plan := `{"summary":"s","spec":{"outcome":"The door opens only for a key that fits the lock","glossary":["the lock"]},` +
-		`"criteria":[{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}],` +
-		`"cards":[{"key":"integ","role":"integration","title":"t","brief":"b"}]}`
-	if _, err := store.AddPlanRevision(ctx, "plan1", json.RawMessage(plan), "sha1"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := store.PutPlanHoldouts(ctx, "plan1", 1, []Holdout{{Idx: 1, Round: 1, ID: "door_state",
-		State: HoldoutStored, DryVerdict: "red", TestName: "TestDoorShut", TestCode: "orig"}}); err != nil {
-		t.Fatal(err)
-	}
-	r.startAudit("t1", 1)
-	if findings, err := r.FileVerdict(ctx, HoldoutVerdict{TaskID: "t1", Idx: 9, Verdict: AuditWrongTest}); err != nil ||
-		!slices.Equal(findings, []string{"file_verdict: the card holds no such hold-out"}) {
-		t.Fatalf("missing row: %v, %q", err, findings)
-	}
-	for name, in := range map[string]HoldoutVerdict{
-		"no such verdict":                 {TaskID: "t1", Idx: 1, Verdict: "nope"},
-		"a gap files no code":             {TaskID: "t1", Idx: 1, Verdict: AuditRealGap, TestCode: "func X()"},
-		"a question carries its question": {TaskID: "t1", Idx: 1, Verdict: AuditSpecQuestion},
-		"the reason is too long":          {TaskID: "t1", Idx: 1, Verdict: AuditRealGap, Reason: strings.Repeat("r", 401)},
-		"the rewrite keeps its name":      {TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, TestCode: "func TestOther(t *testing.T) {}", Quote: "The door opens only for a key that fits"},
-		"the quote is short":              {TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, TestCode: "func TestDoorShut(t *testing.T) {}", Quote: "too short"},
-		"the quote is not the spec's":     {TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, TestCode: "func TestDoorShut(t *testing.T) {}", Quote: "a sentence the spec never says out loud"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			findings, err := r.FileVerdict(ctx, in)
-			if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0], "file_verdict: ") {
-				t.Fatalf("findings = %q, %v", findings, err)
-			}
-			rows, _ := store.PlanHoldouts(ctx, "plan1")
-			if rows[0].AuditVerdict != "" {
-				t.Fatalf("a refused filing changed the row: %+v", rows[0])
-			}
-		})
-	}
-	rewrite := "func TestDoorShut(t *testing.T) {\n\tt.Fatal(\"locked\")\n}"
-	if findings, err := r.FileVerdict(ctx, HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest,
-		Reason: "tests the hinge, not the lock", Quote: "The door opens only for a key that fits", TestCode: rewrite}); err != nil || len(findings) != 0 {
-		t.Fatalf("the filing: %v, %q", err, findings)
-	}
-	rows, _ := store.PlanHoldouts(ctx, "plan1")
-	if rows[0].AuditVerdict != AuditWrongTest || rows[0].AuditReason != "tests the hinge, not the lock" ||
-		rows[0].Rewrite != rewrite || rows[0].State != HoldoutStored {
-		t.Fatalf("row = %+v", rows[0])
-	}
-	if _, err := r.FileVerdict(ctx, HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditRealGap, Reason: "again"}); !errors.Is(err, ErrAnswered) {
-		t.Fatalf("a second filing: %v", err)
-	}
-	r.endAudit("t1")
-	if findings, err := r.FileVerdict(ctx, HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditRealGap, Reason: "no audit"}); err != nil ||
-		!slices.Equal(findings, []string{"file_verdict: no audit of this hold-out is running"}) {
-		t.Fatalf("no live audit: %v, %q", err, findings)
-	}
-}
-
-// The gateway's way in mirrors the plan filer's: a broken body or a
-// nameless filing is the gateway's 400, findings answer what the agent
-// corrects, and a filed verdict answers filed true.
-func TestAuditVerdictHandler(t *testing.T) {
-	card := seedCriteriaPlan(t)
-	card.Process = "maintenance"
-	r, _, _ := newTestRunner(t, card, newFakeKube(), &fakeObjectStore{})
-	post := func(t *testing.T, body string) *httptest.ResponseRecorder {
-		t.Helper()
-		rr := httptest.NewRecorder()
-		r.AuditVerdictHandler(rr, httptest.NewRequest("POST", "/internal/holdout-verdict", strings.NewReader(body)))
-		return rr
-	}
-	if rr := post(t, "{"); rr.Code != 400 || !strings.Contains(rr.Body.String(), "holdout verdict: ") {
-		t.Fatalf("broken body: %d %s", rr.Code, rr.Body)
-	}
-	if rr := post(t, `{"task_id":"t1"}`); rr.Code != 400 || !strings.Contains(rr.Body.String(), "task_id and idx are required") {
-		t.Fatalf("nameless filing: %d %s", rr.Code, rr.Body)
-	}
-	rr := post(t, `{"task_id":"t1","idx":1,"verdict":"nope"}`)
-	if rr.Code != 200 || strings.TrimSpace(rr.Body.String()) != `{"filed":false,"findings":["file_verdict: the verdict is one of wrong_test, real_gap, spec_question"]}` {
-		t.Fatalf("findings: %d %s", rr.Code, rr.Body)
-	}
 }
 
 // The confirming answer waits for the round's hold-out clicks; a normal
@@ -494,12 +366,12 @@ func TestAnswerPlanWaitsForTheHoldoutDecisions(t *testing.T) {
 		t.Fatal(err)
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalPlan, TaskID: "t-plan"})
-	if _, err := store.PutPlanHoldouts(ctx, "t-plan", 1,
-		[]Holdout{{Idx: 1, Round: 1, ID: "door_state", State: HoldoutProposed, DryVerdict: "red"}}); err != nil {
+	if _, err := store.PutPlanProofs(ctx, "t-plan", 1,
+		[]PlanProof{{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofProposed}}); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.PutPlanHoldouts(ctx, "t-plan", 0,
-		[]Holdout{{Idx: 2, Round: 0, ID: "old_gap", State: HoldoutProposed, DryVerdict: "red"}}); err != nil {
+	if _, err := store.PutPlanProofs(ctx, "t-plan", 0,
+		[]PlanProof{{Idx: 2, Round: 0, ID: "old_gap", Origin: ProofOriginHoldout, State: ProofProposed}}); err != nil {
 		t.Fatal(err)
 	}
 	wf := &signalLog{}
@@ -518,101 +390,12 @@ func TestAnswerPlanWaitsForTheHoldoutDecisions(t *testing.T) {
 	if !slices.Equal(wf.got, []string{"t-plan plan_answered alice revision 1 index 1", "t-plan plan_answered sebastian revision 1 index 3"}) {
 		t.Fatalf("signals %q", wf.got)
 	}
-	rows, _ := store.PlanHoldouts(ctx, "t-plan")
-	if len(rows) != 2 || rows[0].State != HoldoutStored || rows[1].State != HoldoutDropped {
+	rows, _ := store.PlanProofs(ctx, "t-plan")
+	if len(rows) != 2 || rows[0].State != ProofOkayed || rows[1].State != ProofDropped {
 		t.Fatalf("rows = %+v, want the round's okayed and the old round swept", rows)
 	}
-	if open, _ := store.UndecidedHoldouts(ctx, "t-plan", 1); open != 0 {
+	if open, _ := store.UndecidedProofs(ctx, "t-plan", 1); open != 0 {
 		t.Fatalf("round 1 holds %d undecided", open)
-	}
-}
-
-// The criteria gate runs the plan's stored hold-outs beside its
-// criteria, blind to the agent: a red one reaches the settlement as a
-// Holdout, never the card's findings or comment; a green one rides
-// silently.
-func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
-	kube := newFakeKube()
-	objects := &fakeObjectStore{}
-	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
-	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"a_green","kind":"test","test":"TestA in ./a"}`)
-	rows := []Holdout{
-		{Idx: 1, Round: 1, ID: "door_state", State: HoldoutStored, DryVerdict: "red",
-			TestName: "TestDoorState", TestCode: "func TestDoorState(t *testing.T) {}"},
-		{Idx: 2, Round: 1, ID: "key_log", State: HoldoutStored, DryVerdict: "green",
-			TestName: "TestKeyLog", TestCode: "func TestKeyLog(t *testing.T) {}"},
-	}
-	if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 1, rows); err != nil {
-		t.Fatal(err)
-	}
-	done := make(chan struct{})
-	var res CriteriaResult
-	var err error
-	go func() {
-		defer close(done)
-		res, err = runCriteria(t, r)
-	}()
-	scriptReproPods(kube, proofLines(
-		harness.ProofRun{ID: "a_green", Report: junitGz(t, wrap(`<testcase name="TestA"></testcase>`))},
-		harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorState"><failure message="Failed">--- FAIL: TestDoorState (0.01s)</failure></testcase>`))},
-		harness.ProofRun{ID: "holdout-2", Report: junitGz(t, wrap(`<testcase name="TestKeyLog"></testcase>`))},
-	))
-	<-done
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(res.Findings) != 0 || res.Skipped != "" || res.Escalate != "" {
-		t.Fatalf("result = %+v, want the criteria met", res)
-	}
-	wantHoldouts := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "Failed --- FAIL: TestDoorState (0.01s)"}}
-	if !slices.Equal(res.Holdouts, wantHoldouts) {
-		t.Fatalf("holdouts = %+v, want %+v", res.Holdouts, wantHoldouts)
-	}
-	if len(kube.podOrder) != 1 || len(hub.minted()) != 1 {
-		t.Fatalf("pods %d, mints %v", len(kube.podOrder), hub.minted())
-	}
-	if len(hub.comments) != 1 || !strings.Contains(hub.comments[0], "1 of 1 criteria met") {
-		t.Fatalf("comments = %q", hub.comments)
-	}
-	var list []harness.Proof
-	if err := json.Unmarshal([]byte(podEnv(kube.podOrder[0])["PROOFS"]), &list); err != nil || len(list) != 3 {
-		t.Fatalf("PROOFS = %+v (%v), want the criterion and the two hold-outs", list, err)
-	}
-	for i, h := range rows {
-		if want := holdoutProof(h); !reflect.DeepEqual(list[1+i], want) || list[1+i].File == nil {
-			t.Fatalf("entry %d = %+v, want %+v with its file", 1+i, list[1+i], want)
-		}
-	}
-	verdicts, _ := store.CriteriaVerdicts(context.Background(), "t1")
-	if len(verdicts) != 1 || verdicts[0].Criterion != "a_green" || verdicts[0].Verdict != "met" {
-		t.Fatalf("verdict rows = %+v, want a_green's alone", verdicts)
-	}
-	step := timelineStep(t, objects, "t1", "gate_criteria")
-	if proofs, _ := step["proofs"].([]any); len(proofs) != 1 {
-		t.Fatalf("timeline proofs = %v, want a_green's", step["proofs"])
-	}
-	for _, leak := range []string{"door_state", "key_log", "TestDoorState"} {
-		for surface, text := range map[string]string{
-			"the comment":         hub.comments[0],
-			"a row":               verdicts[0].Evidence,
-			"the timeline line":   string(mustJSON(step)),
-			"the card's findings": strings.Join(res.Findings, "\n"),
-		} {
-			if strings.Contains(text, leak) {
-				t.Fatalf("%s carries the hold-out %q: %s", surface, leak, text)
-			}
-		}
-	}
-	entries, _ := step["holdouts"].([]any)
-	if len(entries) != 2 {
-		t.Fatalf("timeline holdouts = %v", step["holdouts"])
-	}
-	for i, want := range []struct{ id, verdict string }{{"holdout-1", "red"}, {"holdout-2", "green"}} {
-		e, _ := entries[i].(map[string]any)
-		if e["id"] != want.id || e["verdict"] != want.verdict {
-			t.Fatalf("entry %d = %v, want %s %s", i, e, want.id, want.verdict)
-		}
 	}
 }
 
@@ -624,10 +407,12 @@ func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
 	kube := newFakeKube()
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
+	proofsWorker(t, r)
 	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"a_green","kind":"test","test":"TestA in ./a"}`)
-	if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 1, []Holdout{
-		{Idx: 1, Round: 1, ID: "door_state", State: HoldoutStored, DryVerdict: "red", TestName: "TestDoorState", TestCode: "func TestDoorState(t *testing.T) {}"},
+		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
+	if _, err := store.PutPlanProofs(context.Background(), "plan1", 1, []PlanProof{
+		{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored, Suite: "proofs/door_state", Name: "TestDoorState",
+			Path: "proofs/door_state/door_state_test.go", Code: "package door_state"},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -649,294 +434,36 @@ func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
 	}
 }
 
-// settleRig is the settlement's rig: the integration card of a plan
-// whose spec the audits quote, with the plan's hold-out rows seeded.
-func settleRig(t *testing.T, rows ...Holdout) (*Runner, *fakeKube, *fakeStore) {
-	t.Helper()
+// The settlement settles at once: no audit runs, so a history that
+// recorded a red hold-out ends its criteria loop. No pod, no token, no
+// model call, the row as it was and nothing in the ledger.
+func TestSettleHoldoutsSettlesAtOnce(t *testing.T) {
+	ctx := context.Background()
 	kube := newFakeKube()
-	card := seedCriteriaPlan(t)
-	card.Process, card.ModelAlias = "maintenance", "factory/small"
-	r, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
-	plan := `{"summary":"s","spec":{"outcome":"The door opens only for a key that fits the lock","glossary":["the lock"]},` +
-		`"criteria":[{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}],` +
-		`"cards":[{"key":"integ","role":"integration","title":"t","brief":"b"}]}`
-	if _, err := store.AddPlanRevision(context.Background(), "plan1", json.RawMessage(plan), "sha1"); err != nil {
+	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, &fakeObjectStore{})
+	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
+		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
+	if _, err := store.PutPlanProofs(ctx, "plan1", 1, []PlanProof{{Idx: 1, Round: 1, ID: "door_state", Origin: ProofOriginHoldout, State: ProofStored,
+		Name: "TestDoorState", Code: "func TestDoorState(t *testing.T) {}"}}); err != nil {
 		t.Fatal(err)
 	}
-	if len(rows) > 0 {
-		if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 1, rows); err != nil {
-			t.Fatal(err)
-		}
+	before, _ := store.PlanProofs(ctx, "plan1")
+	val, err := execActivity(t, r, ActivityHoldoutSettlement, "t1", int64(0), int64(9), "c1",
+		[]HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "Failed --- FAIL: TestDoorState (0.01s)"}})
+	if err != nil {
+		t.Fatal(err)
 	}
-	return r, kube, store
-}
-
-// sessionLog is what an audit session's sandbox answers: it finished
-// green with its summary.
-func sessionLog(summary string) string {
-	return envLine(harness.Event{Kind: harness.EventFinished, Time: time.Now(), Detail: map[string]any{"success": true, "summary": summary}}) +
-		"\n" + resultLine(true, summary)
-}
-
-// settle runs the settlement activity, files the audit's verdict while
-// its session runs and answers its pods in order.
-func settle(t *testing.T, r *Runner, kube *fakeKube, reds []HoldoutGateResult, verdict *HoldoutVerdict, bodies ...string) (HoldoutSettlement, error) {
-	t.Helper()
-	done := make(chan error, 1)
 	var res HoldoutSettlement
-	go func() {
-		val, err := execActivity(t, r, ActivityHoldoutSettlement, "t1", int64(7), int64(9), "c1", reds)
-		if err == nil {
-			err = val.Get(&res)
-		}
-		done <- err
-	}()
-	if len(bodies) > 0 {
-		awaitPod(t, kube, done)
-		if verdict != nil {
-			if findings, err := r.FileVerdict(context.Background(), *verdict); err != nil || len(findings) != 0 {
-				t.Fatalf("the audit's filing: %v, %q", err, findings)
-			}
-		}
-		kube.scriptPods(0, bodies[0])
+	if err := val.Get(&res); err != nil || !reflect.DeepEqual(res, HoldoutSettlement{Settled: true}) {
+		t.Fatalf("settlement = %+v, %v; want settled alone", res, err)
 	}
-	if len(bodies) > 1 {
-		awaitPodN(t, kube, 1, done)
-		kube.scriptPods(1, bodies[1])
+	if len(kube.podOrder) != 0 || len(hub.minted()) != 0 {
+		t.Fatalf("pods %d, mints %v; want none", len(kube.podOrder), hub.minted())
 	}
-	return res, <-done
-}
-
-// awaitPodN waits for the kube's pod i, or fails when the activity
-// ends first.
-func awaitPodN(t *testing.T, kube *fakeKube, i int, done chan error) {
-	t.Helper()
-	for {
-		kube.mu.Lock()
-		n := len(kube.podOrder)
-		kube.mu.Unlock()
-		if n > i {
-			return
-		}
-		select {
-		case err := <-done:
-			t.Fatalf("the activity ended before pod %d: %v", i, err)
-		case <-time.After(5 * time.Millisecond):
-		}
+	if after, _ := store.PlanProofs(ctx, "plan1"); !reflect.DeepEqual(after, before) {
+		t.Fatalf("rows = %+v, want %+v", after, before)
 	}
-}
-
-// A wrong test with no rewrite drops at the settlement: the red lands
-// in the ledger, the row keeps the audit's verdict and the card
-// settles. The audit session is a report-mode sandbox that changes no
-// code, pushes nothing and fetches no pull request head.
-func TestSettleHoldoutsDropsAWrongTest(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	res, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock"},
-		sessionLog("the test names the hinge"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Settled || res.Ask != "" || len(res.Findings) != 0 {
-		t.Fatalf("settlement = %+v", res)
-	}
-	if got := store.catches["plan1 1 "+CatchHoldoutRed+" "+FinderGate]; !slices.Equal(got,
-		[]string{"hold-out door_state red at the gate: --- FAIL: TestDoorShut (0.01s)"}) {
-		t.Fatalf("ledger = %q", got)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].State != HoldoutDropped || rows[0].AuditVerdict != AuditWrongTest || rows[0].AuditReason != "tests the hinge, not the lock" {
-		t.Fatalf("row = %+v", rows[0])
-	}
-	env := podEnv(kube.podAt(0))
-	if env["MODE"] != "report" || !strings.Contains(env["REPORT_GUIDE"], "Hold-out idx 1 (file_verdict names it): The door stays shut until a key that fits turns the lock") ||
-		!strings.Contains(env["REPORT_GUIDE"], "The test (dry-run on main head base: red):") {
-		t.Fatalf("the audit session's env = %v", env)
-	}
-	if clone := containerEnv(initContainer(t, kube.podAt(0).spec["spec"].(map[string]any), "clone")); clone["PULL"] != "" {
-		t.Fatalf("the audit's clone PULL = %q for the card's pull request #9, want none", clone["PULL"])
-	}
-}
-
-// A rewrite that holds replaces the hold-out's test: it dry-runs on the
-// base head, red means it still tests the feature's absence, and the
-// row carries it with its verdict.
-func TestSettleHoldoutsKeepsARewriteThatHolds(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	rewrite := "func TestDoorShut(t *testing.T) {\n\tt.Fatal(\"locked\")\n}"
-	res, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock",
-			Quote: "The door opens only for a key that fits", TestCode: rewrite},
-		sessionLog("audited"),
-		proofLines(harness.ProofRun{ID: "holdout-1", Exit: 1, Report: junitGz(t, wrap(`<testcase name="TestDoorShut"><failure message="Failed">--- FAIL: TestDoorShut (0.00s)</failure></testcase>`))}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if !res.Settled {
-		t.Fatalf("settlement = %+v", res)
-	}
-	if at := initContainer(t, kube.podOrder[1].spec["spec"].(map[string]any), "fetch"); containerEnv(at)["CHECKOUT_SHA"] != "base" {
-		t.Fatalf("the rewrite's fetch env = %v, want the hold-out's dry head", containerEnv(at))
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].TestCode != rewrite || rows[0].DryVerdict != "red" || rows[0].DryOutput != "Failed --- FAIL: TestDoorShut (0.00s)" ||
-		rows[0].AuditVerdict != "" || rows[0].Rewrite != "" || rows[0].State != HoldoutStored {
-		t.Fatalf("row = %+v", rows[0])
-	}
-}
-
-// A rewrite that passes on the base head bends: it tests nothing. The
-// audit's fields clear, the hold-out keeps its own test and the human
-// is asked.
-func TestSettleHoldoutsRefusesARewriteThatBends(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	res, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock",
-			Quote: "The door opens only for a key that fits", TestCode: "func TestDoorShut(t *testing.T) {}"},
-		sessionLog("audited"),
-		proofLines(harness.ProofRun{ID: "holdout-1", Report: junitGz(t, wrap(`<testcase name="TestDoorShut"></testcase>`))}))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if at := initContainer(t, kube.podOrder[1].spec["spec"].(map[string]any), "fetch"); containerEnv(at)["CHECKOUT_SHA"] != "base" {
-		t.Fatalf("the rewrite's fetch env = %v, want the hold-out's dry head", containerEnv(at))
-	}
-	if res.Settled || !strings.Contains(res.Ask, "the audit's rewrite of hold-out door_state green on the base head") ||
-		!strings.Contains(res.Ask, "the hold-out keeps its own test") {
-		t.Fatalf("settlement = %+v", res)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].TestCode != "orig" || rows[0].AuditVerdict != "" || rows[0].State != HoldoutStored {
-		t.Fatalf("row = %+v", rows[0])
-	}
-}
-
-// A rewrite whose dry run ends early fails the settlement, so the
-// activity runs again: it is no bending, and the hold-out keeps its row
-// with no ask.
-func TestSettleHoldoutsFailsWhenTheRewritesRunEndsEarly(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	res, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditWrongTest, Reason: "tests the hinge, not the lock",
-			Quote: "The door opens only for a key that fits", TestCode: "func TestDoorShut(t *testing.T) {}"},
-		sessionLog("audited"),
-		"go: downloading gotest.tools/gotestsum v1.13.0")
-	if err == nil || !strings.Contains(err.Error(), "the proofs pod ended early: 1 of 1 entries unreported") || res.Ask != "" {
-		t.Fatalf("settlement = %+v, err = %v; want the early end and no ask", res, err)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].TestCode != "orig" || rows[0].State != HoldoutStored || rows[0].AuditVerdict != AuditWrongTest {
-		t.Fatalf("row = %+v, want its test and the audit's verdict kept", rows[0])
-	}
-}
-
-// A real gap opens the criterion: it becomes public as a finding for
-// the builder, the audit lands in the ledger and the round's close
-// waits for the card to work it.
-func TestSettleHoldoutsOpensARealGap(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "key_log", Criterion: "Every key turn lands in the log",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestKeyLog", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "key_log", Verdict: "red", Evidence: "--- FAIL: TestKeyLog (0.01s)"}}
-	res, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditRealGap, Reason: "the log never lands"},
-		sessionLog("audited"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Settled || res.Ask != "" || !slices.Equal(res.Findings, []string{
-		"Every key turn lands in the log (hold-out key_log): the audit found a real gap the spec names and the plan's proof does not cover; work the criterion."}) {
-		t.Fatalf("settlement = %+v", res)
-	}
-	if got := store.catches["plan1 1 "+CatchAudit+" "+FinderAuditor]; !slices.Equal(got,
-		[]string{"hold-out key_log: the audit found a real gap: the log never lands"}) {
-		t.Fatalf("ledger = %q", got)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].State != HoldoutOpened || rows[0].AuditVerdict != AuditRealGap {
-		t.Fatalf("row = %+v", rows[0])
-	}
-}
-
-// A spec question goes to the human verbatim; the answer starts a new
-// planner round or runs the gate again.
-func TestSettleHoldoutsAsksTheSpecQuestion(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	res, err := settle(t, r, kube, reds,
-		&HoldoutVerdict{TaskID: "t1", Idx: 1, Verdict: AuditSpecQuestion, Reason: "must the log keep the key id?"},
-		sessionLog("audited"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Settled || !strings.Contains(res.Ask, "hold-out door_state asks a question the spec cannot settle: must the log keep the key id?") {
-		t.Fatalf("settlement = %+v", res)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].State != HoldoutStored || rows[0].AuditVerdict != AuditSpecQuestion {
-		t.Fatalf("row = %+v", rows[0])
-	}
-}
-
-// A hold-out the audit opened that stays red at the gate asks the
-// human: the cycle counts on the row and lands in the ledger, and no
-// second audit runs.
-func TestSettleHoldoutsAsksTheHumanWhenAnOpenedHoldoutStaysRed(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutOpened, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	res, err := settle(t, r, kube, reds, nil)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Settled || !strings.Contains(res.Ask, "hold-out door_state (The door stays shut until a key that fits turns the lock) stayed red after its criterion was opened") {
-		t.Fatalf("settlement = %+v", res)
-	}
-	if got := store.catches["plan1 1 "+CatchHoldoutRed+" "+FinderGate]; !slices.Equal(got,
-		[]string{"hold-out door_state red at the gate again: --- FAIL: TestDoorShut (0.01s)"}) {
-		t.Fatalf("ledger = %q", got)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].RedCycles != 1 || rows[0].State != HoldoutOpened {
-		t.Fatalf("row = %+v", rows[0])
-	}
-	if len(kube.podOrder) != 0 {
-		t.Fatalf("pods %d, want no audit of an opened hold-out", len(kube.podOrder))
-	}
-}
-
-// An audit session that ends without filing a verdict asks the human
-// with its own words; the hold-out stands as it was.
-func TestSettleHoldoutsEscalatesAnAuditWithoutAVerdict(t *testing.T) {
-	row := Holdout{Idx: 1, Round: 1, ID: "door_state", Criterion: "The door stays shut until a key that fits turns the lock",
-		State: HoldoutStored, DryVerdict: "red", DryHead: "base", TestName: "TestDoorShut", TestCode: "orig"}
-	r, kube, store := settleRig(t, row)
-	reds := []HoldoutGateResult{{Idx: 1, ID: "door_state", Verdict: "red", Evidence: "--- FAIL: TestDoorShut (0.01s)"}}
-	res, err := settle(t, r, kube, reds, nil, sessionLog("the test names the hinge, not the lock"))
-	if err != nil {
-		t.Fatal(err)
-	}
-	if res.Settled || !strings.Contains(res.Ask, "the audit session of hold-out door_state ended without a verdict: the test names the hinge, not the lock") {
-		t.Fatalf("settlement = %+v", res)
-	}
-	rows, _ := store.PlanHoldouts(context.Background(), "plan1")
-	if rows[0].State != HoldoutStored || rows[0].AuditVerdict != "" {
-		t.Fatalf("row = %+v", rows[0])
+	if catches, err := store.PlanCatches(ctx, "plan1"); err != nil || len(catches) != 0 {
+		t.Fatalf("catches = %+v, %v; want none", catches, err)
 	}
 }

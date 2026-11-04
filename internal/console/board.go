@@ -3646,7 +3646,11 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 	case "chat":
 		var err error
-		if d.Session, d.Said, err = c.sessionChat(r, bt.ID); err != nil {
+		var no *refusal
+		switch d.Session, d.Said, err = c.sessionChat(r, bt.Task); {
+		case errors.As(err, &no):
+			d.Problem = no.msg
+		case err != nil:
 			problem("session", err)
 		}
 		d.Steers = d.Session != nil && d.Session.Ended.IsZero() && bt.Status == "running" && c.cfg.Steer != nil
@@ -3654,18 +3658,20 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	c.render(w, "drawer.html", d)
 }
 
-// sessionChat is card id's newest session, nil before its first, and its
+// sessionChat is card k's newest session, nil before its first, and its
 // messages in time order: the agent's text of each model call in the
 // transcript, and the steers among the card's events from the session's
-// start to its end.
-func (c *Console) sessionChat(r *http.Request, id string) (*sessionRef, []said, error) {
+// start to its end. A transcript refused unread (a prover's) is the
+// refusal.
+func (c *Console) sessionChat(r *http.Request, k factoryd.Task) (*sessionRef, []said, error) {
+	id := k.ID
 	steps, err := c.readTimeline(r.Context(), id)
 	all := sessionsOf(steps)
 	if err != nil || len(all) == 0 {
 		return nil, nil, err
 	}
 	s := sessionAt(all, 0)
-	body, err := (&turn{c: c, r: r}).transcript(id, s)
+	body, err := (&turn{c: c, r: r}).transcript(k, s)
 	var no *refusal
 	if err != nil && !(errors.As(err, &no) && no.status == http.StatusNotFound) {
 		return &s, nil, err

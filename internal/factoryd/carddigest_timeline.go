@@ -18,6 +18,7 @@ type timelineLine struct {
 	Time        time.Time               `json:"time"`
 	Session     string                  `json:"session"`
 	Model       string                  `json:"model"`
+	Role        string                  `json:"role"`
 	Attempt     int                     `json:"attempt"`
 	Outcome     string                  `json:"outcome"`
 	Started     string                  `json:"started"`
@@ -34,12 +35,12 @@ type timelineLine struct {
 	StartFailed string                  `json:"start_failed"`
 }
 
-// digestSession is one session the timeline records: its start, its end
-// and its push.
+// digestSession is one session the timeline records: its start, its end,
+// its push, and its role, "" for a card's session.
 type digestSession struct {
-	id, model, outcome, commit string
-	attempt, line              int
-	start, end                 time.Time
+	id, model, outcome, commit, role string
+	attempt, line                    int
+	start, end                       time.Time
 }
 
 // timelineSteps are the steps of the card's timeline tl: its sessions,
@@ -78,7 +79,7 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 			byID[l.Session] = s
 			sessions = append(sessions, s)
 		}
-		s.model, s.attempt = cmp.Or(s.model, l.Model), cmp.Or(s.attempt, l.Attempt)
+		s.model, s.attempt, s.role = cmp.Or(s.model, l.Model), cmp.Or(s.attempt, l.Attempt), cmp.Or(s.role, l.Role)
 		return s
 	}
 	for i, raw := range bytes.Split(tl, []byte("\n")) {
@@ -157,10 +158,11 @@ func newestLine(tl []byte, step string) lineMark {
 	return lineMark{}
 }
 
-// sessionStep is session s's step: its outcome, with the head it pushed,
-// and its cost and calls from the task's audit rows between its start and
-// its end. A session with no end ran up to the next session's start, next,
-// or runs still when it is the last.
+// sessionStep is session s's step: by its role and model when it has a
+// role, else by its attempt and model; its outcome, with the head it
+// pushed, and its cost and calls from the task's audit rows between its
+// start and its end. A session with no end ran up to the next session's
+// start, next, or runs still when it is the last.
 func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digestSession) (DigestStep, error) {
 	end, outcome := s.end, strings.ReplaceAll(cmp.Or(s.outcome, "ended"), "_", " ")
 	switch {
@@ -177,7 +179,11 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 	if s.outcome == string(OutcomePushed) && s.commit != "" {
 		outcome += " " + s.commit[:min(7, len(s.commit))]
 	}
-	return DigestStep{At: s.start, Kind: "session", Actor: strings.TrimSpace(fmt.Sprintf("%d %s", s.attempt, aliasOf(s.model))),
+	actor := fmt.Sprintf("%d %s", s.attempt, aliasOf(s.model))
+	if s.role != "" {
+		actor = s.role + " " + aliasOf(s.model)
+	}
+	return DigestStep{At: s.start, Kind: "session", Actor: strings.TrimSpace(actor),
 		Outcome: outcome, CostEUR: cost, Ref: DigestRef{Session: s.id, Step: strconv.Itoa(s.line)}, state: s.outcome, calls: calls}, nil
 }
 

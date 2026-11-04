@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // expectedBudget is the budget card t holds when nothing moved it but its
@@ -117,8 +118,11 @@ func (d CardDigest) providerRefused() bool {
 
 // digestFlags are the patterns the card's life d shows, by name: one pass
 // over its steps, then t's cases, its row, its dependencies, its owned
-// wait, and its events, oldest first.
-func digestFlags(d CardDigest, t Task, events []Event, cases []Case, deps []Dependency, budget float64) []DigestFlag {
+// wait, its events oldest first, and a plan's proofs, all read from
+// rows.
+func digestFlags(d CardDigest, rows cardRows, budget float64) []DigestFlag {
+	t, cases, deps := rows.task, rows.cases, rows.deps
+	events, now := rows.events, d.at
 	var flags []DigestFlag
 	add := func(name, detail string) { flags = append(flags, DigestFlag{name, detail}) }
 	steps := d.Steps
@@ -130,6 +134,13 @@ func digestFlags(d CardDigest, t Task, events []Event, cases []Case, deps []Depe
 	run, runFirst := 0, ""
 	for _, s := range steps {
 		switch s.Kind {
+		case "proofs":
+			if s.Actor != FactoryDecider {
+				continue
+			}
+			for _, id := range strings.Fields(s.state) {
+				add("prover_refused_thrice", id)
+			}
 		case "answer", "granted", "funded", "extended":
 			if granted && afterNoPush != "" {
 				add("grant_bought_nothing", afterNoPush)
@@ -192,6 +203,12 @@ func digestFlags(d CardDigest, t Task, events []Event, cases []Case, deps []Depe
 		if dep.Status == "failed" {
 			add("dependency_failed", fmt.Sprintf("#%d", dep.Issue))
 		}
+	}
+	switch since := now.Sub(rows.proverDue); {
+	case rows.proofsStored > 0 && rows.proofsStored < rows.proofsWanted:
+		add("proofs_missing", fmt.Sprintf("%d of %d wanted proofs without a store", rows.proofsWanted-rows.proofsStored, rows.proofsWanted))
+	case rows.proofsStored == 0 && !rows.proverDue.IsZero() && since > time.Hour:
+		add("proofs_missing", textutil.Plural(int(since/time.Hour), "hour", "hours"))
 	}
 	if defaultKind(t.Kind) == "agent" && Cents(t.BudgetEUR) != Cents(budget) {
 		add("budget_moved_no_event", fmt.Sprintf("%.2f EUR not %.2f EUR", t.BudgetEUR, budget))

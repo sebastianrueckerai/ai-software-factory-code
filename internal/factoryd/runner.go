@@ -136,7 +136,8 @@ type Runner struct {
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
 	// endpointWait bounds how long the worker's message endpoint is given
-	// to come up for a brief or record delivery; a test shortens it
+	// to come up for a brief, record or proofs list delivery; a test
+	// shortens it
 	endpointWait time.Duration
 	stopWait     time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
@@ -164,9 +165,6 @@ type Runner struct {
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica)
 	caseLocks sync.Map
-	// audits is the hold-out an audit session audits, by task: only it
-	// may file that hold-out's verdict (the file_verdict tool)
-	audits map[string]int
 	// now and sleep are the roll gap's and the roll hold's clock; nil is
 	// the wall clock
 	now   func() time.Time
@@ -1269,13 +1267,14 @@ func (r *Runner) pushBrief(ctx context.Context, workerStop <-chan struct{}, task
 // postWorkerUntil posts to the worker's message endpoint until it answers:
 // the endpoint comes up only once the pod's clone and prepare are done, so
 // a first post can meet connection refused. It gives up at ctx's end, a
-// stopping factoryd, or wait after the first try, with the last error said.
+// stopping factoryd, a post no retry changes (postFinal), or wait after
+// the first try, with the last error said.
 func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}, ns, pod, token, path string, body any, wait time.Duration) error {
 	end := time.Now().Add(wait)
 	var err error
 	for {
-		if err = r.postWorker(ctx, ns, pod, token, path, body); err == nil {
-			return nil
+		if err = r.postWorker(ctx, ns, pod, token, path, body); err == nil || postFinal(err) {
+			return err
 		}
 		pause := min(r.startPoll, time.Until(end))
 		if pause <= 0 {

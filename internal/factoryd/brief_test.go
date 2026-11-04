@@ -447,7 +447,7 @@ func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	spec, _ := json.Marshal(CriteriaSpec{Task: "t-int"})
 	a := ApprovalRequest{Kind: ApprovalCriteriaRerun, TaskID: "t-plan", Project: "sf/code", Spec: spec,
 		Reason: "criteria never judged: the review of card #1380 did not run (the review never ran): c1"}
-	criteria := []criterionFact{{ID: "c1", Kind: "test", Text: "go test ./... is green", Verdict: "open"}}
+	criteria := []criterionFact{{ID: "c1", Kind: "test", Text: "a link is stored", Verdict: "open"}}
 	facts, acts, err := briefFacts(a, briefTask(), criteria, "")
 	if err != nil {
 		t.Fatal(err)
@@ -463,7 +463,7 @@ func TestBriefOfCriteriaNeverJudged(t *testing.T) {
 	if p := briefPrompt(a.Kind, acts); !strings.Contains(p, "criteria never judged card") {
 		t.Errorf("the prompt does not name the card: %s", p)
 	}
-	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{{ID: "c1", Kind: "test", Test: "go test ./... is green"}}})
+	plan, _ := json.Marshal(Plan{Criteria: []PlanCriterion{{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"}}})
 	store := &fakeBriefStore{revisions: map[string]PlanRevision{"t-plan": {TaskID: "t-plan", Revision: 3, Plan: plan}}, verdicts: map[string][]CriterionVerdict{}}
 	got, err := (&BriefWriter{Store: store}).criteriaFacts(context.Background(), a)
 	if err != nil || fmt.Sprint(got) != fmt.Sprint(criteria) {
@@ -480,7 +480,7 @@ func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
 		t.Fatal(err)
 	}
 	plan, err := json.Marshal(Plan{Criteria: []PlanCriterion{
-		{ID: "c1", Kind: "test", Test: "go test ./... is green"},
+		{ID: "c1", Kind: "test", Claim: "a link is stored", Inputs: "POST /api/links", Expected: "201"},
 		{ID: "c2", Kind: "human", Claim: "the feature reads well"},
 	}})
 	if err != nil {
@@ -524,6 +524,23 @@ func TestBriefWriterWritesTheCriteriaBrief(t *testing.T) {
 	for _, want := range []string{"the feature reads well", `"verdict":"open"`, `"verdict":"met"`} {
 		if !strings.Contains(sent, want) {
 			t.Errorf("the model's facts lack %q: %s", want, sent)
+		}
+	}
+}
+
+// A criterion as one line on a criteria card's brief: its claim, else
+// its suite, else its prompt.
+func TestCriterionText(t *testing.T) {
+	for _, tc := range []struct {
+		c    PlanCriterion
+		want string
+	}{
+		{PlanCriterion{Kind: CriterionInvariant, Suite: "./..."}, "./..."},
+		{PlanCriterion{Kind: CriterionTest, Claim: "c", Inputs: "i"}, "c"},
+		{PlanCriterion{Kind: CriterionJudgement, Prompt: "p"}, "p"},
+	} {
+		if got := criterionText(tc.c); got != tc.want {
+			t.Errorf("criterionText(%+v) = %q, want %q", tc.c, got, tc.want)
 		}
 	}
 }

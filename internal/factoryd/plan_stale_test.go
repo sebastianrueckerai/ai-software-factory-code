@@ -44,7 +44,7 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 		want string
 	}{
 		"replaces an id the previous revision does not hold": {renamed, "criterion links_crud_v2: replaces gone, an id the previous revision does not hold"},
-		"the same id with another definition":                {changed, "criterion links_crud: the previous revision holds this id with another definition; a changed criterion files under a new id"},
+		"the same id with another definition":                {changed, "criterion links_crud: revision 1 holds this id with another definition; a changed criterion files under a new id"},
 	} {
 		res, err := r.FilePlan(ctx, "t-plan", planJSON(t, tc.p))
 		if err != nil {
@@ -65,6 +65,38 @@ func TestFilePlanRefusesABrokenAmendment(t *testing.T) {
 	}
 	if catches, _ := store.PlanCatches(ctx, "t-plan"); len(catches) != 0 {
 		t.Fatalf("the re-file wrote records: %+v", catches)
+	}
+}
+
+// An id never changes meaning in any revision: a criterion revision 2
+// dropped comes back in revision 3 only with the definition revision 1
+// gave it, so its old rows never stand for another criterion.
+func TestFilePlanRefusesADroppedIdBackWithAnotherDefinition(t *testing.T) {
+	ctx := context.Background()
+	withPages := func(claim string) Plan {
+		p := testPlan()
+		p.Criteria = append(p.Criteria, PlanCriterion{ID: "pages_ok", Kind: CriterionHuman, Claim: claim, Evidence: "the list page"})
+		p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the list page reads well"})
+		p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the pages read well"})
+		return p
+	}
+	r, store, _, _ := newPlanRunner(t, withPages("the pages read well"))
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	runPlanTask(store)
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || len(res.Findings) != 0 || res.Revision != 2 {
+		t.Fatalf("revision 2 drops pages_ok: %+v, %v, findings %q", res, err, res.Findings)
+	}
+	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, withPages("the pages read calm")))
+	want := []string{"criterion pages_ok: revision 1 holds this id with another definition; a changed criterion files under a new id"}
+	if err != nil || !slices.Equal(res.Findings, want) {
+		t.Fatalf("pages_ok back with a new claim: %+v, %v; want the findings %q", res, err, want)
+	}
+	if rev, _, _ := store.PlanRevision(ctx, "t-plan", 0); rev.Revision != 2 {
+		t.Fatalf("a refused amendment landed as revision %d", rev.Revision)
+	}
+	if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, withPages("the pages read well"))); err != nil || len(res.Findings) != 0 || res.Revision != 3 {
+		t.Fatalf("pages_ok back as it was: %+v, %v, findings %q", res, err, res.Findings)
 	}
 }
 

@@ -44,6 +44,9 @@ func (d CardDigest) Render() string {
 	if h.Plan > 0 {
 		head = append(head, strings.TrimSpace(fmt.Sprintf("plan #%d %s", h.Plan, h.PlanName)))
 	}
+	if h.ProofsWanted > 0 {
+		head = append(head, fmt.Sprintf("proofs %d of %d stored", h.ProofsStored, h.ProofsWanted))
+	}
 	head = append(head, fmt.Sprintf("budget %.2f spent %.2f holds %.2f EUR", h.BudgetEUR, h.SpentEUR, h.HoldsEUR))
 	if h.SlotHeld {
 		head = append(head, "slot held")

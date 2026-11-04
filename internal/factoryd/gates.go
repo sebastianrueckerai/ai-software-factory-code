@@ -3,6 +3,7 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/rand"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -898,27 +899,54 @@ func (r *Runner) runRepro(ctx context.Context, t Task, repo Repo, ref, commit, a
 	return rep, err
 }
 
-// proofsBudget is the proofs pod's run budget: the activity's bound less
-// the pod's start (awaitPodStart's 10 minutes) and the reads.
+// proofsBudget is the proofs pod's run budget, from the worker's start
+// with its wait for the list: the activity's bound less the pod's start
+// (awaitPodStart's 10 minutes) and the reads.
 const proofsBudget = reproActivityTimeout - 15*time.Minute
 
-// runProofs runs entries in one sandbox pod and reads each one's outcome
-// by its id; a sandbox that cannot start is a *startFailure. A pod that
-// ended before it reported every entry returns the outcomes with a
-// *proofsEnded: the entries it reached keep theirs, the rest are no
-// report.
-func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
+// proofRuns runs entries in one sandbox pod within budget, posting their
+// list to the worker's POST /proofs once the pod runs, under a bearer of
+// this run whose hash alone is in the pod's spec: the list is in no spec, no
+// environment and no file before its entries run. It returns each entry's
+// run by its id, and why the pod reported none when it says. A list past
+// harness.MaxProofsList is a terminal error, before any pod; a sandbox
+// that cannot start is a *startFailure; a pod that does not take the list
+// is an error; a log that ends before the closing line keeps the runs
+// read, with errLogEnded.
+func (r *Runner) proofRuns(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof, budget time.Duration) (runs map[string]harness.ProofRun, runErr string, err error) {
 	list, err := json.Marshal(entries)
 	if err != nil {
-		return nil, err
+		return nil, "", err
 	}
-	var runs []harness.ProofRun
-	var runErr string
-	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, list), func(ns, podName string) error {
+	if len(list) > harness.MaxProofsList {
+		return nil, "", terminalError("the proofs list is %d bytes, past the %d MiB the worker takes", len(list), harness.MaxProofsList>>20)
+	}
+	bearer := rand.Text()
+	var read []harness.ProofRun
+	err = r.runnerPod(ctx, t, r.proofsPodSpec(t, repo, ref, commit, at, bearer, budget), func(ns, podName string) error {
+		if err := r.postWorkerUntil(ctx, nil, ns, podName, bearer, "/proofs", json.RawMessage(list), r.endpointWait); err != nil {
+			return fmt.Errorf("hand the proofs pod its list: %w", err)
+		}
 		var err error
-		runs, runErr, err = r.readProofs(ctx, ns, podName, t.ID)
+		read, runErr, err = r.readProofs(ctx, ns, podName, t.ID)
 		return err
 	})
+	if err != nil && !errors.Is(err, errLogEnded) {
+		return nil, "", err
+	}
+	runs = make(map[string]harness.ProofRun, len(read))
+	for _, run := range read {
+		runs[run.ID] = run
+	}
+	return runs, runErr, err
+}
+
+// runProofs runs entries through proofRuns and reads each one's outcome
+// by its id. A pod that ended before it reported every entry returns the
+// outcomes with a *proofsEnded: the entries it reached keep theirs, the
+// rest are no report.
+func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, at string, entries []harness.Proof) (map[string]proofOutcome, error) {
+	runs, runErr, err := r.proofRuns(ctx, t, repo, ref, commit, at, entries, proofsBudget)
 	ended := errors.Is(err, errLogEnded)
 	if err != nil && !ended {
 		return nil, err
@@ -926,14 +954,10 @@ func (r *Runner) runProofs(ctx context.Context, t Task, repo Repo, ref, commit, 
 	if ended {
 		runErr = proofsEndedEarly
 	}
-	byID := make(map[string]harness.ProofRun, len(runs))
-	for _, run := range runs {
-		byID[run.ID] = run
-	}
 	out := make(map[string]proofOutcome, len(entries))
 	var unreached []string
 	for _, e := range entries {
-		run, ok := byID[e.ID]
+		run, ok := runs[e.ID]
 		if !ok && ended {
 			unreached = append(unreached, e.ID)
 		}
@@ -1241,13 +1265,14 @@ func (r *Runner) reproPodSpec(t Task, repo Repo, ref, commit, at string) map[str
 	})
 }
 
-// proofsPodSpec is the runner pod in proofs mode: list is the entries'
-// JSON, each entry bounded by the reproduction timeout, all by proofsBudget.
-func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at string, list []byte) map[string]any {
+// proofsPodSpec is the runner pod in proofs mode, each entry bounded by
+// the reproduction timeout, all by budget. Its list comes over the
+// message port under bearer, of which the worker holds the hash alone.
+func (r *Runner) proofsPodSpec(t Task, repo Repo, ref, commit, at, bearer string, budget time.Duration) map[string]any {
 	return r.runnerPodSpec(t, repo, ref, commit, at, []map[string]any{
 		{"name": "MODE", "value": "proofs"},
-		{"name": "PROOFS", "value": string(list)},
-		{"name": "PROOFS_BUDGET", "value": strconv.Itoa(int(proofsBudget.Seconds()))},
+		{"name": "PROOFS_BUDGET", "value": strconv.Itoa(int(budget.Seconds()))},
+		{"name": "MESSAGE_TOKEN_SHA256", "value": messageTokenHash(bearer)},
 	})
 }
 

@@ -51,7 +51,6 @@ classes:
       request_info: {}
       delegate: {}
       request_tool: {}
-      file_verdict: {}
       request_cut: {}
       manual: {}
   analyzer:
@@ -73,6 +72,16 @@ classes:
     tools:
       escalate: {}
       file_plan: {}
+      manual: {}
+  prover:
+    session: report
+    models: [small, big]
+    session_model: big
+    supervisor_model: big
+    time: {agent_time: 90m, check_in: 0s}
+    tools:
+      file_proofs: {}
+      escalate: {}
       manual: {}
 prices:
   max_output_tokens:
@@ -109,6 +118,14 @@ func agentDocLoopPolicy() policy.Version {
 		panic(err)
 	}
 	return policy.Version{Commit: "fixture", Tree: tree}
+}
+
+// The loop's modes: coding, screening, sizing, the planner, the prover and
+// the message responder.
+func TestAgentDocLoopIDs(t *testing.T) {
+	if got, want := AgentDocLoopIDs(), []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}; !slices.Equal(got, want) {
+		t.Fatalf("AgentDocLoopIDs() = %q, want %q", got, want)
+	}
 }
 
 // Every loop mode's first user turn — the brief — is labelled by the
@@ -349,8 +366,8 @@ func TestAgentDocLoopRecord(t *testing.T) {
 			switch id {
 			case "planner":
 				want = "factory-tools_file_plan"
-			case "holdout-audit":
-				want = "factory-tools_file_verdict"
+			case "prover":
+				want = "factory-tools_file_proofs"
 			}
 			if !slices.Contains(names, want) {
 				t.Errorf("%s: the wire offers no %s: %v", id, want, names)

@@ -34,7 +34,7 @@ var agentDocClasses = []string{"coder"}
 func AgentDocDirectIDs() []string {
 	return []string{"checkin", "model-review", "security-audit", "gate-supervisor",
 		"review-criteria", "review-behaviours", "delta-planner", "holdout-proposer",
-		"holdout-redrafter", "answer-screener", "brief-writer", "title"}
+		"answer-screener", "brief-writer", "title"}
 }
 
 // AgentDocDirect drives agent id's first model call through the real
@@ -57,9 +57,7 @@ func AgentDocDirect(ctx context.Context, id, gwURL string, v policy.Version, hc 
 	case "delta-planner":
 		return agentDocDelta(ctx, gwURL, v, hc)
 	case "holdout-proposer":
-		return agentDocHoldout(ctx, gwURL, v, hc, false)
-	case "holdout-redrafter":
-		return agentDocHoldout(ctx, gwURL, v, hc, true)
+		return agentDocHoldout(ctx, gwURL, v, hc)
 	case "answer-screener":
 		return agentDocAnswer(ctx, gwURL, v, hc)
 	case "brief-writer":
@@ -276,8 +274,8 @@ func agentDocPlan() Plan {
 		Spec:    &Spec{Outcome: "The counter counts every row the query returns, skipped ones included."},
 		Summary: "One card fixes the counter; one criterion proves it.",
 		Criteria: []PlanCriterion{{
-			ID: "c1", Kind: "test", Test: "go test ./internal/foo/ -run TestCounter",
-			Inputs: "the fixture table with one skipped row", Expected: "the count includes the skipped row",
+			ID: "c1", Kind: "test", Claim: "the counter counts a row the query skips",
+			Inputs: "the fixture table with one skipped row", Expected: "a count of 1",
 		}},
 		Cards: []PlanCard{{
 			Key: "f1", Role: RoleFeature, Title: "Fix the counter", Brief: "Count skipped rows.",
@@ -374,56 +372,29 @@ func agentDocDelta(ctx context.Context, gwURL string, v policy.Version, hc *http
 	}, nil
 }
 
-// agentDocHoldout drives the hold-out round's proposer or redrafter.
-func agentDocHoldout(ctx context.Context, gwURL string, v policy.Version, hc *http.Client, fix bool) ([]agentdoc.Span, error) {
+// agentDocHoldout drives the hold-out round's proposer.
+func agentDocHoldout(ctx context.Context, gwURL string, v policy.Version, hc *http.Client) ([]agentdoc.Span, error) {
 	m, alias, err := agentDocModel(gwURL, v, policy.PurposeReview, hc)
 	if err != nil {
 		return nil, err
 	}
 	p := agentDocPlan()
-	var system string
-	var input any
-	var spans []agentdoc.Span
-	if fix {
-		system = holdoutFixSystem
-		type failed struct {
-			ID       string `json:"id"`
-			TestName string `json:"test_name"`
-			TestCode string `json:"test_code"`
-			Output   string `json:"output"`
-		}
-		input = struct {
-			Spec   *Spec    `json:"spec"`
-			Failed []failed `json:"failed"`
-		}{Spec: p.Spec, Failed: []failed{{
-			ID: "h1", TestName: "TestCounterSkips", TestCode: "func TestCounterSkips(t *testing.T) {}",
-			Output: "fixture dry-run output: the test did not compile",
-		}}}
-		spans = append(spans,
-			agentdoc.Span{Name: "the redrafter prompt", Symbol: "factoryd.holdoutFixSystem", Kind: agentdoc.KindBuilder,
-				Place: agentdoc.PlaceSystem, Text: holdoutFixSystem})
-	} else {
-		input = struct {
-			Spec         *Spec           `json:"spec"`
-			Criteria     []PlanCriterion `json:"criteria"`
-			PastFailures []string        `json:"past_failures"`
-			Max          int             `json:"max"`
-		}{Spec: p.Spec, Criteria: p.Criteria, PastFailures: []string{"a past fixture failure"}, Max: maxHoldouts}
-		system = holdoutSystem
-		spans = append(spans,
-			agentdoc.Span{Name: "the proposer prompt", Symbol: "factoryd.holdoutSystem", Kind: agentdoc.KindBuilder,
-				Place: agentdoc.PlaceSystem, Text: holdoutSystem})
-	}
-	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, system, input); err != nil {
+	input := struct {
+		Spec         *Spec           `json:"spec"`
+		Criteria     []PlanCriterion `json:"criteria"`
+		PastFailures []string        `json:"past_failures"`
+		Max          int             `json:"max"`
+	}{Spec: p.Spec, Criteria: p.Criteria, PastFailures: []string{"a past fixture failure"}, Max: maxHoldouts}
+	if _, _, err := m.Chat(ctx, agentDocTask, alias, policy.PurposeReview, v.Document.Limits.SupervisorTimeout, holdoutSystem, input); err != nil {
 		return nil, err
 	}
-	cover := agentdoc.Span{Name: "the hold-out call's facts", Symbol: "factoryd.(*Runner).redraftHoldouts",
-		Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(input)}
-	if !fix {
-		cover.Name, cover.Symbol = "the hold-out call's facts", "factoryd.(*Runner).proposeHoldouts"
-	}
-	return append(spans, cover, agentDocInputLead, agentdoc.Span{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder,
-		Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)}), nil
+	return []agentdoc.Span{
+		{Name: "the proposer prompt", Symbol: "factoryd.holdoutSystem", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceSystem, Text: holdoutSystem},
+		{Name: "the hold-out call's facts", Symbol: "factoryd.(*Runner).proposeHoldouts", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser,
+			Text: marshalled(input)},
+		agentDocInputLead,
+		{Name: "the spec", Symbol: "factoryd.Spec", Kind: agentdoc.KindBuilder, Place: agentdoc.PlaceUser, Text: marshalled(p.Spec)},
+	}, nil
 }
 
 // agentDocAnswerTag is the marker tag this capture scripts, so the page

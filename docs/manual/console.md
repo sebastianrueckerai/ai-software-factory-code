@@ -300,7 +300,12 @@ decimals: a task's model calls cost fractions of a cent.
   the answer the next turn reads. An unbound ask settles on a later
   row that answers it: the human's press or typed message, or another
   ask; a poke, an escalation, a budget row or a wake's row settles
-  nothing. The ask may bind
+  nothing. A poke settles once its thread is read past it, save a poke
+  with choices (a failed card's Retry and Leave it): its buttons stand
+  until the human's press or words answer it
+  (`answered by <login> · 15:04`) or an event moves its card on, a
+  status change, its end, a retry or a close, with that event's word,
+  actor and time. The ask may bind
   one choice to a write tool call (`tool`, `args`, `choice`, admitted
   as the propose path admits a call): the binding is a proposal of
   kind `ask`, kept out of the pending Do it list, so only the ask row

@@ -877,7 +877,7 @@ func (a *AcceptanceRig) PlanQuestions(context.Context, string, int) ([]factoryd.
 	return nil, nil
 }
 
-func (a *AcceptanceRig) PlanHoldouts(context.Context, string) ([]factoryd.Holdout, error) {
+func (a *AcceptanceRig) PlanProofs(context.Context, string) ([]factoryd.PlanProof, error) {
 	return nil, nil
 }
 
@@ -1440,15 +1440,24 @@ func (a *AcceptanceRig) ChatMessagesAfter(context.Context, string, string, int64
 	return nil, nil
 }
 
-func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
+func (a *AcceptanceRig) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatAsk, error) {
 	a.mu.Lock()
 	defer a.mu.Unlock()
-	var out []factoryd.ChatMessage
-	for _, m := range a.msgs {
-		if m.Repository == repository && m.Login == login &&
-			(m.Kind == factoryd.MessageEscalation || m.Kind == factoryd.MessagePoke) && m.TaskID != "" {
-			out = append(out, m.ChatMessage)
+	var out []factoryd.ChatAsk
+	for i, m := range a.msgs {
+		if m.Repository != repository || m.Login != login ||
+			(m.Kind != factoryd.MessageEscalation && m.Kind != factoryd.MessagePoke) || m.TaskID == "" {
+			continue
 		}
+		ask := factoryd.ChatAsk{ChatMessage: m.ChatMessage}
+		if m.Kind == factoryd.MessagePoke && len(m.Choices) > 0 {
+			if j := slices.IndexFunc(a.msgs[i+1:], func(n accMessage) bool {
+				return n.Repository == repository && n.Login == login && n.Conversation == m.Conversation && n.Role == "user" && n.BirthKind == ""
+			}); j >= 0 {
+				ask.Pressed = a.msgs[i+1+j].At
+			}
+		}
+		out = append(out, ask)
 	}
 	return out, nil
 }

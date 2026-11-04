@@ -470,8 +470,8 @@ commissioning tools) as `{}`; any other call is `refused_capability`.
   on it takes it at once. After 24 hours without a wake the card asks a human; the
   image's arrival ends that wait too. The asking session takes no number
   of the session cap. A session start whose image has no pin in force
-  parks the same way, with no tool card; a reproduction, criteria or
-  hold-out sandbox whose image has none is the start escalation at step
+  parks the same way, with no tool card; a reproduction or criteria
+  sandbox whose image has none is the start escalation at step
   `image pin`. A pull request that changes
   `factory/images.yaml` has the file checked at the gated commit; each
   finding goes back to the agent like an anti-cheat finding.

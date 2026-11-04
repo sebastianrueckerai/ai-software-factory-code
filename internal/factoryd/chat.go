@@ -242,8 +242,8 @@ type ChatConversation struct {
 	NeedsYou int64     `json:"needs_you,omitempty"`
 	NewRows  int64     `json:"new_rows,omitempty"`
 	// WaitsYou is the thread's distinct cards with an open ask or poke
-	// row, the tab title's count: what waits for the member now, unlike
-	// NeedsYou, which counts open asks only.
+	// row, the tab title's count: what waits for the human now, unlike
+	// NeedsYou, which counts the open asks and pokes with choices only.
 	WaitsYou int64 `json:"waits_you,omitempty"`
 	SeenUpto int64 `json:"-"`
 	// ClearedUpto is the member's cleared marker: the console's Clear old
@@ -1083,24 +1083,44 @@ func (s *PGStore) ChatAttachmentByID(ctx context.Context, repository string, id 
 	return a, true, nil
 }
 
+// ChatAsk is an ask or poke row as the settle rule reads it outside its
+// thread: the row, and for a poke with choices Pressed, the time of the
+// human's first press or words after it in its thread, a user row no
+// event wrote; zero for none.
+type ChatAsk struct {
+	ChatMessage
+	Pressed time.Time
+}
+
 // ChatAsks are login's ask and poke rows on repository, every thread's,
-// oldest first: the rows about a card, whose state the settle rule
-// derives at read (the notification-settling concept).
-func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]ChatMessage, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT id, at, conversation, task_id, birth_kind, kind, content FROM chat_messages
-		WHERE repository = $1 AND login = $2 AND kind IN ($3, $4) AND task_id <> '' ORDER BY id`,
+// oldest first, with their choices: the rows about a card, whose state
+// the settle rule derives at read (the notification-settling concept).
+func (s *PGStore) ChatAsks(ctx context.Context, repository, login string) ([]ChatAsk, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT m.id, m.at, m.conversation, m.task_id, m.birth_kind, m.kind, m.content, m.choices,
+		CASE WHEN m.kind = $4 AND m.choices IS NOT NULL THEN (SELECT u.at FROM chat_messages u
+			WHERE u.repository = m.repository AND u.login = m.login AND u.conversation = m.conversation AND u.id > m.id
+				AND u.role = 'user' AND u.birth_kind = '' ORDER BY u.id LIMIT 1) END
+		FROM chat_messages m WHERE m.repository = $1 AND m.login = $2 AND m.kind IN ($3, $4) AND m.task_id <> '' ORDER BY m.id`,
 		repository, login, MessageEscalation, MessagePoke)
 	if err != nil {
 		return nil, err
 	}
 	defer rows.Close()
-	var out []ChatMessage
+	var out []ChatAsk
 	for rows.Next() {
-		var m ChatMessage
-		if err := rows.Scan(&m.ID, &m.At, &m.Conversation, &m.TaskID, &m.BirthKind, &m.Kind, &m.Content); err != nil {
+		var a ChatAsk
+		var choices []byte
+		var pressed sql.NullTime
+		if err := rows.Scan(&a.ID, &a.At, &a.Conversation, &a.TaskID, &a.BirthKind, &a.Kind, &a.Content, &choices, &pressed); err != nil {
 			return nil, err
 		}
-		out = append(out, m)
+		if len(choices) > 0 {
+			if err := json.Unmarshal(choices, &a.Choices); err != nil {
+				return nil, err
+			}
+		}
+		a.Pressed = pressed.Time
+		out = append(out, a)
 	}
 	return out, rows.Err()
 }

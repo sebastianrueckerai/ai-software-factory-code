@@ -2,7 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
+	"maps"
 	"slices"
 	"strings"
 	"testing"
@@ -734,6 +736,212 @@ func TestNoFlagInsideTheBound(t *testing.T) {
 	}
 }
 
+// planRig is the digest rig with t1410 a done plan task, p its revision
+// 1, and rows its plan_proofs rows.
+func planRig(t *testing.T, p Plan, rows ...PlanProof) digestRig {
+	t.Helper()
+	g := newDigestRig(func(c *Task) { c.Track, c.Status, c.PlanName = policy.TrackPlan, "done", "size-doors" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1410", mustJSON(p), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	g.store.proofs = map[string][]PlanProof{"t1410": rows}
+	return g
+}
+
+// jsonDetail is an event's detail as its row reads back: s decoded.
+func jsonDetail(t *testing.T, s string) map[string]any {
+	t.Helper()
+	var m map[string]any
+	if err := json.Unmarshal([]byte(s), &m); err != nil {
+		t.Fatalf("detail %s: %v", s, err)
+	}
+	return m
+}
+
+// proofRow is a criterion's row of state, its test's code beside it.
+func proofRow(idx int, id, state string) PlanProof {
+	return PlanProof{Idx: idx, Round: 1, ID: id, Criterion: id, Origin: ProofOriginCriterion, State: state, Path: "proofs/" + id + "/" + id + "_test.go",
+		Code: "package " + id}
+}
+
+// storedKeyLog is keyLog stored with its test.
+func storedKeyLog() PlanProof {
+	h := keyLog()
+	h.State, h.Path, h.Suite, h.Name, h.Code = ProofStored, "proofs/key_log/key_log_test.go", "./proofs/key_log", "TestKeyLog", "package key_log"
+	return h
+}
+
+func TestCardDigestShowsTheProversFilingsAndTheStore(t *testing.T) {
+	g := planRig(t, proverPlan(), proofRow(1, "size_bound", ProofStored), proofRow(2, "door", ProofStored), proofRow(3, "reads_calm", ProofStored),
+		storedKeyLog())
+	g.event(40, EventProofsFiled, FactoryDecider, jsonDetail(t, `{"prover": "t-prove", "filing": 1,
+		"proofs": [{"criterion": "size_bound", "path": "proofs/size_bound/size_bound_test.go", "suite": "./proofs/size_bound", "name": "TestSizeBound", "outcome": "red"},
+			{"criterion": "holdout-4", "outcome": "red"}],
+		"refusals": ["file_proofs: no proof for reads_calm", "file_proofs: no proof for door"]}`))
+	g.event(45, EventProofsFiled, FactoryDecider, jsonDetail(t, `{"prover": "t-prove", "filing": 2,
+		"proofs": [{"criterion": "size_bound", "path": "proofs/size_bound/size_bound_test.go", "suite": "./proofs/size_bound", "name": "TestSizeBound", "outcome": "red"},
+			{"criterion": "door", "path": "proofs/door/door_test.go", "suite": "./proofs/door", "name": "TestDoor", "outcome": "red"},
+			{"criterion": "reads_calm", "path": "proofs/reads_calm/reads_calm_test.go", "suite": "./proofs/reads_calm", "name": "TestReadsCalm", "outcome": "green"},
+			{"criterion": "holdout-4", "outcome": "red"}],
+		"refusals": []}`))
+	g.event(60, EventProofsStored, FactoryDecider, jsonDetail(t, `{"prover": "t-prove", "commit": "m0", "stored": ["size_bound", "door", "reads_calm", "holdout-4"],
+		"flagged": [{"criterion": "door", "flag": "green on main"}]}`))
+	d := g.digest(t)
+	want := []DigestStep{
+		{Kind: "proofs", Actor: "prover", Outcome: "filing 1: 2 red on main, 2 refused"},
+		{Kind: "proofs", Actor: "prover", Outcome: "filing 2: 3 red on main, 1 green on main"},
+		{Kind: "proofs", Actor: "factoryd", Outcome: "4 stored, 1 flagged green on main"},
+	}
+	if len(d.Steps) != 4 || d.Steps[0].Kind != "filed" {
+		t.Fatalf("Steps = %+v, want filed and three proofs steps", d.Steps)
+	}
+	for i, w := range want {
+		if s := d.Steps[i+1]; s.Kind != w.Kind || s.Actor != w.Actor || s.Outcome != w.Outcome {
+			t.Fatalf("step %d = %+v, want %+v", i+2, s, w)
+		}
+	}
+	render := d.Render()
+	for _, w := range []string{"#1410 · plan #1410 size-doors · proofs 4 of 4 stored · budget", "   2 +0:40   proofs by prover       → filing 1: 2 red on main, 2 refused\n",
+		"   4 +1:00   proofs by factoryd     → 4 stored, 1 flagged green on main\n"} {
+		if !strings.Contains(render, w) {
+			t.Fatalf("Render =\n%s\nwant it to hold %q", render, w)
+		}
+	}
+	// surfaces[n] is CardStep(n)
+	surfaces := []string{render}
+	for n := range len(d.Steps) {
+		got, err := g.r.CardStep(context.Background(), "t1410", n+1, "card", readPointer)
+		if err != nil {
+			t.Fatalf("CardStep(%d): %v", n+1, err)
+		}
+		surfaces = append(surfaces, got)
+	}
+	for n, wants := range map[int][]string{
+		2: {"\nprover t-prove, filing 1\n", "\nsize_bound red on main: TestSizeBound in ./proofs/size_bound at proofs/size_bound/size_bound_test.go\n",
+			"\nholdout-4 red on main\n", "\nrefused: file_proofs: no proof for reads_calm\n", "\nrefused: file_proofs: no proof for door\n"},
+		3: {"\nprover t-prove, filing 2\n", "\nreads_calm green on main: TestReadsCalm in ./proofs/reads_calm at proofs/reads_calm/reads_calm_test.go\n"},
+		4: {"\nprover t-prove at m0\n", "\nsize_bound stored\n", "\ndoor stored, flagged green on main\n", "\nholdout-4 stored\n"},
+	} {
+		for _, w := range wants {
+			if !strings.Contains(surfaces[n], w) {
+				t.Fatalf("CardStep(%d) =\n%s\nwant it to hold %q", n, surfaces[n], w)
+			}
+		}
+	}
+	if strings.Contains(surfaces[3], "refused:") || strings.Contains(surfaces[4], "{") {
+		t.Fatalf("CardStep(3) =\n%s\nCardStep(4) =\n%s\nwant no refusal in a clean filing and no raw detail", surfaces[3], surfaces[4])
+	}
+	for _, surface := range surfaces {
+		for _, hidden := range []string{"key_log", "Every key turn", "package "} {
+			if strings.Contains(surface, hidden) {
+				t.Fatalf("a digest surface holds %q:\n%s", hidden, surface)
+			}
+		}
+	}
+}
+
+// The head counts the due proofs whose row is stored or opened against all
+// the prover owes: a row the newest revision dropped, or a dropped
+// hold-out, is no proof owed.
+func TestCardDigestHeadCountsThePlansProofs(t *testing.T) {
+	dropped := keyLog()
+	dropped.Idx, dropped.ID, dropped.State = 5, "slow_door", ProofDropped
+	rows := []PlanProof{proofRow(1, "size_bound", ProofStored), proofRow(2, "door", ProofFiled), keyLog(), proofRow(6, "old_bound", ProofStored), dropped}
+	d := planRig(t, proverPlan(), rows...).digest(t)
+	if d.Head.ProofsStored != 1 || d.Head.ProofsWanted != 4 {
+		t.Fatalf("Head = %+v, want proofs 1 of 4", d.Head)
+	}
+	head, _, _ := strings.Cut(d.Render(), "\n")
+	if want := "#1410 · plan #1410 size-doors · proofs 1 of 4 stored · budget 5.00 spent 0.00 holds 0.00 EUR · done"; head != want {
+		t.Fatalf("head line = %q, want %q", head, want)
+	}
+	rows[1].State = ProofOpened
+	if h := planRig(t, proverPlan(), rows...).digest(t).Head; h.ProofsStored != 2 || h.ProofsWanted != 4 {
+		t.Fatalf("Head with door opened = %+v, want proofs 2 of 4", h)
+	}
+	// a stored hold-out the criterion reads_calm shadows is holdout-7's
+	// proof, not the criterion's
+	shadowed := storedKeyLog()
+	shadowed.Idx, shadowed.ID = 7, "reads_calm"
+	if h := planRig(t, proverPlan(), append(rows, shadowed)...).digest(t).Head; h.ProofsStored != 3 || h.ProofsWanted != 5 {
+		t.Fatalf("Head with a shadowed hold-out stored = %+v, want proofs 3 of 5", h)
+	}
+	g := newDigestRig(nil)
+	g.store.proofs = map[string][]PlanProof{"t1410": rows}
+	off := g.digest(t)
+	if head, _, _ := strings.Cut(off.Render(), "\n"); off.Head.ProofsWanted != 0 || strings.Contains(head, "proofs") {
+		t.Fatalf("a card off the plan track: Head = %+v, head line %q, want no proofs", off.Head, head)
+	}
+}
+
+// A plan's proofs are missing an hour after its prover is due, while no
+// row is stored: from its foundation card's end done, merged or not, or
+// from its first card's filing, at its confirmation, when it has no
+// foundation card; never from its revision. Once rows are stored, the flag
+// counts the proofs still owed. The proofs_stored event alone stores
+// nothing.
+func TestCardDigestFlagsAMissingProof(t *testing.T) {
+	foundation := func(key, status, merge string) func(g digestRig) {
+		return func(g digestRig) {
+			at := digestAt(0)
+			g.store.tasks["t1411"] = Task{ID: "t1411", Kind: "agent", Repository: "sf/app", IssueNumber: 1411, Source: SourcePlan, Parent: "t1410",
+				PlanKey: key, Status: status, MergeCommit: merge, FinishedAt: &at}
+		}
+	}
+	revised := func(g digestRig) { g.store.plans["t1410"][0].CreatedAt = digestAt(0) }
+	filed := func(m int) func(g digestRig) {
+		return func(g digestRig) {
+			g.store.tasks["t1412"] = Task{ID: "t1412", Kind: "agent", Repository: "sf/app", IssueNumber: 1412, Source: SourcePlan, Parent: "t1410",
+				PlanKey: "sizes", Status: "queued", CreatedAt: digestAt(m)}
+		}
+	}
+	stored := func(holdout PlanProof) func(g digestRig) {
+		return func(g digestRig) {
+			g.store.proofs["t1410"] = []PlanProof{proofRow(1, "size_bound", ProofStored), proofRow(2, "door", ProofStored), proofRow(3, "reads_calm", ProofStored), holdout}
+		}
+	}
+	noFoundation := proverPlan()
+	noFoundation.Cards = noFoundation.Cards[1:]
+	invariants := proverPlan()
+	invariants.Criteria = invariants.Criteria[3:]
+	for _, tc := range []struct {
+		name string
+		plan Plan
+		at   int
+		seed []func(g digestRig)
+		want []DigestFlag
+	}{
+		{"an hour and a minute after the merge", proverPlan(), 61, []func(digestRig){foundation("foundation", "done", "abc")}, []DigestFlag{{"proofs_missing", "1 hour"}}},
+		{"three hours and a minute after", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc")}, []DigestFlag{{"proofs_missing", "3 hours"}}},
+		{"exactly an hour after", proverPlan(), 60, []func(digestRig){foundation("foundation", "done", "abc")}, nil},
+		{"under an hour after", proverPlan(), 59, []func(digestRig){foundation("foundation", "done", "abc")}, nil},
+		{"a foundation done without a merge", proverPlan(), 61, []func(digestRig){foundation("foundation", "done", "")}, []DigestFlag{{"proofs_missing", "1 hour"}}},
+		{"every proof stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc"), stored(storedKeyLog())}, nil},
+		{"3 of 4 stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc"), stored(keyLog())},
+			[]DigestFlag{{"proofs_missing", "1 of 4 wanted proofs without a store"}}},
+		{"the store's event with no row stored", proverPlan(), 181, []func(digestRig){foundation("foundation", "done", "abc"), func(g digestRig) {
+			g.event(30, EventProofsStored, FactoryDecider, map[string]any{"prover": "t-prove", "commit": "m0", "stored": []any{"size_bound"}, "flagged": []any{}})
+		}}, []DigestFlag{{"proofs_missing", "3 hours"}}},
+		{"a foundation not done", proverPlan(), 181, []func(digestRig){foundation("foundation", "in-review", "")}, nil},
+		{"a plan with no foundation card, its first card filed 61 minutes ago", noFoundation, 181, []func(digestRig){revised, filed(120)},
+			[]DigestFlag{{"proofs_missing", "1 hour"}}},
+		{"a plan with no foundation card, its first card filed 59 minutes ago", noFoundation, 181, []func(digestRig){revised, filed(122)}, nil},
+		{"a plan with no foundation card and no card filed", noFoundation, 181, []func(digestRig){revised}, nil},
+		{"a plan that owes no proof", invariants, 181, []func(digestRig){foundation("foundation", "done", "abc")}, nil},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := planRig(t, tc.plan)
+			g.r.now = func() time.Time { return digestAt(tc.at) }
+			for _, seed := range tc.seed {
+				seed(g)
+			}
+			if got := g.digest(t).Flags; !slices.Equal(got, tc.want) {
+				t.Fatalf("Flags = %v, want %v", got, tc.want)
+			}
+		})
+	}
+}
+
 // Each row of the owned wait, read at a minute just past its bound where
 // the wait flags: the first row that holds, a failed merge's retry before
 // the gate it sits in, and a rung's step only on a card no earlier row
@@ -825,6 +1033,80 @@ func TestOwnedWaitTakesTheFirstRowThatHolds(t *testing.T) {
 			}
 			if !slices.Equal(d.Flags, tc.flags) {
 				t.Fatalf("Flags = %v, want %v", d.Flags, tc.flags)
+			}
+		})
+	}
+}
+
+func TestCardDigestFlagsAProofTheDryRunFlagged(t *testing.T) {
+	g := planRig(t, proverPlan())
+	g.event(30, EventProofsStored, FactoryDecider, jsonDetail(t, `{"prover": "t-prove", "commit": "m0", "stored": ["size_bound", "door", "reads_calm", "holdout-4"],
+		"flagged": [{"criterion": "door", "flag": "green on main"}, {"criterion": "holdout-4", "flag": "unrunnable"}]}`))
+	d := g.digest(t)
+	if len(d.Steps) != 2 {
+		t.Fatalf("Steps = %+v, want filed and the store", d.Steps)
+	}
+	if want := []DigestFlag{{"prover_refused_thrice", "door"}, {"prover_refused_thrice", "holdout-4"}}; !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want %v", d.Flags, want)
+	}
+	if got, want := d.Steps[1].Outcome, "4 stored, 1 flagged green on main, 1 flagged unrunnable"; got != want {
+		t.Fatalf("step 2 outcome = %q, want %q", got, want)
+	}
+	clean := planRig(t, proverPlan())
+	clean.event(30, EventProofsStored, FactoryDecider, jsonDetail(t, `{"prover": "t-prove", "commit": "m0", "stored": ["size_bound"], "flagged": []}`))
+	if d := clean.digest(t); len(d.Flags) != 0 || len(d.Steps) != 2 || d.Steps[1].Outcome != "1 stored" {
+		t.Fatalf("a store with no flag: Flags = %v, step 2 %+v, want none and 1 stored", d.Flags, d.Steps[1])
+	}
+}
+
+// A proofs event whose detail does not decode is a step that says so,
+// its filing's number kept, and its detail a line that says so too.
+func TestCardDigestReadsAnUnreadableProofsEvent(t *testing.T) {
+	g := planRig(t, proverPlan())
+	g.event(30, EventProofsFiled, FactoryDecider, map[string]any{"prover": "t-prove", "filing": 2, "proofs": "not a list"})
+	g.event(40, EventProofsStored, FactoryDecider, map[string]any{"prover": "t-prove", "stored": 4})
+	d := g.digest(t)
+	if len(d.Steps) != 3 {
+		t.Fatalf("Steps = %+v, want filed and the two proofs steps", d.Steps)
+	}
+	for i, want := range []string{"filing 2: unreadable detail", "unreadable detail"} {
+		if got := d.Steps[i+1].Outcome; got != want {
+			t.Fatalf("step %d outcome = %q, want %q", i+2, got, want)
+		}
+	}
+	for n := 2; n <= 3; n++ {
+		got, err := g.r.CardStep(context.Background(), "t1410", n, "card", readPointer)
+		if err != nil || !strings.Contains(got, "\nunreadable detail\n") {
+			t.Fatalf("CardStep(%d) = %q, %v; want the detail named unreadable", n, got, err)
+		}
+	}
+}
+
+// A report session records no attempt: the prover's reads by its role and
+// its model; a session without a role keeps the attempt.
+func TestCardDigestNamesTheProversSession(t *testing.T) {
+	for _, tc := range []struct {
+		name, want string
+		role       map[string]any
+	}{
+		{"the prover", "prover big", map[string]any{"role": "prover"}},
+		{"a session without a role", "0 big", map[string]any{}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.IssueNumber = SourceProver, "t-plan", 0 })
+			line := func(detail map[string]any) map[string]any { maps.Copy(detail, tc.role); return detail }
+			g.line(t, 1, "session_start", line(map[string]any{"session": "s-p", "model": "factory/big", "mode": "report"}))
+			g.line(t, 5, "session_end", line(map[string]any{"session": "s-p", "model": "factory/big", "mode": "report", "outcome": "reported",
+				"summary": "filed 4 proofs, filing 1", "started": rfc3339(digestAt(1))}))
+			d := g.digest(t)
+			if len(d.Steps) != 2 {
+				t.Fatalf("Steps = %+v, want filed and the session", d.Steps)
+			}
+			if s := d.Steps[1]; s.Kind != "session" || s.Actor != tc.want || s.Outcome != "reported" {
+				t.Fatalf("step 2 = %+v, want session %s, reported", s, tc.want)
+			}
+			if w := "session " + tc.want + " "; !strings.Contains(d.Render(), w) {
+				t.Fatalf("Render =\n%s\nwant it to hold %q", d.Render(), w)
 			}
 		})
 	}

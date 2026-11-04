@@ -42,6 +42,20 @@ func TestCardStepReturnsASessionsStepsForASessionLine(t *testing.T) {
 	}
 }
 
+// A prover's session step points at no transcript: it holds the plan's
+// blind proofs.
+func TestCardStepPointsAtNoTranscriptOfAProver(t *testing.T) {
+	g := newDigestRig(func(t *Task) { t.Source, t.Parent, t.IssueNumber = SourceProver, "t-plan", 0 })
+	id := g.session(t, 1, 5, 1, "reported")
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	if !strings.Contains(got, "session "+id+", 2 timeline lines:") || strings.Contains(got, "transcript:") {
+		t.Fatalf("CardStep =\n%s\nwant the session's lines and no transcript line", got)
+	}
+}
+
 func TestCardStepReturnsTheFivePartsAndTheAnswerForAnAskLine(t *testing.T) {
 	ctx := context.Background()
 	g := newDigestRig(nil)
@@ -255,5 +269,31 @@ func TestAskAnswerReadsTheRowsOfItsCase(t *testing.T) {
 		if got := askAnswer(tt.rows, tt.ask); got != tt.want {
 			t.Errorf("%s: askAnswer = %q, want %q", tt.name, got, tt.want)
 		}
+	}
+}
+
+// A filing's entry the timeline logs by its id alone, a criterion beside a
+// hold-out's path, reads so in the detail; an entry that names no
+// criterion reads as one; an outcome outside the three counts for none.
+func TestCardStepShowsAProofsEntryByItsIDAlone(t *testing.T) {
+	g := planRig(t, proverPlan())
+	g.event(40, EventProofsFiled, FactoryDecider, map[string]any{"prover": "t-prove", "filing": 1,
+		"proofs":   []map[string]any{{"criterion": "door", "outcome": "red"}, {"outcome": "invalid"}, {"criterion": "holdout-4", "outcome": "unrunnable"}},
+		"refusals": []string{"file_proofs: an entry names no criterion or hold-out of this plan"}})
+	d := g.digest(t)
+	if len(d.Steps) != 2 {
+		t.Fatalf("Steps = %+v, want filed and the filing", d.Steps)
+	}
+	if got, want := d.Steps[1].Outcome, "filing 1: 1 red on main, 1 unrunnable on main, 1 refused"; got != want {
+		t.Fatalf("step 2 outcome = %q, want %q", got, want)
+	}
+	got, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
+	if err != nil {
+		t.Fatalf("CardStep: %v", err)
+	}
+	want := "prover t-prove, filing 1\ndoor red on main\n(no criterion) invalid on main\nholdout-4 unrunnable on main\n" +
+		"refused: file_proofs: an entry names no criterion or hold-out of this plan\n"
+	if !strings.HasSuffix(got, "→ filing 1: 1 red on main, 1 unrunnable on main, 1 refused\n"+want) {
+		t.Fatalf("CardStep =\n%s\nwant it to end\n%s", got, want)
 	}
 }

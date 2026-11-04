@@ -30,7 +30,7 @@ import (
 
 // AgentDocLoopIDs are the loop's six modes.
 func AgentDocLoopIDs() []string {
-	return []string{"coding", "screening", "sizing", "planner", "holdout-audit", "message-responder"}
+	return []string{"coding", "screening", "sizing", "planner", "prover", "message-responder"}
 }
 
 // AgentDocOpencodeVersion names the pinned harness the loop's captures
@@ -64,6 +64,8 @@ func agentDocLoopClass(id string) string {
 		return "analyzer"
 	case "planner":
 		return "planner"
+	case "prover":
+		return policy.ClassProver
 	}
 	return "coder"
 }
@@ -108,25 +110,11 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 		b.Report = sizingGuide(sizeLines(v.Document.Risk.LargeLines))
 	case "planner":
 		b.Report = planGuide(policy.PlanShape{MinCards: 1, MaxCards: 20}, v.Document.Limits, nil, b.Tools)
-	case "holdout-audit":
-		b.Report = auditGuide(agentDocPlan(), agentDocLoopHoldout(),
-			"came back red: it wanted the skipped row counted, it got 0")
+	case "prover":
+		b.Report = proverGuide(agentDocPlan(), []PlanProof{{Idx: 1, ID: "h1", Origin: ProofOriginHoldout,
+			Claim: "The counter counts a row the query skips twice.", Inputs: "a table with two skipped rows", Expected: "a count of 2", State: ProofOkayed}}, nil)
 	}
 	return b
-}
-
-// agentDocLoopHoldout is the fixture plan's one hold-out as its audit
-// session reads it: red at the gate, the audit to say why.
-func agentDocLoopHoldout() Holdout {
-	return Holdout{
-		Idx: 1, Round: 1, ID: "h1", Origin: "the spec",
-		Criterion: "The counter counts a row the query skips.",
-		State:     "audit",
-		DryHead:   "main-0123abc", DryVerdict: "red", DryOutput: "the count was 0, want 1",
-		TestName: "TestCounterCountsSkippedRow",
-		TestCode: "package holdout\n\nimport \"testing\"\n\nfunc TestCounterCountsSkippedRow(t *testing.T) {\n" +
-			"\tif got := count([]row{{skip: true}}); got != 1 {\n\t\tt.Fatalf(\"count = %d, want 1\", got)\n\t}\n}\n",
-	}
 }
 
 // agentDocLoopSpans tiles the mode's brief — the session's first user
@@ -157,10 +145,10 @@ func agentDocLoopSpans(id string, b harness.TaskBrief, tag string) []agentdoc.Sp
 		guide = workGuide(b.Tools, b.Image)
 	} else {
 		symbol = map[string]string{
-			"screening":     "(*Runner).reportGuide",
-			"sizing":        "sizingGuide",
-			"planner":       "planGuide",
-			"holdout-audit": "auditGuide",
+			"screening": "(*Runner).reportGuide",
+			"sizing":    "sizingGuide",
+			"planner":   "planGuide",
+			"prover":    "proverGuide",
 		}[id]
 	}
 	s := []agentdoc.Span{
@@ -448,10 +436,10 @@ func agentDocLoopEnv() (func(), error) {
 
 // agentDocLoopModelAlias is the model the mode's session runs on, the
 // per-mode choice the runner makes: premium for the planner, big for
-// screening, small for the rest.
+// screening and the prover, small for the rest.
 func agentDocLoopModelAlias(id string) string {
 	switch id {
-	case "screening":
+	case "screening", "prover":
 		return "factory/" + policy.Big
 	case "planner":
 		return "factory/" + policy.Premium

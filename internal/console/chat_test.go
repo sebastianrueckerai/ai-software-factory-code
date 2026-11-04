@@ -777,14 +777,24 @@ func (f *fakeChat) ChatAttachmentByID(_ context.Context, repository string, id i
 	return factoryd.ChatAttachment{}, false, nil
 }
 
-func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatMessage, error) {
+func (f *fakeChat) ChatAsks(_ context.Context, repository, login string) ([]factoryd.ChatAsk, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	var out []factoryd.ChatMessage
-	for _, m := range f.msgs[repository+" "+login] {
-		if (m.Kind == factoryd.MessageEscalation || m.Kind == factoryd.MessagePoke) && m.TaskID != "" {
-			out = append(out, m)
+	var out []factoryd.ChatAsk
+	rows := f.msgs[repository+" "+login]
+	for i, m := range rows {
+		if (m.Kind != factoryd.MessageEscalation && m.Kind != factoryd.MessagePoke) || m.TaskID == "" {
+			continue
 		}
+		a := factoryd.ChatAsk{ChatMessage: m}
+		if m.Kind == factoryd.MessagePoke && len(m.Choices) > 0 {
+			if j := slices.IndexFunc(rows[i+1:], func(n factoryd.ChatMessage) bool {
+				return n.Conversation == m.Conversation && n.Role == "user" && n.BirthKind == ""
+			}); j >= 0 {
+				a.Pressed = rows[i+1+j].At
+			}
+		}
+		out = append(out, a)
 	}
 	return out, nil
 }

@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"slices"
 	"strings"
@@ -206,5 +207,49 @@ func TestBoardDigestReadsTheStoredQueueReason(t *testing.T) {
 		"caps:\n"+
 		"month 0.00 of 600.00 EUR · day 0.00 of 150.00 EUR · project 4.00 of 10.00 EUR\n"; !strings.HasSuffix(got, want) {
 		t.Fatalf("Render =\n%s\nwant it to end\n%s", got, want)
+	}
+}
+
+func TestBoardDigestPlanLineCountsTheProofs(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	g.card("t1440", 1440, "done", "", 1, child("k1440"))
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(proverPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	g.store.proofs = map[string][]PlanProof{"t1344": {proofRow(1, "size_bound", ProofStored), keyLog()}}
+	b := g.digest(t)
+	if len(b.Plans) != 1 || b.Plans[0].ProofsStored != 1 || b.Plans[0].ProofsWanted != 4 {
+		t.Fatalf("Plans = %+v, want one plan with proofs 1 of 4", b.Plans)
+	}
+	if want := "\nplans:\n#1344 session-metrics  done 1 · proofs 1 of 4 stored\ncaps:\n"; !strings.Contains(b.Render(), want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+}
+
+// A plan whose revision does not decode is one line that says so, and the
+// digest goes on, as it does past a card it cannot read. A store read
+// that fails is the digest's error.
+func TestBoardDigestNamesAnUnreadablePlan(t *testing.T) {
+	g := newBoardRig(policy.ProjectConfig{WorkInProgress: 3})
+	g.card("t1344", 1344, "done", "", 0, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "session-metrics" })
+	g.card("t1345", 1345, "done", "", 1, func(t *Task) { t.Track, t.PlanName = policy.TrackPlan, "door-keys" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(proverPlan()), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1345", json.RawMessage(`{"criteria": 5}`), "r2"); err != nil {
+		t.Fatal(err)
+	}
+	b, err := g.r.BoardDigest(context.Background(), "sf/app")
+	if err != nil {
+		t.Fatalf("BoardDigest: %v", err)
+	}
+	if want := "\nplans:\n#1344 session-metrics  no cards · proofs 0 of 3 stored\n#1345 door-keys  unreadable\ncaps:\n"; !strings.Contains(b.Render(), want) {
+		t.Fatalf("Render =\n%s\nwant it to hold\n%s", b.Render(), want)
+	}
+	// a store read that fails is the digest's error: a retry may read it
+	g.r.store = &proofsUnread{g.store}
+	if _, err := g.r.BoardDigest(context.Background(), "sf/app"); err == nil || !strings.Contains(err.Error(), "plan_proofs: connection reset") {
+		t.Fatalf("BoardDigest with the proofs unread = %v, want the read's error", err)
 	}
 }

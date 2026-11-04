@@ -439,7 +439,7 @@ func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error
 	switch {
 	case old.Track == policy.TrackPlan:
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is a plan: ask for changes to it, or replan it.", old.IssueNumber))
-	case old.Source == SourceScreening || old.Source == SourceSizing:
+	case old.Report():
 		return 0, ErrNoRetry(fmt.Sprintf("Task %s is the %s report of task %s, not a work card: retry that card if it failed.", old.ID, old.Source, old.Parent))
 	case old.Track != policy.TrackDirect || !(old.Source == SourcePlan && old.Parent != "" || slices.Contains([]string{"webhook", "api", SourceRoutine}, old.Source)):
 		return 0, ErrNoRetry(fmt.Sprintf("Card #%d is no work card of a person, a routine or a plan: file the work as a new card if it is still needed.", old.IssueNumber))

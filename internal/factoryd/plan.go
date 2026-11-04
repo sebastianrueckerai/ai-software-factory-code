@@ -113,19 +113,21 @@ type Spec struct {
 }
 
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
-// spec-intake concept, piece 1): kind test names its test, its inputs and
-// the numbers it expects, a test bash check runs; invariant names a suite
-// and carries nothing else; judgement names the claim a model judges, its
-// fixed inputs and the pinned prompt, and no test; human names the claim
-// only a person settles, with the evidence the approver will see. The
-// kind names the fields it uses, the rest stay empty.
+// spec-intake concept, piece 1), stated at the feature's surface and
+// naming no test: kind test names its claim, its inputs and the numbers
+// it expects; invariant names a suite, a package path whose tests stay
+// green, and carries nothing else; judgement names the claim a model
+// judges, in inputs what the artifact a test writes must show, and the
+// pinned prompt; human names the claim only a person settles, with the
+// evidence the approver will see. The kind names the fields it uses, the
+// rest stay empty.
 type PlanCriterion struct {
 	ID       string `json:"id"`
 	Kind     string `json:"kind"`
-	Test     string `json:"test,omitempty"`
+	Claim    string `json:"claim,omitempty"`
 	Inputs   string `json:"inputs,omitempty"`
 	Expected string `json:"expected,omitempty"`
-	Claim    string `json:"claim,omitempty"`
+	Suite    string `json:"suite,omitempty"`
 	Prompt   string `json:"prompt,omitempty"`
 	Evidence string `json:"evidence,omitempty"`
 	// Replaces names the id this criterion revises (piece 10): a changed
@@ -303,7 +305,11 @@ var (
 	cardKey   = regexp.MustCompile(`^[a-z][a-z0-9-]{1,31}$`)
 	// criterionID is a criterion id's shape: the concept's examples are
 	// snake_case (schedule_test), where card keys use dashes.
-	criterionID    = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
+	criterionID = regexp.MustCompile(`^[a-z][a-z0-9_]{1,31}$`)
+	// suitePath admits a suite bash check test runs: a package path, never
+	// a flag, whose first segment holds a dot only as the whole segment, so
+	// go test reads no ... or import path beyond the repository.
+	suitePath      = regexp.MustCompile(`^(\.|[A-Za-z0-9_][A-Za-z0-9_-]*)(/[A-Za-z0-9_./-]*)?$`)
 	roles          = []string{RoleFoundation, RoleFeature, RoleIntegration}
 	criterionKinds = []string{CriterionTest, CriterionInvariant, CriterionJudgement, CriterionHuman}
 	// deployLine is a spec's line asking for a deployment: "Deploy:" or
@@ -641,32 +647,37 @@ func criteriaFindings(p Plan, shape policy.PlanShape) []string {
 		}
 		switch c.Kind {
 		case CriterionTest:
-			if c.Test == "" || c.Inputs == "" || c.Expected == "" {
-				add("kind test names its test, its inputs and its expected numbers")
+			if c.Claim == "" || c.Inputs == "" || c.Expected == "" {
+				add("kind test names its claim, its inputs and its expected numbers")
 			}
-			if c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
-				add("kind test carries no claim, prompt or evidence")
+			if c.Suite != "" || c.Prompt != "" || c.Evidence != "" {
+				add("kind test carries no suite, prompt or evidence")
 			}
 		case CriterionInvariant:
-			if c.Test == "" {
+			switch {
+			case c.Suite == "":
 				add("kind invariant names its suite")
+			case slices.Contains(strings.Split(c.Suite, "/"), ".."):
+				add("suite %q: a package path inside the repository, with no .. segment", c.Suite)
+			case !suitePath.MatchString(c.Suite):
+				add("suite %q: a package path such as ./...", c.Suite)
 			}
 			if c.Inputs != "" || c.Expected != "" || c.Claim != "" || c.Prompt != "" || c.Evidence != "" {
 				add("kind invariant carries no inputs, expected numbers, claim, prompt or evidence")
 			}
 		case CriterionJudgement:
 			if c.Claim == "" || c.Inputs == "" || c.Prompt == "" {
-				add("kind judgement names its claim, its fixed inputs and its pinned prompt")
+				add("kind judgement names its claim, the inputs its artifact shows and its pinned prompt")
 			}
-			if c.Test != "" || c.Expected != "" || c.Evidence != "" {
-				add("kind judgement carries no test, expected numbers or evidence")
+			if c.Suite != "" || c.Expected != "" || c.Evidence != "" {
+				add("kind judgement carries no suite, expected numbers or evidence")
 			}
 		case CriterionHuman:
 			if c.Claim == "" || c.Evidence == "" {
 				add("kind human names its claim and the evidence the approver sees")
 			}
-			if c.Test != "" || c.Inputs != "" || c.Expected != "" || c.Prompt != "" {
-				add("kind human carries no test, inputs, expected numbers or prompt")
+			if c.Suite != "" || c.Inputs != "" || c.Expected != "" || c.Prompt != "" {
+				add("kind human carries no suite, inputs, expected numbers or prompt")
 			}
 		}
 	}
@@ -1035,7 +1046,7 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		if c.Round != p.Round {
 			continue
 		}
-		fmt.Fprintf(&b, "\n<details><summary>%s: %s</summary>\n\n%s\n\n%s</details>\n", cell(c.Key), cell(c.Title), strings.TrimSpace(c.Brief), cardFacts(c))
+		fmt.Fprintf(&b, "\n<details><summary>%s: %s</summary>\n\n%s\n\n%s</details>\n", cell(c.Key), cell(c.Title), strings.TrimSpace(c.Brief), cardFacts(c, p.Criteria))
 	}
 	return b.String()
 }
@@ -1053,7 +1064,7 @@ func QuestionLine(n int, q PlanQuestion) string {
 }
 
 // criterionNames is what criterion c names, the fields its kind uses
-// joined with ": ": the test, the inputs and the expected numbers for a
+// joined with ": ": the claim, the inputs and the expected numbers for a
 // test, the suite for an invariant, the claim for a judgement or a human
 // criterion.
 func criterionNames(c PlanCriterion) string {
@@ -1068,26 +1079,34 @@ func criterionNames(c PlanCriterion) string {
 	}
 	switch c.Kind {
 	case CriterionTest:
-		return join(c.Test, c.Inputs, c.Expected)
+		return join(c.Claim, c.Inputs, c.Expected)
 	case CriterionInvariant:
-		return c.Test
+		return c.Suite
 	case CriterionJudgement, CriterionHuman:
 		return c.Claim
 	}
-	return join(c.Test, c.Inputs, c.Expected, c.Claim, c.Prompt, c.Evidence)
+	return join(c.Claim, c.Inputs, c.Expected, c.Suite, c.Prompt, c.Evidence)
 }
 
 // cardDirectories keys a plan card's directories line.
 const cardDirectories = "Directories (guidance, not a boundary)"
 
-// cardFacts are a card's directories, acceptance tests and size as its
-// issue and the plan comment list them.
-func cardFacts(c PlanCard) string {
+// cardFacts are a card's directories, acceptance tests, each criterion
+// of criteria its items cite, in full, and size, as its issue and the
+// plan comment list them.
+func cardFacts(c PlanCard, criteria []PlanCriterion) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s: %s\n", cardDirectories, cmp.Or(strings.Join(c.Directories, ", "), "none"))
 	b.WriteString("Acceptance:\n")
 	for _, it := range c.Acceptance {
 		fmt.Fprintf(&b, "- %s\n", itemText(it))
+	}
+	head := "Criteria the items cite:\n"
+	for _, k := range criteria {
+		if slices.ContainsFunc(c.Acceptance, func(it PlanItem) bool { return it.Criterion == k.ID }) {
+			fmt.Fprintf(&b, "%s- %s (%s): %s\n", head, k.ID, k.Kind, criterionNames(k))
+			head = ""
+		}
 	}
 	fmt.Fprintf(&b, "Size: %s\n", c.Size)
 	if c.Rung != "" {
@@ -1098,11 +1117,12 @@ func cardFacts(c PlanCard) string {
 
 // cardBody is card c's issue body before its marker: card i of n of of
 // (plan #n), filed for author, with the issues of the cards it depends on
-// (deps, their keys by issue; a card not filed yet by its key alone), and
-// start, the line on the old card's work it starts from, after the facts
-// ("" for none). The integration card carries the plan's spec (piece 7:
-// its brief already does), spec the rendered spec block or "".
-func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency, spec, start string) string {
+// (deps, their keys by issue; a card not filed yet by its key alone), the
+// plan's criteria its items cite, and start, the line on the old card's
+// work it starts from, after the facts ("" for none). The integration
+// card carries the plan's spec (piece 7: its brief already does), spec
+// the rendered spec block or "".
+func cardBody(c PlanCard, criteria []PlanCriterion, of string, i, n int, author string, deps []Dependency, spec, start string) string {
 	on := make([]string, 0, len(deps))
 	for _, d := range deps {
 		if d.Issue == 0 {
@@ -1111,7 +1131,7 @@ func cardBody(c PlanCard, of string, i, n int, author string, deps []Dependency,
 		}
 		on = append(on, fmt.Sprintf("#%d (%s)", d.Issue, d.Key))
 	}
-	directories, facts, _ := strings.Cut(cardFacts(c), "\n")
+	directories, facts, _ := strings.Cut(cardFacts(c, criteria), "\n")
 	body := fmt.Sprintf("Card %s of %s (%d of %d), filed for %s. Written by the planner.\n\n%s\n\n%s\nDepends on: %s\n%s",
 		c.Key, of, i, n, author, strings.TrimSpace(c.Brief), directories, cmp.Or(strings.Join(on, ", "), "none"), strings.TrimSuffix(facts, "\n"))
 	if start != "" {
@@ -1173,7 +1193,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"Split the work into the cards of a plan. " +
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
-		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "test": "...", "inputs": "...", "expected": "...", "claim": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
+		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
 		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
@@ -1182,10 +1202,12 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"The merged cards of earlier rounds are not in your last plan. " +
 		"When the criteria fall into two sets whose cards share nothing" + butFoundation + ", you may ask in a question whether they should be two plans. " +
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
-		"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
-		"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
-		"kind invariant names its suite as go test <suite> passes, for example go test ./..., and carries no inputs; " +
-		"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
+		"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
+		"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
+		"kind test names its claim, its inputs and the numbers it expects, and no test: a separate session writes its test, which runs in the sandbox bash check runs, " +
+		"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
+		"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
+		"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
 		"kind human names a claim only a person settles, with the evidence the approver will see. " +
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item. " +
 		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it, unless it merged), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
@@ -1216,7 +1238,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 	}
 	return g + "title and brief: markdown, what to build and how it is checked. " +
 		"directories: paths relative to the repository's root, guidance for the card's agent; " +
-		"acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none. " +
+		"acceptance: each item what the card's tests prove, with the inputs and the numbers they expect, citing the criterion it works on; the foundation's items need cite none. " +
 		"size: small, medium or large; anything bigger is two cards. " +
 		"Attack your own draft once before you file: reread the spec, the criteria and the cards for contradictions, ambiguity and missing edge cases, " +
 		"and turn each finding into a question with origin self_attack. " +
@@ -1332,7 +1354,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		return err
 	}
 	if confirming {
-		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+		if open, err := store.UndecidedProofs(ctx, taskID, revision); err != nil || open > 0 {
 			if err == nil {
 				err = ErrHoldoutsOpen
 			}
@@ -1343,7 +1365,7 @@ func AnswerPlan(ctx context.Context, store Store, wf Workflows, taskID string, r
 		return err
 	}
 	if confirming {
-		if err := store.SweepPlanHoldouts(ctx, taskID); err != nil {
+		if err := store.SweepPlanProofs(ctx, taskID); err != nil {
 			return err
 		}
 	}
@@ -1424,7 +1446,7 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 	}
 	confirming := hasConfirm && slices.ContainsFunc(answers, func(a PlanAnswer) bool { return a.Idx == ci })
 	if confirming {
-		if open, err := store.UndecidedHoldouts(ctx, taskID, revision); err != nil || open > 0 {
+		if open, err := store.UndecidedProofs(ctx, taskID, revision); err != nil || open > 0 {
 			if err == nil {
 				err = ErrHoldoutsOpen
 			}
@@ -1435,7 +1457,7 @@ func storePlanAnswers(ctx context.Context, store Store, taskID string, revision 
 		return err
 	}
 	if confirming {
-		return store.SweepPlanHoldouts(ctx, taskID)
+		return store.SweepPlanProofs(ctx, taskID)
 	}
 	return nil
 }
@@ -2726,7 +2748,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		return PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate}, nil
 	}
 	if st.newest != nil {
-		found = revisionFindings(*st.newest, p)
+		revisions, err := r.planRevisions(ctx, taskID, st.revision, st.read)
+		if err != nil {
+			return PlanResult{}, err
+		}
+		found = revisionFindings(revisions, p)
 	}
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
@@ -2770,28 +2796,56 @@ func (r *Runner) namePlan(ctx context.Context, t Task, p Plan) {
 	r.Namer.Name(ctx, t, TitleClause(t.Objective), outcome, p.Summary)
 }
 
-// revisionFindings judges an amendment against the revision it changes
-// (piece 10): an id never changes meaning, so a changed criterion files
-// under a new id that names the old one in replaces. A removed
+// planRevisions are plan task id's revisions 1 to n, revision i at
+// index i-1, each read from the store unless read holds it already; a
+// revision the store does not hold is an empty plan.
+func (r *Runner) planRevisions(ctx context.Context, id string, n int, read map[int]*Plan) ([]Plan, error) {
+	out := make([]Plan, n)
+	for i := range out {
+		p, held := read[i+1]
+		if !held {
+			var err error
+			if p, _, err = r.planAt(ctx, id, i+1); err != nil {
+				return nil, err
+			}
+		}
+		if p != nil {
+			out[i] = *p
+		}
+	}
+	return out, nil
+}
+
+// revisionFindings judges an amendment against the plan's revisions,
+// revision i at index i-1, the last the one it changes (piece 10): an id
+// never changes meaning, in any revision, so a changed criterion files
+// under a new id that names the old one in replaces, and an id an earlier
+// revision dropped comes back only with its old definition. A removed
 // criterion's citation goes with it; the coverage rules carry that.
-func revisionFindings(old, next Plan) []string {
-	prev := map[string]PlanCriterion{}
-	for _, c := range old.Criteria {
-		prev[c.ID] = c
+func revisionFindings(revisions []Plan, next Plan) []string {
+	prev := map[string]bool{}
+	if len(revisions) > 0 {
+		for _, c := range revisions[len(revisions)-1].Criteria {
+			prev[c.ID] = true
+		}
 	}
 	var found []string
 	for _, c := range next.Criteria {
-		o, held := prev[c.ID]
-		if held && c != o {
-			found = append(found, "criterion "+c.ID+": the previous revision holds this id with another definition; a changed criterion files under a new id")
+		known := false
+		for i := len(revisions) - 1; i >= 0; i-- {
+			if slices.ContainsFunc(revisions[i].Criteria, func(e PlanCriterion) bool { return e.ID == c.ID && e != c }) {
+				found = append(found, fmt.Sprintf("criterion %s: revision %d holds this id with another definition; a changed criterion files under a new id", c.ID, i+1))
+				break
+			}
+			known = known || slices.Contains(revisions[i].Criteria, c)
 		}
-		// a criterion the previous revision holds with this definition
+		// a criterion an earlier revision holds with this definition
 		// carries its replaces marker as history, not as a replacement
 		// it is making now
-		if c.Replaces == "" || (held && c == o) {
+		if c.Replaces == "" || known {
 			continue
 		}
-		if _, ok := prev[c.Replaces]; !ok {
+		if !prev[c.Replaces] {
 			found = append(found, "criterion "+c.ID+": replaces "+c.Replaces+", an id the previous revision does not hold")
 		}
 	}
@@ -2812,7 +2866,7 @@ func (r *Runner) recordCriteria(ctx context.Context, taskID string, revision int
 }
 
 // criteriaDelta is what next does to old's criteria, sorted: "<id>
-// added", "<id> replaces <old>" and "<id> removed".
+// added", "<id> replaces <old>" for an id old holds, and "<id> removed".
 func criteriaDelta(old, next Plan) []string {
 	prev := map[string]bool{}
 	for _, c := range old.Criteria {
@@ -2826,7 +2880,7 @@ func criteriaDelta(old, next Plan) []string {
 	for _, c := range next.Criteria {
 		switch {
 		case prev[c.ID]:
-		case c.Replaces != "":
+		case c.Replaces != "" && prev[c.Replaces]:
 			details = append(details, c.ID+" replaces "+c.Replaces)
 		default:
 			details = append(details, c.ID+" added")
@@ -2925,7 +2979,7 @@ func (r *Runner) restartChildren(ctx context.Context, t Task, repo Repo, revisio
 				start = workLine(from)
 			}
 		}
-		body := r.untrusted(t, cardBody(c, of, place[c.Key], len(order), k.Author, deps, spec, start))
+		body := r.untrusted(t, cardBody(c, p.Criteria, of, place[c.Key], len(order), k.Author, deps, spec, start))
 		if err := r.store.UpdatePlanCardBrief(ctx, k.ID, Task{Objective: r.untrusted(t, c.Title) + "\n\n" + body, Image: c.Image, Rung: c.Rung, Size: c.Size}); err != nil {
 			log.Printf("card %s: the plan's revision %d rebriefs it: %v", k.ID, revision, err)
 		}
@@ -3008,9 +3062,9 @@ func (r *Runner) RequestPlan(ctx context.Context, taskID string, revision int, p
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
 		return PlanRef{}, terminalError("task %s: plan revision %d: %v", taskID, rev.Revision, err)
 	}
-	// the round's hold-outs are drafted before a question is stored, a
-	// review model call and dry runs of minutes: the questions, the
-	// confirmation and the zone then reach Needs you as the plan waits
+	// the round's hold-outs are proposed before a question is stored, a
+	// review model call: the questions, the confirmation and the zone then
+	// reach Needs you as the plan waits
 	if confirm, _, err := r.confirms(ctx, t, p); err != nil {
 		return PlanRef{}, err
 	} else if confirm {
@@ -3549,7 +3603,7 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 				base, start = from.SHA, workLine(from)
 			}
 		}
-		body := r.untrusted(t, cardBody(c, of, i+1, len(order), approver, deps, spec, start))
+		body := r.untrusted(t, cardBody(c, p.Criteria, of, i+1, len(order), approver, deps, spec, start))
 		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,

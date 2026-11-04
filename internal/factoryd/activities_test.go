@@ -2478,6 +2478,32 @@ func TestEscalateQuotesTheLastToolRefusal(t *testing.T) {
 	}
 }
 
+// A prover's ask is factoryd's words alone: its last refused file_proofs
+// call names a hold-out's id and path, which reach no ask.
+func TestEscalateOfAProverQuotesNoRefusal(t *testing.T) {
+	const refusal = `file_proofs: size_bound_escape: path "proofs/escape/escape_test.go" is size_bound's too`
+	task := Task{ID: "t1", Status: "running", Objective: "size the doors", Repository: "sf/repo", SHA: "m0", Parent: "t-plan",
+		Source: SourceProver, Track: policy.TrackDirect, Kind: "agent", RequiredCapabilities: []string{policy.ClassProver}}
+	r, store, objects := newActivityRunner(t, task, &prForgejo{})
+	ctx := context.Background()
+	if err := store.InsertSession(ctx, Session{ID: "s1", TaskID: "t1"}); err != nil {
+		t.Fatal(err)
+	}
+	transcript := `{"time":"2026-11-04T01:41:00Z","kind":"tool_call","detail":{"tool":"file_proofs","status":"error","error":` + strconv.Quote(refusal) + `}}`
+	if err := objects.Put(ctx, "sessions/t1/s1.jsonl", []byte(transcript)); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := execActivity(t, r, ActivityEscalate, "t1", providerRefused+"3 sessions in a row (status 400): the request was refused"); err != nil {
+		t.Fatal(err)
+	}
+	ask := string(mustJSON(store.intakeEvents[0]))
+	for _, hidden := range []string{"size_bound_escape", "proofs/escape", "file_proofs", "was refused:"} {
+		if strings.Contains(ask, hidden) {
+			t.Fatalf("the prover's ask holds %q: %s", hidden, ask)
+		}
+	}
+}
+
 // A SigNoz alert's verdict comes with its task's end (Task 70): real on a
 // merge, noise when a human closed the issue without one, unjudged
 // otherwise; another task's alert and a judged one stay as they are.

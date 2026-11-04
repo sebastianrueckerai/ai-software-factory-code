@@ -894,6 +894,23 @@ Next: the tests.</p></div>
 	}
 }
 
+// A prover's Chat tab shows no transcript: the drawer names why, and none
+// of the session's model text, which holds the plan's blind proofs.
+func TestDrawerChatShowsNoProversTranscript(t *testing.T) {
+	r, ck := drawerRig(t)
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-prove", Kind: "agent", Status: "running",
+		Source: factoryd.SourceProver, Parent: "t-plan", Track: policy.TrackDirect, Repository: "sf/code"}})
+	r.objects["sessions/t-prove/timeline.jsonl"] = []byte(`{"time":"2026-10-11T10:00:00Z","step":"session_start","session":"s-1","model":"big","attempt":1,"role":"prover"}
+`)
+	r.objects["sessions/t-prove/s-1.jsonl"] = []byte(`{"time":"2026-10-11T10:01:00Z","kind":"model_call","detail":{"text":"package key_log\n\nfunc TestKeyLog(t *testing.T) {}"}}
+`)
+	got := drawer(t, r, ck, "t-prove", "chat")
+	if !strings.Contains(got, `<p class="problem" role="alert">Task t-prove is plan t-plan&#39;s prover: its sessions hold the plan&#39;s blind proofs, which no read outside the prover shows.</p>`) ||
+		strings.Contains(got, "key_log") || strings.Contains(got, `class="msg agent"`) {
+		t.Fatalf("the prover's chat tab:\n%s", got)
+	}
+}
+
 // A steer from the drawer is the member's own act, so no proposal: the
 // steer function at once, its row with the text, and the Chat tab again
 // with the message in it and no note; a GitHub token in it

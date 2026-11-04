@@ -322,7 +322,7 @@ func (s *acceptTasks) PlanQuestions(_ context.Context, _ string, _ int) ([]facto
 	return nil, nil
 }
 
-func (s *acceptTasks) PlanHoldouts(_ context.Context, _ string) ([]factoryd.Holdout, error) {
+func (s *acceptTasks) PlanProofs(_ context.Context, _ string) ([]factoryd.PlanProof, error) {
 	return nil, nil
 }
 
@@ -847,7 +847,7 @@ func (f *acceptChat) SideConversation(_ context.Context, repository, login, _ st
 	return highest + 1, nil
 }
 
-func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatMessage, error) {
+func (f *acceptChat) ChatAsks(context.Context, string, string) ([]factoryd.ChatAsk, error) {
 	return nil, nil
 }
 

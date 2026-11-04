@@ -52,9 +52,9 @@ func testPlan() Plan {
 	return Plan{Spec: &Spec{Outcome: "A link shortener: links with slugs that redirect and count clicks.",
 		Glossary: []string{"slug: the short key a link gets", "click: one redirect served"}},
 		Summary: "The foundation first, then links and redirects, then the acceptance tests.", Criteria: []PlanCriterion{
-			{ID: "links_crud", Kind: CriterionTest, Test: "TestCreateLink in internal/links", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store"},
-			{ID: "redirect_302", Kind: CriterionTest, Test: "TestRedirect in internal/links", Inputs: "GET /abc", Expected: "302"},
-			{ID: "all_green", Kind: CriterionInvariant, Test: "go test ./... passes"},
+			{ID: "links_crud", Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store"},
+			{ID: "redirect_302", Kind: CriterionTest, Claim: "a slug redirects", Inputs: "GET /abc", Expected: "302"},
+			{ID: "all_green", Kind: CriterionInvariant, Suite: "./..."},
 		}, Cards: []PlanCard{
 			{Key: "foundation", Role: RoleFoundation, Title: "Foundation: layout, contract, schema", Brief: "Lay out cmd/server, the store and one end-to-end test.",
 				Directories: []string{"cmd/server", "internal/"}, Acceptance: []PlanItem{{Criterion: "all_green", Text: "go test ./... passes with TestEndToEndHealth"}}, Size: "medium"},
@@ -217,24 +217,43 @@ func TestValidatePlan(t *testing.T) {
 		// findings listed.
 		"no criteria": {change(func(p *Plan) { p.Criteria = nil }), []string{"plan: 0 criteria; want 1 to 10"}},
 		"criterion id": {change(func(p *Plan) {
-			p.Criteria = append(p.Criteria, PlanCriterion{ID: "Links API", Kind: CriterionInvariant, Test: "go test ./... passes"})
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "Links API", Kind: CriterionInvariant, Suite: "./..."})
 			p.Cards[1].Acceptance = append(p.Cards[1].Acceptance, PlanItem{Criterion: "Links API", Text: "x"})
 			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "Links API", Text: "x"})
 		}), []string{`plan: criterion 4: id "Links API": lowercase letters, digits and underscores, 2 to 32`}},
 		"criterion id twice": {change(func(p *Plan) { p.Criteria = append(p.Criteria, p.Criteria[0]) }), []string{"plan: criterion id links_crud is used twice"}},
 		"criterion kind": {change(func(p *Plan) {
-			p.Criteria = append(p.Criteria, PlanCriterion{ID: "perf_test", Kind: "perf", Test: "t", Inputs: "i", Expected: "e"})
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "perf_test", Kind: "perf", Claim: "c", Inputs: "i", Expected: "e"})
 			p.Cards[1].Acceptance = append(p.Cards[1].Acceptance, PlanItem{Criterion: "perf_test", Text: "x"})
 			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "perf_test", Text: "x"})
 		}), []string{`plan: criterion perf_test: kind "perf", want one of [test invariant judgement human]`}},
-		"test incomplete":    {change(func(p *Plan) { p.Criteria[0].Inputs = "" }), []string{"plan: criterion links_crud: kind test names its test, its inputs and its expected numbers"}},
-		"test overfull":      {change(func(p *Plan) { p.Criteria[0].Claim = "x" }), []string{"plan: criterion links_crud: kind test carries no claim, prompt or evidence"}},
-		"invariant overfull": {change(func(p *Plan) { p.Criteria[2].Expected = "no failures" }), []string{"plan: criterion all_green: kind invariant carries no inputs, expected numbers, claim, prompt or evidence"}},
+		"test incomplete":      {change(func(p *Plan) { p.Criteria[0].Expected = "" }), []string{"plan: criterion links_crud: kind test names its claim, its inputs and its expected numbers"}},
+		"test overfull":        {change(func(p *Plan) { p.Criteria[0].Suite = "./..." }), []string{"plan: criterion links_crud: kind test carries no suite, prompt or evidence"}},
+		"invariant incomplete": {change(func(p *Plan) { p.Criteria[2].Suite = "" }), []string{"plan: criterion all_green: kind invariant names its suite"}},
+		"invariant suite":      {change(func(p *Plan) { p.Criteria[2].Suite = "go test ./... passes" }), []string{`plan: criterion all_green: suite "go test ./... passes": a package path such as ./...`}},
+		"invariant flag":       {change(func(p *Plan) { p.Criteria[2].Suite = "-race" }), []string{`plan: criterion all_green: suite "-race": a package path such as ./...`}},
+		"invariant outside":    {change(func(p *Plan) { p.Criteria[2].Suite = "../proofs" }), []string{`plan: criterion all_green: suite "../proofs": a package path inside the repository, with no .. segment`}},
+		"invariant dots":       {change(func(p *Plan) { p.Criteria[2].Suite = "..." }), []string{`plan: criterion all_green: suite "...": a package path such as ./...`}},
+		"invariant import":     {change(func(p *Plan) { p.Criteria[2].Suite = "a.b/c" }), []string{`plan: criterion all_green: suite "a.b/c": a package path such as ./...`}},
+		"invariant overfull":   {change(func(p *Plan) { p.Criteria[2].Expected = "no failures" }), []string{"plan: criterion all_green: kind invariant carries no inputs, expected numbers, claim, prompt or evidence"}},
 		"judgement incomplete": {change(func(p *Plan) {
 			p.Criteria = append(p.Criteria, PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the chat reads calm", Inputs: "the seeded issues"})
 			p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "reads_calm", Text: "the chat reads calm"})
 			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "reads_calm", Text: "the chat reads calm"})
-		}), []string{"plan: criterion reads_calm: kind judgement names its claim, its fixed inputs and its pinned prompt"}},
+		}), []string{"plan: criterion reads_calm: kind judgement names its claim, the inputs its artifact shows and its pinned prompt"}},
+		"judgement overfull": {change(func(p *Plan) {
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "reads_calm", Kind: CriterionJudgement, Claim: "the chat reads calm", Inputs: "the seeded issues",
+				Prompt: "Does the chat read calm?", Suite: "./..."})
+			p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "reads_calm", Text: "the chat reads calm"})
+			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "reads_calm", Text: "the chat reads calm"})
+		}), []string{"plan: criterion reads_calm: kind judgement carries no suite, expected numbers or evidence"}},
+		"human overfull": {change(func(p *Plan) {
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "pages_ok", Kind: CriterionHuman, Claim: "the pages read well", Evidence: "the pages", Suite: "./..."})
+			p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the pages read well"})
+			p.Cards[3].Acceptance = append(p.Cards[3].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the pages read well"})
+		}), []string{"plan: criterion pages_ok: kind human carries no suite, inputs, expected numbers or prompt"}},
+		"old test field": {"```json\n{\"summary\": \"s\", \"cards\": [], \"criteria\": [{\"id\": \"a\", \"kind\": \"test\", \"test\": \"TestA in ./a\"}]}\n```",
+			[]string{`plan: json: unknown field "test"`}},
 		"human incomplete": {change(func(p *Plan) {
 			p.Criteria = append(p.Criteria, PlanCriterion{ID: "member_ok", Kind: CriterionHuman, Claim: "a member can file a card"})
 			p.Cards[2].Acceptance = append(p.Cards[2].Acceptance, PlanItem{Criterion: "member_ok", Text: "a member can file a card"})
@@ -272,7 +291,7 @@ func TestValidatePlanRounds(t *testing.T) {
 	contracts := func(key string) PlanCard {
 		return PlanCard{Key: key, Role: RoleFoundation, Title: "Contracts", Brief: "The stats contract.", Acceptance: []PlanItem{{Text: "x"}}, Size: "small", Round: 2}
 	}
-	statsPage := PlanCriterion{ID: "stats_page", Kind: CriterionTest, Test: "TestStatsPage in web", Inputs: "GET /links/abc", Expected: "the page shows 2 clicks"}
+	statsPage := PlanCriterion{ID: "stats_page", Kind: CriterionTest, Claim: "a link's page shows its clicks", Inputs: "GET /links/abc", Expected: "the page shows 2 clicks"}
 	change := func(p Plan, edit func(p *Plan)) Plan {
 		edit(&p)
 		return p
@@ -386,11 +405,22 @@ func TestValidatePlanOutline(t *testing.T) {
 // wants at least one criterion too; a shape without an integration card
 // refuses only the overrun. Every extra criterion is complete but
 // uncited, so the count is the first finding either way.
+// A suite's first segment holds a dot only as the whole segment: go test
+// reads ... as every package it knows and a.b/c as an import path, both
+// beyond the repository.
+func TestSuitePathTakesADotOnlyAsTheFirstSegment(t *testing.T) {
+	for suite, want := range map[string]bool{"./...": true, "./internal/...": true, "internal/x": true, "...": false, "a.b/c": false, ".x/y": false} {
+		if got := suitePath.MatchString(suite); got != want {
+			t.Errorf("suitePath(%q) = %v, want %v", suite, got, want)
+		}
+	}
+}
+
 func TestValidatePlanCapsCriteriaAtTen(t *testing.T) {
 	at := func(n int) Plan {
 		p := testPlan()
 		for i := range n - 3 {
-			p.Criteria = append(p.Criteria, PlanCriterion{ID: "extra_" + strconv.Itoa(i), Kind: CriterionTest, Test: "t", Inputs: "i", Expected: "e"})
+			p.Criteria = append(p.Criteria, PlanCriterion{ID: "extra_" + strconv.Itoa(i), Kind: CriterionTest, Claim: "c", Inputs: "i", Expected: "e"})
 		}
 		return p
 	}
@@ -522,12 +552,12 @@ func TestPlanGuideSizes(t *testing.T) {
 	}
 }
 
-// stage12-design 5.2: acceptance items are named tests, not free text
-// readPlan cannot check for. The count bound is readPlan's
-// finding, not the prose (roadmap 186). The item cites the criterion it
-// works on (the spec-intake concept, piece 2).
+// An acceptance item says what the card's tests prove, with their inputs
+// and numbers; it names no test. The count bound is readPlan's finding,
+// not the prose (roadmap 186). The item cites the criterion it works on
+// (the spec-intake concept, piece 2).
 func TestPlanGuideAcceptanceRule(t *testing.T) {
-	want := "acceptance: each item a test by name: TestXxx in <package>, its inputs and the numbers it expects, citing the criterion it works on; the foundation's items need cite none."
+	want := "acceptance: each item what the card's tests prove, with the inputs and the numbers they expect, citing the criterion it works on; the foundation's items need cite none."
 	if got := planGuide(testShape, testLimits, nil, nil); !strings.Contains(got, want) {
 		t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 	}
@@ -535,18 +565,20 @@ func TestPlanGuideAcceptanceRule(t *testing.T) {
 
 // The spec-intake concept (pieces 1 and 2, roadmap 285): the guide
 // dictates the criteria block's json shape, the kinds' field rules, the
-// citation rule, and the integration card's one item per criterion.
+// citation rule, and the integration card's one item per criterion. A
+// criterion names no test: a separate session writes it.
 func TestPlanGuideCriteria(t *testing.T) {
 	got := planGuide(testShape, testLimits, nil, nil)
 	for _, want := range []string{
-		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human"`,
+		`"criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}]`,
 		`"acceptance": [{"criterion": "...", "text": "..."}]`,
 		"criteria: the spec's proof, one object per criterion: the issue's criteria list when it carries one, else drafted by you from the spec's acceptance tests. " +
-			"Each criterion has an id in snake_case and a kind naming the fields it uses: " +
-			"kind test names its test as TestXxx in <package>, a test bash check runs in-process, against in-process fakes: " +
-			"no browser, no external database, no device; a want beyond the sandbox becomes a human criterion or waits as a note; " +
-			"kind invariant names its suite as go test <suite> passes, for example go test ./..., and carries no inputs; " +
-			"kind judgement names the claim a model judges, its fixed inputs and the pinned prompt, and no test; " +
+			"Each criterion has an id in snake_case and a kind naming the fields it uses, and states what the feature does for a caller at a surface that stays put while the cards are built: " +
+			"its HTTP API, its command line, its store as a test seeds and reads it, or the files and output it writes; never how it is built inside. " +
+			"kind test names its claim, its inputs and the numbers it expects, and no test: a separate session writes its test, which runs in the sandbox bash check runs, " +
+			"so no browser, no device and no outside service; a want beyond the sandbox becomes a human criterion or waits as a note; " +
+			"kind invariant names its suite, a package path such as ./..., whose tests stay green, and nothing else; " +
+			"kind judgement names the claim a model judges, in inputs what the artifact a test writes must show, and the pinned prompt; " +
 			"kind human names a claim only a person settles, with the evidence the approver will see.",
 		"Every card but the foundation cites the criterion its acceptance item works on, and every criterion is cited by some card's item.",
 		"An amendment of a filed revision adds a criterion, removes one (its citing card goes with it, unless it merged), or changes one under a new id that names the old one in replaces; an id never changes its definition. " +
@@ -560,6 +592,9 @@ func TestPlanGuideCriteria(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Fatalf("planGuide = %q, want it to contain %q", got, want)
 		}
+	}
+	if strings.Contains(got, "TestXxx") {
+		t.Fatalf("planGuide = %q, want no TestXxx", got)
 	}
 }
 
@@ -1124,7 +1159,8 @@ func TestChildrenFiledInTopologicalOrder(t *testing.T) {
 	}
 	redirects := fj.issues[4].body
 	want := "Card redirects of plan #1 (3 of 4), filed for alice. Written by the planner.\n\nGET /<slug> answers 302 and counts a click.\n\n" +
-		"Directories (guidance, not a boundary): none\nDepends on: #2 (foundation), #3 (links-api)\nAcceptance:\n- GET /abc answers 302 [redirect_302]\nSize: small\n\n" +
+		"Directories (guidance, not a boundary): none\nDepends on: #2 (foundation), #3 (links-api)\nAcceptance:\n- GET /abc answers 302 [redirect_302]\n" +
+		"Criteria the items cite:\n- redirect_302 (test): a slug redirects: GET /abc: 302\nSize: small\n\n" +
 		"<!-- factoryd plan t-plan card redirects -->"
 	if redirects != want {
 		t.Fatalf("body of #4 =\n%s\nwant\n%s", redirects, want)
@@ -1278,7 +1314,8 @@ func TestChildBodySanitised(t *testing.T) {
 		t.Fatalf("title %q", is.title)
 	}
 	want := "Card links-api of plan #1 (2 of 4), filed for alice. Written by the planner.\n\nBuild it, (fixes) #1, see hxxps://evil[.]test/x \n\n" +
-		"Directories (guidance, not a boundary): internal/links\nDepends on: #2 (foundation)\nAcceptance:\n- ping ＠ops when POST /api/links answers 201 [links_crud]\nSize: small\n\n" +
+		"Directories (guidance, not a boundary): internal/links\nDepends on: #2 (foundation)\nAcceptance:\n- ping ＠ops when POST /api/links answers 201 [links_crud]\n" +
+		"Criteria the items cite:\n- links_crud (test): a link created through the API is stored: POST /api/links with a url: 201 and the row in the store\nSize: small\n\n" +
 		"<!-- factoryd plan t-plan card links-api -->"
 	if is.body != want {
 		t.Fatalf("body =\n%q\nwant\n%q", is.body, want)
@@ -1324,9 +1361,10 @@ func TestPlanCommentMarker(t *testing.T) {
 		"| 3 | redirects | feature | Redirects and clicks | small | foundation, links-api |  |",
 		"| 4 | integration | integration | Integration: acceptance tests | medium | foundation, links-api, redirects |  |",
 		"| # | id | kind | names | cited by |",
-		"| 1 | links_crud | test | TestCreateLink in internal/links: POST /api/links with a url: 201 and the row in the store | links-api, integration |",
-		"| 3 | all_green | invariant | go test ./... passes | foundation, integration |",
+		"| 1 | links_crud | test | a link created through the API is stored: POST /api/links with a url: 201 and the row in the store | links-api, integration |",
+		"| 3 | all_green | invariant | ./... | foundation, integration |",
 		"<details><summary>redirects: Redirects and clicks</summary>\n\nGET /<slug> answers 302 and counts a click.",
+		"- GET /abc answers 302 [redirect_302]\nCriteria the items cite:\n- redirect_302 (test): a slug redirects: GET /abc: 302\nSize: small\n</details>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("comment lacks %q:\n%s", want, body)
@@ -1452,7 +1490,7 @@ func TestConfirmsAgainOnAChangedSpec(t *testing.T) {
 		return p
 	}
 	added := func(p *Plan) {
-		p.Criteria = append(p.Criteria, PlanCriterion{ID: "clicks_counted", Kind: CriterionInvariant, Test: "go test ./internal/clicks passes"})
+		p.Criteria = append(p.Criteria, PlanCriterion{ID: "clicks_counted", Kind: CriterionInvariant, Suite: "./internal/clicks"})
 	}
 	for _, tc := range []struct {
 		name  string
@@ -2244,12 +2282,12 @@ type sweepFails struct {
 	fails int
 }
 
-func (s *sweepFails) SweepPlanHoldouts(ctx context.Context, id string) error {
+func (s *sweepFails) SweepPlanProofs(ctx context.Context, id string) error {
 	if s.fails > 0 {
 		s.fails--
 		return errors.New("the store is down")
 	}
-	return s.fakeStore.SweepPlanHoldouts(ctx, id)
+	return s.fakeStore.SweepPlanProofs(ctx, id)
 }
 
 // The identical re-file's answer row survives a retry: the first filing
@@ -4556,14 +4594,76 @@ func TestPlanLoopRefusalBeforeTheChange(t *testing.T) {
 	}
 }
 
+// A revision's records name what it does to the revision before it: a
+// replacement only when that revision holds the replaced id, so a
+// criterion that comes back unchanged with its old replaces marker, after
+// a revision that dropped it, is added, not a replacement again.
+func TestCriteriaDeltaRecordsWhatTheRevisionDoes(t *testing.T) {
+	x := PlanCriterion{ID: "x_crud", Kind: CriterionInvariant, Suite: "./..."}
+	y := PlanCriterion{ID: "y_crud", Kind: CriterionInvariant, Suite: "./internal/...", Replaces: "x_crud"}
+	z := PlanCriterion{ID: "z_page", Kind: CriterionHuman, Claim: "c", Evidence: "e"}
+	for name, tc := range map[string]struct {
+		old, next []PlanCriterion
+		want      []string
+	}{
+		"a replacement":          {[]PlanCriterion{x, z}, []PlanCriterion{y, z}, []string{"y_crud replaces x_crud"}},
+		"back after a drop":      {[]PlanCriterion{z}, []PlanCriterion{y, z}, []string{"y_crud added"}},
+		"one added, one removed": {[]PlanCriterion{x}, []PlanCriterion{z}, []string{"x_crud removed", "z_page added"}},
+		"held, marker and all":   {[]PlanCriterion{y}, []PlanCriterion{y}, nil},
+	} {
+		if got := criteriaDelta(Plan{Criteria: tc.old}, Plan{Criteria: tc.next}); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: criteriaDelta = %q, want %q", name, got, tc.want)
+		}
+	}
+}
+
+// What a criterion names is the fields its kind uses: a test's claim,
+// inputs and expected numbers, an invariant's suite, a judgement's or a
+// human criterion's claim.
+func TestCriterionNamesByKind(t *testing.T) {
+	for _, tc := range []struct {
+		c    PlanCriterion
+		want string
+	}{
+		{PlanCriterion{Kind: CriterionTest, Claim: "a link created through the API is stored", Inputs: "POST /api/links with a url", Expected: "201 and the row in the store"},
+			"a link created through the API is stored: POST /api/links with a url: 201 and the row in the store"},
+		{PlanCriterion{Kind: CriterionInvariant, Suite: "./..."}, "./..."},
+		{PlanCriterion{Kind: CriterionJudgement, Claim: "the page reads calm", Inputs: "the page", Prompt: "p"}, "the page reads calm"},
+		{PlanCriterion{Kind: CriterionHuman, Claim: "c", Evidence: "e"}, "c"},
+	} {
+		if got := criterionNames(tc.c); got != tc.want {
+			t.Errorf("criterionNames(%+v) = %q, want %q", tc.c, got, tc.want)
+		}
+	}
+}
+
+// With the test name gone from the item text, a card's facts carry every
+// criterion its items cite in full, in the plan's order, after the
+// acceptance items: the builder reads the claim, the inputs and the
+// numbers there. A card that cites none carries no such block.
+func TestCardFactsCarryTheCitedCriteria(t *testing.T) {
+	p := testPlan()
+	want := "Criteria the items cite:\n- links_crud (test): a link created through the API is stored: POST /api/links with a url: 201 and the row in the store\n" +
+		"- redirect_302 (test): a slug redirects: GET /abc: 302\n- all_green (invariant): ./...\n"
+	if facts := cardFacts(p.Cards[3], p.Criteria); !strings.Contains(facts, "GET /abc: 302 [redirect_302]\n"+want+"Size: medium\n") {
+		t.Fatalf("facts = %q, want %q after the acceptance items and before the size", facts, want)
+	}
+	if facts := cardFacts(p.Cards[1], p.Criteria); !strings.Contains(facts, "- links_crud (test): ") || strings.Contains(facts, "redirect_302") || strings.Contains(facts, "all_green") {
+		t.Fatalf("links-api's facts = %q, want links_crud alone", facts)
+	}
+	if facts := cardFacts(PlanCard{Size: "small"}, p.Criteria); strings.Contains(facts, "Criteria the items cite") {
+		t.Fatalf("facts = %q, want no criteria block", facts)
+	}
+}
+
 // A card's rung and reason reach its issue as a Rung line intake reads
 // (roadmap 222, item 5); a card without one carries none.
 func TestCardFactsRungLine(t *testing.T) {
-	facts := cardFacts(PlanCard{Size: "small", Rung: RungFrontier, RungReason: "touches the queue"})
+	facts := cardFacts(PlanCard{Size: "small", Rung: RungFrontier, RungReason: "touches the queue"}, nil)
 	if !strings.HasSuffix(facts, "Size: small\nRung: frontier, touches the queue\n") {
 		t.Fatalf("facts = %q", facts)
 	}
-	if facts := cardFacts(PlanCard{Size: "small"}); strings.Contains(facts, "Rung") {
+	if facts := cardFacts(PlanCard{Size: "small"}, nil); strings.Contains(facts, "Rung") {
 		t.Fatalf("facts = %q, want no rung line", facts)
 	}
 	if got := cardFindings(PlanCard{Key: "a", Title: "t", Brief: "b", Size: "small", Rung: "huge"}, testLimits); !slices.ContainsFunc(got, func(f string) bool { return strings.Contains(f, "rung huge") }) {
@@ -4578,7 +4678,7 @@ func TestCardFactsRungLine(t *testing.T) {
 func TestPlanCardObjectiveLeavesItsFieldsToTheCard(t *testing.T) {
 	c := PlanCard{Key: "redirects", Title: "Redirects", Brief: "GET /<slug> answers 302.", Directories: []string{"internal/links"},
 		Acceptance: []PlanItem{{Text: "GET /abc answers 302"}}, Size: "small", Rung: RungCheap, RungReason: "routine"}
-	objective := "Redirects\n\n" + cardBody(c, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "", "")
+	objective := "Redirects\n\n" + cardBody(c, nil, "plan #1", 3, 4, "sebastian", []Dependency{{Issue: 2, Key: "foundation"}}, "", "")
 	want := "Redirects\n\nCard redirects of plan #1 (3 of 4), filed for sebastian. Written by the planner.\n\nGET /<slug> answers 302.\n\n" +
 		"Depends on: #2 (foundation)\nAcceptance:\n- GET /abc answers 302"
 	if got := briefObjective(objective, true); got != want {

@@ -80,6 +80,18 @@ const (
 	// correction of a confirmation carries only the amount — and it
 	// reaches the policy through the proposal routes as every write does.
 	EventPoolChanged = "pool_changed"
+	// EventProofsFiled records one file_proofs call of a plan's prover, on
+	// the plan task: detail {"prover", "filing", "proofs": [{"criterion",
+	// "path", "suite", "name", "outcome"}], "refusals"}, the outcome red,
+	// green, unrunnable or invalid; a hold-out's entry is {"criterion":
+	// "holdout-<idx>", "outcome"} alone, and a refusal names it so; an entry
+	// that names no criterion is {"outcome"} alone. Never a test's code.
+	EventProofsFiled = "proofs_filed"
+	// EventProofsStored records the dry run of the last filing on main and
+	// the rows it stored, on the plan task: detail {"prover", "commit",
+	// "stored": [ids], "flagged": [{"criterion", "flag"}]}, a hold-out by
+	// holdoutEntry.
+	EventProofsStored = "proofs_stored"
 )
 
 // StepEvent is the timeline step every event is recorded under.

@@ -9,10 +9,14 @@ import (
 	"encoding/json"
 	"errors"
 	"io"
+	"net"
+	"net/http"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"reflect"
+	"slices"
+	"strconv"
 	"strings"
 	"syscall"
 	"testing"
@@ -386,12 +390,13 @@ func TestReproFetchOnTheWayToForgejoIsTransient(t *testing.T) {
 }
 
 // proofsCheck is the check script of the proofs tests: it prints its
-// arguments, the paths it got and whether it sees PROOFS, then writes a
-// report naming the test (the suite's when none) and an artifact; suite
-// ./none exits 2 first.
+// arguments, the paths it got, whether it sees the bearer's hash and
+// whether the message port answers, then writes a report naming the test
+// (the suite's when none) and an artifact; suite ./none exits 2 first.
 const proofsCheck = `printf 'argc=%s %s\n' "$#" "$*"
 printf 'report=%s\nartifacts=%s\n' "$CHECK_REPORT" "$CHECK_ARTIFACTS"
-printf 'proofs=%s\n' "${PROOFS-unset}"
+printf 'hash=%s\n' "${MESSAGE_TOKEN_SHA256-unset}"
+if (exec 3<>/dev/tcp/127.0.0.1/8091) 2>/dev/null; then echo port=open; else echo port=closed; fi
 [ -d "$CHECK_ARTIFACTS" ] || exit 9
 [ "$2" = ./none ] && exit 2
 printf '<testsuites><testcase name="%s"></testcase></testsuites>' "${3:-suite}" >"$CHECK_REPORT"
@@ -448,33 +453,36 @@ func (e emitted) runs(t *testing.T) []harness.ProofRun {
 func proofRuns(t *testing.T, ws string, proofs ...harness.Proof) []harness.ProofRun {
 	t.Helper()
 	var got emitted
-	runProofList(proofsEnv{proofs: proofs, timeout: time.Minute, budget: 10 * time.Minute}, ws, got.emit)
+	runProofList(proofsEnv{proofs: proofs, timeout: time.Minute, budget: 10 * time.Minute}, ws, time.Now(), got.emit)
 	if len(got) != len(proofs) {
 		t.Fatalf("%d envelopes for %d proofs", len(got), len(proofs))
 	}
 	return got.runs(t)
 }
 
-func proofsEnvs(t *testing.T, proofs ...harness.Proof) {
+// proofsEnvs sets the proofs mode's environment: a minute an entry
+// within ten.
+func proofsEnvs(t *testing.T) {
 	t.Helper()
-	b, err := json.Marshal(proofs)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for k, v := range map[string]string{"PROOFS": string(b), "REPRO_TIMEOUT": "60", "PROOFS_BUDGET": "600"} {
+	for k, v := range map[string]string{"REPRO_TIMEOUT": "60", "PROOFS_BUDGET": "600"} {
 		t.Setenv(k, v)
 	}
+}
+
+// listed is a proofs mode's list as a test hands it over, in place of the
+// message port.
+func listed(proofs ...harness.Proof) func() ([]harness.Proof, error) {
+	return func() ([]harness.Proof, error) { return proofs, nil }
 }
 
 // The proofs mode runs bash check test with the entry's suite, and its
 // name only when given, each with a report path and an artifacts
 // directory of its own outside the tree, and returns what the check left.
-// The check does not see PROOFS: every entry's file is in it.
 func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	ws, repo := proofsWorkspace(t, proofsCheck)
-	proofsEnvs(t, harness.Proof{ID: "a", Suite: "./a", Name: "TestA"}, harness.Proof{ID: "all", Suite: "./..."}, harness.Proof{ID: "none", Suite: "./none"})
+	proofsEnvs(t)
 	var got emitted
-	closing := proofs(ws, got.emit)
+	closing := proofs(ws, []harness.Proof{{ID: "a", Suite: "./a", Name: "TestA"}, {ID: "all", Suite: "./..."}, {ID: "none", Suite: "./none"}}, time.Now(), got.emit)
 	if want := (harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{}}); !reflect.DeepEqual(closing, want) {
 		t.Fatalf("closing envelope = %+v", closing)
 	}
@@ -492,8 +500,8 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 		{"none", "argc=2 test ./none", "", 2, nil},
 	} {
 		r := runs[i]
-		if r.ID != want.id || r.Exit != want.exit || strings.SplitN(r.Output, "\n", 2)[0] != want.first || !strings.Contains(r.Output, "\nproofs=unset\n") {
-			t.Errorf("run %d = %+v, want id %s, exit %d, first line %q, no PROOFS", i, r, want.id, want.exit, want.first)
+		if r.ID != want.id || r.Exit != want.exit || strings.SplitN(r.Output, "\n", 2)[0] != want.first {
+			t.Errorf("run %d = %+v, want id %s, exit %d, first line %q", i, r, want.id, want.exit, want.first)
 		}
 		if want.report == "" && r.Report != nil {
 			t.Errorf("%s: report %q, want none", r.ID, gunzip(t, r.Report))
@@ -523,17 +531,32 @@ func TestProofsRunCheckTestPerEntry(t *testing.T) {
 	}
 }
 
-// An entry's file is in the tree before the check runs.
-func TestProofsWriteTheEntrysFileFirst(t *testing.T) {
-	ws, repo := proofsWorkspace(t, "cat .holdout1/holdout_test.go")
-	content := "package holdout\nfunc TestDoor(t *testing.T) {}\n"
-	runs := proofRuns(t, ws, harness.Proof{ID: "holdout-1", Suite: "./.holdout1", Name: "TestDoor",
-		File: &harness.ProofFile{Path: ".holdout1/holdout_test.go", Content: content}})
-	if runs[0].Exit != 0 || runs[0].Output != content {
-		t.Fatalf("run = %+v", runs[0])
+// An entry's file is in the tree while its check runs, and only then: the
+// tree's own file at its path is back after, so a later entry, a suite
+// above all, runs on the tree as pushed.
+func TestProofsWriteTheEntrysFileForItsRunAlone(t *testing.T) {
+	ws, repo := proofsWorkspace(t, "cat p/*_test.go\n")
+	if err := os.Mkdir(filepath.Join(repo, "p"), 0o700); err != nil {
+		t.Fatal(err)
 	}
-	if b, err := os.ReadFile(filepath.Join(repo, ".holdout1", "holdout_test.go")); err != nil || string(b) != content {
-		t.Fatalf("the file holds %q, %v", b, err)
+	const own = "package p // the tree's own\n"
+	if err := os.WriteFile(filepath.Join(repo, "p", "own_test.go"), []byte(own), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	runs := proofRuns(t, ws,
+		harness.Proof{ID: "new", Suite: "./p", Name: "TestNew", File: &harness.ProofFile{Path: "p/new_test.go", Content: "package p // new\n"}},
+		harness.Proof{ID: "over", Suite: "./p", Name: "TestOver", File: &harness.ProofFile{Path: "p/own_test.go", Content: "package p // over\n"}},
+		harness.Proof{ID: "all", Suite: "./..."})
+	for i, want := range []string{"package p // new\n" + own, "package p // over\n", own} {
+		if runs[i].Exit != 0 || runs[i].Output != want {
+			t.Errorf("run %s = %+v, want the check to read %q", runs[i].ID, runs[i], want)
+		}
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "p", "own_test.go")); err != nil || string(b) != own {
+		t.Fatalf("the tree's own file holds %q, %v", b, err)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "p", "new_test.go")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the entry's file stayed: %v", err)
 	}
 }
 
@@ -587,7 +610,7 @@ func TestProofsLeaveOutArtifactsPastTheLine(t *testing.T) {
 printf '<testsuites></testsuites>' >"$CHECK_REPORT"
 `)
 	var got emitted
-	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "./a"}}, timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "./a"}}, timeout: time.Minute, budget: time.Minute}, ws, time.Now(), got.emit)
 	r := got.runs(t)[0]
 	if len(r.Artifacts) != 2 || len(r.Artifacts["a.bin"]) != 262144 || len(r.Artifacts["b.bin"]) != 262144 {
 		t.Fatalf("artifacts: %d keys, a.bin %d bytes, b.bin %d bytes", len(r.Artifacts), len(r.Artifacts["a.bin"]), len(r.Artifacts["b.bin"]))
@@ -610,7 +633,7 @@ esac
 `)
 	var got emitted
 	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "huge", Suite: "./huge"}, {ID: "dense", Suite: "./dense"}},
-		timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+		timeout: time.Minute, budget: time.Minute}, ws, time.Now(), got.emit)
 	runs := got.runs(t)
 	for i, why := range []string{"\nproofs mode: the report passed 64 MiB", " bytes gzipped, does not fit one log line"} {
 		r := runs[i]
@@ -638,7 +661,7 @@ func TestProofsNeverBlockOnAFIFO(t *testing.T) {
 		var got emitted
 		runProofList(proofsEnv{proofs: []harness.Proof{
 			{ID: "held", Suite: "./.holdout1", Name: "TestDoor", File: &harness.ProofFile{Path: ".holdout1/holdout_test.go", Content: "package holdout\n"}},
-			{ID: "pipe", Suite: "./pipe"}}, timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+			{ID: "pipe", Suite: "./pipe"}}, timeout: time.Minute, budget: time.Minute}, ws, time.Now(), got.emit)
 		var runs []harness.ProofRun
 		for _, env := range got {
 			runs = append(runs, *env.Proof)
@@ -684,7 +707,7 @@ func TestProofsRefuseAnEntryDirectoryThatExists(t *testing.T) {
 func TestProofsEmitEachEntryBeforeTheNextStarts(t *testing.T) {
 	ws, repo := proofsWorkspace(t, "touch \"ran-$2\"\n")
 	var ids []string
-	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "a"}, {ID: "b", Suite: "b"}}, timeout: time.Minute, budget: time.Minute}, ws,
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "a"}, {ID: "b", Suite: "b"}}, timeout: time.Minute, budget: time.Minute}, ws, time.Now(),
 		func(env harness.WorkerEnvelope) {
 			ids = append(ids, env.Proof.ID)
 			_, errA := os.Stat(filepath.Join(repo, "ran-a"))
@@ -708,7 +731,7 @@ printf '</testsuites>\n'
 } >"$CHECK_REPORT"
 `)
 	var got emitted
-	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "all", Suite: "./..."}}, timeout: time.Minute, budget: time.Minute}, ws, got.emit)
+	runProofList(proofsEnv{proofs: []harness.Proof{{ID: "all", Suite: "./..."}}, timeout: time.Minute, budget: time.Minute}, ws, time.Now(), got.emit)
 	r := got.runs(t)[0]
 	if n := len(gunzip(t, r.Report)); n <= 2<<20 {
 		t.Fatalf("report of %d bytes", n)
@@ -735,7 +758,7 @@ func TestProofsTimeOutPerEntryAndWithinTheBudget(t *testing.T) {
 		ws, _ := proofsWorkspace(t, "if [ \"$2\" = ./slow ]; then sleep 30; fi\n")
 		began := time.Now()
 		var got emitted
-		runProofList(proofsEnv{proofs: list, timeout: tc.timeout, budget: tc.budget}, ws, got.emit)
+		runProofList(proofsEnv{proofs: list, timeout: tc.timeout, budget: tc.budget}, ws, time.Now(), got.emit)
 		runs := got.runs(t)
 		if len(runs) != 2 || runs[0].ID != "slow" || runs[0].Exit != -1 || !strings.HasSuffix(runs[0].Output, tc.slow) {
 			t.Fatalf("timeout %s, budget %s: runs = %+v", tc.timeout, tc.budget, runs)
@@ -794,31 +817,30 @@ func TestProofsReportAFetchFailureOrABadEnvironment(t *testing.T) {
 			t.Fatalf("the check ran: %v", err)
 		}
 	}
+	list := []harness.Proof{{ID: "a", Suite: "./a"}}
 	ws, repo := proofsWorkspace(t, "touch ran")
-	proofsEnvs(t, harness.Proof{ID: "a", Suite: "./a"})
+	proofsEnvs(t)
 	if err := os.WriteFile(fetchFailed(ws), []byte(moved), 0o600); err != nil {
 		t.Fatal(err)
 	}
 	var got emitted
-	if closing := proofs(ws, got.emit); len(got) != 0 || closing.Type != "proofs" || closing.Proofs == nil || closing.Proofs.Error != "proofs mode: "+moved {
+	if closing := proofs(ws, list, time.Now(), got.emit); len(got) != 0 || closing.Type != "proofs" || closing.Proofs == nil || closing.Proofs.Error != "proofs mode: "+moved {
 		t.Fatalf("emitted %d, closing envelope = %+v", len(got), closing)
 	}
 	notRan(repo)
 
 	ws, repo = proofsWorkspace(t, "touch ran")
-	t.Setenv("PROOFS", "not json")
-	if closing := proofs(ws, got.emit); len(got) != 0 || closing.Proofs == nil || !strings.HasPrefix(closing.Proofs.Error, "proofs mode: PROOFS: ") {
+	t.Setenv("PROOFS_BUDGET", "0")
+	if closing := proofs(ws, list, time.Now(), got.emit); len(got) != 0 || closing.Proofs == nil || closing.Proofs.Error != "proofs mode: PROOFS_BUDGET: want positive seconds" {
 		t.Fatalf("emitted %d, closing envelope = %+v", len(got), closing)
 	}
 	notRan(repo)
 
-	proofsEnvs(t, harness.Proof{ID: "a", Suite: "./a"})
-	for k, v := range map[string]string{"GATEWAY_URL": "http://gw", "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443"} {
-		t.Setenv(k, v)
-	}
+	proofsEnvs(t)
+	sandboxEnvs(t)
 	open := closedSandbox(t)
 	open.directIP = listening(t)
-	closing := proofsReport(context.Background(), ws, nil, func(workerEnv) egressProbe { return open }, got.emit)
+	closing := proofsReport(context.Background(), ws, nil, func(workerEnv) egressProbe { return open }, listed(list...), got.emit)
 	want := harness.WorkerEnvelope{Type: "result", Result: &harness.Result{
 		Summary: "start failed: egress probe: direct IP " + open.directIP + " answered: connected to " + open.directIP, Step: "egress probe"}}
 	if len(got) != 0 || !reflect.DeepEqual(closing, want) {
@@ -830,19 +852,150 @@ func TestProofsReportAFetchFailureOrABadEnvironment(t *testing.T) {
 }
 
 func TestLoadProofsEnv(t *testing.T) {
-	t.Setenv("PROOFS", `[{"id":"a","suite":"./a","name":"TestA"}]`)
 	t.Setenv("REPRO_TIMEOUT", "600")
 	t.Setenv("PROOFS_BUDGET", "2100")
 	e, err := loadProofsEnv()
-	if want := (proofsEnv{proofs: []harness.Proof{{ID: "a", Suite: "./a", Name: "TestA"}}, timeout: 10 * time.Minute, budget: 35 * time.Minute}); err != nil || !reflect.DeepEqual(e, want) {
+	if want := (proofsEnv{timeout: 10 * time.Minute, budget: 35 * time.Minute}); err != nil || !reflect.DeepEqual(e, want) {
 		t.Fatalf("env = %+v, %v", e, err)
 	}
 	t.Setenv("PROOFS_BUDGET", "0")
 	if _, err := loadProofsEnv(); err == nil {
 		t.Fatal("a zero budget loaded")
 	}
-	t.Setenv("PROOFS", "")
-	if _, err := loadProofsEnv(); err == nil || err.Error() != "PROOFS is required" {
-		t.Fatalf("no PROOFS: %v", err)
+}
+
+// messagePortFree skips a test that binds the worker's one fixed message
+// port while something holds it, as inside a live worker pod.
+func messagePortFree(t *testing.T) {
+	t.Helper()
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
+	if err != nil {
+		t.Skip("the worker's message port is held: " + err.Error())
+	}
+	ln.Close()
+}
+
+// postProofs posts body to the proofs mode's port with auth, again until
+// the port answers within five seconds: its status, 0 for none.
+func postProofs(auth, body string) int {
+	for deadline := time.Now().Add(5 * time.Second); ; {
+		req, _ := http.NewRequest(http.MethodPost, "http://127.0.0.1:"+strconv.Itoa(harness.MessagePort)+"/proofs", strings.NewReader(body))
+		req.Header.Set("Authorization", auth)
+		resp, err := http.DefaultClient.Do(req)
+		if err == nil {
+			resp.Body.Close()
+			return resp.StatusCode
+		}
+		if time.Now().After(deadline) {
+			return 0
+		}
+		time.Sleep(5 * time.Millisecond)
+	}
+}
+
+// sandboxEnvs sets what the egress probe of the proofs mode reads.
+func sandboxEnvs(t *testing.T) {
+	t.Helper()
+	for k, v := range map[string]string{"GATEWAY_URL": "http://gw", "EGRESS_CANARY": "example.com:443", "EGRESS_DIRECT_IP": "192.0.2.7:443"} {
+		t.Setenv(k, v)
+	}
+}
+
+// The proofs mode takes its list over the message port before anything
+// else: a post without the session's bearer, or with no list, is refused
+// and the wait goes on; the list posted runs. The port is closed by the
+// time a check runs, and no check sees the bearer's hash.
+func TestProofsTakeTheListOverTheMessagePort(t *testing.T) {
+	messagePortFree(t)
+	ws, _ := proofsWorkspace(t, proofsCheck)
+	proofsEnvs(t)
+	sandboxEnvs(t)
+	t.Setenv("MESSAGE_TOKEN_SHA256", testMessageHash)
+	old := proofsListWait
+	t.Cleanup(func() { proofsListWait = old })
+	proofsListWait = 10 * time.Second
+	answers := make(chan []int, 1)
+	go func() {
+		answers <- []int{
+			postProofs("", `[{"id":"a","suite":"./a","name":"TestA"}]`),
+			postProofs("Bearer session-secret", "not json"),
+			postProofs("Bearer session-secret", `[{"id":"a","suite":"./a","name":"TestA"}]`),
+		}
+	}()
+	var got emitted
+	closing := proofsReport(context.Background(), ws, nil, func(workerEnv) egressProbe { return closedSandbox(t) },
+		func() ([]harness.Proof, error) { return awaitProofs(nolog) }, got.emit)
+	if codes := <-answers; !slices.Equal(codes, []int{http.StatusUnauthorized, http.StatusBadRequest, http.StatusNoContent}) {
+		t.Fatalf("the port answered %v, want 401, 400, 204", codes)
+	}
+	if want := (harness.WorkerEnvelope{Type: "proofs", Proofs: &harness.Proofs{}}); !reflect.DeepEqual(closing, want) {
+		t.Fatalf("closing envelope = %+v", closing)
+	}
+	runs := got.runs(t)
+	if len(runs) != 1 || runs[0].ID != "a" || runs[0].Exit != 0 || !strings.HasPrefix(runs[0].Output, "argc=3 test ./a TestA\n") {
+		t.Fatalf("runs = %+v, want a's", runs)
+	}
+	for _, line := range []string{"\nhash=unset\n", "\nport=closed\n"} {
+		if !strings.Contains(runs[0].Output, line) {
+			t.Errorf("the check's output %q lacks %q", runs[0].Output, line)
+		}
+	}
+}
+
+// A pod nobody posts a list to ends at the wait with the closing
+// envelope's error, before the egress probe and any check, and frees the
+// port; a bearer's hash it cannot read ends it at once.
+func TestProofsEndWhenNoListArrives(t *testing.T) {
+	messagePortFree(t)
+	ws, repo := proofsWorkspace(t, "touch ran")
+	proofsEnvs(t)
+	old := proofsListWait
+	t.Cleanup(func() { proofsListWait = old })
+	proofsListWait = 50 * time.Millisecond
+	probed := false
+	probe := func(workerEnv) egressProbe { probed = true; return closedSandbox(t) }
+	port := func() ([]harness.Proof, error) { return awaitProofs(nolog) }
+	for hash, want := range map[string]string{
+		testMessageHash: "proofs mode: no proofs list from factoryd within 50ms",
+		"":              "proofs mode: MESSAGE_TOKEN_SHA256 must be 64 hex digits",
+	} {
+		t.Setenv("MESSAGE_TOKEN_SHA256", hash)
+		var got emitted
+		closing := proofsReport(context.Background(), ws, nil, probe, port, got.emit)
+		if len(got) != 0 || closing.Type != "proofs" || closing.Proofs == nil || closing.Proofs.Error != want {
+			t.Fatalf("emitted %d, closing envelope = %+v, want the error %q", len(got), closing, want)
+		}
+	}
+	if probed {
+		t.Error("the egress probe ran before the list")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the check ran: %v", err)
+	}
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
+	if err != nil {
+		t.Fatalf("the port is still held: %v", err)
+	}
+	ln.Close()
+}
+
+// The wait for the list counts against the run's budget, so the pod's
+// time past its start stays bounded however late the list comes.
+func TestProofsCountTheWaitAgainstTheBudget(t *testing.T) {
+	ws, repo := proofsWorkspace(t, "touch ran")
+	t.Setenv("REPRO_TIMEOUT", "60")
+	t.Setenv("PROOFS_BUDGET", "1")
+	sandboxEnvs(t)
+	late := func() ([]harness.Proof, error) {
+		time.Sleep(1100 * time.Millisecond)
+		return []harness.Proof{{ID: "a", Suite: "./a"}}, nil
+	}
+	var got emitted
+	proofsReport(context.Background(), ws, nil, func(workerEnv) egressProbe { return closedSandbox(t) }, late, got.emit)
+	if runs := got.runs(t); !reflect.DeepEqual(runs, []harness.ProofRun{{ID: "a", Exit: -1, Output: "proofs mode: the run's 1s ran out before this entry"}}) {
+		t.Fatalf("runs = %+v, want a out of budget", runs)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
+		t.Fatalf("the check ran: %v", err)
 	}
 }

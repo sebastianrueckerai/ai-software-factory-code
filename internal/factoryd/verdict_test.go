@@ -27,9 +27,9 @@ func criteriaPlan() Plan {
 	return Plan{
 		Summary: "the plan",
 		Criteria: []PlanCriterion{
-			{ID: "c1", Kind: CriterionTest, Test: "go test ./..."},
+			{ID: "c1", Kind: CriterionTest, Claim: "a link is stored", Inputs: "POST /api/links with a url", Expected: "201"},
 			{ID: "c2", Kind: CriterionHuman, Claim: "the feature reads well"},
-			{ID: "c3", Kind: CriterionInvariant, Test: "no endpoint times out"},
+			{ID: "c3", Kind: CriterionInvariant, Suite: "./..."},
 		},
 		Cards: []PlanCard{
 			{Key: "foundation", Role: "feature", Title: "Foundation", Directories: []string{"a"}},
@@ -86,14 +86,15 @@ func TestNormalizeCriteria(t *testing.T) {
 func TestEffectiveVerdictAndOpenCriteria(t *testing.T) {
 	p := criteriaPlan()
 	rows := []CriterionVerdict{
-		{Criterion: "c1", Source: "review", Verdict: "met"},
-		{Criterion: "c2", Source: "review", Verdict: ""},
-		{Criterion: "c3", Source: "review", Verdict: "unmet"},
-		{Criterion: "c3", Source: "approver", Verdict: "waived"},
+		{Criterion: "c1", Source: "review", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Source: "review", Verdict: "", Kind: CriterionHuman},
+		{Criterion: "c3", Source: "review", Verdict: "unmet", Kind: CriterionInvariant},
+		{Criterion: "c3", Source: "approver", Verdict: "waived", Kind: CriterionInvariant},
 	}
-	for id, want := range map[string]string{"c1": "met", "c2": "", "c3": "waived", "c9": ""} {
-		if got := effectiveVerdict(rows, id); got != want {
-			t.Errorf("effectiveVerdict(%s) = %q, want %q", id, got, want)
+	c9 := PlanCriterion{ID: "c9", Kind: CriterionTest}
+	for c, want := range map[PlanCriterion]string{p.Criteria[0]: "met", p.Criteria[1]: "", p.Criteria[2]: "waived", c9: ""} {
+		if got := effectiveVerdict(rows, c); got != want {
+			t.Errorf("effectiveVerdict(%s) = %q, want %q", c.ID, got, want)
 		}
 	}
 	if open := openCriteria(p, rows); len(open) != 1 || open[0].ID != "c2" {
@@ -102,27 +103,78 @@ func TestEffectiveVerdictAndOpenCriteria(t *testing.T) {
 }
 
 func TestStandingRowRanksApproverOverGateOverReview(t *testing.T) {
+	c1, c2 := PlanCriterion{ID: "c1", Kind: CriterionInvariant}, PlanCriterion{ID: "c2", Kind: CriterionJudgement}
 	gate := "criterion c1: suite ./... failed: Failed boom"
 	rows := []CriterionVerdict{
-		{Criterion: "c1", Source: CriteriaSourceReview, Verdict: "met"},
-		{Criterion: "c1", Source: CriteriaSourceGate, Verdict: "unmet", Evidence: gate},
+		{Criterion: "c1", Source: CriteriaSourceReview, Verdict: "met", Kind: CriterionInvariant},
+		{Criterion: "c1", Source: CriteriaSourceGate, Verdict: "unmet", Evidence: gate, Kind: CriterionInvariant},
 	}
-	if v, ok := StandingRow(rows, "c1"); !ok || v.Source != CriteriaSourceGate || v.Evidence != gate {
+	if v, ok := StandingRow(rows, c1); !ok || v.Source != CriteriaSourceGate || v.Evidence != gate {
 		t.Errorf("StandingRow(c1) = %+v, %v; want the gate's", v, ok)
 	}
-	if got := effectiveVerdict(rows, "c1"); got != "unmet" {
+	if got := effectiveVerdict(rows, c1); got != "unmet" {
 		t.Errorf("effectiveVerdict(c1) = %q, want unmet", got)
 	}
-	rows = append(rows, CriterionVerdict{Criterion: "c1", Source: CriteriaSourceApprover, Verdict: "waived"},
-		CriterionVerdict{Criterion: "c2", Source: CriteriaSourceReview, Verdict: "met"})
-	if v, ok := StandingRow(rows, "c1"); !ok || v.Source != CriteriaSourceApprover || v.Verdict != "waived" {
+	rows = append(rows, CriterionVerdict{Criterion: "c1", Source: CriteriaSourceApprover, Verdict: "waived", Kind: CriterionInvariant},
+		CriterionVerdict{Criterion: "c2", Source: CriteriaSourceReview, Verdict: "met", Kind: CriterionJudgement})
+	if v, ok := StandingRow(rows, c1); !ok || v.Source != CriteriaSourceApprover || v.Verdict != "waived" {
 		t.Errorf("StandingRow(c1) = %+v, %v; want the approver's", v, ok)
 	}
-	if v, ok := StandingRow(rows, "c2"); !ok || v.Source != CriteriaSourceReview || v.Verdict != "met" {
+	if v, ok := StandingRow(rows, c2); !ok || v.Source != CriteriaSourceReview || v.Verdict != "met" {
 		t.Errorf("StandingRow(c2) = %+v, %v; want the review's", v, ok)
 	}
-	if v, ok := StandingRow(rows, "c9"); ok {
+	if v, ok := StandingRow(rows, PlanCriterion{ID: "c9", Kind: CriterionTest}); ok {
 		t.Errorf("StandingRow(c9) = %+v, want none", v)
+	}
+}
+
+// A row of another kind than the plan's criterion is stale: a revision
+// that dropped the criterion and a later one that brought its id back as
+// another kind leave the old kind's rows behind. Such a row never stands,
+// so the gate's old row does not outrank the review's fresh one, and a
+// criterion with stale rows alone is never judged.
+func TestStandingRowSkipsARowOfAnotherKind(t *testing.T) {
+	c1 := PlanCriterion{ID: "c1", Kind: CriterionJudgement, Claim: "the page reads calm", Inputs: "the page", Prompt: "p"}
+	c2 := PlanCriterion{ID: "c2", Kind: CriterionHuman, Claim: "the copy is true", Evidence: "the page"}
+	rows := []CriterionVerdict{
+		{Criterion: "c1", Source: CriteriaSourceGate, Verdict: "met", Evidence: "criterion c1: suite ./... passed", Kind: CriterionInvariant},
+		{Criterion: "c1", Source: CriteriaSourceReview, Verdict: "unmet", Evidence: "the page shouts", Kind: CriterionJudgement},
+		{Criterion: "c2", Source: CriteriaSourceApprover, Verdict: "waived", Kind: CriterionTest},
+	}
+	if v, ok := StandingRow(rows, c1); !ok || v.Source != CriteriaSourceReview || v.Verdict != "unmet" {
+		t.Errorf("StandingRow(c1) = %+v, %v; want the review's fresh row", v, ok)
+	}
+	if v, ok := StandingRow(rows, c2); ok {
+		t.Errorf("StandingRow(c2) = %+v, want none: its one row is of another kind", v)
+	}
+	p := Plan{Criteria: []PlanCriterion{c1, c2}}
+	if open := openCriteria(p, rows); len(open) != 2 {
+		t.Errorf("openCriteria = %v, want c1 and c2", open)
+	}
+	if never := neverJudged(p, rows); len(never) != 1 || never[0].ID != "c2" {
+		t.Errorf("neverJudged = %v, want c2 alone", never)
+	}
+}
+
+// The delta round and the review's criterion call read a criterion by
+// its new fields: an acceptance item says what the card's tests prove,
+// and no prompt names a criterion's test.
+func TestTheDeltaAndReviewPromptsReadTheNewFields(t *testing.T) {
+	delta := fmt.Sprintf(deltaSystem, "")
+	for _, want := range []string{
+		`"text": "what the card's tests prove, with the inputs and the numbers`,
+		"acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers.",
+	} {
+		if !strings.Contains(delta, want) {
+			t.Errorf("deltaSystem lacks %q", want)
+		}
+	}
+	if strings.Contains(delta, "its command the criterion's test") {
+		t.Errorf("deltaSystem still asks for the criterion's test: %q", delta)
+	}
+	if !strings.Contains(reviewCriterionPrompt, "criterion is the criterion with its id, kind, claim, inputs, expected, suite, prompt and evidence.") ||
+		strings.Contains(reviewCriterionPrompt, ", test,") {
+		t.Errorf("the criterion prompt does not name the new fields: %q", reviewCriterionPrompt)
 	}
 }
 
@@ -641,9 +693,9 @@ func TestCriterionPromptOffersAbsent(t *testing.T) {
 // reads verdicts for the criteria it called alone.
 func TestPlanCallsSkipTheGatesKinds(t *testing.T) {
 	p := Plan{Criteria: []PlanCriterion{
-		{ID: "g_test", Kind: CriterionTest, Test: "TestG in ./g"},
+		{ID: "g_test", Kind: CriterionTest, Claim: "g answers", Inputs: "GET /g", Expected: "200"},
 		{ID: "c1", Kind: CriterionJudgement, Claim: "a answers"},
-		{ID: "g_inv", Kind: CriterionInvariant, Test: "go test ./... passes"},
+		{ID: "g_inv", Kind: CriterionInvariant, Suite: "./..."},
 		{ID: "c2", Kind: CriterionHuman, Claim: "the page reads well"},
 	}}
 	calls, of := planCalls(p, "the objective", nil, featureCard{Key: "I"}, 64<<10)
@@ -784,7 +836,7 @@ func TestParseBehavioursAnswer(t *testing.T) {
 func TestReviewCriteriaStepFilesDuesAndFindings(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "in-review")
-	r := &Runner{store: s}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s}
 	rv := Review{Verdict: "approve", Summary: "the diff is sound", Criteria: []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Evidence: "go test exits 0", Fix: "card"},
 		{Criterion: "c2", Evidence: "the list page reads clean"},
@@ -841,7 +893,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}
 	objs := &fakeObjectStore{}
 	fj := &prForgejo{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	r.CriteriaPass(ctx)
 	if !slices.Equal(fj.issuesClosed, []int64{7}) {
 		t.Fatalf("issues closed %v, want the plan's #7", fj.issuesClosed)
@@ -860,11 +912,11 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 
 	// a plan whose cards are done with a criterion open asks its gap once
 	s2 := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
-	r2 := &Runner{store: s2, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r2 := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s2, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	if err := s2.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
-		{Criterion: "c2", Evidence: "read it"},
-		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+		{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner", Kind: CriterionInvariant},
 	}); err != nil {
 		t.Fatal(err)
 	}
@@ -912,7 +964,7 @@ func TestPlanCloseCheckClosesAndGaps(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	(&Runner{store: s3, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
+	(&Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s3, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}).CriteriaPass(ctx)
 	if pending, _ := s3.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
 		t.Fatalf("a running plan asked its gap: %+v", pending)
 	}
@@ -931,7 +983,7 @@ func TestGrantAgainOnTheSameRevision(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s}
 	if n, err := GrantCriteria(ctx, s, "t-plan", "sebastian", 40); err != nil || n != 1 {
 		t.Fatalf("the first grant = %d, %v", n, err)
 	}
@@ -967,15 +1019,15 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; the review of card #1380 did not run (" + note + "): c2", nil},
 		{"mixed", note, ApprovalCriteriaRerun,
 			"criteria never judged: the criteria gate of card #1380 never ran: c3; the review of card #1380 did not run (" + note + "): c2; not met: c1",
-			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "times out"}}},
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Evidence: "times out", Kind: CriterionTest}}},
 		{"the gate never ran", note, ApprovalCriteriaRerun,
 			"criteria never judged: the criteria gate of card #1380 never ran: c1, c3; not met: c2",
-			[]CriterionVerdict{{Criterion: "c2", Evidence: "read it"}}},
+			[]CriterionVerdict{{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}}},
 		{"the review's alone", note, ApprovalCriteriaRerun,
 			"criteria never judged: the review of card #1380 did not run (" + note + "): c2; not met: c1, c3",
-			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "unmet"}}},
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
 		{"unmet rows only", note, ApprovalCriteria, "criteria not met with the plan's cards done: c2, c3",
-			[]CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}},
+			[]CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}},
 	} {
 		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
 		integration := s.tasks["t-int"]
@@ -985,7 +1037,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		// brings a plan without a verdict row to the pass
 		mergeCard(s, "t-int")
 		objs := &fakeObjectStore{}
-		r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
+		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s}, forgejo: planIssues(t)}
 		if c.note != "" || c.name == "mixed" {
 			r.record(ctx, "t-int", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
 		}
@@ -1009,7 +1061,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 		// rows for every criterion, some unmet, leave the rerun ask nothing
 		// to run: it is resolved, and the gap ask names what stays open;
 		// met or waived every one, the close resolves that
-		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it"}, {Criterion: "c3", Verdict: "unmet"}}); err != nil {
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "unmet", Kind: CriterionInvariant}}); err != nil {
 			t.Fatal(err)
 		}
 		r.CriteriaPass(ctx)
@@ -1021,7 +1073,7 @@ func TestPlanCloseCheckSplitsNeverJudgedFromUnmet(t *testing.T) {
 			t.Fatalf("mixed: approved %+v, want the rerun ask resolved by factoryd", resolved)
 		}
 		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{
-			{Criterion: "c1", Verdict: "waived"}, {Criterion: "c2", Verdict: "met"}, {Criterion: "c3", Verdict: "waived"}}); err != nil {
+			{Criterion: "c1", Verdict: "waived", Kind: CriterionTest}, {Criterion: "c2", Verdict: "met", Kind: CriterionHuman}, {Criterion: "c3", Verdict: "waived", Kind: CriterionInvariant}}); err != nil {
 			t.Fatal(err)
 		}
 		r.CriteriaPass(ctx)
@@ -1058,7 +1110,7 @@ func planWithoutCriteria(t *testing.T, statuses ...string) (*Runner, *fakeStore,
 	}
 	fj := &planForgejo{issues: map[int64]*planIssue{1: {state: "open"}}}
 	objs := &fakeObjectStore{}
-	r := &Runner{store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: objs, Events: s, Store: s},
 		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}}
 	return r, s, objs, fj
 }
@@ -1433,14 +1485,14 @@ func TestCriteriaPassSkipsAnsweredDeltaDues(t *testing.T) {
 	}
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
-		{Criterion: "c2", Evidence: "read it"},
-		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+		{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner", Kind: CriterionInvariant},
 	}); err != nil {
 		t.Fatal(err)
 	}
 	// the marker holds the sweep's round back: no model call, and the gap
 	// question opens (the cards are done, c2 and c3 open)
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	r.CriteriaPass(ctx)
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("pending = %+v, want the gap question alone", pending)
@@ -1467,7 +1519,7 @@ func TestPlanCloseWaitsForTheIntegrationCard(t *testing.T) {
 			t.Fatal(err)
 		}
 		objs := &fakeObjectStore{}
-		return s, objs, &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+		return s, objs, &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
 	}
 
 	s, objs, r := rig("in-review")
@@ -1546,7 +1598,7 @@ func firstOfRounds(t *testing.T, status string) (*Runner, *fakeStore, *bytes.Buf
 	var logs bytes.Buffer
 	log.SetOutput(&logs)
 	t.Cleanup(func() { log.SetOutput(os.Stderr) })
-	return &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
+	return &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}, s, &logs
 }
 
 // A plan with later rounds still to plan does not close with its round's
@@ -1610,7 +1662,7 @@ func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 		t.Fatal(err)
 	}
 	setStatus(s, "t-plan", "closed")
-	r = &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r = &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 1 || len(pending) != 0 {
 		t.Fatalf("a closed plan with c1 unmet: plan_closed %d, pending %+v; want one close and no question", closeRows(s), pending)
@@ -1630,7 +1682,7 @@ func TestClosedPlanCardDeniesItsCriteriaApproval(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.planCloseCheck(ctx, "t-plan")
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteria {
 		t.Fatalf("the failed plan's gap: pending %+v, want the criteria approval", pending)
@@ -1659,7 +1711,7 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}}
 	r.CriteriaPass(ctx)
 	pending, _ := s.ApprovalRequests(ctx, "pending")
 	if len(pending) != 1 || pending[0].TaskID != "t-plan" {
@@ -1735,11 +1787,11 @@ func TestDecideCriterionRefusesAWaiverOfAMetOne(t *testing.T) {
 func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-gap", "t-gap-int", "done")
-	r := &Runner{store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: &fakeObjectStore{}}}
 	if err := s.PutCriteriaVerdicts(ctx, "t-gap-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
 		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
-		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner"},
+		{Criterion: "c3", Verdict: "unmet", Evidence: "times out", Fix: "planner", Kind: CriterionInvariant},
 	}); err != nil {
 		t.Fatal(err)
 	}

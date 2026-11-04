@@ -80,14 +80,25 @@ func TestLab(t *testing.T) {
 	t.Cleanup(model.Close)
 	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
 	r.c.cfg.Steer = func(context.Context, string, string, string) error { return nil }
-	// a waiver stands as the approver's row on the plan's integration card
+	// a waiver stands as the approver's row on the plan's integration card,
+	// of the criterion's kind in the plan, as factoryd.DecideCriterion writes it
 	r.c.cfg.DecideCriterion = func(_ context.Context, id, cid, verdict, by, reason string) error {
 		r.tasks.mu.Lock()
 		defer r.tasks.mu.Unlock()
+		var p factoryd.Plan
+		if revs := r.tasks.plans[id]; len(revs) > 0 {
+			if err := json.Unmarshal(revs[len(revs)-1].Plan, &p); err != nil {
+				return err
+			}
+		}
+		i := slices.IndexFunc(p.Criteria, func(c factoryd.PlanCriterion) bool { return c.ID == cid })
+		if i < 0 {
+			return factoryd.ErrNoCriterion
+		}
 		for _, t := range r.tasks.tasks {
 			if t.Parent == id && t.PlanKey == "integration" {
 				r.tasks.criteria[t.ID] = append(r.tasks.criteria[t.ID], factoryd.CriterionVerdict{
-					Criterion: cid, Verdict: verdict, Evidence: reason, Source: "approver", DecidedBy: by})
+					Criterion: cid, Verdict: verdict, Evidence: reason, Kind: p.Criteria[i].Kind, Source: "approver", DecidedBy: by})
 				return nil
 			}
 		}
@@ -1475,9 +1486,12 @@ func criteriaScene(now time.Time) labScene {
 	found.Parent, found.Source, found.PlanKey = plan.ID, factoryd.SourcePlan, "foundation"
 	integ.Parent, integ.Source, integ.PlanKey = plan.ID, factoryd.SourcePlan, "integration"
 	criteria := []factoryd.PlanCriterion{
-		{ID: "size_bound_escape", Kind: factoryd.CriterionTest, Test: "TestDivideConquerSizeBounds in acceptance"},
-		{ID: "window_and_existing_figures", Kind: factoryd.CriterionTest, Test: "TestDivideConquerMetricsCompatibility in acceptance"},
-		{ID: "ledger_retry_integrity", Kind: factoryd.CriterionTest, Test: "TestDivideConquerLedgerIntegrity in acceptance"},
+		{ID: "size_bound_escape", Kind: factoryd.CriterionTest, Claim: "the panel counts the cards over their size bound",
+			Inputs: "a card over its bound, one unsized and one with no bound", Expected: "1 over, the unsized card counted as large"},
+		{ID: "window_and_existing_figures", Kind: factoryd.CriterionTest, Claim: "the new panels keep the page's window and its old figures",
+			Inputs: "GET /metrics for the last week", Expected: "twelve panels and the old figures unchanged"},
+		{ID: "ledger_retry_integrity", Kind: factoryd.CriterionTest, Claim: "a retried session spends once in the ledger",
+			Inputs: "one session answered twice", Expected: "one spend row"},
 	}
 	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Two cards: the read model, then the page.", Criteria: criteria,
 		Cards: []factoryd.PlanCard{

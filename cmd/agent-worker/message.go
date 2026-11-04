@@ -33,6 +33,18 @@ func parseHash(hexed string) ([32]byte, error) {
 	return h, nil
 }
 
+// bearer reports whether r carries the bearer whose hash is tokenSHA256,
+// and answers 401 when it does not.
+func bearer(tokenSHA256 [32]byte, w http.ResponseWriter, r *http.Request) bool {
+	token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
+	sum := sha256.Sum256([]byte(token))
+	if !ok || subtle.ConstantTimeCompare(sum[:], tokenSHA256[:]) != 1 {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return false
+	}
+	return true
+}
+
 // messageHandler serves factoryd's two requests into the pod, each with
 // the session's bearer: POST /message {text}, handed to send, the
 // harness's Message, and POST /push {token}, which gate takes.
@@ -41,15 +53,7 @@ func parseHash(hexed string) ([32]byte, error) {
 // on (roadmap 222, item 5).
 func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe) http.Handler {
 	mux := http.NewServeMux()
-	authorized := func(w http.ResponseWriter, r *http.Request) bool {
-		token, ok := strings.CutPrefix(r.Header.Get("Authorization"), "Bearer ")
-		sum := sha256.Sum256([]byte(token))
-		if !ok || subtle.ConstantTimeCompare(sum[:], tokenSHA256[:]) != 1 {
-			http.Error(w, "unauthorized", http.StatusUnauthorized)
-			return false
-		}
-		return true
-	}
+	authorized := func(w http.ResponseWriter, r *http.Request) bool { return bearer(tokenSHA256, w, r) }
 	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
 		if !authorized(w, r) {
 			return
@@ -166,13 +170,19 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 	}
 }
 
-// serveMessages listens on harness.MessagePort until the returned stop.
+// serveMessages serves the session's messageHandler until the returned stop.
 func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, log func(string, ...any)) (stop func(), err error) {
+	return servePort(messageHandler(tokenSHA256, gate, send, ck), log)
+}
+
+// servePort serves h on harness.MessagePort until the returned stop, which
+// lets the requests in flight finish.
+func servePort(h http.Handler, log func(string, ...any)) (stop func(), err error) {
 	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
 	if err != nil {
 		return nil, err
 	}
-	srv := &http.Server{Handler: messageHandler(tokenSHA256, gate, send, ck), ReadHeaderTimeout: 10 * time.Second}
+	srv := &http.Server{Handler: h, ReadHeaderTimeout: 10 * time.Second}
 	go func() {
 		if err := srv.Serve(ln); err != nil && !errors.Is(err, http.ErrServerClosed) {
 			log("message endpoint: %v", err)
@@ -181,6 +191,6 @@ func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.C
 	return func() {
 		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 		defer cancel()
-		srv.Shutdown(ctx) // #nosec G104 -- the session is over; a hung request is cut
+		srv.Shutdown(ctx) // #nosec G104 -- the port is done with; a hung request is cut
 	}, nil
 }

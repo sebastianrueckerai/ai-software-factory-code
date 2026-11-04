@@ -534,7 +534,11 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if want := fmt.Sprintf("Case %d needs you no more: its question is withdrawn because the wait ended.", flag.ID); len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
 		t.Fatalf("the inbox = %+v, asks %+v; want the two asks and the withdrawal %q", rows, asks, want)
 	}
-	for read, got := range map[string][]ChatMessage{"ChatMessages": rows[:2], "ChatAsks": asks[:2]} {
+	askRows := make([]ChatMessage, len(asks))
+	for i, a := range asks {
+		askRows[i] = a.ChatMessage
+	}
+	for read, got := range map[string][]ChatMessage{"ChatMessages": rows[:2], "ChatAsks": askRows[:2]} {
 		var words []string
 		for _, m := range got {
 			words = append(words, SettleOf(m, events, "waiting-human", false).Word)

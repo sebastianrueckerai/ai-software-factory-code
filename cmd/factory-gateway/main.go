@@ -103,7 +103,7 @@ func main() {
 			HTTP: egress.Client(120 * time.Second)},
 		Escalator:        factoryd,
 		PlanFiler:        factoryd,
-		HoldoutVerdicter: factoryd,
+		ProofsFiler:      factoryd,
 		Delegator:        factoryd,
 		DeploymentReader: factoryd,
 		ImageLooker:      factoryd,
