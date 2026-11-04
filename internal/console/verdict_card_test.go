@@ -20,9 +20,9 @@ import (
 // integration card (c1 met).
 func verdictRig(r *rig) {
 	plan, _ := json.Marshal(factoryd.Plan{Summary: "The shortener", Criteria: []factoryd.PlanCriterion{
-		{ID: "c1", Kind: factoryd.CriterionTest, Test: "go test ./..."},
+		{ID: "c1", Kind: factoryd.CriterionTest, Claim: "a link is stored", Inputs: "POST /api/links with a url", Expected: "201"},
 		{ID: "c2", Kind: factoryd.CriterionHuman, Claim: "the pages read well"},
-		{ID: "c3", Kind: factoryd.CriterionInvariant, Test: "no endpoint times out"},
+		{ID: "c3", Kind: factoryd.CriterionInvariant, Suite: "./internal/server"},
 	}, Cards: []factoryd.PlanCard{
 		{Key: "foundation", Role: "foundation", Title: "Foundation"},
 		{Key: "integration", Role: "integration", Title: "Integration"},
@@ -56,7 +56,7 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 		"Criteria gap",
 		"The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason.",
 		`<fieldset class="question settled"><legend>c1 (test): met</legend>`,
-		"go test ./...",
+		`<p class="meta">a link is stored</p>`,
 		`<p class="reason">go test ./... exits 0, 214 tests</p>`,
 		`<fieldset class="question"><legend>c2 (human): open</legend>`,
 		"the pages read well",
@@ -73,6 +73,27 @@ func TestCriteriaGapCardHoldsVerdictsAndForms(t *testing.T) {
 	}
 	if n := strings.Count(card, `action="/approvals/30/waive"`); n != 2 {
 		t.Errorf("waiver forms = %d, want 2 (the open criteria alone):\n%s", n, card)
+	}
+}
+
+// A criterion's line on the card is its claim, or an invariant's suite.
+func TestCriteriaCardShowsTheClaimOrTheSuite(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "The shortener", Criteria: []factoryd.PlanCriterion{
+		{ID: "c1", Kind: factoryd.CriterionInvariant, Suite: "./..."},
+		{ID: "c2", Kind: factoryd.CriterionTest, Claim: "a slug redirects"},
+	}, Cards: []factoryd.PlanCard{
+		{Key: "foundation", Role: "foundation", Title: "Foundation"},
+		{Key: "integration", Role: "integration", Title: "Integration"},
+	}})
+	r.tasks.plans["t-plan"][0].Plan = plan
+	ck, _ := r.loggedIn(t)
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	for _, want := range []string{`<p class="meta">./...</p>`, `<p class="meta">a slug redirects</p>`} {
+		if !strings.Contains(card, want) {
+			t.Errorf("the criteria card lacks %q:\n%s", want, card)
+		}
 	}
 }
 

@@ -1372,6 +1372,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		rec.work = append(rec.work, fmt.Sprintf("This is the cut of #%d at session %d, %.2f EUR spent: %s", cards[i].IssueNumber, session, spent, sanitize.Inbound(step.Work)))
 	}
 	roles, settled := map[string]string{}, map[string]bool{}
+	var criteria []PlanCriterion
 	if newest, _, err := r.planAt(ctx, p.ID, 0); err != nil {
 		return replanRecord{}, false, err
 	} else if newest != nil {
@@ -1381,6 +1382,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		for _, c := range settledCards(*newest, cards, filingRound(step, newest)) {
 			settled[c.Key] = true
 		}
+		criteria = newest.Criteria
 	}
 	revisions := map[int]*Plan{}
 	for _, k := range cards {
@@ -1456,7 +1458,7 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 		}
 		// its last session is one from before the replan: a direct card's
 		// later ones are its planner's
-		text, err := r.oldCardText(ctx, k, tl, fmt.Sprintf("# #%d %s", k.IssueNumber, title), cmp.Or(said, state)+spend, role, cmp.Or(head, k.MergeCommit, k.SHA), step.Time)
+		text, err := r.oldCardText(ctx, k, tl, fmt.Sprintf("# #%d %s", k.IssueNumber, title), cmp.Or(said, state)+spend, role, cmp.Or(head, k.MergeCommit, k.SHA), step.Time, criteria)
 		if err != nil {
 			return replanRecord{}, false, err
 		}
@@ -1478,11 +1480,12 @@ func (r *Runner) replanRecord(ctx context.Context, p Task, ptl []byte) (replanRe
 
 // oldCardText is old card k's record file under title: its state line,
 // then each section that has lines: the reviews' findings and the stages'
-// from its timeline tl, an integration card's standing criteria verdicts
-// (StandingRow), the check-in's notes, and the working state of its
-// newest session created before before that left one, at branch head
-// commit, with how that session ended.
-func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, state, role, commit string, before time.Time) (string, error) {
+// from its timeline tl, an integration card's standing verdict
+// (StandingRow) on each of criteria, the plan's newest revision's, the
+// check-in's notes, and the working state of its newest session created
+// before before that left one, at branch head commit, with how that
+// session ended.
+func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, state, role, commit string, before time.Time, criteria []PlanCriterion) (string, error) {
 	parts := []string{title, state}
 	section := func(heading string, lines []string) {
 		if len(lines) > 0 {
@@ -1509,13 +1512,11 @@ func (r *Runner) oldCardText(ctx context.Context, k Task, tl []byte, title, stat
 			return "", err
 		}
 		lines = nil
-		seen := map[string]bool{}
-		for _, row := range rows {
-			if seen[row.Criterion] {
+		for _, c := range criteria {
+			v, ok := StandingRow(rows, c)
+			if !ok {
 				continue
 			}
-			seen[row.Criterion] = true
-			v, _ := StandingRow(rows, row.Criterion)
 			line := "- " + v.Criterion
 			for _, s := range []string{v.Verdict, v.Evidence} {
 				if s != "" {

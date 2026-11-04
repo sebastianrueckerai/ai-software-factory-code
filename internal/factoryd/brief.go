@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
@@ -192,7 +193,7 @@ func (b *BriefWriter) criteriaFacts(ctx context.Context, a ApprovalRequest) ([]c
 	out := make([]criterionFact, len(p.Criteria))
 	for i, c := range p.Criteria {
 		out[i] = criterionFact{ID: c.ID, Kind: c.Kind, Text: criterionText(c), Verdict: "open"}
-		if v, ok := StandingRow(rows, c.ID); ok {
+		if v, ok := StandingRow(rows, c); ok {
 			out[i].Verdict, out[i].Evidence = v.Verdict, v.Evidence
 		}
 	}
@@ -210,17 +211,10 @@ type criterionFact struct {
 	Evidence string `json:"evidence,omitempty"`
 }
 
-// criterionText is a criterion as one line: its test, else its claim,
+// criterionText is a criterion as one line: its claim, else its suite,
 // else its prompt.
 func criterionText(c PlanCriterion) string {
-	switch {
-	case c.Test != "":
-		return c.Test
-	case c.Claim != "":
-		return c.Claim
-	default:
-		return c.Prompt
-	}
+	return cmp.Or(c.Claim, c.Suite, c.Prompt)
 }
 
 // briefFacts are what the human will see of a: the facts of its kind and

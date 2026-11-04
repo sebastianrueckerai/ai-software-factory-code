@@ -1481,10 +1481,10 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		{"filed anew", note, base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run (" + note + ") for c3", 2, named},
 		{"re-opened", note, named, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and the model review did not run (" + note + ") for c3", 1, named},
 		{"a review that judged", "", base, nil, "the merge is held: 2 criteria were never judged, the criteria gate never ran for c1, and no model review judged c3", 1, base},
-		{"the review's alone", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}}, "the merge is held: 1 criterion was never judged, the model review did not run (" + note + ")", 2, named},
-		{"the review's alone, judged", "", base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}}, "the merge is held: 1 criterion was never judged by a model review", 1, base},
-		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met"}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
-		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet"}, {Criterion: "c3", Verdict: "met"}}, "", 1, base},
+		{"the review's alone", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}}, "the merge is held: 1 criterion was never judged, the model review did not run (" + note + ")", 2, named},
+		{"the review's alone, judged", "", base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}}, "the merge is held: 1 criterion was never judged by a model review", 1, base},
+		{"the gate never ran", note, base, []CriterionVerdict{{Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}, "the merge is held: 1 criterion was never judged, the criteria gate never ran", 1, base},
+		{"every criterion judged", note, base, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}, "", 1, base},
 	} {
 		task := gateTask
 		task.Source, task.Parent, task.PlanKey = SourcePlan, "t-plan", "integration"
@@ -1500,7 +1500,7 @@ func TestMergeHoldsWhileACriterionWasNeverJudged(t *testing.T) {
 		}
 		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
 		// the press met the human criterion
-		if err := store.PutCriteriaVerdicts(ctx, "t1", "approver", "sebastian", append(c.rows, CriterionVerdict{Criterion: "c2", Verdict: "met"})); err != nil {
+		if err := store.PutCriteriaVerdicts(ctx, "t1", "approver", "sebastian", append(c.rows, CriterionVerdict{Criterion: "c2", Verdict: "met", Kind: CriterionHuman})); err != nil {
 			t.Fatal(err)
 		}
 		r.record(ctx, "t1", "model_review", map[string]any{"pr": 9, "commit": "c1", "note": c.note})
@@ -1565,7 +1565,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 	store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/repo", IssueNumber: 7, Source: SourceChat}
 	store.tasks["t-found"] = Task{ID: "t-found", Repository: "sf/repo", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation"}
-	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it"}}); err != nil {
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c2", Evidence: "read it", Kind: CriterionHuman}}); err != nil {
 		t.Fatal(err)
 	}
 	val, err := execActivity(t, r, ActivityUnjudgedCriteria, "t1")
@@ -1594,7 +1594,7 @@ func TestUnjudgedCriteriaAndHoldMerge(t *testing.T) {
 	}
 	// rows that landed between the read and the hold leave nothing held:
 	// the ask says so and asks for the press again
-	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met"}, {Criterion: "c3", Verdict: "met"}}); err != nil {
+	if err := store.PutCriteriaVerdicts(ctx, "t1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionJudgement}}); err != nil {
 		t.Fatal(err)
 	}
 	comments := len(fj.comments)

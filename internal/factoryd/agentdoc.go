@@ -276,8 +276,8 @@ func agentDocPlan() Plan {
 		Spec:    &Spec{Outcome: "The counter counts every row the query returns, skipped ones included."},
 		Summary: "One card fixes the counter; one criterion proves it.",
 		Criteria: []PlanCriterion{{
-			ID: "c1", Kind: "test", Test: "go test ./internal/foo/ -run TestCounter",
-			Inputs: "the fixture table with one skipped row", Expected: "the count includes the skipped row",
+			ID: "c1", Kind: "test", Claim: "the counter counts a row the query skips",
+			Inputs: "the fixture table with one skipped row", Expected: "a count of 1",
 		}},
 		Cards: []PlanCard{{
 			Key: "f1", Role: RoleFeature, Title: "Fix the counter", Brief: "Count skipped rows.",

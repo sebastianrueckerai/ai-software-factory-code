@@ -1743,7 +1743,7 @@ func planTimeline(t *testing.T, r *Runner) []byte {
 var personReplan = map[string]any{"origin": ReplanPerson, "by": "ana", "comment": "the ui is too wide", "stops": []string{"t-ui"}, "revision": 1}
 
 // oldCardsRig is recordPlanTask under version 7 with its revision 1 of
-// four cards, the json stored the last result, and step, when not nil, its
+// four cards and one criterion, the json stored the last result, and step, when not nil, its
 // pending replan step, written at replanAt. Its old cards: api (#30)
 // merged, with a 40 KiB review; ui (#31) stopped, its branch at c7 past
 // its base, a review with a forged fence line, a check's findings, a
@@ -1752,7 +1752,8 @@ var personReplan = map[string]any{"origin": ReplanPerson, "by": "ana", "comment"
 // recorded, and one after it with a todo list; docs (#32) never started,
 // a hidden comment and a carriage return in its title;
 // cli (#33), the integration card, failed in the agent's words with no
-// commit past its base and a criterion unmet.
+// commit past its base and a criterion unmet, beside a stale row of
+// another kind.
 func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeKube, *forgejoHub, string) {
 	t.Helper()
 	ctx := context.Background()
@@ -1762,7 +1763,8 @@ func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeK
 	pinned := fixtureVersion(t)
 	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
 	hub.branches = map[string]string{"factory/t-ui": "c7"}
-	raw := planJSON(t, Plan{Summary: "s", Cards: []PlanCard{replanCard("api", RoleFeature, "the api"), replanCard("ui", RoleFeature, "the ui"),
+	raw := planJSON(t, Plan{Summary: "s", Criteria: []PlanCriterion{{ID: "links_crud", Kind: CriterionTest, Claim: "a link created through the API is stored",
+		Inputs: "POST /api/links with a url", Expected: "201"}}, Cards: []PlanCard{replanCard("api", RoleFeature, "the api"), replanCard("ui", RoleFeature, "the ui"),
 		replanCard("docs", RoleFeature, "the docs"), replanCard("cli", RoleIntegration, "the cli")}})
 	if _, err := store.AddPlanRevision(ctx, "t-plan", json.RawMessage(raw), "sha-1"); err != nil {
 		t.Fatal(err)
@@ -1799,11 +1801,15 @@ func oldCardsRig(t *testing.T, step map[string]any) (*Runner, *fakeStore, *fakeK
 			t.Fatal(err)
 		}
 	}
-	// an old review row under the gate's: the gate's stands
-	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "review", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "met", Evidence: "the diff adds the handler"}}); err != nil {
+	// an old review row under the gate's: the gate's stands; a row of
+	// another kind is stale and never does
+	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "review", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "met", Evidence: "the diff adds the handler", Kind: CriterionTest}}); err != nil {
 		t.Fatal(err)
 	}
-	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "gate", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "unmet", Evidence: "POST /api/links answers 500"}}); err != nil {
+	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "gate", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "unmet", Evidence: "POST /api/links answers 500", Kind: CriterionTest}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.PutCriteriaVerdicts(ctx, "t-cli", "approver", "", []CriterionVerdict{{Criterion: "links_crud", Verdict: "waived", Evidence: "an old invariant", Kind: CriterionInvariant}}); err != nil {
 		t.Fatal(err)
 	}
 	for _, s := range []struct {

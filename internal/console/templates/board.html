@@ -230,7 +230,7 @@
 {{else}}<p class="meta">The plan's cards ran out with a criterion still unmet. Approve grants one more bounded card, which the planner drafts; or waive a criterion with your reason. Every criterion met or waived ends the request on the next sweep; no final press.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
 {{end}}{{range .Criteria}}<fieldset class="question{{if or (eq .Verdict "met") (eq .Verdict "waived")}} settled{{end}}"><legend>{{.ID}} ({{.Kind}}): {{if .Verdict}}{{.Verdict}}{{else}}open{{end}}</legend>
-<p class="meta">{{if .Test}}{{.Test}}{{else}}{{.Claim}}{{end}}</p>
+<p class="meta">{{or .Claim .Suite}}</p>
 {{with .Evidence}}<p class="reason">{{.}}</p>
 {{end}}{{if and $.Approver (ne .Verdict "met") (ne .Verdict "waived")}}<form method="post" action="/approvals/{{$.ID}}/waive" hx-post="/approvals/{{$.ID}}/waive">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="criterion" value="{{.ID}}">

@@ -914,7 +914,7 @@ func installLine(m *imagegen.Manifest, tools []string) string {
 // reads the repository's AGENTS.md into the session itself.
 func featureGuide(role string, m *imagegen.Manifest, tools []string) string {
 	g := "How to work: build what this card's brief asks, and only that: other agents build the plan's other cards. " +
-		"Write the tests the acceptance items name, with the names, inputs and numbers they give; no probe tests or debug programs. "
+		"Write tests for the acceptance items, with the inputs and numbers they give; no probe tests or debug programs. "
 	if role == RoleIntegration {
 		g += "This is the integration card: turn the spec's acceptance tests into Go tests under acceptance/ and make them pass. "
 	}

@@ -233,7 +233,7 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	}
 	k.Delivered = !slices.ContainsFunc(cards, func(t factoryd.Task) bool { return t.Status != "done" && t.Status != "merged" })
 	for _, c := range p.Criteria {
-		v, _ := factoryd.StandingRow(rows, c.ID)
+		v, _ := factoryd.StandingRow(rows, c)
 		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})
 	}
 	k.Grantable = slices.ContainsFunc(k.Criteria, func(c criterionRow) bool { return c.Verdict != "met" && c.Verdict != "waived" })

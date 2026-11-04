@@ -223,8 +223,8 @@ func TestPlanClosedBackfill(t *testing.T) {
 		`INSERT INTO plan_revisions (task_id, revision, plan, sha256) VALUES
 			('t-509', 1, '{"summary": "links"}', 's1'),
 			('t-1304', 1, '{"summary": "x"}', 's2'),
-			('t-1304', 2, '{"summary": "x", "criteria": [{"id": "c1", "kind": "test", "test": "go test ./..."}]}', 's3'),
-			('t-1305', 1, '{"summary": "y", "criteria": [{"id": "c1", "kind": "test", "test": "go test ./..."}]}', 's4'),
+			('t-1304', 2, '{"summary": "x", "criteria": [{"id": "c1", "kind": "invariant", "suite": "./..."}]}', 's3'),
+			('t-1305', 1, '{"summary": "y", "criteria": [{"id": "c1", "kind": "invariant", "suite": "./..."}]}', 's4'),
 			('t-1305', 2, '{"summary": "y"}', 's5')`,
 		`INSERT INTO events (repository, task_id, issue_number, kind, actor, via, detail) VALUES
 			('sf/r', 't-1293', 1293, 'plan_closed', 'factoryd', 'factoryd', '{"criteria": 3}')`,

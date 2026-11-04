@@ -76,7 +76,7 @@ func TestAskHoldoutsDraftsDriesRedraftsAndStores(t *testing.T) {
 	ll := &fakeLiteLLM{contents: []string{proposal, redraft}}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	p := Plan{Spec: &Spec{Outcome: "The door opens only for a key that fits the lock", Glossary: []string{"the lock"}},
-		Criteria: []PlanCriterion{{ID: "green_login", Kind: "test", Test: "TestLogin in ./internal/auth"}}}
+		Criteria: []PlanCriterion{{ID: "green_login", Kind: "test", Claim: "a login answers 200", Inputs: "POST /login", Expected: "200"}}}
 	done := make(chan error, 1)
 	go func() {
 		done <- r.askHoldouts(context.Background(), holdoutPlanTask(), 1, p)
@@ -400,7 +400,7 @@ func TestFileVerdict(t *testing.T) {
 	card.Process, card.ModelAlias = "maintenance", "factory/small"
 	r, _, store := newTestRunner(t, card, newFakeKube(), &fakeObjectStore{})
 	plan := `{"summary":"s","spec":{"outcome":"The door opens only for a key that fits the lock","glossary":["the lock"]},` +
-		`"criteria":[{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}],` +
+		`"criteria":[{"id":"green_login","kind":"test","claim":"a login answers 200","inputs":"POST /login","expected":"200"}],` +
 		`"cards":[{"key":"integ","role":"integration","title":"t","brief":"b"}]}`
 	if _, err := store.AddPlanRevision(ctx, "plan1", json.RawMessage(plan), "sha1"); err != nil {
 		t.Fatal(err)
@@ -536,7 +536,7 @@ func TestGateCriteriaRunsTheStoredHoldoutsBlindToTheAgent(t *testing.T) {
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"a_green","kind":"test","test":"TestA in ./a"}`)
+		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
 	rows := []Holdout{
 		{Idx: 1, Round: 1, ID: "door_state", State: HoldoutStored, DryVerdict: "red",
 			TestName: "TestDoorState", TestCode: "func TestDoorState(t *testing.T) {}"},
@@ -625,7 +625,7 @@ func TestGateCriteriaFailsWhenThePodEndsBeforeTheHoldouts(t *testing.T) {
 	objects := &fakeObjectStore{}
 	r, hub, store := newTestRunner(t, seedCriteriaPlan(t), kube, objects)
 	seedPlan(t, store, map[string]string{"integ": RoleIntegration},
-		`{"id":"a_green","kind":"test","test":"TestA in ./a"}`)
+		`{"id":"a_green","kind":"invariant","suite":"./a"}`)
 	if _, err := store.PutPlanHoldouts(context.Background(), "plan1", 1, []Holdout{
 		{Idx: 1, Round: 1, ID: "door_state", State: HoldoutStored, DryVerdict: "red", TestName: "TestDoorState", TestCode: "func TestDoorState(t *testing.T) {}"},
 	}); err != nil {
@@ -658,7 +658,7 @@ func settleRig(t *testing.T, rows ...Holdout) (*Runner, *fakeKube, *fakeStore) {
 	card.Process, card.ModelAlias = "maintenance", "factory/small"
 	r, _, store := newTestRunner(t, card, kube, &fakeObjectStore{})
 	plan := `{"summary":"s","spec":{"outcome":"The door opens only for a key that fits the lock","glossary":["the lock"]},` +
-		`"criteria":[{"id":"green_login","kind":"test","test":"TestLogin in ./internal/auth"}],` +
+		`"criteria":[{"id":"green_login","kind":"test","claim":"a login answers 200","inputs":"POST /login","expected":"200"}],` +
 		`"cards":[{"key":"integ","role":"integration","title":"t","brief":"b"}]}`
 	if _, err := store.AddPlanRevision(context.Background(), "plan1", json.RawMessage(plan), "sha1"); err != nil {
 		t.Fatal(err)

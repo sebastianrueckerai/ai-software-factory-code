@@ -1466,9 +1466,12 @@ func criteriaScene(now time.Time) labScene {
 	found.Parent, found.Source, found.PlanKey = plan.ID, factoryd.SourcePlan, "foundation"
 	integ.Parent, integ.Source, integ.PlanKey = plan.ID, factoryd.SourcePlan, "integration"
 	criteria := []factoryd.PlanCriterion{
-		{ID: "size_bound_escape", Kind: factoryd.CriterionTest, Test: "TestDivideConquerSizeBounds in acceptance"},
-		{ID: "window_and_existing_figures", Kind: factoryd.CriterionTest, Test: "TestDivideConquerMetricsCompatibility in acceptance"},
-		{ID: "ledger_retry_integrity", Kind: factoryd.CriterionTest, Test: "TestDivideConquerLedgerIntegrity in acceptance"},
+		{ID: "size_bound_escape", Kind: factoryd.CriterionTest, Claim: "the panel counts the cards over their size bound",
+			Inputs: "a card over its bound, one unsized and one with no bound", Expected: "1 over, the unsized card counted as large"},
+		{ID: "window_and_existing_figures", Kind: factoryd.CriterionTest, Claim: "the new panels keep the page's window and its old figures",
+			Inputs: "GET /metrics for the last week", Expected: "twelve panels and the old figures unchanged"},
+		{ID: "ledger_retry_integrity", Kind: factoryd.CriterionTest, Claim: "a retried session spends once in the ledger",
+			Inputs: "one session answered twice", Expected: "one spend row"},
 	}
 	planJSON, _ := json.Marshal(factoryd.Plan{Summary: "Two cards: the read model, then the page.", Criteria: criteria,
 		Cards: []factoryd.PlanCard{

@@ -248,7 +248,7 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	want := "| 3 | all_green | invariant | go test ./... passes | foundation, integration |\n\nQuestions:\n" +
+	want := "| 3 | all_green | invariant | ./... | foundation, integration |\n\nQuestions:\n" +
 		"1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)\n" +
 		"2. How long are the results kept? (choices: 7 days / 30 days, see hxxps://evil[.]example)\n\n<details>"
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0].body, want) {

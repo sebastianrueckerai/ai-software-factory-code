@@ -1274,12 +1274,12 @@ func TestGuidesEndWithTheOneCheckSentence(t *testing.T) {
 	}
 }
 
-// featureGuide's card writes the tests the acceptance items name, not any
-// probe or debug program (stage12-design 5.2).
-func TestFeatureGuideWritesTheNamedTests(t *testing.T) {
-	want := "Write the tests the acceptance items name, with the names, inputs and numbers they give; no probe tests or debug programs."
-	if !strings.Contains(featureGuide(RoleFeature, nil, nil), want) {
-		t.Fatalf("featureGuide = %q, want it to contain %q", featureGuide(RoleFeature, nil, nil), want)
+// featureGuide's card writes tests for its acceptance items, which name
+// no test, and no probe or debug program (stage12-design 5.2).
+func TestFeatureGuideWritesTestsForTheItems(t *testing.T) {
+	want := "Write tests for the acceptance items, with the inputs and numbers they give; no probe tests or debug programs."
+	if got := featureGuide(RoleFeature, nil, nil); !strings.Contains(got, want) || strings.Contains(got, "the names") {
+		t.Fatalf("featureGuide = %q, want it to contain %q and no test names", got, want)
 	}
 }
 
