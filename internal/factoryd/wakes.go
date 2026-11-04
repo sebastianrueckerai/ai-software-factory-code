@@ -233,8 +233,7 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && source == SourceMonthCap {
 			continue // the month cap refuses the agent's own calls: its ask wakes nobody
 		}
-		merge := e.Kind == EventApprovalRequested && e.Detail["kind"] == ApprovalMerge
-		if (e.Kind == EventQuestionAsked || merge) && p.Autonomy == policy.AutonomyAutonomous {
+		if (e.Kind == EventQuestionAsked || isMergeRow(e)) && p.Autonomy == policy.AutonomyAutonomous {
 			key := askKey(e)
 			if _, done, err := w.Store.WakeMarkAt(ctx, p.Repository, key); err != nil {
 				return err
@@ -468,8 +467,9 @@ func (w *Waker) cardText(ctx context.Context, e Event) string {
 
 // askText is the wake's text: every ask of the batch with its card ref,
 // then what the turn does with them; fund is named where the woken login
-// holds the tool, an approver, and approve_merge where it also may merge,
-// at merge rule auto.
+// holds the tool, an approver. A batch with a merge row closes on one
+// merge sentence: approve_merge and deny_merge where the approver may
+// merge, at merge rule auto, else that a human approves merges.
 func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []string, login, mergeRule string) string {
 	var b strings.Builder
 	if len(asks) == 1 {
@@ -481,7 +481,7 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	for _, a := range asks {
 		t, _, _ := w.Store.Task(ctx, a.e.TaskID)
 		line := askSentence(a.e)
-		if a.e.Kind == EventApprovalRequested {
+		if isMergeRow(a.e) {
 			anyMerge, line = true, mergeLine(a.e)
 		}
 		fmt.Fprintf(&b, "\n%s: %s", cardRef(a.e, t), line)
@@ -496,9 +496,15 @@ func (w *Waker) askText(ctx context.Context, asks []pendingAsk, approvers []stri
 	case anyMerge && approver && mergeRule == policy.MergeAuto:
 		b.WriteString(" A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis.")
 	case anyMerge:
-		b.WriteString(" A human approves merges here: record what you found with attach_analysis.")
+		b.WriteString(" A human approves merges here.")
 	}
 	return b.String()
+}
+
+// isMergeRow says e is a merge approval row, the one approval kind that
+// wakes.
+func isMergeRow(e Event) bool {
+	return e.Kind == EventApprovalRequested && e.Detail["kind"] == ApprovalMerge
 }
 
 // mergeLine is a merge approval row's line on the wake: its pull request,
