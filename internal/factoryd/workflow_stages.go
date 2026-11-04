@@ -1202,8 +1202,10 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			t.leaveQueue(approvalWaitLeft)
 		}
 		v = t.awaitApproval(commit, g, covered)
-		// the head the approval's turn merged on (versionQueueWaits)
-		commit = t.head
+		if t.waitsOutOfQueue() {
+			// the head the approval's turn merged on
+			commit = t.head
+		}
 		if !v.reask {
 			break
 		}

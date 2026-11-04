@@ -279,8 +279,9 @@ type ProjectConfig struct {
 	// policy's, and a longer one is rejected. Absent or 0: policy.yaml's.
 	Waits *Waits `yaml:"waits,omitempty" json:"waits,omitempty"`
 	// WorkInProgress is how many of the project's cards hold a work slot
-	// at once (waiting on a dependency, working, in review or waiting on a
-	// human); a queued card starts only under it. Absent: the default, 5.
+	// at once (running, closing, in review in any gate but the approval's,
+	// or queued and admitted); a queued card starts only under it. Absent:
+	// the default, 5.
 	WorkInProgress int `yaml:"work_in_progress,omitempty" json:"work_in_progress,omitempty"`
 	// Model runs a coding card's first session on Models.Stronger instead
 	// of the ladder's first rung; the only accepted value is "stronger".

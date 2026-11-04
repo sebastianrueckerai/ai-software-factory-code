@@ -92,7 +92,8 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.card("t1441", 1441, "done", "", 2, child("k1441"))
 	g.card("t1451", 1451, "failed", "", 3, child("k1451"))
 
-	g.card("t1410", 1410, "in-review", GateApproval, 10, nil)
+	admitted := func(t *Task) { at := boardNow.Add(-20 * time.Hour); t.AdmittedAt = &at }
+	g.card("t1410", 1410, "in-review", GateApproval, 10, admitted)
 	g.moved("t1410", "in-review", GateApproval, 9*time.Hour+40*time.Minute)
 	g.line(t, "t1410", 10*time.Hour, "model_review", map[string]any{"verdict": "concerns", "findings": []string{findingA}, "round": 1})
 	for _, ago := range []time.Duration{9*time.Hour + 59*time.Minute, 9*time.Hour + 50*time.Minute} {
@@ -103,7 +104,7 @@ func TestBoardDigestRendersLiveCardsQueueSlotsPlansAndCaps(t *testing.T) {
 	g.store.cases = []Case{{ID: 1, TaskID: "t1410", Kind: CaseBudgetFloor, StateKey: "k-floor", Status: CaseAtHuman,
 		Money: &CaseMoney{Kind: string(CaseBudgetFloor), BudgetEUR: 5, SpentEUR: 4.9}}}
 
-	g.card("t1452", 1452, "waiting-deps", "", 11, child("k1452"))
+	g.card("t1452", 1452, "waiting-deps", "", 11, func(t *Task) { child("k1452")(t); admitted(t) })
 	g.moved("t1452", "waiting-deps", "", 3*time.Hour+2*time.Minute)
 	g.card("t1472", 1472, "running", GateSession, 12, child("k1472"))
 	g.moved("t1472", "queued", GateIntake, 13*time.Minute)

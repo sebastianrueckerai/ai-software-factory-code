@@ -426,9 +426,10 @@ func TestParkingOnAPersonPullsTheNextQueuedCard(t *testing.T) {
 }
 
 // A card frees its slot the moment it waits on a person's approval or on
-// a dependency: entering the wait clears its admission and pulls the next
-// queued card of the project into the slot. The bound of 2 is full with
-// the waiting card and its running dependency until then.
+// a dependency: entering the wait pulls the next queued card of the
+// project into the slot, and the card keeps its first admission. The
+// bound of 2 is full with the waiting card and its running dependency
+// until then.
 func TestEnteringAWaitPullsTheNextQueuedCard(t *testing.T) {
 	for name, tc := range map[string]struct {
 		status, gate, activity string
@@ -450,6 +451,7 @@ func TestEnteringAWaitPullsTheNextQueuedCard(t *testing.T) {
 			if err := store.SetAdmitted(ctx, "t1"); err != nil {
 				t.Fatal(err)
 			}
+			first, _, _ := store.Task(ctx, "t1")
 			rec := &recordingWorkflows{}
 			r.cfg.Workflows = BoundedWorkflows{Workflows: rec, Store: store, Policy: func() policy.Tree {
 				return policy.Tree{Projects: map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo", WorkInProgress: 2}}}
@@ -460,8 +462,8 @@ func TestEnteringAWaitPullsTheNextQueuedCard(t *testing.T) {
 			if _, err := execActivity(t, r, tc.activity, tc.args...); err != nil {
 				t.Fatal(err)
 			}
-			if w, _, _ := store.Task(ctx, "t1"); w.AdmittedAt != nil {
-				t.Fatalf("the waiting card is %s in gate %s, admitted at %v: want its admission cleared", w.Status, w.Gate, w.AdmittedAt)
+			if w, _, _ := store.Task(ctx, "t1"); w.AdmittedAt == nil || !w.AdmittedAt.Equal(*first.AdmittedAt) || w.Status != map[string]string{"approval": "in-review", "dependency": "waiting-deps"}[name] {
+				t.Fatalf("the waiting card is %s in gate %s, admitted at %v: want it in its wait, its first admission %v kept", w.Status, w.Gate, w.AdmittedAt, first.AdmittedAt)
 			}
 			if q, _, _ := store.Task(ctx, "t-q"); !slices.Equal(rec.starts, []string{"t-q"}) || q.AdmittedAt == nil {
 				t.Fatalf("starts %v, admitted at %v: want the waiting card's slot to start the queued one", rec.starts, q.AdmittedAt)
@@ -473,16 +475,15 @@ func TestEnteringAWaitPullsTheNextQueuedCard(t *testing.T) {
 // A card takes its slot again when it resumes, over the bound, as an
 // answered card does: the approved card back in its merge queue turn and
 // the card whose dependency is done (MarkStarted) count again though the
-// running card fills the bound of 1. The resumed card is stamped admitted
-// again and its queue reason cleared, and the queued card stays out.
+// running card fills the bound of 1. The resumed card keeps its first
+// admission, and the queued card stays out.
 func TestApprovedCardResumesOverTheBound(t *testing.T) {
 	ctx := context.Background()
-	since := time.Now().Add(-time.Hour)
+	first := time.Now().Add(-time.Hour)
 	store, rec, bounded := boundedFixture(t, 1,
-		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running"},
-		Task{ID: "t-appr", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "in-review", Gate: GateApproval, IssueNumber: 2},
-		Task{ID: "t-deps", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "waiting-deps", Gate: GateDependencies, IssueNumber: 3,
-			QueueReason: "waits on #1", QueueSince: &since},
+		Task{ID: "t-run", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "running", AdmittedAt: &first},
+		Task{ID: "t-appr", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "in-review", Gate: GateApproval, IssueNumber: 2, AdmittedAt: &first},
+		Task{ID: "t-deps", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "waiting-deps", Gate: GateDependencies, IssueNumber: 3, AdmittedAt: &first},
 		Task{ID: "t-q", Repository: "demo/app", Kind: "agent", Track: "direct", Status: "queued", IssueNumber: 4})
 	count := func(step string, want int) {
 		t.Helper()
@@ -502,8 +503,13 @@ func TestApprovedCardResumesOverTheBound(t *testing.T) {
 		t.Fatal(err)
 	}
 	count("the dependency done", 3)
-	if d, _, _ := store.Task(ctx, "t-deps"); d.Status != "running" || d.AdmittedAt == nil || d.QueueReason != "" || d.QueueSince != nil {
-		t.Fatalf("the resumed card is %s, admitted at %v, queue reason %q since %v; want running, stamped, no reason", d.Status, d.AdmittedAt, d.QueueReason, d.QueueSince)
+	for _, id := range []string{"t-appr", "t-deps"} {
+		if c, _, _ := store.Task(ctx, id); c.AdmittedAt == nil || !c.AdmittedAt.Equal(first) {
+			t.Fatalf("%s is %s, admitted at %v; want its first admission %v", id, c.Status, c.AdmittedAt, first)
+		}
+	}
+	if d, _, _ := store.Task(ctx, "t-deps"); d.Status != "running" {
+		t.Fatalf("the resumed card is %s, want running", d.Status)
 	}
 	if err := bounded.Start(ctx, "t-q"); err != nil {
 		t.Fatal(err)

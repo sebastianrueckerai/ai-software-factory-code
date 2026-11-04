@@ -29,10 +29,12 @@ import (
 // waiting-poster for a fund after a cap, the approval gate for the merge —
 // on a dependency (waiting-deps) or on its image (waiting-image) holds no
 // slot (roadmap 233): the bound counts only what runs. Entering the
-// approval gate or waiting-deps clears the admission stamp and pulls the
-// next queued card. A person's answer or approval, the dependency or the
-// image resumes the card even at the bound, an overshoot of one gate pass
-// that touches only the card just unblocked.
+// approval gate or waiting-deps pulls the next queued card, and the card
+// keeps its admission stamp, the time of its first admission. A person's
+// answer or approval, the dependency or the image resumes the card even
+// at the bound, an overshoot of one per unblocked card: a finished
+// dependency resumes all its dependents, and each approval while the merge
+// queue is paused adds one.
 type BoundedWorkflows struct {
 	Workflows
 	// Store reads the card, its dependencies and its project's spend, and

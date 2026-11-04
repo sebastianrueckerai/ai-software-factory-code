@@ -12,10 +12,9 @@ import (
 // names its event. A flag on the head's state keys on the head, the newest
 // judged line's commit, h2. A wait keys on its kind and start: a run quiet
 // since 11:00, a queue held since 09:00, whose wait_over_bound is left to
-// queued_over_bound. A slot held by a wait and a failed dependency open no
-// case: the first is a record, the run's own trip takes the second. An
-// ended card opens a case only for what it left open where Finish closes
-// it, a merged or closing one none.
+// queued_over_bound. A failed dependency opens no case: the run's own
+// trip takes it. An ended card opens a case only for what it left open
+// where Finish closes it, a merged or closing one none.
 func TestMonitorFlagStates(t *testing.T) {
 	at := time.Date(2026, 11, 4, 12, 0, 0, 0, time.UTC)
 	held := at.Add(-3 * time.Hour)

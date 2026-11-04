@@ -43,14 +43,16 @@ func (s *PGStore) PlanClosed(ctx context.Context, plan string) (time.Time, bool,
 }
 
 // QueuedPlans are the issues of repository's plans with a card in the
-// merge queue, in review and holding an entry or waiting in gate
-// merge-queue: its merge would open the plan's group on main. A card
-// merged by hand keeps its gate but has left the queue.
+// merge queue, in review and holding an entry, waiting in gate
+// merge-queue, or waiting for its approval, which takes a turn again
+// before the merge (versionQueueWaits): its merge would open the plan's
+// group on main. A card merged by hand keeps its gate but has left the
+// queue.
 func (s *PGStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT DISTINCT p.issue_number FROM tasks c JOIN tasks p ON p.id = c.parent_task
 		WHERE c.repository = $1 AND c.source = 'plan' AND c.plan_key IS NOT NULL AND c.status = 'in-review'
-			AND (c.gate = $2 OR EXISTS (SELECT 1 FROM merge_queue q WHERE q.task_id = c.id))
-		ORDER BY 1`, repository, GateMergeQueue)
+			AND (c.gate IN ($2, $3) OR EXISTS (SELECT 1 FROM merge_queue q WHERE q.task_id = c.id))
+		ORDER BY 1`, repository, GateMergeQueue, GateApproval)
 	if err != nil {
 		return nil, err
 	}

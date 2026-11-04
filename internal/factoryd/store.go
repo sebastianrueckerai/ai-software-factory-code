@@ -325,13 +325,10 @@ type Store interface {
 	// statuses in from; any other current status is an error. Entering done
 	// or failed stamps the finish time and leaves the gate; entering a
 	// status that is neither final nor merged clears the finish time and
-	// the spend settlement (a reopen). Entering waiting-deps clears the
-	// admission stamp.
+	// the spend settlement (a reopen).
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	// MarkStarted moves a queued, waiting-deps, running, in-review,
-	// waiting-human, waiting-poster or waiting-image task to running,
-	// stamping a bound card admitted again when a wait cleared its stamp,
-	// and clears its queue reason.
+	// waiting-human, waiting-poster or waiting-image task to running.
 	MarkStarted(ctx context.Context, id string) error
 	// SetAdmitted stamps task id's admission (admitted_at, once): the
 	// moment it took one of its project's work_in_progress slots. The
@@ -592,7 +589,7 @@ type Store interface {
 	// status; false when it has none.
 	NewestApproval(ctx context.Context, taskID, kind string) (ApprovalRequest, bool, error)
 	// SetGate records that the task entered gate at since; a finished
-	// task enters none. The approval gate clears its admission stamp.
+	// task enters none.
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
 	// InsertAlert records an alert and returns its id; 0 when the task
 	// has its screening alert already (one per task).
@@ -2085,15 +2082,13 @@ func (s *PGStore) Ping(ctx context.Context) error {
 // transitionSet and transitionWhere are TransitionTask's update: $1 the
 // task, $2 the status it moves to, $3 the statuses it may move from. A
 // card that moves back from a final status (a reopen) is unfinished and
-// unsettled again. A card that waits on its dependencies gives up its
-// admission: it holds no work slot.
+// unsettled again.
 const (
 	transitionSet = `status = $2,
 		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE NULL END,
 		 settled_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN settled_at ELSE NULL END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
-		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END,
-		 admitted_at = CASE WHEN $2 = 'waiting-deps' THEN NULL ELSE admitted_at END`
+		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`
 	transitionWhere = `id = $1 AND status = ANY($3)`
 )
 
@@ -2114,24 +2109,21 @@ func (s *PGStore) TransitionTask(ctx context.Context, id string, from []string, 
 
 // SetGate sets a live card's gate (the review, the audit, …) and the
 // since it entered it; a final card keeps its last gate — the WHERE
-// refuses done, failed and closed. A card whose approval waits for a
-// human gives up its admission: it holds no work slot. SetState, the
-// merge queue, the gate watchers and the gates' approval paths call it.
+// refuses done, failed and closed. SetState, the merge queue, the gate
+// watchers and the gates' approval paths call it.
 func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time) error {
-	_, err := s.changeStatus(ctx, `gate = $2, gate_since = $3, admitted_at = CASE WHEN $2 = '`+GateApproval+`' THEN NULL ELSE admitted_at END`,
+	_, err := s.changeStatus(ctx, `gate = $2, gate_since = $3`,
 		`id = $1 AND status NOT IN ('done', 'failed', 'closed')`, id, gate, since)
 	return err
 }
 
 // MarkStarted moves a startable card — queued, held, in review,
-// waiting-human and the like — to running. A bound card that gave up its
-// admission in a wait takes its slot again, over the bound: it is
-// stamped admitted again, and a running card has no queue reason.
-// SetState's running branch is its sole caller; a card outside the
-// startable set answers ErrNotFound.
+// waiting-human and the like — to running. A card back from a wait takes
+// its slot again by its status, over the bound, and keeps its first
+// admission. SetState's running branch is its sole caller; a card outside
+// the startable set answers ErrNotFound.
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
-	changed, err := s.changeStatus(ctx, `status = 'running', queue_reason = '', queue_since = NULL,
-		admitted_at = CASE WHEN admitted_at IS NULL AND `+boundCards+` THEN now() ELSE admitted_at END`,
+	changed, err := s.changeStatus(ctx, `status = 'running'`,
 		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image')`, id)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
@@ -2789,9 +2781,8 @@ func (s *PGStore) DeployedCommit(ctx context.Context, deployment string) (string
 }
 
 // CountQueue counts repository's queued cards not yet admitted (roadmap
-// 239's queue cap); a card that gave up its admission in a wait is past
-// its start and counts in neither. QueueRefusal, the ready check, and the
-// roadmap refill call it.
+// 239's queue cap): a card past its start counts in no queue, whatever
+// its wait. QueueRefusal, the ready check, and the roadmap refill call it.
 func (s *PGStore) CountQueue(ctx context.Context, repository string) (int, error) {
 	var n int
 	err := s.db.QueryRowContext(ctx, `

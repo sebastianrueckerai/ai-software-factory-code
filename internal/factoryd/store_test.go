@@ -583,7 +583,7 @@ func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 func (s *fakeStore) QueuedPlans(ctx context.Context, repository string) ([]int64, error) {
 	var out []int64
 	for _, c := range s.tasks {
-		queued := c.Gate == GateMergeQueue || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
+		queued := c.Gate == GateMergeQueue || c.Gate == GateApproval || slices.ContainsFunc(s.queue, func(e queueEntry) bool { return e.task == c.ID })
 		if issue := s.tasks[c.Parent].IssueNumber; c.Repository == repository && c.Source == SourcePlan && c.Parent != "" && c.PlanKey != "" &&
 			c.Status == "in-review" && queued && !slices.Contains(out, issue) {
 			out = append(out, issue)
@@ -894,9 +894,6 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
 	}
 	t.Status = to
-	if to == "waiting-deps" {
-		t.AdmittedAt = nil
-	}
 	if !Final(to) {
 		delete(s.settled, id)
 	}
@@ -924,11 +921,6 @@ func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
 	t.Status = "running"
-	if t.AdmittedAt == nil && t.Kind == "agent" && !t.Unbound() {
-		now := time.Now()
-		t.AdmittedAt = &now
-	}
-	t.QueueReason, t.QueueSince = "", nil
 	s.tasks[id] = t
 	s.started[id] = true
 	return nil
@@ -1766,9 +1758,6 @@ func (s *fakeStore) SetGate(ctx context.Context, id, gate string, since time.Tim
 		return nil
 	}
 	t.Gate, t.GateSince = gate, &since
-	if gate == GateApproval {
-		t.AdmittedAt = nil
-	}
 	s.tasks[id] = t
 	s.gates = append(s.gates, id+" "+gate+" "+since.UTC().Format(time.RFC3339Nano))
 	return nil

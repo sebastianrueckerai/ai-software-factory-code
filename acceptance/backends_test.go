@@ -196,9 +196,6 @@ func (s *acceptanceStore) TransitionTask(_ context.Context, id string, from []st
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, factoryd.ErrNotFound, from, to)
 	}
 	t.Status = to
-	if to == "waiting-deps" {
-		t.AdmittedAt = nil
-	}
 	if factoryd.Final(to) {
 		now := time.Now()
 		t.FinishedAt, t.Gate, t.GateSince = &now, "", nil
@@ -215,11 +212,6 @@ func (s *acceptanceStore) MarkStarted(_ context.Context, id string) error {
 		return fmt.Errorf("task %s: %w", id, factoryd.ErrNotFound)
 	}
 	t.Status = "running"
-	if t.AdmittedAt == nil && t.Kind == "agent" && !t.Unbound() {
-		now := time.Now()
-		t.AdmittedAt = &now
-	}
-	t.QueueReason, t.QueueSince = "", nil
 	s.tasks[id] = t
 	return nil
 }
@@ -796,9 +788,6 @@ func (s *acceptanceStore) SetGate(_ context.Context, id, gate string, since time
 		return nil
 	}
 	t.Gate, t.GateSince = gate, &since
-	if gate == factoryd.GateApproval {
-		t.AdmittedAt = nil
-	}
 	s.tasks[id] = t
 	return nil
 }

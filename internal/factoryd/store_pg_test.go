@@ -8,11 +8,12 @@ import (
 )
 
 // A card holds no work slot while its approval waits for a human or it
-// waits on a dependency: entering either wait clears its admission. It
-// takes the slot again as it resumes, the approved card back in a gate of
-// its turn, the other through MarkStarted, which stamps it admitted again
-// and clears its queue reason. holdsSlot reads the same rule card by card,
-// and the queue cap counts only the queued cards not yet admitted.
+// waits on a dependency, and takes it again as it resumes: the approved
+// card back in a gate of its turn, the other through MarkStarted. The
+// slot reads the status, so the admission stamp keeps the first admission
+// through both waits, and a waiting card, admitted, takes no queue
+// reason. holdsSlot reads the same rule card by card, and the queue cap
+// counts only the queued cards not yet admitted.
 func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 	for name, open := range bothStores {
 		t.Run(name, func(t *testing.T) {
@@ -63,11 +64,19 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 					t.Fatalf("%s: holdsSlot holds %v, want %v", step, held, holding)
 				}
 			}
-			admitted := func(id string, want bool) {
+			stamps := map[string]time.Time{}
+			for _, id := range []string{"t-appr", "t-deps"} {
+				task, _, err := s.Task(ctx, id)
+				if err != nil || task.AdmittedAt == nil {
+					t.Fatalf("%s admitted at %v (err %v), want stamped", id, task.AdmittedAt, err)
+				}
+				stamps[id] = *task.AdmittedAt
+			}
+			admitted := func(id string) {
 				t.Helper()
 				task, _, err := s.Task(ctx, id)
-				if err != nil || (task.AdmittedAt != nil) != want {
-					t.Fatalf("%s admitted at %v (err %v), want stamped %v", id, task.AdmittedAt, err, want)
+				if err != nil || task.AdmittedAt == nil || !task.AdmittedAt.Equal(stamps[id]) {
+					t.Fatalf("%s admitted at %v (err %v), want its first admission %v", id, task.AdmittedAt, err, stamps[id])
 				}
 			}
 			counts("at the start", 6, 1, "t-run", "t-close", "t-review", "t-appr", "t-deps", "t-qa")
@@ -75,13 +84,13 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 			if err := s.SetGate(ctx, "t-appr", GateApproval, now); err != nil {
 				t.Fatal(err)
 			}
-			admitted("t-appr", false)
+			admitted("t-appr")
 			counts("the approval waits", 5, 1, "t-run", "t-close", "t-review", "t-deps", "t-qa")
 
 			if err := s.TransitionTask(ctx, "t-deps", []string{"queued"}, "waiting-deps"); err != nil {
 				t.Fatal(err)
 			}
-			admitted("t-deps", false)
+			admitted("t-deps")
 			counts("the dependency waits", 4, 1, "t-run", "t-close", "t-review", "t-qa")
 
 			if err := s.SetGate(ctx, "t-appr", GateMergeQueue, now); err != nil {
@@ -92,13 +101,13 @@ func TestCountAdmittedFreesTheApprovalAndDependencyWaits(t *testing.T) {
 			if err := s.SetQueueReason(ctx, "t-deps", "waits on #3", now); err != nil {
 				t.Fatal(err)
 			}
+			if task, _, _ := s.Task(ctx, "t-deps"); task.QueueReason != "" || task.QueueSince != nil {
+				t.Fatalf("the waiting card's queue reason = %q since %v, want none: it is admitted", task.QueueReason, task.QueueSince)
+			}
 			if err := s.MarkStarted(ctx, "t-deps"); err != nil {
 				t.Fatal(err)
 			}
-			admitted("t-deps", true)
-			if task, _, _ := s.Task(ctx, "t-deps"); task.QueueReason != "" || task.QueueSince != nil {
-				t.Fatalf("the resumed card's queue reason = %q since %v, want none", task.QueueReason, task.QueueSince)
-			}
+			admitted("t-deps")
 			counts("the dependency done", 6, 1, "t-run", "t-close", "t-review", "t-appr", "t-deps", "t-qa")
 		})
 	}

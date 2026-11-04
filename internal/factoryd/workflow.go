@@ -3324,12 +3324,12 @@ func (t *taskRun) autoMerge(commit string, g GateResults, rv Review, met []strin
 // file with the pull request (the cheap turn), else it goes back to
 // approve as synced. A failed merge keeps the turn through its retries,
 // and a new approval wait leaves the queue again. An approval over
-// findings the card showed adjudicates them (versionAdjudicated). A merge Forgejo refuses
-// keeps the wait, but a queue head's red checks take it back through its
-// turn while re-runs are left (versionRedHeadRestage); one that fails
-// otherwise keeps the approval and is tried again after mergeRetryAfter
-// (versionGatesPinned). A press on a plan's integration card whose
-// criteria no review judged runs the review on g again first
+// findings the card showed adjudicates them (versionAdjudicated). A merge
+// Forgejo refuses keeps the wait, but a queue head's red checks take it
+// back through its turn while re-runs are left (versionRedHeadRestage);
+// one that fails otherwise keeps the approval and is tried again after
+// mergeRetryAfter (versionGatesPinned). A press on a plan's integration
+// card whose criteria no review judged runs the review on g again first
 // (versionReviewHoldsMerge).
 func (t *taskRun) awaitApproval(commit string, g GateResults, covered []string) verdict {
 	approver := ""

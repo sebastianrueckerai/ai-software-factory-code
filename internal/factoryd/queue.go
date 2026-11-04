@@ -22,8 +22,10 @@ import (
 // merges main in and runs the checks of a head that moved. A task leaves
 // the queue while its approval waits for a human, and an approval enters
 // it again at its end: that turn merges main in once more and holds
-// through the merge (versionQueueWaits). A run from before holds its turn
-// through the approval wait and the merge.
+// through the merge (versionQueueWaits). A failed merge keeps the turn
+// through its retries, and a refused merge or exhausted retries leave the
+// queue until the next approval. A run from before holds its turn through
+// the approval wait and the merge.
 
 // SignalQueueTurn wakes a task waiting in the merge queue: the entry ahead
 // of it left.
