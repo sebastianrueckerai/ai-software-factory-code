@@ -627,15 +627,30 @@ func (s *fakeTasks) RollCarries(_ context.Context, id string) ([]factoryd.Task, 
 	return out, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (s *fakeTasks) TaskByIssue(_ context.Context, repository string, issue int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var held []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issue {
-			return t.Task, true, nil
+			held = append(held, t.Task)
 		}
 	}
-	return factoryd.Task{}, false, nil
+	slices.SortFunc(held, func(a, b factoryd.Task) int {
+		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return factoryd.Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 // BoardTasks lists repository's open cards, as the store does, in its

@@ -381,15 +381,30 @@ func (s *acceptanceStore) TasksByRuling(_ context.Context, repository, ruling st
 	return cards, nil
 }
 
+// TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
+// newest one among the rest.
 func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
+	var held []factoryd.Task
 	for _, t := range s.tasks {
 		if t.Repository == repository && t.IssueNumber == issueNumber && issueNumber != 0 {
-			return t, true, nil
+			held = append(held, t)
 		}
 	}
-	return factoryd.Task{}, false, nil
+	slices.SortFunc(held, func(a, b factoryd.Task) int {
+		if da, db := factoryd.Final(a.Status), factoryd.Final(b.Status); da != db {
+			if da {
+				return 1
+			}
+			return -1
+		}
+		return cmp.Or(b.CreatedAt.Compare(a.CreatedAt), strings.Compare(b.ID, a.ID))
+	})
+	if len(held) == 0 {
+		return factoryd.Task{}, false, nil
+	}
+	return held[0], true, nil
 }
 
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
