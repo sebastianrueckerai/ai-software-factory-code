@@ -398,12 +398,13 @@ func openedStep(s DigestStep, e Event) DigestStep {
 }
 
 // failureLine is a proof's message as one line: its first line that is
-// not a go test's banner, a leading "<file>.go:<n>: " cut.
+// not a go test's banner or a passing sibling, a leading "<file>.go:<n>: "
+// cut.
 func failureLine(message string) string {
 	for _, line := range strings.Split(message, "\n") {
 		line = strings.TrimSpace(line)
 		if line == "" || line == "Failed" || strings.HasPrefix(line, "=== RUN") ||
-			strings.HasPrefix(line, "--- FAIL") || strings.HasPrefix(line, "--- SKIP") {
+			strings.HasPrefix(line, "--- PASS") || strings.HasPrefix(line, "--- FAIL") || strings.HasPrefix(line, "--- SKIP") {
 			continue
 		}
 		if file, rest, ok := strings.Cut(line, ": "); ok && goTestFile(file) {
@@ -550,7 +551,7 @@ func criteriaSteps(rows []CriterionVerdict) []DigestStep {
 			out[i].Outcome += ", "
 		}
 		word := cmp.Or(v.Verdict, "undecided")
-		if v.Verdict == "met" {
+		if v.Verdict == "met" && v.Source == CriteriaSourceGate {
 			for _, state := range []string{proofBlind, proofOpen} {
 				if strings.HasPrefix(v.Evidence, state+": ") {
 					word += " (" + state + ")"

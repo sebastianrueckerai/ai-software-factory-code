@@ -720,6 +720,15 @@ func TestCardDigestShowsTheBlindTryAndTheOpening(t *testing.T) {
 	}
 }
 
+// A failed proof's package output can name a passing sibling before the
+// failing test. The failure line is the failing test's line.
+func TestFailureLineNamesTheFailingTestNotAPassingSibling(t *testing.T) {
+	message := "Failed\n--- PASS: TestOther (0.01s)\n--- FAIL: TestDoor (0.00s)\n    door_test.go:12: the door did not open"
+	if got, want := failureLine(message), "the door did not open"; got != want {
+		t.Fatalf("failureLine = %q, want %q", got, want)
+	}
+}
+
 // The judgement call, the proofs at main and a human's not met are steps;
 // a met row and its event make one step alone.
 func TestCardDigestShowsTheJudgementTheProofsAtMainAndTheHumansNotMet(t *testing.T) {
@@ -752,6 +761,19 @@ func TestCardDigestShowsTheJudgementTheProofsAtMainAndTheHumansNotMet(t *testing
 	}
 	if d.Steps[2].commit != "29b0d33aa" {
 		t.Fatalf("proofs at main commit = %q, want the line's head 29b0d33aa", d.Steps[2].commit)
+	}
+	pages, met := 0, 0
+	for _, s := range d.Steps {
+		if s.Kind != "criteria" || !strings.HasPrefix(s.Outcome, "pages_ok") {
+			continue
+		}
+		pages++
+		if s.Outcome == "pages_ok met" {
+			met++
+		}
+	}
+	if pages != 2 || met != 1 {
+		t.Fatalf("pages_ok made %d criteria steps, %d of them met, want 2 with 1 met: the row and its event make one step", pages, met)
 	}
 	judged, err := g.r.CardStep(context.Background(), "t1410", 2, "card", readPointer)
 	if err != nil {
