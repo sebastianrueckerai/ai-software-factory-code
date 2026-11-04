@@ -187,7 +187,7 @@ func TestReconcileCasesOpensAMonthCapCardsAskAsAMonthCap(t *testing.T) {
 // The stale sweep's ask opens as wait_expired, as its event does.
 func TestReconcileCasesOpensAStaleAskAsAWaitExpired(t *testing.T) {
 	s := cardCaseStore(t, "cases_heal")
-	// the row escalateStale writes for a card quiet 2 h while running
+	// a stale sweep's ask for a card quiet 2 h while running
 	reason := staleQuiet + "2 h 0 min while running: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: answer on the issue."
 	escalate(t, s, IntakeEvent{TaskID: caseTask, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: 27001,
 		Question: ShapedQuestion(reason, QuestionFacts{}, nil)})

@@ -10,10 +10,12 @@ import (
 	"fmt"
 	"log"
 	"log/slog"
+	"maps"
 	"net/http"
 	"os"
 	"os/signal"
 	"regexp"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -126,6 +128,10 @@ func main() {
 		log.Fatalf("telemetry: %v", err)
 	}
 	if err := factoryd.RegisterAlertCount(metrics.Meter, store.AlertCounts); err != nil {
+		log.Fatalf("telemetry: %v", err)
+	}
+	passes := &factoryd.Passes{}
+	if err := passes.RegisterLate(metrics.Meter); err != nil {
 		log.Fatalf("telemetry: %v", err)
 	}
 	ciQueue := factoryd.NewCIQueue(metrics)
@@ -383,48 +389,45 @@ func main() {
 	go routines.Loop(ctx, 10*time.Second)
 	releases := &factoryd.ReleaseKeeper{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Own: own.Repo(), Now: time.Now}
 	monitor := &factoryd.Monitor{Store: store, Runner: runner, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Now: time.Now}
-	go func() {
-		// nudged is the stale sweep's memory of its signals, task id → when
-		nudged := map[string]time.Time{}
-		var lastBranchSweep time.Time
-		for {
-			factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
-			factoryd.StaleSweep(ctx, store, workflows, webhookIntake, inner.Alive, nudged)
-			runner.CriteriaPass(ctx)
-			runner.RevertPausePass(ctx)
-			runner.ImpassePass(ctx)
-			if err := releases.Pass(ctx); err != nil {
-				log.Printf("release pass: %v", err)
-			}
-			if err := monitor.Sweep(ctx); err != nil {
-				log.Printf("monitor sweep: %v", err)
-			}
-			if now := time.Now(); now.Sub(lastBranchSweep) >= time.Hour {
-				lastBranchSweep = now
-				if err := runner.SweepBranches(ctx, now); err != nil {
-					log.Printf("branch sweep: %v", err)
-				}
-			}
-			// SigNoz's rules evaluate every minute, so its list changes no
-			// faster: a sweep a minute heals a lost resolve before a card's
-			// first model call or a promotion's check reads the row
-			if err := alertIntake.SweepSigNoz(ctx, time.Now()); err != nil {
-				log.Printf("signoz sweep: %v", err)
-			}
-			if err := alertIntake.CloseCleared(ctx); err != nil {
-				log.Printf("cleared alerts: %v", err)
-			}
-			// a rollout not settled at its window's cap raises its own alert
-			if err := alertIntake.RolloutPass(ctx, time.Now()); err != nil {
-				log.Printf("rollout pass: %v", err)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(time.Minute):
-			}
-		}
-	}()
+	// the minute passes, each on its own goroutine under its bound: a pass
+	// that hangs is flagged and holds none of the others
+	passes.Run(ctx, "heal", time.Minute, 4*time.Minute, func(ctx context.Context) error {
+		factoryd.HealPass(ctx, store, workflows, webhookIntake, completion, inner.Completed)
+		return nil
+	})
+	nudged := map[string]time.Time{} // the stale sweep's memory of its signals, task id to when
+	passes.Run(ctx, "stale", time.Minute, 2*time.Minute, func(ctx context.Context) error {
+		factoryd.StaleSweep(ctx, store, workflows, objects, inner.Alive, nudged)
+		return nil
+	})
+	passes.Run(ctx, "criteria", time.Minute, 4*time.Minute, func(ctx context.Context) error {
+		runner.CriteriaPass(ctx)
+		return nil
+	})
+	passes.Run(ctx, "revert_pause", time.Minute, 2*time.Minute, func(ctx context.Context) error {
+		runner.RevertPausePass(ctx)
+		return nil
+	})
+	passes.Run(ctx, "impasse", time.Minute, 2*time.Minute, func(ctx context.Context) error {
+		runner.ImpassePass(ctx)
+		return nil
+	})
+	passes.Run(ctx, "releases", time.Minute, 4*time.Minute, releases.Pass)
+	passes.Run(ctx, "monitor_sweep", time.Minute, 4*time.Minute, monitor.Sweep)
+	passes.Run(ctx, "branch_sweep", time.Hour, 10*time.Minute, func(ctx context.Context) error {
+		return runner.SweepBranches(ctx, time.Now())
+	})
+	// SigNoz's rules evaluate every minute, so its list changes no
+	// faster: a sweep a minute heals a lost resolve before a card's
+	// first model call or a promotion's check reads the row
+	passes.Run(ctx, "signoz", time.Minute, 2*time.Minute, func(ctx context.Context) error {
+		return alertIntake.SweepSigNoz(ctx, time.Now())
+	})
+	passes.Run(ctx, "cleared_alerts", time.Minute, 2*time.Minute, alertIntake.CloseCleared)
+	// a rollout not settled at its window's cap raises its own alert
+	passes.Run(ctx, "rollout", time.Minute, 2*time.Minute, func(ctx context.Context) error {
+		return alertIntake.RolloutPass(ctx, time.Now())
+	})
 	go completion.SettleLoop(ctx, time.Minute)
 	capWaits := &factoryd.CapWaits{Store: store, Signal: func(ctx context.Context, taskID string) error {
 		return inner.SignalRunning(ctx, taskID, factoryd.SignalPolicyLoaded)
@@ -479,13 +482,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.Handle("/", health.Handler("factoryd", version))
 	mux.Handle("GET /versionz", health.Version(version))
-	mux.HandleFunc("GET /readyz", func(w http.ResponseWriter, r *http.Request) {
-		if err := store.Ping(r.Context()); err != nil {
-			http.Error(w, "store unreachable: "+err.Error(), http.StatusServiceUnavailable)
-			return
-		}
-		w.Write([]byte("ok")) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
-	})
+	mux.HandleFunc("GET /readyz", readyz(store.Ping, passes.Ages))
 	mux.Handle("POST /tasks", requireBearer(intakeToken, createTaskHandler(store, forgejo, workflows, runner.Timeline(), policyLoader.Budget)))
 	mux.Handle("GET /policy", requireBearer(intakeToken, factoryd.PolicyHandler(store)))
 	mux.Handle("GET /costs", requireBearer(intakeToken, factoryd.CostsHandler(store)))
@@ -992,6 +989,25 @@ func recordHandler(tasks taskReader, objects factoryd.ObjectStore) http.HandlerF
 // factoryd and the gateway share: factoryd presents it for its model calls.
 func escalationRoute(gatewayToken string, store factoryd.EscalationStore, sessions factoryd.SessionEscalator) http.Handler {
 	return requireBearer(gatewayToken, factoryd.EscalationHandler(store, sessions))
+}
+
+// readyz answers once the store does: ok, then each pass's age since its
+// newest end as pass_<name>_age_s, so a human and the status line see a
+// stuck pass.
+func readyz(ping func(context.Context) error, ages func(time.Time) map[string]time.Duration) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if err := ping(r.Context()); err != nil {
+			http.Error(w, "store unreachable: "+err.Error(), http.StatusServiceUnavailable)
+			return
+		}
+		passes := ages(time.Now())
+		var b strings.Builder
+		b.WriteString("ok\n")
+		for _, name := range slices.Sorted(maps.Keys(passes)) {
+			fmt.Fprintf(&b, "pass_%s_age_s %d\n", name, int64(passes[name]/time.Second))
+		}
+		w.Write([]byte(b.String())) // #nosec G104 -- best-effort response write, client disconnect is the only failure mode
+	}
 }
 
 // requireBearer admits only requests carrying token.

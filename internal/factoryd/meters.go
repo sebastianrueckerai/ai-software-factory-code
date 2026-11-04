@@ -135,3 +135,24 @@ func RegisterAlertCount(meter metric.Meter, counts func(context.Context) ([]Aler
 		}))
 	return err
 }
+
+// RegisterLate exports factory.pass.late{pass}: 1 while a pass's last run
+// passed its bound, from the moment it passes it, and 0 once a run ends
+// within it.
+func (p *Passes) RegisterLate(meter metric.Meter) error {
+	_, err := meter.Float64ObservableGauge("factory.pass.late",
+		metric.WithDescription("1 while a pass's last run passed its bound, 0 once a run ends within it"),
+		metric.WithFloat64Callback(func(_ context.Context, obs metric.Float64Observer) error {
+			p.mu.Lock()
+			defer p.mu.Unlock()
+			for name, late := range p.late {
+				v := 0.0
+				if late {
+					v = 1
+				}
+				obs.Observe(v, metric.WithAttributes(attribute.String("pass", name)))
+			}
+			return nil
+		}))
+	return err
+}

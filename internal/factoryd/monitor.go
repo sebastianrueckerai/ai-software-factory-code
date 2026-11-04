@@ -89,8 +89,8 @@ func (m *Monitor) Pass(ctx context.Context) error {
 
 // Sweep runs card on every live card of every project, wakes the due cases
 // (rung 0 again through OpenTrip's repeat path) and expires the steps past
-// their bound. The minute loop calls it. A merged or closing card raises
-// no case, so the sweep reads neither.
+// their bound. Its own pass runs it every minute. A merged or closing
+// card raises no case, so the sweep reads neither.
 func (m *Monitor) Sweep(ctx context.Context) error {
 	var errs []error
 	tree := m.Policy()

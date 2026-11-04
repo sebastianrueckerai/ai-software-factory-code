@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
@@ -11,9 +10,6 @@ import (
 	enumspb "go.temporal.io/api/enums/v1"
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/client"
-
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // DeliveryRetention is how long a processed webhook delivery id is kept
@@ -350,33 +346,25 @@ func reopenCompleted(ctx context.Context, store Store, wf Workflows, completed f
 // acts on it.
 const StaleWindow = 30 * time.Minute
 
-// StaleCards is what the stale sweep reads and writes: the cards of its
-// statuses, their newest events, and the escalation's records.
+// StaleCards is what the stale sweep reads: the cards of its statuses and
+// their newest events.
 type StaleCards interface {
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error)
-	TransitionTask(ctx context.Context, id string, from []string, to string) error
-	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
-	InsertAlert(ctx context.Context, a Alert) (int64, error)
 }
 
-// StaleSweep acts on the cards the console's ring names, beside the heal
-// pass (which restarts what died but cannot know a restarted run goes on
-// reporting nothing): a card of a live status (running, waiting-deps,
-// waiting-poster — never the queue, whose wait owes no work) quiet for the
-// stale window is nudged — SignalWithStart starts a workflow that died —
-// and one still quiet a window after its nudge is escalated to a human
-// like any escalation: waiting-human, the question on the card, an event
-// row, an alert. A card whose workflow Temporal reports running (alive)
-// is never nudged or escalated, in any state, since a quiet wait is by
-// design. nudged is the sweep's memory of its signals (task id → when),
-// owned by the caller's loop; a card that reports again is forgotten and
-// starts over.
-func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, in *Intake, alive func(ctx context.Context, taskID string) (bool, error), nudged map[string]time.Time) {
-	var objects ObjectStore
-	if in != nil && in.Timeline != nil {
-		objects = in.Timeline.Objects
-	}
+// StaleSweep restarts the dead runs among the cards the console's ring
+// names. A card of a live status (running, waiting-deps, waiting-poster,
+// never the queue, whose wait owes no work) quiet for the stale window,
+// whose workflow Temporal reports dead, is nudged: SignalWithStart starts
+// the workflow again. One still quiet a window after its nudge is nudged
+// again. The sweep asks no human: the monitor's run_quiet flag faces the
+// quiet card. A card whose workflow runs is never nudged, in any state,
+// since a quiet wait is by design. objects holds the timelines whose
+// newest step counts as the card's work. nudged is the sweep's memory of
+// its signals (task id to when), owned by the caller's pass. A card that
+// reports again is forgotten.
+func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, objects ObjectStore, alive func(ctx context.Context, taskID string) (bool, error), nudged map[string]time.Time) {
 	for _, status := range []string{"running", "waiting-deps", "waiting-poster"} {
 		tasks, err := store.ListTasksByStatus(ctx, status)
 		if err != nil {
@@ -418,39 +406,32 @@ func StaleSweep(ctx context.Context, store StaleCards, wf Workflows, in *Intake,
 			nudge, ok := nudged[t.ID]
 			switch {
 			case quiet < StaleWindow:
-				// it reported: the ring comes off and the rungs start over
+				// it reported: the ring comes off and the memory with it
 				delete(nudged, t.ID)
-			case !ok:
-				state, _ := staleNames(t.Status)
-				sig := TaskSignal{Author: FactoryDecider, Body: fmt.Sprintf("quiet for %s while %s", staleDuration(quiet), state)}
+			case ok && time.Since(nudge) < StaleWindow:
+				// the nudge's grace: the workflow has a window to answer
+			default:
+				sig := TaskSignal{Author: FactoryDecider, Body: fmt.Sprintf("quiet for %s while %s", staleDuration(quiet), staleState(t.Status))}
 				if err := wf.Signal(ctx, t.ID, SignalStaleNudge, sig); err != nil {
 					log.Printf("stale sweep: nudge task %s: %v", t.ID, err)
 					continue
 				}
 				nudged[t.ID] = time.Now()
-			case time.Since(nudge) < StaleWindow:
-				// the nudge's grace: the workflow has a window to answer
-			default:
-				if err := escalateStale(ctx, store, in, t, quiet); err != nil {
-					log.Printf("stale sweep: escalate task %s: %v", t.ID, err)
-					continue
-				}
-				delete(nudged, t.ID)
 			}
 		}
 	}
 }
 
-// staleNames are the sweep's words for a status: how the card spends its
-// wait, and what a human can do about it.
-func staleNames(status string) (state, action string) {
+// staleState is the sweep's words for how a card of status spends its
+// wait.
+func staleState(status string) string {
 	switch status {
 	case "waiting-deps":
-		return "waiting on its dependencies", "answer on the issues of the cards it waits on, or close this issue to end the wait"
+		return "waiting on its dependencies"
 	case "waiting-poster":
-		return "waiting on the issue's author", "the issue's author answers on the issue, or close it to end the wait"
+		return "waiting on the issue's author"
 	}
-	return "running", "answer on the issue to start a new attempt with your comment as guidance, or close the issue to end the card"
+	return "running"
 }
 
 // staleDuration is a quiet span in the ring's words.
@@ -462,97 +443,10 @@ func staleDuration(d time.Duration) string {
 	return fmt.Sprintf("%d h %d min", m/60, m%60)
 }
 
-// staleEscalation is the stale sweep's record of its escalation: the wait
-// it ended, in the timeline step's keys.
-type staleEscalation struct {
-	Time   time.Time `json:"time"`
-	State  string    `json:"state"`
-	Quiet  string    `json:"quiet"`
-	Action string    `json:"action"`
-}
-
-// staleQuiet starts the stale sweep's reason.
+// staleQuiet starts the reason of a stale sweep's ask. Nothing writes one,
+// but a card's open ask may still carry it, so the question and the case
+// read it.
 const staleQuiet = "The card was quiet for "
-
-// escalateStale moves a still-quiet card to waiting-human the way the
-// runner's Escalate does: the state mirrored on the issue, the reason as
-// a comment whose first line is the question the card shows, the intake
-// event the answers reconcile from, a question_asked row and an
-// escalation alert. Its errors are the intake event and the transition:
-// the rest is logged, never a reason to stop half-way.
-func escalateStale(ctx context.Context, store StaleCards, in *Intake, t Task, quiet time.Duration) error {
-	state, action := staleNames(t.Status)
-	reason := fmt.Sprintf(staleQuiet+"%s while %s: is its run gone?\nWhy: nothing reached its timeline or events for that long, and a nudge signal went unanswered.\nRecommendation: %s.",
-		staleDuration(quiet), state, action)
-	var forgejo *Forgejo
-	var timeline *Timeline
-	if in != nil {
-		forgejo, timeline = in.Forgejo, in.Timeline
-	}
-	next := "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	var comment int64
-	if forgejo != nil && t.IssueNumber != 0 {
-		if repo, err := SplitRepo(t.Repository); err != nil {
-			log.Printf("task %s: the stale escalation's comment: %v", t.ID, err)
-		} else if comment, err = forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, t.IssueNumber,
-			"factoryd: task "+t.ID+" needs a human.\n\n"+fenced(reason)+"\n\n"+next); err != nil {
-			log.Printf("task %s: the stale escalation's comment: %v", t.ID, err)
-			comment = 0
-		}
-	}
-	if timeline != nil {
-		detail := staleDetail(time.Now().UTC(), state, quiet, action)
-		detail["reason"], detail["comment"] = reason, comment
-		if err := timeline.Append(ctx, t.ID, "escalated", detail); err != nil {
-			log.Printf("task %s: timeline escalated: %v", t.ID, err)
-		}
-	}
-	shaped := ShapedQuestion(reason, QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}, nil)
-	// the intake row is the ask's durable anchor, written before the wait:
-	// a card in waiting-human without its row has no ask
-	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeEscalation, Author: FactoryDecider, Body: reason, CommentID: comment,
-		Question: shaped}); err != nil {
-		return fmt.Errorf("task %s: record the stale escalation: %w", t.ID, err)
-	}
-	if err := store.TransitionTask(ctx, t.ID, []string{"running", "waiting-deps", "waiting-poster"}, "waiting-human"); err != nil {
-		return fmt.Errorf("task %s is %s, cannot wait for a human: %w", t.ID, t.Status, err)
-	}
-	mirrorTaskState(ctx, forgejo, t, "waiting-human")
-	if in != nil {
-		pullQueued(ctx, in.Store, in.Workflows, t.Repository)
-	}
-	asked := map[string]any{"question": textutil.Truncate(escalationQuestion(reason), 300), "comment": comment, "source": "stale",
-		"reason": textutil.Truncate(reason, 300)}
-	if shaped != nil {
-		asked["question"], asked["ask"], asked["why"], asked["info"] = shaped.Ask, shaped.Ask, shaped.Why, shaped.Info
-		asked["choices"] = shaped.Labels()
-		if shaped.Recommendation != "" {
-			asked["recommendation"] = shaped.Recommendation
-		}
-	}
-	if timeline != nil {
-		timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, asked)
-	}
-	if _, err := store.InsertAlert(ctx, Alert{Kind: AlertEscalation, Source: FactoryDecider, TaskID: t.ID,
-		Detail: map[string]any{"comment": comment, "reason": textutil.Truncate(reason, 2000)}}); err != nil {
-		log.Printf("task %s: record the stale escalation's alert: %v", t.ID, err)
-	}
-	return nil
-}
-
-// staleDetail is the sweep's record of its escalation as a timeline
-// step's detail keys.
-func staleDetail(at time.Time, state string, quiet time.Duration, action string) map[string]any {
-	b, err := json.Marshal(staleEscalation{Time: at, State: state, Quiet: staleDuration(quiet), Action: action})
-	if err != nil {
-		return map[string]any{}
-	}
-	var out map[string]any
-	if err := json.Unmarshal(b, &out); err != nil {
-		return map[string]any{}
-	}
-	return out
-}
 
 // newestStepAt is taskID's newest timeline step's time, the card's own
 // work as the sweep reads it; an unreadable timeline, or one whose lines
