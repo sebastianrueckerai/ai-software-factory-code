@@ -288,6 +288,209 @@ func TestWakerTheSameAskWakesOnce(t *testing.T) {
 	}
 }
 
+// wakeApproval records one approval row of task #issue on repository,
+// detail its kind and what the kind carries, and returns the event's id.
+func wakeApproval(t *testing.T, s *PGStore, repository, task string, issue int64, detail map[string]any) int64 {
+	t.Helper()
+	id, err := s.Record(t.Context(), Event{Repository: repository, TaskID: task, IssueNumber: issue,
+		Kind: EventApprovalRequested, Via: ViaFactoryd, Detail: detail})
+	if err != nil {
+		t.Fatalf("record the approval: %v", err)
+	}
+	return id
+}
+
+// mergeRow is a merge approval row's detail as the merge gate files it.
+func mergeRow(approval, pr int64, class string, red bool) map[string]any {
+	return map[string]any{"approval": approval, "kind": ApprovalMerge, "pr": pr, "class": class, "factory": false, "red_checks": red}
+}
+
+// A merge approval row at autonomous wakes one turn on the venue inbox
+// like an ask: its line names the pull request and the risk, and at merge
+// rule human the turn records what it found, the merge staying a human's
+// even for an approver.
+func TestWakeMergeRowWakesAtAutonomous(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman,
+			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}},
+	})
+	id := wakeApproval(t, s, "sf/wake", "t-1", 40, mergeRow(3, 12, "medium", false))
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	conv, err := s.EnsureInbox(t.Context(), "sf/wake", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := "Wake: 1 ask waits for a human.\n#40: merge of PR #12, medium risk\n\n" +
+		"Read each card. Settle what your permissions allow. A card waiting on its budget takes fund from your pool. " +
+		"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
+		"A human approves merges here: record what you found with attach_analysis."
+	calls := starter.recorded()
+	if len(calls) != 1 {
+		t.Fatalf("%d wakes, want 1: %+v", len(calls), calls)
+	}
+	if c := calls[0]; c.project != "wake-proj" || c.login != "sebastian" || c.conversation != conv || c.birth != "wake_ask" || c.text != want {
+		t.Fatalf("the wake = %+v, want wake-proj sebastian on %d, wake_ask, text %q", c, conv, want)
+	}
+	if keys := wakeStateKeys(t, s, "sf/wake"); !slices.Equal(keys, []string{"approval:t-1:3", "turn"}) {
+		t.Fatalf("the marks are %v, want the approval's and the turn's", keys)
+	}
+	if got := wakeCursorOf(t, s, "sf/wake"); got < id {
+		t.Fatalf("the cursor %d stayed behind the event %d", got, id)
+	}
+}
+
+// At full auto, autonomous with merge rule auto, the woken approver may
+// settle the merge itself: the turn names approve_merge and deny_merge. A
+// woken login that approves nothing still leaves the merge to a human.
+// Red checks ride the merge line.
+func TestWakeMergeRowWakesAtFullAuto(t *testing.T) {
+	for _, tc := range []struct {
+		approvers []string
+		want      string
+	}{
+		{[]string{"sebastian"}, "Wake: 1 ask waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
+			"Read each card. Settle what your permissions allow. A card waiting on its budget takes fund from your pool. " +
+			"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
+			"A merge you find safe takes approve_merge, a wrong one deny_merge, and the rest goes to a human with attach_analysis."},
+		{[]string{"morgan"}, "Wake: 1 ask waits for a human.\n#40: merge of PR #12, medium risk, checks red\n\n" +
+			"Read each card. Settle what your permissions allow. " +
+			"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
+			"A human approves merges here: record what you found with attach_analysis."},
+	} {
+		w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+			"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeAuto,
+				Notify: []string{"sebastian"}, Approvers: tc.approvers},
+		})
+		wakeApproval(t, s, "sf/wake", "t-1", 40, mergeRow(3, 12, "medium", true))
+		if err := drainPass(t, w); err != nil {
+			t.Fatalf("Pass: %v", err)
+		}
+		calls := starter.recorded()
+		if len(calls) != 1 || calls[0].birth != "wake_ask" || calls[0].text != tc.want {
+			t.Errorf("approvers %v: the wakes are %+v, want one wake_ask with text %q", tc.approvers, calls, tc.want)
+		}
+	}
+}
+
+// Below autonomous a merge row wakes nobody, whatever the merge rule: the
+// event only moves the cursor.
+func TestWakeMergeRowSleepsBelowAutonomous(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+		"assisted": {Repository: "sf/assisted", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeAuto,
+			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}},
+		"manual": {Repository: "sf/manual", Autonomy: policy.AutonomyManual, MergeRule: policy.MergeHuman,
+			Notify: []string{"sebastian"}, Approvers: []string{"sebastian"}},
+	})
+	ids := map[string]int64{
+		"sf/assisted": wakeApproval(t, s, "sf/assisted", "t-1", 40, mergeRow(3, 12, "medium", false)),
+		"sf/manual":   wakeApproval(t, s, "sf/manual", "t-2", 41, mergeRow(4, 13, "low", false)),
+	}
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 0 {
+		t.Fatalf("%d wakes, want 0: %+v", len(calls), calls)
+	}
+	for repo, id := range ids {
+		if got := wakeCursorOf(t, s, repo); got < id {
+			t.Fatalf("%s's cursor %d stayed behind its event %d", repo, got, id)
+		}
+		if keys := wakeStateKeys(t, s, repo); len(keys) != 0 {
+			t.Fatalf("%s carries marks %v, want none", repo, keys)
+		}
+	}
+}
+
+// Only merge rows wake: a plan's, a criteria gap's and a criteria rerun's
+// approval rows start no turn, the cursor passes them, and an ask beside
+// them wakes alone.
+func TestWakePlanAndCriteriaRowsOnlyMoveTheCursor(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, nil)
+	var last int64
+	for i, kind := range []string{ApprovalPlan, ApprovalCriteria, ApprovalCriteriaRerun} {
+		last = wakeApproval(t, s, "sf/wake", "t-plan", 50, map[string]any{"approval": int64(i + 1), "kind": kind})
+	}
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	if calls := starter.recorded(); len(calls) != 0 {
+		t.Fatalf("%d wakes, want 0: %+v", len(calls), calls)
+	}
+	if got := wakeCursorOf(t, s, "sf/wake"); got < last {
+		t.Fatalf("the cursor %d stayed behind the event %d", got, last)
+	}
+	wakeApproval(t, s, "sf/wake", "t-plan", 50, map[string]any{"approval": int64(4), "kind": ApprovalPlan})
+	wakeAsk(t, s, "sf/wake", "t-1", "Use a replica?", ViaFactoryd)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	want := "Wake: 1 ask waits for a human.\nt-1: Use a replica?\n\n" +
+		"Read each card. Settle what your permissions allow. " +
+		"For what stays the human's, record what you found with attach_analysis. An ask already answered is done."
+	if calls := starter.recorded(); len(calls) != 1 || calls[0].text != want {
+		t.Fatalf("the wakes are %+v, want one with text %q", calls, want)
+	}
+}
+
+// Two merge rows of one card are two approvals: each keys its own mark,
+// so each wakes its own turn, and the same approval again wakes no more.
+func TestWakeTwoMergeRowsOfOneCardWakeOnceEach(t *testing.T) {
+	w, s, starter, clock := newWakeRig(t, nil)
+	wakeApproval(t, s, "sf/wake", "t-1", 40, mergeRow(3, 12, "medium", false))
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeApproval(t, s, "sf/wake", "t-1", 40, mergeRow(4, 12, "medium", false))
+	*clock = clock.Add(11 * time.Second)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	wakeApproval(t, s, "sf/wake", "t-1", 40, mergeRow(4, 12, "medium", false))
+	*clock = clock.Add(11 * time.Second)
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	calls := starter.recorded()
+	if len(calls) != 2 {
+		t.Fatalf("%d wakes, want 2: %+v", len(calls), calls)
+	}
+	for i, c := range calls {
+		if !strings.Contains(c.text, "\n#40: merge of PR #12, medium risk\n") {
+			t.Fatalf("wake %d's text %q misses the merge line", i, c.text)
+		}
+	}
+	if keys := wakeStateKeys(t, s, "sf/wake"); !slices.Equal(keys, []string{"approval:t-1:3", "approval:t-1:4", "turn"}) {
+		t.Fatalf("the marks are %v, want both approvals' and the turn's", keys)
+	}
+}
+
+// An ask and a merge row of one pass ride one turn that names both, each
+// marked under its own key.
+func TestWakeMergeAndAskBatchInOneTurn(t *testing.T) {
+	w, s, starter, _ := newWakeRig(t, map[string]policy.ProjectConfig{
+		"wake-proj": {Repository: "sf/wake", Autonomy: policy.AutonomyAutonomous, MergeRule: policy.MergeHuman,
+			Notify: []string{"sebastian"}},
+	})
+	wakeAskComment(t, s, "sf/wake", "t-1", "Use a replica?", 27247, ViaFactoryd)
+	wakeApproval(t, s, "sf/wake", "t-2", 41, mergeRow(5, 13, "high", false))
+	if err := drainPass(t, w); err != nil {
+		t.Fatalf("Pass: %v", err)
+	}
+	want := "Wake: 2 asks wait for a human.\nt-1: Use a replica?\n#41: merge of PR #13, high risk\n\n" +
+		"Read each card. Settle what your permissions allow. " +
+		"For what stays the human's, record what you found with attach_analysis. An ask already answered is done. " +
+		"A human approves merges here: record what you found with attach_analysis."
+	calls := starter.recorded()
+	if len(calls) != 1 || calls[0].birth != "wake_ask" || calls[0].text != want {
+		t.Fatalf("the wakes are %+v, want one wake_ask with text %q", calls, want)
+	}
+	if keys := wakeStateKeys(t, s, "sf/wake"); !slices.Equal(keys, []string{"approval:t-2:5", "ask:t-1:27247", "turn"}) {
+		t.Fatalf("the marks are %v, want the ask's, the approval's and the turn's", keys)
+	}
+}
+
 // drainPass runs one pass and waits out the wake turns it started, so a
 // test reads the store only after their bookkeeping landed.
 func drainPass(t *testing.T, w *Waker) error {
