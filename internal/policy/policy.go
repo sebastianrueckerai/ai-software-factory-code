@@ -33,6 +33,10 @@ type Document struct {
 	// and when the check-in and the factory agent judge a case. Absent
 	// keys take their defaults one by one.
 	Escalation Escalation `yaml:"escalation,omitempty" json:"escalation"`
+	// Waits bound the waits the AI owns, one bound per wait kind: a wait
+	// past its bound opens a case. Each bound lies between 1m and 7 days.
+	// Absent or 0: the default.
+	Waits Waits `yaml:"waits,omitempty" json:"waits"`
 	// Classes are the capability classes a task can hold, by name.
 	Classes map[string]Class `yaml:"classes" json:"classes"`
 	// Prices are the tool prices no provider API reports.
@@ -1248,11 +1252,11 @@ type FalPrices struct {
 }
 
 // Validate judges d as a whole: schema version 1, a sane budget, and
-// every block's own judgement (limits, escalation, chat, risk, envelope
-// default and project_default), plus the cross-block rules: approvers distinct,
-// hosts well formed, bounds and supervisor detectors known, the time
-// zone an IANA zone, the routines policy.yaml's, the capability classes
-// named and their tools capped. ParseTree runs it on a tree read from
+// every block's own judgement (limits, escalation, waits, chat, risk,
+// envelope default and project_default), plus the cross-block rules:
+// approvers distinct, hosts well formed, bounds and supervisor detectors
+// known, the time zone an IANA zone, the routines policy.yaml's, the
+// capability classes named and their tools capped. ParseTree runs it on a tree read from
 // the configuration repository, and factoryd's Boot and the gateway
 // re-run it on a stored version: one written under an older schema is
 // not a valid version for this binary.
@@ -1294,6 +1298,9 @@ func (d Document) Validate() error {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if err := d.escalationOf(ProjectConfig{}).checkDraw(); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	if err := d.Waits.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if len(d.Classes) == 0 {

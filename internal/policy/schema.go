@@ -39,7 +39,7 @@ func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 
 // minimums and maximums bound integer fields, keyed Type.Field.
 var (
-	minimums = map[string]float64{"ChatConfig.MonthlyEUR": 0, "ProjectBudget.TaskMaxEUR": 0, "Limits.Steps": 1, "Risk.LargeLines": 0, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "Limits.ReviewDiffKiB": DefaultReviewDiffKiB, "Limits.WarnAt": 1, "Limits.PlanWarnAt": 1, "Limits.NoPushSpend": 1, "PlanShape.MinCards": 1, "PlanShape.MaxCards": 2, "ProjectConfig.QueueCap": 0, "ChatConfig.ParallelTurns": 1, "ChatConfig.Window": 1000, "Draw.Sessions": 1, "Draw.EUR": 0}
+	minimums = map[string]float64{"ChatConfig.MonthlyEUR": 0, "ProjectBudget.TaskMaxEUR": 0, "Limits.Steps": 1, "Risk.LargeLines": 0, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "Limits.ReviewDiffKiB": DefaultReviewDiffKiB, "Limits.WarnAt": 1, "Limits.PlanWarnAt": 1, "Limits.NoPushSpend": 1, "PlanShape.MinCards": 1, "PlanShape.MaxCards": 2, "ProjectConfig.QueueCap": 0, "ChatConfig.ParallelTurns": 1, "ChatConfig.Window": 1000, "Draw.Sessions": 1, "Draw.EUR": 0, "Waits.NoPushSessions": 1}
 	maximums = map[string]float64{"PlanShape.MinCards": 20, "PlanShape.MaxCards": 20, "Limits.ReviewDiffKiB": MaxReviewDiffKiB, "Limits.WarnAt": 99, "Limits.PlanWarnAt": 99, "Limits.NoPushSpend": 99}
 )
 
@@ -91,7 +91,7 @@ const durationPattern = `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 
 // The schema types' own source, for their doc comments.
 //
-//go:embed policy.go project.go risk.go process.go commands.go routine.go escalation.go
+//go:embed policy.go project.go risk.go process.go commands.go routine.go escalation.go waits.go
 var typeSources embed.FS
 
 var (
