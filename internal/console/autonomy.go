@@ -155,7 +155,7 @@ func (c *Console) commitProjectFileGuarded(ctx context.Context, a actor, name, m
 		switch {
 		case err != nil:
 			log.Printf("console: check %s against infra's head: %v", path, err)
-			return 0, refuse(http.StatusBadGateway, "cannot read the configuration at infra's head; see the factoryd log")
+			return 0, refuse(http.StatusBadGateway, "cannot read the configuration at infra's head: "+errText(err)+". Try again in a moment.")
 		case len(refused) > 0:
 			return 0, refuse(http.StatusUnprocessableEntity, "The project file would not load: "+strings.Join(refused, "; "))
 		}

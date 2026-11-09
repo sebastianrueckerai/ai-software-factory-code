@@ -201,7 +201,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		}
 		if rows, open, ok, rerr := c.planRows(ctx, t); rerr != nil {
 			log.Printf("console: approval request %d: %v", a.ID, rerr)
-			k.Problem = "The console could not read the criterion rows. See the factoryd log."
+			k.Problem = "The console could not read the criterion rows: " + errText(rerr) + ". Reload the board."
 		} else if ok {
 			k.Criteria, k.Unsettled = rows, open
 		}
@@ -209,7 +209,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
 		if err = c.planOf(ctx, &k); err != nil {
-			k.Problem = "the plan could not be read; see the factoryd log"
+			k.Problem = "the plan could not be read: " + errText(err) + ". Reload the board."
 		}
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		err = c.criteriaOf(ctx, &k)

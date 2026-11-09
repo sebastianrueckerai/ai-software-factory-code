@@ -432,7 +432,7 @@ func TestRetryFilesTheReplacement(t *testing.T) {
 	}
 	r.retryErr = errors.New("the retry of t-c7 as t-x stopped at filing its issue: forgejo 502")
 	if rec := retry(ck, s.csrf); rec.Code != http.StatusInternalServerError ||
-		strings.TrimSpace(rec.Body.String()) != "The card could not be retried; see the factoryd log." {
+		strings.TrimSpace(rec.Body.String()) != "The card could not be retried: the retry of t-c7 as t-x stopped at filing its issue: forgejo 502. Try again in a moment." {
 		t.Errorf("a failed retry: %d %q", rec.Code, rec.Body)
 	}
 }
@@ -483,7 +483,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	}
 	r.goErr = errors.New("the go of t-wait stopped at filing its issue: forgejo 502")
 	if rec := hand("t-wait", s.csrf); rec.Code != http.StatusInternalServerError ||
-		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory; see the factoryd log." {
+		strings.TrimSpace(rec.Body.String()) != "The card could not be handed to the factory: the go of t-wait stopped at filing its issue: forgejo 502. Try again in a moment." {
 		t.Errorf("a failed go: %d %q", rec.Code, rec.Body)
 	}
 }

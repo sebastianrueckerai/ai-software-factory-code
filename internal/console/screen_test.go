@@ -759,7 +759,7 @@ func TestDrawerActivity(t *testing.T) {
 	}
 	r.c.cfg.Timelines = failingObjects{}
 	failed := drawer(t, r, ck, "t-run", "activity")
-	if !strings.Contains(failed, `<p class="problem" role="alert">The timeline could not be read; see the factoryd log.</p>`) || strings.Contains(failed, "<table") {
+	if !strings.Contains(failed, `<p class="problem" role="alert">The timeline could not be read: s3: 503. Reload the board.</p>`) || strings.Contains(failed, "<table") {
 		t.Errorf("an unreadable timeline:\n%s", failed)
 	}
 }

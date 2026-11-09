@@ -2108,7 +2108,7 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 		return "", refuse(http.StatusConflict, string(no))
 	case err != nil:
 		log.Printf("console: the tool card of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		return "", refuse(http.StatusBadGateway, "The tool card could not be filed; see the factoryd log.")
+		return "", refuse(http.StatusBadGateway, "The tool card could not be filed: "+errText(err)+". Try again in a moment.")
 	}
 	card := ask.Card
 	what := fmt.Sprintf("The ask joined tool card #%d %s %q, which no session has started.", card.IssueNumber, card.ID, factoryd.CardTitle(card))

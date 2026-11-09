@@ -116,7 +116,7 @@ console.log(JSON.stringify([refused.line.textContent, unsent.line.textContent, o
 	if err != nil {
 		t.Fatalf("node: %v", err)
 	}
-	want := `["The card's life could not be read; see the factoryd log.","The card's life could not be read; the factory did not answer.","Loading…"]`
+	want := `["The card's life could not be read; try again in a moment.","The card's life could not be read; the factory did not answer. Try again.","Loading…"]`
 	if strings.TrimSpace(string(got)) != want {
 		t.Errorf("console.js under node:\n%s\nwant\n%s", got, want)
 	}

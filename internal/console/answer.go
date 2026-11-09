@@ -380,7 +380,7 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	n, err := t.c.cfg.Escalate(t.r.Context(), t.p.Repository, q, t.a.s.user)
 	if err != nil {
 		log.Printf("console: the escalation of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		return "", refuse(http.StatusBadGateway, "The escalation could not be filed; see the factoryd log.")
+		return "", refuse(http.StatusBadGateway, "The escalation could not be filed: "+errText(err)+". Try again in a moment.")
 	}
 	return fmt.Sprintf("Filed the escalation as #%d in Needs you; the inbox carries it to the project's humans with its choices.", n), nil
 }

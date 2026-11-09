@@ -179,7 +179,7 @@ func TestReplanCard(t *testing.T) {
 	// a card without an issue that factoryd fails is named by its id
 	status, msg = refused(t, r, "replan", toolInput{TaskID: "t-y", Note: note})
 	equal(t, "the failed replan of a card without an issue", []any{status, msg},
-		[]any{http.StatusInternalServerError, "Card t-y could not go back to the planner: see the factoryd log, then replan it again."})
+		[]any{http.StatusInternalServerError, "Card t-y could not go back to the planner: the store is down. Try again in a moment, then replan it again."})
 
 	// a plan's child replans its plan, so the note goes on the plan's issue
 	rec = r.do(post("/tasks/t-ch/replan", url.Values{"csrf": {s.csrf}, "note": {note}}), ck)

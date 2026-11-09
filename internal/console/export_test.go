@@ -473,7 +473,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	}
 
 	set(http.StatusUnprocessableEntity, 0, 0)
-	file(http.StatusBadGateway, "Forgejo refused to open the pull request; the filing was undone; see the factoryd log")
+	file(http.StatusBadGateway, "Forgejo refused to open the pull request; the filing was undone")
 	if m, ok := r.mirrors.rows["linkshort import"]; ok || !slices.Equal(r.mirrors.deletes, []string{"linkshort import"}) {
 		t.Errorf("an unopened pull request: import row %+v (%v), deletes %q; want none, one delete", m, ok, r.mirrors.deletes)
 	}
@@ -497,7 +497,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 
 	set(0, http.StatusForbidden, http.StatusForbidden)
 	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; sf/infra#12 may stay open: close it; "+
-		"delete branch project-linkshort to file the name again; see the factoryd log")
+		"delete branch project-linkshort to file the name again: db down. Try again in a moment.")
 	want := factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", Token: ghToken, State: "pending"}
 	if got := r.mirrors.rows["linkshort import"]; got != want || len(r.mirrors.deletes) != 3 {
 		t.Errorf("an open pull request on its branch: import row %+v, deletes %q; want %+v kept", got, r.mirrors.deletes, want)
@@ -507,6 +507,16 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	}
 	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); ok || err != nil {
 		t.Errorf("FiledPR = %d, %v, %v; want no filing recorded", pr, ok, err)
+	}
+
+	// a configuration the console cannot read names its error and the
+	// next action, not the factoryd log, and files nothing
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
+		return nil, errors.New("infra: 503")
+	}
+	file(http.StatusBadGateway, "cannot read the configuration at infra's head: infra: 503. Try again in a moment.")
+	if len(infra.contents) != 0 {
+		t.Fatalf("a failed check committed: %+v", infra.contents)
 	}
 }
 

@@ -225,7 +225,7 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, no.msg, no.status)
 	default:
 		log.Printf("console: %s: %v", current(r).user, err)
-		http.Error(w, "The action failed; see the factoryd log.", http.StatusInternalServerError)
+		http.Error(w, "The action failed: "+errText(err)+". Try again in a moment.", http.StatusInternalServerError)
 	}
 }
 
@@ -570,7 +570,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		return "", refuse(http.StatusConflict, no.Error())
 	case err != nil:
 		log.Printf("console: %s retries %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The card could not be retried; see the factoryd log.")
+		return "", refuse(http.StatusInternalServerError, "The card could not be retried: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s retried %s (%s#%d) as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
@@ -637,7 +637,7 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		return "", 0, refuse(http.StatusConflict, no.Error())
 	case err != nil:
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
-		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory; see the factoryd log.")
+		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
 	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
@@ -1383,7 +1383,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
 		case err != nil:
 			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The re-run failed; see the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
 		}
 		log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
 		return done(fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber), 0, nil, kept)
@@ -1393,7 +1393,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
 		case err != nil:
 			log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed; see the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
 		}
 		note, posted, err := c.closeIssue(ctx, a, t, label)
 		return done(note, posted, err, chosen)
@@ -1575,7 +1575,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return refuse(http.StatusNotFound, "There is no card "+t.ID+" in this project.")
 	}
 	log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
-	return refuse(http.StatusInternalServerError, "The answer failed: see the factoryd log.")
+	return refuse(http.StatusInternalServerError, "The answer failed: "+errText(err)+". Reload the board and press the button again.")
 }
 
 // choiceDone ends human card t's case caseID with res once the choice's
@@ -1742,7 +1742,7 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	}
 	if err := c.cfg.Approvals.RetryApprovalBrief(ctx, brief.ID); err != nil {
 		log.Printf("console: %s funded %s, queueing its brief: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Raised #%d's budget by %.2f EUR, but its brief could not be queued again; see the factoryd log.", t.IssueNumber, eur))
+		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Raised #%d's budget by %.2f EUR, but its brief could not be queued again: %s. Try again in a moment.", t.IssueNumber, eur, errText(err)))
 	}
 	return said + " The factory writes the card's brief within seconds.", nil
 }
@@ -1786,7 +1786,7 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 		return 0, 0, refuse(http.StatusNotFound, "There is no project "+name+".")
 	case err != nil:
 		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
-		return 0, 0, refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
+		return 0, 0, refuse(http.StatusInternalServerError, "The budget could not be raised: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s raised the chat of %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, p.Repository, eur, from, to, a.via, note)
 	c.record(ctx, a, p.Repository, t.ID, 0, factoryd.EventChatFunded,
@@ -1814,7 +1814,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
 		if err != nil {
 			log.Printf("console: %s closes %s: the plan: %v", a.s.user, t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "The plan could not be read; see the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The plan could not be read: "+errText(err)+". Try again in a moment.")
 		}
 		if !between {
 			return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
@@ -1854,7 +1854,7 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
-			return "", 0, refuse(http.StatusConflict, "The card could not be closed; see the factoryd log.")
+			return "", 0, refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
 		}
 		log.Printf("console: %s closed %s (%s, %s) via %s", a.s.user, t.ID, t.Repository, t.Status, a.via)
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
@@ -1898,7 +1898,7 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 		if t.IssueNumber != 0 {
 			card = fmt.Sprintf("Card #%d", t.IssueNumber)
 		}
-		return "", refuse(http.StatusInternalServerError, card+" could not go back to the planner: see the factoryd log, then replan it again.")
+		return "", refuse(http.StatusInternalServerError, card+" could not go back to the planner: "+errText(err)+". Try again in a moment, then replan it again.")
 	}
 	comment := factoryd.ReplanComment(note)
 	on := t
@@ -2218,7 +2218,7 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The harness of card #%d takes no messages.", t.IssueNumber))
 	case err != nil:
 		log.Printf("console: %s steers %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusBadGateway, "The message could not be delivered; see the factoryd log.")
+		return "", refuse(http.StatusBadGateway, "The message could not be delivered: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s steered %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSteered, map[string]any{"text": text})
@@ -2315,7 +2315,7 @@ func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalReques
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", q.ID, a.s.user, status)
 	case err != nil:
 		log.Printf("console: decide approval request %d: %v", q.ID, err)
-		return refuse(http.StatusInternalServerError, "cannot record the decision; see the factoryd log")
+		return refuse(http.StatusInternalServerError, "cannot record the decision: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s %s %s request %d of %s via %s: %s", a.s.user, status, q.Kind, q.ID, q.TaskID, a.via, note)
 	return nil
@@ -2635,7 +2635,7 @@ func (c *Console) doDecide(ctx context.Context, a actor, id int64, cid, verb, re
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", plan))
 		case err != nil:
 			log.Printf("console: %s decides %s of %s %s: %v", a.s.user, cid, plan, verb, err)
-			return "", refuse(http.StatusInternalServerError, "The decision could not be recorded. See the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The decision could not be recorded: "+errText(err)+". Try again in a moment.")
 		}
 	}
 	log.Printf("console: %s decided criterion %s of %s %s via %s", a.s.user, cid, plan, verb, a.via)
@@ -2669,7 +2669,7 @@ func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:
 		log.Printf("console: %s confirmed the criteria of %s: %v", a.s.user, q.TaskID, err)
-		return "", refuse(http.StatusInternalServerError, "the confirmation could not be recorded; see the factoryd log")
+		return "", refuse(http.StatusInternalServerError, "the confirmation could not be recorded: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s confirmed the delivered cards of %s via %s", a.s.user, q.TaskID, a.via)
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "met"})
@@ -2759,7 +2759,7 @@ func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string
 			name, red.Commit[:min(7, len(red.Commit))]))
 	case err != nil:
 		log.Printf("console: %s deploys %s now: %v", a.s.user, p.Repository, err)
-		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: see the factoryd log, then press Deploy now again.")
+		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: "+errText(err)+". Try again in a moment, then press Deploy now again.")
 	}
 	return fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.", name, commit[:min(7, len(commit))]), nil
 }

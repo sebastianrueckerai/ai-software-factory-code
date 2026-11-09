@@ -546,7 +546,7 @@ func (c *Console) resourceChange(ctx context.Context, a actor, what string, id i
 		case errors.Is(err, cloudres.ErrNotOpen):
 			return refuse(http.StatusConflict, "cannot "+what+": the resource is no longer open")
 		default:
-			return refuse(http.StatusInternalServerError, "cannot "+what+"; see the factoryd log")
+			return refuse(http.StatusInternalServerError, "cannot "+what+": "+errText(err)+". Try again in a moment.")
 		}
 	}
 	log.Printf("console: %s %sd the commission of resource %d via %s", a.s.user, what, id, a.via)

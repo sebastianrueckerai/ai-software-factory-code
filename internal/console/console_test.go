@@ -3200,7 +3200,9 @@ func TestMergeCardShowsWhyItHasNotMerged(t *testing.T) {
 	}
 }
 
-// Pages say what failed in a fixed sentence; the details go to the log.
+// A resources button's refusal names what failed, the error and the next
+// action, not the factoryd log: the bound arms keep their fixed causes,
+// and a store failure carries the store's error.
 func TestErrorsShowNoInternals(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
@@ -3214,7 +3216,8 @@ func TestErrorsShowNoInternals(t *testing.T) {
 		t.Fatalf("promote beyond the standing block = %d: %s", rec.Code, rec.Body)
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
+	if rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != `cannot promote: pq: deadlock detected in "cloud_resources". Try again in a moment.` {
 		t.Fatalf("a store error = %d: %s", rec.Code, rec.Body)
 	}
 }

@@ -3153,7 +3153,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	http.Error(w, "Forgejo refused to "+what+"; see the factoryd log", http.StatusBadGateway)
+	http.Error(w, "Forgejo refused to "+what+": "+errText(err)+". Try again in a moment.", http.StatusBadGateway)
 }
 
 // writableCard is the card the path names, built as the board shows it
@@ -3554,7 +3554,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	}
 	problem := func(what string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
-		d.Problem = "The " + what + " could not be read; see the factoryd log."
+		d.Problem = "The " + what + " could not be read: " + errText(err) + ". Reload the board."
 	}
 	switch tab {
 	case "overview":

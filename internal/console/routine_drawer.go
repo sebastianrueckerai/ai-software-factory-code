@@ -159,9 +159,14 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 	d := routineDrawerData{View: rv, Tab: tab, Tabs: routineTabs, Factory: rv.State.Project == "",
 		Acts: ghost{Project: project, Name: name, Title: rt.Title, Skipped: rv.State.SkipNext, Files: rt.Files, Side: rv.FilesInForce(),
 			Toggled: rv.State.NeedsMe != nil, Filter: f, CSRF: current(r).csrf, Drawer: true, Tab: tab}}
-	v, ok := c.inForce(ctx)
-	if !ok {
-		d.Problems = append(d.Problems, "The configuration in force could not be read. See the factoryd log.")
+	v, ok, perr := c.cfg.Policies.CurrentPolicy(ctx)
+	if !ok || perr != nil {
+		log.Printf("console: the policy in force: loaded %v, %v", ok, perr)
+		problem := "The configuration in force could not be read. Reload the board."
+		if perr != nil {
+			problem = "The configuration in force could not be read: " + errText(perr) + ". Reload the board."
+		}
+		d.Problems = append(d.Problems, problem)
 	}
 	loc, err := v.Document.Location()
 	if err != nil {
@@ -219,7 +224,7 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 		runs, err := c.cfg.Routines.Runs(ctx, project, name, limit)
 		if err != nil {
 			log.Printf("console: the runs of routine %s of %s: %v", name, project, err)
-			d.Problems = append(d.Problems, "The routine's runs could not be read. See the factoryd log.")
+			d.Problems = append(d.Problems, "The routine's runs could not be read: "+errText(err)+". Reload the board.")
 		}
 		for _, run := range runs {
 			d.Runs = append(d.Runs, routineRunOf(run, loc))

@@ -1122,6 +1122,16 @@ func scrubTokens(text string) (out string, github, chat bool) {
 	return out, gh != text, out != gh
 }
 
+// errText is err's words with every token-shaped secret scrubbed by
+// scrubTokens, the <err> a refusal sentence embeds; "" for no error.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	out, _, _ := scrubTokens(err.Error())
+	return out
+}
+
 // removedTokens names the tokens scrubTokens removed.
 func removedTokens(github, chat bool) string {
 	switch {
@@ -1558,12 +1568,12 @@ func errSentence(a actor, err error) string {
 		return "Forgejo refused to " + fj.what + ": " + api.reason()
 	case errors.As(err, &fj):
 		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
-		return "Forgejo refused to " + fj.what + "; see the factoryd log."
+		return "Forgejo refused to " + fj.what + ": " + errText(fj.err) + ". Try again in a moment."
 	case errors.As(err, &stale):
 		return stale.Error()
 	}
 	log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
-	return "The action failed; see the factoryd log."
+	return "The action failed: " + errText(err) + ". Try again in a moment."
 }
 
 // refusalCode is err's HTTP status when err is a refusal, 0 for any
