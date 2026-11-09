@@ -12,11 +12,26 @@ var chatView = (function () {
   function esc(s) {
     return String(s).replace(/&/g, "&amp;").replace(/</g, "&lt;").replace(/>/g, "&gt;").replace(/"/g, "&quot;");
   }
+  // a document path in the model's text opens the document view (280): a
+  // bare docs/….md path, or a Markdown link whose target, its #fragment
+  // and a leading / or ./ stripped, ends in .md — a target without the
+  // docs/ prefix resolves against the document root docs/. One pass, so
+  // an anchor's own path is never linkified again; code spans never
+  // reach it, and other paths and external targets stay text.
+  var docrefRe = /\[([^\]]*)\]\(([^)\s]*)\)|(^|[^&\w])(docs\/[\w.\/-]*\.md)\b/g;
+  function docref(all, label, target, pre, path) {
+    if (label === undefined) return pre + "<a class=\"docref\" data-doc=\"" + path + "\" href=\"?doc=" + path + "\">" + path + "</a>";
+    var t = target.split("#")[0].replace(/^\.?\/+/, "");
+    if (!/\.md$/.test(t)) return all;
+    if (t.indexOf("docs/") !== 0) t = "docs/" + t;
+    return "<a class=\"docref\" data-doc=\"" + t + "\" href=\"?doc=" + t + "\">" + label + "</a>";
+  }
   // inline renders one escaped line
   function inline(s) {
     return s.split(/(`[^`]+`)/).map(function (part, i) {
       if (i % 2) return "<code>" + part.slice(1, -1) + "</code>";
       return part.replace(/\*\*([^*]+)\*\*/g, "<strong>$1</strong>")
+        .replace(docrefRe, docref)
         .replace(/(^|[^&\w])(PR\s+)?#(\d+)\b/g, function (all, pre, pr, n) {
           // "PR #969" names a pull request, not a card, so it stays text
           return pr ? all : pre + "<a href=\"#issue-" + n + "\" class=\"cardref\" data-issue=\"" + n + "\">#" + n + "</a>";
@@ -1234,6 +1249,14 @@ var chatView = (function () {
     var flash = document.getElementById("flash");
     flash.textContent = "#" + ref.dataset.issue + " is not on the board.";
     flash.hidden = false;
+  });
+  // a document link in the model's text opens the document view, the
+  // same view event show_doc's open rides
+  document.addEventListener("click", function (e) {
+    var a = e.target.closest("a.docref");
+    if (!a) return;
+    e.preventDefault();
+    document.dispatchEvent(new CustomEvent("view", {detail: {doc: a.dataset.doc}}));
   });
   // a factory row's body opens the card it is about; its buttons, links
   // and the fold keep their own acts
