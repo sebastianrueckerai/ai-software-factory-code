@@ -13,6 +13,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
+	"go.temporal.io/sdk/temporal"
 )
 
 // ActivityEndCase is EndCase's activity.
@@ -20,6 +21,9 @@ const ActivityEndCase = "EndCase"
 
 // ActivityRecordGrant is RecordGrant's activity.
 const ActivityRecordGrant = "RecordGrant"
+
+// ActivityAuditDraw is AuditDraw's activity.
+const ActivityAuditDraw = "AuditDraw"
 
 // ActInput is one answer: by whom, how it reached the factory (ViaConsole,
 // ViaChat, "" for ViaFactoryd), on which rung, and on which case of the
@@ -576,6 +580,32 @@ func (r *Runner) RecordGrant(ctx context.Context, taskID, by string, d policy.Dr
 	return r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 3, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
 		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: by, Via: ViaFactoryd,
 			Detail: map[string]any{"pool": true, "rung": 3}, IdentityKey: key}})
+}
+
+// AuditDraw records grant d, which card taskID's run made itself on no
+// writer's answer (the audit's gap verdict at a cap), as the factory's
+// own draw against the pool: a row of rung 0, refused past the pool or
+// the card's bound (draw-refused), that raises nothing on the card's row
+// (RunGrants). key is the grant's identity: a retry after the commit
+// drops its row on it and writes nothing.
+func (r *Runner) AuditDraw(ctx context.Context, taskID string, d policy.Draw, key string) error {
+	t, _, err := r.task(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	v := r.cfg.Policy()
+	_, project, _ := v.ProjectOf(t.Repository)
+	esc := v.EscalationOf(t.Repository)
+	if err := r.store.DrawCard(ctx, t.ID, CaseDraw{Rung: 0, Extend: d, PolicyCeiling: CardCeiling(v.Document, project), CardBound: esc.CardDrawOf(t.Size),
+		Pool: esc.Pool, RunGrants: true, Event: Event{Repository: t.Repository, TaskID: t.ID, IssueNumber: t.IssueNumber, Actor: FactoryDecider, Via: ViaFactoryd,
+			Detail: map[string]any{"pool": true, "rung": 0}, IdentityKey: key}}); err != nil {
+		var refused *DrawBoundError
+		if errors.As(err, &refused) {
+			return temporal.NewNonRetryableApplicationError(err.Error(), errDrawRefused, nil)
+		}
+		return err
+	}
+	return nil
 }
 
 // beside adds the keys of extra that detail does not hold.

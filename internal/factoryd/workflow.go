@@ -633,6 +633,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.raiseReload = workflow.GetVersion(ctx, "raise-reload", workflow.DefaultVersion, versionRaiseReload)
 	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	run.cases = workflow.GetVersion(ctx, "cases", workflow.DefaultVersion, versionCases)
+	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
@@ -1348,6 +1349,13 @@ const (
 	// stopped at its start check-in ran nothing and is none. Read at such a
 	// stop. A run from before keeps the last session that ended on its own.
 	versionStoppedParent workflow.Version = 1
+	// versionAuditDraw (change id "audit-draw"): the audit's gap verdict
+	// at a cap — the hold-out settlement's findings, which name no writer —
+	// buys its session as the factory's own draw, rung 0 against the pool,
+	// refused once the pool is empty, when the card asks a human instead.
+	// Read where such a verdict buys a session or time. A run from before
+	// buys it ungated, as a writer's did before versionCases.
+	versionAuditDraw workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1543,6 +1551,7 @@ type taskRun struct {
 	// its checks run again first. nextModel is the model a handover at a
 	// gate's wait chose for the next session, "" for none
 	cases           workflow.Version
+	auditDraw       workflow.Version
 	caseID          int64
 	resolution      *Resolution
 	stopFindings    string
@@ -1669,8 +1678,16 @@ func (t *taskRun) lifecycle() (string, error) {
 			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least) {
 			before := u
 			capAnswer()
-			if t.cases >= versionCases && v.by != "" {
-				t.recordGrant(v.by, policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}, u)
+			draw := policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}
+			switch {
+			case t.cases >= versionCases && v.by != "":
+				t.recordGrant(v.by, draw, u)
+			case t.cases >= versionCases && v.by == "" && t.auditDraw >= versionAuditDraw && !t.recordAuditDraw(draw, u):
+				// the pool (or the card) is empty: the grant goes back and
+				// the card asks a human
+				u = before
+				t.recordUsage(u)
+				return false
 			}
 			return true
 		}
@@ -3046,6 +3063,23 @@ func (t *taskRun) recordGrant(by string, d policy.Draw, u TaskUsage) {
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordGrant, t.taskID, by, d, key).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record the grant's draw", "task", t.taskID, "error", err)
 	}
+}
+
+// recordAuditDraw records grant d, which no writer's answer bought (the
+// audit's gap verdict at a cap), u the usage after it, as the factory's
+// own draw, rung 0 against the pool (versionAuditDraw), once (grantKey).
+// The grant stands when the row fails, as the usage's does; a refused
+// draw (an empty pool) returns false: it buys nothing and the card asks
+// a human.
+func (t *taskRun) recordAuditDraw(d policy.Draw, u TaskUsage) bool {
+	key := grantKey(workflow.GetInfo(t.ctx).WorkflowExecution.RunID, u)
+	if err := workflow.ExecuteActivity(t.short, ActivityAuditDraw, t.taskID, d, key).Get(t.ctx, nil); err != nil {
+		if drawRefused(err) {
+			return false
+		}
+		workflow.GetLogger(t.ctx).Warn("record the audit's draw", "task", t.taskID, "error", err)
+	}
+	return true
 }
 
 // grantKey is the identity of a grant of the run runID, u the usage after
@@ -5195,6 +5229,15 @@ func isTerminal(err error) bool {
 func isHeadMoved(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errHeadMoved
+}
+
+// errDrawRefused types a draw's refusal past a bound (an empty pool): the
+// grant it was to record buys nothing and the card asks a human.
+const errDrawRefused = "draw-refused"
+
+func drawRefused(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errDrawRefused
 }
 
 // imageNotPinned is a RunSession that refused its card's image as one with

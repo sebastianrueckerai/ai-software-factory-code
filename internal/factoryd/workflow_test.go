@@ -269,6 +269,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityCapResume:       func(ctx context.Context, in CapCheck) (CapResumed, error) { return CapResumed{Resume: in.Turned}, nil },
 		ActivityEndCase:         func(ctx context.Context, caseID int64, reason string) error { return nil },
 		ActivityRecordGrant:     func(ctx context.Context, taskID, by string, d policy.Draw, key string) error { return nil },
+		ActivityAuditDraw:       func(ctx context.Context, taskID string, d policy.Draw, key string) error { return nil },
 		ActivityOpenTrip:        func(ctx context.Context, in TripInput) (TripOutcome, error) { return TripOutcome{}, nil },
 		ActivityParkForTool:     func(ctx context.Context, taskID, tool, need string) (ToolPark, error) { return ToolPark{}, nil },
 		ActivityImageArrived:    func(ctx context.Context, taskID, image, tool string) (string, error) { return "", nil },
@@ -429,6 +430,13 @@ func (h *workflowHarness) onHeadChecks(results ...ChecksResult) {
 // time's cap fails a card with nothing pushed.
 func (h *workflowHarness) beforeCases() {
 	h.env.OnGetVersion("cases", workflow.DefaultVersion, versionCases).Return(workflow.DefaultVersion)
+}
+
+// beforeAuditDraw runs the workflow as a run from before
+// versionAuditDraw: the audit's gap verdict at a cap buys its session
+// ungated, with no draw.
+func (h *workflowHarness) beforeAuditDraw() {
+	h.env.OnGetVersion("audit-draw", workflow.DefaultVersion, versionAuditDraw).Return(workflow.DefaultVersion)
 }
 
 // beforeQueueWaits runs the workflow as a run from before

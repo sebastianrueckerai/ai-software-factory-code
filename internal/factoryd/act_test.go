@@ -11,6 +11,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"go.temporal.io/sdk/temporal"
 )
 
 // A card t1 of the facts rig: an approved green head h2 under a fund that
@@ -323,6 +324,35 @@ func TestRecordGrantDrawsAgainstThePool(t *testing.T) {
 	}
 	if u := g.store.tasks["t1"].Usage; u.RaisedSessions != before.RaisedSessions || u.RaisedTime != before.RaisedTime {
 		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
+	}
+}
+
+// The audit's grant at a cap, which no writer's answer bought, is the
+// factory's own draw (versionAuditDraw): a card_extended row of rung 0
+// that the pool counts, that raises nothing on the card's row and is
+// refused past a bound as a typed draw-refused, never a raise.
+func TestAuditDrawIsTheFactoryRungZeroDraw(t *testing.T) {
+	g := newFactsRig(t)
+	ctx := context.Background()
+	before := g.store.tasks["t1"].Usage
+	drawnBefore, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 1}, identityKey(EventCardExtended, "run-1", "1", "0s")); err != nil {
+		t.Fatal(err)
+	}
+	drawn, _ := g.store.PoolDrawn(ctx, "demo-app/demo-app", time.Now())
+	if drawn.Minus(drawnBefore) != (policy.Draw{Sessions: 1}) {
+		t.Fatalf("the pool drew %+v more, want 1 session", drawn.Minus(drawnBefore))
+	}
+	last := g.store.events[len(g.store.events)-1]
+	if last.Kind != EventCardExtended || last.Actor != FactoryDecider || last.Detail["rung"] != 0 || last.Detail["pool"] != true {
+		t.Fatalf("the row = %+v, want the factory's pool draw on rung 0", last)
+	}
+	if u := g.store.tasks["t1"].Usage; u.RaisedSessions != before.RaisedSessions || u.RaisedTime != before.RaisedTime {
+		t.Fatalf("usage = %+v, want the raises of %+v", u, before)
+	}
+	var app *temporal.ApplicationError
+	if err := g.r.AuditDraw(ctx, "t1", policy.Draw{Sessions: 99}, identityKey(EventCardExtended, "run-1", "2", "0s")); !errors.As(err, &app) || app.Type() != errDrawRefused {
+		t.Fatalf("past the bound = %v, want a typed draw-refused", err)
 	}
 }
 
