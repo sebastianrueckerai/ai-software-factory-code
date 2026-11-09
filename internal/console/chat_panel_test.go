@@ -1629,6 +1629,7 @@ function el(props) {
     getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {}, removeEventListener: function () {},
     appendChild: function (c) { this.children.push(c); return c; }, focus: function () {}, click: function () {}, scrollIntoView: function () {},
     reset: function () {}, remove: function () {}, closest: function () { return null; },
+    get firstChild() { return this.children[0]; },
     getBoundingClientRect: function () { return {top: 0, bottom: 0, left: 0, right: 0}; },
     classList: {contains: function () { return false; }, toggle: function () {}, add: function () {}, remove: function () {}}};
   return Object.assign(e, props);
