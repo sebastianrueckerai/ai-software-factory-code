@@ -279,3 +279,42 @@ func TestWipPushTokenAbsentUntilEnd(t *testing.T) {
 		t.Fatalf("the scrub did not mask the token in the emitted line:\n%s", out.String())
 	}
 }
+
+// A POST /wip whose stage fails after its temp repo exists — here the
+// fetch of a repoDir that is not a git repository — answers 500 and
+// leaves no .wip- dir behind: done is the staging repo's only remover,
+// and the failing answer's path runs it too.
+func TestWipFailedStageRemovesStagingDir(t *testing.T) {
+	h, wip, dir, _, _, _, _, _ := seedWipSession(t)
+	parent := filepath.Dir(dir)
+	bad := filepath.Join(parent, "notarepo")
+	if err := os.Mkdir(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(bad, "a.txt"), []byte("a\n"), 0o644); err != nil {
+		t.Fatal(err)
+	}
+	wip.repoDir = bad
+	var probed []string
+	wip.probe = func(dir string) { probed = append(probed, dir) }
+
+	if code, _, answer := postWip(t, h); code != http.StatusInternalServerError {
+		t.Fatalf("POST /wip against a non-repo answered %d with %q, want 500", code, answer)
+	}
+	if len(probed) == 0 {
+		t.Fatal("the stage failed before its temp repo existed: the probe saw no staging dir")
+	}
+	entries, err := os.ReadDir(parent)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var leaks []string
+	for _, entry := range entries {
+		if strings.HasPrefix(entry.Name(), ".wip-") {
+			leaks = append(leaks, entry.Name())
+		}
+	}
+	if len(leaks) != 0 {
+		t.Fatalf("the failed POST left %d staging dir(s) behind: %v", len(leaks), leaks)
+	}
+}

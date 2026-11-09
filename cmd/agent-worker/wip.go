@@ -58,11 +58,16 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		commit, bundle, done, err := w.stage()
+		if done != nil {
+			// the staging repo outlives the body it answers, and a failed
+			// stage leaves one behind too: done is the only remover of the
+			// .wip- dir, so it runs on every path that has one
+			defer done()
+		}
 		if err != nil {
 			http.Error(rw, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		defer done() // the staging repo outlives the body it answers
 		if commit == "" {
 			// the tree is the start's: there is nothing to ship
 			rw.WriteHeader(http.StatusNoContent)
