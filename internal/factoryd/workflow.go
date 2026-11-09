@@ -218,6 +218,11 @@ type WorkflowConfig struct {
 	// slice as a quarter of WallClockCap (grant).
 	AnswerSlice   time.Duration
 	ChecksTimeout time.Duration
+	// ChecksBound is the checks wait's bound, the waits row waits.checks
+	// of the version in force at the start, which the wait's own timeout
+	// follows (versionChecksWait); zero for a run from before it, which
+	// keeps the code default DefaultWaits.Checks.
+	ChecksBound time.Duration
 	// StrongerAfter is how many returns from the same stage keep the
 	// model; the next takes the stronger rung (limits.stronger_after).
 	StrongerAfter int
@@ -636,6 +641,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
 	run.caseQueue = workflow.GetVersion(ctx, "case-queue", workflow.DefaultVersion, versionCaseQueue)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
+	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1319,6 +1325,12 @@ const (
 	// run from before holds its entry through the approval wait and the
 	// merge.
 	versionQueueWaits workflow.Version = 1
+	// versionChecksWait (change id "checks-wait"): the checks wait's own
+	// activity timeout follows its bound, the waits row waits.checks, so
+	// the wait can outlast it: start-to-close at least the bound plus a
+	// minute of poll margin. A run from before keeps its recorded 45m + 1m
+	// options.
+	versionChecksWait workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
 	// started from; the answer to a share stop with the pull request open
@@ -1575,6 +1587,9 @@ type taskRun struct {
 	// changesBy is the writer of the newest change request drained, whose
 	// session a change request at the cap draws (versionCases)
 	changesBy string
+	// checksWait: the checks wait's own timeout follows its bound
+	// (versionChecksWait)
+	checksWait workflow.Version
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
@@ -4249,8 +4264,9 @@ func (t *taskRun) endTrips() {
 func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	// a session's wait would trip again past its own start-to-close, and
 	// so would any wait whose doubled bound outlasts the attempt (a merge:
-	// 2 x 90 s against 2 min); a retry on the last attempt would fail the
-	// activity
+	// 2 x 90 s against 2 min; the checks wait at the 50m default: 2 x 50m
+	// against its 51m, so a checks trip at the new bound offers no wait);
+	// a retry on the last attempt would fail the activity
 	maxAttempts := run.opts.RetryPolicy.MaximumAttempts
 	in := GateSupervision{Trip: trip, Input: run.args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < run.opts.StartToCloseTimeout,
 		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts), PolicyVersion: t.cfg.PolicyVersion}
@@ -4310,10 +4326,19 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 	}
 }
 
+// checksOptions: the checks wait can outlast its bound, CI's own (the
+// waits row waits.checks, versionChecksWait): its start-to-close is at
+// least the bound plus a minute of poll margin, or the configured timeout
+// plus one when that is longer; a run from before the change keeps its
+// recorded options.
 func (t *taskRun) checksOptions() workflow.ActivityOptions {
+	timeout := t.cfg.ChecksTimeout
+	if t.checksWait >= versionChecksWait {
+		timeout = max(timeout, cmp.Or(t.cfg.ChecksBound, policy.DefaultWaits.Checks))
+	}
 	return workflow.ActivityOptions{
-		StartToCloseTimeout:    t.cfg.ChecksTimeout + time.Minute,
-		ScheduleToCloseTimeout: t.cfg.ChecksTimeout + time.Minute,
+		StartToCloseTimeout:    timeout + time.Minute,
+		ScheduleToCloseTimeout: timeout + time.Minute,
 		HeartbeatTimeout:       2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,

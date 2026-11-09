@@ -392,7 +392,9 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 		return nil, fmt.Errorf("runner: a reproduction timeout of %s exceeds %s", cfg.ReproTimeout, MaxReproTimeout)
 	}
 	if cfg.ChecksTimeout <= 0 {
-		cfg.ChecksTimeout = 45 * time.Minute
+		// the waits row's code default: the wait itself, not only its
+		// schedule, must be able to outlast its bound
+		cfg.ChecksTimeout = policy.DefaultWaits.Checks
 	}
 	if cfg.Metrics == nil {
 		cfg.Metrics = telemetry.Noop()
@@ -425,6 +427,7 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		MaxSessions:   l.Sessions,
 		WallClockCap:  l.AgentTime,
 		ChecksTimeout: r.cfg.ChecksTimeout,
+		ChecksBound:   v.Document.PartsBound(ActivityWaitChecks, policy.ReviewParts),
 		StrongerAfter: l.StrongerAfter,
 		PolicyVersion: v.ID,
 	}
