@@ -183,8 +183,31 @@ func TestOutsideImagesComeFromTheStore(t *testing.T) {
 	if err := yaml.Unmarshal(ci, &workflow); err != nil {
 		t.Fatal(err)
 	}
-	if ref, ok := strings.CutPrefix(workflow.Env["BUILDKIT"], store); !ok || !listed[ref] {
-		t.Errorf("ci.yml: BUILDKIT=%s, want the store's copy of a line of upstream-images.txt", workflow.Env["BUILDKIT"])
+	// the image jobs read the buildkitd pin from the list as they run, so
+	// the weekly bump moves it there and touches nothing under .forgejo/:
+	// one read per image job, no literal in env, one moby/buildkit line to read
+	buildkitRead := "BUILDKIT=" + store + "$(awk '$1 ~ /^docker\\.io\\/moby\\/buildkit:/ {print $1; exit}' upstream-images.txt)"
+	if n := strings.Count(string(ci), buildkitRead); n != 3 {
+		t.Errorf("ci.yml: %d image jobs read BUILDKIT from upstream-images.txt, want 3", n)
+	}
+	if v, ok := workflow.Env["BUILDKIT"]; ok {
+		t.Errorf("ci.yml: BUILDKIT=%s in env, want each image job to read it from upstream-images.txt", v)
+	}
+	buildkitLines := 0
+	for ref := range listed {
+		if strings.HasPrefix(ref, "docker.io/moby/buildkit:") {
+			buildkitLines++
+		}
+	}
+	if buildkitLines != 1 {
+		t.Errorf("upstream-images.txt: %d moby/buildkit lines, want 1", buildkitLines)
+	}
+	projectImage, err := os.ReadFile(filepath.Join("..", "..", ".forgejo", "workflows", "project-image.yml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if n := strings.Count(string(projectImage), buildkitRead); n != 1 {
+		t.Errorf("project-image.yml: %d jobs read BUILDKIT from upstream-images.txt, want 1", n)
 	}
 	if _, ok := workflow.Jobs["upstream"]; !ok {
 		t.Error("ci.yml: no upstream job copies the list into the store")
