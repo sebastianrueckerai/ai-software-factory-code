@@ -95,7 +95,7 @@ quay.io/jetstack/cert-manager-controller:v1.21.3@sha256:9b262e9493ab3e0daebc2c9c
 quay.io/jetstack/cert-manager-cainjector:v1.21.3@sha256:165691f631d61931a27e4fbbb82bbed8205431d0446b3c14d170081aeff75f0a bootstrap
 quay.io/jetstack/cert-manager-webhook:v1.21.3@sha256:fc2845cc042ab57c8b98c5ff62462d50dcd5d8d3302f9e6875cd05042ce1020b bootstrap
 quay.io/jetstack/cert-manager-acmesolver:v1.21.3@sha256:5d9c98380d108c34fba252ce675857a9b63e00271ecb64ecfa7f58626723dac0 bootstrap
-quay.io/jetstack/cert-manager-startupapicheck:v1.21.2@sha256:ed347b0ab607058f139b83f41567109456b9776330b63da8086a120afb7f1729 bootstrap
+quay.io/jetstack/cert-manager-startupapicheck:v1.21.3@sha256:6b9e17adc075c80c0c5cb1f901654f0efa4c5d4b1a8b369985ac67f5bbb0b8d2 bootstrap
 docker.io/rancher/local-path-provisioner:v0.0.37@sha256:c3f2c60ee2490eb83ac00101d7e239fd8c20a5b8b4038e2dfc36a7e66fe99c08 bootstrap
 docker.io/library/busybox:1.38.0@sha256:f97baa533a26513c453a362be331a43eb60214302f449c16571b23cea141dce4 bootstrap
 ghcr.io/fluxcd/source-controller:v1.10.1@sha256:0d0012714ea71c4adceb87f21a880801d2a366a426f9bff382491eb1380f2bc3 bootstrap
