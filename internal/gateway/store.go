@@ -32,6 +32,15 @@ type Task struct {
 	ModelAlias string
 }
 
+// TaskCosts is a task's own truth over its model calls: how many it made
+// (its audit rows with no tool) and the tokens they reported.
+type TaskCosts struct {
+	Calls        int
+	PromptTokens int
+	CachedTokens int
+	OutputTokens int
+}
+
 type AuditRow struct {
 	TaskID string
 	// Kind is the factoryd purpose of the call (policy.Purposes), factoryd
@@ -82,6 +91,10 @@ const AuditKindAgent = "agent"
 // The production implementation is Postgres; tests use an in-memory fake.
 type Store interface {
 	Task(ctx context.Context, id string) (Task, bool, error)
+	// TaskCosts reads id's model-call totals: the count of its audit
+	// rows with tool = '' and the sums of their token columns; ok is
+	// false when no task row holds id.
+	TaskCosts(ctx context.Context, id string) (TaskCosts, bool, error)
 	InsertAudit(ctx context.Context, row AuditRow) error
 	CurrentPolicy(ctx context.Context) (policy.Version, bool, error)
 	// TakeHold admits a call into the free task and day headroom (see
@@ -128,6 +141,23 @@ func (s *PGStore) Task(ctx context.Context, id string) (Task, bool, error) {
 		return Task{}, false, fmt.Errorf("task %s required_capabilities: %w", id, err)
 	}
 	return t, true, nil
+}
+
+// TaskCosts aggregates id's model calls: its audit rows with no tool and
+// the sums of their token columns, 0 for a task that called nothing.
+func (s *PGStore) TaskCosts(ctx context.Context, id string) (TaskCosts, bool, error) {
+	var tc TaskCosts
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(a.id), COALESCE(sum(a.prompt_tokens), 0), COALESCE(sum(a.cached_tokens), 0), COALESCE(sum(a.output_tokens), 0)
+		 FROM tasks t LEFT JOIN audit a ON a.task_id = t.id AND a.tool = '' WHERE t.id = $1`, id,
+	).Scan(&tc.Calls, &tc.PromptTokens, &tc.CachedTokens, &tc.OutputTokens)
+	if errors.Is(err, sql.ErrNoRows) {
+		return TaskCosts{}, false, nil
+	}
+	if err != nil {
+		return TaskCosts{}, false, err
+	}
+	return tc, true, nil
 }
 
 // InsertAudit writes row with its task's issue author

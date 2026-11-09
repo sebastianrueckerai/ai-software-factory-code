@@ -220,6 +220,39 @@ func (m *memStore) openHolds() int {
 	return len(m.holds)
 }
 
+// TaskCosts aggregates the audits as PGStore does: the rows with no tool.
+func (m *memStore) TaskCosts(_ context.Context, id string) (TaskCosts, bool, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.tasks[id]; !ok {
+		return TaskCosts{}, false, nil
+	}
+	var tc TaskCosts
+	for _, r := range m.audits {
+		if r.TaskID != id || r.Tool != "" {
+			continue
+		}
+		tc.Calls++
+		tc.PromptTokens += r.PromptTokens
+		tc.CachedTokens += r.CachedTokens
+		tc.OutputTokens += r.OutputTokens
+	}
+	return tc, true, nil
+}
+
+// addTask seeds a second task row; addAudit seeds audit rows.
+func (m *memStore) addTask(t Task) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.tasks[t.ID] = t
+}
+
+func (m *memStore) addAudit(rows ...AuditRow) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.audits = append(m.audits, rows...)
+}
+
 func (m *memStore) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	m.mu.Lock()
 	defer m.mu.Unlock()
