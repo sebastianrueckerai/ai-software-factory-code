@@ -11,6 +11,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -426,5 +427,27 @@ func TestSessionPodTurnsOpencodesFetchesOff(t *testing.T) {
 	}
 	if m := regexp.MustCompile(`(?m)^\s*(?:ENV\s+)?OPENCODE_[A-Z_]+=.*$`).FindAllString(string(b), -1); len(m) != 0 {
 		t.Errorf("Dockerfile.sandbox sets opencode's env %q: a project image FROM the base would lack it", m)
+	}
+}
+
+// Every go test a session's agent runs is bounded the way bash check is
+// (#1542, #1543): GOFLAGS pins two test binaries at once while keeping
+// the image's -mod=mod, and GOMEMLIMIT holds each go process under half
+// the pod's 4Gi.
+func TestSessionPodBoundsGoTest(t *testing.T) {
+	pod := (&Runner{cfg: testRunnerConfig(), forgejo: &Forgejo{BotUser: "factory-agent"}}).workerPodSpec(Task{ID: "t1"}, sessionSpec{id: "s-1"})
+	env := containerEnv(pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any))
+	if env["GOFLAGS"] != "-mod=mod -p=2" {
+		t.Errorf("session worker GOFLAGS = %q, want -mod=mod -p=2", env["GOFLAGS"])
+	}
+	if env["GOMEMLIMIT"] != sandboxGoMemLimit {
+		t.Errorf("session worker GOMEMLIMIT = %q, want %s", env["GOMEMLIMIT"], sandboxGoMemLimit)
+	}
+	n, err := strconv.ParseInt(strings.TrimSuffix(env["GOMEMLIMIT"], "MiB"), 10, 64)
+	if err != nil {
+		t.Fatalf("GOMEMLIMIT %q is not MiB", env["GOMEMLIMIT"])
+	}
+	if n*1024*1024 >= 4<<30/2 {
+		t.Errorf("GOMEMLIMIT %s is not under half the pod's 4Gi", env["GOMEMLIMIT"])
 	}
 }
