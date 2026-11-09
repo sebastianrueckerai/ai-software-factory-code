@@ -41,7 +41,7 @@ func TestMonitorFlagStates(t *testing.T) {
 		{running, "money_ask_hides_findings", "", "h2"},
 		{running, "dependency_failed", "#5", "-"},
 		{running, "wait_over_bound", "run_quiet since +0:00", "run_quiet|2026-11-04T11:00:00Z"},
-		{queued, "queued_over_bound", "work bound 3 of 3 since +1:00", "queued|2026-11-04T09:00:00Z"},
+		{queued, "queued_over_bound", "work bound 3 of 3 for 3h", "queued|2026-11-04T09:00:00Z"},
 		{queued, "wait_over_bound", "queued since +1:00", "-"},
 		{closes(digest(DigestHead{Status: "done"})), "issue_open_after_end", "session_cap", "h2"},
 		{digest(DigestHead{Status: "failed"}), "issue_open_after_end", "session_cap", "-"},
