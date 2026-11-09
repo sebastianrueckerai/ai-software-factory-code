@@ -36,7 +36,7 @@ RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/fa
 
 FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
-ARG DEBIAN_SNAPSHOT=20261015T000000Z
+ARG DEBIAN_SNAPSHOT=20261108T000000Z
 # git: factoryd's GitHub exports of mode pull_requests fetch and push with
 # it; ca-certificates: every HTTPS call of both binaries. Debian's packages
 # come from snapshot.debian.org at DEBIAN_SNAPSHOT, as in Dockerfile.runner,

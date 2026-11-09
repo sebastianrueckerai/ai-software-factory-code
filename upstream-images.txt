@@ -75,7 +75,7 @@ docker.io/curlimages/curl:8.23.0@sha256:3b8fde20978e330b401837f24b871ebe2c8d14ff
 # mirror (infra talos/patches.yaml), mostly by tag
 registry.k8s.io/kube-apiserver:v1.37.2@sha256:f3916d65eddfe52b6d21ff4a17abdf4c52589c8ef62ec7e0c17204f276cd8db6 bootstrap
 registry.k8s.io/kube-controller-manager:v1.37.2@sha256:07fccf8e84f4cdc72c8e59f1a50da68f15acf1299e455004a944610aecac60c4 bootstrap
-registry.k8s.io/kube-scheduler:v1.37.2@sha256:e5438c1bb8c56c41ad556d8a1e8eba44fc5b3cfe4da3adf2a17168102434074 bootstrap
+registry.k8s.io/kube-scheduler:v1.37.2@sha256:e5438c1bb8c569c41ad556d8a1e8eba44fc5b3cfe4da3adf2a17168102434074 bootstrap
 registry.k8s.io/coredns/coredns:v1.14.7@sha256:2329f5f0e7e79fbe56dcdf11ecc4337ee2476bb251095bc275fe9461cb88a55b bootstrap
 registry.k8s.io/etcd:3.7.1@sha256:acf78d83ed1eb6263a0b972fdf4f1e5a3ca536545f8b54947486e22abfe14a11 bootstrap
 registry.k8s.io/pause:3.10.2@sha256:412c4a7219cb8a299a37337f3d87810c5340095322e15594a1637785adad0f17 bootstrap
