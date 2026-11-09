@@ -53,6 +53,7 @@ type toolInput struct {
 	Thread      int64    `json:"thread,omitempty"`
 	Ref         string   `json:"ref,omitempty"`
 	Path        string   `json:"path,omitempty"`
+	Heading     string   `json:"heading,omitempty"`
 	SHA         string   `json:"sha,omitempty"`
 	WithDiff    bool     `json:"with_diff,omitempty"`
 	Remote      string   `json:"remote,omitempty"`
@@ -1815,6 +1816,31 @@ var tools = []chatTool{
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			note, err := t.c.doWriteDoc(t.r.Context(), t.a, t.cfg.DocRepo, t.p.Repository, in.Path, docEdit{Old: in.Old, New: in.New, Content: in.Content, Base: in.BaseSHA256})
 			return note, nil, err
+		}},
+	{name: "show_doc", title: "Show a document",
+		params: map[string]any{"path": docPath, "heading": str("the heading to open at")},
+		about:  "Open a document of the project's document repository in the member's own document view.",
+		run: func(t *turn, in toolInput) (string, *inverse, error) {
+			repo, err := t.c.docRepoOf(t.cfg.DocRepo, in.Path)
+			if err != nil {
+				return "", nil, err
+			}
+			if _, _, present, err := t.c.docFile(t.r.Context(), repo, in.Path); err != nil {
+				return "", nil, err
+			} else if !present {
+				tree, err := t.c.docTree(t.r.Context(), repo)
+				if err != nil {
+					return "", nil, err
+				}
+				return "", nil, refuse(http.StatusNotFound, fmt.Sprintf("There is no document %s on master. The nearest: %s.", in.Path, strings.Join(nearestDocs(tree, in.Path), ", ")))
+			}
+			t.viewEvent = map[string]any{"doc": in.Path}
+			open := in.Path + " is open in your document view."
+			if in.Heading != "" {
+				t.viewEvent["heading"] = in.Heading
+				open = fmt.Sprintf("%s is open in your document view, at %q.", in.Path, in.Heading)
+			}
+			return open, nil, nil
 		}},
 	{name: "set_autonomy", title: "Set the autonomy level", write: true,
 		params: map[string]any{"autonomy": enum("the autonomy state", policy.AutonomyStates...),

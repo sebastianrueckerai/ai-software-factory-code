@@ -161,7 +161,7 @@ var accessTable = map[string]accessRule{
 	"diff": rMember, "plan": rMember, "pr": rMember, "file": rMember, "tree": rMember, "grep": rMember, "web_search": rMember,
 	"web_scrape": rMember, "research": rMember, "session": rMember,
 	"session_steps": rMember, "session_step": rMember, "session_search": rMember, "ci": rMember,
-	"read_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "inbox": rMember, "routines": rMember,
+	"read_doc": rMember, "show_doc": rMember, "notes_read": rMember, "active_threads": rMember, "chat_search": rMember, "inbox": rMember, "routines": rMember,
 	"board_view": rMember, "board_view_reset": rMember,
 	"watch_card": rMember, "unwatch_card": rMember, "set_timer": rMember, "analyze_image": rMember, "read_attachment": rMember, "summarize_attachment": rMember,
 	"costs": rFactory, "alerts": rFactory, "deployment_health": rMember, "resources": rFactory, "settings": rFactory, "policy": rFactory,
