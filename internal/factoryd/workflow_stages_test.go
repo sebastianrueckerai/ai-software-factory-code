@@ -1340,6 +1340,9 @@ func TestStagesFailedAuditIsAFinding(t *testing.T) {
 	if len(steps) != 1 || steps[0]["verdict"] != AuditFindings {
 		t.Fatalf("audit steps = %v", steps)
 	}
+	if !slices.Equal(g.notRun, []string{"audit c1 1 the audit failed: forgejo gone"}) {
+		t.Fatalf("notRun = %v", g.notRun)
+	}
 }
 
 // A project the audit skips: no finding, the auto merge goes on (a run
