@@ -6,8 +6,10 @@ import (
 	"errors"
 	"fmt"
 	"maps"
+	"net/http"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -1026,6 +1028,108 @@ func TestRetryFindsItsIssueUnlinked(t *testing.T) {
 	}
 	if filed != 1 || store.tasks["t-33198a8c2c69"].IssueNumber != 9 {
 		t.Fatalf("%d issues with the marker, replacement on #%d; want one, #9", filed, store.tasks["t-33198a8c2c69"].IssueNumber)
+	}
+}
+
+// raceBoardWait is how long the first board read of a racingBoard waits
+// for its twin.
+const raceBoardWait = 3 * time.Second
+
+// racingBoard is the issue board as two concurrent retries read it: the
+// first board read, which is the press parked between its commit and its
+// filing, announces itself on arrived and is held until the second is
+// answered too, so both presses search a board that carries no marker
+// and then both file, the race the failed card's retry lock ends. A
+// first read whose twin never comes, the second press refused without
+// listing, passes after raceBoardWait.
+type racingBoard struct {
+	next            http.RoundTripper
+	mu              sync.Mutex
+	held            bool
+	arrived, second chan struct{}
+}
+
+func (b *racingBoard) RoundTrip(r *http.Request) (*http.Response, error) {
+	if r.Method != http.MethodGet || !strings.HasSuffix(r.URL.Path, "/issues") || r.URL.Query().Get("page") != "1" {
+		return b.next.RoundTrip(r)
+	}
+	res, err := b.next.RoundTrip(r)
+	if err != nil {
+		return nil, err
+	}
+	b.mu.Lock()
+	first := !b.held
+	b.held = true
+	if first {
+		close(b.arrived)
+	} else {
+		close(b.second)
+	}
+	b.mu.Unlock()
+	if first {
+		select {
+		case <-b.second:
+		case <-time.After(raceBoardWait):
+		}
+	}
+	return res, nil
+}
+
+// Two presses that retry the same failed card at the same moment, as the
+// answers on two dependent cards' cases do, file one issue and start one
+// workflow: the second lands while the first sits between its commit and
+// its filing, finds the replacement present with no issue, and a press
+// holds the card's retry lock end to end, so it waits, then reads the
+// first's retried step.
+func TestConcurrentRetriesFileOneIssue(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, wf := newRetryRig(t)
+	board := &racingBoard{next: http.DefaultTransport, arrived: make(chan struct{}), second: make(chan struct{})}
+	r.forgejo.HTTP = &http.Client{Transport: board}
+	out := make([]int64, 2)
+	errs := make([]error, 2)
+	var presses sync.WaitGroup
+	presses.Add(2)
+	start := func(i int) {
+		go func() {
+			defer presses.Done()
+			out[i], errs[i] = r.RetryCard(ctx, "t-a", "alice")
+		}()
+	}
+	start(0)
+	// the first press is between its commit and its filing; the second
+	// lands there, reading the replacement as present with no issue
+	<-board.arrived
+	start(1)
+	presses.Wait()
+	const replacement = "t-33198a8c2c69"
+	var filed int
+	for n := int64(1); n <= fj.next; n++ {
+		if is := fj.issues[n]; is != nil && strings.Contains(is.body, "<!-- factoryd retry of t-a -->") {
+			filed++
+		}
+	}
+	if filed != 1 || fj.next != 9 || store.tasks[replacement].IssueNumber != 9 {
+		t.Fatalf("%d issues with the marker of %d filed, the replacement on #%d; want one of 9 filed, on #9",
+			filed, fj.next, store.tasks[replacement].IssueNumber)
+	}
+	var won, refused int
+	for i, err := range errs {
+		var no ErrNoRetry
+		switch {
+		case err == nil && out[i] == 9:
+			won++
+		case errors.As(err, &no) && err.Error() == "Card #5 was already retried.":
+			refused++
+		default:
+			t.Errorf("press %d = #%d, %v", i, out[i], err)
+		}
+	}
+	if won != 1 || refused != 1 {
+		t.Fatalf("%d presses filed, %d refused; want one of each", won, refused)
+	}
+	if !slices.Equal(wf.started, []string{replacement}) || fj.issues[5].state != "closed" {
+		t.Fatalf("started %q, #5 %s; want the replacement started once, #5 closed", wf.started, fj.issues[5].state)
 	}
 }
 
