@@ -255,6 +255,47 @@ func TestCardDigestFlagsAGrantThatBoughtNothing(t *testing.T) {
 	}
 }
 
+// planAnswerRig is the digest rig with t1410 a plan that holds revision 1,
+// the human's answer to its question at +0:10, and the planner's session
+// after it: the answer is the grant, and what the session bought shows in
+// whether it filed a revision.
+func planAnswerRig(t *testing.T) digestRig {
+	t.Helper()
+	g := newDigestRig(func(c *Task) { c.Track, c.PlanName = policy.TrackPlan, "session-metrics" })
+	if _, err := g.store.AddPlanRevision(context.Background(), "t1410", mustJSON(Plan{}), "r1"); err != nil {
+		t.Fatal(err)
+	}
+	g.event(10, EventPlanQuestionAnswered, "sebastian", map[string]any{"revision": 1, "index": 0, "answer": "Keep the table"})
+	g.session(t, 13, 20, 0, "reported")
+	return g
+}
+
+// A plan's grant is the answer to its question, and the planner's session
+// that filed a revision bought that revision: the grant closes on the
+// revision the session filed, as a direct card's closes on a push, and the
+// revision stands on the digest as a step of its own. A planner session
+// that files nothing leaves the grant open.
+func TestCardDigestCountsAFiledRevisionAsTheGrantsResult(t *testing.T) {
+	filed := planAnswerRig(t)
+	filed.line(t, 15, "plan_revision", map[string]any{"revision": 2, "cards": 3, "sha256": "5e4b081"})
+	d := filed.digest(t)
+	if len(d.Flags) != 0 {
+		t.Fatalf("Flags after the planner's session filed revision 2 = %v, want none", d.Flags)
+	}
+	want := "#1410 · plan #1410 session-metrics · budget 5.00 spent 0.00 holds 0.00 EUR · slot held · running\n" +
+		"   1 +0:00   filed by webhook       → direct card\n" +
+		"   2 +0:10   answer by sebastian    → Keep the table\n" +
+		"   3 +0:13   session 0 small        → reported\n" +
+		"   4 +0:15   revision               → revision 2, 3 cards\n" +
+		"flags: none\n"
+	if got := d.Render(); got != want {
+		t.Fatalf("Render =\n%s\nwant\n%s", got, want)
+	}
+	if got, want := planAnswerRig(t).digest(t).Flags, []DigestFlag{{"grant_bought_nothing", "session 0"}}; !slices.Equal(got, want) {
+		t.Fatalf("Flags after a planner session that filed nothing = %v, want %v", got, want)
+	}
+}
+
 func TestCardDigestFlagsAFindingConfirmedTwice(t *testing.T) {
 	g := newDigestRig(nil)
 	g.line(t, 10, "model_review", map[string]any{"verdict": "concerns", "findings": []string{findingA, findingB}, "round": 1})
