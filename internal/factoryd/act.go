@@ -328,10 +328,10 @@ func (r *Runner) EndCase(ctx context.Context, caseID int64, reason string) error
 }
 
 // answersACase reports whether a answers a case and so needs one named:
-// every action the run carries out but the draws, and a withdrawal and a
-// note.
+// every action the run carries out but the draws, a withdrawal, a note
+// and a settle.
 func answersACase(a Action) bool {
-	return a.InRun && a.Name != ActExtend && a.Name != ActFund || a.Name == ActWithdraw || a.Name == ActNote
+	return a.InRun && a.Name != ActExtend && a.Name != ActFund || a.Name == ActWithdraw || a.Name == ActNote || a.Name == ActSettle
 }
 
 // actRefusal is why in may not answer the facts f of card, "" when it
