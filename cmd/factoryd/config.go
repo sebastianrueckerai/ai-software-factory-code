@@ -29,6 +29,10 @@ import (
 //	factoryd config explain [--tree <dir>] <process> <card kind>
 //	                               prints the path of a card kind through a
 //	                               process of a valid tree (default factory)
+//	factoryd manual --out <file>   rewrites the marked spend-rail section
+//	                               of the markdown file with the table
+//	                               generated from the policy schema and the
+//	                               catalogue in internal/policy/manual.go
 func run(args []string, stdout, stderr io.Writer) int {
 	switch {
 	case len(args) >= 1 && args[0] == "schema":
@@ -45,6 +49,20 @@ func run(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintf(stdout, "schemas written to %s\n", *out)
+		return 0
+	case len(args) >= 1 && args[0] == "manual":
+		fs := flag.NewFlagSet("manual", flag.ContinueOnError)
+		fs.SetOutput(stderr)
+		out := fs.String("out", "", "the markdown file whose marked spend-rail section is rewritten")
+		if err := fs.Parse(args[1:]); err != nil || *out == "" || fs.NArg() != 0 {
+			fmt.Fprintln(stderr, "usage: factoryd manual --out <file>")
+			return 2
+		}
+		if err := rewriteManual(*out); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		fmt.Fprintf(stdout, "spend-rail table written to %s\n", *out)
 		return 0
 	case len(args) == 3 && args[0] == "config" && args[1] == "check":
 		tree, diffs, err := checkTree(args[2])
@@ -74,7 +92,7 @@ func run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprint(stdout, text)
 		return 0
 	}
-	fmt.Fprintln(stderr, "usage: factoryd config check <dir> | factoryd config explain [--tree <dir>] <process> <card kind> | factoryd schema --out <dir> --commit <sha>")
+	fmt.Fprintln(stderr, "usage: factoryd config check <dir> | factoryd config explain [--tree <dir>] <process> <card kind> | factoryd schema --out <dir> --commit <sha> | factoryd manual --out <file>")
 	return 2
 }
 
@@ -125,6 +143,21 @@ func writeSchemas(dir, commit string) error {
 		}
 	}
 	return nil
+}
+
+// rewriteManual reads the markdown file at path, replaces its marked
+// spend-rail section with the generated table and writes it back in
+// place.
+func rewriteManual(path string) error {
+	doc, err := os.ReadFile(path) // #nosec G304 -- the operator's own path argument
+	if err != nil {
+		return err
+	}
+	out, err := policy.RewriteSpendRails(doc)
+	if err != nil {
+		return err
+	}
+	return os.WriteFile(path, out, 0o644) // #nosec G306 G703 -- the operator's own manual page, in place
 }
 
 // checkTree judges dir as the loader does and names its stale or missing
