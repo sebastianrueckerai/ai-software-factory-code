@@ -285,12 +285,13 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	}
 	s.gate = newPushGate()
 	checkin := newCheckinServe(ws, log)
+	wip := newWipServe(s.env, s.repoDir, s.base, s.mainHead, log)
 	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
 		if model != "" {
 			s.oc.SetModel(model)
 		}
 		return s.oc.Message(ctx, text)
-	}, checkin, log)
+	}, checkin, wip, log)
 	if err != nil {
 		return s, startError{"message endpoint", err}
 	}
@@ -1069,7 +1070,11 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if e.pushToken, err = pushToken(head); err != nil {
 		return "", err
 	}
-	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
+	// the forced refspec: an interim push (factoryd's POST /wip half) may
+	// have replaced the task branch's tip with a WIP commit since the
+	// session's start, and the end push — the session's own commit — lands
+	// on that tip, not refused as non-fast-forward
+	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, "+"+head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
 	return head, nil
