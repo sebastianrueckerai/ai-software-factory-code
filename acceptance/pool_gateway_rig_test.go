@@ -218,6 +218,25 @@ func (s *accGatewayStore) Task(_ context.Context, id string) (factorygateway.Tas
 	return t, ok, nil
 }
 
+func (s *accGatewayStore) TaskCosts(_ context.Context, id string) (factorygateway.TaskCosts, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if _, ok := s.tasks[id]; !ok {
+		return factorygateway.TaskCosts{}, false, nil
+	}
+	var tc factorygateway.TaskCosts
+	for _, r := range s.audits {
+		if r.TaskID != id || r.Tool != "" {
+			continue
+		}
+		tc.Calls++
+		tc.PromptTokens += r.PromptTokens
+		tc.CachedTokens += r.CachedTokens
+		tc.OutputTokens += r.OutputTokens
+	}
+	return tc, true, nil
+}
+
 func (s *accGatewayStore) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

@@ -542,16 +542,32 @@ func TestRungZeroClosesOnlyAnEndedCard(t *testing.T) {
 
 // A monitor flag's case sits beside the card's run, which carries out no
 // answer to it: the human is offered only what Act does itself, here the
-// raise of the ceiling, the replan and the close of the table's rung 3
-// offer, and a resume is refused.
+// raise of the ceiling, the replan and the settle of the flag, and a
+// resume is refused. Close is refused on the live card, since it would
+// end the card, and taken on an ended one, whose issue it may close; a
+// settle of any other case is refused.
 func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	f := CaseFacts{Kind: CaseMonitorFlag, Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
 		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5}
-	if got, want := offeredNames(f, 3), []string{ActRaiseCeiling, ActReplan, ActClose}; !slices.Equal(got, want) {
+	if got, want := offeredNames(f, 3), []string{ActRaiseCeiling, ActReplan, ActSettle}; !slices.Equal(got, want) {
 		t.Errorf("rung 3 on a monitor case is offered %v, want %v", got, want)
 	}
 	resume, _ := ActionByName(ActResume)
 	if got, want := resume.refusal(f, 3, Resolution{Action: ActResume}), "resume would do nothing on a monitor flag's case: the card's run waits on none"; got != want {
 		t.Errorf("a resume of a monitor case = %q, want %q", got, want)
+	}
+	closing, _ := ActionByName(ActClose)
+	if got, want := closing.refusal(f, 3, Resolution{Action: ActClose}),
+		"close ends the card, not the flag's case: settle it with settle, which ends the case and the card goes on"; got != want {
+		t.Errorf("a close of a live card's monitor case = %q, want %q", got, want)
+	}
+	ended := f
+	ended.Final = "done"
+	if got := closing.refusal(ended, 3, Resolution{Action: ActClose}); got != "" {
+		t.Errorf("a close of an ended card's monitor case = %q, want it taken", got)
+	}
+	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
+		"settle ends a monitor flag's case alone, and this case is no monitor flag's"; got != want {
+		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
