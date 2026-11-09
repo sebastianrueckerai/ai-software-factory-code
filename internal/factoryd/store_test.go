@@ -132,6 +132,9 @@ type fakeStore struct {
 	monitorCursor *int64
 	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
 	releases      map[string]Release
+	// mergeReceipts are the stored merge receipts by task; the first
+	// write stands, as PutMergeReceipt keeps it
+	mergeReceipts map[string]MergeReceipt
 	// afterRead runs once OpenGroups or QueuedPlans (the name) has read
 	afterRead func(name string)
 }
@@ -1706,6 +1709,21 @@ func (s *fakeStore) SetTaskMergeCommit(ctx context.Context, id, commit string) e
 		s.tasks[id] = t
 	}
 	return nil
+}
+
+func (s *fakeStore) PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) error {
+	if s.mergeReceipts == nil {
+		s.mergeReceipts = map[string]MergeReceipt{}
+	}
+	if _, ok := s.mergeReceipts[taskID]; !ok {
+		s.mergeReceipts[taskID] = receipt
+	}
+	return nil
+}
+
+func (s *fakeStore) MergeReceipt(ctx context.Context, taskID string) (MergeReceipt, bool, error) {
+	r, ok := s.mergeReceipts[taskID]
+	return r, ok, nil
 }
 
 func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
