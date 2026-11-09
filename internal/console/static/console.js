@@ -1095,7 +1095,7 @@ document.addEventListener("keydown", function (e) {
     if (v && path) store("scroll:" + path, v.querySelector("#doc-article").scrollTop);
   }
 
-  function show(d, frag) {
+  function show(d, frag, heading) {
     var v = view(), art = document.getElementById("doc-article");
     if (!v || !art) return;
     var path = d.path, draft = draftOf(path);
@@ -1115,7 +1115,16 @@ document.addEventListener("keydown", function (e) {
     art.scrollTop = 0;
     var at = frag && art.querySelector('[id="' + CSS.escape(frag) + '"]');
     if (at) at.scrollIntoView();
-    else art.scrollTop = load("scroll:" + d.path, 0) || 0;
+    // the chat's open lands at the heading it names, the first whose
+    // text matches case-insensitively, else the top; a document's own
+    // open stands where the member left it
+    else if (heading === undefined) art.scrollTop = load("scroll:" + d.path, 0) || 0;
+    else if (heading) {
+      var hs = art.querySelectorAll("h1,h2,h3,h4,h5,h6"), want = heading.trim().toLowerCase();
+      for (var i = 0; i < hs.length; i++) {
+        if (hs[i].textContent.trim().toLowerCase() === want) { hs[i].scrollIntoView(); break; }
+      }
+    }
     // a draft reopens in the editor, the note saying it was restored
     if (draft) { restoredFor = path; enterEdit(); } else setMode("read");
     v.focus({ preventScroll: true });
@@ -1441,7 +1450,7 @@ document.addEventListener("keydown", function (e) {
     fetch(docURL(path), { headers: { Accept: "application/json" } }).then(function (r) {
       if (!r.ok) return r.text().then(function (t) { throw { status: r.status, text: t }; });
       return r.json();
-    }).then(function (d) { show(d, opts.frag); }).catch(function (e) {
+    }).then(function (d) { show(d, opts.frag, opts.heading); }).catch(function (e) {
       if (e && e.status === 404) {
         // a draft of a file master does not hold: a new file, opened in
         // the editor for its first save to create, its draft seeded with
@@ -1520,6 +1529,15 @@ document.addEventListener("keydown", function (e) {
   document.addEventListener("click", function (e) {
     if (!e.target.closest || !e.target.closest("#documents")) return;
     openDoc(nav.stack[nav.index] || load("recent", [])[0] || "docs/roadmap.md");
+  });
+  // the chat's view event — show_doc's open riding the turn's stream, a
+  // docref's press — opens the document it names, a history entry pushed
+  // as the panel's own links do; a named heading scrolls to its first
+  // match, case-insensitively, else the document opens at its top
+  document.addEventListener("view", function (e) {
+    var d = e.detail || {};
+    if (!d.doc) return;
+    openDoc(d.doc, {heading: d.heading || ""});
   });
   // a document's own links: a data-doc link opens in the view, a quiet
   // one goes nowhere

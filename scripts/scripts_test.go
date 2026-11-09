@@ -86,6 +86,15 @@ func TestAffectedPackages(t *testing.T) {
 		"an untracked package": {func(t *testing.T, dir string) {
 			write(t, dir, map[string]string{"e/e.go": "package e\n"})
 		}, "example.com/m/e\n"},
+		"a diff confined to k8s/": {func(t *testing.T, dir string) {
+			write(t, dir, map[string]string{"k8s/probe.yaml": "kind: ConfigMap\n"})
+		}, "./internal/reproducible/...\n"},
+		"k8s/ and a Go change": {func(t *testing.T, dir string) {
+			write(t, dir, map[string]string{"k8s/probe.yaml": "kind: ConfigMap\n", "a/a.go": "package a\n\nconst X = 1\n"})
+		}, "./...\n"},
+		"a non-Go file outside k8s/": {func(t *testing.T, dir string) {
+			write(t, dir, map[string]string{"docs/notes.md": "n\n"})
+		}, "./...\n"},
 		"a non-Go file": {func(t *testing.T, dir string) {
 			write(t, dir, map[string]string{"a/a.go": "package a\n\nconst X = 1\n", "README.md": "m\n"})
 		}, "./...\n"},
