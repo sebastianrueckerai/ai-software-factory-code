@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // timelineLine is the part of a timeline line the digest reads.
@@ -41,6 +43,8 @@ type timelineLine struct {
 	Cost        float64                 `json:"cost"`
 	Criteria    json.RawMessage         `json:"criteria"`
 	Opened      json.RawMessage         `json:"opened"`
+	Revision    int                     `json:"revision"`
+	Cards       int                     `json:"cards"`
 }
 
 // digestSession is one session the timeline records: its start, its end,
@@ -53,9 +57,10 @@ type digestSession struct {
 
 // timelineSteps are the steps of the card's timeline tl: its sessions,
 // with their cost and calls from the audit rows, check-ins, handovers,
-// checks, the criteria gate's runs, reviews and audits. A line of a kind
-// the digest does not read, or one it cannot parse, is skipped; the asks
-// and approvals there are the events' too, and come from them.
+// checks, the criteria gate's runs, reviews, audits and the revision a
+// plan's session filed. A line of a kind the digest does not read, or one
+// it cannot parse, is skipped; the asks and approvals there are the
+// events' too, and come from them.
 func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([]DigestStep, error) {
 	out, sessions := lineSteps(tl)
 	for i, s := range sessions {
@@ -112,6 +117,8 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 			continue
 		case "checkin":
 			step = checkinStep(step, l)
+		case "plan_revision":
+			step.Kind, step.Outcome = "revision", fmt.Sprintf("revision %d, %s", l.Revision, textutil.Plural(l.Cards, "card", "cards"))
 		case "handover":
 			step.Kind, step.Outcome = "handover", digestText(l.Handover)
 		case "checks":
