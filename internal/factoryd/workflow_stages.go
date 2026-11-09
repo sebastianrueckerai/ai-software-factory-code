@@ -773,7 +773,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 // beside its own failure ask. A run from before queue-waits records
 // none, so its history stands (the call sits under that gate alone).
 func (t *taskRun) notRunRow(kind string, pr int64, commit string, round int, reason string) {
-	if !t.waitsOutOfQueue() {
+	if t.queueWaits < versionQueueWaits {
 		return
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityRecordNotRun, t.taskID, kind, pr, commit, round, reason).Get(t.ctx, nil); err != nil {
