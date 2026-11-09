@@ -7,7 +7,10 @@
 # One rule covers every input the package walk cannot see — workflows,
 # scripts, Dockerfiles, migrations, testdata, go.mod: any non-Go file in
 # the diff selects the whole suite, as does any surprise in the walk
-# itself. Fail open to more testing, never less.
+# Fail open to more testing, never less. One exception: a diff confined
+# to k8s/ selects ./internal/reproducible/... only, the package whose
+# tests read the pins and the manifests; a roll cut from a green main
+# need not re-run the whole suite for a manifest tweak.
 set -euo pipefail
 base=${1:?usage: $0 <base>}
 cd "$(git rev-parse --show-toplevel)"
@@ -16,6 +19,11 @@ changed=$({ git diff --name-only "$base"; git ls-files --others --exclude-standa
 echo "changed files:" >&2
 echo "$changed" >&2
 [ -n "$changed" ] || full "empty diff"
+if ! echo "$changed" | grep -qv '^k8s/'; then
+  echo "a diff confined to k8s/: the reproducible package" >&2
+  echo "./internal/reproducible/..."
+  exit 0
+fi
 if echo "$changed" | grep -qvE '\.go$'; then full "a non-Go input changed"; fi
 mapfile -t dirs < <(echo "$changed" | while IFS= read -r f; do dirname "$f"; done | sort -u)
 for d in "${dirs[@]}"; do
