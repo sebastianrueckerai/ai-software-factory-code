@@ -209,6 +209,14 @@ func TestTools(t *testing.T) {
 	if got := d.Tools([]string{"coder"}, SourceToolRequest); !slices.Equal(got, []string{"replicate_predict", "web_scrape"}) || d.AllowsSessionTool([]string{"coder"}, SourceToolRequest, ToolRequestTool) {
 		t.Errorf("a tool card's tools = %v, want no request_tool", got)
 	}
+	// task_costs is free: a class lists it with {} and gets the read
+	d, err = Parse([]byte(strings.Replace(withTools, "      replicate_predict:", "      task_costs: {}\n      replicate_predict:", 1)))
+	if err != nil {
+		t.Fatalf("a coder class listing task_costs: %v", err)
+	}
+	if got := d.Tools([]string{"coder"}, ""); !slices.Equal(got, []string{"replicate_predict", "task_costs", "web_scrape"}) {
+		t.Errorf("a coder class listing task_costs: tools = %v", got)
+	}
 }
 
 // request_cut is a free tool a class lists without caps.
@@ -269,6 +277,18 @@ func TestToolCap(t *testing.T) {
 	}
 	if _, ok := d.ToolCap([]string{"coder"}, ToolFal); ok {
 		t.Fatal("coder got fal_run, which the document does not list")
+	}
+	// task_costs is a free tool: the zero cap, and caps on it are refused
+	free, err := Parse([]byte(strings.Replace(withTools, "      replicate_predict:", "      task_costs: {}\n      replicate_predict:", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c, ok := free.ToolCap([]string{"coder"}, ToolTaskCosts); !ok || c != (ToolCap{}) {
+		t.Fatalf("coder task_costs = (%+v, %v), want the free tool's zero cap", c, ok)
+	}
+	if _, err := Parse([]byte(strings.Replace(withTools, "      replicate_predict:", "      task_costs: {max_requests: 3, max_eur: 1}\n      replicate_predict:", 1))); err == nil ||
+		!strings.Contains(err.Error(), "tool task_costs is free") {
+		t.Fatalf("caps on task_costs = %v, want the free refusal", err)
 	}
 }
 

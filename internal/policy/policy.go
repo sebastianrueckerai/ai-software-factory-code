@@ -151,7 +151,7 @@ var ChatTools = []string{"system", "board", "card", "history", "card_history", "
 	"new_card", "request_image", "answer", "comment", "tell_card", "steer", "retry",
 	"request_changes", "approve_merge", "deny_merge", "rerun_checks", "answer_criteria", "set_summary", "set_accent", "invite", "github_export",
 	"github_sync", "close", "edit", "grant_session", "fund", "set_dependency", "replan", "set_pool",
-	"read_doc", "write_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
+	"read_doc", "write_doc", "show_doc", "set_autonomy", "routines", "routine_write", "routine_delete", "routine_run", "routine_skip",
 	"notes_read", "notes_write", "escalate", "attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset",
 	"watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}
 
@@ -1142,6 +1142,12 @@ const (
 	ToolDigest = "digest"
 	// ToolFileProofs is the prover's filing of its tests.
 	ToolFileProofs = "file_proofs"
+	// ToolTaskCosts answers the task's cost figures: its budget, spent
+	// and remaining EUR, the count of its model calls and their prompt,
+	// cached and output tokens. Without task_id they are the caller's
+	// own; with it the named task's, a read of the classes that
+	// supervise.
+	ToolTaskCosts = "task_costs"
 )
 
 // SourceToolRequest is the source of a tool card, which adds a tool an
@@ -1180,7 +1186,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileProofs, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileProofs, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest, ToolTaskCosts}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {

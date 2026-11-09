@@ -211,6 +211,21 @@ func withDocs(t *testing.T, r *rig, files map[string]string) *docsFake {
 	return f
 }
 
+// TestNearestDocs: nearestDocs names the tree's documents under the
+// document roots nearest the missing path, longest shared directory
+// prefix first, ties alphabetical, three at most.
+func TestNearestDocs(t *testing.T) {
+	tree := []string{"README.md", "docs", "docs/plans", "docs/roadmap.md", "docs/plans/board.md",
+		"docs/plans/documents.md"}
+	equal(t, "the nearest to docs/plans/cache.md", nearestDocs(tree, "docs/plans/cache.md"),
+		[]string{"docs/plans/board.md", "docs/plans/documents.md", "docs/roadmap.md"})
+	equal(t, "ties alphabetical", nearestDocs([]string{"docs/zzz.md", "docs/api.md", "docs/none/x.md"}, "docs/plans/cache.md"),
+		[]string{"docs/api.md", "docs/zzz.md"})
+	if n := len(nearestDocs(tree, "docs/none.md")); n != 3 {
+		t.Fatalf("nearestDocs names %d documents, want three at most", n)
+	}
+}
+
 const docsPlan = "# The cache plan\n\nThe store: Postgres.\nThe window: one week.\n"
 
 // read_doc answers the file with its base_sha256, or the lines holding a

@@ -187,7 +187,7 @@ const plainAsk = "This card stopped and needs your decision: how should it go on
 func monitorQuestion(reason string, id int64) *HumanQuestion {
 	return &HumanQuestion{Ask: fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", id),
 		Why:  escalationQuestion(reason),
-		Info: fmt.Sprintf("The card goes on in its run meanwhile. In the project chat, case %d takes a note, a close of the card, a fund, a raise of its ceiling, a retry of a failed dependency or a replan.", id)}
+		Info: fmt.Sprintf("The card goes on in its run meanwhile. In the project chat, case %d takes a note, a settle of the flag, a fund, a raise of its ceiling, a retry of a failed dependency or a replan. Close ends the card; settle ends the case alone.", id)}
 }
 
 // plainQuestion is the question an ask no template covers gets, so no

@@ -11,6 +11,7 @@ import (
 	"maps"
 	"net/http"
 	"net/url"
+	"path"
 	"regexp"
 	"slices"
 	"strconv"
@@ -482,6 +483,43 @@ func (c *Console) docTree(ctx context.Context, repo factoryd.Repo) ([]string, er
 			return nil, fmt.Errorf("the tree %q ended at %d of %d entries", ref, len(paths), res.TotalCount)
 		}
 	}
+}
+
+// nearestDocs is up to three files of tree under the document roots,
+// nearest to miss first: the longest shared directory prefix with the
+// missing path, ties alphabetical.
+func nearestDocs(tree []string, miss string) []string {
+	dirs := func(p string) []string {
+		p = path.Dir(p)
+		if p == "." || p == "/" {
+			return nil
+		}
+		return strings.Split(strings.Trim(p, "/"), "/")
+	}
+	missDirs := dirs(miss)
+	shared := func(p string) int {
+		n := 0
+		for i, a := range dirs(p) {
+			if i >= len(missDirs) || a != missDirs[i] {
+				break
+			}
+			n++
+		}
+		return n
+	}
+	var docs []string
+	for _, p := range tree {
+		if docRootOK(p) {
+			docs = append(docs, p)
+		}
+	}
+	slices.SortFunc(docs, func(a, b string) int {
+		if c := cmp.Compare(shared(b), shared(a)); c != 0 {
+			return c
+		}
+		return strings.Compare(a, b)
+	})
+	return docs[:min(3, len(docs))]
 }
 
 // readDoc is read_doc: path at master with its base_sha256 and line count,
