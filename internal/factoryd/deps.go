@@ -10,6 +10,7 @@ import (
 	"log"
 	"slices"
 	"strings"
+	"sync"
 	"time"
 
 	"go.temporal.io/sdk/workflow"
@@ -427,10 +428,19 @@ func retryMarker(id string) string {
 // card's and the failed card's branch, if any, to start from; the
 // dependents wake, and the failed card's issue closes as factoryd's
 // recorded close. Each step after the transaction is safe to repeat: a
-// retry that stopped is finished by the next. The replacement is queued on
+// retry that stopped is finished by the next. The press holds the failed
+// card's retry lock from its first read to its end, so however many
+// presses race it, as the answers on two dependents' cases do, one files
+// the replacement's issue and starts its workflow; the rest read its
+// retried step. The replacement is queued on
 // the direct track, where it starts under the work bound once its branch
 // is copied. It returns its issue.
 func (r *Runner) RetryCard(ctx context.Context, taskID, by string) (int64, error) {
+	// one press at a time per card: a second that races the first waits
+	// here, then reads its retried step, so it files no second issue
+	lock, _ := r.retryLocks.LoadOrStore(taskID, &sync.Mutex{})
+	lock.(*sync.Mutex).Lock()
+	defer lock.(*sync.Mutex).Unlock()
 	old, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return 0, err

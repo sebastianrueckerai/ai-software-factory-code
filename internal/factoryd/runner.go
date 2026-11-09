@@ -165,6 +165,10 @@ type Runner struct {
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica)
 	caseLocks sync.Map
+	// retryLocks holds a *sync.Mutex by task id, so RetryCard files a
+	// failed card's replacement once at a time, however many presses
+	// race it (one factoryd replica)
+	retryLocks sync.Map
 	// now and sleep are the roll gap's and the roll hold's clock; nil is
 	// the wall clock
 	now   func() time.Time
@@ -1982,7 +1986,12 @@ func retryForbidden(ctx context.Context, do func() error) error {
 var (
 	sandboxRequests = map[string]any{"cpu": "250m", "memory": "512Mi"}
 	sandboxLimits   = map[string]any{"cpu": "2", "memory": "4Gi"}
-	sandboxQuota    = map[string]any{
+
+	// sandboxGoMemLimit is each go process's GOMEMLIMIT in a sandbox pod:
+	// under half the pod's 4Gi, so two -p 2 test binaries racing cannot
+	// together reach the limit.
+	sandboxGoMemLimit = "1500MiB"
+	sandboxQuota      = map[string]any{
 		"pods":            "2",
 		"requests.cpu":    "1",
 		"requests.memory": "2Gi",
@@ -2308,7 +2317,14 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 	env = append(env,
 		map[string]any{"name": "GATEWAY_URL", "value": r.cfg.GatewayURL},
 		map[string]any{"name": "EGRESS_CANARY", "value": r.cfg.EgressCanary},
-		map[string]any{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP})
+		map[string]any{"name": "EGRESS_DIRECT_IP", "value": r.cfg.EgressDirectIP},
+		// every go test in the session is bounded the way bash check is (#1542,
+		// #1543): two test binaries at once and a heap soft limit under the
+		// pod's 4Gi, so the command the agent types cannot exceed the pod's
+		// memory. GOFLAGS must keep -mod=mod, the image's value a pod env
+		// would otherwise override.
+		map[string]any{"name": "GOFLAGS", "value": "-mod=mod -p=2"},
+		map[string]any{"name": "GOMEMLIMIT", "value": sandboxGoMemLimit})
 	return map[string]any{
 		"metadata": map[string]any{
 			"labels": map[string]string{
