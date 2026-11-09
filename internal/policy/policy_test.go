@@ -1012,7 +1012,7 @@ func TestBounds(t *testing.T) {
 		t.Fatal(err)
 	}
 	for name, want := range map[string]time.Duration{
-		"RunSession": 31 * time.Minute, "WaitChecks": 10 * time.Minute, "GateReproduction": 15 * time.Minute,
+		"RunSession": 31 * time.Minute, "WaitChecks": 50 * time.Minute, "GateReproduction": 15 * time.Minute,
 		"ModelReview": 20 * time.Minute, "GateAudit": 20 * time.Minute, "Merge": 90 * time.Second, "GatePolicy": 2 * time.Minute,
 		"Finish": 2 * time.Minute, "SuperviseGate": 8 * time.Minute,
 	} {
@@ -1041,7 +1041,7 @@ func TestBounds(t *testing.T) {
 		name  string
 		parts int
 		want  time.Duration
-	}{{"ModelReview", 1, 8 * time.Minute}, {"GateAudit", 2, 14 * time.Minute}, {"ModelReview", 3, 20 * time.Minute}, {"WaitChecks", 1, 10 * time.Minute}} {
+	}{{"ModelReview", 1, 8 * time.Minute}, {"GateAudit", 2, 14 * time.Minute}, {"ModelReview", 3, 20 * time.Minute}, {"WaitChecks", 1, 50 * time.Minute}} {
 		if got := d.PartsBound(tc.name, tc.parts); got != tc.want {
 			t.Errorf("PartsBound(%s, %d) = %s, want %s", tc.name, tc.parts, got, tc.want)
 		}
@@ -1049,6 +1049,11 @@ func TestBounds(t *testing.T) {
 	// a review the policy bounds itself keeps that bound, whatever its parts
 	if b, err := Parse([]byte(valid + "bounds: {ModelReview: 900}\n")); err != nil || b.PartsBound("ModelReview", 1) != 15*time.Minute {
 		t.Errorf("PartsBound(ModelReview, 1) under bounds.ModelReview 900 = %s (%v), want 15m", b.PartsBound("ModelReview", 1), err)
+	}
+	// the checks wait reads its bound from the waits row waits.checks, not
+	// from the bounds defaults; an explicit bounds: WaitChecks overrides it
+	if w, err := Parse([]byte(valid + "waits: {checks: 12m}\n")); err != nil || w.Bound("WaitChecks") != 12*time.Minute {
+		t.Errorf("Bound(WaitChecks) under waits.checks 12m = %s (%v), want 12m", w.Bound("WaitChecks"), err)
 	}
 	d, err = Parse([]byte(valid + "bounds: {WaitChecks: 900, default: 60}\n"))
 	if err != nil {
