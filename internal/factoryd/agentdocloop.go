@@ -384,6 +384,13 @@ func (s agentDocLoopStore) Task(ctx context.Context, id string) (gateway.Task, b
 		Repository: agentDocLoopRepo, Source: "github"}, true, nil
 }
 
+func (s agentDocLoopStore) TaskCosts(ctx context.Context, id string) (gateway.TaskCosts, bool, error) {
+	if id != agentDocTask {
+		return gateway.TaskCosts{}, false, nil
+	}
+	return gateway.TaskCosts{}, true, nil
+}
+
 func (s agentDocLoopStore) InsertAudit(ctx context.Context, row gateway.AuditRow) error { return nil }
 
 func (s agentDocLoopStore) CurrentPolicy(ctx context.Context) (policy.Version, bool, error) {

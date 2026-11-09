@@ -1142,6 +1142,12 @@ const (
 	ToolDigest = "digest"
 	// ToolFileProofs is the prover's filing of its tests.
 	ToolFileProofs = "file_proofs"
+	// ToolTaskCosts answers the task's cost figures: its budget, spent
+	// and remaining EUR, the count of its model calls and their prompt,
+	// cached and output tokens. Without task_id they are the caller's
+	// own; with it the named task's, a read of the classes that
+	// supervise.
+	ToolTaskCosts = "task_costs"
 )
 
 // SourceToolRequest is the source of a tool card, which adds a tool an
@@ -1180,7 +1186,7 @@ func CutAskRefusal(reason string, parts []string) string {
 }
 
 // FreeTools are the tools a class lists without caps.
-var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileProofs, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest}
+var FreeTools = []string{ToolEscalate, ToolRequestInfo, ToolRequestTool, ToolRequestCut, ToolFilePlan, ToolFileProofs, ToolDelegate, ToolCloudPrices, ToolCommission, ToolListResources, ToolRelease, ToolSSHCertificate, ToolRequestStatus, ToolManual, ToolDeploymentHealth, ToolAnalyzeImage, ToolDigest, ToolTaskCosts}
 
 // ToolPrices are the tool prices no provider API reports.
 type ToolPrices struct {
