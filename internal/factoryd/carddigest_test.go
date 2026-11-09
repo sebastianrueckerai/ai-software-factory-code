@@ -627,19 +627,20 @@ func TestCardDigestReadsEveryShapeOfTheGatesLine(t *testing.T) {
 	}
 }
 
-// A card queued 3 h on its reason against the 2 h bound flags its wait
-// and its queue, each since the first refusal at +1:00. A project that
-// shortens the bound to 1 h flags a card queued 1 h 30 m.
+// A card queued 3 h on its reason, the first refusal at +1:00 against the
+// 2 h bound, flags its wait since the refusal's offset and its queue with
+// the wait's length. A project that shortens the bound to 1 h flags a card
+// queued 1 h 30 m.
 func TestWaitOverBoundOnAQueuedCard(t *testing.T) {
 	since := digestAt(60)
 	g := newDigestRig(func(c *Task) { c.Status, c.QueueReason, c.QueueSince = "queued", "work bound 3 of 3", &since })
 	g.at(240)
 	d := g.digest(t)
-	want := []DigestFlag{{"queued_over_bound", "work bound 3 of 3 since +1:00"}, {"wait_over_bound", "queued since +1:00"}}
+	want := []DigestFlag{{"queued_over_bound", "work bound 3 of 3 for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if !slices.Equal(d.Flags, want) {
 		t.Fatalf("Flags = %v, want %v", d.Flags, want)
 	}
-	if !strings.HasSuffix(d.Render(), "\nflags: queued_over_bound(work bound 3 of 3 since +1:00), wait_over_bound(queued since +1:00)\n") {
+	if !strings.HasSuffix(d.Render(), "\nflags: queued_over_bound(work bound 3 of 3 for 3h), wait_over_bound(queued since +1:00)\n") {
 		t.Fatalf("Render =\n%s\nwant both flags on the flags line", d.Render())
 	}
 	if h := d.Head; h.QueueReason != "work bound 3 of 3" || h.QueueSince == nil || !h.QueueSince.Equal(since) || !h.StatusSince.Equal(digestStart) {
@@ -653,8 +654,25 @@ func TestWaitOverBoundOnAQueuedCard(t *testing.T) {
 	v.Projects["app"] = policy.ProjectConfig{Repository: "sf/app", Waits: &policy.Waits{Queued: time.Hour}}
 	g.r.cfg.Policy = func() policy.Version { return v }
 	d = g.digest(t)
+	want = []DigestFlag{{"queued_over_bound", "work bound 3 of 3 for 1h30m"}, {"wait_over_bound", "queued since +1:00"}}
 	if d.Waits.Queued != time.Hour || !slices.Equal(d.Flags, want) {
 		t.Fatalf("Waits.Queued = %s, Flags = %v; want 1h0m0s and %v", d.Waits.Queued, d.Flags, want)
+	}
+}
+
+// A card queued on a dependency from its filing waits ninety minutes: the
+// queue's flag names the dependency and the wait's length, for the filing's
+// offset is +0:00 and says nothing of how long the wait is.
+func TestQueuedOverBoundNamesTheWaitsLength(t *testing.T) {
+	since := digestAt(0)
+	g := newDigestRig(func(c *Task) { c.Status, c.QueueReason, c.QueueSince = "queued", "waits on #7", &since })
+	v := testPolicyVersion()
+	v.Projects["app"] = policy.ProjectConfig{Repository: "sf/app", Waits: &policy.Waits{Queued: time.Hour}}
+	g.r.cfg.Policy = func() policy.Version { return v }
+	g.at(90)
+	want := []DigestFlag{{"queued_over_bound", "waits on #7 for 1h30m"}, {"wait_over_bound", "queued since +0:00"}}
+	if d := g.digest(t); !slices.Equal(d.Flags, want) {
+		t.Fatalf("Flags = %v, want %v", d.Flags, want)
 	}
 }
 
