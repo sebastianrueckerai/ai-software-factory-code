@@ -50,7 +50,8 @@ anchor.dataset = {doc: "docs/roadmap.md"};
 anchor.matchers = [/docref/, /data-doc/, /^a$/, /\[href\]/];
 anchor.getAttribute = function (k) { return k === "href" ? "?doc=docs/roadmap.md" : null; };
 chatLog.appendChild(anchor);
-var byID = {board: el({dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(), drawer: el({hidden: true}),
+var chatPanel = el({dataset: {login: "sebastian", project: "code"}});
+var byID = {chat: chatPanel, board: el({dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(), drawer: el({hidden: true}),
   "session-log": el(), "steer-input": el({value: ""}), "doc-view": el({hidden: true}), "doc-article": el(), "doc-path": el(), "doc-facts": el(),
   "doc-edit": el({hidden: true}), "doc-editor": el({value: ""}), "doc-back": el(), "doc-fwd": el(), "doc-wide": el(), "doc-close": el(),
   "doc-forgejo": el(), "doc-pins": el(), "doc-dot": el({hidden: true}), "doc-mode-read": el(), "doc-mode-edit": el(), documents: el(),
