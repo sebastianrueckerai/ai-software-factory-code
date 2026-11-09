@@ -222,7 +222,7 @@ func (g monitorRig) flagCases(t *testing.T, id string) map[string]Case {
 const (
 	queuedSince    = "2026-11-04T09:00:00Z"
 	queuedKey      = "queued_over_bound|queued|" + queuedSince
-	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 since +1:00)"
+	queuedLine     = "Monitor flag: queued_over_bound(work bound 3 of 3 for 3h)"
 	monitorHandsUp = "no resolver fits"
 )
 
@@ -246,9 +246,9 @@ func (g monitorRig) assertQueueCase(t *testing.T, id string) {
 		t.Fatalf("%s's flag cases = %v, want %s alone at the human on %q", id, slices.Sorted(maps.Keys(cases)), queuedKey, queuedLine)
 	}
 	digest, _ := c.Facts["digest"].(string)
-	if c.Facts["flag"] != "queued_over_bound" || c.Facts["detail"] != "work bound 3 of 3 since +1:00" || c.Facts["state"] != "queued|"+queuedSince ||
+	if c.Facts["flag"] != "queued_over_bound" || c.Facts["detail"] != "work bound 3 of 3 for 3h" || c.Facts["state"] != "queued|"+queuedSince ||
 		c.Facts["wait"] != "queued" || c.Facts["since"] != queuedSince || c.Facts["bound"] != "2h" ||
-		!strings.Contains(digest, "flags: queued_over_bound(work bound 3 of 3 since +1:00), wait_over_bound(queued since +1:00)") {
+		!strings.Contains(digest, "flags: queued_over_bound(work bound 3 of 3 for 3h), wait_over_bound(queued since +1:00)") {
 		t.Fatalf("%s's case facts = %v, want the flag, its detail, state queued|%s, the queued wait since then against 2h and the digest", id, c.Facts, queuedSince)
 	}
 	steps := caseStepsOf(t, g.s, c.ID)
