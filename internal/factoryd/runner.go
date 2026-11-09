@@ -165,6 +165,10 @@ type Runner struct {
 	// caseLocks holds a *sync.Mutex by case id, so Act answers one case
 	// once at a time (one factoryd replica)
 	caseLocks sync.Map
+	// retryLocks holds a *sync.Mutex by task id, so RetryCard files a
+	// failed card's replacement once at a time, however many presses
+	// race it (one factoryd replica)
+	retryLocks sync.Map
 	// now and sleep are the roll gap's and the roll hold's clock; nil is
 	// the wall clock
 	now   func() time.Time
