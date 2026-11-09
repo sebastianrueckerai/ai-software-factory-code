@@ -2017,14 +2017,14 @@ func TestChatOffersTheMembersTools(t *testing.T) {
 			"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci", "alerts", "deployment_health", "resources",
 			"settings", "policy",
 			"project_images", "release_resource", "new_card", "request_image", "answer", "comment", "tell_card", "request_changes", "deny_merge",
-			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "routines",
+			"rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session", "set_dependency", "read_doc", "write_doc", "show_doc", "routines",
 			"routine_run", "routine_skip", "notes_read", "notes_write", "escalate", "attach_analysis",
 			"active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 		// demo lists no namespaces: it runs nothing in the cluster, so no deployment_health
 		{"bob", "demo", []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "diff", "plan", "pr", "file", "tree", "grep", "web_search", "web_scrape", "research", "session",
 			"session_steps", "session_step", "session_search", "ci", "project_images", "new_card", "request_image", "answer", "comment", "tell_card",
 			"request_changes", "deny_merge", "rerun_checks", "set_summary", "set_accent", "close", "edit", "grant_session",
-			"set_dependency", "read_doc", "write_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
+			"set_dependency", "read_doc", "write_doc", "show_doc", "routines", "routine_run", "routine_skip", "notes_read", "notes_write", "escalate",
 			"attach_analysis", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card", "set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}},
 	} {
 		r, _, g := newChatRig(t)
@@ -2734,6 +2734,72 @@ func TestChatBoardView(t *testing.T) {
 	if !slices.Contains(ev, `view {"card":"","query":"?project=ai-software-factory-code"}`) {
 		t.Errorf("reset does not clear the view:\n%s", strings.Join(ev, "\n"))
 	}
+}
+
+// TestChatShowDoc: the read-only show_doc opens the document in the
+// member's own document view (280). The view event rides the turn's
+// stream right after the tool's block, with the heading when one was
+// named; the block's result names the open; a refused call rides no view
+// event, naming the nearest documents instead.
+func TestChatShowDoc(t *testing.T) {
+	r, _, g := newChatRig(t)
+	withDocs(t, r, map[string]string{
+		"docs/roadmap.md":         "# The roadmap\n",
+		"docs/plans/board.md":     "# The board plan\n",
+		"docs/plans/documents.md": "# The documents plan\n"})
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	ck, s := r.loggedIn(t)
+	open := func(args string) []string {
+		g.replies = [][]string{{call(0, "show_doc", args)}, {say("done")}}
+		_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"show me the plan"}})
+		return ev
+	}
+	ev := open(`{"path":"docs/roadmap.md"}`)
+	at := slices.IndexFunc(ev, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"show_doc"`)
+	})
+	if at < 0 {
+		t.Fatalf("the turn holds no show_doc tool block:\n%s", strings.Join(ev, "\n"))
+	}
+	if want := `view {"doc":"docs/roadmap.md"}`; at+1 >= len(ev) || ev[at+1] != want {
+		t.Errorf("the view event does not follow the tool's block:\n%s", strings.Join(ev, "\n"))
+	}
+	if !strings.Contains(ev[at], `docs/roadmap.md is open in your document view.`) {
+		t.Errorf("the block's result does not name the open:\n%s", ev[at])
+	}
+	ev = open(`{"path":"docs/plans/board.md","heading":"The board plan"}`)
+	if !slices.Contains(ev, `view {"doc":"docs/plans/board.md","heading":"The board plan"}`) {
+		t.Errorf("the heading does not ride the view event:\n%s", strings.Join(ev, "\n"))
+	}
+	if !slices.ContainsFunc(ev, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `is open in your document view, at \"The board plan\".`)
+	}) {
+		t.Errorf("the heading block's result does not name the open:\n%s", strings.Join(ev, "\n"))
+	}
+	// a missing path refuses with the nearest documents and rides no view event
+	ev = open(`{"path":"docs/plans/cache.md"}`)
+	want := "Refused: There is no document docs/plans/cache.md on master. The nearest: docs/plans/board.md, docs/plans/documents.md, docs/roadmap.md."
+	if !slices.ContainsFunc(ev, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, want)
+	}) {
+		t.Errorf("the missing path refuses without the nearest documents:\n%s", strings.Join(ev, "\n"))
+	}
+	if slices.ContainsFunc(ev, func(e string) bool { return strings.HasPrefix(e, "view ") }) {
+		t.Errorf("a view event rides the refusal:\n%s", strings.Join(ev, "\n"))
+	}
+}
+
+// TestChatShowDocRefusals: show_doc refuses a malformed path and a
+// project without a document repository with read_doc's own sentences.
+func TestChatShowDocRefusals(t *testing.T) {
+	r, _ := newReadsRig(t)
+	withDocs(t, r, map[string]string{"docs/roadmap.md": "# The roadmap\n"})
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	status, msg := refused(t, r, "show_doc", toolInput{Path: "../escape.md"})
+	equal(t, "the malformed path", []any{status, msg}, []any{http.StatusBadRequest, "../escape.md is no file path: name a path from the repository's root, with no . or .. segments"})
+	r, _ = newReadsRig(t)
+	status, msg = refused(t, r, "show_doc", toolInput{Path: "docs/roadmap.md"})
+	equal(t, "no document repository", []any{status, msg}, []any{http.StatusConflict, "the project names no document repository (chat.doc_repo); there are no documents"})
 }
 
 // TestChatBoardViewRefusals: a word a control does not carry is refused

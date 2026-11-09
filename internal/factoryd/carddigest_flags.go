@@ -128,8 +128,9 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 	steps := d.Steps
 	confirmed := map[string]int{}
 	review := ""
-	// a grant is open until a session pushes; afterNoPush names the first
-	// session after it that ended without a push
+	// a grant is open until a session pushes, or, on a plan, the planner's
+	// session files a revision; afterNoPush names the first session after
+	// it that ended without a push
 	granted, afterNoPush := false, ""
 	run, runFirst := 0, ""
 	for _, s := range steps {
@@ -146,6 +147,10 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 				add("grant_bought_nothing", afterNoPush)
 			}
 			granted, afterNoPush = true, ""
+		case "revision":
+			// the planner's session that filed a revision bought it: the
+			// grant closes on the revision, as on a push
+			granted, afterNoPush = false, ""
 		case "session":
 			if s.state == "" {
 				continue
