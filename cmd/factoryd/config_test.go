@@ -393,3 +393,91 @@ func TestConfigCheckRefusesALanesBlock(t *testing.T) {
 		t.Fatalf("stderr = %q, want %q", stderr.String(), want)
 	}
 }
+
+// TestManualHoldsAllCaps runs the manual command over a copy of the
+// manual page: the marked section is rewritten with the generated table,
+// 36 rows in the schema's order, a second run writes the same bytes, wrong
+// flags exit 2 and a file without both markers exits 1.
+func TestManualHoldsAllCaps(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/manual/policy.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	path := filepath.Join(t.TempDir(), "policy.md")
+	if err := os.WriteFile(path, doc, 0o600); err != nil {
+		t.Fatal(err)
+	}
+	table, err := policy.SpendRailTable()
+	if err != nil {
+		t.Fatalf("SpendRailTable: %v", err)
+	}
+	var stdout, stderr bytes.Buffer
+	if code := run([]string{"manual", "--out", path}, &stdout, &stderr); code != 0 {
+		t.Fatalf("first run: exit %d: %s", code, stderr.String())
+	}
+	first, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"manual", "--out", path}, &stdout, &stderr); code != 0 {
+		t.Fatalf("second run: exit %d: %s", code, stderr.String())
+	}
+	second, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(first, second) {
+		t.Fatal("the second run changed the file")
+	}
+	if !bytes.Contains(first, []byte(table)) {
+		t.Fatal("the file does not hold the generated table")
+	}
+	wantRows := []string{
+		"limits.sessions", "limits.agent_time", "limits.check_in", "limits.supervisor_calls",
+		"limits.supervisor_timeout", "limits.stronger_after", "limits.steps", "limits.nudge_after",
+		"limits.nudges", "limits.same_call", "limits.review_diff_kib", "limits.checkin_calls",
+		"limits.checkin_time", "limits.checkin_share", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
+		"limits.checkin_sessions", "limits.warn_at", "limits.plan_warn_at", "limits.no_push_spend",
+		"budget.task_default_eur", "budget.task_max_eur", "budget.day_eur", "budget.month_eur",
+		"budget.session_floor_cheap_eur", "budget.session_floor_frontier_eur", "budget.premium_month_eur",
+		"escalation.pool.sessions", "escalation.pool.agent_time", "escalation.pool.eur",
+		"escalation.card_draw.sessions", "escalation.card_draw.agent_time", "escalation.card_draw.eur",
+		"chat.monthly_eur", "classes.<c>.tools", "envelope_default",
+	}
+	var gotRows []string
+	inSection := false
+	for _, line := range strings.Split(string(first), "\n") {
+		switch {
+		case strings.HasPrefix(line, policy.SpendRailBegin):
+			inSection = true
+		case strings.HasPrefix(line, policy.SpendRailEnd):
+			inSection = false
+		case inSection && strings.HasPrefix(line, "| ") && !strings.HasPrefix(line, "| key ") && !strings.HasPrefix(line, "| ---"):
+			gotRows = append(gotRows, strings.TrimSpace(strings.SplitN(line[2:], " |", 2)[0]))
+		}
+	}
+	if !slices.Equal(gotRows, wantRows) {
+		t.Fatalf("the table holds %d rows, want %d in order; got:\n%v", len(gotRows), len(wantRows), gotRows)
+	}
+	for name, args := range map[string][]string{
+		"without --out": {"manual"},
+		"an extra arg":  {"manual", "--out", path, "extra"},
+	} {
+		if code := run(args, &stdout, &stderr); code != 2 {
+			t.Errorf("manual %s: exit %d, want 2", name, code)
+		}
+	}
+	stripped := filepath.Join(t.TempDir(), "stripped.md")
+	strippedDoc := strings.ReplaceAll(string(doc), policy.SpendRailBegin+"\n", "")
+	strippedDoc = strings.ReplaceAll(strippedDoc, policy.SpendRailEnd+"\n", "")
+	if err := os.WriteFile(stripped, []byte(strippedDoc), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if code := run([]string{"manual", "--out", stripped}, &stdout, &stderr); code != 1 {
+		t.Errorf("a file without both markers: exit %d, want 1", code)
+	}
+	missing := filepath.Join(t.TempDir(), "absent.md")
+	if code := run([]string{"manual", "--out", missing}, &stdout, &stderr); code != 1 {
+		t.Errorf("a missing file: exit %d, want 1", code)
+	}
+}
