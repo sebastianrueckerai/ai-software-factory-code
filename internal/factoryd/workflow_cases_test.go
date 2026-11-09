@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -655,6 +656,139 @@ func TestWorkflowChangeRequestAtTheCapBuysTheSession(t *testing.T) {
 	}
 	if want := []string{fmt.Sprintf("sebastian %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(grants, want) {
 		t.Fatalf("grants drawn = %q, want %q", grants, want)
+	}
+}
+
+// The audit's gap verdict at the session cap — the hold-out settlement's
+// findings, which name no writer — buys its session as the factory's own
+// draw (versionAuditDraw): rung 0 against the pool, keyed to the run
+// (grantKey), and no cap card opens. The session it buys carries the
+// audit's finding.
+func TestWorkflowAuditGapAtTheCapIsTheFactoryDraw(t *testing.T) {
+	finding := "Every key turn lands in the log (hold-out key_log): the audit found a real gap the spec names and the plan's proof does not cover; work the criterion."
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.criteria = []CriteriaResult{
+			{Holdouts: []HoldoutGateResult{{Idx: 1, ID: "key_log", Verdict: "red", Evidence: "--- FAIL: TestKeyLog (0.01s)"}}},
+			{},
+		}
+		g.settlements = []HoldoutSettlement{{Findings: []string{finding}}}
+	})
+	g.branchHead = "c2"
+	var draws []string
+	g.env.OnActivity(ActivityAuditDraw, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, d policy.Draw, key string) error {
+			draws = append(draws, fmt.Sprintf("%s %+v %s", taskID, d, key))
+			return nil
+		})
+	var steps []string
+	g.onVerify(&steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards",
+		"session 4 after 0 cards", "pr c4 after 0 cards"}; !slices.Equal(steps, want) || len(g.escalated) != 0 {
+		t.Fatalf("steps %q, asked %q; want %q and no one asked", steps, g.escalated, want)
+	}
+	if want := []string{"policy", "repro c2", "review c2", "criteria c2", "settle c2", "policy", "repro c4", "review c4", "criteria c4", "approval c4", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("gates %q, want %q", g.steps, want)
+	}
+	if s := g.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{finding}) || g.usage[len(g.usage)-1].ExtraAttempts != 1 {
+		t.Fatalf("fourth session %+v, usage %+v; want attempt 4 with the audit's finding, one attempt granted", s, g.usage[len(g.usage)-1])
+	}
+	if want := []string{fmt.Sprintf("t1 %+v %s", policy.Draw{Sessions: 1}, "card_extended default-test-run-id 1 0s")}; !slices.Equal(draws, want) {
+		t.Fatalf("audit draws = %q, want %q", draws, want)
+	}
+}
+
+// The pool empty, the same audit gap at the cap buys no session: the
+// factory's draw refuses, the bought session and its time go back, and
+// the card asks a human, whose extend on the console (a raised session
+// on the row) starts the next session with the audit's finding.
+func TestWorkflowAuditGapAtAnEmptyPoolAsksAHuman(t *testing.T) {
+	finding := "Every key turn lands in the log (hold-out key_log): the audit found a real gap the spec names and the plan's proof does not cover; work the criterion."
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.criteria = []CriteriaResult{
+			{Holdouts: []HoldoutGateResult{{Idx: 1, ID: "key_log", Verdict: "red", Evidence: "--- FAIL: TestKeyLog (0.01s)"}}},
+			{},
+		}
+		g.settlements = []HoldoutSettlement{{Findings: []string{finding}}}
+	})
+	g.branchHead = "c2"
+	g.env.OnActivity(ActivityAuditDraw, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, d policy.Draw, key string) error {
+			return temporal.NewNonRetryableApplicationError("the escalation pool is empty: no session left of its bound", errDrawRefused, nil)
+		})
+	var steps []string
+	g.onVerify(&steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")})
+	g.env.RegisterDelayedCallback(func() {
+		g.rowUsage = TaskUsage{RaisedSessions: 1}
+		g.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, Resolution{Action: ActHandover, Args: map[string]any{"model": "stronger"}}, 605))
+	}, 2*time.Hour)
+	g.signalAfter(5*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "session 3 after 0 cards", "pr c2 after 0 cards",
+		"session 4 after 1 cards", "pr c4 after 1 cards"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps %q, want %q", steps, want)
+	}
+	if want := []string{"policy", "repro c2", "review c2", "criteria c2", "settle c2", "policy", "repro c4", "review c4", "criteria c4", "approval c4", "merge"}; !slices.Equal(g.steps, want) {
+		t.Fatalf("gates %q, want %q", g.steps, want)
+	}
+	if len(g.escalated) != 1 || !strings.HasPrefix(g.escalated[0], capReached) || !strings.Contains(g.escalated[0], finding) {
+		t.Fatalf("asked %q, want one session-cap card holding the audit's finding", g.escalated)
+	}
+	if s := g.sessions[3]; s.Attempt != 4 || s.Model != "factory/big" || !slices.Equal(s.Findings, []string{finding}) {
+		t.Fatalf("fourth session %+v, want attempt 4 on factory/big with the audit's finding, after the ask", s)
+	}
+	if u := g.usage[len(g.usage)-1]; u.ExtraAttempts != 0 {
+		t.Fatalf("usage %+v, want no attempt granted by the refused draw", u)
+	}
+}
+
+// A run from before versionAuditDraw buys the audit's gap session at the
+// cap ungated, as a writer's ran before versionCases: no draw, no card.
+func TestWorkflowAuditGapAtTheCapFromBeforeAuditDrawBuysUngated(t *testing.T) {
+	finding := "Every key turn lands in the log (hold-out key_log): the audit found a real gap the spec names and the plan's proof does not cover; work the criterion."
+	g := newGateHarness(t, func(g *gateHarness) {
+		g.criteria = []CriteriaResult{
+			{Holdouts: []HoldoutGateResult{{Idx: 1, ID: "key_log", Verdict: "red", Evidence: "--- FAIL: TestKeyLog (0.01s)"}}},
+			{},
+		}
+		g.settlements = []HoldoutSettlement{{Findings: []string{finding}}}
+	})
+	g.beforeAuditDraw()
+	g.branchHead = "c2"
+	var draws int
+	g.env.OnActivity(ActivityAuditDraw, mock.Anything, "t1", mock.Anything, mock.Anything).Return(
+		func(ctx context.Context, taskID string, d policy.Draw, key string) error {
+			draws++
+			return nil
+		})
+	var steps []string
+	g.onVerify(&steps, []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "no changes to push"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "no changes to push"},
+		{Outcome: OutcomeRedirect, SessionID: "s3", Commit: "c2", Trip: "repetition", Summary: "supervisor: redirect after repetition", Findings: []string{"f3"}},
+		pushed("s4", "c4")})
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if s := g.sessions[3]; s.Attempt != 4 || !slices.Equal(s.Findings, []string{finding}) || len(g.escalated) != 0 || draws != 0 {
+		t.Fatalf("fourth session %+v, asked %q, draws %d; want attempt 4 ungated, no one asked, no draw", s, g.escalated, draws)
 	}
 }
 
