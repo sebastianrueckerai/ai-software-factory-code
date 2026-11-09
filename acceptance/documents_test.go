@@ -7,6 +7,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"net/url"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -177,6 +178,152 @@ func docRows(t *testing.T, r *AcceptanceRig) []string {
 			e.Detail["hash"].(string), e.Detail["commit"].(string)}, " "))
 	}
 	return out
+}
+
+// TestDocumentsShowDocOpenRidesTurn is the show_doc open riding a real
+// turn on the acceptance rig (roadmap 280): a scripted reply calling
+// show_doc {"path":"docs/roadmap.md"} carries the show_doc tool block and
+// then exactly the view event with the path; with a heading named, the
+// view event carries it; a refused path names the nearest documents and
+// rides no view event.
+func TestDocumentsShowDocOpenRidesTurn(t *testing.T) {
+	r, _, chatPath, _, ck, csrf := docsRig(t)
+
+	run := func(args string) []string {
+		t.Helper()
+		r.Reply([]string{Call(1, "show_doc", args)}, []string{Say("Done.")})
+		code, body := postChat(t, r, chatPath, ck, url.Values{"message": {"show me the roadmap"}, "csrf": {csrf}})
+		if code != http.StatusOK {
+			t.Fatalf("POST the chat = %d:\n%s", code, body)
+		}
+		return eventsOf(t, body)
+	}
+
+	events := run(`{"path":"docs/roadmap.md"}`)
+	at := -1
+	for i, e := range events {
+		if strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"show_doc"`) {
+			at = i
+			break
+		}
+	}
+	if at < 0 {
+		t.Fatalf("the turn holds no show_doc tool block:\n%s", strings.Join(events, "\n"))
+	}
+	if at+1 >= len(events) || events[at+1] != `view {"doc":"docs/roadmap.md"}` {
+		t.Errorf("the view event does not follow the show_doc's block:\n%s", strings.Join(events, "\n"))
+	}
+	if !strings.Contains(events[at], `docs/roadmap.md is open in your document view.`) {
+		t.Errorf("the block's result does not name the open:\n%s", events[at])
+	}
+
+	events = run(`{"path":"docs/plans/board.md","heading":"The board plan"}`)
+	if !slices.Contains(events, `view {"doc":"docs/plans/board.md","heading":"The board plan"}`) {
+		t.Errorf("the heading does not ride the view event:\n%s", strings.Join(events, "\n"))
+	}
+
+	// A missing path refuses naming the nearest documents, and rides no
+	// view event.
+	events = run(`{"path":"docs/plans/cache.md"}`)
+	want := "Refused: There is no document docs/plans/cache.md on master. The nearest: docs/plans/board.md, docs/plans/documents.md, docs/roadmap.md."
+	if !hasToolResult(events, "show_doc", want) {
+		t.Errorf("the refusal does not name the nearest documents:\n%s", strings.Join(events, "\n"))
+	}
+	if slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "view ") }) {
+		t.Errorf("a view event rides the refusal:\n%s", strings.Join(events, "\n"))
+	}
+}
+
+// TestDocumentsWriteThenShow is "write a plan and show it" end to end
+// (roadmap 280): the agent's write_doc lands a commit on master, the
+// show_doc on the same file rides its view event, and the document the
+// open fetches answers with the commit the write made and its content.
+func TestDocumentsWriteThenShow(t *testing.T) {
+	r, docs, chatPath, docsPath, ck, csrf := docsRig(t)
+
+	written := strings.Replace(documentsRoadmap, "Where it stands: in progress.", "Where it stands: in review.", 1)
+	r.Reply([]string{Call(1, "write_doc",
+		`{"path":"docs/roadmap.md","old":"Where it stands: in progress.","new":"Where it stands: in review.","base_sha256":"`+
+			factoryd.ContentHash(documentsRoadmap)+`"}`)})
+	code, body := postChat(t, r, chatPath, ck, url.Values{"message": {"mark item 7 in review"}, "csrf": {csrf}})
+	if code != http.StatusOK {
+		t.Fatalf("POST the chat = %d:\n%s", code, body)
+	}
+	token := docProposalToken(t, eventsOf(t, body))
+	code, body = postChat(t, r, chatPath+"/proposals/"+token, ck, url.Values{"csrf": {csrf}})
+	if code != http.StatusOK {
+		t.Fatalf("Do it = %d:\n%s", code, body)
+	}
+	events := eventsOf(t, body)
+	if !hasToolResult(events, "write_doc",
+		"Committed c0ffee0 to sf/docs@master: docs/roadmap.md, now base_sha256 "+factoryd.ContentHash(written)+".") {
+		t.Fatalf("the write_doc did not land:\n%s", strings.Join(events, "\n"))
+	}
+
+	r.Reply([]string{Call(1, "show_doc", `{"path":"docs/roadmap.md"}`)}, []string{Say("Done.")})
+	code, body = postChat(t, r, chatPath, ck, url.Values{"message": {"show it"}, "csrf": {csrf}})
+	if code != http.StatusOK {
+		t.Fatalf("POST the chat = %d:\n%s", code, body)
+	}
+	events = eventsOf(t, body)
+	if !slices.Contains(events, `view {"doc":"docs/roadmap.md"}`) {
+		t.Errorf("the open does not ride the show_doc's turn:\n%s", strings.Join(events, "\n"))
+	}
+
+	// The document the open fetches answers with the write's commit and
+	// content.
+	code, raw := getDoc(t, r, ck, docsPath+"/docs/roadmap.md")
+	equal(t, "the read's status", code, http.StatusOK)
+	var opened struct{ Path, Commit string }
+	if err := json.Unmarshal(raw, &opened); err != nil {
+		t.Fatalf("the read's answer decodes: %v (%s)", err, raw)
+	}
+	equal(t, "the fetched document", []any{opened.Path, opened.Commit, docs.Files()["docs/roadmap.md"]},
+		[]any{"docs/roadmap.md", "c0ffee0", written})
+}
+
+// TestDocumentsAnswerServedToPanel is the panel's side of the document
+// link (roadmap 280): a scripted answer naming docs/plans/documents.md in
+// its text is stored and served whole by GET the chat, its path intact
+// for the panel's docref render.
+func TestDocumentsAnswerServedToPanel(t *testing.T) {
+	r, _, chatPath, _, ck, csrf := docsRig(t)
+
+	said := "The drawer's document mode is docs/plans/documents.md."
+	r.Reply([]string{Say(said)})
+	code, body := postChat(t, r, chatPath, ck, url.Values{"message": {"where is the documents plan?"}, "csrf": {csrf}})
+	if code != http.StatusOK {
+		t.Fatalf("POST the chat = %d:\n%s", code, body)
+	}
+
+	srv := httptest.NewServer(r.Handler())
+	defer srv.Close()
+	req, err := http.NewRequest(http.MethodGet, srv.URL+chatPath, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	req.AddCookie(ck)
+	resp, err := srv.Client().Do(req)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer resp.Body.Close()
+	b, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var answer struct {
+		Messages []factoryd.ChatMessage `json:"messages"`
+	}
+	if err := json.Unmarshal(b, &answer); err != nil {
+		t.Fatalf("GET the chat decodes: %v (%s)", err, b)
+	}
+	for _, m := range answer.Messages {
+		if m.Role == "assistant" && m.Content == said {
+			return
+		}
+	}
+	t.Errorf("GET the chat does not serve the answer with its path intact:\n%s", b)
 }
 
 // TestDocumentsEndToEnd is the live flow's first half: Sebastian opens
