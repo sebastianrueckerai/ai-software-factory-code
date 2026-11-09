@@ -82,30 +82,15 @@ func TestSpendRail(t *testing.T) {
 // differs from the table this build generates, so a cap that lands in the
 // schema or the catalogue without the table following cannot pass.
 func TestSpendRailNoDrift(t *testing.T) {
-	want, err := SpendRailTable()
-	if err != nil {
-		t.Fatalf("SpendRailTable: %v", err)
-	}
 	doc, err := os.ReadFile("../../docs/manual/policy.md")
 	if err != nil {
 		t.Fatal(err)
 	}
-	i, j := bytes.Index(doc, []byte(SpendRailBegin)), bytes.Index(doc, []byte(SpendRailEnd))
-	if i < 0 || j < 0 {
-		t.Fatal("docs/manual/policy.md carries no spend-rail markers")
-	}
-	rest := doc[j+len(SpendRailEnd):]
-	if k := bytes.IndexByte(rest, '\n'); k >= 0 {
-		rest = rest[k+1:]
-	} else {
-		rest = nil
-	}
-	got := append(append([]byte{}, doc[:i]...), append([]byte(want), rest...)...)
 	rewritten, err := RewriteSpendRails(doc)
 	if err != nil {
 		t.Fatalf("RewriteSpendRails: %v", err)
 	}
-	if !bytes.Equal(rewritten, got) {
+	if !bytes.Equal(rewritten, doc) {
 		t.Fatal("docs/manual/policy.md's spend-rail section differs from the generated table; run: go run ./cmd/factoryd manual --out docs/manual/policy.md")
 	}
 }

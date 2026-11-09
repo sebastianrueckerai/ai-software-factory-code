@@ -445,11 +445,16 @@ func TestManualHoldsAllCaps(t *testing.T) {
 		"chat.monthly_eur", "classes.<c>.tools", "envelope_default",
 	}
 	var gotRows []string
+	inSection := false
 	for _, line := range strings.Split(string(first), "\n") {
-		if !strings.HasPrefix(line, "| ") || strings.HasPrefix(line, "| key ") || strings.HasPrefix(line, "| ---") {
-			continue
+		switch {
+		case strings.HasPrefix(line, policy.SpendRailBegin):
+			inSection = true
+		case strings.HasPrefix(line, policy.SpendRailEnd):
+			inSection = false
+		case inSection && strings.HasPrefix(line, "| ") && !strings.HasPrefix(line, "| key ") && !strings.HasPrefix(line, "| ---"):
+			gotRows = append(gotRows, strings.TrimSpace(strings.SplitN(line[2:], " |", 2)[0]))
 		}
-		gotRows = append(gotRows, strings.TrimSpace(strings.SplitN(line[2:], " |", 2)[0]))
 	}
 	if !slices.Equal(gotRows, wantRows) {
 		t.Fatalf("the table holds %d rows, want %d in order; got:\n%v", len(gotRows), len(wantRows), gotRows)
