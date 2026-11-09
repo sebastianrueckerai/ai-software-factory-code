@@ -12,7 +12,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/sebastian/rueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
