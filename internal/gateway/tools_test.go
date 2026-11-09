@@ -318,7 +318,7 @@ func TestMCPListsTheTools(t *testing.T) {
 	for _, tl := range res.Tools {
 		names = append(names, tl.Name)
 	}
-	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,manual,replicate_predict,request_cut,request_info,request_tool,web_scrape,web_search"
+	want := "analyze_image,delegate,deployment_health,digest,escalate,fal_run,file_plan,file_proofs,manual,replicate_predict,request_cut,request_info,request_tool,task_costs,web_scrape,web_search"
 	if strings.Join(names, ",") != want {
 		t.Fatalf("tools = %v, want %s", names, want)
 	}
@@ -1471,11 +1471,162 @@ func TestWebToolsRefuseLocalTargets(t *testing.T) {
 	}
 }
 
+// costsPolicy adds a planner class (a plan session that supervises) with
+// task_costs free, and a second project beside the caller's own.
+func costsPolicy() policy.Version {
+	pv := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+	pv.Document.Classes["planner"] = policy.Class{Session: policy.SessionPlan, Models: []string{"small"},
+		Tools: map[string]policy.ToolCap{policy.ToolTaskCosts: {}}}
+	pv.Projects["other"] = policy.ProjectConfig{Repository: "sf/other"}
+	return pv
+}
+
+// unmarshalCosts reads the task_costs answer's figures.
+func unmarshalCosts(t *testing.T, text string) taskCostsAnswer {
+	t.Helper()
+	var got taskCostsAnswer
+	if err := json.Unmarshal([]byte(text), &got); err != nil {
+		t.Fatalf("task_costs = %q: %v", text, err)
+	}
+	return got
+}
+
+// task_costs without arguments answers the caller's own figures, free:
+// no hold, no provider call, one audit row.
+func TestTaskCostsOwnFigures(t *testing.T) {
+	task := Task{ID: "42", BudgetEUR: 5, SpentEUR: 1.25, Status: "running", Classes: []string{"coder"}, Repository: "sf/code"}
+	e := newToolEnv(t, task, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	e.store.addAudit(
+		AuditRow{TaskID: "42", PromptTokens: 400, CachedTokens: 50, OutputTokens: 100},
+		AuditRow{TaskID: "42", PromptTokens: 500, CachedTokens: 150, OutputTokens: 100},
+		AuditRow{TaskID: "42", PromptTokens: 300, OutputTokens: 100},
+		AuditRow{TaskID: "42", Tool: "manual"}, // a tool row is no model call
+	)
+	text, isErr := e.call(t, policy.ToolTaskCosts, nil)
+	if isErr {
+		t.Fatalf("task_costs = %q", text)
+	}
+	got := unmarshalCosts(t, text)
+	if got.TaskID != "42" || !near6(got.BudgetEUR, 5) || !near6(got.SpentEUR, 1.25) || !near6(got.RemainingEUR, 3.75) ||
+		got.Calls != 3 || got.PromptTokens != 1200 || got.CachedTokens != 200 || got.OutputTokens != 300 {
+		t.Fatalf("figures = %+v", got)
+	}
+	if a := e.lastAudit(t); a.Decision != "costs_read" || a.Tool != policy.ToolTaskCosts || a.Reason != "42" || *a.PolicyVersion != 7 {
+		t.Fatalf("audit = %+v", a)
+	}
+	if len(e.toolLedger()) != 0 || e.store.openHolds() != 0 || len(e.providers.calls) != 0 {
+		t.Fatalf("free: ledger %v, holds %d, providers %v", e.toolLedger(), e.store.openHolds(), e.providers.calls)
+	}
+	if rows := e.store.auditRows(); len(rows) != 5 {
+		t.Fatalf("audit rows = %d, want the 4 seeded and the answer's", len(rows))
+	}
+}
+
+// A plan-session class names another task of its own project and gets
+// that task's figures, not its own.
+func TestTaskCostsSupervisedRead(t *testing.T) {
+	e := newToolEnv(t, Task{ID: "50", BudgetEUR: 8, SpentEUR: 3, Status: "running", Classes: []string{"planner"}, Repository: "sf/code"}, costsPolicy())
+	e.store.addTask(Task{ID: "51", BudgetEUR: 2, SpentEUR: 0.5, Status: "running", Classes: []string{"coder"}, Repository: "sf/code"})
+	e.store.addAudit(AuditRow{TaskID: "50", PromptTokens: 9000, OutputTokens: 9000}, AuditRow{TaskID: "51", PromptTokens: 100, OutputTokens: 40})
+	text, isErr := e.call(t, policy.ToolTaskCosts, map[string]any{"task_id": "51"})
+	if isErr {
+		t.Fatalf("task_costs = %q", text)
+	}
+	got := unmarshalCosts(t, text)
+	if got.TaskID != "51" || !near6(got.BudgetEUR, 2) || !near6(got.SpentEUR, 0.5) || !near6(got.RemainingEUR, 1.5) ||
+		got.Calls != 1 || got.PromptTokens != 100 || got.CachedTokens != 0 || got.OutputTokens != 40 {
+		t.Fatalf("figures = %+v, want task 51's", got)
+	}
+	if a := e.lastAudit(t); a.Decision != "costs_read" || a.Reason != "51" || len(e.toolLedger()) != 0 {
+		t.Fatalf("audit = %+v", a)
+	}
+}
+
+// A named task of another project, and a task_id no row holds, are each
+// refused with a reason, leak no figures and are audited.
+func TestTaskCostsCrossProject(t *testing.T) {
+	e := newToolEnv(t, Task{ID: "50", BudgetEUR: 8, Status: "running", Classes: []string{"planner"}, Repository: "sf/code"}, costsPolicy())
+	e.store.addTask(Task{ID: "52", BudgetEUR: 9, SpentEUR: 9, Status: "running", Classes: []string{"coder"}, Repository: "sf/other"})
+	e.store.addAudit(AuditRow{TaskID: "52", PromptTokens: 999, OutputTokens: 999})
+	text, isErr := e.call(t, policy.ToolTaskCosts, map[string]any{"task_id": "52"})
+	if !isErr || !strings.Contains(text, "refused_capability") || !strings.Contains(text, "task 52 is not in the caller's project") {
+		t.Fatalf("cross-project = %q, want the refusal", text)
+	}
+	if strings.Contains(text, "999") || strings.Contains(text, "9.0") {
+		t.Fatalf("cross-project refusal leaks figures: %q", text)
+	}
+	text, isErr = e.call(t, policy.ToolTaskCosts, map[string]any{"task_id": "gone"})
+	if !isErr || !strings.Contains(text, "refused_arguments") || !strings.Contains(text, "no such task gone") {
+		t.Fatalf("unknown id = %q, want the refusal", text)
+	}
+	var refusals []AuditRow
+	for _, r := range e.store.auditRows() {
+		if r.Tool == policy.ToolTaskCosts {
+			refusals = append(refusals, r)
+		}
+	}
+	if len(refusals) != 2 || refusals[0].Decision != "refused_capability" || refusals[1].Decision != "refused_arguments" {
+		t.Fatalf("audit rows = %+v, want the two refusals", refusals)
+	}
+}
+
+// A code-session class passing task_id is refused with a reason naming
+// the parameter as the supervising classes' read; its own figures stay
+// readable without the parameter.
+func TestTaskCostsTaskIDClass(t *testing.T) {
+	task := Task{ID: "42", BudgetEUR: 1, Status: "running", Classes: []string{"coder"}, Repository: "sf/code"}
+	e := newToolEnv(t, task, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	e.store.addTask(Task{ID: "43", BudgetEUR: 2, Status: "running", Classes: []string{"coder"}, Repository: "sf/code"})
+	text, isErr := e.call(t, policy.ToolTaskCosts, map[string]any{"task_id": "43"})
+	if !isErr || !strings.Contains(text, "refused_capability") ||
+		!strings.Contains(text, "task_id is a read of the classes that supervise (a plan session)") {
+		t.Fatalf("coder with task_id = %q, want the refusal naming the parameter", text)
+	}
+	text, isErr = e.call(t, policy.ToolTaskCosts, nil)
+	if isErr {
+		t.Fatalf("coder without task_id = %q", text)
+	}
+	if got := unmarshalCosts(t, text); got.TaskID != "42" || !near6(got.BudgetEUR, 1) || got.Calls != 0 {
+		t.Fatalf("own figures = %+v", got)
+	}
+}
+
+// tools/list offers task_costs to a class that lists it and admits its
+// call; a class without it sees neither.
+func TestTaskCostsAllowlist(t *testing.T) {
+	pv := costsPolicy()
+	pv.Document.Classes["reader"] = policy.Class{Models: []string{"small"}, Tools: map[string]policy.ToolCap{policy.ToolRequestInfo: {}}}
+	e := newToolEnv(t, running("planner"), pv)
+	res, err := e.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolTaskCosts }) {
+		t.Fatal("a listing class does not see task_costs in tools/list")
+	}
+	if text, isErr := e.call(t, policy.ToolTaskCosts, nil); isErr || unmarshalCosts(t, text).TaskID != "42" {
+		t.Fatalf("a listing class's call = %q (%v)", text, isErr)
+	}
+	off := newToolEnv(t, running("reader"), pv)
+	res, err = off.session.ListTools(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if slices.ContainsFunc(res.Tools, func(tl *mcp.Tool) bool { return tl.Name == policy.ToolTaskCosts }) {
+		t.Fatal("a class without task_costs sees it in tools/list")
+	}
+	if text, isErr := off.call(t, policy.ToolTaskCosts, nil); !isErr || !strings.Contains(text, "refused_capability") {
+		t.Fatalf("a class without it = %q, want refused_capability", text)
+	}
+	if a := off.lastAudit(t); a.Decision != "refused_capability" || a.Tool != policy.ToolTaskCosts {
+		t.Fatalf("audit = %+v", a)
+	}
+}
+
 // manual reads the factory manual into the session: the loop, the card
 // states, the gates. Free, for the classes that list it; a class without
 // it is refused like any hidden tool.
-func TestManualTool(t *testing.T) {
-	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+func TestManualTool(t *testing.T) {	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
 	v.Document.Classes["coder"].Tools["manual"] = policy.ToolCap{}
 	e := newToolEnv(t, running("coder"), v)
 	text, isErr := e.call(t, "manual", nil)

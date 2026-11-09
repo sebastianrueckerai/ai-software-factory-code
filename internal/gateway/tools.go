@@ -439,6 +439,26 @@ type DigestIn struct {
 	Ask  string `json:"ask,omitempty" jsonschema:"what you need from the file, at most 2000 characters; leave it out for a summary"`
 }
 
+// TaskCostsIn is the task_costs tool's input: without task_id the
+// caller's own figures, with it those of that task of the caller's
+// project, a read of the classes that supervise.
+type TaskCostsIn struct {
+	TaskID string `json:"task_id,omitempty" jsonschema:"another task of the caller's project, a read of the classes that supervise (a plan session); leave it out for the caller's own figures"`
+}
+
+// taskCostsAnswer is the task_costs tool's answer: the figures of the
+// task it read.
+type taskCostsAnswer struct {
+	TaskID        string  `json:"task_id"`
+	BudgetEUR     float64 `json:"budget_eur"`
+	SpentEUR      float64 `json:"spent_eur"`
+	RemainingEUR  float64 `json:"remaining_eur"`
+	Calls         int     `json:"calls"`
+	PromptTokens  int     `json:"prompt_tokens"`
+	CachedTokens  int     `json:"cached_tokens"`
+	OutputTokens  int     `json:"output_tokens"`
+}
+
 // The bounds of a digest's arguments; the file's is policy.MaxDigestBytes.
 const (
 	maxDigestPath = 4096
@@ -548,6 +568,11 @@ func (s *Server) toolServer(c *toolCaller) *mcp.Server {
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolManual, Description: "Read the factory manual: what the factory is, the card states, the gates your pull request passes. Free."},
 		func(ctx context.Context, _ *mcp.CallToolRequest, _ struct{}) (*mcp.CallToolResult, any, error) {
 			return s.manualRead(c), nil, nil
+		})
+	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolTaskCosts, Description: "Read the task's cost figures: budget, spent and remaining EUR, the count of its model calls and their prompt, cached and output tokens; " +
+		"task_id names another task of the caller's project, a read of the classes that supervise. Free."},
+		func(ctx context.Context, _ *mcp.CallToolRequest, in TaskCostsIn) (*mcp.CallToolResult, any, error) {
+			return s.taskCosts(ctx, c, in), nil, nil
 		})
 	mcp.AddTool(srv, &mcp.Tool{Name: policy.ToolDeploymentHealth, Description: "Read a Deployment of this card's project as the cluster reports it right now: the Deployment's replicas, " +
 		"its pods with each container's restart count, state and last termination (reason, exit code, time), and the Kubernetes events of the last hour for the Deployment, its ReplicaSets and pods. " +
@@ -1124,6 +1149,58 @@ func (s *Server) manualRead(c *toolCaller) *mcp.CallToolResult {
 		return r
 	}
 	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: manual.Text()}}}
+}
+
+// taskCosts answers the caller's own figures, or those of a named task
+// of the caller's project for the classes that supervise (a plan
+// session). Free, for the classes that list it.
+func (s *Server) taskCosts(ctx context.Context, c *toolCaller, in TaskCostsIn) *mcp.CallToolResult {
+	tool := policy.ToolTaskCosts
+	if c.task.Status != "running" {
+		return s.refuseTool(c, tool, "refused_task_status", "the task is "+c.task.Status)
+	}
+	if r := s.admitTool(c, tool); r != nil {
+		return r
+	}
+	task := c.task
+	if id := strings.TrimSpace(in.TaskID); id != "" {
+		if !slices.ContainsFunc(c.task.Classes, func(name string) bool {
+			class, ok := c.pv.Document.Classes[name]
+			return ok && class.Session == policy.SessionPlan
+		}) {
+			return s.refuseTool(c, tool, "refused_capability",
+				"task_id is a read of the classes that supervise (a plan session): leave it out for the caller's own figures")
+		}
+		named, ok, err := s.opts.Store.Task(ctx, id)
+		switch {
+		case err != nil:
+			s.auditTool(c, tool, "error_store", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+			return toolError(err.Error())
+		case !ok:
+			return s.refuseTool(c, tool, "refused_arguments", "no such task "+id)
+		}
+		// the same scoping the chat's card read makes: the named task's
+		// repository must resolve to the caller's own project
+		project, _, _ := c.pv.ProjectOf(c.task.Repository)
+		if namedProject, _, ok := c.pv.ProjectOf(named.Repository); !ok || namedProject != project {
+			return s.refuseTool(c, tool, "refused_capability", fmt.Sprintf("task %s is not in the caller's project", id))
+		}
+		task = named
+	}
+	totals, ok, err := s.opts.Store.TaskCosts(ctx, task.ID)
+	if err != nil {
+		s.auditTool(c, tool, "error_store", textutil.Truncate(err.Error(), 500), &c.task.SpentEUR, nil)
+		return toolError(err.Error())
+	}
+	if !ok {
+		return s.refuseTool(c, tool, "refused_arguments", "no such task "+task.ID)
+	}
+	s.auditTool(c, tool, "costs_read", task.ID, &c.task.SpentEUR, nil)
+	b, _ := json.Marshal(taskCostsAnswer{
+		TaskID: task.ID, BudgetEUR: task.BudgetEUR, SpentEUR: task.SpentEUR, RemainingEUR: task.BudgetEUR - task.SpentEUR,
+		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,
+	})
+	return &mcp.CallToolResult{Content: []mcp.Content{&mcp.TextContent{Text: string(b)}}}
 }
 
 var (
