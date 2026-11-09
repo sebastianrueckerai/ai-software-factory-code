@@ -84,8 +84,8 @@ func TestWorkflowDirGuardWrapsTheEmitter(t *testing.T) {
 }
 
 // watch collects the guard's messages, which its sends deliver
-// asynchronously, and returns a func that waits for them and answers the
-// text of every message it received.
+// asynchronously, and returns a func that waits for a new message and
+// answers the text of every message sent since the previous call.
 func (g *workflowDirGuard) watch(t *testing.T) func() string {
 	t.Helper()
 	var mu sync.Mutex
@@ -108,6 +108,8 @@ func (g *workflowDirGuard) watch(t *testing.T) func() string {
 		}
 		mu.Lock()
 		defer mu.Unlock()
-		return strings.Join(texts, "\n")
+		got := strings.Join(texts, "\n")
+		texts = nil
+		return got
 	}
 }
