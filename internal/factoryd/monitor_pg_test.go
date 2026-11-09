@@ -676,7 +676,9 @@ func TestMonitorRungZeroEndsAStepPastItsBound(t *testing.T) {
 
 // A monitor case's answer signals no run: the run waits on none, and a
 // signal would start a queued card's. The human's close of queued t1's
-// monitor case closes its issue and ends the case, and no signal goes.
+// monitor case is refused, since close ends the card: the case stays at
+// the human, the card queued, no issue closes. The settle of the same
+// case ends it alone, with its one step, and no signal goes.
 func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 	g := newMonitorRig(t)
 	ctx := context.Background()
@@ -686,11 +688,29 @@ func TestActSignalsNoRunForAMonitorCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := g.m.Runner.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose}}); err != nil {
+	_, err = g.m.Runner.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActClose, Note: "settled"}})
+	var refused ErrActRefused
+	if !errors.As(err, &refused) || !strings.Contains(string(refused), "settle") || !strings.Contains(string(refused), "close ends the card") {
+		t.Fatalf("close of a monitor case = %v, want the refusal that names settle and says close ends the card", err)
+	}
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseAtHuman {
+		t.Fatalf("the case after the refused close = %s, want it at the human", got.Status)
+	}
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "queued" || len(g.forge.closes) != 0 || len(g.signals.got) != 0 {
+		t.Fatalf("t1 %s, closes %v, signals %+v; want it queued, nothing closed and no signal", task.Status, g.forge.closes, g.signals.got)
+	}
+	if _, err := g.m.Runner.Act(ctx, ActInput{TaskID: "t1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: ActSettle, Note: "the flag's concern is settled"}}); err != nil {
 		t.Fatal(err)
 	}
-	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || !slices.Equal(g.forge.closes, []int64{12}) || len(g.signals.got) != 0 {
-		t.Fatalf("case %s, closes %v, signals %+v; want it resolved, #12 closed and no signal", got.Status, g.forge.closes, g.signals.got)
+	if got := caseByID(t, g.s, c.ID); got.Status != CaseResolved || got.Resolution == nil || got.Resolution.Action != ActSettle {
+		t.Fatalf("the case after the settle = %s by %v, want it resolved with settle", got.Status, got.Resolution)
+	}
+	if steps := caseStepsOf(t, g.s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Decision != ActSettle ||
+		steps[0].Grounds != "the flag's concern is settled" || steps[0].Outcome != StepResolved {
+		t.Fatalf("the case's steps = %+v, want the human's one settle step", steps)
+	}
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "queued" || len(g.forge.closes) != 0 || len(g.signals.got) != 0 {
+		t.Fatalf("t1 %s, closes %v, signals %+v; want it queued still, nothing closed and no signal", task.Status, g.forge.closes, g.signals.got)
 	}
 }
 

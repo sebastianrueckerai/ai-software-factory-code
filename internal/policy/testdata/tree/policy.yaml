@@ -27,6 +27,7 @@ classes:
       # the factory manual: what the factory is, the card states, the gates. Free.
       manual: {}
       delegate: {}
+      task_costs: {}
   analyzer:
     session: report
     models: [small, big]
@@ -35,6 +36,7 @@ classes:
       web_scrape: {max_requests: 30, max_eur: 0.20}
       escalate: {}
       manual: {}
+      task_costs: {}
   planner:
     session: plan
     models: [small, big]
@@ -45,6 +47,7 @@ classes:
       escalate: {}
       manual: {}
       file_plan: {}
+      task_costs: {}
 prices:
   firecrawl: {eur_per_credit: 0.005, scrape_credits: 1, search_credits: 2}
   max_output_tokens: {small: 24576, big: 24576, supervisor: 18432, operator: 4096, pulse: 2048}
