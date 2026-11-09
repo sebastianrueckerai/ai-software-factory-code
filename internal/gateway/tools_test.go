@@ -1626,7 +1626,8 @@ func TestTaskCostsAllowlist(t *testing.T) {
 // manual reads the factory manual into the session: the loop, the card
 // states, the gates. Free, for the classes that list it; a class without
 // it is refused like any hidden tool.
-func TestManualTool(t *testing.T) {	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
+func TestManualTool(t *testing.T) {
+	v := toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2})
 	v.Document.Classes["coder"].Tools["manual"] = policy.ToolCap{}
 	e := newToolEnv(t, running("coder"), v)
 	text, isErr := e.call(t, "manual", nil)

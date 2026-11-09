@@ -449,14 +449,14 @@ type TaskCostsIn struct {
 // taskCostsAnswer is the task_costs tool's answer: the figures of the
 // task it read.
 type taskCostsAnswer struct {
-	TaskID        string  `json:"task_id"`
-	BudgetEUR     float64 `json:"budget_eur"`
-	SpentEUR      float64 `json:"spent_eur"`
-	RemainingEUR  float64 `json:"remaining_eur"`
-	Calls         int     `json:"calls"`
-	PromptTokens  int     `json:"prompt_tokens"`
-	CachedTokens  int     `json:"cached_tokens"`
-	OutputTokens  int     `json:"output_tokens"`
+	TaskID       string  `json:"task_id"`
+	BudgetEUR    float64 `json:"budget_eur"`
+	SpentEUR     float64 `json:"spent_eur"`
+	RemainingEUR float64 `json:"remaining_eur"`
+	Calls        int     `json:"calls"`
+	PromptTokens int     `json:"prompt_tokens"`
+	CachedTokens int     `json:"cached_tokens"`
+	OutputTokens int     `json:"output_tokens"`
 }
 
 // The bounds of a digest's arguments; the file's is policy.MaxDigestBytes.
