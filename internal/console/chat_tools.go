@@ -1818,7 +1818,8 @@ var tools = []chatTool{
 			return note, nil, err
 		}},
 	{name: "show_doc", title: "Show a document",
-		params: map[string]any{"path": docPath, "heading": str("the heading to open at")},
+		params:  map[string]any{"path": docPath, "heading": str("the heading to open at")},
+		required: []string{"path"},
 		about:  "Open a document of the project's document repository in the member's own document view.",
 		run: func(t *turn, in toolInput) (string, *inverse, error) {
 			repo, err := t.c.docRepoOf(t.cfg.DocRepo, in.Path)
