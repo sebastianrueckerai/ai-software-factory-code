@@ -1569,3 +1569,139 @@ Promise.resolve().then(function () {
 		}
 	}
 }
+
+// TestChatPanelDocrefs: an answer's document path and its Markdown links
+// render as docref anchors — the bare docs/….md path, a link whose target
+// carries the docs/ prefix and one without it, which resolves against the
+// document root docs/ — while a code path, an external link and a code
+// span stay text (roadmap 280).
+func TestChatPanelDocrefs(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var chatView = require("vm").runInNewContext(require("fs").readFileSync(process.argv[1], "utf8") + "\nchatView",
+  {document: {getElementById: function () { return null; }}});
+console.log(JSON.stringify([
+  chatView.md("The backlog plan is docs/plans/2026-09-24-build-plan.md."),
+  chatView.md("See [the build plan](docs/plans/2026-09-24-build-plan.md)."),
+  chatView.md("See [the plan](plans/2026-09-24-build-plan.md)."),
+  chatView.md("The change is internal/console/chat.go, the [wiki](https://example.com/wiki) aside."),
+  chatView.md("The roadmap is ` + "`docs/roadmap.md`" + ` in code.")
+]));`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver, "static/chat.js")
+	cmd.Env = append(os.Environ(), "TZ=UTC")
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	var got []string
+	if err := json.Unmarshal(out, &got); err != nil {
+		t.Fatalf("node said %s: %v", out, err)
+	}
+	const anchor = `<a class="docref" data-doc="docs/plans/2026-09-24-build-plan.md" href="?doc=docs/plans/2026-09-24-build-plan.md">`
+	want := []string{
+		`<p>The backlog plan is ` + anchor + `docs/plans/2026-09-24-build-plan.md</a>.</p>`,
+		`<p>See ` + anchor + `the build plan</a>.</p>`,
+		`<p>See ` + anchor + `the plan</a>.</p>`,
+		`<p>The change is internal/console/chat.go, the [wiki](https://example.com/wiki) aside.</p>`,
+		`<p>The roadmap is <code>docs/roadmap.md</code> in code.</p>`,
+	}
+	if !slices.Equal(got, want) {
+		t.Errorf("chatView.md under node:\n%s\nwant\n%s", strings.Join(got, "\n"), strings.Join(want, "\n"))
+	}
+}
+
+// TestChatPanelDocrefOpensView: the console's document view opens on the
+// chat's view event — show_doc's open riding the turn's stream — and on a
+// pressed docref, whose press dispatches the same event; both fetch the
+// document under the project (roadmap 280).
+func TestChatPanelDocrefOpensView(t *testing.T) {
+	node, err := exec.LookPath("node")
+	if err != nil {
+		t.Skip("no node")
+	}
+	const driver = `var listeners = {}, winListeners = {}, pushes = [], fetches = [], pending = [], sources = [];
+function store() { var m = {}; return {getItem: function (k) { return k in m ? m[k] : null; }, setItem: function (k, v) { m[k] = String(v); }, removeItem: function (k) { delete m[k]; }}; }
+function el(props) {
+  var e = {dataset: {}, hidden: false, textContent: "", innerHTML: "", children: [], style: {}, value: "", title: "", open: false, scrollTop: 0,
+    querySelector: function () { return null; }, querySelectorAll: function () { return []; }, contains: function () { return false; },
+    getAttribute: function () { return null; }, setAttribute: function () {}, addEventListener: function () {}, removeEventListener: function () {},
+    appendChild: function (c) { this.children.push(c); return c; }, focus: function () {}, click: function () {}, scrollIntoView: function () {},
+    reset: function () {}, remove: function () {}, closest: function () { return null; },
+    get firstChild() { return this.children[0]; },
+    getBoundingClientRect: function () { return {top: 0, bottom: 0, left: 0, right: 0}; },
+    classList: {contains: function () { return false; }, toggle: function () {}, add: function () {}, remove: function () {}}};
+  return Object.assign(e, props);
+}
+var byID = {board: el({dataset: {project: "code", query: "?project=code"}}), "status-line": el(), live: el(),
+  drawer: el({hidden: true}), "session-log": el(), "steer-input": el(), q: el({value: ""}),
+  chat: el({dataset: {login: "sebastian", project: "code"}}), "chat-log": el(), "chat-input": el({value: ""}),
+  "chat-new": el(), "thread-rows": el(), "thread-head": el(), "chat-answer": el(), "chat-commands": el(), "chat-palette": el(),
+  documents: el(), "doc-view": el(), "doc-article": el(), "doc-path": el(), "doc-facts": el(), "doc-edit": el(),
+  "doc-new-form": el(), "doc-pathline": el(), "doc-pins": el(), "doc-back": el(), "doc-fwd": el(), "doc-wide": el(),
+  "doc-forgejo": el(), "doc-recent": el(), "doc-recent-menu": el(), "doc-editor": el(), keys: el({hidden: true}), flash: el({hidden: true})};
+function EventSource(url) { this.url = url; this.on = {}; sources.push(this); }
+EventSource.prototype.addEventListener = function (type, fn) { this.on[type] = fn; };
+EventSource.prototype.close = function () { this.closed = true; };
+var sandbox = {EventSource: EventSource, URL: URL, URLSearchParams: URLSearchParams, CSS: {escape: function (s) { return s; }},
+  location: {href: "http://lab/?project=code", search: "?project=code", hash: ""},
+  history: {state: null, replaceState: function () {}, pushState: function (state, title, path) { pushes.push(path); }},
+  localStorage: store(), sessionStorage: store(),
+  setTimeout: function (fn) { if (fn) fn(); return 0; }, setInterval: function () {}, clearTimeout: function () {},
+  Event: function (type) { this.type = type; }, CustomEvent: function (type, init) { this.type = type; this.detail = init && init.detail; },
+  fetch: function (url) {
+    fetches.push(String(url));
+    return new Promise(function (ok) { pending.push(function () {
+      ok({ok: true, json: function () {
+        var path = String(url).indexOf("roadmap") > 0 ? "docs/roadmap.md" : "docs/plans/2026-09-24-build-plan.md";
+        return Promise.resolve({path: path, html: "<h1 id=\"the-roadmap\">The roadmap</h1><p>Hello.</p>",
+          sha256: "aa", commit: "c0ffee", at: "2026-11-09T09:00:00Z"});
+      }});
+    }); });
+  },
+  htmx: {ajax: function () { return new Promise(function () {}); }, swap: function () {}, process: function () {}},
+  window: {addEventListener: function (type, fn) { (winListeners[type] = winListeners[type] || []).push(fn); }, innerHeight: 800},
+  document: {body: el(), documentElement: {getAttribute: function () { return "dark"; }}, title: "", activeElement: null,
+    getElementById: function (id) { return byID[id] || null; },
+    querySelectorAll: function () { return []; }, querySelector: function () { return null; },
+    createElement: function () { return el(); }, createTextNode: function (t) { return {textContent: t}; },
+    addEventListener: function (type, fn) { (listeners[type] = listeners[type] || []).push(fn); },
+    removeEventListener: function (type, fn) { listeners[type] = (listeners[type] || []).filter(function (f) { return f !== fn; }); },
+    dispatchEvent: function (e) { (listeners[e.type] || []).forEach(function (fn) { fn(e); }); }}};
+require("vm").runInNewContext(require("fs").readFileSync("static/console.js", "utf8"), sandbox);
+require("vm").runInNewContext(require("fs").readFileSync("static/chat.js", "utf8"), sandbox);
+(listeners.DOMContentLoaded || []).forEach(function (fn) { fn(); });
+function settle() {
+  pending.splice(0).forEach(function (ok) { ok(); });
+  return new Promise(function (done) { setImmediate(done); });
+}
+(async function () {
+  var out = {};
+  sandbox.document.dispatchEvent({type: "view", detail: {doc: "docs/roadmap.md"}});
+  await settle();
+  await settle();
+  out.event = [!byID["doc-view"].hidden, byID["doc-path"].textContent, pushes.slice()];
+  var prevented = 0;
+  var anchor = el({});
+  anchor.dataset.doc = "docs/plans/2026-09-24-build-plan.md";
+  anchor.closest = function (sel) { return sel === "a.docref" ? anchor : null; };
+  (listeners.click || []).forEach(function (fn) { fn({target: anchor, preventDefault: function () { prevented++; }}); });
+  await settle();
+  await settle();
+  out.press = [prevented, !byID["doc-view"].hidden, byID["doc-path"].textContent];
+  out.fetches = fetches;
+  console.log(JSON.stringify(out));
+})();`
+	cmd := exec.CommandContext(t.Context(), node, "-e", driver)
+	out, err := cmd.Output()
+	if err != nil {
+		t.Fatalf("node: %v", err)
+	}
+	want := `{"event":[true,"docs/roadmap.md",["/?project=code&doc=docs%2Froadmap.md"]],` +
+		`"press":[1,true,"docs/plans/2026-09-24-build-plan.md"],` +
+		`"fetches":["/projects/code/docs/docs/roadmap.md","/projects/code/docs/docs/plans/2026-09-24-build-plan.md"]}`
+	if strings.TrimSpace(string(out)) != want {
+		t.Errorf("console.js and chat.js under node:\n%s\nwant\n%s", out, want)
+	}
+}
