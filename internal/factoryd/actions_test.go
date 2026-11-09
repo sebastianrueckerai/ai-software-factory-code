@@ -222,13 +222,13 @@ func TestFundIsNeverRungZeros(t *testing.T) {
 // A green approved head at the session cap, its budget at the ceiling and
 // the pool spent: the human is offered a re-verify (the approval card is
 // where they approve), an extend and a ceiling raise past the pool, a
-// successor, a replan of the direct card and a close; rung 0, bound by
-// the card's draw, routes to approval, gets no extend and withdraws
-// instead of closing.
+// successor, a replan of the direct card, a close and a note; rung 0,
+// bound by the card's draw, routes to approval, gets no extend and
+// withdraws instead of closing.
 func TestOfferedFollowsTheTable(t *testing.T) {
 	f := CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
 		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5}
-	if got, want := offeredNames(f, 3), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose}; !slices.Equal(got, want) {
+	if got, want := offeredNames(f, 3), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3 is offered %v, want %v", got, want)
 	}
 	if got, want := offeredNames(f, 0), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw}; !slices.Equal(got, want) {
@@ -542,14 +542,14 @@ func TestRungZeroClosesOnlyAnEndedCard(t *testing.T) {
 
 // A monitor flag's case sits beside the card's run, which carries out no
 // answer to it: the human is offered only what Act does itself, here the
-// raise of the ceiling, the replan and the settle of the flag, and a
-// resume is refused. Close is refused on the live card, since it would
+// raise of the ceiling, the replan, the settle of the flag and a note,
+// and a resume is refused. Close is refused on the live card, since it would
 // end the card, and taken on an ended one, whose issue it may close; a
 // settle of any other case is refused.
 func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	f := CaseFacts{Kind: CaseMonitorFlag, Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
 		AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5}
-	if got, want := offeredNames(f, 3), []string{ActRaiseCeiling, ActReplan, ActSettle}; !slices.Equal(got, want) {
+	if got, want := offeredNames(f, 3), []string{ActRaiseCeiling, ActReplan, ActSettle, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3 on a monitor case is offered %v, want %v", got, want)
 	}
 	resume, _ := ActionByName(ActResume)
