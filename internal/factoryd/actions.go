@@ -30,7 +30,8 @@ const (
 	ActReplan        = "replan" // args: task_id of a failed dependency, whose work its plan's planner takes (impasse)
 	ActClose         = "close"
 	ActWithdraw      = "withdraw"
-	ActNote          = "note" // records a step and resolves nothing: a park, or keep waiting
+	ActNote          = "note"   // records a step and resolves nothing: a park, or keep waiting
+	ActSettle        = "settle" // ends a monitor flag's case alone; the card goes on
 )
 
 // Resolution is one answer on a case: the action with its arguments, an
@@ -199,6 +200,14 @@ var Actions = []Action{
 		return ""
 	}},
 	{Name: ActClose, Rungs: rungs(2, 3), Applies: applyAlways},
+	// settle is a monitor flag's own: it ends the flag's case and leaves
+	// the card in its run, where close would end the card itself
+	{Name: ActSettle, Rungs: rungs(0, 1, 2, 3), Applies: func(f CaseFacts, _ Resolution) string {
+		if f.Kind != CaseMonitorFlag {
+			return "settle ends a monitor flag's case alone, and this case is no monitor flag's"
+		}
+		return ""
+	}},
 	// withdraw is the factory's own: Act signals no run for it, so neither
 	// the chat's agent nor the human takes it
 	{Name: ActWithdraw, Rungs: rungs(0, 1), Applies: applyAlways},
@@ -213,7 +222,7 @@ var Actions = []Action{
 // monitorActions are the actions a monitor flag's case takes: those Act carries
 // out itself, since the card's run waits on no such case and drops its
 // resolution.
-var monitorActions = []string{ActNote, ActClose, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw}
+var monitorActions = []string{ActNote, ActSettle, ActRetry, ActReplan, ActFund, ActRaiseCeiling, ActWithdraw}
 
 // rungs marks the rungs of in a row's Rungs.
 func rungs(of ...int) [4]bool {
@@ -270,8 +279,13 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 	if !a.Rungs[rung] && !ended {
 		return fmt.Sprintf("%s may not pick %s: %s may", who(rung), a.Name, rungsText(a.Rungs))
 	}
-	if f.Kind == CaseMonitorFlag && !slices.Contains(monitorActions, a.Name) {
-		return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
+	if f.Kind == CaseMonitorFlag {
+		switch {
+		case a.Name == ActClose && f.Final == "":
+			return "close ends the card, not the flag's case: settle it with settle, which ends the case and the card goes on"
+		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
+			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
+		}
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
