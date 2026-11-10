@@ -137,7 +137,7 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 	const maxHits = 200
 	var hits []grepHit
 	for _, ref := range refs {
-		out, err := gitRun(ctx, dir, "", nil, grepLimits, "-c", "grep.threads=1", "grep", "-n", "-w", "-F", "-I", "--no-color", "-e", symbol, ref.Rev, "--")
+		out, err := gitRun(ctx, dir, "", nil, grepLimits, "grep", "-n", "-w", "-F", "-I", "--no-color", "-e", symbol, ref.Rev, "--")
 		if err != nil {
 			var exit *exec.ExitError
 			if errors.As(err, &exit) && exit.ExitCode() == 1 {
@@ -145,7 +145,7 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 			}
 			return nil, err
 		}
-		for i, l := range strings.Split(out, "\n") {
+		for i, l := range strings.SplitN(out, "\n", maxHits+1) {
 			if i == maxHits {
 				break
 			}

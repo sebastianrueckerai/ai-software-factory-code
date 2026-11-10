@@ -167,10 +167,11 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	default:
 		return "", fmt.Errorf("fetch the task branch: %w", err)
 	}
-	// the body is verified as a bundle before anything is taken from it:
-	// a body that is no bundle, whatever its header says it ships, costs
-	// the interim push alone
-	if _, err := run(nil, "bundle", "verify", bundle); err != nil {
+	// the header is read as a bundle's before anything is taken from the
+	// body: a body that is no bundle, whatever it says it ships, costs the
+	// interim push alone. list-heads reads the header only, so it maps no
+	// pack of the repository
+	if _, err := run(nil, "bundle", "list-heads", bundle); err != nil {
 		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
 	// the bundle's pack is indexed under git's strict object checks, which
@@ -193,6 +194,15 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	}
 	if got := bundleCommit(hdr); got != commit {
 		return "", fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
+	}
+	prerequisites := bundlePrerequisites(hdr)
+	if len(prerequisites) > wipMaxPrerequisites {
+		return "", fmt.Errorf("the bundle lists %d prerequisites, not the worker's one", len(prerequisites))
+	}
+	for _, id := range prerequisites {
+		if _, err := run(nil, "cat-file", "-e", id+"^{commit}"); err != nil {
+			return "", fmt.Errorf("the bundle builds on commit %s, which neither the task branch nor main holds: nothing is pushed", id)
+		}
 	}
 	if _, err := gitRun(ctx, own, "", nil, lim(wipGitOutput, io.NewSectionReader(f, int64(len(hdr)+2), size-int64(len(hdr)+2))), "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
 		return "", fmt.Errorf("index the shipped bundle: %w", err)
@@ -243,10 +253,13 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 // The bounds on what a pod ships, all far above any card's real work (a
 // card's diff is bounded at hundreds to a few thousand lines).
 const (
+	// wipMaxPrerequisites bounds the prerequisites of a bundle: the
+	// worker's is one, the session's start.
+	wipMaxPrerequisites = 16
 	// wipHeaderMax bounds the bundle header read from the file.
 	wipHeaderMax = 64 << 10
 	// wipGitOutput bounds a git call whose answer is an id, a flag or a
-	// one-line failure: bundle verify prints a line per missing prerequisite.
+	// one-line failure.
 	wipGitOutput = 4 << 10
 	// wipRulesOutput bounds the push rules' listings: a diff's file names
 	// or a directory's top-level entries, a few MiB at 100,000 entries.
@@ -268,11 +281,11 @@ const (
 	wipMaxTotal = 64 << 20
 	// wipGitMemory is the address space any git call on shipped bytes may
 	// map. The container holds 512 MiB: factoryd's own peak (121 MiB
-	// observed), the 16 MiB body, one capped child at a time (interimSlot),
-	// and the GitHub exports' git, which runs beside it outside the slot
-	// (a fetch of a 186 MiB repository peaked at 100 MiB, not capped here:
-	// an export reads the factory's own repositories). 121 + 16 + 192 +
-	// 100 = 429 MiB. The largest legitimate child measured was 45 MiB: a
+	// observed), the 16 MiB body, one capped child at a time in the whole
+	// process (gitRun's slot), and the GitHub exports' git, which is not
+	// capped: an export reads the factory's own repositories (a fetch of a
+	// 186 MiB repository peaked at 100 MiB). 121 + 16 + 192 + 100 =
+	// 429 MiB. The largest legitimate child measured was 45 MiB: a
 	// real pack needs the pack in flight, the 32 MiB delta base cache and
 	// one inflated object. pack.threads=1 (gitConfig) is needed under the
 	// cap: each extra thread maps a stack and an arena.
@@ -344,6 +357,19 @@ func checkShippedSize(ctx context.Context, own, commit, start string, lim func(i
 		return tooLarge(fmt.Sprintf("a tree of %d files and %d bytes", entries, blobs))
 	}
 	return nil
+}
+
+// bundlePrerequisites are the commit ids a bundle header lists as the
+// objects its pack builds on: its lines that start with a dash. A line
+// that holds no commit id is skipped; index-pack judges the pack.
+func bundlePrerequisites(header []byte) []string {
+	var ids []string
+	for line := range strings.SplitSeq(string(header), "\n") {
+		if id, _, _ := strings.Cut(strings.TrimPrefix(line, "-"), " "); strings.HasPrefix(line, "-") && wipCommitID.MatchString(id) {
+			ids = append(ids, id)
+		}
+	}
+	return ids
 }
 
 // bundleCommit is the commit a bundle header's ref line names for

@@ -884,40 +884,107 @@ func gitSpy(t *testing.T) string {
 	return calls
 }
 
+// seedGit runs git in dir with stdin and answers its trimmed output.
+func seedGit(dir, stdin string, args ...string) (string, error) {
+	cmd := exec.Command("git", append([]string{"-C", dir}, args...)...)
+	cmd.Stdin = strings.NewReader(stdin)
+	out, err := cmd.Output()
+	return strings.TrimSpace(string(out)), err
+}
+
+// shipsTree makes the fake pod ship a WIP commit on the start whose tree
+// build makes in the seed repository from objects alone: no file reaches
+// the disk, so the work of a test is the size of its objects.
+func (s *wipServe) shipsTree(build func(seed string) (string, error)) {
+	s.ship = func(i int, _ string) (string, []byte, error) {
+		tree, err := build(s.seed)
+		if err != nil {
+			return "", nil, err
+		}
+		commit, err := wipGitRun(s.seed, ruleIdentity, "commit-tree", tree, "-p", s.base, "-m", "wip")
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := wipGitRun(s.seed, nil, "update-ref", "refs/heads/wip", commit); err != nil {
+			return "", nil, err
+		}
+		file := filepath.Join(s.dir, "tree.bundle")
+		if _, err := wipGitRun(s.seed, nil, "bundle", "create", file, s.base+"..refs/heads/wip"); err != nil {
+			return "", nil, err
+		}
+		body, err := os.ReadFile(file)
+		return commit, body, err
+	}
+}
+
 // Work too large for any card is refused before any diff or listing reads
 // it: a 16 MiB file of newlines (a 16 KB bundle that FitBound's diff
-// inflates to 700 MiB), and a directory of 100,000 entries (a tree object
-// over the tree bound), and 60,000 files in small directories (over the
-// file bound of the whole tree). The failing step is the size check, and
-// git never ran diff or read-tree on it.
+// inflates to 700 MiB), a directory of 100,000 entries (a tree object over
+// the tree bound), 60,000 files in small directories (over the file bound
+// of the whole tree), and one 7 MiB blob under ten names (over the blob
+// bound of the whole tree). The trees are built from objects, so no test
+// waits on the disk. The failing step is the size check, and git never ran
+// diff or read-tree on it.
 func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
-	for name, edit := range map[string]func(dir string){
-		"file-of-newlines": func(dir string) {
+	noEdit := func(string) {}
+	for name, tc := range map[string]struct {
+		edit func(dir string)
+		tree func(seed string) (string, error)
+	}{
+		"file-of-newlines": {edit: func(dir string) {
 			os.WriteFile(filepath.Join(dir, "nl.txt"), bytes.Repeat([]byte("\n"), 16<<20), 0o644)
-		},
-		"many-files": func(dir string) {
+		}},
+		"many-files": {edit: noEdit, tree: func(seed string) (string, error) {
+			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
+			if err != nil {
+				return "", err
+			}
+			var top strings.Builder
 			for d := range 60 {
-				os.MkdirAll(filepath.Join(dir, fmt.Sprintf("d%02d", d)), 0o755)
+				var dir strings.Builder
 				for i := range 1000 {
-					os.WriteFile(filepath.Join(dir, fmt.Sprintf("d%02d", d), fmt.Sprintf("f%04d", i)), nil, 0o644)
+					fmt.Fprintf(&dir, "100644 blob %s\tf%04d\n", empty, i)
 				}
+				id, err := seedGit(seed, dir.String(), "mktree")
+				if err != nil {
+					return "", err
+				}
+				fmt.Fprintf(&top, "040000 tree %s\td%02d\n", id, d)
 			}
-		},
-		"ten-copies-of-a-blob": func(dir string) {
-			// one 7 MiB blob under ten names: 70 MiB of the tree as checked out
+			return seedGit(seed, top.String(), "mktree")
+		}},
+		"ten-copies-of-a-blob": {edit: noEdit, tree: func(seed string) (string, error) {
+			blob, err := seedGit(seed, string(make([]byte, 7<<20)), "hash-object", "-w", "--stdin")
+			if err != nil {
+				return "", err
+			}
+			var top strings.Builder
 			for i := range 10 {
-				os.WriteFile(filepath.Join(dir, fmt.Sprintf("copy%d.bin", i)), make([]byte, 7<<20), 0o644)
+				fmt.Fprintf(&top, "100644 blob %s\tcopy%d.bin\n", blob, i)
 			}
-		},
-		"wide-tree": func(dir string) {
-			os.MkdirAll(filepath.Join(dir, "wide"), 0o755)
+			return seedGit(seed, top.String(), "mktree")
+		}},
+		"wide-tree": {edit: noEdit, tree: func(seed string) (string, error) {
+			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
+			if err != nil {
+				return "", err
+			}
+			var wide strings.Builder
 			for i := range 100000 {
-				os.WriteFile(filepath.Join(dir, "wide", fmt.Sprintf("f%06d", i)), nil, 0o644)
+				fmt.Fprintf(&wide, "100644 blob %s\tf%06d\n", empty, i)
 			}
-		},
+			id, err := seedGit(seed, wide.String(), "mktree")
+			if err != nil {
+				return "", err
+			}
+			return seedGit(seed, "040000 tree "+id+"\twide\n", "mktree")
+		}},
 	} {
 		t.Run(name, func(t *testing.T) {
-			runner, objects, serve := wipRig(t, nil, edit)
+			runner, objects, serve := wipRig(t, nil, tc.edit)
+			if tc.tree != nil {
+				serve.shipsTree(tc.tree)
+			}
 			version := testPolicyVersion()
 			version.Document.Risk.LargeLines = 1000
 			runner.cfg.Policy = func() policy.Version { return version }
@@ -1570,7 +1637,7 @@ func TestASessionThatRevertsItsWorkSaysWhatTheBranchHolds(t *testing.T) {
 // gitConfig keeps the two settings every capped call needs: one pack thread,
 // and a 32 MiB pack window instead of the whole pack.
 func TestGitConfigHoldsTheCapSettings(t *testing.T) {
-	for _, want := range []string{"pack.threads=1", "core.packedGitWindowSize=32m"} {
+	for _, want := range []string{"pack.threads=1", "core.packedGitWindowSize=32m", "grep.threads=1"} {
 		if !slices.Contains(gitConfig, want) {
 			t.Fatalf("gitConfig = %q, want %s", gitConfig, want)
 		}
@@ -1667,5 +1734,126 @@ func TestGitRunFailsPastItsOutputCap(t *testing.T) {
 	}
 	if out, err := gitRun(context.Background(), dir, "", nil, gitLimits{maxOut: 64}, "--version"); err != nil || !strings.HasPrefix(out, "git version") {
 		t.Fatalf("under the cap: (%q, %v), want the output", out, err)
+	}
+}
+
+// A bundle that builds on a commit the repository lacks is refused, and the
+// refusal names that commit, not the pod's body.
+func TestInterimPushRefusesABundleWithAMissingPrerequisite(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	var missing string
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		var err error
+		if missing, err = wipGitRun(serve.seed, ruleIdentity, "commit-tree", tree, "-m", "elsewhere"); err != nil {
+			return "", nil, err
+		}
+		w, err := wipGitRun(serve.seed, ruleIdentity, "commit-tree", tree, "-p", missing, "-m", "wip")
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", w); err != nil {
+			return "", nil, err
+		}
+		file := filepath.Join(serve.dir, "missing.bundle")
+		if _, err := wipGitRun(serve.seed, nil, "bundle", "create", file, missing+"..refs/heads/wip"); err != nil {
+			return "", nil, err
+		}
+		b, err := os.ReadFile(file)
+		return w, b, err
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	text := fmt.Sprint(timelineStep(t, objects, "t2", "wip_push_failed")["error"])
+	if !strings.Contains(text, "builds on commit "+missing) || strings.Contains(text, "no bundle") {
+		t.Fatalf("the refusal = %q, want it to name the missing commit %s, not the pod's body", text, missing)
+	}
+}
+
+// Capped git calls run one at a time across the process: two overlapping
+// calls would pass the memory the cap assumes.
+func TestCappedGitCallsDoNotOverlap(t *testing.T) {
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, notes := t.TempDir(), filepath.Join(t.TempDir(), "notes")
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho start >> '"+notes+"'\nsleep 0.2\necho end >> '"+notes+"'\nexec '"+realGit+"' \"$@\"\n"), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	var wg sync.WaitGroup
+	for range 2 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			gitRun(context.Background(), t.TempDir(), "", nil, gitLimits{addressSpace: wipGitMemory}, "--version")
+		}()
+	}
+	wg.Wait()
+	got, _ := os.ReadFile(notes)
+	if want := "start\nend\nstart\nend\n"; string(got) != want {
+		t.Fatalf("capped calls ran as %q, want %q", got, want)
+	}
+}
+
+// The temporary file that holds the shipped body is gone after each way an
+// interim push can end.
+func TestInterimPushRemovesItsBundleFile(t *testing.T) {
+	workflow := func(dir string) {
+		os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: false\n"), 0o644)
+	}
+	plain := func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) }
+	for name, tc := range map[string]struct {
+		edit    func(dir string)
+		holdFor time.Duration // the slot is held for this long, 0: not held
+		ctx     time.Duration // the context's timeout, 0: none
+		ship    func(serve *wipServe) func(i int, tree string) (string, []byte, error)
+	}{
+		"gave-up-at-the-slot":       {edit: plain, holdFor: time.Hour},
+		"context-ended-in-the-wait": {edit: plain, holdFor: time.Hour, ctx: 100 * time.Millisecond},
+		"refused":                   {edit: workflow},
+		"push-failed": {edit: plain, ship: func(*wipServe) func(int, string) (string, []byte, error) {
+			return func(int, string) (string, []byte, error) {
+				return "0123456789012345678901234567890123456789", []byte("not a bundle"), nil
+			}
+		}},
+		"pushed": {edit: plain},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tmp := t.TempDir()
+			t.Setenv("TMPDIR", tmp)
+			runner, _, serve := wipRig(t, nil, tc.edit)
+			if tc.ship != nil {
+				serve.ship = tc.ship(serve)
+			}
+			runner.kube.(*fakeKube).pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+			spec := sessionSpec{id: "s-1", startRef: serve.base, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
+			ctx := context.Background()
+			if tc.ctx > 0 {
+				var cancel context.CancelFunc
+				ctx, cancel = context.WithTimeout(ctx, tc.ctx)
+				defer cancel()
+			}
+			if tc.holdFor > 0 {
+				old := wipSlotWait
+				wipSlotWait = 150 * time.Millisecond
+				if tc.ctx > 0 {
+					wipSlotWait = time.Hour
+				}
+				t.Cleanup(func() { wipSlotWait = old })
+				interimSlot <- struct{}{}
+				defer func() { <-interimSlot }()
+			}
+			runner.interimPush(ctx, supervisedTask("t2"), spec, "ns", "pod", nil)
+			if left, _ := filepath.Glob(filepath.Join(tmp, "wip-*.bundle")); len(left) != 0 {
+				t.Fatalf("bundle files left behind: %v", left)
+			}
+		})
 	}
 }

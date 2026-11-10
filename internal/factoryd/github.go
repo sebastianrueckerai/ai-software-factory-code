@@ -116,7 +116,7 @@ func (g *GitHub) pullState(ctx context.Context, token, remote string, n int64) (
 // for a minute fails, and packing keeps to one thread and small windows,
 // as factoryd's memory limit holds git too.
 var gitConfig = []string{"http.lowSpeedLimit=1000", "http.lowSpeedTime=60", "pack.threads=1", "pack.windowMemory=32m",
-	"core.packedGitLimit=64m", "core.packedGitWindowSize=32m", "core.deltaBaseCacheLimit=32m"}
+	"core.packedGitLimit=64m", "core.packedGitWindowSize=32m", "grep.threads=1", "core.deltaBaseCacheLimit=32m"}
 
 // git runs git in dir with gitConfig and login, the basic login of the
 // call's one remote, as an http.extraHeader, all from the environment, so
@@ -145,6 +145,11 @@ type gitLimits struct {
 	maxOut       int
 	addressSpace int64
 }
+
+// cappedGit is the process's one slot for a git call under an
+// address-space cap: two such children would pass the memory the caps
+// assume (wipGitMemory).
+var cappedGit = make(chan struct{}, 1)
 
 // errGitOutput marks a call whose output passed its cap.
 var errGitOutput = errors.New("git output over its cap")
@@ -177,6 +182,12 @@ func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits,
 	defer cancel()
 	argv := append([]string{"git"}, args...)
 	if lim.addressSpace > 0 {
+		select {
+		case cappedGit <- struct{}{}:
+			defer func() { <-cappedGit }()
+		case <-ctx.Done():
+			return "", fmt.Errorf("git %s: waiting for a capped git slot: %w", args[0], ctx.Err())
+		}
 		argv = append([]string{"prlimit", "--as=" + strconv.FormatInt(lim.addressSpace, 10), "--"}, argv...)
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
