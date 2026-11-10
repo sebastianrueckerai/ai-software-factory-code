@@ -88,6 +88,9 @@ func (s *fakeStore) RetryableRoll(ctx context.Context, repository string, backof
 		if r.Repository != repository {
 			continue
 		}
+		if r.State == RollOpened {
+			return "", false, nil
+		}
 		if r.State == RollMerged {
 			merged = max(merged, r.RunID)
 		}

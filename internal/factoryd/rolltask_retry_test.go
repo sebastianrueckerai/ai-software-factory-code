@@ -282,3 +282,24 @@ func TestARetryWaitsForANewerHeadWhoseImagesBuild(t *testing.T) {
 		t.Fatalf("started %d, requests %s, want no retry beside a newer head", len(g.wf.started), g.states())
 	}
 }
+
+// A retry the roller refuses, whose human card fails to file, goes back to
+// the failed attempt it overwrote.
+func TestARefusedRetryWhoseCardFailsKeepsItsFailure(t *testing.T) {
+	f := retryForgejo()
+	g := newRollRetryRig(t, f)
+	g.poll()
+	first := g.store.rolls[0].TaskID
+	g.fail()
+	f.mu.Lock()
+	delete(f.registry, "sf/factory-gateway/manifests/sha256-"+strings.TrimPrefix(sha256Of(gwNewIdx), "sha256:"))
+	f.mu.Unlock()
+	g.advance(rollRetryBackoff)
+	g.store.createFails = 1
+	if err := g.roller.poll(context.Background()); err == nil {
+		t.Fatal("the card's filing error was swallowed")
+	}
+	if g.states() != "c1:failed:0" || g.store.rolls[0].TaskID != first || g.store.rolls[0].State != RollFailed {
+		t.Fatalf("requests %s task %s, want the failed attempt under %s back", g.states(), g.store.rolls[0].TaskID, first)
+	}
+}

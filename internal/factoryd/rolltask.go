@@ -140,14 +140,18 @@ func (s *PGStore) InsertRollRequest(ctx context.Context, r RollRequest) error {
 	return nil
 }
 
+// rollUndo is the SET clause that takes a retry's request back to the
+// failed attempt it overwrote.
+const rollUndo = `state = 'failed', task_id = failed_tasks[cardinality(failed_tasks)],
+	failed_tasks = failed_tasks[1:cardinality(failed_tasks) - 1], committed = false, head = NULL, settled_at = now()`
+
 // ForgetRollRequest takes back a request whose roll never started, so its
 // commit is judged again: a first attempt's request goes, a retry's goes
 // back to the failed attempt it overwrote, which keeps its place on the
 // ladder.
 func (s *PGStore) ForgetRollRequest(ctx context.Context, sha string) error {
 	_, err := s.db.ExecContext(ctx, `WITH undone AS (
-		UPDATE roll_requests SET state = 'failed', task_id = failed_tasks[cardinality(failed_tasks)],
-			failed_tasks = failed_tasks[1:cardinality(failed_tasks) - 1], committed = false, head = NULL, settled_at = now()
+		UPDATE roll_requests SET `+rollUndo+`
 		WHERE sha = $1 AND cardinality(failed_tasks) > 0 RETURNING sha)
 		DELETE FROM roll_requests WHERE sha = $1 AND sha NOT IN (SELECT sha FROM undone)`, sha)
 	return err
@@ -265,8 +269,7 @@ func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	gone AS (
 		DELETE FROM roll_requests WHERE sha IN (SELECT sha FROM forgotten) AND cardinality(failed_tasks) = 0 RETURNING sha),
 	undone AS (
-		UPDATE roll_requests SET state = 'failed', task_id = failed_tasks[cardinality(failed_tasks)],
-			failed_tasks = failed_tasks[1:cardinality(failed_tasks) - 1], committed = false, head = NULL, settled_at = now()
+		UPDATE roll_requests SET `+rollUndo+`
 		WHERE sha IN (SELECT sha FROM forgotten) AND cardinality(failed_tasks) > 0 RETURNING sha),
 	settled AS (
 		UPDATE roll_requests r SET settled_at = now(), state = CASE WHEN t.status IN ('done', 'merged') THEN 'merged' ELSE 'failed' END
@@ -330,7 +333,7 @@ func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollReq
 
 // RetryableRoll is the commit whose failed roll the roller tries again:
 // repository's newest request is a failed one that settled at least
-// backoff ago by the database's clock, and fewer than bound attempts failed
+// backoff ago by the database's clock, no roll is open, and fewer than bound attempts failed
 // since the last merged roll. A newer request of any state, a new head's,
 // takes the place of the retry.
 func (s *PGStore) RetryableRoll(ctx context.Context, repository string, backoff time.Duration, bound int) (string, bool, error) {
@@ -338,6 +341,7 @@ func (s *PGStore) RetryableRoll(ctx context.Context, repository string, backoff 
 	err := s.db.QueryRowContext(ctx, `SELECT sha FROM roll_requests
 		WHERE repository = $1 AND state = 'failed' AND settled_at <= now() - make_interval(secs => $2)
 		AND run_id = (SELECT max(run_id) FROM roll_requests WHERE repository = $1)
+		AND NOT EXISTS (SELECT 1 FROM roll_requests WHERE repository = $1 AND state = 'opened')
 		AND (SELECT COALESCE(sum(1 + cardinality(failed_tasks)), 0) FROM roll_requests WHERE repository = $1 AND state = 'failed'
 			AND run_id > COALESCE((SELECT max(run_id) FROM roll_requests WHERE repository = $1 AND state = 'merged'), 0)) < $3
 		LIMIT 1`, repository, backoff.Seconds(), bound).Scan(&sha)

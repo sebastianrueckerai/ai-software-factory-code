@@ -2,7 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"fmt"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -207,7 +209,7 @@ func TestRollCarriesKeepsEveryAttemptsCard(t *testing.T) {
 	ctx := context.Background()
 	s := openRetryStore(t)
 	const repo = "sf/ai-software-factory-code"
-	if err := s.CreateTask(ctx, Task{ID: "card", Status: "merged", Repository: repo, Kind: "agent", PRNumber: 7, Track: "direct", FinishedAt: ptrTime(time.Now())}); err != nil {
+	if err := s.CreateTask(ctx, Task{ID: "card", Status: "merged", Repository: repo, Kind: "agent", PRNumber: 7, Track: "direct", FinishedAt: justNow()}); err != nil {
 		t.Fatal(err)
 	}
 	for i, id := range []string{"r1", "r2"} {
@@ -306,4 +308,112 @@ func TestRollerRetriesFromTheStoreAcrossARestart(t *testing.T) {
 	}
 }
 
-func ptrTime(t time.Time) *time.Time { return &t }
+// Two green runs wait, the newest fails and the older one rolls: the
+// newest's retry waits until that roll settles, then runs as its own third
+// card, and the one question after it names three cards, none twice.
+func TestARetryWaitsWhileAnOlderCommitsRollIsOpen(t *testing.T) {
+	ctx := context.Background()
+	s := openRetryStore(t)
+	f := retryForgejo()
+	f.runs = []map[string]any{pushRun(57, commitC1, "success"), pushRun(56, commitC2, "success")}
+	fj, reg := f.srv(t)
+	wf := &fakeWorkflows{}
+	store := pgRollStore{s}
+	poll := func() {
+		t.Helper()
+		r := &Roller{Forgejo: fj, Registry: reg, SigningKey: &testCosignKey.PublicKey, Store: store, Workflows: wf,
+			Repo: Repo{Owner: "sf", Name: "ai-software-factory-code"}, Token: "registrar-tok", Budget: testBudget, Scrub: redact.New(),
+			Flux: &fakeFluxSwitch{}}
+		if err := r.poll(ctx); err != nil {
+			t.Fatal(err)
+		}
+	}
+	exec := func(q string, args ...any) {
+		t.Helper()
+		if _, err := s.db.ExecContext(ctx, q, args...); err != nil {
+			t.Fatal(err)
+		}
+	}
+	failOpen := func() {
+		t.Helper()
+		exec(`UPDATE tasks SET status = 'failed', finished_at = now() WHERE source = 'roll' AND status <> 'failed'`)
+		poll()
+	}
+	pastBackoff := func() {
+		t.Helper()
+		exec(`UPDATE roll_requests SET settled_at = now() - make_interval(secs => $1) WHERE state = 'failed'`, (rollRetryBackoff + time.Minute).Seconds())
+	}
+	state := func(sha string) string {
+		t.Helper()
+		var st string
+		var kept int
+		if err := s.db.QueryRowContext(ctx, `SELECT state, cardinality(failed_tasks) FROM roll_requests WHERE sha = $1`, sha).Scan(&st, &kept); err != nil {
+			t.Fatal(err)
+		}
+		return fmt.Sprintf("%s/%d", st, kept)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-prev", Status: "queued", Repository: codeRepo, Kind: "agent", Source: SourceRoll, Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	exec(`UPDATE tasks SET status = 'merged', finished_at = now() WHERE id = 't-prev'`)
+	if err := s.InsertRollRequest(ctx, RollRequest{SHA: commitC0, Repository: codeRepo, RunID: 50, State: RollMerged, TaskID: "t-prev", Committed: true}); err != nil {
+		t.Fatal(err)
+	}
+
+	poll() // the newest, c1, rolls and the older c2 waits
+	failOpen()
+	if len(wf.started) != 2 || state(commitC1) != "failed/0" || state(commitC2) != "opened/0" {
+		t.Fatalf("started %d, c1 %s, c2 %s, want c1 failed and the older c2 rolling", len(wf.started), state(commitC1), state(commitC2))
+	}
+	// c2's roll has its pull request, so a fold into it would run
+	var open string
+	exec(`UPDATE tasks SET pr_number = 99 WHERE source = 'roll' AND status NOT IN ('failed', 'merged')`)
+	if err := s.db.QueryRowContext(ctx, `SELECT id FROM tasks WHERE source = 'roll' AND status NOT IN ('failed', 'merged')`).Scan(&open); err != nil {
+		t.Fatal(err)
+	}
+	f.mu.Lock()
+	f.files[forkRepo+"@factory/"+open] = mainPins()
+	f.mu.Unlock()
+	pastBackoff()
+	poll()
+	if len(wf.started) != 2 || state(commitC1) != "failed/0" || len(wf.signals) != 0 {
+		t.Fatalf("started %d, c1 %s: the retry ran beside c2's open roll", len(wf.started), state(commitC1))
+	}
+	failOpen()
+	pastBackoff()
+	poll()
+	if len(wf.started) != 3 || state(commitC1) != "opened/1" {
+		t.Fatalf("started %d, c1 %s, want c1 retried as the third card once c2's roll settled", len(wf.started), state(commitC1))
+	}
+	failOpen()
+	for range 3 {
+		pastBackoff()
+		poll()
+	}
+	rows, err := s.db.QueryContext(ctx, `SELECT objective FROM tasks WHERE kind = 'human' AND objective LIKE '%' || $1 || '%'`, rollAskMarker)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer rows.Close()
+	var asks []string
+	for rows.Next() {
+		var o string
+		if err := rows.Scan(&o); err != nil {
+			t.Fatal(err)
+		}
+		asks = append(asks, o)
+	}
+	if len(wf.started) != 3 || len(asks) != 1 {
+		t.Fatalf("started %d, %d questions, want 3 cards and one question", len(wf.started), len(asks))
+	}
+	cards := map[string]bool{}
+	for _, line := range strings.Split(asks[0], "\n") {
+		if strings.HasPrefix(line, "- run ") {
+			_, card, _ := strings.Cut(line, "(card #")
+			cards[card] = true
+		}
+	}
+	if n := strings.Count(asks[0], "\n- run "); n != 3 || len(cards) != 3 {
+		t.Fatalf("question lists %d attempts with %d distinct cards:\n%s", n, len(cards), asks[0])
+	}
+}
