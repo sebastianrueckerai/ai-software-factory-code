@@ -41,8 +41,10 @@ type wipServe struct {
 	// from
 	base, mainHead string
 	log            func(string, ...any)
-	mu             sync.Mutex   // one /wip at a time
-	started, ended atomic.Int64 // the /wip asks begun and answered
+	mu             sync.Mutex // one /wip at a time
+	// started counts the /wip asks begun; served is the number, in that
+	// count, of the last ask whose answer shipped
+	started, served atomic.Int64
 	// probe is a test's look at the staging repo before it is removed,
 	// probeEnv at the environment of each git the /wip path spawns.
 	probe, probeEnv func(dirOrEnv string)
@@ -60,11 +62,11 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		}
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		w.started.Add(1)
+		n := w.started.Add(1)
 		served := false // only an answer that shipped its work ends a hold
 		defer func() {
 			if served {
-				w.ended.Add(1)
+				w.served.Store(n)
 			}
 		}()
 		commit, bundle, done, err := w.stage()
@@ -126,18 +128,17 @@ func holdFor(stopped, now time.Time) time.Duration {
 	return max(0, min(overBoundHold, stopGrace-now.Sub(stopped)-overBoundMargin))
 }
 
-// holdForAsk waits until an ask that began after the since-th is answered,
+// holdForAsk waits until an ask that began after the since-th is served,
 // or until d: the result line, which ends the pod, waits behind it. A
 // check-in's ask under way at since may have staged the tree before the
 // agent's last write, so it does not end the wait, and an ask that failed
-// does not either: factoryd asks again inside the hold. Asks run one at a
-// time, so the ask that began after the since-th is the since+1-th to end.
+// does not either: factoryd asks again inside the hold.
 func (w *wipServe) holdForAsk(since int64, d time.Duration) bool {
 	timeout := time.NewTimer(d)
 	defer timeout.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
-	for w.ended.Load() <= since {
+	for w.served.Load() <= since {
 		select {
 		case <-timeout.C:
 			return false

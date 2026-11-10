@@ -350,7 +350,7 @@ func TestWipHoldForAskIgnoresAnAskBegunBeforeTheStop(t *testing.T) {
 	since := wip.started.Load()
 	done := make(chan bool)
 	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
-	wip.ended.Add(1) // ... and it is answered
+	wip.served.Store(since) // ... and it is answered
 	time.Sleep(150 * time.Millisecond)
 	select {
 	case <-done:
@@ -360,6 +360,36 @@ func TestWipHoldForAskIgnoresAnAskBegunBeforeTheStop(t *testing.T) {
 	postWip(t, h)
 	if !<-done {
 		t.Fatal("the hold ran out although a later ask was answered")
+	}
+}
+
+// An ask that failed before the end push's baseline counts for nothing: one
+// served ask after the baseline ends the hold. Counting served answers
+// against asks begun, the failed ask would keep every later hold waiting
+// to its bound.
+func TestWipHoldForAskEndsAfterAFailedAskBeforeTheBaseline(t *testing.T) {
+	h, wip, dir, _, _, _, _, _ := seedWipSession(t)
+	good := wip.repoDir
+	bad := filepath.Join(filepath.Dir(dir), "notarepo")
+	if err := os.Mkdir(bad, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	wip.repoDir = bad
+	if code, _, _ := postWip(t, h); code != http.StatusInternalServerError {
+		t.Fatalf("the failing ask answered %d, want 500", code)
+	}
+	wip.repoDir = good
+	since := wip.started.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	postWip(t, h)
+	select {
+	case ok := <-done:
+		if !ok {
+			t.Fatal("the hold ran out although the ask after the baseline shipped")
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("the hold still waits after the ask after the baseline shipped")
 	}
 }
 
