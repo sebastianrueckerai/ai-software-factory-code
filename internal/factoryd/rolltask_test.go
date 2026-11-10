@@ -1549,7 +1549,7 @@ func TestModelReviewOfARollCallsNoModel(t *testing.T) {
 		t.Fatalf("review %+v", rv)
 	}
 	events, _ := store.TaskEvents(context.Background(), "t-roll", 10)
-	if got := unreadGates(events); !slices.Equal(got, []string{"audit"}) {
+	if got := unreadGates(events, nil); !slices.Equal(got, []string{"audit"}) {
 		t.Fatalf("gates unread after the roll's review = %v, want only the audit", got)
 	}
 }

@@ -670,3 +670,20 @@ func TestWakeApproveMergeRefusedWhenReviewDidNotRun(t *testing.T) {
 		t.Fatalf("request 4 is %s, want pending", q.Status)
 	}
 }
+
+// A push that lands between the console's check and the signal makes
+// ApproveMerge refuse: the wake answers the same 409 and the request stays
+// pending.
+func TestWakeApproveMergeRefusedAtTheSignal(t *testing.T) {
+	const refused = "Refused: The audit did not run, so the project agent cannot approve this merge. " +
+		"Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."
+	r, _, calls := mergeWake(t, policy.MergeAuto, true, func(r *rig) {
+		r.c.cfg.ApproveMerge = func(context.Context, string, int64, string) error {
+			return &factoryd.UnreviewedMergeError{Stages: []string{"audit"}}
+		}
+	}, []string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("Left to a human.")})
+	equal(t, "the wake's call", calls, []wakeCall{{name: "approve_merge", result: refused, status: http.StatusConflict}})
+	if q := r.approvals.get(4); q.Status != "pending" {
+		t.Fatalf("request 4 is %s, want pending", q.Status)
+	}
+}

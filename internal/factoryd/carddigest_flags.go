@@ -299,9 +299,10 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 // ran among events oldest first: the approval's rule. Only rows since the
 // newest session push count (a queue's merge of main moves the head and
 // runs neither gate again), a stage the task skipped since then (disabled,
-// not switched on for the project) is not required, and a gate row of a
+// not switched on for the project) is not required, as is a stage the card's
+// process does not list (unlisted), and a gate row of a
 // stage after its skip makes it required again.
-func unreadGates(events []Event) []string {
+func unreadGates(events []Event, unlisted map[string]bool) []string {
 	ran := map[string]bool{}
 	skipped := map[string]bool{}
 	for _, e := range events {
@@ -323,7 +324,7 @@ func unreadGates(events []Event) []string {
 	}
 	var out []string
 	for _, stage := range []string{"review", "audit"} {
-		if !ran[stage] && !skipped[stage] {
+		if !ran[stage] && !skipped[stage] && !unlisted[stage] {
 			out = append(out, stage)
 		}
 	}

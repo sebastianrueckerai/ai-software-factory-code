@@ -594,11 +594,11 @@ func main() {
 		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
 		CheckMerge: func(ctx context.Context, taskID, approver string) error {
-			_, err := factoryd.CheckMergeApproval(ctx, store, taskID, approver)
+			_, err := factoryd.CheckMergeApproval(ctx, store, policyLoader.Current, taskID, approver)
 			return err
 		},
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
-			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
+			return factoryd.ApproveMerge(ctx, store, policyLoader.Current, workflows, taskID, pr, approver)
 		},
 		RerunChecks: func(ctx context.Context, taskID string, pr int64, by string) error {
 			return factoryd.RerunFactoryChecks(ctx, store, workflows, taskID, pr, by)

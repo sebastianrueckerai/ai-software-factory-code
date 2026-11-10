@@ -2548,17 +2548,17 @@ func TestApproveMerge(t *testing.T) {
 	store := newFakeStore()
 	wf := &recordedSignals{}
 	ctx := context.Background()
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err == nil {
 		t.Fatal("approved without a pending request")
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
 	store.events = append(store.events,
 		Event{TaskID: "t1", Kind: EventModelReview, Detail: map[string]any{"commit": "c1", "reviewed": true}},
 		Event{TaskID: "t1", Kind: EventGateAudit, Detail: map[string]any{"commit": "c1", "ran": true}})
-	if err := ApproveMerge(ctx, store, wf, "t1", 8, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 8, "sebastian"); err == nil {
 		t.Fatal("approved another pull request")
 	}
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err != nil {
+	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(wf.sent, []string{"t1 approved sebastian 9"}) {
@@ -2568,12 +2568,12 @@ func TestApproveMerge(t *testing.T) {
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "approved in the console" {
 		t.Fatalf("approval = %+v", a)
 	}
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
+	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
 		t.Fatalf("a second approve: %v, signals %v", err, wf.sent)
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t2", PRNumber: 3})
 	wf.err = errors.New("temporal unavailable")
-	if err := ApproveMerge(ctx, store, wf, "t2", 3, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t2", 3, "sebastian"); err == nil {
 		t.Fatal("a failed signal answered no error")
 	}
 	if a := store.approvals[1]; a.Status != "pending" || a.DecidedBy != "" {
@@ -3892,7 +3892,7 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 			wf := &recordedSignals{}
 			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
 			store.events = append(store.events, c.events...)
-			err := ApproveMerge(ctx, store, wf, "t1", 9, c.approver)
+			err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, c.approver)
 			if c.refused != "" {
 				var u *UnreviewedMergeError
 				if !errors.As(err, &u) || err.Error() != c.refused {
@@ -3910,5 +3910,35 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 				t.Fatalf("approval %+v, signals %v, want note %q", a, wf.sent, c.note)
 			}
 		})
+	}
+}
+
+// A stage the card's process does not list is not required of the project
+// agent's approval; a listed one still is.
+func TestApproveMergeLeavesOutAStageTheProcessDoesNotList(t *testing.T) {
+	ctx := context.Background()
+	version := func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Processes: map[string]policy.Process{
+			"lean":   {Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageApproval}}},
+			"review": {Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageReview}, {Name: policy.StageApproval}}},
+		}}}
+	}
+	for _, c := range []struct {
+		process, refused string
+	}{
+		{"lean", ""},
+		{"review", "The review did not run, so the project agent cannot approve this merge."},
+	} {
+		store := newFakeStore()
+		store.tasks["t1"] = Task{ID: "t1", Process: c.process}
+		store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+		store.events = append(store.events, Event{TaskID: "t1", Kind: EventSessionPushed, Detail: map[string]any{}})
+		err := ApproveMerge(ctx, store, version, &recordedSignals{}, "t1", 9, ChatUser)
+		switch {
+		case c.refused == "" && err != nil:
+			t.Errorf("process %s: %v, want approved", c.process, err)
+		case c.refused != "" && (err == nil || err.Error() != c.refused):
+			t.Errorf("process %s: %v, want %q", c.process, err, c.refused)
+		}
 	}
 }

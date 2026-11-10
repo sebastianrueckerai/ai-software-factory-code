@@ -1339,7 +1339,7 @@ func TestWithdrawApprovalClosesTheRequest(t *testing.T) {
 		t.Fatalf("approval = %+v, want withdrawn by factoryd", a)
 	}
 	wf := &fakeWorkflows{}
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil || len(wf.signals) != 0 {
+	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err == nil || len(wf.signals) != 0 {
 		t.Fatalf("ApproveMerge = %v, signals %q; want the request not open, no signal", err, wf.signals)
 	}
 }

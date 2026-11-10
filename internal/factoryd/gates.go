@@ -2564,12 +2564,12 @@ const consoleApproved = "approved in the console"
 // approver's and signals the task's workflow, which merges as
 // factory-merge. Only a pending merge request of the task, for that pull
 // request, is approved.
-func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, approver string) error {
+func ApproveMerge(ctx context.Context, store Store, current func() policy.Version, wf Workflows, taskID string, pr int64, approver string) error {
 	q, err := pendingMerge(ctx, store, taskID, pr)
 	if err != nil {
 		return err
 	}
-	note, err := CheckMergeApproval(ctx, store, taskID, approver)
+	note, err := CheckMergeApproval(ctx, store, current, taskID, approver)
 	if err != nil {
 		return err
 	}
@@ -2580,13 +2580,17 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 // approver's approval does anything: the project agent is refused when the
 // review or the audit did not run (UnreviewedMergeError); a human's
 // approval passes with a decision note that names what did not run.
-func CheckMergeApproval(ctx context.Context, store Store, taskID, approver string) (string, error) {
+func CheckMergeApproval(ctx context.Context, store Store, current func() policy.Version, taskID, approver string) (string, error) {
 	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
 	if err != nil {
 		return "", err
 	}
 	slices.Reverse(events)
-	stages := unreadGates(events)
+	t, _, err := store.Task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	stages := unreadGates(events, unlistedStages(t, current()))
 	switch {
 	case len(stages) == 0:
 		return consoleApproved, nil
@@ -2594,6 +2598,27 @@ func CheckMergeApproval(ctx context.Context, store Store, taskID, approver strin
 		return "", &UnreviewedMergeError{Stages: stages}
 	}
 	return consoleApproved + "; the " + strings.Join(stages, " and the ") + " did not run", nil
+}
+
+// unlistedStages are the review and audit stages that the process of task t
+// does not list in version v; none when the process cannot be found.
+func unlistedStages(t Task, v policy.Version) map[string]bool {
+	name := t.Process
+	if name == "" {
+		_, project, _ := v.ProjectOf(t.Repository)
+		name = project.Process
+	}
+	p, ok := v.Processes[name]
+	if !ok {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, stage := range []string{policy.StageReview, policy.StageAudit} {
+		if _, listed := p.Stage(stage); !listed {
+			out[stage] = true
+		}
+	}
+	return out
 }
 
 // UnreviewedMergeError refuses the project agent's approval of a merge
