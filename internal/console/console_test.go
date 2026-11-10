@@ -1759,6 +1759,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CaseByID":      func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
 		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
+		"CheckMerge":    func(c *Config) { c.CheckMerge = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)

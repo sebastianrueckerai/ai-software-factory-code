@@ -618,6 +618,8 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no Act")
 	case cfg.PoolDrawn == nil:
 		return nil, errors.New("console: no PoolDrawn")
+	case cfg.CheckMerge == nil:
+		return nil, errors.New("console: no CheckMerge")
 	}
 	if cfg.Scrub == nil {
 		cfg.Scrub = redact.New()

@@ -345,6 +345,8 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return factoryd.ActResult{}, factoryd.ErrActRefused("this rig answers no case")
 	}
 	cfg.PoolDrawn = func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil }
+	// the rigs keep no review or audit rows: every approval passes the gate
+	cfg.CheckMerge = func(context.Context, string, int64, string) error { return nil }
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers
