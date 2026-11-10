@@ -115,9 +115,8 @@ func (r Routine) Validate(where string) error {
 	switch r.Files {
 	case FilesHuman, FilesReport:
 	case FilesAgent:
-		if r.Skill == "" {
-			return fmt.Errorf("%s: an agent routine names its skill", at)
-		}
+		// an agent routine may name a skill or run on its brief alone:
+		// the card body is the brief, and a named skill prefixes it
 	case FilesPullRequest:
 		if r.Pass != PassTemplate {
 			return fmt.Errorf("%s: a pull-request routine names its pass, template", at)
