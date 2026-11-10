@@ -1520,6 +1520,7 @@ type taskRun struct {
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
+	copiedHeads       []string         // the heads whose lines were copied this run, once each
 	holds             int              // heads adopted this run (versionHeadHolds)
 	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
@@ -4349,11 +4350,11 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 // into the store (versionUpstreamCopy); what the upstream cannot serve is
 // the card's finding, and the run goes on.
 func (t *taskRun) copyUpstream(commit string) error {
-	if t.upstreamCopy < versionUpstreamCopy {
+	if t.upstreamCopy < versionUpstreamCopy || slices.Contains(t.copiedHeads, commit) {
 		return nil
 	}
 	ctx := workflow.WithActivityOptions(t.ctx, workflow.ActivityOptions{
-		StartToCloseTimeout: 30 * time.Minute,
+		StartToCloseTimeout: time.Duration(policy.DefaultBounds[ActivityCopyUpstreamImages]) * time.Second,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,
 			MaximumAttempts:        3,
@@ -4364,6 +4365,7 @@ func (t *taskRun) copyUpstream(commit string) error {
 	if err := workflow.ExecuteActivity(ctx, ActivityCopyUpstreamImages, t.taskID, commit).Get(ctx, &findings); err != nil {
 		return err
 	}
+	t.copiedHeads = append(t.copiedHeads, commit)
 	if len(findings) > 0 {
 		t.recordFindings("upstream-copy", "card", 0, findings)
 		t.remember("upstream-copy", 0, findings)

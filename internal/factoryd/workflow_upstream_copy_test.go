@@ -148,3 +148,33 @@ func TestWorkflowReplaysAHistoryFromBeforeUpstreamCopy(t *testing.T) {
 	}
 	replaySplice(t, events)
 }
+
+// A head the agent moves past its gates is copied for before its checks
+// wait, as a verified head is, at the policy gate and at the merge.
+func TestWorkflowCopiesUpstreamImagesOfAMovedHead(t *testing.T) {
+	for name, setup := range map[string]func(g *gateHarness){
+		"at the gates": func(g *gateHarness) {
+			g.policyErrs = []error{headMovedError("pull request #9's head moved to c2 after its checks passed on c1")}
+		},
+		"at the merge": func(g *gateHarness) {
+			g.merge = []MergeResult{{MovedHead: true, Refusal: "pull request #9's head moved to c2 after its gates ran on c1"}, {Merged: true}}
+			g.signalAfter(4*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			g := newGateHarness(t)
+			g.onSessions(pushed("s1", "c1"))
+			g.branchHead = "c2"
+			setup(g)
+			g.onChecks(ChecksResult{State: ChecksSuccess})
+			copied := g.onCopy(nil, nil)
+			g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+			if final := g.run(t); final != "done" {
+				t.Fatalf("final = %q, finals = %v", final, g.finals)
+			}
+			if !slices.Equal(*copied, []string{"c1", "c2"}) {
+				t.Errorf("copies on %v, want c1 then c2 once each", *copied)
+			}
+		})
+	}
+}

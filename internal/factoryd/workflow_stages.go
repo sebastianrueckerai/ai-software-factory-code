@@ -674,6 +674,10 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 			}
 			t.holds++
 			*head, commit = branch, branch
+			if err := t.copyUpstream(branch); err != nil {
+				v, stop = failed("copy upstream images", err)
+				return nil, v, stop
+			}
 			t.checkedHead, g.ChecksPassed = "", false
 			cf, cv, cstop := t.runStage(policy.StageChecks, head, g, review)
 			if cstop {
@@ -1275,6 +1279,9 @@ func (t *taskRun) approve(commit string, g GateResults, review Review, earlier [
 			return verdict{final: "failed", reason: fmt.Sprintf("the pull request's head kept moving past its gates: %d heads held, the last move to %s not adopted", t.holds, branch)}
 		}
 		t.holds++
+		if err := t.copyUpstream(branch); err != nil {
+			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
+		}
 		t.checkedHead, g.ChecksPassed = "", false
 		return t.approve(branch, g, review, earlier, card, covered)
 	}

@@ -819,7 +819,7 @@ const BoundDefault = "default"
 // SuperviseGate, ModelReview and GateAudit follow the limits (Bound).
 // WaitChecks follows the waits row (waits.checks), not a bounds default.
 var DefaultBounds = map[string]int{
-	"GateReproduction": 900, "GateCriteria": 900, "ProofsAtMain": 900, "Merge": 90, BoundDefault: 120,
+	"GateReproduction": 900, "GateCriteria": 900, "ProofsAtMain": 900, "Merge": 90, "CopyUpstreamImages": 1800, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes

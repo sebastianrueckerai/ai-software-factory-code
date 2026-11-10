@@ -13,6 +13,7 @@ import (
 	"net/url"
 	"os"
 	"regexp"
+	"slices"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -21,17 +22,32 @@ import (
 // imageLine is the shape of an image line of upstream-images.txt that
 // scripts/upstream-copy copies: name:tag@sha256:<64 hex>, the name led by
 // its registry's host.
-var imageLine = regexp.MustCompile(`^([^\s@:/]+\.[^\s@:]+/[^\s@:]+):([\w][\w.-]{0,127})@sha256:([0-9a-f]{64})$`)
+var imageLine = regexp.MustCompile(`^(` + hostName + `(?:/` + nameComponent + `)+):([\w][\w.-]{0,127})@sha256:([0-9a-f]{64})$`)
+
+// The OCI distribution name grammar: a registry host with a dot, then
+// path components of lowercase alphanumerics joined by single separators.
+const (
+	hostName      = `[a-z0-9]+(?:-+[a-z0-9]+)*(?:\.[a-z0-9]+(?:-+[a-z0-9]+)*)+`
+	nameComponent = `[a-z0-9]+(?:(?:[._]|__|-+)[a-z0-9]+)*`
+)
 
 // addedImageLines are the image lines of head that base lacks, compared
 // by ref; a malformed one is a finding, not a line. Blank, comment and
 // https lines are not image lines.
 func addedImageLines(base, head string) (lines, findings []string) {
 	had := map[string]bool{}
-	for _, l := range imageCandidates(base) {
+	baseLines, err := imageCandidates(base)
+	if err != nil {
+		findings = append(findings, "upstream-images.txt at the base: "+err.Error())
+	}
+	for _, l := range baseLines {
 		had[strings.Fields(l)[0]] = true
 	}
-	for _, l := range imageCandidates(head) {
+	headLines, err := imageCandidates(head)
+	if err != nil {
+		findings = append(findings, "upstream-images.txt at the head: "+err.Error())
+	}
+	for _, l := range headLines {
 		ref := strings.Fields(l)[0]
 		if had[ref] {
 			continue
@@ -46,7 +62,7 @@ func addedImageLines(base, head string) (lines, findings []string) {
 	return lines, findings
 }
 
-func imageCandidates(list string) []string {
+func imageCandidates(list string) ([]string, error) {
 	var out []string
 	sc := bufio.NewScanner(strings.NewReader(list))
 	for sc.Scan() {
@@ -56,7 +72,10 @@ func imageCandidates(list string) []string {
 		}
 		out = append(out, l)
 	}
-	return out
+	if err := sc.Err(); err != nil {
+		return out, fmt.Errorf("a line is too long to read (%w)", err)
+	}
+	return out, nil
 }
 
 // UpstreamCopier copies the image lines a branch adds to
@@ -76,7 +95,18 @@ type UpstreamCopier struct {
 	Scrub *redact.Scrubber
 }
 
-var errUpstreamMissing = errors.New("the upstream does not serve this digest")
+// findingError is a line the copy cannot make, which the card hears as a
+// finding; any other error is Temporal's to retry.
+type findingError string
+
+func (e findingError) Error() string { return string(e) }
+
+const errUpstreamMissing = findingError("the upstream does not serve this digest")
+
+// maxBlobBytes is the largest blob a copy before merge takes: a copy holds
+// one blob at a time in /tmp, a 1 GiB volume. Main's upstream job copies a
+// larger one at the merge.
+const maxBlobBytes = 512 << 20
 
 // Copy copies the image lines head adds to base into the store, returning
 // findings for the lines it cannot copy; an error is one Temporal retries.
@@ -91,8 +121,9 @@ func (c *UpstreamCopier) Copy(ctx context.Context, base, head string) ([]string,
 			}
 		}
 		err := c.image(ctx, admin, strings.Fields(l)[0])
-		if errors.Is(err, errUpstreamMissing) {
-			findings = append(findings, l+": "+errUpstreamMissing.Error())
+		var fe findingError
+		if errors.As(err, &fe) {
+			findings = append(findings, l+": "+fe.Error())
 		} else if err != nil {
 			return findings, c.scrubbed(fmt.Errorf("%s: %w", l, err))
 		}
@@ -125,20 +156,15 @@ func (c *UpstreamCopier) image(ctx context.Context, admin AdminAuth, ref string)
 		return err
 	}
 	_, _, err = c.Registry.IndexEntries(ctx, tok, repo, digest)
-	if errors.Is(err, ErrNotFound) {
-		host, path, _ := strings.Cut(name, "/")
-		j := &copyJob{c: c, admin: admin, repo: repo, path: path, base: c.endpoint(host)}
-		if err := j.manifest(ctx, digest, tag+"-"+hexDigest[:12]); err != nil {
-			return err
-		}
-	} else if err != nil {
+	if err == nil {
+		return nil
+	}
+	if !errors.Is(err, ErrNotFound) {
 		return err
 	}
-	_, _, err = c.Registry.IndexEntries(ctx, tok, repo, tag)
-	if errors.Is(err, ErrNotFound) {
-		return (&copyJob{c: c, admin: admin, repo: repo}).tag(ctx, digest, tag)
-	}
-	return err
+	host, path, _ := strings.Cut(name, "/")
+	j := &copyJob{c: c, admin: admin, repo: repo, path: path, base: c.endpoint(host)}
+	return j.manifest(ctx, digest, tag+"-"+hexDigest[:12])
 }
 
 func (c *UpstreamCopier) endpoint(host string) string {
@@ -161,15 +187,23 @@ type copyJob struct {
 	token string
 }
 
+type descriptor struct {
+	Digest string `json:"digest"`
+	Size   int64  `json:"size"`
+}
+
 type manifestDoc struct {
-	Config    struct{ Digest string }   `json:"config"`
-	Layers    []struct{ Digest string } `json:"layers"`
-	Manifests []struct{ Digest string } `json:"manifests"`
+	Config    descriptor   `json:"config"`
+	Layers    []descriptor `json:"layers"`
+	Manifests []descriptor `json:"manifests"`
 }
 
 // manifest copies the manifest at upstream ref, with what it names, to the
 // store under putAs.
 func (j *copyJob) manifest(ctx context.Context, ref, putAs string) error {
+	if !signatureRef.MatchString(ref) {
+		return findingError(fmt.Sprintf("the upstream's manifest names %q, which is not a sha256 digest", ref))
+	}
 	res, err := j.get(ctx, "/manifests/"+ref, manifestAccept)
 	if err != nil {
 		return err
@@ -179,7 +213,7 @@ func (j *copyJob) manifest(ctx context.Context, ref, putAs string) error {
 	if err != nil {
 		return fmt.Errorf("upstream manifest %s: %w", ref, err)
 	}
-	if sum := sha256.Sum256(body); strings.HasPrefix(ref, "sha256:") && ref != "sha256:"+hex.EncodeToString(sum[:]) {
+	if sum := sha256.Sum256(body); ref != "sha256:"+hex.EncodeToString(sum[:]) {
 		return fmt.Errorf("upstream manifest %s: the body hashes to sha256:%x", ref, sum)
 	}
 	var doc manifestDoc
@@ -191,14 +225,16 @@ func (j *copyJob) manifest(ctx context.Context, ref, putAs string) error {
 			return err
 		}
 	}
-	blobs := []string{}
-	if doc.Config.Digest != "" {
-		blobs = append(blobs, doc.Config.Digest)
-	}
-	for _, l := range doc.Layers {
-		blobs = append(blobs, l.Digest)
+	blobs := slices.Concat([]descriptor{doc.Config}, doc.Layers)
+	for _, b := range blobs {
+		if b.Size > maxBlobBytes {
+			return findingError(fmt.Sprintf("a blob of %d bytes is too large to copy before the merge, where main's upstream job copies it", b.Size))
+		}
 	}
 	for _, b := range blobs {
+		if b.Digest == "" && b.Size == 0 {
+			continue
+		}
 		if err := j.blob(ctx, b); err != nil {
 			return err
 		}
@@ -206,7 +242,11 @@ func (j *copyJob) manifest(ctx context.Context, ref, putAs string) error {
 	return j.putManifest(ctx, putAs, res.Header.Get("Content-Type"), body)
 }
 
-func (j *copyJob) blob(ctx context.Context, digest string) error {
+func (j *copyJob) blob(ctx context.Context, d descriptor) error {
+	digest := d.Digest
+	if d.Size < 0 {
+		return fmt.Errorf("upstream blob %s: size %d", digest, d.Size)
+	}
 	if !signatureRef.MatchString(digest) {
 		return fmt.Errorf("upstream blob %q is not a sha256 digest", digest)
 	}
@@ -230,9 +270,12 @@ func (j *copyJob) blob(ctx context.Context, digest string) error {
 	defer os.Remove(f.Name())
 	defer f.Close()
 	h := sha256.New()
-	n, err := io.Copy(io.MultiWriter(f, h), res.Body)
+	n, err := io.Copy(io.MultiWriter(f, h), io.LimitReader(res.Body, d.Size+1))
 	if err != nil {
 		return fmt.Errorf("upstream blob %s: %w", digest, err)
+	}
+	if n != d.Size {
+		return fmt.Errorf("upstream blob %s: %d bytes or more, its descriptor says %d", digest, n, d.Size)
 	}
 	if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != digest {
 		return fmt.Errorf("upstream blob %s: the body hashes to %s", digest, got)
@@ -276,23 +319,6 @@ func (j *copyJob) putManifest(ctx context.Context, reference, contentType string
 		return fmt.Errorf("store manifest put of %s: status %d", reference, res.StatusCode)
 	}
 	return nil
-}
-
-// tag names digest, which the store holds, tag.
-func (j *copyJob) tag(ctx context.Context, digest, tag string) error {
-	res, err := j.store(ctx, http.MethodGet, "/v2/"+j.repo+"/manifests/"+digest, "", nil, 0)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	if res.StatusCode != http.StatusOK {
-		return fmt.Errorf("store manifest %s: status %d", digest, res.StatusCode)
-	}
-	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
-	if err != nil {
-		return err
-	}
-	return j.putManifest(ctx, tag, res.Header.Get("Content-Type"), body)
 }
 
 // store sends a request to the store with the site admin's login. The

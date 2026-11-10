@@ -1,8 +1,10 @@
 package factoryd
 
 import (
+	"cmp"
 	"crypto/sha256"
 	"encoding/hex"
+	"encoding/json"
 	"fmt"
 	"io"
 	"net/http"
@@ -19,6 +21,25 @@ type fakeImg struct {
 	manifest []byte
 	digest   string
 	blobs    map[string][]byte
+	ctype    string // the manifest's Content-Type; an image manifest's when ""
+}
+
+// fakeIndex is an index of children, each a manifest the upstream serves.
+func fakeIndex(children ...fakeImg) fakeImg {
+	var parts []string
+	blobs := map[string][]byte{}
+	for _, c := range children {
+		parts = append(parts, fmt.Sprintf(`{"digest":%q,"size":%d}`, c.digest, len(c.manifest)))
+		for d, b := range c.blobs {
+			blobs[d] = b
+		}
+	}
+	return rawIndex("["+strings.Join(parts, ",")+"]", blobs)
+}
+
+func rawIndex(manifests string, blobs map[string][]byte) fakeImg {
+	m := []byte(`{"schemaVersion":2,"mediaType":"application/vnd.oci.image.index.v1+json","manifests":` + manifests + `}`)
+	return fakeImg{manifest: m, digest: sha(m), blobs: blobs, ctype: "application/vnd.oci.image.index.v1+json"}
 }
 
 func newFakeImage(layer string) fakeImg {
@@ -72,7 +93,7 @@ func newFakeUpstream(t *testing.T, images ...fakeImg) *fakeUpstream {
 				http.NotFound(w, r)
 				return
 			}
-			w.Header().Set("Content-Type", "application/vnd.oci.image.manifest.v1+json")
+			w.Header().Set("Content-Type", cmp.Or(im.ctype, "application/vnd.oci.image.manifest.v1+json"))
 			w.Write(im.manifest)
 		case "blobs":
 			u.blobReads++
@@ -158,6 +179,14 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 			switch r.Method {
 			case http.MethodPut:
 				body, _ := io.ReadAll(r.Body)
+				var doc manifestDoc
+				json.Unmarshal(body, &doc)
+				for _, ch := range doc.Manifests {
+					if _, ok := s.manifests[repo+"/"+ch.Digest]; !ok {
+						http.Error(w, "manifest blob unknown", http.StatusBadRequest)
+						return
+					}
+				}
 				s.writes++
 				s.manifests[repo+"/"+ref] = body
 				s.manifests[repo+"/"+sha(body)] = body
@@ -227,7 +256,7 @@ func TestUpstreamCopyCopiesAddedImageLine(t *testing.T) { // added_image_line_co
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
 	repo := "upstream/docker.io/library/golang"
-	for _, ref := range []string{"1.26.11-alpine-" + strings.TrimPrefix(im.digest, "sha256:")[:12], "1.26.11-alpine", im.digest} {
+	for _, ref := range []string{"1.26.11-alpine-" + strings.TrimPrefix(im.digest, "sha256:")[:12], im.digest} {
 		if got := store.manifests[repo+"/"+ref]; string(got) != string(im.manifest) {
 			t.Errorf("store %s = %q, want the manifest", ref, got)
 		}
@@ -236,6 +265,9 @@ func TestUpstreamCopyCopiesAddedImageLine(t *testing.T) { // added_image_line_co
 		if string(store.blobs[repo+"/"+d]) != string(b) {
 			t.Errorf("store blob %s missing", d)
 		}
+	}
+	if _, ok := store.manifests[repo+"/1.26.11-alpine"]; ok {
+		t.Error("the plain tag was written: only main's upstream job names it")
 	}
 	if len(store.badAuth) != 0 {
 		t.Errorf("writes without the admin's login: %v", store.badAuth)
@@ -246,23 +278,6 @@ func TestUpstreamCopyCopiesAddedImageLine(t *testing.T) { // added_image_line_co
 	}
 	if up.manifestReads != reads || store.writes != writes {
 		t.Errorf("second call: %d more upstream manifest reads, %d more store writes, want 0 and 0", up.manifestReads-reads, store.writes-writes)
-	}
-}
-
-func TestUpstreamCopyDoesNotMovePlainTagOfAnotherDigest(t *testing.T) {
-	im, other := newFakeImage("new"), newFakeImage("old")
-	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	repo := "upstream/docker.io/library/golang"
-	store.manifests[repo+"/1.26.11-alpine"] = other.manifest
-	store.manifests[repo+"/"+other.digest] = other.manifest
-	if _, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil {
-		t.Fatal(err)
-	}
-	if string(store.manifests[repo+"/1.26.11-alpine"]) != string(other.manifest) {
-		t.Error("the plain tag moved off the digest another line holds")
-	}
-	if _, ok := store.manifests[repo+"/1.26.11-alpine-"+strings.TrimPrefix(im.digest, "sha256:")[:12]]; !ok {
-		t.Error("the digest's own tag is missing")
 	}
 }
 
@@ -277,7 +292,7 @@ func TestUpstreamCopyMissingDigestIsFindingNotError(t *testing.T) { // missing_d
 	if want := goLine(gone.digest) + ": the upstream does not serve this digest"; len(findings) != 1 || findings[0] != want {
 		t.Errorf("findings = %q, want [%q]", findings, want)
 	}
-	if _, ok := store.manifests["upstream/docker.io/library/golang/1.26.12"]; !ok {
+	if _, ok := store.manifests["upstream/docker.io/library/golang/1.26.12-"+strings.TrimPrefix(good.digest, "sha256:")[:12]]; !ok {
 		t.Error("the other line was not copied")
 	}
 }
@@ -304,21 +319,6 @@ func TestUpstreamCopyEqualListsTouchNothing(t *testing.T) { // no_copy_without_c
 	}
 	if up.manifestReads != 0 || up.blobReads != 0 || store.writes != 0 || store.uploads != 0 {
 		t.Errorf("reads %d/%d, writes %d/%d, want all 0", up.manifestReads, up.blobReads, store.writes, store.uploads)
-	}
-}
-
-func TestUpstreamCopyServerErrorIsErrorWithoutCredentials(t *testing.T) {
-	im := newFakeImage("x")
-	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	up.srv.Close()
-	c := store.copier(up)
-	c.Endpoint = func(string) string { return "http://user:pass@" + strings.TrimPrefix(up.srv.URL, "http://") }
-	_, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n")
-	if err == nil {
-		t.Fatal("no error for an unreachable upstream")
-	}
-	if strings.Contains(err.Error(), "user:pass") || strings.Contains(err.Error(), "pass@") {
-		t.Errorf("error carries userinfo: %v", err)
 	}
 }
 
@@ -433,5 +433,149 @@ func TestCopyUpstreamImagesActivityErrorIsScrubbed(t *testing.T) {
 		if strings.Contains(err.Error(), leak) {
 			t.Errorf("error %q carries %q", err, leak)
 		}
+	}
+}
+
+func TestAddedImageLinesHoldNamesToTheOCIGrammar(t *testing.T) {
+	d := "@sha256:" + strings.Repeat("a", 64)
+	for line, ok := range map[string]bool{
+		"docker.io/library/golang:1.26-alpine" + d:          true,
+		"ghcr.io/berriai/litellm:1.2" + d:                   true,
+		"factory.talos.dev/installer/ab_c.d--e:v1.14.5" + d: true,
+		"registry.k8s.io/coredns/coredns:v1.14.7" + d:       true,
+		"docker.io/Library/golang:1" + d:                    false,
+		"docker.io/library/../golang:1" + d:                 false,
+		"docker.io/library/gol?ang:1" + d:                   false,
+		"docker.io/library/gol#ang:1" + d:                   false,
+		"docker.io/library/gol%2Fang:1" + d:                 false,
+		"docker.io//golang:1" + d:                           false,
+		"docker.io/library/-golang:1" + d:                   false,
+		"docker.io/library/golang_:1" + d:                   false,
+		"docker.io:1" + d:                                   false,
+		"golang:1" + d:                                      false,
+		"docker.io/library/golang:" + d:                     false,
+	} {
+		lines, findings := addedImageLines("", line+"\n")
+		if ok != (len(lines) == 1 && len(findings) == 0) || !ok && (len(lines) != 0 || len(findings) != 1 || findings[0] != line+": want name:tag@sha256:<digest>") {
+			t.Errorf("%q: lines %q, findings %q, want ok = %v", line, lines, findings, ok)
+		}
+	}
+}
+
+func TestAddedImageLinesTooLongALineIsAFinding(t *testing.T) {
+	head := "docker.io/library/a:1@sha256:" + strings.Repeat("a", 64) + "\n" + strings.Repeat("x", 70000) + "\n"
+	_, findings := addedImageLines("", head)
+	if len(findings) != 1 || !strings.HasPrefix(findings[0], "upstream-images.txt at the head: a line is too long to read") {
+		t.Errorf("findings = %q", findings)
+	}
+}
+
+func TestUpstreamCopyCopiesAnIndexAfterItsChildren(t *testing.T) {
+	a, b := newFakeImage("amd64"), newFakeImage("arm64")
+	idx := fakeIndex(a, b)
+	up, store := newFakeUpstream(t, a, b, idx), newFakeImgStore(t)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("Copy = %q, %v", findings, err)
+	}
+	repo := "upstream/docker.io/library/golang/"
+	tag := "1.26.11-alpine-" + strings.TrimPrefix(idx.digest, "sha256:")[:12]
+	if string(store.manifests[repo+tag]) != string(idx.manifest) {
+		t.Error("the index is not in the store")
+	}
+	for _, c := range []fakeImg{a, b} {
+		if string(store.manifests[repo+c.digest]) != string(c.manifest) {
+			t.Errorf("child %s is not in the store", c.digest)
+		}
+		for d := range c.blobs {
+			if _, ok := store.blobs[strings.TrimSuffix(repo, "/")+"/"+d]; !ok {
+				t.Errorf("blob %s of a child is not in the store", d)
+			}
+		}
+	}
+}
+
+func TestUpstreamCopyRefusesAnIndexChildThatIsNotADigest(t *testing.T) {
+	good := newFakeImage("good")
+	idx := rawIndex(fmt.Sprintf(`[{"digest":%q,"size":1},{"digest":"latest","size":1}]`, good.digest), good.blobs)
+	up, store := newFakeUpstream(t, good, idx), newFakeImgStore(t)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := goLine(idx.digest) + `: the upstream's manifest names "latest", which is not a sha256 digest`; len(findings) != 1 || findings[0] != want {
+		t.Errorf("findings = %q, want [%q]", findings, want)
+	}
+	for k := range store.manifests {
+		if strings.HasSuffix(k, "/latest") || strings.Contains(k, "1.26.11-alpine-") {
+			t.Errorf("store holds %s: nothing of the refused index is to be named", k)
+		}
+	}
+}
+
+func TestUpstreamCopyRefusesABlobOverTheBound(t *testing.T) {
+	im := newFakeImage("big")
+	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":%d}]}`, sha([]byte("c")), sha([]byte("l")), maxBlobBytes+1)
+	big := fakeImg{manifest: m, digest: sha(m), blobs: im.blobs}
+	up, store := newFakeUpstream(t, big), newFakeImgStore(t)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(big.digest)+"\n")
+	if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0], goLine(big.digest)+": a blob of 536870913 bytes is too large to copy before the merge") {
+		t.Fatalf("Copy = %q, %v", findings, err)
+	}
+	if up.blobReads != 0 || store.writes != 0 {
+		t.Errorf("%d blob reads, %d store writes, want none", up.blobReads, store.writes)
+	}
+}
+
+func TestUpstreamCopyStopsABlobLongerThanItsDescriptor(t *testing.T) {
+	lay := []byte(strings.Repeat("x", 100))
+	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":10}]}`, sha([]byte("c")), sha(lay))
+	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): lay}}
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	_, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	if err == nil || !strings.Contains(err.Error(), "its descriptor says 10") {
+		t.Fatalf("err = %v, want the blob refused at its descriptor's size", err)
+	}
+}
+
+// registry.k8s.io and the CDNs of the others answer a manifest or blob
+// with a redirect to a host that wants no bearer; the client drops the
+// Authorization header there and the copy works.
+func TestUpstreamCopyFollowsRedirectsToAnotherHost(t *testing.T) {
+	im := newFakeImage("redirected")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	up.bearerRequired = false
+	var auth []string
+	front := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		auth = append(auth, r.Header.Get("Authorization"))
+		http.Redirect(w, r, up.srv.URL+r.URL.Path, http.StatusTemporaryRedirect)
+	}))
+	t.Cleanup(front.Close)
+	c := store.copier(up)
+	c.Endpoint = func(string) string { return front.URL }
+	findings, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n")
+	if err != nil || len(findings) != 0 {
+		t.Fatalf("Copy = %q, %v", findings, err)
+	}
+	if up.manifestReads != 1 || up.blobReads != 2 || len(auth) != 3 {
+		t.Errorf("manifest reads %d, blob reads %d, front requests %d; want 1, 2, 3", up.manifestReads, up.blobReads, len(auth))
+	}
+}
+
+func TestCopyUpstreamImagesActivityReadsAnOpenPullRequestsHeadRepository(t *testing.T) {
+	im := newFakeImage("x")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	fj := &prForgejo{
+		pulls: map[int64]string{12: `{"number":12,"state":"open","html_url":"https://git.example/sf/repo/pulls/12","head":{"sha":"c1","ref":"factory/schema-abc","repo":{"full_name":"someone/fork"}},"base":{"ref_name":"main"}}`},
+		raw:   map[string]string{"sf/repo@base": "", "someone/fork@c1": goLine(im.digest) + "\n"},
+	}
+	task := prTask
+	task.PRNumber = 12
+	r := copyRunner(t, task, fj, store.copier(up))
+	if _, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := store.manifests["upstream/docker.io/library/golang/"+im.digest]; !ok {
+		t.Error("the line of the pull request's head repository was not copied")
 	}
 }
