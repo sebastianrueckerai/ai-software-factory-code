@@ -17,6 +17,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 // criteriaPlan is a plan with one revision holding three criteria (a test
@@ -1736,5 +1737,95 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 	r.CriteriaPass(ctx)
 	if got := closes(objs); got != 0 {
 		t.Fatalf("a test criterion on a gate row alone: plan_closed recorded %d times, want 0", got)
+	}
+}
+
+// A done plan whose criteria the gate never judged runs the gate once on
+// the integration card, which holds the gate reserve of the policy
+// (0.40 EUR) free for it: a card with 0.00 EUR left is raised by 0.40, a
+// card with 4.00 EUR left is not raised, and a gate that leaves a
+// criterion unjudged is not run a second time: the human is asked then.
+func TestPlanCloseCheckRunsTheCriteriaGateOnTheReserve(t *testing.T) {
+	ctx := context.Background()
+	reserve := policy.DefaultGateReserveEUR
+	for _, c := range []struct {
+		name          string
+		budget, spent float64
+		wantBudget    float64 // 5.00 spent of 5.00 + 0.40; 1.00 spent of 5.00 stays
+		judges        bool
+	}{
+		{"spent", 5, 5, 5.4, true},
+		{"part left, under the reserve", 5, 4.8, 5.2, true},
+		{"budget left", 5, 1, 5, true},
+		{"the gate leaves a criterion unjudged", 5, 5, 5.4, false},
+	} {
+		s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+		integration := s.tasks["t-int"]
+		integration.IssueNumber, integration.PRNumber = 1380, 9
+		integration.BudgetEUR, integration.SpentEUR = c.budget, c.spent
+		s.tasks["t-int"] = integration
+		mergeCard(s, "t-int")
+		if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+			t.Fatal(err)
+		}
+		fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`}}
+		forgejo := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s}, forgejo: forgejo}
+		var calls []string
+		var leftAtCall float64
+		r.criteriaGate = func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error) {
+			calls = append(calls, fmt.Sprintf("%s#%d@%s", taskID, pr, commit))
+			leftAtCall = s.tasks[taskID].Left()
+			if !c.judges {
+				return CriteriaResult{}, nil
+			}
+			return CriteriaResult{}, s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceGate, FactoryDecider, []CriterionVerdict{
+				{Criterion: "c1", Verdict: "met", Kind: CriterionTest}, {Criterion: "c3", Verdict: "met", Kind: CriterionInvariant}})
+		}
+		r.planCloseCheck(ctx, "t-plan")
+		r.planCloseCheck(ctx, "t-plan")
+		if want := []string{"t-int#9@h9"}; !slices.Equal(calls, want) {
+			t.Fatalf("%s: gate calls %v, want %v", c.name, calls, want)
+		}
+		if got := s.tasks["t-int"].BudgetEUR; got != c.wantBudget {
+			t.Errorf("%s: budget %.2f, want %.2f", c.name, got, c.wantBudget)
+		}
+		if leftAtCall < reserve-1e-9 {
+			t.Errorf("%s: %.6f EUR left when the gate ran, want at least the reserve %.2f", c.name, leftAtCall, reserve)
+		}
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if c.judges && (len(pending) != 0 || closeRows(s) != 1) {
+			t.Errorf("%s: pending %+v, closes %d, want the plan closed with no ask", c.name, pending, closeRows(s))
+		}
+		if !c.judges && (len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun) {
+			t.Errorf("%s: pending %+v, want the one criteria_rerun ask", c.name, pending)
+		}
+	}
+}
+
+// A gate error and a pull request read error reach the log scrubbed: the
+// URL's userinfo and the bearer value are masked.
+func TestRunCriteriaGateScrubsItsErrors(t *testing.T) {
+	ctx := context.Background()
+	const leak = "GET https://user:pass@git.example/pulls/9: Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	integration := s.tasks["t-int"]
+	integration.PRNumber, integration.BudgetEUR = 9, 5
+	s.tasks["t-int"] = integration
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	fj := &prForgejo{pulls: map[int64]string{9: `{"number":9,"head":{"sha":"h9"}}`}}
+	r := &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, Scrub: redact.New(), timeline: &Timeline{Objects: &fakeObjectStore{}, Events: s, Store: s},
+		forgejo: &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"},
+		criteriaGate: func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return CriteriaResult{}, errors.New(leak)
+		}}
+	if !r.runCriteriaGate(ctx, s.tasks["t-plan"], Repo{Owner: "sf", Name: "code"}, s.tasks["t-int"]) {
+		t.Fatal("the gate did not run")
+	}
+	got := logs.String()
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "abcdefghijklmnopqrstuvwx") || !strings.Contains(got, "[redacted]@git.example") || !strings.Contains(got, "Bearer [redacted]") {
+		t.Errorf("log = %q, want the userinfo and the bearer masked", got)
 	}
 }

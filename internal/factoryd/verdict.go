@@ -995,7 +995,15 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	open := openCriteria(p, rows)
-	if never := neverJudged(p, rows); len(never) > 0 {
+	never := neverJudged(p, rows)
+	if gate, _ := judgeIDs(never); len(gate) > 0 && r.runCriteriaGate(ctx, t, repo, integration) {
+		if rows, err = r.store.CriteriaVerdicts(ctx, integration.ID); err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		open, never = openCriteria(p, rows), neverJudged(p, rows)
+	}
+	if len(never) > 0 {
 		unmet := slices.DeleteFunc(open, func(c PlanCriterion) bool {
 			return slices.ContainsFunc(never, func(n PlanCriterion) bool { return n.ID == c.ID })
 		})
@@ -1009,6 +1017,41 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	r.openGap(ctx, t, repo, open, integration)
+}
+
+// runCriteriaGate runs the criteria gate once on the head of the
+// integration card's pull request, for a done plan whose gate-judged
+// criteria hold no verdict row, and answers whether it ran. The card
+// holds the gate reserve free first, raised by what its spend left short
+// of it, so the gate draws on the reserve as the review and the audit do.
+// A plan whose gate ran once asks the human instead.
+func (r *Runner) runCriteriaGate(ctx context.Context, plan Task, repo Repo, integration Task) bool {
+	if integration.PRNumber == 0 || r.timeline.hasEvent(ctx, plan.ID, EventCriteriaGateRun, nil) {
+		return false
+	}
+	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, integration.PRNumber)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate's pull request: %s", plan.ID, r.Scrub.String(err.Error()))
+		return false
+	}
+	reserve := r.cfg.Policy().Document.Limits.GateReserve()
+	raise := policy.CeilMicro(reserve - max(integration.Left(), 0))
+	if raise > 0 {
+		if _, _, err := r.store.FundCard(ctx, integration.ID, raise, 0, Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
+			Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the criteria gate of a done plan"}}); err != nil {
+			log.Printf("plan %s: fund the criteria gate: %s", plan.ID, r.Scrub.String(err.Error()))
+			return false
+		}
+	}
+	r.timeline.recordEvent(ctx, plan.ID, EventCriteriaGateRun, map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": pr.HeadSHA})
+	gate := r.criteriaGate
+	if gate == nil {
+		gate = r.GateCriteria
+	}
+	if _, err := gate(ctx, integration.ID, integration.PRNumber, pr.HeadSHA); err != nil {
+		log.Printf("plan %s: the criteria gate: %s", plan.ID, r.Scrub.String(err.Error()))
+	}
+	return true
 }
 
 // closePlan closes plan t's issue as factoryd's own close, saying why
