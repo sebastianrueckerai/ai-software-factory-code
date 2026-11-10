@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -579,16 +580,20 @@ type sessionOutcome struct {
 	// agentText is the agent's last message (the adapter's finished event)
 	agentText string
 	commit    string
-	trip      *Trip
-	decision  *Decision
-	digest    string
-	noResult  string
-	start     *startFailure   // the session could not start
-	pending   *podPending     // its pod never left Pending: no session ran
-	model     string          // the model the session ended on
-	overHold  *OverHoldCall   // the session's newest call booked beyond its hold
-	reads     []string        // the paths a report session read
-	checkIn   *CheckInOutcome // the check-in that ran at the session's start
+	// wip is the last interim push's commit (wippush.go): the work the
+	// session left on the branch without its own end push, which its
+	// result keeps when the session died with no other
+	wip      string
+	trip     *Trip
+	decision *Decision
+	digest   string
+	noResult string
+	start    *startFailure   // the session could not start
+	pending  *podPending     // its pod never left Pending: no session ran
+	model    string          // the model the session ended on
+	overHold *OverHoldCall   // the session's newest call booked beyond its hold
+	reads    []string        // the paths a report session read
+	checkIn  *CheckInOutcome // the check-in that ran at the session's start
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -597,9 +602,9 @@ type sessionOutcome struct {
 // report came, which says the work is not pushed only when no push was.
 func (out sessionOutcome) stopReport() []string {
 	switch {
-	case out.result != nil && out.commit == "":
+	case out.result != nil && cmp.Or(out.commit, out.wip) == "":
 		return []string{"the stopped worker reported: " + out.result.Summary}
-	case out.result == nil && out.noResult != "" && out.commit != "":
+	case out.result == nil && out.noResult != "" && cmp.Or(out.commit, out.wip) != "":
 		return []string{out.noResult}
 	case out.result == nil && out.noResult != "":
 		return []string{"work in progress not pushed: " + out.noResult}
@@ -649,9 +654,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// consumed is how many of the pod's log lines the loop took: the row
 	// keeps it for the reattach
 	consumed := 0
+	// spentAtStart is the card's enforced spend at the session's real
+	// start, nil where it could not be read
+	var spentAtStart *float64
 	if live != nil {
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
+		spentAtStart = live.SpentAtStart
 	} else {
+		if cur, ok, err := r.store.Task(ctx, t.ID); err != nil {
+			log.Printf("task %s: session %s: read the card's spend at the session's start: %s", t.ID, s.id, r.Scrub.String(err.Error()))
+		} else if ok {
+			spent := cur.EnforcedSpent()
+			spentAtStart = &spent
+		}
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
 			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
@@ -659,7 +674,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, fmt.Errorf("create pod: %w", err)
 		}
 		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline}); err != nil {
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart}); err != nil {
 			return out, err
 		}
 	}
@@ -727,6 +742,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
+	if spentAtStart != nil {
+		supCfg.SpentAtStart = *spentAtStart
+	} else {
+		log.Printf("task %s: session %s: the card's spend at the session's start is unknown, so spend_no_push is off for this session", t.ID, s.id)
+		supCfg.NoPushSpend = 0
+	}
 	if sizeBounded(t, s) {
 		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 	}
@@ -906,20 +927,40 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if trip.decided != nil {
 			d = *trip.decided
 		} else {
-			// the session's work in progress ships while the check-in
-			// runs: one interim push under factoryd's own credential
-			// (interimPush, wippush.go), joined before anything below
-			// acts on the answer, so it cannot race the stop's end push
-			wipDone := make(chan struct{})
+			// the session's work in progress ships before the check-in's
+			// conversation opens: one interim push under factoryd's own
+			// credential (interimPush, wippush.go), done — landed,
+			// refused or given up — before the ask is built, so the ask
+			// carries its outcome and the stop's end push cannot race it
+			pctx, stopPush := context.WithCancel(callCtx)
 			go func() {
-				defer close(wipDone)
-				r.interimPush(callCtx, t, s, ns, podName, workerStop)
+				select {
+				case <-workerStop:
+					stopPush()
+				case <-pctx.Done():
+				}
 			}()
+			wip := r.interimPush(pctx, t, s, ns, podName, workerStop)
+			stopPush()
+			out.wip = cmp.Or(wip.head, out.wip)
+			if wip.refusal != "" {
+				// a push rule's refusal is a message the agent can act on:
+				// it reaches the running session — a write answers it, so
+				// an agent that ignores it meets the stuck rule — and the
+				// ask's messages, so the check-in judges it too
+				err := r.message(ctx, t, s, ns, podName, wip.refusal)
+				if err == nil || errors.Is(err, harness.ErrNotRunning) {
+					sup.messagedInTrip(time.Now())
+					messages = append(messages, wip.refusal)
+				} else {
+					log.Printf("task %s: deliver the interim push's refusal to the session: %s", t.ID, r.Scrub.String(err.Error()))
+				}
+			}
 			answered := make(chan struct{})
 			lines, started := sup.CardLines(), sup.started
 			go func() {
 				defer close(answered)
-				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip.head)
 			}()
 			for answering := true; answering; {
 				select {
@@ -941,7 +982,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					stopAt = time.Now()
 					cancel()
 					<-answered
-					<-wipDone
 					log.Printf("task %s: factoryd stopping cut the check-in for %s", t.ID, trip.Kind)
 					return true, shutdown()
 				}
@@ -949,10 +989,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					held, esc = esc, nil
 				}
 			}
-			// the interim push is done — landed, refused or given up —
-			// before any decision acts on the check-in: a stop's end
-			// push builds on the tip it left
-			<-wipDone
 		}
 		if esc != nil {
 			log.Printf("task %s: the agent escalated during the check-in for %s", t.ID, trip.Kind)
@@ -1150,7 +1186,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			}
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
-			facts: checkinFacts(t, s), ask: &ask}
+			facts: checkinFacts(t, s, ""), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
 		out.Share = share
@@ -1225,10 +1261,12 @@ func cuttable(t Task, s sessionSpec) bool {
 // checkinLive is the mid-session check-in: a detector tripped, and the
 // check-in decides over the running session from the transcript it reads
 // factoryd-side. Nothing is pushed to the pod — the coding agent needs no
-// record of its own audit. d is the action for the trip switch; ck the
+// record of its own audit. wipHead is the interim push's head when one
+// landed before the conversation (wippush.go), "" when none did; the
+// ask's facts name it. d is the action for the trip switch; ck the
 // conversation's outcome with its record (nil only under no alias); ride
 // says the outcome stops the session and rides SessionResult.CheckIn.
-func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wipHead string) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
 	// a handover's next session runs on the stronger rung, or on the
 	// session_model of a plan or report class, which this session runs on
@@ -1250,7 +1288,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wipHead), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
@@ -1340,17 +1378,17 @@ func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}
 // postWorkerWip is postWorkerUntil's sibling for the ask whose answer is
 // a body: it POSTs the running worker's /wip with the session's bearer
 // until it answers, and hands back the WIP commit the answer names in its
-// Wip-Commit header with its objects as the raw bundle, read under
-// wipBundleCap. A 204 answer ships nothing: no commit, no error. The
+// Wip-Commit header with the path of a temporary file that holds the
+// bundle, streamed under wipBundleCap and never held in memory; the caller
+// removes it. A 204 answer ships nothing: no commit, no error. The
 // endpoint was up at the session's brief and the pod runs on through a
 // check-in, so unlike the brief's delivery no answer is waited out: an
 // answered refusal, of any status, or a timed-out ask is final — the
 // interim push is given up, not retried — and only a transport that has
 // not answered is retried until wait, as postWorkerUntil retries it.
-func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, ns, pod, token string, wait time.Duration) (string, []byte, error) {
+func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, ns, pod, token string, wait time.Duration) (string, string, error) {
 	end := time.Now().Add(wait)
-	var commit string
-	var bundle []byte
+	var commit, bundle string
 	var err error
 	for {
 		commit, bundle, err = r.postWip(ctx, ns, pod, token)
@@ -1366,10 +1404,10 @@ func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, 
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return "", nil, ctx.Err()
+			return "", "", ctx.Err()
 		case <-workerStop:
 			timer.Stop()
-			return "", nil, errWorkerStop
+			return "", "", errWorkerStop
 		case <-timer.C:
 		}
 	}
@@ -1379,53 +1417,83 @@ func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, 
 // body's bundle.
 const wipCommitHeader = "Wip-Commit"
 
+// wipCommitID is the shape of a commit id the pod may name: it reaches
+// git's arguments, so nothing else passes.
+var wipCommitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
 // wipBundleCap bounds the bundle one /wip answer may ship, as the worker
 // bounds the record a check-in hands factoryd. wipAskTimeout bounds one
 // ask, which the worker answers by staging a commit: a worker that hangs
 // costs one ask, not the check-in. A var, so a test hangs it shorter.
-const wipBundleCap = 64 << 20
+const wipBundleCap = 16 << 20
 
 var wipAskTimeout = 30 * time.Second
 
 // postWip posts one /wip to the running worker's endpoint and reads its
-// answer: the WIP commit from the header, the bundle as the raw body.
-func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, []byte, error) {
+// answer: the WIP commit from the header, the bundle streamed from the body
+// into a temporary file.
+func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, string, error) {
 	ip, err := r.kube.PodIP(ctx, ns, pod)
 	if errors.Is(err, errPodEnded) {
-		return "", nil, fmt.Errorf("%w: %w", harness.ErrNotRunning, err)
+		return "", "", fmt.Errorf("%w: %w", harness.ErrNotRunning, err)
 	}
 	if err != nil {
-		return "", nil, fmt.Errorf("pod address: %w", err)
+		return "", "", fmt.Errorf("pod address: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, wipAskTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+"/wip", nil)
 	if err != nil {
-		return "", nil, err
+		return "", "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := workerReads.Do(req)
 	if err != nil {
-		return "", nil, err
+		return "", "", err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, wipBundleCap+1))
+	commit := resp.Header.Get(wipCommitHeader)
+	badAnswer := func(n int64) error {
+		return &workerAnswer{code: resp.StatusCode, text: fmt.Sprintf("the /wip answer names commit %q over %d bytes of bundle", textutil.Truncate(commit, 80), n)}
+	}
 	switch {
 	case resp.StatusCode == http.StatusNoContent:
-		return "", nil, nil // the tree equals the start's: nothing to ship
+		return "", "", nil // the tree equals the start's: nothing to ship
 	case resp.StatusCode != http.StatusOK:
-		return "", nil, &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
-	case resp.Header.Get(wipCommitHeader) == "", len(body) == 0, len(body) > wipBundleCap:
-		return "", nil, fmt.Errorf("the /wip answer names commit %q over %d bytes of bundle", resp.Header.Get(wipCommitHeader), len(body))
+		text, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return "", "", &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(text)), 300)}
+	case !wipCommitID.MatchString(commit):
+		return "", "", badAnswer(0)
 	}
-	return resp.Header.Get(wipCommitHeader), body, nil
+	f, err := os.CreateTemp("", "wip-*.bundle")
+	if err != nil {
+		return "", "", err
+	}
+	n, err := io.Copy(f, io.LimitReader(resp.Body, wipBundleCap+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && (n == 0 || n > wipBundleCap) {
+		err = badAnswer(n)
+	}
+	if err != nil {
+		os.Remove(f.Name()) // #nosec G104 -- the temporary file of a refused answer
+		return "", "", err
+	}
+	return commit, f.Name(), nil
 }
 
 // checkinFacts is the small JSON of the card's facts the runner already
 // holds; the check-in's card_facts answers it after the card's digest.
-func checkinFacts(t Task, s sessionSpec) string {
-	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
-		"attempt": s.attempt, "sessions": s.sessions})
+// wipHead, when an interim push landed before the conversation, names the
+// head the session's work sits on.
+func checkinFacts(t Task, s sessionSpec, wipHead string) string {
+	facts := map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
+		"attempt": s.attempt, "sessions": s.sessions}
+	if wipHead != "" {
+		facts["wip_head"] = wipHead
+	}
+	b, _ := json.Marshal(facts)
 	return string(b)
 }
 

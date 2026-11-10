@@ -1431,6 +1431,11 @@ func (s *PGStore) TasksByRuling(ctx context.Context, repository, ruling string) 
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE repository = $1 AND ships_ruling = $2 ORDER BY created_at, id`, repository, ruling)
 }
 
+// TasksByParent is the tasks whose parent is task id, in any status.
+func (s *PGStore) TasksByParent(ctx context.Context, id string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 ORDER BY created_at, id`, id)
+}
+
 // InsertIntakeEvent inserts e; a whole-column retry answers id 0, no
 // row, no error. The intake's delivery dedup (delivery_id, comment_id)
 // rides the ON CONFLICT DO NOTHING. The intake recorder's every event,

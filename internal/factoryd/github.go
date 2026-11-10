@@ -116,7 +116,7 @@ func (g *GitHub) pullState(ctx context.Context, token, remote string, n int64) (
 // for a minute fails, and packing keeps to one thread and small windows,
 // as factoryd's memory limit holds git too.
 var gitConfig = []string{"http.lowSpeedLimit=1000", "http.lowSpeedTime=60", "pack.threads=1", "pack.windowMemory=32m",
-	"core.packedGitLimit=64m", "core.deltaBaseCacheLimit=32m"}
+	"core.packedGitLimit=64m", "core.packedGitWindowSize=32m", "grep.threads=1", "core.deltaBaseCacheLimit=32m"}
 
 // git runs git in dir with gitConfig and login, the basic login of the
 // call's one remote, as an http.extraHeader, all from the environment, so
@@ -131,10 +131,76 @@ func git(ctx context.Context, dir, login string, args ...string) (string, error)
 // file, a commit identity — which reach the process as its environment,
 // never an argument or an error.
 func gitEnv(ctx context.Context, dir, login string, env []string, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+	return gitRun(ctx, dir, login, env, gitLimits{}, args...)
+}
+
+// gitLimits bounds a git call that reads bytes the sandbox shipped: stdin
+// is what the command reads, maxOut the output factoryd accepts (a call
+// that prints more fails, so no caller reads a cut-off listing), and
+// addressSpace the bytes of address space git may map, enforced by prlimit,
+// so an object that inflates past it dies in git, not in factoryd's
+// container.
+type gitLimits struct {
+	stdin        io.Reader
+	maxOut       int
+	addressSpace int64
+}
+
+// cappedGit is the process's one slot for a git call under an
+// address-space cap: two such children would pass the memory the caps
+// assume (wipGitMemory).
+var cappedGit = make(chan struct{}, 1)
+
+// errGitOutput marks a call whose output passed its cap.
+var errGitOutput = errors.New("git output over its cap")
+
+// outCap collects output up to max (all of it when max is 0); past it,
+// the output is dropped and stop is called.
+type outCap struct {
+	buf  bytes.Buffer
+	max  int
+	over bool
+	stop func()
+}
+
+func (w *outCap) Write(p []byte) (int, error) {
+	if w.max > 0 && w.buf.Len()+len(p) > w.max {
+		if !w.over {
+			w.over = true
+			w.stop()
+		}
+		return len(p), nil
+	}
+	return w.buf.Write(p)
+}
+
+func (w *outCap) String() string { return w.buf.String() }
+
+// gitTimeout is the longest one git call runs: at its end its whole process
+// group is killed. A var, so a test shortens it.
+var gitTimeout = 2 * time.Minute
+
+// gitRun is gitEnv under limits, for the commands that read the sandbox's bytes.
+func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits, args ...string) (string, error) {
+	// the wait for the slot is bounded by the caller's context; the call's own
+	// timeout starts once the slot is taken
+	if lim.addressSpace > 0 {
+		select {
+		case cappedGit <- struct{}{}:
+			defer func() { <-cappedGit }()
+		case <-ctx.Done():
+			return "", fmt.Errorf("git %s: waiting for a capped git slot: %w", args[0], ctx.Err())
+		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
+	argv := append([]string{"git"}, args...)
+	if lim.addressSpace > 0 {
+		argv = append([]string{"prlimit", "--as=" + strconv.FormatInt(lim.addressSpace, 10), "--"}, argv...)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
 	cmd.Dir = dir
+	cmd.Stdin = lim.stdin
 	config := gitConfig
 	if login != "" {
 		config = append(slices.Clip(config), "http.extraHeader=Authorization: Basic "+login)
@@ -149,11 +215,16 @@ func gitEnv(ctx context.Context, dir, login string, env []string, args ...string
 	ownProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = 5 * time.Second
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, textutil.Truncate(strings.ReplaceAll(strings.TrimSpace(string(out)), "\n", "; "), 400))
+	out := &outCap{max: lim.maxOut, stop: cancel}
+	cmd.Stdout, cmd.Stderr = out, out
+	err := cmd.Run()
+	if out.over {
+		return "", fmt.Errorf("git %s: %w (%d bytes)", args[0], errGitOutput, lim.maxOut)
 	}
-	return strings.TrimSpace(string(out)), nil
+	if err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, textutil.Truncate(strings.ReplaceAll(strings.TrimSpace(out.String()), "\n", "; "), 400))
+	}
+	return strings.TrimSpace(out.String()), nil
 }
 
 func basicLogin(user, token string) string {

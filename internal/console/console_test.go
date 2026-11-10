@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -90,8 +91,15 @@ type fakeForgejo struct {
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
 	patched    []string // "path {body}" per PATCH of an issue
-	assets     []asset  // multipart uploads to an issue's or a comment's assets
-	failAssets bool     // asset uploads answer 500
+	// deps are the issues an issue's path depends on, as Forgejo lists them;
+	// a close answers 412 while one is left. depsStay makes a removal answer
+	// 201 and keep the edge, depsFail makes it answer failDeps's message
+	deps       map[string][]map[string]any
+	depsStay   bool
+	failDeps   string
+	depsStatus int     // failDeps's status, 500 when 0
+	assets     []asset // multipart uploads to an issue's or a comment's assets
+	failAssets bool    // asset uploads answer 500
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
 	pullHead string            // PR 9's current head; empty answers no pull read
@@ -324,6 +332,32 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Write([]byte(`{"id":12}`))
+	case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/") && strings.HasSuffix(r.URL.Path, "/dependencies"):
+		switch r.Method {
+		case http.MethodGet:
+			list := f.deps[r.URL.Path]
+			if r.URL.Query().Get("page") != "1" || list == nil {
+				list = []map[string]any{}
+			}
+			json.NewEncoder(w).Encode(list)
+		case http.MethodDelete:
+			if f.failDeps != "" {
+				http.Error(w, `{"message":`+strconv.Quote(f.failDeps)+`}`, cmp.Or(f.depsStatus, http.StatusInternalServerError))
+				return
+			}
+			var meta struct {
+				Index int64 `json:"index"`
+			}
+			json.NewDecoder(r.Body).Decode(&meta)
+			f.deleted = append(f.deleted, r.URL.Path+" "+strconv.FormatInt(meta.Index, 10))
+			if !f.depsStay {
+				f.deps[r.URL.Path] = slices.DeleteFunc(f.deps[r.URL.Path], func(d map[string]any) bool { return d["number"] == float64(meta.Index) || d["number"] == meta.Index })
+			}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+		}
+	case r.Method == http.MethodPatch && len(f.deps[r.URL.Path+"/dependencies"]) > 0:
+		http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
 		// the issue as it stands after the edit: the rig's issues are titled
 		// "Fix the cache" with the body "It drops entries." until edited
@@ -1534,7 +1568,14 @@ func newRig(t *testing.T) *rig {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
 			return nil
 		},
-		DeployNow: func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
+		DeployNow:                func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
+		GrantCriteria:            func(context.Context, string, string, int64) (int, error) { return 0, nil },
+		DecideCriterion:          func(context.Context, string, string, string, string, string) error { return nil },
+		ConfirmDeliveredCriteria: func(context.Context, string, string, string) (int, error) { return 0, nil },
+		Replan:                   func(context.Context, string, string, string, bool) (string, error) { return "", nil },
+		CheckProject:             func(context.Context, string, []byte) ([]string, error) { return nil, nil },
+		MainExists:               func(context.Context, factoryd.Repo) (bool, error) { return false, nil },
+		ReconcileError:           func(string) string { return "" },
 		SetIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error {
 			edge := fmt.Sprintf("%s#%d on #%d", repo, number, dependency)
 			r.issueDeps = slices.DeleteFunc(r.issueDeps, func(e string) bool { return e == edge })
@@ -1770,14 +1811,35 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 func TestNewRefusesAMissingCardRead(t *testing.T) {
 	r := newRig(t)
 	for name, drop := range map[string]func(*Config){
-		"CardDigest":    func(c *Config) { c.CardDigest = nil },
-		"CardStep":      func(c *Config) { c.CardStep = nil },
-		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
-		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
-		"CaseByID":      func(c *Config) { c.CaseByID = nil },
-		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
-		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
-		"CheckMerge":    func(c *Config) { c.CheckMerge = nil },
+		"CardDigest":               func(c *Config) { c.CardDigest = nil },
+		"CardStep":                 func(c *Config) { c.CardStep = nil },
+		"BoardDigest":              func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf":              func(c *Config) { c.OpenCasesOf = nil },
+		"CaseByID":                 func(c *Config) { c.CaseByID = nil },
+		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
+		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
+		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
+		"Writers":                  func(c *Config) { c.Writers = nil },
+		"Writes":                   func(c *Config) { c.Writes = nil },
+		"DeploymentHealth":         func(c *Config) { c.DeploymentHealth = nil },
+		"AnswerPlan":               func(c *Config) { c.AnswerPlan = nil },
+		"AnswerPlanQuestions":      func(c *Config) { c.AnswerPlanQuestions = nil },
+		"DecideHoldout":            func(c *Config) { c.DecideHoldout = nil },
+		"GrantCriteria":            func(c *Config) { c.GrantCriteria = nil },
+		"DecideCriterion":          func(c *Config) { c.DecideCriterion = nil },
+		"ConfirmDeliveredCriteria": func(c *Config) { c.ConfirmDeliveredCriteria = nil },
+		"RetryCard":                func(c *Config) { c.RetryCard = nil },
+		"GoCard":                   func(c *Config) { c.GoCard = nil },
+		"CloseCard":                func(c *Config) { c.CloseCard = nil },
+		"RerunStall":               func(c *Config) { c.RerunStall = nil },
+		"DismissStall":             func(c *Config) { c.DismissStall = nil },
+		"Replan":                   func(c *Config) { c.Replan = nil },
+		"DeployNow":                func(c *Config) { c.DeployNow = nil },
+		"CheckProject":             func(c *Config) { c.CheckProject = nil },
+		"MainExists":               func(c *Config) { c.MainExists = nil },
+		"ReconcileError":           func(c *Config) { c.ReconcileError = nil },
+		"AddCollaborator":          func(c *Config) { c.AddCollaborator = nil },
+		"SetIssueDependency":       func(c *Config) { c.SetIssueDependency = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)

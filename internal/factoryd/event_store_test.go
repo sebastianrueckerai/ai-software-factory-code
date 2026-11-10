@@ -534,3 +534,31 @@ func TestFundCardCapHoldsUnderParallelTurns(t *testing.T) {
 		t.Fatalf("FundCard of no task = %v, want ErrNotFound", err)
 	}
 }
+
+// TaskEventsOfKind finds a kind's newest events past any number of events
+// of other kinds that follow them, of the one task only.
+func TestPGStoreTaskEventsOfKind(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	first, _ := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventChatBudgetSpent, Actor: "factoryd", Via: ViaFactoryd})
+	second, _ := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventChatBudgetSpent, Actor: "factoryd", Via: ViaFactoryd})
+	s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-2", Kind: EventChatBudgetSpent, Actor: "factoryd", Via: ViaFactoryd})
+	for range 60 {
+		s.Record(ctx, Event{Repository: "sf/r", TaskID: "t-1", Kind: EventChatFunded, Actor: "alice", Via: ViaButton})
+	}
+	got, err := s.TaskEventsOfKind(ctx, "t-1", EventChatBudgetSpent, 1)
+	if err != nil || len(got) != 1 || got[0].ID != second {
+		t.Fatalf("limit 1 = %+v, %v; want the newest stop %d", got, err, second)
+	}
+	got, err = s.TaskEventsOfKind(ctx, "t-1", EventChatBudgetSpent, 10)
+	if err != nil || len(got) != 2 || got[0].ID != second || got[1].ID != first {
+		t.Fatalf("limit 10 = %+v, %v; want the stops %d and %d newest first", got, err, second, first)
+	}
+}

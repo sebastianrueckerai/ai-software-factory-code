@@ -22,9 +22,8 @@ import (
 // the stop and every stopped turn goes on.
 
 const (
-	// chatStopEvents bounds a stop's read of the chat task's events, which
-	// are its stops and its funds alone.
-	chatStopEvents = 50
+	// chatFundEvents bounds a stop's read of the chat task's funds.
+	chatFundEvents = 50
 	// chatFundNote is the note of a fund pressed in the chat.
 	chatFundNote = "funded in the chat"
 )
@@ -44,17 +43,15 @@ type chatStop struct {
 // chatStopOf reads chat task task's stop.
 func (c *Console) chatStopOf(ctx context.Context, task factoryd.Task) (chatStop, error) {
 	s := chatStop{task: task}
-	events, err := c.cfg.Events.TaskEvents(ctx, task.ID, chatStopEvents)
+	stops, err := c.cfg.Events.TaskEventsOfKind(ctx, task.ID, factoryd.EventChatBudgetSpent, 1)
 	if err != nil {
 		return s, err
 	}
-	for _, e := range events {
-		switch {
-		case e.Kind == factoryd.EventChatBudgetSpent && s.event.ID == 0:
-			s.event = e
-		case e.Kind == factoryd.EventChatFunded:
-			s.funds = append(s.funds, e)
-		}
+	if len(stops) > 0 {
+		s.event = stops[0]
+	}
+	if s.funds, err = c.cfg.Events.TaskEventsOfKind(ctx, task.ID, factoryd.EventChatFunded, chatFundEvents); err != nil {
+		return s, err
 	}
 	if s.event.ID != 0 {
 		at, _ := s.event.Detail["budget_eur"].(float64)
@@ -108,9 +105,12 @@ func suggestFund(spent7 float64, now time.Time) float64 {
 }
 
 // askFund records the chat's stop once, the chat_budget_spent event the
-// Poker turns into the inbox's needs-you row, with the fund it suggests:
-// only while the chat is not stopped already, so every refusal after the
-// first asks nothing. It answers the stop as it then stands.
+// Poker turns into the inbox's needs-you row, with the fund it suggests,
+// and files the stop's human card: only while the chat is not stopped
+// already, so every refusal after the first asks nothing. The stop is
+// recorded whatever the filing does; a card that fails to file is filed by
+// factoryd's minute loop (factoryd.ChatBudgetCards.Check). It answers the
+// stop as it then stands.
 func (c *Console) askFund(ctx context.Context, p factoryd.Project, task factoryd.Task) chatStop {
 	s, err := c.chatStopOf(ctx, task)
 	if err != nil {
@@ -123,6 +123,11 @@ func (c *Console) askFund(ctx context.Context, p factoryd.Project, task factoryd
 	spent7, err := c.cfg.Chat.TaskSpendSince(ctx, task.ID, now.Add(-7*24*time.Hour))
 	if err != nil {
 		log.Printf("console: the chat spend of %s: %v", p.Repository, err)
+	}
+	if c.cfg.FileChatBudgetCard != nil {
+		if err := c.cfg.FileChatBudgetCard(ctx, p, task); err != nil {
+			log.Printf("console: the chat budget card of %s: %v", p.Repository, err)
+		}
 	}
 	e := factoryd.Event{Repository: p.Repository, TaskID: task.ID, Kind: factoryd.EventChatBudgetSpent,
 		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"budget_eur": task.BudgetEUR,

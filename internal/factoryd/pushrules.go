@@ -29,6 +29,12 @@ type PushGit interface {
 	RunGit(dir string, env []string, args ...string) (string, error)
 }
 
+// ErrPushRefused is the named refusal of the rules that judge the work
+// itself — the workflow-directory and migration-naming rules — so a
+// caller can tell a rule's refusal, which the work can fix, from a
+// failure, which the push could not be made.
+var ErrPushRefused = errors.New("refusing to push")
+
 // ErrPushOverBound is the named refusal of the card's line bound: the
 // branch's diff against its merge base does not fit it, and no shape the
 // pusher can give the push changes that.
@@ -142,7 +148,7 @@ func RefuseWorkflowDirChange(g PushGit, own, base, head string) error {
 	}
 	for _, dir := range WorkflowDirs {
 		if was[dir] != now[dir] {
-			return fmt.Errorf("refusing to push: %s/ differs from the base (%s): revert the workflow directory change; the rule lets no agent change it", dir, base)
+			return fmt.Errorf("%w: %s/ differs from the base (%s): revert the workflow directory change; the rule lets no agent change it", ErrPushRefused, dir, base)
 		}
 	}
 	return nil
@@ -201,7 +207,7 @@ func RefuseMisnamedMigrations(g PushGit, globs []string, own, base, head string)
 			continue
 		}
 		if !migrationName.MatchString(path.Base(p)) {
-			return fmt.Errorf("refusing to push: migration %s is misnamed: <UTC yyyymmddhhmmss>_<slug>.sql, never the next number", p)
+			return fmt.Errorf("%w: migration %s is misnamed: <UTC yyyymmddhhmmss>_<slug>.sql, never the next number", ErrPushRefused, p)
 		}
 	}
 	return nil

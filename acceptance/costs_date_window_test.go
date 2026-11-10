@@ -468,6 +468,18 @@ func (f *acceptEvents) TaskEventsFor(ctx context.Context, ids []string, limit in
 	return out, nil
 }
 
+func (f *acceptEvents) TaskEventsOfKind(_ context.Context, id, kind string, limit int) ([]factoryd.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.Event
+	for i := len(f.rows) - 1; i >= 0 && len(out) < limit; i-- {
+		if f.rows[i].TaskID == id && f.rows[i].Kind == kind {
+			out = append(out, f.rows[i])
+		}
+	}
+	return out, nil
+}
+
 func (f *acceptEvents) NewestTaskEvents(_ context.Context, tasks []string) (map[string]factoryd.Event, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
