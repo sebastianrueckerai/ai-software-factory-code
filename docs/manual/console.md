@@ -402,7 +402,7 @@ decimals: a task's model calls cost fractions of a cent.
 A project is a repository the factory works on, the namespaces it deploys
 into, and its settings. The settings are its file
 `projects/<name>.yaml` in the configuration tree: `repository`,
-`merge_rule` auto|human, `objects` factory|seed, `agents` coder|none,
+`merge_rule` auto|human (the policy loader refuses `auto` unless the project file also says `autonomy: autonomous`, full auto; the dial and the filing form write both keys), `objects` factory|seed, `agents` coder|none,
 `notify` (empty: the policy's approvers), `namespaces` (each one project's),
 `environments` (namespace, path, hostname), `quota`, `secrets`, `envelope`,
 `standing`, and for `objects: seed` the `tokens` it is read with. Absent
