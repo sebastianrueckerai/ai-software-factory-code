@@ -733,7 +733,10 @@ lease) is booked in full and flagged: `COST OVER HOLD` in the log and an
 `accrued` audit row carrying it in `over_hold`. Once a commission's
 rows are closed and fully booked, the rest of the reservation returns.
 factoryd's hold sweep skips resource reservations: accrual books and
-drops them. A create whose answer was lost is booked too: a release that
+drops them. The checks wait (`WaitChecks`, the poll of a pull request head's
+combined status) reads its bound from the waits row `waits.checks`
+(default 50m: the pull-request image build's own 2700 s timeout plus a
+five-minute margin); an explicit `bounds: WaitChecks` still overrides it. A create whose answer was lost is booked too: a release that
 finds it by its label records its id first, and a collector that deletes
 it as unknown gives its closed row the id. Two kinds
 (`cloud_resources.lifetime`): a task's commission is `lease`; promotion in the
