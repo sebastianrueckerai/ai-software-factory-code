@@ -5,9 +5,11 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 )
 
@@ -27,6 +29,9 @@ type wipOutcome struct {
 	refusal string
 }
 
+// interimSlot is the one slot of interimPush.
+var interimSlot = make(chan struct{}, 1)
+
 // interimPush is the check-in's interim push of the session's work in
 // progress: it asks the running pod's /wip for the work the agent holds,
 // and pushes what the push rules (pushrules.go) let it push to the task
@@ -40,6 +45,17 @@ type wipOutcome struct {
 // records the wip_pushed timeline step with the commit it landed.
 func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) wipOutcome {
 	if s.report != "" || !wipCommitID.MatchString(s.startRef) {
+		return wipOutcome{}
+	}
+	// one interim push at a time: each holds a capped git and the shipped
+	// bundle, and the container has room for one
+	select {
+	case interimSlot <- struct{}{}:
+		defer func() { <-interimSlot }()
+	case <-ctx.Done():
+		if !errors.Is(ctx.Err(), context.Canceled) {
+			r.wipFailure(ctx, t, s, "queue", "another interim push held the slot until the check-in's deadline")
+		}
 		return wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
@@ -119,10 +135,18 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 	if err := os.WriteFile(file, bundle, 0o600); err != nil {
 		return "", err
 	}
+	// every git call from here reads what the sandbox shipped: each runs
+	// under the address-space cap, with its output capped
+	lim := func(maxOut int, stdin io.Reader) gitLimits {
+		return gitLimits{stdin: stdin, maxOut: maxOut, addressSpace: wipGitMemory}
+	}
+	run := func(env []string, args ...string) (string, error) {
+		return gitRun(ctx, own, "", env, lim(wipGitOutput, nil), args...)
+	}
 	// the body is verified as a bundle before anything is taken from it:
 	// a body that is no bundle, whatever its header says it ships, costs
 	// the interim push alone
-	if _, err := gitRun(ctx, own, "", nil, gitLimits{maxOut: wipGitOutput}, "bundle", "verify", file); err != nil {
+	if _, err := run(nil, "bundle", "verify", file); err != nil {
 		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
 	// the bundle's pack is indexed under git's strict object checks, which
@@ -136,23 +160,26 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 	if got := bundleCommit(hdr); got != commit {
 		return "", fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
 	}
-	if _, err := gitRun(ctx, own, "", nil, gitLimits{stdin: bytes.NewReader(pack), maxOut: wipGitOutput, addressSpace: wipIndexMemory}, "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
+	if _, err := gitRun(ctx, own, "", nil, lim(wipGitOutput, bytes.NewReader(pack)), "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
 		return "", fmt.Errorf("index the shipped bundle: %w", err)
 	}
-	if _, err := git(ctx, own, "", "rev-parse", "--verify", "--quiet", commit+"^{commit}"); err != nil {
+	if _, err := run(nil, "rev-parse", "--verify", "--quiet", commit+"^{commit}"); err != nil {
 		return "", fmt.Errorf("the bundle ships no commit %s: %w", commit, err)
 	}
-	if _, err := git(ctx, own, "", "merge-base", "--is-ancestor", s.startRef, commit); err != nil {
+	if _, err := run(nil, "merge-base", "--is-ancestor", s.startRef, commit); err != nil {
 		return "", fmt.Errorf("the shipped WIP %s does not descend from the session's start %s: nothing is pushed", commit, s.startRef)
 	}
-	tree, err := git(ctx, own, "", "rev-parse", commit+"^{tree}")
+	if err := checkShippedSize(ctx, own, commit, s.startRef, lim); err != nil {
+		return "", err
+	}
+	tree, err := run(nil, "rev-parse", commit+"^{tree}")
 	if err != nil {
 		return "", err
 	}
 	// the pushed commit is factoryd's own: the shipped tree, the start as
 	// its only parent, the factory's identity and message — never the
 	// sandbox's commit
-	head, err := gitEnv(ctx, own, "", wipIdentity, "commit-tree", tree, "-p", s.startRef, "-m", wipMessage(t, s))
+	head, err := run(wipIdentity, "commit-tree", tree, "-p", s.startRef, "-m", wipMessage(t, s))
 	if err != nil {
 		return "", err
 	}
@@ -173,24 +200,85 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 	if err := RefuseMisnamedMigrations(g, s.policy.Risk.MigrationGlobs(), own, s.startRef, head); err != nil {
 		return "", err
 	}
-	if _, err := git(ctx, own, login, "push", "-q", "--force-with-lease=refs/heads/"+branch+":"+tip, fork, head+":refs/heads/"+branch); err != nil {
+	if _, err := gitRun(ctx, own, login, nil, lim(wipGitOutput, nil), "push", "-q", "--force-with-lease=refs/heads/"+branch+":"+tip, fork, head+":refs/heads/"+branch); err != nil {
 		return "", err
 	}
 	return head, nil
 }
 
-// wipGitOutput bounds the output factoryd keeps from a git call on the
-// sandbox's bundle: bundle verify prints a line per missing prerequisite.
-const wipGitOutput = 4 << 10
+// The bounds on what a pod ships, all far above any card's real work (a
+// card's diff is bounded at hundreds to a few thousand lines).
+const (
+	// wipGitOutput bounds a git call whose answer is an id, a flag or a
+	// one-line failure: bundle verify prints a line per missing prerequisite.
+	wipGitOutput = 4 << 10
+	// wipRulesOutput bounds the push rules' listings: a diff's file names
+	// or a directory's top-level entries, a few MiB at 100,000 entries.
+	wipRulesOutput = 8 << 20
+	// wipListOutput bounds the list of shipped objects: about 100,000.
+	wipListOutput = 4 << 20
+	// wipMaxObject bounds one shipped object: a file this size is no
+	// card's source, and git inflates and diffs it whole.
+	wipMaxObject = 8 << 20
+	// wipMaxTree bounds one shipped directory: about 50,000 entries.
+	wipMaxTree = 2 << 20
+	// wipMaxTotal bounds the shipped objects together, four times the
+	// bundle cap a pack of text compresses by.
+	wipMaxTotal = 64 << 20
+	// wipGitMemory is the address space any git call on shipped bytes may
+	// map. One push runs at a time (interimSlot), and factoryd's container
+	// holds 512 MiB: its own peak (121 MiB observed) and the 16 MiB body
+	// leave 375, so the cap keeps 119 MiB of margin. A real pack needs the
+	// pack in flight, the 32 MiB delta base cache (gitConfig), one inflated
+	// object (at most wipMaxObject) and git's libraries: well under it.
+	wipGitMemory = 256 << 20
+)
 
-// wipIndexMemory is the address space the strict index of a shipped pack
-// may map. factoryd's container holds 512 MiB, git is its child, and a
-// delta can inflate a few KiB into gigabytes. A pack of wipBundleCap
-// (16 MiB) needs the pack in flight, the 32 MiB delta base cache
-// (gitConfig), one inflated object and git's libraries: well under 256 MiB
-// for a card that changes a few large files, and 384 MiB stops a delta
-// bomb before it grows past what the container can spare.
-const wipIndexMemory = 384 << 20
+// checkShippedSize refuses work no card makes before any diff or listing
+// reads it: it lists the objects the commit adds past the start, reads
+// their sizes from their headers, and holds each to wipMaxObject
+// (wipMaxTree for a directory) and the sum to wipMaxTotal. A list or a
+// size output past its cap is itself too large.
+func checkShippedSize(ctx context.Context, own, commit, start string, lim func(int, io.Reader) gitLimits) error {
+	tooLarge := func(why string) error {
+		return fmt.Errorf("%w: the shipped work is too large (%s): no card's work comes near; keep to the card's changes", ErrPushRefused, why)
+	}
+	list, err := gitRun(ctx, own, "", nil, lim(wipListOutput, nil), "rev-list", "--objects", commit, "^"+start)
+	if errors.Is(err, errGitOutput) {
+		return tooLarge("more than 100,000 new objects")
+	}
+	if err != nil {
+		return err
+	}
+	var ids strings.Builder
+	for line := range strings.SplitSeq(list, "\n") {
+		id, _, _ := strings.Cut(line, " ")
+		ids.WriteString(id + "\n")
+	}
+	sizes, err := gitRun(ctx, own, "", nil, lim(wipListOutput, strings.NewReader(ids.String())), "cat-file", "--batch-check=%(objecttype) %(objectsize)")
+	if errors.Is(err, errGitOutput) {
+		return tooLarge("more than 100,000 new objects")
+	}
+	if err != nil {
+		return err
+	}
+	total := 0
+	for line := range strings.SplitSeq(sizes, "\n") {
+		typ, n, _ := strings.Cut(line, " ")
+		size, err := strconv.Atoi(n)
+		if err != nil {
+			return fmt.Errorf("the shipped objects' sizes: %q", line)
+		}
+		if size > wipMaxObject || typ == "tree" && size > wipMaxTree {
+			return tooLarge(fmt.Sprintf("a %s of %d bytes", typ, size))
+		}
+		total += size
+	}
+	if total > wipMaxTotal {
+		return tooLarge(fmt.Sprintf("%d bytes of new objects", total))
+	}
+	return nil
+}
 
 // bundleCommit is the commit a bundle header's ref line names for
 // refs/heads/wip, or "".
@@ -204,16 +292,20 @@ func bundleCommit(header []byte) string {
 }
 
 // rulesGit is the push rules' git (PushGit) over factoryd's own: the
-// hardened git call, with none of factoryd's environment, as PushGit's
+// capped, hardened git call, with none of factoryd's environment, as PushGit's
 // doc names the interim push's git.
 type rulesGit struct{ ctx context.Context }
 
+// rulesLimits caps the rules' calls on shipped objects: memory, and an
+// output that fails rather than reads cut off.
+var rulesLimits = gitLimits{maxOut: wipRulesOutput, addressSpace: wipGitMemory}
+
 func (g rulesGit) Git(dir string, args ...string) (string, error) {
-	return git(g.ctx, dir, "", args...)
+	return gitRun(g.ctx, dir, "", nil, rulesLimits, args...)
 }
 
 func (g rulesGit) RunGit(dir string, env []string, args ...string) (string, error) {
-	return gitEnv(g.ctx, dir, "", env, args...)
+	return gitRun(g.ctx, dir, "", env, rulesLimits, args...)
 }
 
 // wipIdentity and wipMessage are the identity and message of every

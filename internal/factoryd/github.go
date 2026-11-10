@@ -135,30 +135,38 @@ func gitEnv(ctx context.Context, dir, login string, env []string, args ...string
 }
 
 // gitLimits bounds a git call that reads bytes the sandbox shipped: stdin
-// is what the command reads, maxOut the output factoryd keeps (the rest is
-// read and dropped), and addressSpace the bytes of address space git may
-// map, enforced by prlimit, so a pack that inflates past it dies in git,
-// not in factoryd's container.
+// is what the command reads, maxOut the output factoryd accepts (a call
+// that prints more fails, so no caller reads a cut-off listing), and
+// addressSpace the bytes of address space git may map, enforced by prlimit,
+// so an object that inflates past it dies in git, not in factoryd's
+// container.
 type gitLimits struct {
 	stdin        io.Reader
 	maxOut       int
 	addressSpace int64
 }
 
-// headWriter keeps the first max bytes written, all of them when max is 0.
-type headWriter struct {
+// errGitOutput marks a call whose output passed its cap.
+var errGitOutput = errors.New("git output over its cap")
+
+// outCap collects output up to max (all of it when max is 0); past it,
+// the output is dropped and stop is called.
+type outCap struct {
 	bytes.Buffer
-	max int
+	max  int
+	over bool
+	stop func()
 }
 
-func (w *headWriter) Write(p []byte) (int, error) {
-	if w.max == 0 {
-		return w.Buffer.Write(p)
+func (w *outCap) Write(p []byte) (int, error) {
+	if w.max > 0 && w.Len()+len(p) > w.max {
+		if !w.over {
+			w.over = true
+			w.stop()
+		}
+		return len(p), nil
 	}
-	if room := w.max - w.Len(); room > 0 {
-		w.Buffer.Write(p[:min(room, len(p))])
-	}
-	return len(p), nil
+	return w.Buffer.Write(p)
 }
 
 // gitRun is gitEnv under limits, for the commands that read the sandbox's bytes.
@@ -186,9 +194,13 @@ func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits,
 	ownProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = 5 * time.Second
-	out := &headWriter{max: lim.maxOut}
+	out := &outCap{max: lim.maxOut, stop: cancel}
 	cmd.Stdout, cmd.Stderr = out, out
-	if err := cmd.Run(); err != nil {
+	err := cmd.Run()
+	if out.over {
+		return "", fmt.Errorf("git %s: %w (%d bytes)", args[0], errGitOutput, lim.maxOut)
+	}
+	if err != nil {
 		return "", fmt.Errorf("git %s: %w: %s", args[0], err, textutil.Truncate(strings.ReplaceAll(strings.TrimSpace(out.String()), "\n", "; "), 400))
 	}
 	return strings.TrimSpace(out.String()), nil

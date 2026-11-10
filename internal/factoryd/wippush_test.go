@@ -35,7 +35,6 @@ import (
 	"strings"
 	"sync"
 	"sync/atomic"
-	"syscall"
 	"testing"
 	"time"
 
@@ -785,11 +784,10 @@ func TestInterimPushRefusesAMalformedObject(t *testing.T) {
 }
 
 // bombBundle is a bundle a few KiB long whose one delta copies a 16 MiB
-// zero blob 32 times: the pack index inflates 512 MiB from it.
-func bombBundle(t *testing.T) (string, []byte) {
+// zero blob copies times: the pack index inflates copies*16 MiB from it.
+func bombBundle(t *testing.T, copies int) (string, []byte) {
 	t.Helper()
 	const size = 0xFFFFFF
-	const copies = 32
 	objHeader := func(typ, n int) []byte {
 		b := []byte{byte(typ<<4 | n&0x0F)}
 		for n >>= 4; n > 0; n >>= 7 {
@@ -838,45 +836,115 @@ func bombBundle(t *testing.T) (string, []byte) {
 	return id, append([]byte("# v2 git bundle\n"+id+" refs/heads/wip\n\n"), pack...)
 }
 
-// A bundle a few KiB long that inflates to half a gigabyte is refused
-// under the index's memory limit, and factoryd's children stay under it.
+// A bundle a few KiB long that inflates to hundreds of MiB is refused by
+// the memory cap on git: 32 copies is the 512 MiB bomb, 21 copies the
+// 336 MiB one that fit the old 384 MiB cap. Git dies on its allocation.
 func TestInterimPushRefusesAZipBomb(t *testing.T) {
-	runner, objects, serve := wipRig(t, nil, func(dir string) {
-		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
-	})
-	id, bomb := bombBundle(t)
-	if len(bomb) > 32<<10 {
-		t.Fatalf("the bomb is %d bytes, want a few KiB", len(bomb))
-	}
-	serve.ship = func(i int, tree string) (string, []byte, error) { return id, bomb, nil }
-	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
-	runner.checkin = chat
+	for _, copies := range []int{32, 21} {
+		t.Run(fmt.Sprint(copies, "-copies"), func(t *testing.T) {
+			runner, objects, serve := wipRig(t, nil, func(dir string) {
+				os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+			})
+			id, bomb := bombBundle(t, copies)
+			if len(bomb) > 32<<10 {
+				t.Fatalf("the bomb is %d bytes, want a few KiB", len(bomb))
+			}
+			serve.ship = func(i int, tree string) (string, []byte, error) { return id, bomb, nil }
+			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+			runner.checkin = chat
 
-	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
-		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
-	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
-		t.Fatalf("result = (%+v, %v) after %d conversations, want the check-in to run on", res, err, chat.calls)
-	}
-	if step := timelineStep(t, objects, "t2", "wip_push_failed"); !strings.Contains(fmt.Sprint(step["error"]), "index the shipped bundle") {
-		t.Fatalf("the wip_push_failed step = %v, want the index's refusal", step)
-	}
-	var ru syscall.Rusage
-	syscall.Getrusage(syscall.RUSAGE_CHILDREN, &ru)
-	if ru.Maxrss > 400<<10 { // KiB
-		t.Fatalf("a child of factoryd peaked at %d MiB, want under the limit", ru.Maxrss>>10)
-	}
-	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
-		t.Fatalf("task branch = %s, want the start alone", tip)
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+			if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+				t.Fatalf("result = (%+v, %v) after %d conversations, want the check-in to run on", res, err, chat.calls)
+			}
+			step := timelineStep(t, objects, "t2", "wip_push_failed")
+			if text := fmt.Sprint(step["error"]); !strings.Contains(text, "index the shipped bundle") || !strings.Contains(text, "memory") {
+				t.Fatalf("the wip_push_failed step = %v, want git's allocation failure at the index", step)
+			}
+			if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+				t.Fatalf("task branch = %s, want the start alone", tip)
+			}
+		})
 	}
 }
 
-// A large card's pack still indexes under the limit: 12 MiB of
-// incompressible data lands.
+// gitSpy puts a git on PATH that notes each call's subcommand, and
+// answers the file the notes go to.
+func gitSpy(t *testing.T) string {
+	t.Helper()
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin, calls := t.TempDir(), filepath.Join(t.TempDir(), "calls")
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\necho \"$1\" >> '"+calls+"'\nexec '"+realGit+"' \"$@\"\n"), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	return calls
+}
+
+// Work too large for any card is refused before any diff or listing reads
+// it: a 16 MiB file of newlines (a 16 KB bundle that FitBound's diff
+// inflates to 700 MiB), and a directory of 100,000 entries (a tree object
+// over the tree bound). The failing step is the size check, and git never
+// ran diff, ls-tree or commit-tree on it.
+func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
+	for name, edit := range map[string]func(dir string){
+		"file-of-newlines": func(dir string) {
+			os.WriteFile(filepath.Join(dir, "nl.txt"), bytes.Repeat([]byte("\n"), 16<<20), 0o644)
+		},
+		"wide-tree": func(dir string) {
+			os.MkdirAll(filepath.Join(dir, "wide"), 0o755)
+			for i := range 100000 {
+				os.WriteFile(filepath.Join(dir, "wide", fmt.Sprintf("f%06d", i)), nil, 0o644)
+			}
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, objects, serve := wipRig(t, nil, edit)
+			version := testPolicyVersion()
+			version.Document.Risk.LargeLines = 1000
+			runner.cfg.Policy = func() policy.Version { return version }
+			runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+			calls := gitSpy(t)
+			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+			runner.checkin = chat
+
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+				t.Fatal(err)
+			}
+			step := timelineStep(t, objects, "t2", "wip_push_failed")
+			if !strings.Contains(fmt.Sprint(step["error"]), "the shipped work is too large") {
+				t.Fatalf("the wip_push_failed step = %v, want the size refusal", step)
+			}
+			log, _ := os.ReadFile(calls)
+			for _, sub := range []string{"diff", "ls-tree", "read-tree"} {
+				if slices.Contains(strings.Fields(string(log)), sub) {
+					t.Fatalf("git ran %s on the oversized work: %s", sub, log)
+				}
+			}
+			serve.mu.Lock()
+			defer serve.mu.Unlock()
+			if len(serve.msgs) != 1 || !strings.Contains(serve.msgs[0], "too large") {
+				t.Fatalf("the pod was messaged %q, want the size refusal: the agent can shrink its work", serve.msgs)
+			}
+			if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+				t.Fatalf("task branch = %s, want the start alone", tip)
+			}
+		})
+	}
+}
+
+// A large card still lands under the cap: 15 MiB of incompressible data in
+// three files, each under the object bound.
 func TestInterimPushLandsALargePack(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil, func(dir string) {
-		big := make([]byte, 12<<20)
-		rand.New(rand.NewSource(1)).Read(big)
-		os.WriteFile(filepath.Join(dir, "big.bin"), big, 0o644)
+		for i := range 3 {
+			big := make([]byte, 5<<20)
+			rand.New(rand.NewSource(int64(i))).Read(big)
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("big%d.bin", i)), big, 0o644)
+		}
 	})
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
 	runner.checkin = chat
@@ -890,6 +958,32 @@ func TestInterimPushLandsALargePack(t *testing.T) {
 	}
 	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip == serve.base {
 		t.Fatal("task branch is still the start")
+	}
+}
+
+// One interim push runs at a time: while another holds the slot, a second
+// check-in's push waits and gives up with its context, asking nothing of
+// its pod.
+func TestInterimPushesDoNotOverlap(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	spec := sessionSpec{id: "s-1", startRef: serve.base, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
+	kube := runner.kube.(*fakeKube)
+	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+	interimSlot <- struct{}{}
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
+	defer cancel()
+	out := runner.interimPush(ctx, supervisedTask("t2"), spec, "ns", "pod", nil)
+	<-interimSlot
+	serve.mu.Lock()
+	asked := len(serve.wipAuth)
+	serve.mu.Unlock()
+	if out != (wipOutcome{}) || asked != 0 {
+		t.Fatalf("outcome %+v after %d asks while the slot was held, want a push that waited and gave up", out, asked)
+	}
+	if out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil); out.head == "" {
+		t.Fatalf("outcome %+v with the slot free, want the push landed; timeline %s", out, objGet(objects, "sessions/t2/timeline.jsonl"))
 	}
 }
 
@@ -1077,9 +1171,8 @@ func TestInterimPushScrubsItsFailureText(t *testing.T) {
 	}
 }
 
-// A refusal the session never received is no guidance: when the
-// message cannot be delivered, neither the stuck rule arms nor the
-// check-in's ask names it as delivered.
+// A refusal the session never received is no guidance: when the message
+// cannot be delivered, the check-in's ask does not name it as delivered.
 func TestInterimPushRefusalNotDeliveredIsNotNamedAsGuidance(t *testing.T) {
 	runner, _, serve := wipRig(t, nil, func(dir string) {
 		os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)

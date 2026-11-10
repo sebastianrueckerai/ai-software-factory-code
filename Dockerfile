@@ -38,7 +38,8 @@ FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:c67e92c8099ba22853
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
 ARG DEBIAN_SNAPSHOT=20261108T000000Z
 # git: factoryd's GitHub exports of mode pull_requests fetch and push with
-# it; ca-certificates: every HTTPS call of both binaries. Debian's packages
+# it; ca-certificates: every HTTPS call of both binaries; util-linux: prlimit,
+# factoryd's address-space cap on the git that reads a sandbox's pack. Debian's packages
 # come from snapshot.debian.org at DEBIAN_SNAPSHOT, as in Dockerfile.runner,
 # which says why; the install's clocks go with it.
 RUN printf '%s\n' 'Acquire::Retries "8";' 'Acquire::http::Timeout "60";' 'Acquire::https::Timeout "60";' 'Acquire::Check-Valid-Until "false";' \
