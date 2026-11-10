@@ -1303,3 +1303,83 @@ func TestWritesOnAProjectWithoutAgents(t *testing.T) {
 	r.forgetWriters()
 	equal(t, "answer by a non-writer of sf/infra", answer(), http.StatusForbidden)
 }
+
+func dependsOn(numbers ...int64) []map[string]any {
+	var out []map[string]any
+	for _, n := range numbers {
+		out = append(out, map[string]any{"number": n, "state": "open", "repository": map[string]any{"owner": "sf", "name": "code"}})
+	}
+	return out
+}
+
+const depsPath = "/api/v1/repos/sf/code/issues/31/dependencies"
+
+// Close removes the issues the card's issue depends on, which Forgejo
+// refuses to close it over (412 while one is open), then closes it; the
+// note names them. #31 depends on #7 and #9, so the note is the human's
+// words, a blank line, and "It no longer waits on #7 and #9.".
+func TestCloseRemovesTheCardsOwnDependencies(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7, 9)}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "note": {"Not needed."}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the button", rec.Code, http.StatusSeeOther)
+	equal(t, "the removals", r.fg.deleted, []string{depsPath + " 7", depsPath + " 9"})
+	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"], "Not needed.\n\nIt no longer waits on #7 and #9.")
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/31 {"state":"closed"}`})
+	equal(t, "the order", writesOf(r.fg), []string{"DELETE " + depsPath, "DELETE " + depsPath, "POST /api/v1/repos/sf/code/issues/31/comments", "PATCH /api/v1/repos/sf/code/issues/31"})
+}
+
+// One dependency, no note: the sentence alone, "It no longer waits on #7.".
+func TestCloseNamesASingleDependency(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
+	ck, s := r.loggedIn(t)
+	r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the note", r.fg.comments["/api/v1/repos/sf/code/issues/31/comments"], "It no longer waits on #7.")
+}
+
+// A failed removal refuses the close with Forgejo's reason, scrubbed, and
+// closes nothing.
+func TestCloseRefusedWhenARemovalFails(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
+	r.fg.failDeps = "no push to https://user:pass@git.example/x with Authorization: Bearer abcdef0123456789"
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the status", rec.Code, http.StatusBadGateway)
+	for _, leak := range []string{"user:pass", "abcdef0123456789"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("the refusal %q leaks %q", rec.Body, leak)
+		}
+	}
+	if !strings.HasPrefix(rec.Body.String(), "Forgejo refused to remove #31's dependency on sf/code#7: ") {
+		t.Errorf("the refusal = %q", rec.Body)
+	}
+	equal(t, "the writes", writesOf(r.fg), []string{"DELETE " + depsPath})
+}
+
+// A removal Forgejo refuses for good (a 404 permission check) names the edge
+// and the fitting action, not "try again".
+func TestCloseRefusedForGoodNamesTheEdge(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
+	r.fg.failDeps, r.fg.depsStatus = "not found", http.StatusNotFound
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
+		"Forgejo refused to remove #31's dependency on sf/code#7: not found. Remove that dependency in Forgejo, then press Close again."})
+	equal(t, "the patches", r.fg.patched, []string(nil))
+}
+
+// An edge Forgejo keeps despite the removal leaves its 412 on the close:
+// the refusal carries Forgejo's own reason.
+func TestCloseRefusalNamesForgejosReason(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
+	r.fg.depsStay = true
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
+		"Forgejo refused to close the issue: cannot close this issue because it still has open dependencies. Try again in a moment."})
+}
