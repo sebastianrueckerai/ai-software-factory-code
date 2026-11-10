@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"maps"
+	"math"
 	"net/http"
 	"slices"
 	"strings"
@@ -553,13 +554,13 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 	})
 
 	// plan E's session moment, the spend round: the card is past the
-	// no-push share of its budget with nothing pushed, the trip's check-in
+	// no-push share of what it had left with nothing pushed, the trip's check-in
 	// reads the workspace, finds the work uncommittable, and answers
 	// handover; the next session starts from the note and the round
 	// verifies.
 	//
-	// The ledger: no asks of the human; one trip (spend_no_push, 3.50 of
-	// 5.00 EUR spent, the line 60 percent); one conversation, two answers —
+	// The ledger: no asks of the human; one trip (spend_no_push, 2.50 of
+	// the 4.00 EUR left at the start, the line 60 percent); one conversation, two answers —
 	// the workspace read through the worker's /tool, then the handover; the
 	// session stopped with the note riding the result's check-in; the
 	// workflow wrote the checkin and handover steps and put the note in the
@@ -576,8 +577,14 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 			{pushedLine("c2") + "\n" + resultLine(true, "pushed branch factory/t1 at c2")},
 		}
 		tk := l.store.tasks["t1"]
-		tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
+		tk.BudgetEUR, tk.SpentEUR = 5, 1
 		l.store.tasks["t1"] = tk
+		spending := &spendingStore{Store: l.runner.store}
+		l.runner.store = spending
+		go func() {
+			time.Sleep(500 * time.Millisecond)
+			spending.added.Store(math.Float64bits(2.5)) // 62.5 percent of the 4 left, past the default 60
+		}()
 		l.runner.tick = 50 * time.Millisecond
 		setDetectors(l.runner, map[string]int{policy.DetectorNoProgress: 3600})
 		l.onChecks(ChecksResult{State: ChecksSuccess})

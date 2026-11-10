@@ -21,6 +21,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"testing/iotest"
 	"time"
@@ -3718,7 +3719,7 @@ func TestSessionFactsSpendIncludesHolds(t *testing.T) {
 // A running session's pace and spend watch read the spend the gateway
 // counts from the card's row: 4.50 settled and 0.40 held of 5.00 is 4.90
 // spent, so the pace reads 4.90, the budget warning says 98 percent with
-// 0.10 left, and the no-push trip names 4.90 of 5.00.
+// 0.10 left, and the no-push trip names 4.90 of the 5.00 the card had.
 func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base",
@@ -3738,7 +3739,7 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.10 of 5.00 EUR are left. ") {
 		t.Fatalf("worker got %q, want the budget warning at 4.90 of 5.00", texts)
 	}
-	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "4.90 of the card's 5.00 EUR are spent (98 percent, the line is 60) and no work is pushed" {
+	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "this session spent 4.90 EUR of the 5.00 EUR the card had left at its start (98 percent, the line is 60) and no work is pushed" {
 		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
 	}
 }
@@ -3855,12 +3856,32 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 	}
 }
 
-// A card past its budget share with nothing pushed asks the check-in.
+// spendingStore reports the spend a session adds once the test sets it.
+type spendingStore struct {
+	Store
+	added atomic.Uint64
+}
+
+func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error) {
+	t, ok, err := s.Store.Task(ctx, id)
+	t.SpentEUR += math.Float64frombits(s.added.Load())
+	return t, ok, err
+}
+
+// A session that spends its share of what the card had left, with nothing
+// pushed, asks the check-in: 1 EUR before the session leaves 4, and 2.5 EUR
+// spent in it is 62.5 percent of 4, past the default 60.
 func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 	runner, hub, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	tk := store.tasks["t2"]
-	tk.BudgetEUR, tk.SpentEUR = 5, 3.5 // 70 percent, past the default 60
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
 	store.tasks["t2"] = tk
+	spending := &spendingStore{Store: runner.store}
+	runner.store = spending
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+		spending.added.Store(math.Float64bits(2.5))
+	}()
 	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
 	runner.tick = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())

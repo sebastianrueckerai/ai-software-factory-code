@@ -1880,7 +1880,7 @@ func TestSpendWithoutPushTripsOncePastTheShare(t *testing.T) {
 		t.Fatalf("tripped at 58 percent: %+v", trip)
 	}
 	trip := s.Spent(3.1, 5)
-	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "3.10 of the card's 5.00 EUR are spent (62 percent, the line is 60) and no work is pushed" {
+	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "this session spent 3.10 EUR of the 5.00 EUR the card had left at its start (62 percent, the line is 60) and no work is pushed" {
 		t.Fatalf("trip = %+v", trip)
 	}
 	s.Resume(time.Unix(10, 0))
@@ -1906,6 +1906,27 @@ func TestSpendWithoutPushIsOffWhereItDoesNotApply(t *testing.T) {
 	s.Event(harness.Event{Kind: harness.EventPushed}, time.Unix(1, 0))
 	if trip := s.Spent(4.9, 5); trip != nil {
 		t.Errorf("a pushed session tripped: %+v", trip)
+	}
+}
+
+// 3.54 EUR spent before the session, a fund lifts the budget to 6.50, so
+// the card had 2.96 left; the line is 0.60 x 2.96 = 1.776.
+func TestSpendWithoutPushWeighsTheSessionsOwnSpend(t *testing.T) {
+	s := spendSupervisor(t, func(c *SupervisorConfig) { c.SpentAtStart = 3.54 })
+	if trip := s.Spent(3.54+0.36, 6.5); trip != nil {
+		t.Fatalf("a session at 0.36 EUR tripped: %+v", trip)
+	}
+	trip := s.Spent(3.54+1.78, 6.5)
+	want := "this session spent 1.78 EUR of the 2.96 EUR the card had left at its start (60 percent, the line is 60) and no work is pushed"
+	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != want {
+		t.Fatalf("trip = %+v, want %q", trip, want)
+	}
+}
+
+func TestSpendWithoutPushIgnoresAnExhaustedStart(t *testing.T) {
+	s := spendSupervisor(t, func(c *SupervisorConfig) { c.SpentAtStart = 5 })
+	if trip := s.Spent(6, 5); trip != nil {
+		t.Fatalf("a card with nothing left at the start tripped: %+v", trip)
 	}
 }
 

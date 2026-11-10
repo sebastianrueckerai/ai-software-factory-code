@@ -727,6 +727,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
+	if cur, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
+		supCfg.SpentAtStart = cur.EnforcedSpent()
+	}
 	if sizeBounded(t, s) {
 		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 	}

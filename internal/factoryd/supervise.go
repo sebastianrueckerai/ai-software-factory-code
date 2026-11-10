@@ -95,6 +95,10 @@ type SupervisorConfig struct {
 	// an earlier session of the card already pushed work.
 	NoPushSpend float64
 	PriorPush   bool
+	// SpentAtStart is the card's enforced spend when the session started:
+	// the line weighs the session's own spend against what the card had
+	// left then.
+	SpentAtStart float64
 	// SizeLines is the line bound the card's size plans (cardLineBound);
 	// 0 = off.
 	SizeLines int
@@ -407,18 +411,21 @@ func (s *Supervisor) cheapCap(at time.Time) *Trip {
 	return s.trip(&Trip{Kind: TripCheapCap, Detail: detail, decided: &Decision{Action: ActionRetryStronger, Reason: detail}})
 }
 
-// Spent trips once per session when the card has spent its share of the
-// budget with nothing pushed (roadmap 199): a session that reads and
-// edits for hours without a push is what the budget pays for. A report
-// session pushes nothing and is warned instead.
+// Spent trips once per session when the session's own spend passes the
+// policy share of what the card had left when the session started, with
+// nothing pushed (roadmap 199). A fund during the session raises budget
+// and so what the card had left. A report session pushes nothing and is
+// warned instead.
 func (s *Supervisor) Spent(spent, budget float64) *Trip {
+	left := budget - s.cfg.SpentAtStart
+	own := spent - s.cfg.SpentAtStart
 	if s.tripped != nil || s.spendTripped || s.cfg.NoPushSpend <= 0 || s.cfg.ReadOnly || s.cfg.PriorPush || s.pushed ||
-		budget <= 0 || spent < s.cfg.NoPushSpend*budget {
+		left <= 0 || own < s.cfg.NoPushSpend*left {
 		return nil
 	}
 	s.spendTripped = true
-	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("%.2f of the card's %.2f EUR are spent (%.0f percent, the line is %.0f) and no work is pushed",
-		spent, budget, 100*spent/budget, 100*s.cfg.NoPushSpend)})
+	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("this session spent %.2f EUR of the %.2f EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed",
+		own, left, 100*own/left, 100*s.cfg.NoPushSpend)})
 }
 
 // Climbed: the session switched to the stronger rung in place; the cheap
