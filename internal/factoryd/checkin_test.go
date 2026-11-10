@@ -1355,3 +1355,40 @@ func TestCheckinGatewayPostsNoOutputLimit(t *testing.T) {
 		}
 	}
 }
+
+// A malformed call of an evidence tool comes back to the model as that
+// tool's error, scrubbed, and the next call within the cap can correct it.
+func TestCheckinGatewayMalformedEvidenceCallIsAToolError(t *testing.T) {
+	var inputs []string
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var body struct {
+			Messages []struct{ Content string } `json:"messages"`
+		}
+		json.NewDecoder(r.Body).Decode(&body)
+		inputs = append(inputs, body.Messages[1].Content)
+		w.Header().Set("Content-Type", "application/json")
+		if len(inputs) == 1 {
+			w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"read_file","arguments":"{\"path\":\"https://user:pass@host/x Authorization: Bearer abcdef123456789"}}]}}]}`))
+			return
+		}
+		w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"answer","arguments":"{\"decision\":\"handover\",\"handover\":\"start from the failing test\"}"}}]}}]}`))
+	}))
+	defer srv.Close()
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, &checkinGateway{URL: srv.URL, Token: "b"}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+	if out.Decision != CheckHandover || out.Handover != "start from the failing test" {
+		t.Fatalf("outcome = %+v reason %q, want the answer after the corrected call", out, out.Record.Reason)
+	}
+	if len(inputs) != 2 {
+		t.Fatalf("%d calls, want 2", len(inputs))
+	}
+	in := inputs[1]
+	if !strings.Contains(in, "tool read_file") || !strings.Contains(in, "tool error: the arguments are not one JSON object") {
+		t.Errorf("the second call lacks the tool error:\n%s", in)
+	}
+	for _, leak := range []string{"user:pass", "abcdef123456789"} {
+		if strings.Contains(in, leak) {
+			t.Errorf("the tool error leaks %q", leak)
+		}
+	}
+}

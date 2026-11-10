@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -15,6 +16,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -427,6 +429,9 @@ type CheckinResponse struct {
 	Text     string
 	ToolName string
 	ToolArgs map[string]any
+	// ToolErr is the scrubbed reason a tool call's arguments were not one
+	// JSON object; the loop shows it to the model as the tool's answer.
+	ToolErr  string
 	UsageEUR float64
 }
 
@@ -771,7 +776,14 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 				}
 				args, _ := json.Marshal(resp.ToolArgs)
 				at := time.Now()
-				out, cut, terr := tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
+				var out string
+				var cut bool
+				var terr error
+				if resp.ToolErr != "" {
+					terr = errors.New(resp.ToolErr)
+				} else {
+					out, cut, terr = tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
+				}
 				d := time.Since(at)
 				if terr != nil {
 					out = "tool error: " + terr.Error()
@@ -933,7 +945,8 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		if args := msg.ToolCalls[0].Function.Arguments; args != "" {
 			if err := json.Unmarshal([]byte(args), &resp.ToolArgs); err != nil {
 				if resp.ToolName != checkinAnswerTool {
-					return CheckinResponse{}, fmt.Errorf("unreadable tool arguments: %w", err)
+					resp.ToolErr = redact.New().String(fmt.Sprintf("the arguments are not one JSON object (%v): %s", err, textutil.Truncate(args, 200)))
+					return resp, nil
 				}
 				// a malformed answer reaches the parser as text, so it gets
 				// its repair round and then the human
