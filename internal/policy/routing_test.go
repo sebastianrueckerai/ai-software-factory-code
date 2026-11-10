@@ -27,10 +27,13 @@ func TestRouting(t *testing.T) {
 	if own.Twin("big") != "big-backup" || own.Twin("small") != "" {
 		t.Errorf("a file's twins replace the defaults: big %q, small %q, want big-backup and none", own.Twin("big"), own.Twin("small"))
 	}
-	if got, want := none.WithTwins([]string{"small", "big", "small"}), []string{"big", "big-alibaba", "small", "small-alibaba"}; !slices.Equal(got, want) {
+	if got, want := none.WithTwins([]string{"small", "big", "small"}, func(string) bool { return true }), []string{"big", "big-alibaba", "small", "small-alibaba"}; !slices.Equal(got, want) {
 		t.Errorf("WithTwins = %v, want %v", got, want)
 	}
-	if got, want := none.WithTwins([]string{"premium"}), []string{"premium"}; !slices.Equal(got, want) {
+	if got, want := none.WithTwins([]string{"small", "big"}, func(t string) bool { return t == "big-alibaba" }), []string{"big", "big-alibaba", "small"}; !slices.Equal(got, want) {
+		t.Errorf("WithTwins with a twin LiteLLM does not serve = %v, want %v", got, want)
+	}
+	if got, want := none.WithTwins([]string{"premium"}, func(string) bool { return true }), []string{"premium"}; !slices.Equal(got, want) {
 		t.Errorf("WithTwins(premium) = %v, want %v: premium has no twin", got, want)
 	}
 }

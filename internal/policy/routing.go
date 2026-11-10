@@ -10,8 +10,10 @@ import (
 // Routing steers a model alias to its twin when the alias runs slow.
 type Routing struct {
 	// SlowSeconds is the bound in seconds per 1000 output tokens: an alias
-	// whose median over the last hour's calls is above it serves from its
-	// twin. Absent or 0: 30.
+	// whose rate over the last hour's calls (the sum of their durations over
+	// the sum of their output tokens) is above it serves from its twin, and
+	// returns once the rate is at or under 80 percent of the bound. Absent or
+	// 0: 30.
 	SlowSeconds float64 `yaml:"slow_seconds_per_1000_tokens,omitempty" json:"slow_seconds_per_1000_tokens,omitempty"`
 	// Twins is the twin of each alias, by alias; an alias without one never
 	// switches. Absent: DefaultTwins.
@@ -53,12 +55,12 @@ func (r Routing) primary(twin string) string {
 	return ""
 }
 
-// WithTwins is aliases with each one's twin beside it, sorted, once each:
-// the models a task's key allows.
-func (r Routing) WithTwins(aliases []string) []string {
+// WithTwins is aliases with each one's twin beside it when served says
+// LiteLLM serves the twin, sorted, once each: the models a task's key allows.
+func (r Routing) WithTwins(aliases []string, served func(twin string) bool) []string {
 	out := slices.Clone(aliases)
 	for _, a := range aliases {
-		if t := r.Twin(a); t != "" {
+		if t := r.Twin(a); t != "" && served(t) {
 			out = append(out, t)
 		}
 	}

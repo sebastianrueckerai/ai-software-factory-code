@@ -18,8 +18,9 @@ import (
 // the calls its own deployments (LiteLLM's /model/info) answered, whichever
 // alias name the call carried. Only calls of minLatencyTokens output tokens
 // or more count. The rate that switches needs minLatencyCalls of them; the
-// rate that returns needs minReturnCalls, and a switched alias with fewer
-// sends its next call to the primary, at most once a routeTTL. A switched
+// return needs minReturnCalls of them at 80 percent of the bound or under,
+// and a switched alias with fewer sends its next call to the primary, at
+// most once a routeTTL. A switched
 // alias also sends every primaryEvery-th call to its primary. The window is
 // the audit table, so a restart or a second replica reads the same one; the
 // call counter is per replica.
@@ -29,8 +30,12 @@ const (
 	minReturnCalls   = 3
 	minLatencyTokens = 100
 	primaryEvery     = 10
-	routeTTL         = time.Minute
-	routeReadTimeout = 10 * time.Second
+	// the return needs the rate at or under returnNum/returnDen of the
+	// bound, so an alias near the bound does not switch and return at every
+	// read
+	returnNum, returnDen = 4, 5
+	routeTTL             = time.Minute
+	routeReadTimeout     = 10 * time.Second
 )
 
 // aliasRoute is what the gateway holds of one alias: whether it serves from
@@ -61,7 +66,7 @@ func (s *Server) route(ctx context.Context, pv *policy.Version, alias string) ro
 		return routed{alias: alias}
 	}
 	s.routeMu.Lock()
-	stale := r.switched && r.twin != twin
+	stale := r.switched && r.twin != twin && !r.reading
 	reread := twin != "" && !r.reading && s.now().Sub(r.checked) >= routeTTL
 	if stale || reread {
 		r.reading, r.checked = true, s.now()
@@ -181,11 +186,11 @@ func (s *Server) judge(ctx context.Context, alias, twin string, switched bool, b
 	switch {
 	case !switched && l.counted >= minLatencyCalls && l.rate > bound:
 		kind = policy.SwitchOn
-		if _, err := s.opts.Prices.Price(ctx, twin); err != nil {
-			log.Printf("alias %s is slow (%.1f s per 1000 output tokens, bound %g) but stays: its twin %s cannot be priced: %v", alias, l.rate, bound, twin, err)
+		if err := s.twinServed(ctx, twin); err != nil {
+			log.Printf("alias %s is slow (%.1f s per 1000 output tokens, bound %g) but stays: %s", alias, l.rate, bound, s.scrub.String(err.Error()))
 			return v
 		}
-	case switched && l.counted >= minReturnCalls && l.rate <= bound:
+	case switched && l.counted >= minReturnCalls && l.rate*returnDen <= bound*returnNum:
 		kind = policy.SwitchReturn
 	default:
 		return v
@@ -242,4 +247,15 @@ func latencyOf(deployments []string, samples []policy.LatencySample) latency {
 // modelOf is the model of a deployment: what follows its last slash.
 func modelOf(deployment string) string {
 	return deployment[strings.LastIndex(deployment, "/")+1:]
+}
+
+// twinServed is nil when LiteLLM lists twin and can price it.
+func (s *Server) twinServed(ctx context.Context, twin string) error {
+	if _, err := s.opts.Prices.Deployments(ctx, twin); err != nil {
+		return fmt.Errorf("its twin %s is not served: %w", twin, err)
+	}
+	if _, err := s.opts.Prices.Price(ctx, twin); err != nil {
+		return fmt.Errorf("its twin %s cannot be priced: %w", twin, err)
+	}
+	return nil
 }

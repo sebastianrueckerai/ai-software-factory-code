@@ -782,7 +782,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 	if err != nil {
 		// a model nobody can price is a hold nobody can bound: the
 		// attempt is refused (roadmap 222, item 5)
-		return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err)}, nil
+		return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %s", alias, r.Scrub.String(err.Error()))}, nil
 	}
 	project, projectEUR := v.ProjectCap(t.Repository)
 	req := policy.HoldRequest{TaskID: t.ID, Kind: policy.KindModel, Ref: alias, Price: price,
@@ -802,7 +802,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 		measure = "no session's opening is recorded: " + measure
 		eur, calls, err := o.Hold(req, func(ref string) (policy.Price, error) { return r.price(ctx, ref) })
 		if err != nil {
-			return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %v", alias, err)}, nil
+			return attemptNeed{unread: fmt.Sprintf(floorUnread+"%s cannot be read: %s", alias, r.Scrub.String(err.Error()))}, nil
 		}
 		if calls != nil {
 			on := "it"
@@ -1272,13 +1272,15 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	// a session that finished with nothing new on top of the work in
 	// progress an earlier stop pushed: that work is its result
-	if out.result != nil && out.result.Success && out.commit == "" && s.startRef != "" && s.startRef != s.base {
+	if out.result != nil && out.result.Success && out.commit == "" && out.wip == "" && s.startRef != "" && s.startRef != s.base {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
 		return res
 	}
 	res.LastMessage = textutil.Truncate(out.agentText, maxHandoverMessage)
 	if out.trip != nil {
-		res.Trip, res.Commit = string(out.trip.Kind), out.commit
+		// the trip's commit is the session's own push, else the last
+		// interim push of its work in progress
+		res.Trip, res.Commit = string(out.trip.Kind), cmp.Or(out.commit, out.wip)
 		res.Findings = out.stopReport()
 		if out.trip.Stuck != "" {
 			res.Findings = append([]string{out.trip.Stuck}, res.Findings...)
@@ -1320,7 +1322,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		case out.trip.Kind == TripAgentInfoRequest:
 			res.Outcome, res.Reason = OutcomeNeedsInfo, d.Reason
 		case out.trip.Kind == TripAgentToolRequest:
-			res.Outcome, res.Reason, res.Tool, res.Need, res.Commit = OutcomeMissingTool, d.Reason, d.Tool, d.Need, out.commit
+			res.Outcome, res.Reason, res.Tool, res.Need, res.Commit = OutcomeMissingTool, d.Reason, d.Tool, d.Need, cmp.Or(out.commit, out.wip)
 		case d.Action == ActionRedirect:
 			res.Outcome, res.DeadEnd = OutcomeRedirect, d.Judged
 		case d.Action == ActionRetryStronger:
@@ -1341,7 +1343,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			return res
 		}
 		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
-			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), out.commit
+			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), cmp.Or(out.commit, out.wip)
 			res.Findings = []string{loopFinding("the model provider refused its repeated tool calls: " + res.Summary)}
 			return res
 		}
@@ -1351,11 +1353,16 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	if out.overHold != nil {
 		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
 	}
+	res.Commit = cmp.Or(out.commit, out.wip)
+	if out.result != nil && out.result.Success && out.commit == "" && out.wip != "" {
+		// the end carries nothing past the start, yet an interim push put
+		// work on the branch that the end no longer holds
+		res.Summary += "; the branch still holds the interim push " + out.wip + ", which the session's final tree no longer carries"
+	}
 	ended := "previous session ended without a pushed commit: "
-	if out.commit != "" {
+	if res.Commit != "" {
 		ended = "previous session ended unfinished: "
 	}
-	res.Commit = out.commit
 	res.Findings = []string{ended + res.Summary}
 	if out.pending != nil {
 		res.Outcome = OutcomeNotStarted

@@ -70,7 +70,7 @@ func (f fakePrices) Price(_ context.Context, alias string) (policy.Price, error)
 // testDeployments are the deployments LiteLLM serves each test alias from.
 var testDeployments = map[string][]string{
 	"big": {"zai/glm-5.3"}, "big-alibaba": {"dashscope/qwen3.8-max"},
-	"small": {"zai/glm-5.3-flash"}, "premium": {"openai/gpt-6.1-sol"},
+	"small": {"zai/glm-5.3-flash"}, "small-alibaba": {"dashscope/qwen3.8-flash"}, "premium": {"openai/gpt-6.1-sol"},
 }
 
 func (f fakePrices) Deployments(_ context.Context, alias string) ([]string, error) {
@@ -100,6 +100,7 @@ type memStore struct {
 	day, month float64
 	pol        *policy.Version // nil = none loaded
 	switches   []policy.AliasSwitch
+	recorded   []policy.AliasSwitch // every RecordAliasSwitch call, kept or not
 	polReads   int
 }
 
@@ -308,6 +309,7 @@ func (m *memStore) LatencySamples(_ context.Context, aliases []string, _ time.Ti
 func (m *memStore) RecordAliasSwitch(_ context.Context, sw policy.AliasSwitch) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
+	m.recorded = append(m.recorded, sw)
 	for i := len(m.switches) - 1; i >= 0; i-- {
 		if m.switches[i].Alias == sw.Alias {
 			if m.switches[i].Kind == sw.Kind {
@@ -334,6 +336,18 @@ func (m *memStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, err
 		}
 	}
 	return out, nil
+}
+
+func (m *memStore) recordCalls(alias, kind string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, sw := range m.recorded {
+		if sw.Alias == alias && sw.Kind == kind {
+			n++
+		}
+	}
+	return n
 }
 
 func (m *memStore) switchRows() []policy.AliasSwitch {

@@ -3,6 +3,7 @@ package gateway
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"slices"
@@ -74,9 +75,9 @@ func (r *routeRig) callOn(t *testing.T, alias string, n int) {
 	}
 }
 
-// The median of 20 calls at 39 s per 1000 tokens is 39, above the bound of
+// The rate of 20 calls at 39 s per 1000 tokens is 39, above the bound of
 // 30: the next call runs on the twin, priced and audited as the twin, and
-// the switch is stored with that median.
+// the switch is stored with that rate.
 func TestSlowAliasSwitchesToItsTwin(t *testing.T) {
 	r := newRouteRig(t)
 	seedSlow(r.store, "big", "zai/glm-5.3", 20, 39)
@@ -97,7 +98,7 @@ func TestSlowAliasSwitchesToItsTwin(t *testing.T) {
 	}
 }
 
-// 19 calls are under the 20 a median needs: no switch.
+// 19 calls are under the 20 a switch needs: no switch.
 func TestSlowAliasNeedsTwentyCalls(t *testing.T) {
 	r := newRouteRig(t)
 	seedSlow(r.store, "big", "zai/glm-5.3", 19, 39)
@@ -141,24 +142,34 @@ func TestSwitchedAliasSendsEveryTenthCallToThePrimary(t *testing.T) {
 	}
 }
 
-// A median back at 30, the bound itself, returns the alias to its primary
-// and stores the return.
-func TestSlowAliasReturnsWhenTheMedianIsBackAtTheBound(t *testing.T) {
+// The return needs the rate at or under 80 percent of the bound, 24 at 30:
+// 20 calls at 25 leave the alias on its twin (no return row), 20 at 24 return
+// it and store the return at 24.
+func TestSlowAliasReturnsAtEightyPercentOfTheBound(t *testing.T) {
 	r := newRouteRig(t)
 	seedSlow(r.store, "big", "zai/glm-5.3", 20, 39)
 	r.call(t, 1)
 	r.store.mu.Lock()
 	r.store.audits = nil
 	r.store.mu.Unlock()
-	seedSlow(r.store, "big", "zai/glm-5.3", 20, 30)
+	seedSlow(r.store, "big", "zai/glm-5.3", 20, 25)
 	r.advance(2 * time.Minute)
 	r.call(t, 1)
-	if got := r.modelsSent(t); got[1] != "big" {
-		t.Fatalf("upstream models = %v, want the second call on big", got)
+	if got := r.modelsSent(t); got[1] != "big-alibaba" || len(r.store.switchRows()) != 1 {
+		t.Fatalf("upstream models %v, switches %+v, want big-alibaba and the one switch at 25", got, r.store.switchRows())
+	}
+	r.store.mu.Lock()
+	r.store.audits = nil
+	r.store.mu.Unlock()
+	seedSlow(r.store, "big", "zai/glm-5.3", 20, 24)
+	r.advance(2 * time.Minute)
+	r.call(t, 1)
+	if got := r.modelsSent(t); got[2] != "big" {
+		t.Fatalf("upstream models = %v, want the third call on big", got)
 	}
 	sw := r.store.switchRows()
-	if len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Rate != 30 {
-		t.Fatalf("switch rows = %+v, want a switch then a return at 30", sw)
+	if len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Rate != 24 {
+		t.Fatalf("switch rows = %+v, want a switch then a return at 24", sw)
 	}
 	if open, _ := r.store.OpenAliasSwitches(t.Context()); len(open) != 0 {
 		t.Fatalf("open switches = %+v, want none", open)
@@ -178,17 +189,17 @@ func switchedThenAged(t *testing.T) *routeRig {
 	return r
 }
 
-// A switched alias returns on 3 probes at 25 s per 1000 tokens: the median
-// is 25, at or under 30. Two probes are too few: it stays on its twin.
+// A switched alias returns on 3 probes at 24 s per 1000 tokens: the rate is
+// 24, at or under 80 percent of 30.
 func TestSwitchedAliasReturnsOnThreeProbes(t *testing.T) {
 	r := switchedThenAged(t)
-	seedSlow(r.store, "big", "zai/glm-5.3", 3, 25)
+	seedSlow(r.store, "big", "zai/glm-5.3", 3, 24)
 	r.call(t, 1)
 	if got := r.modelsSent(t); got[1] != "big" {
 		t.Fatalf("upstream models = %v, want the second call on big", got)
 	}
-	if sw := r.store.switchRows(); len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Rate != 25 {
-		t.Fatalf("switch rows = %+v, want a switch then a return at 25", sw)
+	if sw := r.store.switchRows(); len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Rate != 24 {
+		t.Fatalf("switch rows = %+v, want a switch then a return at 24", sw)
 	}
 }
 
@@ -269,15 +280,15 @@ func TestSlowFallbackCallsDoNotSwitch(t *testing.T) {
 }
 
 // A twin call that LiteLLM falls back to the primary counts as a primary
-// sample by its deployment: 2 probes at 25 on big and one twin-alias call
-// that z.ai answered at 25 are 3 counted calls at 25, so the alias returns.
+// sample by its deployment: 2 probes at 24 on big and one twin-alias call
+// that z.ai answered at 24 are 3 counted calls at 24, so the alias returns.
 func TestTwinCallFallenBackToThePrimaryCounts(t *testing.T) {
 	r := switchedThenAged(t)
-	seedSlow(r.store, "big", "zai/glm-5.3", 2, 25)
-	seedSlow(r.store, "big-alibaba", "zai/glm-5.3", 1, 25)
+	seedSlow(r.store, "big", "zai/glm-5.3", 2, 24)
+	seedSlow(r.store, "big-alibaba", "zai/glm-5.3", 1, 24)
 	r.call(t, 1)
-	if sw := r.store.switchRows(); len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Rate != 25 {
-		t.Fatalf("switch rows = %+v, want a switch then a return at 25", sw)
+	if sw := r.store.switchRows(); len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Rate != 24 {
+		t.Fatalf("switch rows = %+v, want a switch then a return at 24", sw)
 	}
 }
 
@@ -460,5 +471,71 @@ func TestConcurrentCallsKeepTheProbeSchedule(t *testing.T) {
 	}
 	if n["big"] != 10 || n["big-alibaba"] != 90 {
 		t.Fatalf("models sent = %v, want 10 on big and 90 on big-alibaba", n)
+	}
+}
+
+// A twin the policy names but LiteLLM does not list (a typo) is in no key and
+// no switch target, though the price book prices it: the key of the task
+// allows big and small only, and 20 slow calls do not switch big.
+func TestUnlistedTwinIsNoKeyModelAndNoSwitch(t *testing.T) {
+	r := newRouteRig(t)
+	pv := testPolicy(1, 20)
+	pv.Tree.Document.Routing.Twins = map[string]string{"big": "big-typo", "small": "small-alibaba"}
+	r.store.setPolicy(pv)
+	r.srv.opts.Prices = fakePrices{"big": testPrice, "small": testPrice, "big-typo": testPrice, "small-alibaba": testPrice}
+	seedSlow(r.store, "big", "zai/glm-5.3", 20, 39)
+	r.call(t, 1)
+	if got := r.modelsSent(t); got[0] != "big" || len(r.store.switchRows()) != 0 {
+		t.Fatalf("upstream models %v, switches %+v, want big and none", got, r.store.switchRows())
+	}
+	if calls := r.minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,small-alibaba" {
+		t.Fatalf("mint calls = %+v, want the models big,small,small-alibaba", calls)
+	}
+}
+
+// Concurrent calls that find a stale switch store one return, not one each.
+func TestStaleSwitchClosesOnce(t *testing.T) {
+	r := newRouteRig(t)
+	seedSlow(r.store, "big", "zai/glm-5.3", 20, 39)
+	r.call(t, 1)
+	pv := testPolicy(2, 20)
+	pv.Tree.Document.Routing.Twins = map[string]string{"small": "small-alibaba"}
+	r.store.setPolicy(pv)
+	r.advance(2 * time.Minute)
+	var wg sync.WaitGroup
+	for range 20 {
+		wg.Add(1)
+		go func() { defer wg.Done(); doChat(t, r.h, chatBody("big")) }()
+	}
+	wg.Wait()
+	if n := r.store.recordCalls("big", policy.SwitchReturn); n != 1 {
+		t.Fatalf("return rows recorded %d times, want once", n)
+	}
+}
+
+// errPrices prices nothing: its error carries a URL with userinfo and a
+// bearer value, as a failed /model/info read can.
+type errPrices struct{ fakePrices }
+
+const leak = "GET https://user:pass@litellm.example/model/info: Authorization: Bearer abcdefghijklmnopqrstuvwx"
+
+func (errPrices) Price(context.Context, string) (policy.Price, error) {
+	return policy.Price{}, errors.New(leak)
+}
+
+// The price error of a refused call reaches the caller and the audit row
+// with the userinfo and the bearer value masked.
+func TestPriceErrorIsScrubbed(t *testing.T) {
+	r := newRouteRig(t)
+	r.srv.opts.Prices = errPrices{fakePrices{}}
+	rr := doChat(t, r.h, chatBody("big"))
+	rows := r.store.auditRows()
+	if rr.Code != http.StatusServiceUnavailable || len(rows) == 0 {
+		t.Fatalf("call = %d, %d audit rows, want a 503 and an audit row", rr.Code, len(rows))
+	}
+	for _, got := range []string{rr.Body.String(), rows[len(rows)-1].Reason} {
+		if strings.Contains(got, "user:pass") || strings.Contains(got, "abcdefghijklmnopqrstuvwx") || !strings.Contains(got, "[redacted]") {
+			t.Fatalf("the price refusal %q leaks, or masks nothing", got)
+		}
 	}
 }

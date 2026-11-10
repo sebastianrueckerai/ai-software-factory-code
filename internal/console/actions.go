@@ -2249,6 +2249,9 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 // supervisor's message path, marked as theirs, every GitHub token in it
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
+	if c.cfg.Steer == nil {
+		return "", refuse(http.StatusNotImplemented, "This console cannot message a running session: it runs without factoryd's steer.")
+	}
 	text, github, chat := scrubTokens(strings.TrimSpace(text))
 	if text == "" || len(text) > 8<<10 {
 		return "", refuse(http.StatusBadRequest, "a message of up to 8 KiB is required")

@@ -2,6 +2,9 @@ package factoryd
 
 import (
 	"context"
+	"errors"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -35,4 +38,24 @@ func TestFloorPricesTheAliasThatServes(t *testing.T) {
 	if got := price(); got.In != 5e-6 || got.CacheRead != 5e-7 || got.Out != 1.5e-5 || got.MaxOutput != 32768 {
 		t.Fatalf("price with big switched = %+v, want 5e-6 in, 5e-7 cache, 1.5e-5 out", got)
 	}
+}
+
+// A floor refusal that carries a price read's error masks the URL's userinfo
+// and the bearer value.
+func TestFloorUnreadErrorIsScrubbed(t *testing.T) {
+	const leak = "GET https://user:pass@litellm.example/model/info: Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	r := &Runner{store: newFakeStore(), cfg: RunnerConfig{Prices: failingPrices{errors.New(leak)}, Policy: testPolicyVersion}, Scrub: redact.New()}
+	need, err := r.needOf(context.Background(), testPolicyVersion(), Task{ID: "t1"}, "factory/big", false)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(need.unread, "user:pass") || strings.Contains(need.unread, "abcdefghijklmnopqrstuvwx") || !strings.Contains(need.unread, "[redacted]") {
+		t.Fatalf("the floor's refusal %q leaks, or masks nothing", need.unread)
+	}
+}
+
+type failingPrices struct{ err error }
+
+func (f failingPrices) Price(context.Context, string) (policy.Price, error) {
+	return policy.Price{}, f.err
 }

@@ -23,6 +23,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -164,6 +165,7 @@ type Server struct {
 	mu         sync.Mutex
 	keysByTask map[string]*liveKey
 	mints      singleflight.Group
+	scrub      *redact.Scrubber
 
 	now   func() time.Time
 	polMu sync.Mutex
@@ -186,7 +188,7 @@ func NewServer(opts ServerOptions) *Server {
 	if tel == nil {
 		tel = noTelemetry()
 	}
-	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, now: time.Now}
+	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, scrub: redact.New(), now: time.Now}
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
@@ -315,7 +317,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
 	price, err := s.price(ctx, pv, task, served)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_price", s.scrub.String(err.Error()), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 		return
 	}
 
@@ -330,9 +332,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slot, models := task.ID, pv.Document.Routing.WithTwins(pv.Document.Models(task.Classes))
+	listed := func(twin string) bool { _, err := s.opts.Prices.Deployments(ctx, twin); return err == nil }
+	slot, models := task.ID, pv.Document.Routing.WithTwins(pv.Document.Models(task.Classes), listed)
 	if purpose != "" {
-		slot, models = task.ID+"/"+factorydSA, pv.Document.Routing.WithTwins(pv.Document.FactoryModels(task.Classes))
+		slot, models = task.ID+"/"+factorydSA, pv.Document.Routing.WithTwins(pv.Document.FactoryModels(task.Classes), listed)
 	}
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	req := policy.HoldRequest{
@@ -359,7 +362,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		served, routed = rt.alias, rt.note
 		chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
 		if req.Price, err = s.price(ctx, pv, task, served); err != nil {
-			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+			s.refuse(w, pid, id.TaskID, purpose, "error_price", s.scrub.String(err.Error()), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 			return
 		}
 		req.Ref, req.PremiumEUR = policy.LedgerRef(purpose, policy.Big), 0
@@ -455,7 +458,7 @@ func (s *Server) price(ctx context.Context, pv *policy.Version, task Task, alias
 		price, err = pv.Document.Limited(alias, price)
 	}
 	if err != nil {
-		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, alias, err)
+		log.Printf("PRICE MISSING: task %s, model %s: %s; every call of this alias is refused", task.ID, alias, s.scrub.String(err.Error()))
 	}
 	return price, err
 }

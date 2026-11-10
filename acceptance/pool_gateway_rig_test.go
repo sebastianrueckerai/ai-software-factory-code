@@ -14,7 +14,6 @@ package acceptance
 import (
 	"bytes"
 	"context"
-	"errors"
 	"fmt"
 	"math"
 	"net/http"
@@ -373,8 +372,8 @@ func (s *accGatewayStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwit
 	return nil, nil
 }
 
-func (p accGatewayPrices) Deployments(context.Context, string) ([]string, error) {
-	return nil, errors.New("the proofs read no deployments")
+func (p accGatewayPrices) Deployments(_ context.Context, alias string) ([]string, error) {
+	return []string{"proof/" + alias}, nil
 }
 
 var _ factorygateway.Store = (*accGatewayStore)(nil)

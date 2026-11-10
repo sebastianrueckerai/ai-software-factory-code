@@ -22,9 +22,9 @@ import (
 	"sync"
 )
 
-// wipBundleCap bounds the bundle one answer streams: the message server's
-// other endpoints bound their bodies the same way.
-const wipBundleCap = checkinRecordCap
+// wipBundleCap bounds the bundle one answer streams: factoryd's own bound
+// on the bundle it indexes (wipBundleCap in internal/factoryd).
+const wipBundleCap = 16 << 20
 
 // wipCommitHeader names the answer's commit to factoryd; the body is the
 // bundle of base..commit.
