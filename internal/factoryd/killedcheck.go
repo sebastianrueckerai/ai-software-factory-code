@@ -13,9 +13,10 @@ import (
 )
 
 // killMarkers match a line a tool killed by a signal ends on: the marker
-// alone or after one tool word ("vet: signal: killed"). A test's own
-// output, indented or prefixed by its file and line, is not one.
-var killMarkers = regexp.MustCompile(`(?i)^(?:[a-z]+: )?(signal: killed|exit (?:status|code) 137|OOMKilled)\s*$`)
+// alone or after unindented prefixes such as the package and the tool
+// ("pkg: /usr/local/go/pkg/tool/linux_amd64/vet: signal: killed"). A
+// test's own output is indented, so it is not one.
+var killMarkers = regexp.MustCompile(`(?i)^(?:\S+: )*(signal: killed|exit (?:status|code) 137|OOMKilled)\s*$`)
 
 // killMarker is the kill marker a line of log shows, "" for none.
 func killMarker(log []byte) string {

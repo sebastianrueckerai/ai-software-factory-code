@@ -4268,7 +4268,9 @@ func TestWaitChecksScrubsForgejoErrorsInItsFindings(t *testing.T) {
 func TestKilledBySignal(t *testing.T) {
 	for log, want := range map[string]bool{
 		"signal: killed": true, "exit status 137": true, "exit code 137": true, "OOMKilled": true,
-		"vet: signal: killed": true, "2026-09-30T22:50:22.9434409Z signal: killed\r\n": true, "ok\nsignal: killed\nFAIL": true,
+		"vet: signal: killed": true,
+		"2026-11-10T10:48:46.1723690Z github.com/sebastianrueckerai/ai-software-factory-code/internal/console: /usr/local/go/pkg/tool/linux_amd64/vet: signal: killed\n" +
+			"2026-11-10T10:53:42.7852038Z ⚙️ [runner]: RUN exit status 1\n": true, "2026-09-30T22:50:22.9434409Z signal: killed\r\n": true, "ok\nsignal: killed\nFAIL": true,
 		"    x_test.go:9: signal: killed": false, "container OOMKilled": false, "signal: killed by the test": false,
 		"exit status 1370": false, "exit status 1": false, "--- FAIL: TestKilled": false, "": false,
 	} {
