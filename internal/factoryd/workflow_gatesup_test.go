@@ -11,6 +11,8 @@ import (
 
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/workflow"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // onGateSupervisor answers SuperviseGate calls in order with decisions (the
@@ -51,11 +53,12 @@ func (h *workflowHarness) onDropTrip(d time.Duration) *[]string {
 	return &got
 }
 
-// One check wait: its first trip may wait or retry; after the wait the
+// In a run from before checks-wait: one check wait: its first trip may wait or retry; after the wait the
 // second may only retry; after the retry the third may do neither. The
 // checks then finish and the task goes on to its merge.
 func TestWorkflowGateTripsOneWaitAndOneRetryPerRun(t *testing.T) {
 	g := newGateHarness(t)
+	g.env.OnGetVersion("checks-wait", workflow.DefaultVersion, versionChecksWait).Return(workflow.DefaultVersion)
 	g.onSessions(pushed("s1", "c1"))
 	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
@@ -406,5 +409,27 @@ func TestWorkflowGateThatEndsDuringTheSupervisorCallWins(t *testing.T) {
 				t.Fatalf("approval requested %v after the start, want %s", g.requested[0].Sub(start), tc.request)
 			}
 		})
+	}
+}
+
+// A checks-wait trip offers no extra wait to a current run: at a bound of
+// 8m with a supervisor_timeout of 6m the wait's start-to-close is
+// 8 + 1 + 1 + 6 + 1 = 17m, which holds the doubled bound of 16m, but the
+// poll ends at 16m, before the extended trip could be answered. The trip
+// may still retry.
+func TestWorkflowChecksTripOffersNoWaitToACurrentRun(t *testing.T) {
+	g := newGateHarness(t)
+	g.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+		Stages: testStages(), Queue: policy.QueueNone, ChecksBound: 8 * time.Minute, SupervisorTimeout: 6 * time.Minute}
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(12*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	calls := g.onGateSupervisor(GateDecision{Action: ActionContinue, Diagnosis: "running"})
+	g.env.RegisterDelayedCallback(func() {
+		g.env.SignalWorkflow(SignalGateBound, GateTrip{Activity: ActivityWaitChecks, ActivityID: "WaitChecks-1", Attempt: 1, AlertID: 1, Bound: 8 * time.Minute})
+	}, 9*time.Minute)
+	g.signalAfter(time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	if final := g.run(t); final != "done" || len(*calls) != 1 || (*calls)[0].CanWait || !(*calls)[0].CanRetry {
+		t.Fatalf("final %q, calls %+v; want one call that cannot wait and can retry", final, *calls)
 	}
 }

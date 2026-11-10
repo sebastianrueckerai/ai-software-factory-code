@@ -89,6 +89,8 @@ type fakeStore struct {
 	spends []fakeSpend
 	// callTotals are TaskCallTotals' answers by task
 	callTotals map[string]TaskCallTotals
+	// callTotalsErr is TaskCallTotals' error by task
+	callTotalsErr map[string]error
 	// cases are CasesOf's rows, oldest first; caseSteps CaseSteps' by case
 	cases     []Case
 	caseSteps map[int64][]CaseStep
@@ -1894,6 +1896,9 @@ func (s *fakeStore) NewestCallAt(ctx context.Context, taskID string) (time.Time,
 }
 
 func (s *fakeStore) TaskCallTotals(ctx context.Context, taskID string) (TaskCallTotals, error) {
+	if err := s.callTotalsErr[taskID]; err != nil {
+		return TaskCallTotals{}, err
+	}
 	if t, ok := s.callTotals[taskID]; ok {
 		return t, nil
 	}

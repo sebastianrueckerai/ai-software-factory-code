@@ -546,7 +546,12 @@ func (c *Console) resourceChange(ctx context.Context, a actor, what string, id i
 		case errors.Is(err, cloudres.ErrNotOpen):
 			return refuse(http.StatusConflict, "cannot "+what+": the resource is no longer open")
 		default:
-			return refuse(http.StatusInternalServerError, "cannot "+what+"; see the factoryd log")
+			if what == "promote" {
+				return refuse(http.StatusInternalServerError, "The resource could not be promoted: "+errText(err)+
+					". Press Promote again, or release it and commission it anew.")
+			}
+			return refuse(http.StatusInternalServerError, "The resource could not be released: "+errText(err)+
+				". Press Release again, or open an issue on the project when it keeps failing.")
 		}
 	}
 	log.Printf("console: %s %sd the commission of resource %d via %s", a.s.user, what, id, a.via)

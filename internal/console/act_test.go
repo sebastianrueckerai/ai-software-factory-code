@@ -322,15 +322,16 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 
 // Act's failure reaches the human as what it means: a retry factoryd
 // refuses is a 409 with its sentence, and any other failure a 500 that
-// names the factoryd log and nothing of the store.
-func TestActFailuresAnswerWithoutTheStore(t *testing.T) {
+// names the error and the next step, not the factoryd log.
+func TestActFailuresNameTheErrorAndTheNextStep(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
 		status int
 		body   string
 	}{
 		{factoryd.ErrNoRetry("Card #7 was already retried."), http.StatusConflict, "Card #7 was already retried."},
-		{errors.New(`pq: relation "cases" does not exist`), http.StatusInternalServerError, "The answer failed: see the factoryd log."},
+		{errors.New(`pq: relation "cases" does not exist`), http.StatusInternalServerError,
+			"The answer failed: pq: relation \"cases\" does not exist. Reload the board and press the button again."},
 	} {
 		r := newRig(t)
 		ck, s := r.loggedIn(t)
@@ -534,6 +535,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 	}
 	capped := with(func(f *factoryd.CaseFacts) { f.Attempts = 3 })
 	pr := with(func(f *factoryd.CaseFacts) { f.PR, f.PROpen, f.Head, f.Checks = 9, true, "h1", "red" })
+	checksWait := with(func(f *factoryd.CaseFacts) { *f = pr; f.Gate = factoryd.ActivityWaitChecks })
 	fits := func(f factoryd.CaseFacts, res factoryd.Resolution) string {
 		a, ok := factoryd.ActionByName(res.Action)
 		switch {
@@ -560,7 +562,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 		{factoryd.CaseMonthCap, "the month cap is reached", nil, room},
 		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": the check-in's share of the budget is spent", nil, room},
 		{factoryd.CaseCheckinShare, "check-in: " + factoryd.CheckSpend + ": check-in call cap reached (3 calls)", nil, room},
-		{factoryd.CaseGateStop, "The gate supervisor stopped WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.", nil, pr},
+		{factoryd.CaseGateStop, "The gate supervisor stopped WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.", nil, checksWait},
 		{factoryd.CaseGateStop, "The gate supervisor stopped review: review: concerns on the head", nil, pr},
 		{factoryd.CaseFindingsRepeated, "No reply can change this: the head and the card's limits are unchanged since the last stop.", nil, pr},
 		{factoryd.CaseAgentEscalate, factoryd.AgentAsks + "Use a replica?", []string{"Yes", "No"}, room},

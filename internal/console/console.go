@@ -26,6 +26,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -147,6 +148,9 @@ type Tasks interface {
 // Config wires the console. ForgejoURL serves the code exchange and API
 // calls (in-cluster); ForgejoPublicURL is what browsers are sent to.
 type Config struct {
+	// Scrub masks the boot secrets in every text a refusal builds from an
+	// error; nil masks only what the generic rules find.
+	Scrub            *redact.Scrubber
 	PublicURL        string // https://console.aisoftwarefactory.world
 	ForgejoURL       string
 	ForgejoPublicURL string
@@ -184,6 +188,9 @@ type Config struct {
 	ConfigDir    string
 	Approvals    Approvals
 	ApproveMerge MergeApprover
+	// CheckMerge refuses an approval before any review is posted
+	// (factoryd.CheckMergeApproval).
+	CheckMerge func(ctx context.Context, taskID string, pin int64, approver string) error
 	// RerunChecks and CloseFactoryPR decide a factory pull request card's
 	// merge request as a member's re-run of its red checks or close with
 	// their words (factoryd.RerunFactoryChecks, factoryd.CloseFactoryPR).
@@ -614,7 +621,13 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no Act")
 	case cfg.PoolDrawn == nil:
 		return nil, errors.New("console: no PoolDrawn")
+	case cfg.CheckMerge == nil:
+		return nil, errors.New("console: no CheckMerge")
 	}
+	if cfg.Scrub == nil {
+		cfg.Scrub = redact.New()
+	}
+	scrubber.Store(cfg.Scrub)
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}

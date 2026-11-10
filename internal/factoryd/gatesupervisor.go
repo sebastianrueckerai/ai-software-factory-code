@@ -133,6 +133,9 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	case t.Source == SourceRoll:
 		d = GateDecision{Action: ActionEscalate, Diagnosis: "a roll task makes no model call: its gate trip goes to a human",
 			Recommendation: fmt.Sprintf("look at %s of roll task %s yourself", in.Trip.Activity, t.ID)}
+		if in.Trip.Activity == ActivityWaitChecks {
+			d.Diagnosis += "; " + r.rollChecksLine(ctx, t, in)
+		}
 	default:
 		pinned, err := r.pinned(ctx, in.PolicyVersion)
 		if err != nil {
@@ -170,6 +173,39 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 	detail["activity"], detail["attempt"], detail["alert"] = in.Trip.Activity, in.Trip.Attempt, in.Trip.AlertID
 	r.record(ctx, t.ID, "gate_supervisor", detail)
 	return d, nil
+}
+
+// rollChecksLine is the one-line state of a roll task's checks at a trip:
+// the combined status and its jobs by state (green, failed, errored,
+// warning, skipped, running), or why they are unreadable, scrubbed.
+func (r *Runner) rollChecksLine(ctx context.Context, t Task, in GateSupervision) string {
+	repo, err := SplitRepo(t.Repository)
+	sha := ""
+	if len(in.Input) > 1 {
+		sha, _ = in.Input[1].(string)
+	}
+	var cs CombinedStatus
+	if err == nil {
+		ctx, cancel := context.WithTimeout(ctx, bundleReads)
+		defer cancel()
+		cs, err = r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
+	}
+	if err != nil {
+		return "checks unreadable: " + redact.New().String(err.Error())
+	}
+	line := "checks: combined status " + cs.State
+	for _, g := range []struct{ label, state string }{{"green", "success"}, {"failed", "failure"}, {"errored", "error"}, {"warning", "warning"}, {"skipped", "skipped"}, {"running", "pending"}} {
+		var names []string
+		for _, s := range cs.Statuses {
+			if s.State == g.state {
+				names = append(names, s.Context)
+			}
+		}
+		if len(names) > 0 {
+			line += ", " + g.label + ": " + strings.Join(names, ", ")
+		}
+	}
+	return line
 }
 
 // DropTrip resolves the gate_bound alert of a trip the workflow dropped

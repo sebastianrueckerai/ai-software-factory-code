@@ -78,7 +78,7 @@ func TestDrawerShowsTheOpenedProofBesideTheRepositorysVersion(t *testing.T) {
 			`<pre class="proof original" tabindex="0">v1 code</pre>`}, 1},
 		{"not in the pull request", nil, false, []string{`<h5>group_open: acceptance/group_open_test.go, not in the pull request</h5>`,
 			`<pre class="proof original" tabindex="0">v1 code</pre>`}, 1},
-		{"unread", nil, true, []string{`<p class="problem">The console could not read the opened proofs. See the factoryd log.</p>`}, 0},
+		{"unread", nil, true, []string{`<p class="problem">The console could not read the opened proofs; reload the board.</p>`}, 0},
 		{"a feature card", map[string]string{"8e3a1b0c acceptance/group_open_test.go": "v2 code"}, false, nil, 0},
 	} {
 		t.Run(tc.name, func(t *testing.T) {

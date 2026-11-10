@@ -52,7 +52,6 @@ type RunnerConfig struct {
 	Models               ModelLadder
 	AnswerTokens         int
 	HeadroomTokens       int
-	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
 	// Bus receives a session_said event for each model call's text, for
 	// the drawer's Chat; nil publishes none.
@@ -140,6 +139,9 @@ type Runner struct {
 	// shortens it
 	endpointWait time.Duration
 	stopWait     time.Duration
+	// checksMargin is how long before its activity deadline WaitChecks ends
+	// its poll with the checks timeout
+	checksMargin time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
 	tick         time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
@@ -186,6 +188,9 @@ type Runner struct {
 	// Imager verifies a project image before a pod runs it
 	// (verifyProjectImage); set before the worker starts.
 	Imager *Imager
+	// Upstream copies a branch's new upstream image lines into the store
+	// before its checks; nil copies nothing
+	Upstream *UpstreamCopier
 	// Scrub scrubs every session record. NewRunner's knows no secret
 	// value; factoryd sets the one built from its boot secrets before the
 	// worker starts.
@@ -391,9 +396,6 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.ReproTimeout > MaxReproTimeout {
 		return nil, fmt.Errorf("runner: a reproduction timeout of %s exceeds %s", cfg.ReproTimeout, MaxReproTimeout)
 	}
-	if cfg.ChecksTimeout <= 0 {
-		cfg.ChecksTimeout = 45 * time.Minute
-	}
 	if cfg.Metrics == nil {
 		cfg.Metrics = telemetry.Noop()
 	}
@@ -411,7 +413,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
-		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New()}
+		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
 
@@ -424,7 +426,6 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		Models:        r.cfg.Models,
 		MaxSessions:   l.Sessions,
 		WallClockCap:  l.AgentTime,
-		ChecksTimeout: r.cfg.ChecksTimeout,
 		StrongerAfter: l.StrongerAfter,
 		PolicyVersion: v.ID,
 	}
@@ -1190,12 +1191,12 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 
 // costState assembles the cost and state block from the store: the task
 // row's figures and status, and the model-call and token totals of its
-// audit rows. Never from the agent. SpentEUR is the settled spend and
-// HeldEUR what outstanding calls hold. RemainingEUR is the room a session
-// has: the budget less the spend and the holds (Task.Left), less the
-// reserve (ReserveEUR, the review's and the audit's), through
-// policy.SessionHeadroom and clamped at 0, as the pace's left reads it.
-// The gates' supervisor passes no reserve.
+// audit rows. Never from the agent; nil when the totals cannot be read.
+// SpentEUR is the settled spend and HeldEUR what outstanding calls hold.
+// RemainingEUR is the room a session has: the budget less the spend and
+// the holds (Task.Left), less the reserve (ReserveEUR, the review's and the
+// audit's), through policy.SessionHeadroom and clamped at 0, as the pace's
+// left reads it. The gates' supervisor passes no reserve.
 func (r *Runner) costState(ctx context.Context, t Task, reserve float64) *CostState {
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
@@ -1203,7 +1204,7 @@ func (r *Runner) costState(ctx context.Context, t Task, reserve float64) *CostSt
 	totals, err := r.store.TaskCallTotals(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the call totals: %v", t.ID, err)
-		totals = TaskCallTotals{}
+		return nil
 	}
 	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, HeldEUR: t.HeldEUR, RemainingEUR: math.Round(max(policy.SessionHeadroom(t.Left(), reserve), 0)*100) / 100, ReserveEUR: reserve,
 		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,

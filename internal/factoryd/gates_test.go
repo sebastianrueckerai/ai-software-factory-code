@@ -629,6 +629,71 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 }
 
+// The model review's first call carries the deterministic cost and state
+// block from the store, the later parts' calls do not, and the prompt names it.
+func TestModelReviewCarriesTheCostState(t *testing.T) {
+	want := map[string]any{"budget_eur": float64(3), "spent_eur": 0.75, "remaining_eur": 2.25,
+		"calls": float64(4), "prompt_tokens": float64(1500), "cached_tokens": float64(300), "output_tokens": float64(600),
+		"state": "in-review"}
+	for name, diff := range map[string]string{
+		"one part": "diff --git a/Makefile b/Makefile\n+check:\n",
+		"in parts": diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10),
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := gateTask
+			task.BudgetEUR, task.SpentEUR, task.Status = 3, 0.75, "in-review"
+			r, store, _ := newGateRunner(t, task, &gateForgejo{diff: diff})
+			store.callTotals["t1"] = TaskCallTotals{Calls: 4, PromptTokens: 1500, CachedTokens: 300, OutputTokens: 600}
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+				t.Fatal(err)
+			}
+			chats := byPart(ll)
+			if want := map[string]int{"one part": 1, "in parts": 2}[name]; len(chats) != want {
+				t.Fatalf("calls = %d, want %d", len(chats), want)
+			}
+			if !strings.Contains(systemMessage(chats[0]), "the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store") {
+				t.Fatalf("the review prompt does not name the block: %s", systemMessage(chats[0]))
+			}
+			for i, chat := range chats {
+				var in map[string]any
+				if err := json.Unmarshal([]byte(userMessage(chat)), &in); err != nil {
+					t.Fatal(err)
+				}
+				if i > 0 {
+					if _, ok := in["cost"]; ok {
+						t.Fatalf("part %d carries the cost block: %s", i+1, userMessage(chat))
+					}
+					continue
+				}
+				if !reflect.DeepEqual(in["cost"], want) {
+					t.Fatalf("cost = %s\nwant  %s", jsonOf(in["cost"]), jsonOf(want))
+				}
+			}
+		})
+	}
+}
+
+// A call-totals read that fails sends no block: zeros the prompt calls
+// figures read from the store would be a false fact.
+func TestModelReviewSendsNoCostStateWhenTheTotalsFail(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	store.callTotalsErr = map[string]error{"t1": errors.New("the store is gone")}
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+		t.Fatal(err)
+	}
+	var in map[string]any
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := in["cost"]; ok {
+		t.Fatalf("the input carries a cost block over a failed read: %s", userMessage(ll.chats[0]))
+	}
+}
+
 // Roadmap 201: the review reads the objective without the intake's Size
 // and Rung lines, the card's fields, as every model brief does.
 func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
@@ -1213,7 +1278,7 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				keys                      []string
 			}{
 				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
-					[]string{"brief", "concurrency", "diff", "files", "gates", "head", "part", "pull_request"}},
+					[]string{"brief", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
 				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
@@ -2483,14 +2548,17 @@ func TestApproveMerge(t *testing.T) {
 	store := newFakeStore()
 	wf := &recordedSignals{}
 	ctx := context.Background()
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, "sebastian"); err == nil {
 		t.Fatal("approved without a pending request")
 	}
-	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
-	if err := ApproveMerge(ctx, store, wf, "t1", 8, "sebastian"); err == nil {
+	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
+	store.events = append(store.events,
+		Event{TaskID: "t1", Kind: EventModelReview, Detail: map[string]any{"commit": "c1", "reviewed": true}},
+		Event{TaskID: "t1", Kind: EventGateAudit, Detail: map[string]any{"commit": "c1", "ran": true}})
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 8, "sebastian"); err == nil {
 		t.Fatal("approved another pull request")
 	}
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err != nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(wf.sent, []string{"t1 approved sebastian 9"}) {
@@ -2500,12 +2568,12 @@ func TestApproveMerge(t *testing.T) {
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "approved in the console" {
 		t.Fatalf("approval = %+v", a)
 	}
-	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
 		t.Fatalf("a second approve: %v, signals %v", err, wf.sent)
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t2", PRNumber: 3})
 	wf.err = errors.New("temporal unavailable")
-	if err := ApproveMerge(ctx, store, wf, "t2", 3, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t2", 3, "sebastian"); err == nil {
 		t.Fatal("a failed signal answered no error")
 	}
 	if a := store.approvals[1]; a.Status != "pending" || a.DecidedBy != "" {
@@ -3825,5 +3893,137 @@ func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
 	}
 	if got := store.tasks["t1"].SpentEUR; math.Abs(got-4.96) > 1e-9 {
 		t.Fatalf("spent after both gates = %v, want 4.96, within the budget 5", got)
+	}
+}
+
+// The project agent's approval of a merge is refused unless a review row and
+// an audit row that ran sit since the card's newest push, whichever path
+// calls ApproveMerge: the head may have moved on since (a queue's merge of
+// main runs neither gate again). A stage the task skipped is not required, a
+// gate row after its skip makes it required again, a push resets the rows,
+// and a human's approval passes and records what did not run.
+func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
+	ctx := context.Background()
+	row := func(kind string, detail map[string]any) Event {
+		return Event{TaskID: "t1", Kind: kind, Detail: detail}
+	}
+	review := func(head string, ran bool) Event {
+		return row(EventModelReview, map[string]any{"commit": head, "reviewed": ran, "reason": "model review not run: gateway deadline"})
+	}
+	audit := func(head string, ran bool) Event {
+		return row(EventGateAudit, map[string]any{"commit": head, "ran": ran, "reason": "gateway deadline"})
+	}
+	pushed := row(EventSessionPushed, map[string]any{"session": "s-2"})
+	skipAudit := row(EventStageSkipped, map[string]any{"stage": "audit", "reason": auditNotSwitchedOn})
+	cases := []struct {
+		name     string
+		events   []Event
+		approver string
+		refused  string
+		note     string
+	}{
+		{"no rows, agent", []Event{pushed}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
+		{"no audit row, agent", []Event{pushed, review("c1", true)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
+		{"no review row, agent", []Event{pushed, audit("c1", true)}, ChatUser, "The review did not run, so the project agent cannot approve this merge.", ""},
+		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "The review did not run, so the project agent cannot approve this merge.", ""},
+		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
+		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
+		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
+		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", consoleApproved},
+		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", consoleApproved},
+		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", consoleApproved},
+		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
+		{"a failed audit after its skip is required, agent", []Event{pushed, skipAudit, review("c1", true), audit("c1", false)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
+		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run"},
+		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			wf := &recordedSignals{}
+			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
+			store.events = append(store.events, c.events...)
+			err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, c.approver)
+			if c.refused != "" {
+				var u *UnreviewedMergeError
+				if !errors.As(err, &u) || err.Error() != c.refused {
+					t.Fatalf("err = %v, want %q", err, c.refused)
+				}
+				if a := store.approvals[0]; a.Status != "pending" || len(wf.sent) != 0 {
+					t.Fatalf("approval %+v, signals %v: want pending, none", a, wf.sent)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a := store.approvals[0]; a.Status != "approved" || a.DecisionNote != c.note || len(wf.sent) != 1 {
+				t.Fatalf("approval %+v, signals %v, want note %q", a, wf.sent, c.note)
+			}
+		})
+	}
+}
+
+// testPolicyAt reads every pin as the test policy version.
+func testPolicyAt(_ context.Context, _ int64) (policy.Version, bool) {
+	return testPolicyVersion(), true
+}
+
+// A stage the card's process does not list is not required of the project
+// agent's approval; a listed one still is. The version read is the one the
+// request pinned (the current one for pin 0); a process or version that
+// cannot be found leaves both stages required; a card with no process of
+// its own follows its project's.
+func TestApproveMergeLeavesOutAStageTheProcessDoesNotList(t *testing.T) {
+	ctx := context.Background()
+	tree := func(processes map[string]policy.Process) policy.Version {
+		return policy.Version{Tree: policy.Tree{Processes: processes,
+			Projects: map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Process: "lean"}}}}
+	}
+	lean := policy.Process{Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageApproval}}}
+	withReview := policy.Process{Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageReview}, {Name: policy.StageApproval}}}
+	const (
+		noReview = "The review did not run, so the project agent cannot approve this merge."
+		both     = "The review and the audit did not run, so the project agent cannot approve this merge."
+	)
+	failedReview := Event{TaskID: "t1", Kind: EventModelReview, Detail: map[string]any{"commit": "c1", "reviewed": false}}
+	pushed := Event{TaskID: "t1", Kind: EventSessionPushed, Detail: map[string]any{}}
+	cases := []struct {
+		name    string
+		task    Task
+		pin     int64
+		current policy.Version
+		pinned  policy.Version
+		pinOK   bool
+		events  []Event
+		refused string
+	}{
+		{"the card's process lists neither", Task{Process: "lean"}, 0, tree(map[string]policy.Process{"lean": lean}), policy.Version{}, true, []Event{pushed}, ""},
+		{"the card's process lists the review", Task{Process: "review"}, 0, tree(map[string]policy.Process{"review": withReview}), policy.Version{}, true, []Event{pushed}, noReview},
+		{"no process of its own: the project's lean one", Task{Repository: "sf/app"}, 0, tree(map[string]policy.Process{"lean": lean}), policy.Version{}, true, []Event{pushed}, ""},
+		{"the process is missing from the version", Task{Process: "gone"}, 0, tree(map[string]policy.Process{"lean": lean}), policy.Version{}, true, []Event{pushed}, both},
+		{"the pinned version lists the review, the current one does not, a failed review row stands", Task{Process: "p"}, 7,
+			tree(map[string]policy.Process{"p": lean}), tree(map[string]policy.Process{"p": withReview}), true, []Event{pushed, failedReview}, noReview},
+		{"the pinned version cannot be read", Task{Process: "p"}, 7,
+			tree(map[string]policy.Process{"p": lean}), policy.Version{}, false, []Event{pushed}, both},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			c.task.ID = "t1"
+			store.tasks["t1"] = c.task
+			spec := json.RawMessage(fmt.Sprintf(`{"policy_version":%d}`, c.pin))
+			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: spec})
+			store.events = append(store.events, c.events...)
+			at := PolicyAtPin(func() policy.Version { return c.current },
+				func(context.Context, int64) (policy.Version, bool, error) { return c.pinned, c.pinOK, nil })
+			err := ApproveMerge(ctx, store, at, &recordedSignals{}, "t1", 9, ChatUser)
+			switch {
+			case c.refused == "" && err != nil:
+				t.Errorf("%v, want approved", err)
+			case c.refused != "" && (err == nil || err.Error() != c.refused):
+				t.Errorf("%v, want %q", err, c.refused)
+			}
+		})
 	}
 }

@@ -95,6 +95,14 @@ var rung0 = []resolver{
 	{Name: "rerun_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
 		return rungZeroTakes(c, f, headKinds, Resolution{Action: ActRerunChecks}), nil
 	}},
+	// a checks wait's stop with every check green: the wait runs again,
+	// once per head (WaitedOnHead)
+	{Name: "wait_checks", Fire: func(_ context.Context, _ *Runner, c Case, f CaseFacts) (*Resolution, error) {
+		if f.Checks != "green" {
+			return nil, nil
+		}
+		return rungZeroTakes(c, f, []CaseKind{CaseGateStop}, Resolution{Action: ActWaitChecks}), nil
+	}},
 	// a day's, a month's or a project's cap: the run's own wait (capWait)
 	// ends it when the cap turns, and the case waits on the human until then
 	{Name: "cap_wait", Fire: func(context.Context, *Runner, Case, CaseFacts) (*Resolution, error) { return nil, nil }},
@@ -225,7 +233,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	f.Kind = c.Kind
+	f.atCase(c)
 	if at.N > 1 {
 		if out, ok, err := r.retriedTrip(ctx, t, c.Kind, cases, at.ID); ok || err != nil {
 			return out, err

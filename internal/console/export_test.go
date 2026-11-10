@@ -196,7 +196,7 @@ func TestChatGithubExport(t *testing.T) {
 	equal(t, "the row", r.mirrors.rows["demo-app export"], factoryd.Mirror{Project: "demo-app",
 		Direction: factoryd.MirrorExport, Remote: "acme/app", Username: "u", Token: ghToken, State: "created", Mode: factoryd.ModeMirror})
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "auto", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
+		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "human", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
 
 	g.replies = [][]string{{call(1, "github_export", args)}, {say("Set it again.")}}
 	_, _, tokens = chatPost(t, r, ck, s, demo, url.Values{"message": {"export it again"}})
@@ -220,7 +220,7 @@ func TestChatGithubExport(t *testing.T) {
 		`text {"text":"It is the factory's own."}`, `done {}`})
 	equal(t, "Forgejo calls of the refused", r.mirrors.took(), []string(nil))
 	chatRows(t, r.events, before, "sebastian",
-		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "auto", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
+		factoryd.Event{Repository: "demo-app/demo-app", Kind: factoryd.EventGithubExportSet, Detail: map[string]any{"remote": "acme/app", "autonomy": "manual", "merge_rule": "human", "decider": "member", "chat_task": factoryd.ChatTaskID("demo-app", time.Now())}})
 
 	said, _ := json.Marshal([]any{chat.msgs, chat.proposals, r.events.all(), g.calls(), events, done, gone, refused, seed})
 	if strings.Contains(string(said)+logs.String(), ghToken) {
@@ -473,14 +473,14 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	}
 
 	set(http.StatusUnprocessableEntity, 0, 0)
-	file(http.StatusBadGateway, "Forgejo refused to open the pull request; the filing was undone; see the factoryd log")
+	file(http.StatusBadGateway, "Forgejo refused to open the pull request: 422 Unprocessable Entity; the filing was undone. Try again in a moment.")
 	if m, ok := r.mirrors.rows["linkshort import"]; ok || !slices.Equal(r.mirrors.deletes, []string{"linkshort import"}) {
 		t.Errorf("an unopened pull request: import row %+v (%v), deletes %q; want none, one delete", m, ok, r.mirrors.deletes)
 	}
 
 	set(0, 0, 0)
 	r.mirrors.setPR = errors.New("db down")
-	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; the filing was undone")
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import: db down; the filing was undone. Try again in a moment.")
 	if closes, _ := calls(); len(closes) != 1 || closes[0].path != "/api/v1/repos/sf/infra/pulls/12" || closes[0].auth != "Bearer access-1" ||
 		!reflect.DeepEqual(closes[0].body, map[string]any{"state": "closed"}) {
 		t.Errorf("closes %+v, want #12 closed as the human", closes)
@@ -490,14 +490,14 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	}
 
 	set(0, http.StatusForbidden, 0)
-	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; the filing was undone")
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import: db down; the filing was undone. Try again in a moment.")
 	if m, ok := r.mirrors.rows["linkshort import"]; ok || len(r.mirrors.deletes) != 3 {
 		t.Errorf("an unclosed pull request on a deleted branch: import row %+v (%v), deletes %q; want none, three deletes", m, ok, r.mirrors.deletes)
 	}
 
 	set(0, http.StatusForbidden, http.StatusForbidden)
-	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import; sf/infra#12 may stay open: close it; "+
-		"delete branch project-linkshort to file the name again; see the factoryd log")
+	file(http.StatusInternalServerError, "cannot record sf/infra#12 on the GitHub import: db down; sf/infra#12 may stay open: close it; "+
+		"delete branch project-linkshort to file the name again.")
 	want := factoryd.Mirror{Project: "linkshort", Direction: factoryd.MirrorImport, Remote: "acme/app", Token: ghToken, State: "pending"}
 	if got := r.mirrors.rows["linkshort import"]; got != want || len(r.mirrors.deletes) != 3 {
 		t.Errorf("an open pull request on its branch: import row %+v, deletes %q; want %+v kept", got, r.mirrors.deletes, want)
@@ -507,6 +507,17 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	}
 	if pr, ok, err := r.events.FiledPR(context.Background(), "linkshort"); ok || err != nil {
 		t.Errorf("FiledPR = %d, %v, %v; want no filing recorded", pr, ok, err)
+	}
+
+	// a configuration the console cannot read names its error and the
+	// next action, not the factoryd log, and files nothing
+	before := len(infra.contents)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
+		return nil, errors.New("infra: 503")
+	}
+	file(http.StatusBadGateway, "The configuration at infra's head could not be read: infra: 503. File the project again in a moment.")
+	if len(infra.contents) != before {
+		t.Fatalf("a failed check committed: %+v", infra.contents[before:])
 	}
 }
 
@@ -559,7 +570,7 @@ func TestFilingFailsWithoutItsEvent(t *testing.T) {
 	r.events.fail = errors.New("db down")
 	r.events.mu.Unlock()
 	rec := r.do(post("/projects", importForm(s.csrf)), ck)
-	if body := rec.Body.String(); rec.Code != http.StatusInternalServerError || !strings.Contains(body, "cannot record the filing of sf/infra#12; the filing was undone") {
+	if body := rec.Body.String(); rec.Code != http.StatusInternalServerError || !strings.Contains(body, "cannot record the filing of sf/infra#12: db down; the filing was undone. Try again in a moment.") {
 		t.Fatalf("POST /projects = %d %q, want 500 saying the filing was undone", rec.Code, body)
 	}
 	infra.mu.Lock()

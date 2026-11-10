@@ -87,6 +87,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySetGate:                     r.SetGate,
 		ActivityRunSession:                  r.RunSession,
 		ActivityOpenPullRequest:             r.OpenPullRequest,
+		ActivityCopyUpstreamImages:          r.CopyUpstreamImages,
 		ActivityWaitChecks:                  r.WaitChecks,
 		ActivityHeadChecks:                  r.HeadChecks,
 		ActivityRerunChecks:                 r.RerunChecks,
@@ -1687,6 +1688,52 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	return PullRequest{Number: ref.Number, URL: ref.URL}, nil
 }
 
+// upstreamImagesPath is the list of upstream images the factory's store
+// holds copies of.
+const upstreamImagesPath = "upstream-images.txt"
+
+// CopyUpstreamImages copies the image lines the task's branch head adds to
+// upstream-images.txt, against its base's, into the store before the
+// pull request's checks read it; its findings are the lines it could not
+// copy. Without a copier it does nothing.
+func (r *Runner) CopyUpstreamImages(ctx context.Context, taskID, commit string) ([]string, error) {
+	if r.Upstream == nil {
+		return nil, nil
+	}
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	base := t.SHA
+	if base == "" {
+		if base, err = r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase); err != nil {
+			return nil, err
+		}
+	}
+	holder := r.forgejo.Fork(repo)
+	if t.PRNumber != 0 {
+		st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+		if err != nil {
+			return nil, err
+		}
+		if holder, err = SplitRepo(cmp.Or(st.HeadRepo, repo.String())); err != nil {
+			return nil, err
+		}
+	}
+	head, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, commit, upstreamImagesPath)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	was, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, base, upstreamImagesPath)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	return r.Upstream.Copy(ctx, string(was), string(head))
+}
+
 // refuseWorkflowDirChange returns a terminal error when any workflow
 // directory's tree entry in commit (on the fork, where the branch was
 // pushed) differs from the task base's, main's current head's and their
@@ -1848,6 +1895,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.StrongerAfter = 1
 	}
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
+	tc.ChecksBound, tc.SupervisorTimeout = v.ChecksBound(t.Repository), v.Document.Limits.SupervisorTimeout
 	tc.NoAudit = !project.Audit
 	tc.Sessions = SessionCap(t, 0)
 	return tc, nil
@@ -2167,20 +2215,30 @@ func FirstLine(s string) string {
 // WaitChecks polls the combined commit status of sha (Forgejo Actions is the
 // first verification gate, architecture 7) until it settles or the checks
 // timeout passes. Forgejo combines worst-state-wins, so a failed job
-// settles the verdict while slower jobs still run.
+// settles the verdict while slower jobs still run, except that a job killed
+// by a signal is re-run once first (killedChecks) and its re-run awaited.
 func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return ChecksResult{}, err
 	}
-	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-time.Minute), time.Now().Add(r.cfg.ChecksTimeout))
+	deadline := activity.GetInfo(ctx).Deadline.Add(-r.checksMargin)
+	var reran []rerunNote
 	for {
 		cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
 		if err != nil {
 			return ChecksResult{}, err
 		}
 		activity.RecordHeartbeat(ctx, cs.State)
-		res := checksResult(cs, r.forgejo.PublicURL, r.jobLogOf(ctx, t, repo))
+		logOf := r.jobLogOf(ctx, t, repo)
+		res := checksResult(cs, r.forgejo.PublicURL, logOf)
+		if res.State == ChecksFailure {
+			if unsettled, notes := r.killedChecks(ctx, t, repo, cs, logOf, &reran); unsettled {
+				res.State = ""
+			} else {
+				res.Findings = append(res.Findings, notes...)
+			}
+		}
 		if res.State == "" && !time.Now().Before(deadline) {
 			res.State = ChecksTimeout
 		}
@@ -2189,6 +2247,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 				r.annotateMainFailures(ctx, repo, &res)
 			}
 			detail := map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}
+			if len(reran) > 0 {
+				detail["reran"] = reran
+			}
 			if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil || !ok {
 				log.Printf("task %s: ci jobs of %s: no project for %s (%v)", t.ID, sha, t.Repository, err)
 			} else if jobs, err := CIJobsOf(ctx, r.forgejo, r.forgejo.Access(p).Actions, repo.Owner, repo.Name, sha, r.cfg.CIQueue); err != nil {

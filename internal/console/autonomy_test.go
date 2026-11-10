@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/base64"
+	"errors"
 	"net/http"
 	"net/url"
 	"slices"
@@ -97,15 +98,14 @@ func TestEditProjectFile(t *testing.T) {
 }
 
 // The four states in the project file (C14): full auto is autonomous with
-// merge_rule auto, autonomous takes merge_rule human, assisted and manual
-// keep the rule.
+// merge_rule auto, every other level writes merge_rule human.
 func TestEditProjectFileStates(t *testing.T) {
 	raw := []byte("repository: sf/code\nmerge_rule: auto\n")
 	for _, tt := range []struct{ state, want string }{
-		{policy.AutonomyAssisted, "repository: sf/code\nmerge_rule: auto\nautonomy: assisted\n"},
+		{policy.AutonomyAssisted, "repository: sf/code\nmerge_rule: human\nautonomy: assisted\n"},
 		{policy.AutonomyAutonomous, "repository: sf/code\nmerge_rule: human\nautonomy: autonomous\n"},
 		{policy.AutonomyFullAuto, "repository: sf/code\nmerge_rule: auto\nautonomy: autonomous\n"},
-		{policy.AutonomyManual, "repository: sf/code\nmerge_rule: auto\nautonomy: manual\n"},
+		{policy.AutonomyManual, "repository: sf/code\nmerge_rule: human\nautonomy: manual\n"},
 	} {
 		out, err := editProjectFile(raw, autonomyEdit(tt.state, 0))
 		equal(t, tt.state, []any{string(out), err}, []any{tt.want, error(nil)})
@@ -173,6 +173,29 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 		t.Fatalf("a refused file committed: %+v", infra.contents)
 	}
 	equal(t, "a refused file loads nothing", reloads, 1)
+}
+
+// A check that cannot read infra's head refuses the switch with the
+// error and the two remedies, committing nothing.
+func TestSetAutonomyNamesTheUnreadConfiguration(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n"}
+	r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) {
+		return nil, errors.New("infra's head did not answer the read of projects/demo-app.yaml")
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"full auto"}}), ck)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("POST autonomy over an unread head = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "The configuration at infra's head could not be read: infra's head did not answer the read of projects/demo-app.yaml. "+
+		"Try the switch again, or edit the project file on Forgejo." {
+		t.Errorf("the refusal = %q", got)
+	}
+	if len(infra.contents) != 0 {
+		t.Fatalf("an unread head committed: %+v", infra.contents)
+	}
 }
 
 // A level the project file already holds changes nothing: the POST

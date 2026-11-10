@@ -125,7 +125,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		if f, err = r.tripFacts(ctx, t, head); err != nil {
 			return ActResult{}, err
 		}
-		f.Kind = c.Kind
+		f.atCase(c)
 		if why := actRefusal(f, in, cardName(t)); why != "" {
 			return ActResult{}, ErrActRefused(why)
 		}

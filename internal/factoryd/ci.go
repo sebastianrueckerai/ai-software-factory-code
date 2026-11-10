@@ -746,13 +746,13 @@ func jobIDFromRunnerName(name string) (int64, bool) {
 // The nodes have 8 CPUs each.
 var (
 	ciRequests = map[string]any{"cpu": "1", "memory": "1Gi"}
-	ciLimits   = map[string]any{"cpu": "4", "memory": "4Gi"}
+	ciLimits   = map[string]any{"cpu": "4", "memory": "5Gi"}
 	ciQuota    = map[string]any{
 		"pods":            "1",
 		"requests.cpu":    "1",
 		"requests.memory": "1Gi",
 		"limits.cpu":      "4",
-		"limits.memory":   "4Gi",
+		"limits.memory":   "5Gi",
 	}
 )
 
@@ -763,6 +763,8 @@ func (s *CISpawner) runnerPodSpec(kind ciJobKind, cache string, vm *BuildVM, las
 	}
 	env := []any{
 		map[string]any{"name": "HOME", "value": "/home/runner"},
+		// go test takes -p from GOMAXPROCS: two packages compile, vet and run at once
+		map[string]any{"name": "GOMAXPROCS", "value": "2"},
 		map[string]any{"name": "RUNNER_UUID", "valueFrom": map[string]any{
 			"secretKeyRef": map[string]any{"name": ciSecretName, "key": "uuid"}}},
 	}

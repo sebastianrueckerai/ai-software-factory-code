@@ -35,10 +35,13 @@ const (
 	AnswerFund        = "fund"
 	AnswerClose       = "close"
 	AnswerKeepWaiting = "keep_waiting"
-	AnswerGo          = "go"
-	AnswerExtend      = "extend"
-	AnswerOverrule    = "overrule"
-	AnswerSuccessor   = "successor"
+	// AnswerKeepChecking is the checks-wait stop's Keep waiting: it runs
+	// the wait again, where AnswerKeepWaiting only records.
+	AnswerKeepChecking = "keep_checking"
+	AnswerGo           = "go"
+	AnswerExtend       = "extend"
+	AnswerOverrule     = "overrule"
+	AnswerSuccessor    = "successor"
 )
 
 // The marks a stop's reason carries where it names an owner decision:
@@ -642,7 +645,7 @@ func waitChecksQuestion(reason string) *HumanQuestion {
 		Why:  "The gate supervisor stopped the wait: it outlasted its bound.",
 		Info: "Keep waiting re-runs the gate's checks now; close ends the card.",
 		Choices: []QuestionChoice{
-			{AnswerKeepWaiting, "Keep waiting"},
+			{AnswerKeepChecking, "Keep waiting"},
 			{AnswerClose, "End the card"},
 		},
 	}

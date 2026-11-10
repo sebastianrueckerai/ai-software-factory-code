@@ -58,7 +58,7 @@ func TestParseTreeAccepts(t *testing.T) {
 		t.Fatalf("projects = %v", got)
 	}
 	demo := tree.Projects["demo-app"]
-	if demo.Repository != "demo-app/demo-app" || demo.MergeRule != MergeAuto || demo.Objects != ObjectsFactory || demo.Agents != AgentsCoder ||
+	if demo.Repository != "demo-app/demo-app" || demo.MergeRule != MergeHuman || demo.Objects != ObjectsFactory || demo.Agents != AgentsCoder ||
 		len(demo.Environments) != 2 || demo.Environments[0].Hostname != "demo-staging.example.org" || demo.Quota == nil || demo.Quota.Memory != "4Gi" {
 		t.Fatalf("demo-app = %+v", demo)
 	}
@@ -373,7 +373,7 @@ func TestSchemaRoundTrip(t *testing.T) {
 		"unknown tool":         {"policy.yaml", "escalate: {}", "firecrawl: {}"},
 		"unknown bound":        {"policy.yaml", "GateReproduction: 1800", "Lunch: 1800"},
 		"invalid outcome":      {"policy.yaml", "outcome: auto", "outcome: maybe"},
-		"invalid merge rule":   {"projects/demo-app.yaml", "merge_rule: auto", "merge_rule: sometimes"},
+		"invalid merge rule":   {"projects/demo-app.yaml", "merge_rule: human", "merge_rule: sometimes"},
 		"wrong version":        {"policy.yaml", "version: 1", "version: 2"},
 	} {
 		t.Run(name, func(t *testing.T) {

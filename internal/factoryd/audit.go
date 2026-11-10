@@ -149,7 +149,7 @@ func (r *Runner) GateAudit(ctx context.Context, taskID string, pr PullRequest, c
 		return AuditResult{}, err
 	}
 	if _, p, _ := v.ProjectOf(t.Repository); !p.Audit {
-		r.record(ctx, t.ID, "stage_skipped", map[string]any{"stage": policy.StageAudit, "reason": auditNotSwitchedOn})
+		r.record(ctx, t.ID, StepStageSkipped, map[string]any{"stage": policy.StageAudit, "reason": auditNotSwitchedOn})
 		return AuditResult{Skipped: auditNotSwitchedOn}, nil
 	}
 	res := AuditResult{Model: r.callModel(t, policy.PurposeAudit)}

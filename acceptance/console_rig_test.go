@@ -156,6 +156,13 @@ type AcceptanceRig struct {
 	spend        *factoryd.ProjectSpend
 	acted        []factoryd.ActInput
 	actRefusal   string
+	ws           *writeSeams
+	// the loaded policy's own shape of the code project for the write
+	// tools: whether its objects are the factory's, whether its process
+	// holds a dependencies block, and the routines its file names
+	factoryObjects bool
+	dependencies   bool
+	routines       []policy.Routine
 }
 
 // accMessage is one conversation row with the member it belongs to.
@@ -201,7 +208,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 	a := &AcceptanceRig{t: t, sessions: map[string]factoryd.ConsoleSession{}, bus: factoryd.NewEventBus(),
 		timelines: acceptObjects{}, prNext: 100, // the counted pull numbers, 101 first
 		user: "sebastian", writers: map[string][]string{"sf/code": {"sebastian", "anna"}},
-		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman}
+		sessionFloor: map[string]float64{}, mergeRule: policy.MergeHuman, ws: newWriteSeams()}
 	a.tasks = []factoryd.BoardTask{
 		{Task: factoryd.Task{ID: "t-m", Kind: "agent", Status: "queued", Track: policy.TrackDirect, Process: "maintenance",
 			Repository: "sf/code", IssueNumber: 5, Size: "small", BudgetEUR: 3, SpentEUR: 0.4,
@@ -286,6 +293,7 @@ func newAcceptanceRig(t *testing.T, steer bool, docs map[string]string, figures 
 		a.chat = &policy.ChatConfig{DocRepo: "sf/docs"}
 	}
 	cardReads(&cfg, a)
+	a.ws.wire(&cfg)
 	cfg.Act, cfg.PoolDrawn = a.Act, a.PoolDrawn
 	cfg.Figures = figures
 	c, err := console.New(cfg)
@@ -337,6 +345,8 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 		return factoryd.ActResult{}, factoryd.ErrActRefused("this rig answers no case")
 	}
 	cfg.PoolDrawn = func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil }
+	// the rigs keep no review or audit rows: every approval passes the gate
+	cfg.CheckMerge = func(context.Context, string, int64, string) error { return nil }
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers
@@ -718,6 +728,7 @@ func (a *AcceptanceRig) serveForgejo(w http.ResponseWriter, r *http.Request) {
 		a.commentN++
 		w.WriteHeader(http.StatusCreated)
 		_ = json.NewEncoder(w).Encode(map[string]any{"id": a.commentN}) // #nosec G104 -- test harness stub response
+	case a.serveWrites(w, r):
 	default:
 		http.NotFound(w, r)
 	}
@@ -897,8 +908,14 @@ func (a *AcceptanceRig) CriteriaVerdicts(context.Context, string) ([]factoryd.Cr
 	return nil, nil
 }
 
-func (a *AcceptanceRig) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
-	return nil, nil
+func (a *AcceptanceRig) Dependencies(_ context.Context, id string) ([]factoryd.Dependency, error) {
+	a.ws.mu.Lock()
+	defer a.ws.mu.Unlock()
+	var out []factoryd.Dependency
+	for _, d := range a.ws.deps[id] {
+		out = append(out, factoryd.Dependency{TaskID: d})
+	}
+	return out, nil
 }
 
 func (a *AcceptanceRig) Dependents(context.Context, string) ([]factoryd.Dependency, error) {
@@ -1132,9 +1149,19 @@ func (a *AcceptanceRig) AttachAnalysis(_ context.Context, taskID, found, recomme
 	return nil
 }
 
-func (a *AcceptanceRig) AddTaskDeps(context.Context, string, []string) error { return nil }
+func (a *AcceptanceRig) AddTaskDeps(_ context.Context, id string, deps []string) error {
+	a.ws.mu.Lock()
+	defer a.ws.mu.Unlock()
+	a.ws.deps[id] = append(a.ws.deps[id], deps...)
+	return nil
+}
 
-func (a *AcceptanceRig) RemoveTaskDeps(context.Context, string, []string) error { return nil }
+func (a *AcceptanceRig) RemoveTaskDeps(_ context.Context, id string, deps []string) error {
+	a.ws.mu.Lock()
+	defer a.ws.mu.Unlock()
+	a.ws.deps[id] = slices.DeleteFunc(a.ws.deps[id], func(d string) bool { return slices.Contains(deps, d) })
+	return nil
+}
 
 // Approvals: the approval_requests table in memory.
 
@@ -1624,7 +1651,10 @@ func (a *AcceptanceRig) LiveAskBinds(_ context.Context, repository, login string
 
 func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error) {
 	v, _, _ := a.CurrentPolicy(ctx)
-	return []factoryd.Project{{Name: accProjectName, Repository: "sf/code", MergeRule: "human", Objects: "seed",
+	a.mu.Lock()
+	objects := a.objects()
+	a.mu.Unlock()
+	return []factoryd.Project{{Name: accProjectName, Repository: "sf/code", MergeRule: "human", Objects: objects,
 		Agents: "coder", File: true, Process: "maintenance", Tracks: v.Tree.Processes["maintenance"].Tracks,
 		Namespaces: []string{"factory"},
 		Tokens:     policy.SeedTokens{Read: policy.SecretCIRegistrar, Actions: policy.SecretCIRegistrar, Merge: policy.SecretMerge}}}, nil
@@ -1636,6 +1666,7 @@ func (a *AcceptanceRig) Projects(ctx context.Context) ([]factoryd.Project, error
 func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, error) {
 	a.mu.Lock()
 	chat, pool, autonomy, mergeRule, approvers := a.chat, a.pool, a.autonomy, a.mergeRule, a.approvers
+	objects, deps, routines := a.objects(), a.dependencies, slices.Clone(a.routines)
 	a.mu.Unlock()
 	if approvers == nil {
 		approvers = []string{"sebastian", "anna"}
@@ -1649,7 +1680,13 @@ func (a *AcceptanceRig) CurrentPolicy(context.Context) (policy.Version, bool, er
 		"maintenance": {Tracks: policy.Tracks{Direct: policy.Track{Class: "coder"}},
 			Stages: stages, Merge: policy.Merge{Queue: "none"}},
 	}
-	projects := map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: mergeRule, Objects: "seed", Agents: "coder", Process: "maintenance"}}
+	projects := map[string]policy.ProjectConfig{accProjectName: {Repository: "sf/code", MergeRule: mergeRule, Objects: objects, Agents: "coder", Process: "maintenance", Routines: routines}}
+	if deps {
+		p := processes["maintenance"]
+		p.Dependencies = &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}
+		processes["maintenance"] = p
+	}
+
 	// the loaded policy's own hold of the code project: its autonomy (an
 	// empty one is manual) and, when a reload activated it, its pool
 	code := projects[accProjectName]

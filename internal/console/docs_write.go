@@ -128,12 +128,16 @@ func (c *Console) docRefused(w http.ResponseWriter, r *http.Request, err error) 
 		}
 	case errors.As(err, &fj):
 		log.Printf("console: %s could not %s: %v", current(r).user, fj.what, fj.err)
-		out.Reason = "Forgejo refused to " + fj.what + "; see the factoryd log"
+		if fj.say != "" {
+			out.Reason = fmt.Sprintf(fj.say, forgejoCause(fj.err))
+		} else {
+			out.Reason = "Forgejo refused to " + fj.what + ": " + forgejoCause(fj.err) + ". Try again in a moment."
+		}
 	case errors.As(err, &no):
 		out.Reason, status = no.msg, no.status
 	default:
 		log.Printf("console: %s: %v", current(r).user, err)
-		out.Reason = "the save did not land; see the factoryd log"
+		out.Reason = "the save did not land: " + errText(err) + ". Try again in a moment."
 	}
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -186,7 +190,7 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 		switch {
 		case err != nil:
 			log.Printf("console: %s's save of %s on %s does not merge: %v", a.s.user, docPath, docRepo, err)
-			return nil, refuse(http.StatusBadGateway, "the save's merge did not run; see the factoryd log")
+			return nil, refuse(http.StatusBadGateway, "the save's merge did not run: "+errText(err)+". Try again in a moment.")
 		case len(clashes) > 0:
 			return nil, &docRefusal{refusal{http.StatusConflict,
 				fmt.Sprintf("%s changed the same lines (%s)", who, at.Format("15:04"))}, hash, current, who, at, clashes}
@@ -226,7 +230,7 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 	if err := c.as(ctx, a.s, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
 		"branch": "master", "message": a.attribution().Message(docPath + ": edited in the console"), "files": []map[string]string{change}},
 		http.StatusCreated, &landed); err != nil {
-		return nil, &forgejoRefusal{"commit the document", err}
+		return nil, &forgejoRefusal{what: "commit the document", err: err}
 	}
 	// The commit is on master: whatever the head-commit read answers a
 	// beat later, the save has landed and owes its event, so it answers

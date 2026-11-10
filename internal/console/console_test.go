@@ -983,6 +983,9 @@ func (f *fakeResources) Promote(_ context.Context, id int64, by string, standing
 	if id == 500 {
 		return errors.New(`pq: deadlock detected in "cloud_resources"`)
 	}
+	if id == 501 {
+		return errors.New("the store rejected the token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	}
 	if id == 420 {
 		return fmt.Errorf("resource %d: %w: server type cx53 is not in the standing types [cx23]", id, cloudres.ErrBeyondStanding)
 	}
@@ -1142,7 +1145,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
 			Chat:            l.chat, Risk: l.risk, Routines: l.routines},
 			Projects: map[string]policy.ProjectConfig{
-				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
+				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "human", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
 					Envelope: &policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
@@ -1418,6 +1421,7 @@ func newRig(t *testing.T) *rig {
 			r.synced = append(r.synced, project+" by "+by)
 			return "Pull request #3 brings GitHub's default branch of acme/app at abc1234 to main.", r.syncErr
 		},
+		CheckMerge: func(context.Context, string, int64, string) error { return nil },
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL approved %s #%d by %s", taskID, pr, approver))
@@ -1755,6 +1759,7 @@ func TestNewRefusesAMissingCardRead(t *testing.T) {
 		"CaseByID":      func(c *Config) { c.CaseByID = nil },
 		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
 		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
+		"CheckMerge":    func(c *Config) { c.CheckMerge = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)
@@ -2526,7 +2531,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 		`<a href="` + at + `/projects/demo-app.yaml" target="_blank" rel="noopener">demo-app</a>`,
 		`<a href="` + at + `/projects/infra.yaml" target="_blank" rel="noopener">infra</a>`,
 		"<td>sf/infra</td><td>human</td><td>seed</td><td>none</td><td></td>",
-		"<td>demo-app/demo-app</td><td>auto</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
+		"<td>demo-app/demo-app</td><td>human</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
 		"<td>screening</td><td>human</td><td><i class=\"lamp\" aria-hidden=\"true\"></i>no</td><td>outsider</td>",
 		"<td>checks</td><td>agent</td><td><i class=\"lamp on\" aria-hidden=\"true\"></i>yes</td><td></td>",
 		`<a href="https://git.example/sf/infra/src/branch/main/factory" target="_blank" rel="noopener">`} {
@@ -3200,8 +3205,11 @@ func TestMergeCardShowsWhyItHasNotMerged(t *testing.T) {
 	}
 }
 
-// Pages say what failed in a fixed sentence; the details go to the log.
-func TestErrorsShowNoInternals(t *testing.T) {
+// A resources button's refusal names what failed, the error and the next
+// action, not the factoryd log: the bound arms keep their fixed causes,
+// a store failure's 500 carries the store's error, and a token-shaped
+// secret in that error reaches the page masked.
+func TestStoreErrorRefusalNamesTheErrorAndMasksTokens(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/resources/410/promote", url.Values{"csrf": {s.csrf}}), ck)
@@ -3214,8 +3222,15 @@ func TestErrorsShowNoInternals(t *testing.T) {
 		t.Fatalf("promote beyond the standing block = %d: %s", rec.Code, rec.Body)
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
-	if rec.Code != http.StatusInternalServerError || strings.Contains(rec.Body.String(), "pq:") {
+	if rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != `The resource could not be promoted: pq: deadlock detected in "cloud_resources". Press Promote again, or release it and commission it anew.` {
 		t.Fatalf("a store error = %d: %s", rec.Code, rec.Body)
+	}
+	// a token-shaped secret in the store's error is masked in the refusal
+	rec = r.do(post("/resources/501/promote", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != "The resource could not be promoted: the store rejected the token "+tokenMask+". Press Promote again, or release it and commission it anew." {
+		t.Fatalf("a store error holding a token = %d: %s", rec.Code, rec.Body)
 	}
 }
 

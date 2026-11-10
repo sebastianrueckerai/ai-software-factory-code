@@ -121,6 +121,7 @@ func main() {
 	if err := policyLoader.Boot(context.Background()); err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	policyAt := factoryd.PolicyAtPin(policyLoader.Current, store.PolicyVersion)
 	log.Printf("config: version %d (commit %s) current", policyLoader.Current().ID, policyLoader.Current().Commit)
 
 	openActivities, err := factoryd.NewOpenActivities(metrics.Meter)
@@ -181,7 +182,6 @@ func main() {
 		Bus:                  eventBus,
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
-		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			RepetitionEvents: envInt("SUPERVISE_READING_WITHOUT_WRITING", 24),
 			SameFailure:      envInt("SUPERVISE_SAME_FAILURE", factoryd.DefaultSameFailure),
@@ -374,6 +374,9 @@ func main() {
 		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now, Workflows: workflows,
 		Timeline: runner.Timeline(), OpenBao: registrar.OpenBao}
 	runner.Imager = imager
+	// a branch's new upstream image lines reach the store before its image
+	// build reads it: the same read login, the site admin's write login
+	runner.Upstream = &factoryd.UpstreamCopier{Registry: registry, OpenBao: registrar.OpenBao, Scrub: runner.Scrub}
 	go imager.Run(ctx, time.Minute)
 	// a plan is named when its first revision files; the open plans this
 	// build inherits are named once now, off the startup path
@@ -575,6 +578,7 @@ func main() {
 		messengers = &console.Messengers{Store: store}
 	}
 	consoleHandler, err := console.New(console.Config{
+		Scrub:            scrub,
 		PublicURL:        publicURL,
 		Messengers:       messengers,
 		ForgejoURL:       forgejo.BaseURL,
@@ -592,8 +596,12 @@ func main() {
 		Dependencies:     store,
 		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
+		CheckMerge: func(ctx context.Context, taskID string, pin int64, approver string) error {
+			_, err := factoryd.CheckMergeApproval(ctx, store, policyAt, pin, taskID, approver)
+			return err
+		},
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
-			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
+			return factoryd.ApproveMerge(ctx, store, policyAt, workflows, taskID, pr, approver)
 		},
 		RerunChecks: func(ctx context.Context, taskID string, pr int64, by string) error {
 			return factoryd.RerunFactoryChecks(ctx, store, workflows, taskID, pr, by)

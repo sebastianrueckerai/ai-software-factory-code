@@ -294,8 +294,8 @@ func TestRoutineDrawerSaysWhatItCouldNotRead(t *testing.T) {
 	r.ledger.down, r.routines.runsErr = true, errors.New("the store is down")
 	d := getPage(r, ck, "/routines/"+bumpKey+"/drawer").Body.String()
 	for _, want := range []string{
-		"<p class=\"problem\" role=\"alert\">The configuration in force could not be read. See the factoryd log.</p>\n" +
-			"<p class=\"problem\" role=\"alert\">The routine&#39;s runs could not be read. See the factoryd log.</p>\n",
+		"<p class=\"problem\" role=\"alert\">The configuration in force could not be read: the ledger is down. Reload the board.</p>\n" +
+			"<p class=\"problem\" role=\"alert\">The routine&#39;s runs could not be read: the store is down. Open the routine again, or read its runs on Forgejo.</p>\n",
 		`<summary>Runs (15)</summary>`,
 	} {
 		if !strings.Contains(d, want) {

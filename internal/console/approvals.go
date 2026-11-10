@@ -55,7 +55,10 @@ type approvalCard struct {
 	// the card shows the face its frozen spec gives it, which may be
 	// stale; the card says so rather than fail silently.
 	HeadUnread bool
-	Resource   cloudres.ResourceSpec
+	// HeadUnreadWhy: that read's error, scrubbed, named in the card's
+	// problem sentence.
+	HeadUnreadWhy string
+	Resource      cloudres.ResourceSpec
 	// a plan's criteria gap: the spec, the open criteria with their
 	// standing verdicts, whether every card of the plan is delivered
 	// (done or merged), which the confirm button keys on, and whether a
@@ -186,7 +189,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 			green, sha, gerr := c.mergeHeadGreen(ctx, act, a.Project, k.Merge.HeadSHA, a.PRNumber)
 			if gerr != nil {
 				log.Printf("console: approval request %d: %v", a.ID, gerr)
-				k.HeadUnread = true
+				k.HeadUnread, k.HeadUnreadWhy = true, forgejoCause(gerr)
 			} else {
 				k.Healed = green
 				if sha != k.Merge.HeadSHA {
@@ -201,7 +204,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		}
 		if rows, open, ok, rerr := c.planRows(ctx, t); rerr != nil {
 			log.Printf("console: approval request %d: %v", a.ID, rerr)
-			k.Problem = "The console could not read the criterion rows. See the factoryd log."
+			k.Problem = "The console could not read the criterion rows: " + errText(rerr) + ". Reload the board."
 		} else if ok {
 			k.Criteria, k.Unsettled = rows, open
 		}
@@ -209,7 +212,7 @@ func (c *Console) approvalCard(ctx context.Context, a factoryd.ApprovalRequest, 
 		err = json.Unmarshal(a.Spec, &k.Resource)
 	case factoryd.ApprovalPlan:
 		if err = c.planOf(ctx, &k); err != nil {
-			k.Problem = "the plan could not be read; see the factoryd log"
+			k.Problem = "The plan could not be read: " + errText(err) + ". Open the plan's approval again, or read the plan on its issue."
 		}
 	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		err = c.criteriaOf(ctx, &k)
@@ -271,7 +274,7 @@ func (c *Console) openedOf(ctx context.Context, a actor, t factoryd.Task, projec
 		case errors.As(err, &ae) && ae.status == http.StatusNotFound:
 			v.Missing = true
 		case err != nil:
-			return nil, &forgejoRefusal{"read " + pp.Path + " at " + head, err}
+			return nil, &forgejoRefusal{what: "read " + pp.Path + " at " + head, err: err}
 		case string(raw) != pp.Code:
 			v.Changed, v.Repository = true, string(raw)
 		}
@@ -288,8 +291,11 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("spec: %w", err)
 	}
 	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.CriteriaSpec.Revision)
-	if err != nil || !ok {
-		return fmt.Errorf("revision %d of %s: found %v, %v", k.CriteriaSpec.Revision, k.TaskID, ok, err)
+	if err != nil {
+		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
+	}
+	if !ok {
+		return fmt.Errorf("revision %d of %s is not recorded", k.CriteriaSpec.Revision, k.TaskID)
 	}
 	var p factoryd.Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
@@ -386,8 +392,11 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("spec: %w", err)
 	}
 	_, p, ok, err := c.planTable(ctx, k.TaskID, k.PlanSpec.Revision)
-	if err != nil || !ok {
-		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
+	if err != nil {
+		return err
+	}
+	if !ok {
+		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
 	}
 	k.PlanSummary, k.PlanRows, k.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
@@ -522,7 +531,7 @@ func (c *Console) review(ctx context.Context, a actor, q factoryd.ApprovalReques
 // is still pending, and warning and skipped count as green.
 func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha string) (bool, error) {
 	if a.s == nil {
-		return false, &forgejoRefusal{"read the head's checks", errors.New("the actor carries no session, so the head's current checks were not read")}
+		return false, &forgejoRefusal{what: "read the head's checks", err: errors.New("the actor carries no session, so the head's current checks were not read")}
 	}
 	repo, err := factoryd.SplitRepo(project)
 	if err != nil {
@@ -531,7 +540,7 @@ func (c *Console) headChecksGreen(ctx context.Context, a actor, project, sha str
 	var cs factoryd.CombinedStatus
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/commits/%s/status", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), url.PathEscape(sha))
 	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &cs); err != nil {
-		return false, &forgejoRefusal{"read the head's checks", err}
+		return false, &forgejoRefusal{what: "read the head's checks", err: err}
 	}
 	return len(cs.Statuses) > 0 && (cs.State == "success" || cs.State == "warning" || cs.State == "skipped"), nil
 }
@@ -564,7 +573,7 @@ func (c *Console) mergeHeadGreen(ctx context.Context, a actor, project, pin stri
 // prHeadSHA is the pull request's current head commit.
 func (c *Console) prHeadSHA(ctx context.Context, a actor, project string, pr int64) (string, error) {
 	if a.s == nil {
-		return "", &forgejoRefusal{"read the pull request's head", errors.New("the actor carries no session, so the head was not read")}
+		return "", &forgejoRefusal{what: "read the pull request's head", err: errors.New("the actor carries no session, so the head was not read")}
 	}
 	repo, err := factoryd.SplitRepo(project)
 	if err != nil {
@@ -577,7 +586,7 @@ func (c *Console) prHeadSHA(ctx context.Context, a actor, project string, pr int
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr)
 	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &p); err != nil {
-		return "", &forgejoRefusal{"read the pull request's head", err}
+		return "", &forgejoRefusal{what: "read the pull request's head", err: err}
 	}
 	return p.Head.SHA, nil
 }

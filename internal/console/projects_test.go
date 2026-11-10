@@ -295,6 +295,7 @@ type infraFake struct {
 	contents    []recorded
 	pulls       []recorded
 	pullsStatus int              // the pull request's opening; 0: 201
+	pullsBody   string           // the refused opening's body
 	open        []map[string]any // GET pulls?state=open
 	// branches, when set, are infra's branches besides main with their
 	// heads: a commit makes its new branch with a head of its own, a new
@@ -430,6 +431,7 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			f.pulls = append(f.pulls, rec())
 			if f.pullsStatus != 0 {
 				w.WriteHeader(f.pullsStatus)
+				w.Write([]byte(f.pullsBody))
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
@@ -529,6 +531,7 @@ func linkshortFile(day string) string {
 		"# Filed from the console by sebastian on " + day + ".\n" +
 		"repository: linkshort/linkshort\n" +
 		"merge_rule: human\n" +
+		"autonomy: manual\n" +
 		"objects: factory\n" +
 		"agents: coder\n" +
 		"process: spec\n" +
@@ -539,7 +542,23 @@ func linkshortFile(day string) string {
 }
 
 func linkshortForm(csrf string) url.Values {
-	return url.Values{"csrf": {csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "merge_rule": {"human"}}
+	return url.Values{"csrf": {csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "autonomy": {"manual"}}
+}
+
+// Each dial position files the keys the dial writes for it, derived by
+// hand: only full auto is autonomous with merge_rule auto.
+func TestProjectFileWritesTheDialsKeys(t *testing.T) {
+	for state, want := range map[string]string{
+		"manual":     "merge_rule: human\nautonomy: manual\n",
+		"assisted":   "merge_rule: human\nautonomy: assisted\n",
+		"autonomous": "merge_rule: human\nautonomy: autonomous\n",
+		"full auto":  "merge_rule: auto\nautonomy: autonomous\n",
+	} {
+		got := string(projectFile(newProject{Name: "linkshort", Process: "spec", Autonomy: state}, "sebastian", time.Now()))
+		if !strings.Contains(got, "repository: linkshort/linkshort\n"+want+"objects: factory\n") {
+			t.Errorf("%s: filed\n%s", state, got)
+		}
+	}
 }
 
 // The form offers the tree's processes and templates to every console
@@ -559,7 +578,7 @@ func TestNewProjectRefusedByCheck(t *testing.T) {
 	body := form.Body.String()
 	for _, want := range []string{`<form method="post" action="/projects"`, `name="name"`, `pattern="[a-z0-9][a-z0-9\-]{0,35}[a-z0-9]"`,
 		`<option value="maintenance">maintenance</option>`, `<option value="" selected>none</option>`,
-		`<option value="human" selected>human</option>`, `<option value="auto">auto</option>`} {
+		`<option value="manual" selected>manual</option>`, `<option value="full auto">full auto</option>`} {
 		if form.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Errorf("GET /settings/new = %d, lacks %q", form.Code, want)
 		}
@@ -583,7 +602,8 @@ func TestNewProjectRefusedByCheck(t *testing.T) {
 	for form, line := range map[string]string{
 		"name=L":               "name: a DNS label of 2 to 37 lowercase letters, digits and dashes",
 		"name=-x":              "name: a DNS label of 2 to 37 lowercase letters, digits and dashes",
-		"merge_rule=sometimes": "merge rule: human or auto",
+		"autonomy=sometimes":   "autonomy: manual, assisted, autonomous or full auto",
+		"autonomy=autonomous ": "autonomy: manual, assisted, autonomous or full auto",
 		"process=":             "process: one of the configuration's processes",
 		"template=../x":        "template: one of the configuration's templates, or none",
 	} {
@@ -746,7 +766,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
 		}, []string{"failed", "waiting", "waiting", "waiting"}, []string{"#12 was closed without merging."}, []string{`action="/projects/linkshort/merge"`}},
 		{"pull request unreadable", func(s *statusRig) { s.infra.set(map[string]any{"number": 12, "state": 12}) }, []string{"failed", "waiting", "waiting", "waiting"},
-			[]string{"Cannot read the pull request; the factoryd log says why."}, nil},
+			[]string{"The pull request could not be read: forgejo GET /api/v1/repos/sf/infra/pulls/12: json: cannot unmarshal number into Go struct field infraPull.state of type string. Load the page again, or read the pull request on Forgejo."}, nil},
 		{"merge refused", func(s *statusRig) {
 			s.infra.set(openPull)
 			s.c.runs["linkshort"] = &projectRun{merge: "Does not have enough approvals"}
@@ -770,7 +790,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s.reconcileErr = "seed: forgejo: status 500"
 		}, []string{"done", "done", "failed", "waiting"}, []string{"The reconcile failed: seed: forgejo: status 500. It tries again at least hourly."}, nil},
 		{"main unreadable", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.mainErr = errors.New("boom") }, []string{"done", "done", "failed", "waiting"},
-			[]string{"Cannot read the repository&#39;s main; the factoryd log says why."}, nil},
+			[]string{"The repository&#39;s main could not be read: boom. Load the page again, or read the repository on Forgejo."}, nil},
 		{"created, reconciling", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.main = true }, []string{"done", "done", "done", "running"},
 			[]string{"linkshort/linkshort with main.", "Waiting for a reconcile that finds every object in place; one runs at least hourly."}, []string{`type="password"`}},
 		{"reconcile failed", func(s *statusRig) {
@@ -910,8 +930,8 @@ func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	infra.mu.Unlock()
 	rec = r.do(post("/projects", linkshortForm(s.csrf)), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusBadGateway ||
-		!strings.Contains(body, "Forgejo refused to commit the project's file; branch project-linkshort is left: its head is not this filing's commit") {
-		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the branch is left", rec.Code, body)
+		!strings.Contains(body, "Forgejo refused to commit the project's file: 500 Internal Server Error. Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again.") {
+		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the branch may be left", rec.Code, body)
 	}
 	infra.mu.Lock()
 	defer infra.mu.Unlock()
@@ -920,6 +940,54 @@ func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	}
 	if !slices.Equal(infra.branchReads, []string{"Bearer config-token", "Bearer config-token", "Bearer config-token"}) {
 		t.Errorf("branch reads %q, want three with the config token", infra.branchReads)
+	}
+}
+
+// failAfter is an http.RoundTripper that answers every branch read after
+// the first with 502; every other request goes to base.
+type failAfter struct {
+	base http.RoundTripper
+	n    *int
+}
+
+func (f failAfter) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/branches/") {
+		*f.n++
+		if *f.n > 1 {
+			return failAnswer(http.StatusBadGateway, "the branch read did not answer"), nil
+		}
+	}
+	return f.base.RoundTrip(req)
+}
+
+// A refused commit whose undo cannot read the branch holds no proof that
+// another filing has the name, so its advice is the conditional one.
+func TestFailedCommitWithAnUnreadableBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"a 4xx refusal", http.StatusUnprocessableEntity, "Forgejo refused to commit the project's file: 422 Unprocessable Entity. " +
+			"Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again."},
+		{"a 5xx refusal", http.StatusInternalServerError, "Forgejo refused to commit the project's file: 500 Internal Server Error. " +
+			"Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			infra := withInfra(t, r)
+			r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+			ck, s := r.loggedIn(t)
+			infra.mu.Lock()
+			infra.branches, infra.contentsStatus = map[string]string{}, tc.status
+			infra.mu.Unlock()
+			reads := 0
+			r.c.cfg.HTTP = &http.Client{Transport: failAfter{http.DefaultTransport, &reads}}
+			rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+			if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusBadGateway || !strings.HasSuffix(got, tc.want) {
+				t.Errorf("the filing = %d %q, want 502 ending %q", rec.Code, got, tc.want)
+			}
+		})
 	}
 }
 
@@ -952,7 +1020,7 @@ func TestRacingFilingsKeepTheWinnersBranch(t *testing.T) {
 		won, lost = 1, 0
 	}
 	if codes[won] != http.StatusSeeOther || codes[lost] != http.StatusBadGateway ||
-		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file; branch project-linkshort is left: its head is not this filing's commit") {
+		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file: branch already exists; another filing of linkshort holds the name. Choose another name, or open that filing's project when it lands.") {
 		t.Errorf("racing filings answered %d %q and %d %q; want one 303 and one 502 leaving the branch", codes[0], bodies[0], codes[1], bodies[1])
 	}
 	infra.mu.Lock()
@@ -1168,7 +1236,7 @@ func TestPanelButtonRefusalShowsOnPanel(t *testing.T) {
 	s.infra.mergeStatus = http.StatusTeapot
 	s.infra.mergeBody = "{"
 	body := hx("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}).Body.String()
-	if !strings.Contains(body, "Forgejo refused the merge: {") {
-		t.Errorf("a refusal without a message:\n%s", body)
+	if !strings.Contains(body, "Forgejo refused the merge: 418 I&#39;m a teapot") {
+		t.Errorf("a refusal without a message names the status:\n%s", body)
 	}
 }
