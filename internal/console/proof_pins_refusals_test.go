@@ -78,8 +78,7 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 		if err := json.Unmarshal(rec.Body.Bytes(), &refused); err != nil {
 			t.Fatalf("the answer = %s: %v", rec.Body.String(), err)
 		}
-		if refused.Reason != "The document could not be read: forgejo GET /api/v1/repos/sf/docs/contents/docs/plans/cache.md?ref=master: "+
-			"status 502: the document repository sf/docs did not answer. Open the document again and save your change once more." {
+		if refused.Reason != "The document could not be read: the document repository sf/docs did not answer. Open the document again and save your change once more." {
 			t.Errorf("the refusal = %q", refused.Reason)
 		}
 	})
@@ -274,7 +273,8 @@ func (f failStatus) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // failAnswer is a Forgejo answer that carries body.
-func failAnswer(status int, body string) *http.Response {
-	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)),
-		Header: http.Header{"Content-Type": []string{"text/plain"}}}
+func failAnswer(status int, message string) *http.Response {
+	body, _ := json.Marshal(map[string]string{"message": message})
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(string(body))),
+		Header: http.Header{"Content-Type": []string{"application/json"}}}
 }

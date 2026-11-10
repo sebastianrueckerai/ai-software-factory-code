@@ -439,7 +439,7 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 			log.Printf("console: the GitHub import of %s: delete: %v", p.Name, err)
 		}
 	}
-	msg := why
+	msg := why + ": " + forgejoCause(failure)
 	switch {
 	case gone:
 	case u.pr > 0:
@@ -449,13 +449,13 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	}
 	switch {
 	case deleted:
-		msg += "; the filing was undone"
+		msg += "; the filing was undone. Try again in a moment."
 	case err == nil:
-		msg += "; branch " + branch + " is left: its head is not this filing's commit"
+		msg += "; branch " + branch + " is left: its head is not this filing's commit."
 	default:
-		msg += "; delete branch " + branch + " to file the name again"
+		msg += "; delete branch " + branch + " to file the name again."
 	}
-	http.Error(w, msg+": "+errText(failure)+". Try again in a moment.", code)
+	http.Error(w, msg, code)
 }
 
 // branchHead reads infra's branch, with factoryd's config token: its head

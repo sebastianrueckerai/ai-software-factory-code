@@ -170,3 +170,67 @@ func TestErrTextMasksTheConfiguredSecret(t *testing.T) {
 		t.Errorf("errText = %q, want the configured secret masked", got)
 	}
 }
+
+// reason is Forgejo's JSON message when there is one, else the status
+// text, and never the raw body.
+func TestAPIErrorReasonNeverShowsTheRawBody(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		body   string
+		want   string
+	}{
+		{"a JSON message", 409, `{"message":"the branch is protected"}`, "the branch is protected"},
+		{"an empty body", 502, ``, "502 Bad Gateway"},
+		{"an HTML page", 502, `<html><body>upstream sent https://bob:hunter2@git.example/x</body></html>`, "502 Bad Gateway"},
+		{"JSON without a message", 500, `{"errors":["x"]}`, "500 Internal Server Error"},
+		{"a status with no text", 599, `nope`, "599"},
+	} {
+		got := (&apiError{method: "GET", path: "/x", status: tc.status, body: []byte(tc.body)}).reason()
+		if got != tc.want {
+			t.Errorf("%s: reason = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+}
+
+// A document save Forgejo refuses answers Forgejo's message only, masked.
+func TestDocsSaveRefusalIsScrubbed(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	withDocs(t, r, map[string]string{"docs/plans/cache.md": docsPlan})
+	ck, s := r.loggedIn(t)
+	r.c.cfg.HTTP = &http.Client{Transport: failStatus{http.DefaultTransport,
+		"repos/sf/docs/contents", http.StatusBadGateway, leakUser + " " + leakBearer}}
+	body := `{"text":"# The cache plan\n\nThe store: Postgres.\n","base":"` + factoryd.ContentHash(docsPlan) + `"}`
+	req := httptest.NewRequest(http.MethodPost, "/projects/ai-software-factory-code/docs/docs/plans/cache.md", strings.NewReader(body))
+	req.Header.Set("Content-Type", "application/json")
+	req.Header.Set("X-CSRF-Token", s.csrf)
+	rec := r.do(req, ck)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("the failed save = %d: %s", rec.Code, rec.Body)
+	}
+	maskedLeak(t, "the editor's refusal", rec.Body.String())
+	for _, raw := range []string{"forgejo GET", "status 502", "/api/v1/"} {
+		if strings.Contains(rec.Body.String(), raw) {
+			t.Errorf("the editor's refusal holds the raw apiError text %q: %s", raw, rec.Body)
+		}
+	}
+}
+
+// A filing Forgejo refuses answers Forgejo's message only, masked, and the
+// cause comes before what the filing leaves behind.
+func TestFailedFilingRefusalIsScrubbed(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	infra.mu.Lock()
+	infra.branches, infra.pullsStatus = map[string]string{}, http.StatusUnprocessableEntity
+	infra.pullsBody = string(leakyAPIError().body)
+	infra.mu.Unlock()
+	rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+	maskedLeak(t, "the filing's refusal", rec.Body.String())
+	if strings.Contains(rec.Body.String(), "status 422") || strings.Contains(rec.Body.String(), "/api/v1/") {
+		t.Errorf("the filing's refusal holds the raw apiError text: %s", rec.Body)
+	}
+}

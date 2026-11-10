@@ -129,9 +129,9 @@ func (c *Console) docRefused(w http.ResponseWriter, r *http.Request, err error) 
 	case errors.As(err, &fj):
 		log.Printf("console: %s could not %s: %v", current(r).user, fj.what, fj.err)
 		if fj.say != "" {
-			out.Reason = fmt.Sprintf(fj.say, errText(fj.err))
+			out.Reason = fmt.Sprintf(fj.say, forgejoCause(fj.err))
 		} else {
-			out.Reason = "Forgejo refused to " + fj.what + ": " + errText(fj.err) + ". Try again in a moment."
+			out.Reason = "Forgejo refused to " + fj.what + ": " + forgejoCause(fj.err) + ". Try again in a moment."
 		}
 	case errors.As(err, &no):
 		out.Reason, status = no.msg, no.status

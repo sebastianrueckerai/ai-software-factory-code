@@ -295,6 +295,7 @@ type infraFake struct {
 	contents    []recorded
 	pulls       []recorded
 	pullsStatus int              // the pull request's opening; 0: 201
+	pullsBody   string           // the refused opening's body
 	open        []map[string]any // GET pulls?state=open
 	// branches, when set, are infra's branches besides main with their
 	// heads: a commit makes its new branch with a head of its own, a new
@@ -430,6 +431,7 @@ func withInfra(t *testing.T, r *rig) *infraFake {
 			f.pulls = append(f.pulls, rec())
 			if f.pullsStatus != 0 {
 				w.WriteHeader(f.pullsStatus)
+				w.Write([]byte(f.pullsBody))
 				return
 			}
 			w.WriteHeader(http.StatusCreated)
@@ -910,7 +912,7 @@ func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	infra.mu.Unlock()
 	rec = r.do(post("/projects", linkshortForm(s.csrf)), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusBadGateway ||
-		!strings.Contains(body, "Forgejo refused to commit the project's file; branch project-linkshort is left: its head is not this filing's commit") {
+		!strings.Contains(body, "Forgejo refused to commit the project's file: 500 Internal Server Error; branch project-linkshort is left: its head is not this filing's commit.") {
 		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the branch is left", rec.Code, body)
 	}
 	infra.mu.Lock()
@@ -952,7 +954,7 @@ func TestRacingFilingsKeepTheWinnersBranch(t *testing.T) {
 		won, lost = 1, 0
 	}
 	if codes[won] != http.StatusSeeOther || codes[lost] != http.StatusBadGateway ||
-		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file; branch project-linkshort is left: its head is not this filing's commit") {
+		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file: branch already exists; branch project-linkshort is left: its head is not this filing's commit.") {
 		t.Errorf("racing filings answered %d %q and %d %q; want one 303 and one 502 leaving the branch", codes[0], bodies[0], codes[1], bodies[1])
 	}
 	infra.mu.Lock()
@@ -1168,7 +1170,7 @@ func TestPanelButtonRefusalShowsOnPanel(t *testing.T) {
 	s.infra.mergeStatus = http.StatusTeapot
 	s.infra.mergeBody = "{"
 	body := hx("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}).Body.String()
-	if !strings.Contains(body, "Forgejo refused the merge: {") {
-		t.Errorf("a refusal without a message:\n%s", body)
+	if !strings.Contains(body, "Forgejo refused the merge: 418 I&#39;m a teapot") {
+		t.Errorf("a refusal without a message names the status:\n%s", body)
 	}
 }

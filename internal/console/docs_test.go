@@ -697,7 +697,7 @@ func TestDocsSaveRefusals(t *testing.T) {
 	f.failCommits = true
 	code, ans = save("docs/plans/cache.md", docSave{Text: docsPlan + "More.", Base: factoryd.ContentHash(docsPlan)})
 	equal(t, "the Forgejo refusal", []any{code, ans.Reason}, []any{http.StatusBadGateway,
-		"Forgejo refused to commit the document: forgejo POST /api/v1/repos/sf/docs/contents: status 502: {\"message\":\"Forgejo is down\"}. Try again in a moment."})
+		"Forgejo refused to commit the document: Forgejo is down. Try again in a moment."})
 	f.failCommits = false
 	equal(t, "the refusals committed nothing", []any{len(f.commits), len(f.tokens), r.events.count()}, []any{0, 0, before})
 }
