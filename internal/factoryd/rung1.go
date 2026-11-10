@@ -68,9 +68,9 @@ func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseS
 	case slices.Contains(f.Partial, "siblings"):
 		line("The card's plan and its other cards could not be read.")
 	default:
-		line("%s", r.Scrub.String(fmt.Sprintf("Plan #%d %s, %s", f.PlanIssue, f.PlanName, f.PlanStatus)))
+		line("Plan #%d %s, %s", f.PlanIssue, f.PlanName, f.PlanStatus)
 		for _, s := range f.Siblings {
-			line("%s", r.Scrub.String(fmt.Sprintf("#%d %s: %s", s.Issue, s.Key, s.Status)))
+			line("#%d %s: %s", s.Issue, s.Key, s.Status)
 		}
 	}
 	for _, s := range steps {

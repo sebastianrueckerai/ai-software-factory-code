@@ -85,7 +85,7 @@ func (r *Runner) CardStep(ctx context.Context, taskID string, n int, cardRead st
 	default:
 		writeFields(&b, lineFields(lines[line-1]))
 	}
-	return b.String(), nil
+	return r.Scrub.String(b.String()), nil
 }
 
 // filedDetail is the card's filing: by whom, its track, size, rung and

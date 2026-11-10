@@ -117,7 +117,7 @@ func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSessio
 			}
 			continue
 		case "checkin":
-			step = checkinStep(scrub, step, l)
+			step = checkinStep(step, l)
 		case "plan_revision":
 			step.Kind, step.Outcome = "revision", fmt.Sprintf("revision %d, %s", l.Revision, textutil.Plural(l.Cards, "card", "cards"))
 		case "handover":
@@ -213,7 +213,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 // and its decision, the record's when it has one. A record with no
 // decision is a cut conversation: its state stays empty for the flags,
 // and its outcome names the cut with the decision the line carries.
-func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) DigestStep {
+func checkinStep(step DigestStep, l timelineLine) DigestStep {
 	decision, moment := l.Decision, l.Moment
 	if l.Record != nil {
 		decision, moment, step.CostEUR = l.Record.Decision, cmp.Or(l.Record.Moment, moment), l.Record.CostEUR

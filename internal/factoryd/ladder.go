@@ -501,7 +501,7 @@ func (r *Runner) tripCase(ctx context.Context, t Task, f CaseFacts, in TripInput
 	}
 	maps.Copy(facts, named)
 	maps.Copy(facts, in.Extra)
-	facts["source"], facts["reason"] = source, textutil.Truncate(in.Reason, 300)
+	facts["source"], facts["reason"] = source, textutil.Truncate(r.Scrub.String(in.Reason), 300)
 	if in.CheckinStop != "" {
 		facts["checkin_stop"] = in.CheckinStop
 	}

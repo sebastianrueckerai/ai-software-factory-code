@@ -167,7 +167,7 @@ func TestRung1StatementPlanReadFailed(t *testing.T) {
 }
 
 func TestRung1StatementWeighsTheCaseKind(t *testing.T) {
-	got := (&Runner{}).rungStatement(Case{Kind: CaseMonitorFlag}, CaseFacts{}, "D", nil, 1)
+	got := (&Runner{}).rungStatement(Case{Kind: CaseMonitorFlag}, CaseFacts{Head: "h1", PR: 9, PROpen: true}, "D", nil, 1)
 	if !strings.Contains(got, "\n- settle\n") || strings.Contains(got, "\n- reverify\n") {
 		t.Errorf("monitor flag statement:\n%s", got)
 	}
@@ -182,7 +182,7 @@ func TestRung1StatementScrubsDigestAndProblem(t *testing.T) {
 }
 
 func TestRung1StatementScrubsBeforeItCuts(t *testing.T) {
-	found := strings.Repeat("x", 280) + " https://user:pass@host/x"
+	found := strings.Repeat("x", 285) + " https://user:pass@host/x"
 	got := (&Runner{}).rungStatement(Case{}, CaseFacts{}, "D", []CaseStep{{Rung: 1, Found: found}}, 1)
 	if strings.Contains(got, "user") || strings.Contains(got, "pass") {
 		t.Errorf("cut straddles a secret:\n%s", got)
@@ -208,8 +208,8 @@ func TestDigestTextScrubsBeforeItCuts(t *testing.T) {
 	const secret = "hunter2-configured-secret"
 	scrub := redact.New(secret)
 	for _, in := range []string{
-		strings.Repeat("x", 100) + " https://user:pass@host/x",
-		strings.Repeat("x", 100) + " " + secret,
+		strings.Repeat("x", 105) + " https://user:pass@host/x",
+		strings.Repeat("x", 105) + " " + secret,
 	} {
 		got := digestText(scrub, in)
 		for _, bad := range []string{"user", "pass", "hunter2", "configured"} {
@@ -231,5 +231,73 @@ func TestDepFactsScrubTheEndReason(t *testing.T) {
 	deps, err := g.r.depFacts(context.Background(), "t1410")
 	if err != nil || len(deps) != 1 || strings.Contains(deps[0].Why, "hunter2") {
 		t.Errorf("deps = %+v, %v", deps, err)
+	}
+}
+
+func TestCardDigestScrubsEveryPath(t *testing.T) {
+	const secret = "hunter2-configured-secret"
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate, c.PRNumber = "in-review", GateChecks, 12 })
+	g.r.Scrub = redact.New(secret)
+	g.event(1, EventQuestionAsked, FactoryDecider, map[string]any{"question": "ask " + secret, "comment": 27001, "source": "agent", "reason": "the agent asks"})
+	g.event(2, EventQuestionAnswered, "sebastian", map[string]any{"answer": "answer " + secret, "comment": 27002})
+	g.line(t, 3, "handover", map[string]any{"handover": "handover " + secret, "session": "s-1"})
+	g.line(t, 4, "judgement", map[string]any{"criterion": "c", "artifact": "a", "model": "factory/big", "prompt_hash": "p", "verdict": "met", "reason": "judgement " + secret, "cost": 0.04})
+	g.line(t, 5, "gate_criteria", map[string]any{"pr": 12, "commit": "c3c3c3c3", "start_failed": "crit " + secret})
+	g.line(t, 6, "proofs_at_main", map[string]any{"head": "29b0d33aa", "start_failed": "main " + secret})
+	g.event(7, EventSessionPushed, FactoryDecider, map[string]any{"session": "s-1", "attempt": 1})
+	g.event(8, EventModelReview, FactoryDecider, map[string]any{"commit": "c1", "round": 1, "verdict": "", "reviewed": false, "reason": "model review not run: " + secret})
+	g.event(9, EventTaskEnded, FactoryDecider, map[string]any{"state": "failed", "reason": "ended " + secret})
+	d, err := g.r.CardDigest(context.Background(), "t1410")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Render(); strings.Contains(got, "hunter2") || strings.Count(got, "[redacted]") != 8 {
+		t.Errorf("render:\n%s", got)
+	}
+}
+
+func TestRetryRefusalCutsTheEndReason(t *testing.T) {
+	const lead = "policy version 7: risk class forbidden is forbidden to agents: "
+	got := retryRefusal(DepFact{Issue: 20, Status: "failed", Why: lead + strings.Repeat("x", 100) + "\nsecond line"})
+	if want := "dependency #20 ended for good: " + lead + strings.Repeat("x", 120-len(lead)) + "…"; got != want {
+		t.Errorf("retryRefusal = %q, want %q", got, want)
+	}
+}
+
+func TestDigestTextScrubsAnUnreadableDigest(t *testing.T) {
+	got := DigestText(redact.New("hunter2-configured-secret"), CardDigest{}, errors.New("dial https://user:pass@host: hunter2-configured-secret"))
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "hunter2") {
+		t.Errorf("DigestText = %q", got)
+	}
+}
+
+func TestCardStepScrubsTheGateStartFailure(t *testing.T) {
+	const secret = "hunter2-configured-secret"
+	g := newDigestRig(func(c *Task) { c.Status, c.Gate, c.PRNumber = "in-review", GateChecks, 12 })
+	g.r.Scrub = redact.New(secret)
+	g.line(t, 5, "gate_criteria", map[string]any{"pr": 12, "commit": "c3c3c3c3", "start_failed": "crit " + secret})
+	d := g.digest(t)
+	var all string
+	for n := 1; n <= len(d.Steps); n++ {
+		out, err := g.r.CardStep(context.Background(), "t1410", n, "card_facts", nil)
+		if err != nil {
+			t.Fatal(err)
+		}
+		all += out
+	}
+	if !strings.Contains(all, "start failed: crit [redacted]") || strings.Contains(all, "hunter2") {
+		t.Errorf("card steps:\n%s", all)
+	}
+}
+
+func TestTripCaseScrubsTheStoredReason(t *testing.T) {
+	g := newDigestRig(nil)
+	g.r.Scrub = redact.New("hunter2-configured-secret")
+	c, _, err := g.r.tripCase(context.Background(), g.store.tasks["t1410"], CaseFacts{}, TripInput{TaskID: "t1410", Reason: "stopped: hunter2-configured-secret"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got, _ := c.Facts["reason"].(string); strings.Contains(got, "hunter2") || got == "" {
+		t.Errorf("stored reason = %q", got)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -61,10 +62,10 @@ func (d CardDigest) Render() string {
 }
 
 // DigestText is d rendered, or, when err stopped its read, one line that
-// says why: a card read keeps the rest of what it read.
-func DigestText(d CardDigest, err error) string {
+// says why, scrubbed by scrub: a card read keeps the rest of what it read.
+func DigestText(scrub *redact.Scrubber, d CardDigest, err error) string {
 	if err != nil {
-		return "digest unreadable: " + err.Error() + "\n"
+		return "digest unreadable: " + scrub.String(err.Error()) + "\n"
 	}
 	return d.Render()
 }
