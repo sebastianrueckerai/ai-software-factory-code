@@ -313,7 +313,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 		}
 	}
 	if len(p.TakeOffMain) > 0 {
-		b.WriteString("\ntakes off main: " + strings.Join(p.TakeOffMain, ", "))
+		b.WriteString("\ntakes off main: " + strings.Join(p.TakeOffLines(), "; "))
 	}
 	if totals, err := t.c.cfg.Costs.CallTotals(ctx, []string{plan.ID}); err != nil {
 		return "", err

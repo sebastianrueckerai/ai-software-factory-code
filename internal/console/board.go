@@ -3563,7 +3563,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			if _, p, _, err := c.planTable(ctx, bt.ID, 0); err != nil {
 				problem("plan", "Open the card again, or read the plan on its issue.", err)
 			} else {
-				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
+				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
 				if p.Round > 1 || len(p.Outline) > 0 {
 					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
 						problem("plan's cards", "Reload the board.", err)
