@@ -6066,3 +6066,42 @@ func TestWorkflowRunsNoProofsAtMainOffAPlanCardOrAfterAPush(t *testing.T) {
 		})
 	}
 }
+
+// [checks_wait_timeout_50m] A current run schedules WaitChecks with a
+// start-to-close of at least its bound plus a minute: 51m at the code
+// default of 50m, 13m at a bound of 12m under a configured timeout of 5m;
+// a run from before the change keeps its recorded 45m + 1m.
+func TestWorkflowChecksWaitTimeoutFollowsItsBound(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		timeout time.Duration
+		bound   time.Duration
+		before  bool
+		want    time.Duration
+	}{
+		{"default bound", 45 * time.Minute, 0, false, 51 * time.Minute},
+		{"bound of 12m", 5 * time.Minute, 12 * time.Minute, false, 13 * time.Minute},
+		{"run from before", 45 * time.Minute, 0, true, 46 * time.Minute},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cfg := testWorkflowConfig
+			cfg.ChecksTimeout, cfg.ChecksBound = tc.timeout, tc.bound
+			h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+			if tc.before {
+				h.env.OnGetVersion("checks-wait", workflow.DefaultVersion, versionChecksWait).Return(workflow.DefaultVersion)
+			}
+			h.onSessions(pushed("s1", "c1"))
+			h.onChecks(ChecksResult{State: ChecksTimeout})
+			var got time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityWaitChecks {
+					got = info.StartToCloseTimeout
+				}
+			})
+			h.run(t)
+			if got != tc.want {
+				t.Fatalf("WaitChecks start-to-close = %s, want %s", got, tc.want)
+			}
+		})
+	}
+}
