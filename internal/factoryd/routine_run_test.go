@@ -623,6 +623,26 @@ func TestRoutineRunFilesAnAgentCard(t *testing.T) {
 	}
 }
 
+// An agent routine may run on its brief alone: without a skill the card
+// body is the brief, with no "Run the skill" line.
+func TestRoutineRunFilesAnAgentCardWithoutSkill(t *testing.T) {
+	ctx := context.Background()
+	tree := routineTree(t)
+	audit, _ := tree.Routine(codeProject, "audit")
+	audit.Skill = ""
+	audit.Brief = "routines/audit.md"
+	tree.Briefs = maps.Clone(tree.Briefs)
+	tree.Briefs[audit.Brief] = "Hunt bugs in the code changed since the last audit.\n"
+	r, store, _, _ := routineRunner(t, withRoutines(tree, codeProject, audit))
+	if _, err := r.RoutineRun(ctx, RoutineRunInput{Project: codeProject, Routine: "audit", Trigger: "merges", Due: time.Now()}); err != nil {
+		t.Fatal(err)
+	}
+	card := onlyTask(t, store)
+	if want := "Audit: bug hunt and architecture review\n\nHunt bugs in the code changed since the last audit."; card.Objective != want {
+		t.Fatalf("objective %q, want %q", card.Objective, want)
+	}
+}
+
 // The live toggle, read when the run fires: a weekly-bump flipped to run
 // on its own files the agent card of a routine with no skill (no skill
 // line in its words); an audit flipped to need the member files a

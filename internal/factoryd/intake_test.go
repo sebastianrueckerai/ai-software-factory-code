@@ -1471,6 +1471,61 @@ func prClosedBodyBy(ref, headRepo, sender string, merged bool) []byte {
 	return b
 }
 
+// A synchronize of the task's pull request withdraws its open merge
+// approval at once — the board holds no call whose doors act on a head
+// that no longer exists — and signals nothing: the gates post the next
+// call as today. A push whose head names no task's pull request, or a
+// task with no merge approval pending, changes nothing.
+func TestIntakeSynchronizeWithdrawsTheMergeApproval(t *testing.T) {
+	in, store, _ := newTestIntake(t)
+	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}
+	store.approvals = []ApprovalRequest{
+		{ID: 1, TaskID: "t1", Kind: ApprovalMerge, Status: "pending"},
+		{ID: 2, TaskID: "t1", Kind: "budget", Status: "pending"},
+		{ID: 3, TaskID: "t2", Kind: ApprovalMerge, Status: "pending"},
+	}
+	head := "c2deadbeefc2deadbeefc2deadbeefc2deadbe"
+	body, _ := json.Marshal(map[string]any{
+		"action":       "synchronize",
+		"pull_request": map[string]any{"number": 5, "head": map[string]any{"ref": "factory/t1", "sha": head, "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-code"}}},
+		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":       map[string]string{"login": "sebastian"},
+	})
+	if rr := postWebhook(in, "pull_request", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
+		t.Fatalf("status = %d", rr.Code)
+	}
+	a := store.approvals[0]
+	if a.Status != "denied" || a.DecidedBy != FactoryDecider ||
+		a.DecisionNote != "withdrawn: superseded by head c2deadbe; the checks run on c2deadbe, and a green head gets a new request" {
+		t.Fatalf("merge approval of t1 = %+v, want denied by factoryd as superseded by the new head", a)
+	}
+	if store.approvals[1].Status != "pending" || store.approvals[2].Status != "pending" {
+		t.Fatalf("only t1's merge approval was withdrawn: %+v %+v", store.approvals[1], store.approvals[2])
+	}
+	if got := workflowsOf(in).signals; len(got) != 0 {
+		t.Fatalf("signals = %q, want none: the withdrawal alone", got)
+	}
+	// a second push with nothing pending is a no-op, and a head that names
+	// no task's pull request withdraws nothing
+	stray, _ := json.Marshal(map[string]any{
+		"action":       "synchronize",
+		"pull_request": map[string]any{"number": 5, "head": map[string]any{"ref": "feature/x", "sha": head, "repo": map[string]string{"full_name": "factory-agent/ai-software-factory-code"}}},
+		"repository":   map[string]any{"full_name": "sf/ai-software-factory-code"},
+		"sender":       map[string]string{"login": "sebastian"},
+	})
+	for _, b := range [][]byte{body, stray} {
+		if rr := postWebhook(in, "pull_request", b, sign(webhookSecret, b)); rr.Code != http.StatusOK {
+			t.Fatalf("status = %d", rr.Code)
+		}
+	}
+	if a := store.approvals[2]; a.Status != "pending" || a.DecisionNote != "" {
+		t.Fatalf("merge approval of t2 = %+v, want pending and untouched", a)
+	}
+	if got := workflowsOf(in).signals; len(got) != 0 {
+		t.Fatalf("signals = %q, want none", got)
+	}
+}
+
 func TestIntakeMergedPullRequestSignalsWorkflow(t *testing.T) {
 	in, store, _ := newTestIntake(t)
 	store.tasks["t1"] = Task{ID: "t1", Repository: "sf/ai-software-factory-code", Status: "in-review", Kind: "agent"}

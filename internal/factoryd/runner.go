@@ -903,6 +903,15 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if trip.decided != nil {
 			d = *trip.decided
 		} else {
+			// the session's work in progress ships while the check-in
+			// runs: one interim push under factoryd's own credential
+			// (interimPush, wippush.go), joined before anything below
+			// acts on the answer, so it cannot race the stop's end push
+			wipDone := make(chan struct{})
+			go func() {
+				defer close(wipDone)
+				r.interimPush(callCtx, t, s, ns, podName, workerStop)
+			}()
 			answered := make(chan struct{})
 			lines, started := sup.CardLines(), sup.started
 			go func() {
@@ -929,6 +938,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					stopAt = time.Now()
 					cancel()
 					<-answered
+					<-wipDone
 					log.Printf("task %s: factoryd stopping cut the check-in for %s", t.ID, trip.Kind)
 					return true, shutdown()
 				}
@@ -936,6 +946,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					held, esc = esc, nil
 				}
 			}
+			// the interim push is done — landed, refused or given up —
+			// before any decision acts on the check-in: a stop's end
+			// push builds on the tip it left
+			<-wipDone
 		}
 		if esc != nil {
 			log.Printf("task %s: the agent escalated during the check-in for %s", t.ID, trip.Kind)
@@ -1318,6 +1332,90 @@ func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}
 		case <-timer.C:
 		}
 	}
+}
+
+// postWorkerWip is postWorkerUntil's sibling for the ask whose answer is
+// a body: it POSTs the running worker's /wip with the session's bearer
+// until it answers, and hands back the WIP commit the answer names in its
+// Wip-Commit header with its objects as the raw bundle, read under
+// wipBundleCap. A 204 answer ships nothing: no commit, no error. The
+// endpoint was up at the session's brief and the pod runs on through a
+// check-in, so unlike the brief's delivery no answer is waited out: an
+// answered refusal, of any status, or a timed-out ask is final — the
+// interim push is given up, not retried — and only a transport that has
+// not answered is retried until wait, as postWorkerUntil retries it.
+func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, ns, pod, token string, wait time.Duration) (string, []byte, error) {
+	end := time.Now().Add(wait)
+	var commit string
+	var bundle []byte
+	var err error
+	for {
+		commit, bundle, err = r.postWip(ctx, ns, pod, token)
+		var answer *workerAnswer
+		if err == nil || postFinal(err) || errors.As(err, &answer) || errors.Is(err, context.DeadlineExceeded) {
+			return commit, bundle, err
+		}
+		pause := min(r.startPoll, time.Until(end))
+		if pause <= 0 {
+			return commit, bundle, err
+		}
+		timer := time.NewTimer(pause)
+		select {
+		case <-ctx.Done():
+			timer.Stop()
+			return "", nil, ctx.Err()
+		case <-workerStop:
+			timer.Stop()
+			return "", nil, errWorkerStop
+		case <-timer.C:
+		}
+	}
+}
+
+// wipCommitHeader names the commit the worker's /wip answer ships in its
+// body's bundle.
+const wipCommitHeader = "Wip-Commit"
+
+// wipBundleCap bounds the bundle one /wip answer may ship, as the worker
+// bounds the record a check-in hands factoryd. wipAskTimeout bounds one
+// ask, which the worker answers by staging a commit: a worker that hangs
+// costs one ask, not the check-in. A var, so a test hangs it shorter.
+const wipBundleCap = 64 << 20
+
+var wipAskTimeout = 30 * time.Second
+
+// postWip posts one /wip to the running worker's endpoint and reads its
+// answer: the WIP commit from the header, the bundle as the raw body.
+func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, []byte, error) {
+	ip, err := r.kube.PodIP(ctx, ns, pod)
+	if errors.Is(err, errPodEnded) {
+		return "", nil, fmt.Errorf("%w: %w", harness.ErrNotRunning, err)
+	}
+	if err != nil {
+		return "", nil, fmt.Errorf("pod address: %w", err)
+	}
+	ctx, cancel := context.WithTimeout(ctx, wipAskTimeout)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+"/wip", nil)
+	if err != nil {
+		return "", nil, err
+	}
+	req.Header.Set("Authorization", "Bearer "+token)
+	resp, err := workerReads.Do(req)
+	if err != nil {
+		return "", nil, err
+	}
+	defer resp.Body.Close()
+	body, _ := io.ReadAll(io.LimitReader(resp.Body, wipBundleCap+1))
+	switch {
+	case resp.StatusCode == http.StatusNoContent:
+		return "", nil, nil // the tree equals the start's: nothing to ship
+	case resp.StatusCode != http.StatusOK:
+		return "", nil, &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
+	case resp.Header.Get(wipCommitHeader) == "", len(body) == 0, len(body) > wipBundleCap:
+		return "", nil, fmt.Errorf("the /wip answer names commit %q over %d bytes of bundle", resp.Header.Get(wipCommitHeader), len(body))
+	}
+	return resp.Header.Get(wipCommitHeader), body, nil
 }
 
 // checkinFacts is the small JSON of the card's facts the runner already

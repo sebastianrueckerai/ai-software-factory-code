@@ -238,7 +238,7 @@ func TestOutsideFetchesAreNamedWithTheirFileAndURL(t *testing.T) {
 	}
 	quiet := outsideFetches("Dockerfile", logicalLines(strings.Join([]string{
 		storeARG,
-		"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b AS base",
+		"FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018 AS base",
 		"FROM base",
 		`RUN wget -O /tmp/go-modules.tar.gz "https://git.aisoftwarefactory.world/api/packages/upstream/generic/go-modules/$sum/go-modules.tar.gz"`,
 		`RUN echo "deb http://snapshot.debian.org/archive/debian/${DEBIAN_SNAPSHOT} bookworm main" > /etc/apt/sources.list`,

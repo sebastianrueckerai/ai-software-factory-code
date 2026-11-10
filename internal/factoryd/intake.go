@@ -1448,8 +1448,11 @@ func (in *Intake) resyncPRCard(ctx context.Context, t Task, repo Repo) (done boo
 
 // handlePullRequest signals a closed factory pull request to its task's
 // workflow: merged, or closed without a merge (the reviewer rejected it).
-// A human card linked to the pull request has no workflow: the pull
-// request ends it (endPRCard).
+// A synchronize withdraws the task's open merge approval at once (the
+// board holds no call whose Return and Close act on a head that no longer
+// exists); the case record keeps its text as history, and the gates on
+// the new head post the next call. A human card linked to the pull
+// request has no workflow: the pull request ends it (endPRCard).
 func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	var p pullRequestPayload
 	if err := json.Unmarshal(body, &p); err != nil {
@@ -1457,6 +1460,10 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 	}
 	// the bot's own close (Finish, a .forgejo refusal) lands on a workflow
 	// that already knows; Reconcile reads the state for a resumed one
+	if p.Action == "synchronize" {
+		in.withdrawMovedHead(ctx, &p)
+		return nil
+	}
 	if p.Action != "closed" || p.Sender.UserName == in.BotUser {
 		return nil
 	}
@@ -1490,6 +1497,43 @@ func (in *Intake) handlePullRequest(ctx context.Context, body []byte) error {
 		in.intervened(ctx, t, InterventionReject)
 	}
 	return err
+}
+
+// movedHeadWithdrawn is the note a synchronize leaves on the merge
+// approval it withdraws, and the card's status line until the gates on
+// the new head post the next call.
+func movedHeadWithdrawn(head string) string {
+	short := head
+	if len(short) > 8 {
+		short = short[:8]
+	}
+	return fmt.Sprintf("withdrawn: superseded by head %s; the checks run on %s, and a green head gets a new request", short, short)
+}
+
+// withdrawMovedHead withdraws task taskID's open merge approval when the
+// pull request's head moved (the synchronize webhook): the approval row
+// leaves the board at once, denied by factoryd as superseded by the new
+// head, its case record keeping its text as history; nothing pending is
+// a no-op. The event names the head the checks run on.
+func (in *Intake) withdrawMovedHead(ctx context.Context, p *pullRequestPayload) {
+	taskID, ok, err := in.taskOfHead(ctx, p.Repository.FullName, p.PullRequest.Head.Repo.FullName, p.PullRequest.Head.Ref, p.PullRequest.Index)
+	if err != nil || !ok {
+		if err != nil {
+			log.Printf("webhook intake: synchronize: %v", err)
+		}
+		return
+	}
+	if _, ok, err = in.agentTask(ctx, taskID); err != nil || !ok {
+		if err != nil {
+			log.Printf("webhook intake: synchronize: %v", err)
+		}
+		return
+	}
+	note := movedHeadWithdrawn(p.PullRequest.Head.SHA)
+	if err := in.Store.ResolveApprovals(ctx, taskID, ApprovalMerge, "denied", FactoryDecider, note); err != nil {
+		log.Printf("task %s: withdraw the merge approval on a moved head: %v", taskID, err)
+	}
+	in.Timeline.recordEvent(ctx, taskID, "merge_moved_head", map[string]any{"pr": p.PullRequest.Index, "head": p.PullRequest.Head.SHA, "note": note})
 }
 
 // humanMerged records the event pull_request_merged of task taskID's pull
