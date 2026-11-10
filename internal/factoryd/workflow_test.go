@@ -74,7 +74,8 @@ type workflowHarness struct {
 	sessions    []SessionInput
 	finals      [][2]string
 	states      []string
-	state       RunState // what Reconcile reports; zero = a fresh task
+	state       RunState      // what Reconcile reports; zero = a fresh task
+	checksDelay time.Duration // how long WaitChecks takes on the workflow's clock
 	finishAt    time.Time
 	escalated   []string // Escalate's and OpenTrip's reasons, in order
 	escalatedAt []time.Time
@@ -410,7 +411,7 @@ func (h *workflowHarness) onProofsAtMain(res ProofsAtMain, err error) *[]string 
 func (h *workflowHarness) onChecks(results ...ChecksResult) {
 	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil)
 	n := 0
-	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+	h.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(h.checksDelay).Return(
 		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 			n++
 			return results[min(n, len(results))-1], nil
