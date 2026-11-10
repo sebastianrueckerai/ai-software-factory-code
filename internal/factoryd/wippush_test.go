@@ -1085,8 +1085,8 @@ func TestInterimPushesDoNotOverlap(t *testing.T) {
 	if asked != 1 {
 		t.Fatalf("the pod was asked %d times while the slot was held, want once: the ask comes before the slot", asked)
 	}
-	if !reflect.DeepEqual(out, wipOutcome{}) {
-		t.Fatalf("outcome %+v while the slot was held, want a push that waited and gave up", out)
+	if want := (wipOutcome{unpushed: "another interim push held the slot for 150ms"}); !reflect.DeepEqual(out, want) {
+		t.Fatalf("outcome %+v while the slot was held, want a push that waited and gave up with its reason %+v", out, want)
 	}
 	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "queue" {
 		t.Fatalf("the wip_push_failed step = %v, want the queue's", step)
