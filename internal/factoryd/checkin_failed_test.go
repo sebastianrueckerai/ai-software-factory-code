@@ -434,6 +434,14 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	const none = "A reply alone starts no attempt"
 	room := map[string]any{"agent_time_cap_s": 7200, "agent_time_s": 600}
 	spent := map[string]any{"agent_time_cap_s": 7200, "agent_time_s": 7000}
+	covered := map[CaseKind]bool{}
+	defer func() {
+		for _, name := range caseKindNames {
+			if !covered[CaseKind(name)] {
+				t.Errorf("case kind %s has no row in the face table", name)
+			}
+		}
+	}()
 	for _, tc := range []struct {
 		kind    CaseKind
 		reason  string
@@ -448,20 +456,42 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseCheckinHuman, "x", spent, none, reply, "TestFailedCheckinReplyStartsASession"},
 		{CaseCheckinShare, "x", room, reply, none, "TestFailedCheckinReplyStartsASession"},
 		{CaseCheckinShare, "x", spent, none, reply, "TestFailedCheckinReplyStartsASession"},
-		{CasePodNeverStarted, podNeverStarted, room, reply, none, "TestWorkflowSessionWhosePodNeverStartedIsNoAttempt"},
-		{CasePodNeverStarted, podNeverStarted, spent, none, reply, ""},
-		{CaseProviderRefused, providerRefused, room, reply, none, ""},
-		{CaseProviderRefused, providerRefused, spent, none, reply, ""},
-		{CaseNoAnswer, noModelAnswer, room, reply, none, ""},
-		{CaseNoAnswer, noModelAnswer, spent, none, reply, ""},
+		{CasePodNeverStarted, podNeverStarted, room, reply, none, "TestReplyAtProviderAndPodStops"},
+		{CasePodNeverStarted, podNeverStarted, spent, none, reply, "TestReplyAtProviderAndPodStops"},
+		{CaseProviderRefused, providerRefused, room, reply, none, "TestReplyAtProviderAndPodStops"},
+		{CaseProviderRefused, providerRefused, spent, none, reply, "TestReplyAtProviderAndPodStops"},
+		{CaseNoAnswer, noModelAnswer, room, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseNoAnswer, noModelAnswer, spent, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseImageWait, imageWaited, room, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseImageWait, imageWaited, spent, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseContentFilter, contentFilterRefusal, room, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseContentFilter, contentFilterRefusal, spent, none, reply, "TestReplyAtStopsThatBuyASession"},
+		{CaseAgentEscalate, AgentAsks, room, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseAgentEscalate, AgentAsks, spent, none, reply, "TestReplyAtStopsThatBuyASession"},
+		{CaseOther, "x", room, reply, none, "TestReplyAtStopsThatBuyASession"},
+		{CaseOther, "x", spent, none, reply, "TestReplyAtStopsThatBuyASession"},
+		{CaseScreeningSuspect, screeningAsks + "x", room, "let the agent work on it", "new attempt", "TestReplyAtASuspectScreening"},
+		{CaseHumanCard, "x", room, "No attempt starts", reply, "TestHumanCardRunsNoSession"},
+		{CaseWaitExpired, staleQuiet, room, "on its own form", "Reply on this issue", "unreachable: nothing writes a stale ask"},
+		{CaseMergeApproval, "x", room, "on its own form", "Reply on this issue", "answered on the approval, never by a trip"},
+		{CaseAgentRequestInfo, AgentAsks, room, "on its own form", "Reply on this issue", "the poster's wait, never a trip"},
+		{CasePlanQuestion, "x", room, "on its own form", "Reply on this issue", "answered on the plan's questions, never by a trip"},
+		{CasePlanConfirmation, "x", room, "on its own form", "Reply on this issue", "answered on the plan's questions, never by a trip"},
 		{CaseDayCap, capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), room, "start a new attempt sooner", none, "TestWorkflowDayCapWaitTakesAnAnswerOrTheClose"},
 		{CaseDayCap, capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), spent, none, "start a new attempt sooner", "TestCapWaitReplyByAgentTime"},
 		{CaseGateStop, gateStopped + ActivityModelReview + " after 3 tries", room, "run the gate again", "new attempt", "TestWorkflowGateEscalationAnswerRunsTheGateAgain"},
 		{CaseGateStop, gateStopped + ActivityModelReview + " after 3 tries", spent, "run the gate again", "new attempt", "TestWorkflowGateEscalationAnswerRunsTheGateAgain"},
 		{CaseDependencyClosed, "dependency #1 (a) ended closed", room, "start the card anyway", "new attempt", "TestWorkflowTripsOnAFailedDependency"},
 		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", "TestWorkflowTripsOnAFailedDependency"},
-		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, ""},
+		{CaseSessionCap, capReached, room, "A reply alone starts none", reply, "TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap"},
+		{CaseAgentTimeCap, timeCapReached, spent, "A reply alone starts none", reply, "TestWorkflowTimeCapAnswerBuysAnAttemptOnlyAtTheSessionCap"},
+		{CaseBudgetFloor, budgetRefused, room, "A reply alone starts none", reply, "the budget floor's own tests"},
+		{CaseMonthCap, capWaitReason(policy.RefusedMonthCap, capFloor(policy.RefusedMonthCap), "x", time.Now().Add(time.Hour)), room, "start a new attempt sooner", none, "the cap wait's drive above"},
+		{CaseProjectCap, capWaitReason(policy.RefusedProjectCap, capFloor(policy.RefusedProjectCap), "x", time.Now().Add(time.Hour)), spent, none, "start a new attempt sooner", "the cap wait's drive above"},
+		{CaseMonitorFlag, "x", room, "The card goes on meanwhile", reply, "the monitor's own tests"},
+		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, "the deadlock repeats: TestWorkflowRepeatedFailedCheckinKeepsItsLabel and the repeat guard tests"},
 	} {
+		covered[tc.kind] = true
 		got := tripNext(Case{Kind: tc.kind, Facts: tc.facts}, tc.reason)
 		if !strings.Contains(got, tc.want) || strings.Contains(got, tc.notWant) {
 			t.Errorf("%s (%v): face %q, want %q and not %q", tc.kind, tc.facts["agent_time_s"], got, tc.want, tc.notWant)

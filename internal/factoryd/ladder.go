@@ -585,7 +585,8 @@ func tripNext(c Case, reason string) string {
 			return "The factory's own check-in failed, not the card's work, and the card's agent time is spent. " + spentReply
 		}
 		return "The factory's own check-in failed, not the card's work. Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	case CaseCheckinHuman, CaseCheckinShare, CasePodNeverStarted, CaseProviderRefused, CaseNoAnswer:
+	case CaseCheckinHuman, CaseCheckinShare, CasePodNeverStarted, CaseProviderRefused,
+		CaseContentFilter, CaseAgentEscalate, CaseOther:
 		if agentTimeSpent(c) {
 			return "The card's agent time is spent. " + spentReply
 		}
@@ -599,6 +600,12 @@ func tripNext(c Case, reason string) string {
 		}
 	case CaseFindingsRepeated:
 		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
+	case CaseScreeningSuspect:
+		return "A human reads the screening first: reply on this issue to let the agent work on it, or close the issue to end the task."
+	case CaseHumanCard:
+		return "This card is yours: answer with a choice on the card or reply to leave a note. No attempt starts. Close this issue to end it."
+	case CaseWaitExpired, CaseMergeApproval, CaseAgentRequestInfo, CasePlanQuestion, CasePlanConfirmation:
+		return "This stop is answered on its own form, not by a reply on this issue. Close this issue to end the task."
 	case CaseDependencyClosed, CaseDependencyFailed:
 		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
 	case CaseBudgetFloor:
