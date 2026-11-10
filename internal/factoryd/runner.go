@@ -2214,7 +2214,15 @@ func copyPullSecret(ctx context.Context, kube Kube, factoryNamespace, pullSecret
 	return kube.CreateSecret(ctx, ns, pullSecret, "kubernetes.io/dockerconfigjson", data)
 }
 
+// forgetNamespaceBound bounds forgetNamespace: the kube client has no
+// timeout of its own, and a sandbox's teardown runs on a context detached
+// from its work's. A namespace left behind is the next start's or the boot
+// sweep's to delete. A test shortens it.
+var forgetNamespaceBound = 30 * time.Second
+
 func (r *Runner) forgetNamespace(ctx context.Context, taskID string) {
+	ctx, cancel := context.WithTimeout(ctx, forgetNamespaceBound)
+	defer cancel()
 	if err := r.kube.DeleteNamespace(ctx, r.agentNamespace(taskID)); err != nil && !errors.Is(err, ErrNotFound) {
 		log.Printf("task %s: delete namespace: %v", taskID, err)
 	}
