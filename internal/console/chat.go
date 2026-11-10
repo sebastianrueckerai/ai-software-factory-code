@@ -1538,11 +1538,14 @@ func (t *turn) runTool(tool chatTool, args string, in toolInput) (string, int) {
 	if applied["undo"] != "" {
 		result += " The human may undo it."
 	} else {
-		result += " It cannot be undone."
+		result += noUndoSentence
 	}
 	t.send("applied", applied)
 	return result, code
 }
+
+// noUndoSentence ends the stored result of a write that has no inverse.
+const noUndoSentence = " It cannot be undone."
 
 // block sends a tool block: the call, its arguments (as a string when
 // they are no JSON), how long it took, the result truncated to fit.
