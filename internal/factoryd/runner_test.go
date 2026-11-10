@@ -4575,7 +4575,7 @@ func TestRunSessionOfACardWithoutAPlanTrackOffersNoReplan(t *testing.T) {
 		strings.Contains(first.Input, "- replan:") || strings.Contains(first.Input, "Answer replan") {
 		t.Fatalf("the size trip's check-in offers replan:\n%s\n%s", first.System, first.Input)
 	}
-	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan".`) {
+	if !strings.Contains(chat.gots[1].Input, `Your last answer was unreadable: unknown decision "replan"; allowed: continue, message, handover, human.`) {
 		t.Fatalf("second call = %s, want the replan refused", chat.gots[1].Input)
 	}
 }

@@ -3,10 +3,13 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"reflect"
+	"strconv"
+	"strings"
 	"sync"
 	"testing"
 	"time"
@@ -261,5 +264,56 @@ func TestCIJobsOfAHeadListsNameQueueAndRun(t *testing.T) {
 	}
 	if !reflect.DeepEqual(jobs, want) {
 		t.Fatalf("jobs %v, want %v", jobs, want)
+	}
+}
+
+// A forge that answers a runs page over the read limit when asked for more
+// than a page of runs: the metric reads in pages the forge's answer fits in.
+func TestCIRunsReadsRunsInPagesThatFitTheAnswerLimit(t *testing.T) {
+	m, _ := testMetrics(t)
+	run := func(id int64) string {
+		return fmt.Sprintf(`{"id":%d,"commit_sha":"sha%d","event":"push","trigger_event":"push","status":"success","created":"2026-09-28T10:00:00Z","stopped":"2026-09-28T10:01:00Z"}`, id, id)
+	}
+	ids := map[string][]int64{}
+	for id := int64(125); id >= 106; id-- {
+		ids["1"] = append(ids["1"], id)
+	}
+	for id := int64(105); id >= 101; id-- {
+		ids["2"] = append(ids["2"], id)
+	}
+	boot := true
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		q := r.URL.Query()
+		if n, _ := strconv.Atoi(q.Get("limit")); n > 20 {
+			w.Write([]byte(`{"workflow_runs":[{"id":1,"event_payload":"` + strings.Repeat("x", 1<<20) + `"}]}`))
+			return
+		}
+		list := ids[q.Get("page")]
+		if boot {
+			list = []int64{100}
+			if q.Get("page") != "1" {
+				list = nil
+			}
+		}
+		parts := make([]string, 0, len(list))
+		for _, id := range list {
+			parts = append(parts, run(id))
+		}
+		w.Write([]byte(`{"workflow_runs":[` + strings.Join(parts, ",") + `]}`))
+	}))
+	t.Cleanup(srv.Close)
+	rec := &fakeCIRuns{}
+	c := &CIRuns{Forgejo: &Forgejo{BaseURL: srv.URL}, Owner: "sf", Repo: "r", Token: "tok", Metrics: m, Runs: rec}
+	ctx := context.Background()
+
+	if err := c.pollRuns(ctx); err != nil {
+		t.Fatal(err)
+	}
+	boot = false
+	if err := c.pollRuns(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(rec.rows) != 25 {
+		t.Fatalf("recorded %d runs, want 25 across two pages", len(rec.rows))
 	}
 }
