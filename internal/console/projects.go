@@ -331,7 +331,11 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 			"content": base64.StdEncoding.EncodeToString(file)}},
 	}, http.StatusCreated, &committed); err != nil {
 		log.Printf("console: %s could not commit projects/%s.yaml: %v", user, p.Name, err)
-		c.failFiling(w, r, p, undo{none: true}, http.StatusBadGateway, err, "Forgejo refused to commit the project's file")
+		// a refusal in the 4xx range made nothing: a branch that exists
+		// then is another filing's
+		var ae *apiError
+		held := errors.As(err, &ae) && ae.status >= 400 && ae.status < 500
+		c.failFiling(w, r, p, undo{none: true, held: held}, http.StatusBadGateway, err, "Forgejo refused to commit the project's file")
 		return
 	}
 	made := committed.Commit.SHA
@@ -401,6 +405,9 @@ type undo struct {
 	row    bool
 	pr     int64
 	none   bool
+	// held: the commit was refused, so a branch of the name is another
+	// filing's
+	held bool
 }
 
 // failFiling undoes p's filing, failed for err and answered as why, and
@@ -450,6 +457,8 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	switch {
 	case deleted:
 		msg += "; the filing was undone. Try again in a moment."
+	case err == nil && u.held:
+		msg += "; another filing of " + p.Name + " holds the name."
 	case err == nil:
 		msg += "; branch " + branch + " is left: its head is not this filing's commit. Delete branch " + branch + " on Forgejo, then file the project again."
 	default:
