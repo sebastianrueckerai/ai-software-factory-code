@@ -60,17 +60,17 @@ const docPlan = "# The links plan\n\nThe first draft.\n"
 var writeCases = []writeCase{
 	{name: "alert_verdict", tool: "alert_verdict", args: `{"id":7,"verdict":"noise"}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
-			r.ws.alerts[7] = factoryd.Alert{ID: 7, Kind: "escalation", TaskID: "t-m"}
+			r.ws.seatAlert(factoryd.Alert{ID: 7, Kind: "escalation", TaskID: "t-m"})
 		},
 		result: "Alert 7 is judged noise.", event: factoryd.EventAlertVerdict, calls: []string{"alert 7 noise by sebastian"}},
 	{name: "promote_resource", tool: "promote_resource", args: `{"id":3}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
-			r.ws.resources[3] = cloudres.Resource{ID: 3, Repo: "sf/code", OwnerRef: "t-m", Kind: "server"}
+			r.ws.seatResource(cloudres.Resource{ID: 3, Repo: "sf/code", OwnerRef: "t-m", Kind: "server"})
 		},
 		result: "Resource 3 is standing now.", event: factoryd.EventResourcePromoted, calls: []string{"promote 3 by sebastian"}},
 	{name: "release_resource", tool: "release_resource", args: `{"id":3}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
-			r.ws.resources[3] = cloudres.Resource{ID: 3, Repo: "sf/code", OwnerRef: "t-m", Kind: "server"}
+			r.ws.seatResource(cloudres.Resource{ID: 3, Repo: "sf/code", OwnerRef: "t-m", Kind: "server"})
 		},
 		result: "Resource 3 is released; the collector deletes it.", event: factoryd.EventResourceReleased, calls: []string{"release 3 by sebastian"}},
 	{name: "new_card", tool: "new_card",
@@ -79,7 +79,7 @@ var writeCases = []writeCase{
 		result:  "Filed sf/code#51 on track direct.", event: factoryd.EventCardFiled, calls: []string{"POST /api/v1/repos/sf/code/issues"}},
 	{name: "request_image", tool: "request_image", args: `{"tool":"jq","need":"the cards parse JSON"}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
-			r.ws.imageCard = factoryd.Task{ID: "t-img", Repository: "sf/code", IssueNumber: 60, HumanSummary: "Add jq to the default image"}
+			r.ws.seatImageCard(factoryd.Task{ID: "t-img", Repository: "sf/code", IssueNumber: 60, HumanSummary: "Add jq to the default image"})
 		},
 		result: `Filed tool card #60 t-img "Add jq to the default image". After it merges, the factory builds, signs and pins the image; cards can then name it in image.`,
 		event:  factoryd.EventCardFiled, calls: []string{"image sf/code jq for the cards parse JSON by sebastian"}},
@@ -158,7 +158,7 @@ var writeCases = []writeCase{
 	{name: "github_export", tool: "github_export", args: `{"remote":"acme/code"}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
 			r.SeatFactoryObjects()
-			r.ws.mirror = &factoryd.Mirror{Project: accProjectName, Direction: factoryd.MirrorExport, Username: "gh-user", Token: "ghp_secret1234"}
+			r.ws.seatMirror(factoryd.Mirror{Project: accProjectName, Direction: factoryd.MirrorExport, Username: "gh-user", Token: "ghp_secret1234"})
 		},
 		result: "GitHub export of " + accProjectName + " to acme/code is set: Forgejo pushes every branch and tag on each commit and every 8 h.",
 		event:  factoryd.EventGithubExportSet, leaks: []string{"ghp_secret1234"},
@@ -167,7 +167,7 @@ var writeCases = []writeCase{
 	{name: "github_sync", tool: "github_sync", args: `{}`, confirm: true,
 		setup: func(r *AcceptanceRig) {
 			r.SeatFactoryObjects()
-			r.ws.mirror = &factoryd.Mirror{Project: accProjectName, Direction: factoryd.MirrorExport, Remote: "acme/code", Username: "gh-user", Token: "ghp_secret1234"}
+			r.ws.seatMirror(factoryd.Mirror{Project: accProjectName, Direction: factoryd.MirrorExport, Remote: "acme/code", Username: "gh-user", Token: "ghp_secret1234"})
 		},
 		result: "Sync from GitHub of " + accProjectName + " started: its result arrives as an event and on the projects page's export row.",
 		event:  factoryd.EventGithubSynced, calls: []string{"sync " + accProjectName + " by sebastian"}, leaks: []string{"ghp_secret1234"}},
@@ -491,6 +491,13 @@ var (
 		"set_summary", "set_accent", "invite", "github_export", "github_sync", "close", "edit", "grant_session", "fund",
 		"set_dependency", "replan", "set_pool", "write_doc", "set_autonomy", "routine_write", "routine_delete", "routine_run",
 		"routine_skip", "notes_write", "escalate", "attach_analysis"}
+	// readTools are the tools that change nothing; with writeTools they
+	// are every tool the policy names.
+	readTools = []string{"system", "board", "card", "history", "card_history", "card_step", "board_digest", "costs", "diff", "plan", "pr",
+		"file", "tree", "grep", "web_search", "web_scrape", "research", "session", "session_steps", "session_step", "session_search", "ci",
+		"alerts", "deployment_health", "resources", "settings", "policy", "project_images", "read_doc", "show_doc", "routines",
+		"notes_read", "active_threads", "chat_search", "inbox", "board_view", "board_view_reset", "watch_card", "unwatch_card",
+		"set_timer", "analyze_image", "read_attachment", "summarize_attachment", "ask"}
 	removedTools = []string{"move_card", "start_plan", "accept_plan", "reject_plan"}
 )
 
@@ -513,6 +520,12 @@ func TestWriteToolsTable(t *testing.T) {
 		if !cased[tool] {
 			t.Errorf("write tool %s has no case", tool)
 		}
+	}
+	classed := slices.Sorted(slices.Values(slices.Concat(writeTools, readTools)))
+	if named := slices.Sorted(slices.Values(policy.ChatTools)); !slices.Equal(classed, named) {
+		t.Errorf("the policy's tools and the suite's write and read lists differ: class each new tool, and give a write tool a case\nonly in the policy: %v\nonly in the lists: %v",
+			slices.DeleteFunc(slices.Clone(named), func(n string) bool { return slices.Contains(classed, n) }),
+			slices.DeleteFunc(slices.Clone(classed), func(n string) bool { return slices.Contains(named, n) }))
 	}
 	for _, tool := range removedTools {
 		if slices.Contains(policy.ChatTools, tool) || cased[tool] {

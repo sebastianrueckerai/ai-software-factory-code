@@ -95,6 +95,8 @@ func (w *writeSeams) wire(cfg *console.Config) {
 	}
 	cfg.RequestImage = func(_ context.Context, repository, tool, need, image, by string, _ func(string) error) (factoryd.ImageAsk, error) {
 		w.log("image %s %s for %s by %s", repository, tool, need, by)
+		w.mu.Lock()
+		defer w.mu.Unlock()
 		return factoryd.ImageAsk{Card: w.imageCard, Target: "default", Filed: true}, nil
 	}
 	cfg.Escalate = func(_ context.Context, repository string, q factoryd.HumanQuestion, by string) (int64, error) {
@@ -401,4 +403,28 @@ func (r *AcceptanceRig) Writes() []string {
 		}
 	}
 	return out
+}
+
+func (w *writeSeams) seatAlert(a factoryd.Alert) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.alerts[a.ID] = a
+}
+
+func (w *writeSeams) seatResource(res cloudres.Resource) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.resources[res.ID] = res
+}
+
+func (w *writeSeams) seatImageCard(k factoryd.Task) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.imageCard = k
+}
+
+func (w *writeSeams) seatMirror(m factoryd.Mirror) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.mirror = &m
 }
