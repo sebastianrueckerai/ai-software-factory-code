@@ -11,7 +11,9 @@ import (
 	"net/http/httptest"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func sha(b []byte) string { s := sha256.Sum256(b); return "sha256:" + hex.EncodeToString(s[:]) }
@@ -55,6 +57,8 @@ type fakeUpstream struct {
 	manifestReads  int
 	blobReads      int
 	bearerRequired bool
+	active         atomic.Int32
+	maxActive      atomic.Int32
 	srv            *httptest.Server
 }
 
@@ -65,6 +69,11 @@ func newFakeUpstream(t *testing.T, images ...fakeImg) *fakeUpstream {
 		u.images[im.digest] = im
 	}
 	u.srv = httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		n := u.active.Add(1)
+		defer u.active.Add(-1)
+		for m := u.maxActive.Load(); n > m && !u.maxActive.CompareAndSwap(m, n); m = u.maxActive.Load() {
+		}
+		time.Sleep(5 * time.Millisecond)
 		u.mu.Lock()
 		defer u.mu.Unlock()
 		if r.URL.Path == "/token" {
@@ -532,15 +541,68 @@ func TestUpstreamCopyStopsABlobLongerThanItsDescriptor(t *testing.T) {
 	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":10}]}`, sha([]byte("c")), sha(lay))
 	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): lay}}
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	_, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
-	if err == nil || !strings.Contains(err.Error(), "its descriptor says 10") {
-		t.Fatalf("err = %v, want the blob refused at its descriptor's size", err)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	want := goLine(im.digest) + ": a blob of " + sha(lay) + " is longer than its descriptor's 10 bytes"
+	if err != nil || len(findings) != 1 || findings[0] != want {
+		t.Fatalf("Copy = %q, %v; want the finding %q", findings, err, want)
 	}
 }
 
-// registry.k8s.io and the CDNs of the others answer a manifest or blob
-// with a redirect to a host that wants no bearer; the client drops the
-// Authorization header there and the copy works.
+func TestUpstreamCopyBlobThatFailsItsHashIsAFinding(t *testing.T) {
+	lay := []byte("layer")
+	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":5}]}`, sha([]byte("c")), sha(lay))
+	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): []byte("LAYER")}}
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	if err != nil || len(findings) != 1 || !strings.HasPrefix(findings[0], goLine(im.digest)+": a blob of "+sha(lay)+" hashes to ") {
+		t.Fatalf("Copy = %q, %v", findings, err)
+	}
+}
+
+func TestUpstreamCopyShortBlobErrorStatesTheRealCount(t *testing.T) {
+	lay := []byte("layer")
+	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":50}]}`, sha([]byte("c")), sha(lay))
+	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): lay}}
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	_, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	if err == nil || !strings.Contains(err.Error(), "5 bytes, its descriptor says 50") {
+		t.Fatalf("err = %v", err)
+	}
+}
+
+func TestUpstreamCopyQuotesAChildDigestCut(t *testing.T) {
+	long := strings.Repeat("é", 100)
+	idx := rawIndex(fmt.Sprintf(`[{"digest":%q,"size":1}]`, long), nil)
+	up, store := newFakeUpstream(t, idx), newFakeImgStore(t)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
+	if err != nil || len(findings) != 1 || strings.Contains(findings[0], long) || !strings.Contains(findings[0], `"`+strings.Repeat("é", 40)+`..."`) {
+		t.Fatalf("Copy = %q, %v", findings, err)
+	}
+}
+
+func TestUpstreamCopyRunsOneCopyAtATime(t *testing.T) {
+	a, b := newFakeImage("a"), newFakeImage("b")
+	up, store := newFakeUpstream(t, a, b), newFakeImgStore(t)
+	c := store.copier(up)
+	var wg sync.WaitGroup
+	for _, im := range []fakeImg{a, b} {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if _, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if got := up.maxActive.Load(); got != 1 {
+		t.Errorf("%d upstream requests at once, want 1", got)
+	}
+}
+
+// A manifest and a blob the upstream redirects to another host are read
+// there with no bearer, as registry.k8s.io's are (checked by hand against
+// the real one): the copy follows both redirects.
 func TestUpstreamCopyFollowsRedirectsToAnotherHost(t *testing.T) {
 	im := newFakeImage("redirected")
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)

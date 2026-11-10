@@ -887,6 +887,8 @@ spec:
         - matchName: registry-1.docker.io
         - matchName: auth.docker.io
         - matchName: production.cloudfront.docker.com
+        - matchName: production.cloudflare.docker.com
+        - matchName: docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
         - matchName: ghcr.io
         - matchName: pkg-containers.githubusercontent.com
         - matchName: quay.io
@@ -976,6 +978,8 @@ spec:
     - matchName: registry-1.docker.io
     - matchName: auth.docker.io
     - matchName: production.cloudfront.docker.com
+    - matchName: production.cloudflare.docker.com
+    - matchName: docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
     - matchName: ghcr.io
     - matchName: pkg-containers.githubusercontent.com
     - matchName: quay.io

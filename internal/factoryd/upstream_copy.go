@@ -15,6 +15,8 @@ import (
 	"regexp"
 	"slices"
 	"strings"
+	"sync"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
@@ -93,6 +95,9 @@ type UpstreamCopier struct {
 	// HTTP has no overall timeout: a blob is large, ctx bounds the copy.
 	HTTP  *http.Client
 	Scrub *redact.Scrubber
+
+	// one copy at a time: each holds a blob in the shared /tmp
+	mu sync.Mutex
 }
 
 // findingError is a line the copy cannot make, which the card hears as a
@@ -112,6 +117,8 @@ const maxBlobBytes = 512 << 20
 // findings for the lines it cannot copy; an error is one Temporal retries.
 func (c *UpstreamCopier) Copy(ctx context.Context, base, head string) ([]string, error) {
 	lines, findings := addedImageLines(base, head)
+	c.mu.Lock()
+	defer c.mu.Unlock()
 	var admin AdminAuth
 	for _, l := range lines {
 		if admin.User == "" {
@@ -202,7 +209,7 @@ type manifestDoc struct {
 // store under putAs.
 func (j *copyJob) manifest(ctx context.Context, ref, putAs string) error {
 	if !signatureRef.MatchString(ref) {
-		return findingError(fmt.Sprintf("the upstream's manifest names %q, which is not a sha256 digest", ref))
+		return findingError(fmt.Sprintf("the upstream's manifest names %q, which is not a sha256 digest", cutText(ref, 80)))
 	}
 	res, err := j.get(ctx, "/manifests/"+ref, manifestAccept)
 	if err != nil {
@@ -274,11 +281,14 @@ func (j *copyJob) blob(ctx context.Context, d descriptor) error {
 	if err != nil {
 		return fmt.Errorf("upstream blob %s: %w", digest, err)
 	}
-	if n != d.Size {
-		return fmt.Errorf("upstream blob %s: %d bytes or more, its descriptor says %d", digest, n, d.Size)
+	if n > d.Size {
+		return findingError(fmt.Sprintf("a blob of %s is longer than its descriptor's %d bytes", digest, d.Size))
+	}
+	if n < d.Size {
+		return fmt.Errorf("upstream blob %s: %d bytes, its descriptor says %d", digest, n, d.Size)
 	}
 	if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != digest {
-		return fmt.Errorf("upstream blob %s: the body hashes to %s", digest, got)
+		return findingError(fmt.Sprintf("a blob of %s hashes to %s", digest, got))
 	}
 	if _, err := f.Seek(0, io.SeekStart); err != nil {
 		return err
@@ -437,4 +447,15 @@ func (j *copyJob) login(ctx context.Context, challenge string) error {
 		return fmt.Errorf("upstream token for %s: no token in the answer", j.path)
 	}
 	return nil
+}
+
+// cutText is s cut to n bytes, at a rune boundary.
+func cutText(s string, n int) string {
+	if len(s) <= n {
+		return s
+	}
+	for n > 0 && !utf8.RuneStart(s[n]) {
+		n--
+	}
+	return s[:n] + "..."
 }

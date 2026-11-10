@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -440,8 +441,9 @@ func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	hosts := map[string]bool{"registry-1.docker.io": true, "auth.docker.io": true, "production.cloudfront.docker.com": true,
-		"pkg-containers.githubusercontent.com": true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true}
+	hosts := map[string]bool{"registry-1.docker.io": true, "auth.docker.io": true, "production.cloudfront.docker.com": true, "production.cloudflare.docker.com": true,
+		"docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com": true,
+		"pkg-containers.githubusercontent.com":                                         true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true}
 	for _, l := range strings.Split(string(list), "\n") {
 		if f := strings.Fields(l); len(f) > 0 && !strings.HasPrefix(f[0], "#") && !strings.HasPrefix(f[0], "https://") {
 			host, _, _ := strings.Cut(f[0], "/")
@@ -453,5 +455,58 @@ func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
 			continue
 		}
 		t.Run(h, func(t *testing.T) { egressAdmits(t, "https://"+h) })
+	}
+}
+
+// A matchPattern of the egress admits the names of its CDN and nothing
+// outside it; Cilium's `*` matches the characters of one DNS label.
+func TestFactorydEgressPatternsAdmitTheirCDNsAlone(t *testing.T) {
+	b, err := os.ReadFile("../../k8s/factoryd.yaml")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var patterns []string
+	dec := yaml.NewDecoder(strings.NewReader(string(b)))
+	for {
+		var doc struct {
+			Metadata struct{ Name string } `yaml:"metadata"`
+			Spec     struct {
+				Egress []struct {
+					ToFQDNs []struct {
+						MatchPattern string `yaml:"matchPattern"`
+					} `yaml:"toFQDNs"`
+				} `yaml:"egress"`
+			} `yaml:"spec"`
+		}
+		if dec.Decode(&doc) != nil {
+			break
+		}
+		if doc.Metadata.Name != "factoryd-egress" {
+			continue
+		}
+		for _, r := range doc.Spec.Egress {
+			for _, f := range r.ToFQDNs {
+				if f.MatchPattern != "" {
+					patterns = append(patterns, f.MatchPattern)
+				}
+			}
+		}
+	}
+	admits := func(name string) bool {
+		for _, p := range patterns {
+			re := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, "[-a-zA-Z0-9_]*") + "$")
+			if re.MatchString(name) {
+				return true
+			}
+		}
+		return false
+	}
+	for name, want := range map[string]bool{
+		"cdn01.quay.io": true, "cdn02.quay.io": true, "europe-west3-docker.pkg.dev": true, "us-west1-docker.pkg.dev": true,
+		"quay.io": false, "evil.quay.io": false, "cdn01.quay.io.evil.example": false, "docker.pkg.dev": false, "x.europe-west3-docker.pkg.dev": false, "evil.dev": false,
+	} {
+		if admits(name) != want {
+			t.Errorf("patterns %v admit %s = %v, want %v", patterns, name, !want, want)
+		}
 	}
 }
