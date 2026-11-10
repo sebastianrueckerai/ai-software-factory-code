@@ -45,6 +45,7 @@ type fakeStore struct {
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
+	drafts          map[string]PlanDraft
 	sessions        map[string]Session
 	started         map[string]bool
 	finished        map[string]time.Time
@@ -492,8 +493,27 @@ func (s *fakeStore) AddPlanRevision(ctx context.Context, id string, plan json.Ra
 	if n := len(revs); n > 0 && revs[n-1].SHA256 == sha {
 		return n, nil
 	}
+	delete(s.drafts, id)
 	s.plans[id] = append(revs, PlanRevision{TaskID: id, Revision: len(revs) + 1, Plan: plan, SHA256: sha, CreatedAt: time.Now()})
 	return len(revs) + 1, nil
+}
+
+func (s *fakeStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	if s.drafts == nil {
+		s.drafts = map[string]PlanDraft{}
+	}
+	s.drafts[id] = PlanDraft{TaskID: id, Plan: plan, Findings: findings}
+	return nil
+}
+
+func (s *fakeStore) DeletePlanDraft(ctx context.Context, id string) error {
+	delete(s.drafts, id)
+	return nil
+}
+
+func (s *fakeStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
+	d, ok := s.drafts[id]
+	return d, ok, nil
 }
 
 func (s *fakeStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
@@ -886,6 +906,17 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 	return slices.ContainsFunc(s.events, func(e Event) bool {
 		return e.TaskID == id && e.Kind == EventTaskStatus && e.Detail["status"] == "in-review"
 	}), nil
+}
+
+func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	for i, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Kind == IntakeEscalation && e.CommentID == commentID && e.Question != nil {
+			q := *e.Question
+			q.Info = info
+			s.intakeEvents[i].Question = &q
+		}
+	}
+	return nil
 }
 
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
@@ -1511,6 +1542,24 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
 	}
 	s.cases[i].Status = status
+	return nil
+}
+
+func (s *fakeStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	facts := maps.Clone(s.cases[i].Facts)
+	if facts == nil {
+		facts = map[string]any{}
+	}
+	if value == "" {
+		delete(facts, key)
+	} else {
+		facts[key] = value
+	}
+	s.cases[i].Facts = facts
 	return nil
 }
 
