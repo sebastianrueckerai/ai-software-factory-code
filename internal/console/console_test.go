@@ -362,6 +362,12 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{}`))
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+		out := []map[string]string{}
+		for _, b := range f.posted[r.URL.Path] {
+			out = append(out, map[string]string{"body": b})
+		}
+		json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)

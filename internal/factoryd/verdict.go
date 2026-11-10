@@ -1452,8 +1452,11 @@ func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 		log.Printf("plan %s: finish its close: %v", id, err)
 		return
 	}
-	if t.IssueNumber != 0 && !r.closePlanIssue(ctx, t, repo, words) {
-		return
+	if t.IssueNumber != 0 {
+		r.commentOnce(ctx, t, repo, t.IssueNumber, words)
+		if !r.closePlanIssue(ctx, t, repo, "") {
+			return
+		}
 	}
 	if err := r.store.TransitionTask(ctx, id, []string{"done"}, "closed"); err != nil {
 		log.Printf("plan %s: finish its close: %v", id, err)

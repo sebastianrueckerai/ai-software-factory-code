@@ -1919,7 +1919,10 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCriterionDecided, map[string]any{"criteria": n, "verb": "waived", "reason": note})
 	}
 	if t.IssueNumber != 0 {
-		if _, _, err := c.closeIssue(ctx, a, t, words); err != nil {
+		if err := c.commentOnce(ctx, a, t, words); err != nil {
+			return "", &forgejoRefusal{what: "post the closing words", err: err}
+		}
+		if _, err := c.closeIssueNoted(ctx, a, t, words); err != nil {
 			return "", err
 		}
 	}
@@ -1945,24 +1948,55 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 			return "", 0, &forgejoRefusal{what: "post the note", err: err}
 		}
 	}
+	said, err := c.closeIssueNoted(ctx, a, t, note)
+	return said, posted, err
+}
+
+// commentOnce posts text on card t's issue as a unless a comment with that
+// body stands already: whichever of the console and the sweep posts a
+// plan's closing words first, the issue carries them once.
+func (c *Console) commentOnce(ctx context.Context, a actor, t factoryd.Task, text string) error {
+	path, err := issuePath(t, "/comments")
+	if err != nil {
+		return err
+	}
+	var have []struct {
+		Body string `json:"body"`
+	}
+	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &have); err != nil {
+		return err
+	}
+	if slices.ContainsFunc(have, func(h struct {
+		Body string `json:"body"`
+	}) bool {
+		return h.Body == text
+	}) {
+		return nil
+	}
+	return c.comment(ctx, a, t, text, nil)
+}
+
+// closeIssueNoted is closeIssue after its note was posted: it closes the
+// issue, or the card alone, and records note on the close.
+func (c *Console) closeIssueNoted(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
-			return "", 0, refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
+			return "", refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
 		}
 		log.Printf("console: %s closed %s (%s, %s) via %s", a.s.user, t.ID, t.Repository, t.Status, a.via)
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
 		if t.IssueNumber != 0 {
-			return fmt.Sprintf("Closed #%d.", t.IssueNumber), posted, nil
+			return fmt.Sprintf("Closed #%d.", t.IssueNumber), nil
 		}
-		return "Closed card " + t.ID + ".", posted, nil
+		return "Closed card " + t.ID + ".", nil
 	}
 	if err := c.editIssue(ctx, a, t, map[string]string{"state": "closed"}, nil); err != nil {
-		return "", 0, &forgejoRefusal{what: "close the issue", err: err}
+		return "", &forgejoRefusal{what: "close the issue", err: err}
 	}
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
-	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), posted, nil
+	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), nil
 }
 
 // doReplan sends card id, or the plan it belongs to, back to the planner

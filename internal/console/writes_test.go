@@ -1283,11 +1283,26 @@ func TestCloseADonePlan(t *testing.T) {
 		code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "again"})
 		equal(t, tc.name, []any{code, msg}, []any{tc.code, tc.want})
 	}
+	// the sweep's finishing step posts the words between factoryd's write
+	// and the console's post: the issue carries them once
+	closeErr = nil
+	const issue53 = "/api/v1/repos/sf/code/issues/53/comments"
+	words := "closed by sebastian: swept first; its merged cards stay on main"
+	r.c.cfg.CloseDonePlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
+		r.fg.mu.Lock()
+		r.fg.posted[issue53] = append(r.fg.posted[issue53], words)
+		r.fg.mu.Unlock()
+		return 1, factoryd.PlanCloseWords(by, note), nil
+	}
+	rec = r.do(post("/tasks/t-one/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"swept first"}}), ck)
+	equal(t, "the press after the sweep", rec.Code, http.StatusSeeOther)
+	equal(t, "the words once", r.fg.commentBodies(issue53), []string{words})
+	r.c.cfg.CloseDonePlan = func(context.Context, string, string, string, bool) (int, string, error) { return 0, "", closeErr }
 	closeErr = leakyError()
 	code, msg = refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "again"})
 	equal(t, "a failed waiver", code, http.StatusInternalServerError)
 	maskedLeak(t, "the waiver's refusal", msg)
-	equal(t, "nothing patched after the failures", len(r.fg.patched), 2)
+	equal(t, "patched after the failures", len(r.fg.patched), 3)
 }
 
 // A writer who is no approver cannot close a plan with open criteria: the

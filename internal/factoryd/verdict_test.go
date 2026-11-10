@@ -1885,18 +1885,24 @@ func TestCloseDonePlanBetweenRoundsWithoutAnIntegrationCard(t *testing.T) {
 }
 
 // A close whose issue could not close is finished by the sweep: the issue
-// hears the recorded words once, closes, and the card ends closed.
+// hears the recorded words once, whether or not the console posted them
+// first, closes, and the card ends closed.
 func TestCriteriaPassFinishesAPlanClose(t *testing.T) {
 	ctx := context.Background()
-	r, s, fj := tenCriteriaPlan(t, "done")
-	if _, _, err := r.CloseDonePlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true); err != nil {
-		t.Fatal(err)
-	}
-	want := []string{"#1 closed by sebastian: the cards moved to the rebuild; its merged cards stay on main"}
-	for pass := 1; pass <= 2; pass++ {
-		r.CriteriaPass(ctx)
-		if got, status := commentBodies(fj), s.tasks["t-plan"].Status; !slices.Equal(got, want) || status != "closed" || fj.issues[1].state != "closed" {
-			t.Fatalf("pass %d: comments %q, status %q, issue %q; want %q, closed, closed", pass, got, status, fj.issues[1].state, want)
+	for _, posted := range []bool{false, true} {
+		r, s, fj := tenCriteriaPlan(t, "done")
+		if _, _, err := r.CloseDonePlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true); err != nil {
+			t.Fatal(err)
+		}
+		words := "closed by sebastian: the cards moved to the rebuild; its merged cards stay on main"
+		if posted {
+			fj.comments = append(fj.comments, &stubComment{id: 99, issue: 1, body: words})
+		}
+		for pass := 1; pass <= 2; pass++ {
+			r.CriteriaPass(ctx)
+			if got, status := commentBodies(fj), s.tasks["t-plan"].Status; !slices.Equal(got, []string{"#1 " + words}) || status != "closed" || fj.issues[1].state != "closed" {
+				t.Fatalf("console posted first %t, pass %d: comments %q, status %q, issue %q; want the words once, closed, closed", posted, pass, got, status, fj.issues[1].state)
+			}
 		}
 	}
 }
