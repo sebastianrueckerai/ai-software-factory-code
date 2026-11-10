@@ -496,7 +496,7 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	planRig(r)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
 	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"k2", "k4", "k5"},
-		TakeOffReasons: map[string]string{"k2": "its queue cannot run", "k4": "its schema rejects notes", "k5": "its offer repeats"},
+		TakeOffReasons: map[string]string{"k2": "its queue cannot run", "k4": "its schema rejects notes", "k5": "  "},
 		Cards:          []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
 	r.tasks.plans["t-plan"][1].Plan = plan
 	for _, t := range planTasks() {
@@ -510,15 +510,18 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)
 	}
-	for _, why := range []string{"#2: its queue cannot run", "#4: its schema rejects notes", "#5: its offer repeats"} {
+	for _, why := range []string{"#2: its queue cannot run", "#4: its schema rejects notes"} {
 		if !strings.Contains(card, why) {
 			t.Errorf("the plan card lacks the reason %q:\n%s", why, card)
 		}
 	}
+	if strings.Contains(card, "#5:") {
+		t.Errorf("the plan card shows a line for #5, which has a blank reason:\n%s", card)
+	}
 	if strings.Contains(card, "Takes off main:") {
 		t.Errorf("the plan card still holds the take-off-main footnote:\n%s", card)
 	}
-	footnote := "<p>Takes off main: k2: its queue cannot run, k4: its schema rejects notes, k5: its offer repeats</p>"
+	footnote := "<p>Takes off main: k2: its queue cannot run; k4: its schema rejects notes; k5</p>"
 	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, footnote) {
 		t.Errorf("the drawer lacks %q:\n%s", footnote, d)
 	}

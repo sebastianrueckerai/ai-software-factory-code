@@ -78,7 +78,7 @@ type approvalCard struct {
 	PlanRows    []factoryd.PlanRow
 	// TakeOffRefs are the cards the plan takes off main, each as the
 	// confirm button's line reads it: #its issue, else its key. TakeOffWhys
-	// are their reasons, one line each, beside the button.
+	// are the reasons the plan gives, one line each, beside the button.
 	TakeOffRefs []string
 	TakeOffWhys []string
 	Questions   []planQuestion

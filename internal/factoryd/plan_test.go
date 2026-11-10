@@ -5220,7 +5220,7 @@ func TestFilingDropsMergedCards(t *testing.T) {
 	if pause.Plan != "t-plan" || !slices.Equal(pause.Reverts, []string{api.ID}) || store.tasks[pause.RevertTask].Source != SourceRevert {
 		t.Fatalf("pause %+v, its card %+v; want the plan's of links-api alone on a plain revert card", pause, store.tasks[pause.RevertTask])
 	}
-	if len(fj.pulls) != 1 || !strings.Contains(fj.pulls[0], "\n\nWhy: plan revision 2 drops them\n\n") {
+	if len(fj.pulls) != 1 || !strings.Contains(fj.pulls[0], "\n\nWhy: plan revision 2 drops them: links-api: its work breaks the redirects\n\n") {
 		t.Fatalf("pull requests %q, want the revision's why", fj.pulls)
 	}
 	if k := store.tasks[integration.ID]; k.RevertedAt != nil || slices.Contains(pause.Reverts, integration.ID) {
@@ -5261,7 +5261,7 @@ func TestFilingDropsMergedCardsUnderAPause(t *testing.T) {
 	if p := store.pauses["linkshort/linkshort"]; len(*calls) != 0 || !reflect.DeepEqual(p, red) || store.tasks[api.ID].RevertedAt != nil {
 		t.Fatalf("merges %q, pause %+v; want no revert and the pause as it stood", *calls, p)
 	}
-	want := fmt.Sprintf("factoryd: revision 2 drops 1 merged card (#%d), and it stays on main. The merge queue of linkshort/linkshort is paused: "+
+	want := fmt.Sprintf("factoryd: revision 2 drops 1 merged card (#%d: its work breaks the redirects), and it stays on main. The merge queue of linkshort/linkshort is paused: "+
 		"main is red since 2026-11-07T10:00:00Z. Replan without taking work off main, or wait until the queue goes on.", api.IssueNumber)
 	if !slices.Contains(commentsOn(fj, 1), want) {
 		t.Fatalf("the plan's comments %q, want %q", commentsOn(fj, 1), want)
@@ -5285,8 +5285,9 @@ func TestFilePlanKeepsAMergedOmissionOnMain(t *testing.T) {
 // The plan's comment names the cards its revision takes off main.
 func TestPlanCommentNamesTakeOffMain(t *testing.T) {
 	p := testPlan()
-	p.TakeOffMain = []string{"old-api", "old|ui"}
-	if body := planComment(Task{ID: "t-plan", Objective: "Link shortener"}, 2, p, nil); !strings.Contains(body, "\nTakes off main: old-api, old\\|ui.\n") {
+	p.TakeOffMain = []string{"old-api", "old|ui", "old-cli"}
+	p.TakeOffReasons = map[string]string{"old-api": "its queue cannot run", "old|ui": "it shows a|b"}
+	if body := planComment(Task{ID: "t-plan", Objective: "Link shortener"}, 2, p, nil); !strings.Contains(body, "\nTakes off main: old-api: its queue cannot run; old\\|ui: it shows a\\|b; old-cli.\n") {
 		t.Fatalf("the comment does not name take_off_main:\n%s", body)
 	}
 	if body := planComment(Task{ID: "t-plan", Objective: "Link shortener"}, 1, testPlan(), nil); strings.Contains(body, "Takes off main") {

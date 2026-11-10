@@ -99,7 +99,7 @@ type Plan struct {
 	// takes off main once it filed
 	TakeOffMain []string `json:"take_off_main,omitempty"`
 	// TakeOffReasons say, by key, what breaks if the card's work stays on
-	// main; every key of TakeOffMain has one
+	// main; a revision as filed has one for every key of TakeOffMain
 	TakeOffReasons map[string]string `json:"take_off_reasons,omitempty"`
 	// Round is the planning round this revision files, factoryd's stamp: 1
 	// for a plan's first, 0 on a plan filed before rounds
@@ -121,15 +121,21 @@ func (p Plan) TakeOffReason(key string) string {
 	return strings.TrimSpace(p.TakeOffReasons[key])
 }
 
+// TakeOffLine is ref, a name for the card key, and the plan's reason for
+// taking it off main after a colon when it gives one.
+func (p Plan) TakeOffLine(ref, key string) string {
+	if why := p.TakeOffReason(key); why != "" {
+		return ref + ": " + why
+	}
+	return ref
+}
+
 // TakeOffLines are the plan's take-off-main entries, one per key in
-// order: the key, and its reason after a colon when it has one.
+// order, each as TakeOffLine gives it.
 func (p Plan) TakeOffLines() []string {
 	lines := make([]string, len(p.TakeOffMain))
 	for i, k := range p.TakeOffMain {
-		lines[i] = k
-		if why := p.TakeOffReason(k); why != "" {
-			lines[i] += ": " + why
-		}
+		lines[i] = p.TakeOffLine(k, k)
 	}
 	return lines
 }
@@ -1058,7 +1064,7 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		for i, k := range keys {
 			keys[i] = cell(k)
 		}
-		fmt.Fprintf(&b, "\nTakes off main: %s.\n", strings.Join(keys, ", "))
+		fmt.Fprintf(&b, "\nTakes off main: %s.\n", strings.Join(keys, "; "))
 	}
 	if len(p.Criteria) > 0 {
 		cited := citations(p)
@@ -3533,18 +3539,19 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 		return err
 	}
 	var dropped []Task
-	var refs []string
+	var refs, whys []string
 	for _, k := range onMain(cards) {
 		if slices.Contains(p.TakeOffMain, k.PlanKey) {
 			dropped = append(dropped, k)
-			refs = append(refs, fmt.Sprintf("#%d", k.IssueNumber))
+			refs = append(refs, p.TakeOffLine(fmt.Sprintf("#%d", k.IssueNumber), k.PlanKey))
+			whys = append(whys, p.TakeOffLine(k.PlanKey, k.PlanKey))
 		}
 	}
 	if len(dropped) == 0 {
 		return nil
 	}
 	stopBeats := beatUntilDone(ctx, "revert")
-	_, err = r.RevertGroup(ctx, t, dropped, fmt.Sprintf("plan revision %d drops them", n))
+	_, err = r.RevertGroup(ctx, t, dropped, fmt.Sprintf("plan revision %d drops them: %s", n, strings.Join(whys, "; ")))
 	stopBeats()
 	var no ErrNoReplan
 	if !errors.As(err, &no) {
@@ -3555,7 +3562,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 		stay = "it stays"
 	}
 	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: revision %d drops %s (%s), and %s on main. %s",
-		n, plural(len(dropped), "merged card"), strings.Join(refs, ", "), stay, no))
+		n, plural(len(dropped), "merged card"), strings.Join(refs, "; "), stay, no))
 	return nil
 }
 

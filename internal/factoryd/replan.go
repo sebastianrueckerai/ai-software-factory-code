@@ -1261,7 +1261,7 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	var off []string
 	for _, k := range cards {
 		if k.PlanKey != "" && slices.Contains(next.TakeOffMain, k.PlanKey) {
-			off = append(off, fmt.Sprintf("#%d (%s)", k.IssueNumber, k.PlanKey))
+			off = append(off, next.TakeOffLine(fmt.Sprintf("#%d (%s)", k.IssueNumber, k.PlanKey), k.PlanKey))
 		}
 	}
 	if len(off) > 0 {

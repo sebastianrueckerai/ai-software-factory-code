@@ -141,7 +141,8 @@ func TestChatPlanReadTakesOffMain(t *testing.T) {
 	if err := json.Unmarshal(r.tasks.plans["t-p"][0].Plan, &p); err != nil {
 		t.Fatal(err)
 	}
-	p.TakeOffMain = []string{"old-api"}
+	p.TakeOffMain = []string{"old-api", "old-ui"}
+	p.TakeOffReasons = map[string]string{"old-api": "its queue cannot run"}
 	raw, err := json.Marshal(p)
 	if err != nil {
 		t.Fatal(err)
@@ -149,7 +150,7 @@ func TestChatPlanReadTakesOffMain(t *testing.T) {
 	r.tasks.plans["t-p"][0].Plan = raw
 	r.tasks.mu.Unlock()
 	equal(t, "the plan read", reads(t, r, g, "plan", `{"task_id":"t-p"}`),
-		[]string{"revision 1, sha256 5e1f\nsummary: An API, then its web UI.\ntakes off main: old-api\n" + readsPlanRows})
+		[]string{"revision 1, sha256 5e1f\nsummary: An API, then its web UI.\ntakes off main: old-api: its queue cannot run; old-ui\n" + readsPlanRows})
 }
 
 // A plan in its second round lists its rounds after its summary: a round
