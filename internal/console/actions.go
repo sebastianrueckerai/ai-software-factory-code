@@ -1895,6 +1895,15 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // already, and closing a closed issue sends no webhook.
 func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note string) (string, int64, error) {
 	var posted int64
+	if t.IssueNumber != 0 && t.Status != "merged" {
+		freed, err := c.dropDependencies(ctx, a, t)
+		if err != nil {
+			return "", 0, err
+		}
+		if len(freed) > 0 {
+			note = strings.TrimSpace(note + "\n\n" + noLongerWaits(freed))
+		}
+	}
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, &posted); err != nil {
 			return "", 0, &forgejoRefusal{what: "post the note", err: err}
@@ -1918,6 +1927,63 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
 	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), posted, nil
+}
+
+// noLongerWaits is the close note's sentence naming the dependencies a close
+// removed: "It no longer waits on #1659 and #1541."
+func noLongerWaits(numbers []int64) string {
+	names := make([]string, len(numbers))
+	for i, n := range numbers {
+		names[i] = fmt.Sprintf("#%d", n)
+	}
+	list := strings.Join(names, " and ")
+	if len(names) > 2 {
+		list = strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
+	}
+	return "It no longer waits on " + list + "."
+}
+
+// dropDependencies removes the issues card t's issue depends on, which
+// Forgejo refuses to close it over while one is open, and answers their
+// numbers. The edges other cards hold on t stay. A failed read or removal
+// refuses the close before anything is closed.
+func (c *Console) dropDependencies(ctx context.Context, a actor, t factoryd.Task) ([]int64, error) {
+	path, err := issuePath(t, "/dependencies")
+	if err != nil {
+		return nil, err
+	}
+	repo, err := factoryd.SplitRepo(t.Repository)
+	if err != nil {
+		return nil, err
+	}
+	type dep struct {
+		Number     int64 `json:"number"`
+		Repository struct {
+			Owner string `json:"owner"`
+			Name  string `json:"name"`
+		} `json:"repository"`
+	}
+	var have []dep
+	for page := 1; ; page++ {
+		var got []dep
+		if err := c.as(ctx, a.s, http.MethodGet, fmt.Sprintf("%s?page=%d&limit=50", path, page), nil, http.StatusOK, &got); err != nil {
+			return nil, &forgejoRefusal{what: "read the issue's dependencies", err: err}
+		}
+		if len(got) == 0 {
+			break
+		}
+		have = append(have, got...)
+	}
+	var freed []int64
+	for _, d := range have {
+		owner, name := cmp.Or(d.Repository.Owner, repo.Owner), cmp.Or(d.Repository.Name, repo.Name)
+		meta := map[string]any{"owner": owner, "repo": name, "index": d.Number}
+		if err := c.as(ctx, a.s, http.MethodDelete, path, meta, anyStatus, nil); err != nil {
+			return nil, &forgejoRefusal{what: fmt.Sprintf("remove the dependency of #%d on #%d", t.IssueNumber, d.Number), err: err}
+		}
+		freed = append(freed, d.Number)
+	}
+	return freed, nil
 }
 
 // doReplan sends card id, or the plan it belongs to, back to the planner

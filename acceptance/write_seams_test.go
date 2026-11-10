@@ -312,6 +312,8 @@ func (a *AcceptanceRig) serveWrites(w http.ResponseWriter, r *http.Request) bool
 		a.ws.mu.Unlock()
 		w.WriteHeader(http.StatusCreated)
 		_, _ = fmt.Fprintf(w, `{"number":%d}`, n) // #nosec G104 -- test harness stub response
+	case r.Method == http.MethodGet && strings.HasSuffix(path, "/dependencies"):
+		_, _ = w.Write([]byte(`[]`)) // #nosec G104 -- test harness stub response
 	case r.Method == http.MethodPatch && strings.HasPrefix(path, issues+"/"):
 		var body map[string]string
 		_ = json.NewDecoder(r.Body).Decode(&body) // #nosec G104 -- test harness stub request
