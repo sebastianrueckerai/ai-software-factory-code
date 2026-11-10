@@ -2749,7 +2749,9 @@ func beatUntilDone(ctx context.Context, detail string) func() {
 			case <-beatCtx.Done():
 				return
 			case <-tick.C:
-				record(ctx, detail)
+				if activity.IsActivity(ctx) {
+					record(ctx, detail)
+				}
 			}
 		}
 	}()

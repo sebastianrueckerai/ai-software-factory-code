@@ -996,12 +996,9 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 	open := openCriteria(p, rows)
 	never := neverJudged(p, rows)
-	if gate, _ := judgeIDs(never); len(gate) > 0 && r.runCriteriaGate(ctx, t, repo, integration) {
-		if rows, err = r.store.CriteriaVerdicts(ctx, integration.ID); err != nil {
-			log.Printf("plan %s: the close check: %v", parent, err)
-			return
-		}
-		open, never = openCriteria(p, rows), neverJudged(p, rows)
+	if gate, _ := judgeIDs(never); len(gate) > 0 && r.gateDue(ctx, parent, integration) {
+		r.queueGate(parent)
+		return
 	}
 	if len(never) > 0 {
 		unmet := slices.DeleteFunc(open, func(c PlanCriterion) bool {
@@ -1019,39 +1016,129 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	r.openGap(ctx, t, repo, open, integration)
 }
 
-// runCriteriaGate runs the criteria gate once on the head of the
-// integration card's pull request, for a done plan whose gate-judged
-// criteria hold no verdict row, and answers whether it ran. The card
-// holds the gate reserve free first, raised by what its spend left short
-// of it, so the gate draws on the reserve as the review and the audit do.
-// A plan whose gate ran once asks the human instead.
-func (r *Runner) runCriteriaGate(ctx context.Context, plan Task, repo Repo, integration Task) bool {
-	if integration.PRNumber == 0 || r.timeline.hasEvent(ctx, plan.ID, EventCriteriaGateRun, nil) {
-		return false
+// The outcomes of a done plan's criteria gate run (EventCriteriaGateRun):
+// ran wrote what it could, cut ended without a verdict (timed out, the
+// sandbox lost or never started), no_room found the card's ceiling too
+// low to hold the gate reserve free.
+const (
+	gateRan    = "ran"
+	gateCut    = "cut"
+	gateNoRoom = "no_room"
+)
+
+// criteriaGateBound is the bound of a criteria gate run, the one the gate
+// has as a workflow activity.
+const criteriaGateBound = reproActivityTimeout
+
+// CriteriaGatePassBound is the criteria gate pass's bound: one run and a
+// minute.
+const CriteriaGatePassBound = criteriaGateBound + time.Minute
+
+// gateDue tells whether the criteria gate is still to run for plan id on
+// its integration card: the card has a pull request, and no run ran, found
+// no room, or was cut twice.
+func (r *Runner) gateDue(ctx context.Context, id string, integration Task) bool {
+	has := func(m map[string]string) bool { return r.timeline.hasEvent(ctx, id, EventCriteriaGateRun, m) }
+	return integration.PRNumber != 0 && !has(map[string]string{"outcome": gateRan}) && !has(map[string]string{"outcome": gateNoRoom}) &&
+		!has(map[string]string{"outcome": gateCut, "attempt": "2"})
+}
+
+// queueGate hands plan id to the criteria gate pass.
+func (r *Runner) queueGate(id string) {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	if !slices.Contains(r.gateQueue, id) {
+		r.gateQueue = append(r.gateQueue, id)
+	}
+}
+
+// CriteriaGatePass runs the criteria gate of the plans the close check
+// queued, one at a time, each on a context of its own under the gate's
+// bound: a gate that outlasts the criteria pass finishes here. A run
+// starts only while a whole one still fits the pass.
+func (r *Runner) CriteriaGatePass(ctx context.Context) {
+	r.gateMu.Lock()
+	queue := slices.Sorted(slices.Values(r.gateQueue))
+	r.gateQueue = nil
+	r.gateMu.Unlock()
+	for i, id := range queue {
+		if dl, ok := ctx.Deadline(); ctx.Err() != nil || i > 0 && ok && time.Until(dl) < criteriaGateBound {
+			for _, rest := range queue[i:] {
+				r.queueGate(rest)
+			}
+			return
+		}
+		r.runCriteriaGate(ctx, id)
+	}
+}
+
+// runCriteriaGate runs plan id's criteria gate on the head of the
+// integration card's pull request and records the outcome on the plan.
+// The card holds the gate reserve free first, raised by what its spend
+// left short of it, so the gate draws on the reserve as the review and the
+// audit do; a card whose ceiling bars the raise records no_room and the
+// human is asked. A cut run runs once more on a later pass.
+func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
+	plan, repo, err := r.task(ctx, id)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	p, _, err := planOfStore(ctx, r.store, id, "")
+	if err != nil {
+		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	integration, err := IntegrationCard(ctx, r.store, id, p)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
+		return
+	}
+	if !r.gateDue(ctx, id, integration) {
+		return
+	}
+	attempt := "1"
+	if r.timeline.hasEvent(ctx, id, EventCriteriaGateRun, map[string]string{"outcome": gateCut, "attempt": "1"}) {
+		attempt = "2"
+	}
+	record := func(outcome, commit string) {
+		r.timeline.recordEvent(ctx, id, EventCriteriaGateRun, map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": commit, "outcome": outcome, "attempt": attempt})
 	}
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, integration.PRNumber)
 	if err != nil {
-		log.Printf("plan %s: the criteria gate's pull request: %s", plan.ID, r.Scrub.String(err.Error()))
-		return false
+		log.Printf("plan %s: the criteria gate's pull request: %s", id, r.Scrub.String(err.Error()))
+		record(gateCut, "")
+		return
 	}
 	reserve := r.cfg.Policy().Document.Limits.GateReserve()
-	raise := policy.CeilMicro(reserve - max(integration.Left(), 0))
-	if raise > 0 {
-		if _, _, err := r.store.FundCard(ctx, integration.ID, raise, 0, Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
-			Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the criteria gate of a done plan"}}); err != nil {
+	if raise := policy.CeilMicro(reserve - max(integration.Left(), 0)); raise > 0 {
+		_, _, err := r.store.FundCard(ctx, integration.ID, raise, 0, Event{Repository: integration.Repository, TaskID: integration.ID, IssueNumber: integration.IssueNumber,
+			Kind: EventCardFunded, Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"reason": "the criteria gate of a done plan"}})
+		var capped *CardCapError
+		switch {
+		case errors.As(err, &capped):
+			record(gateNoRoom, pr.HeadSHA)
+			return
+		case err != nil:
 			log.Printf("plan %s: fund the criteria gate: %s", plan.ID, r.Scrub.String(err.Error()))
-			return false
+			return
 		}
 	}
-	r.timeline.recordEvent(ctx, plan.ID, EventCriteriaGateRun, map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": pr.HeadSHA})
 	gate := r.criteriaGate
 	if gate == nil {
 		gate = r.GateCriteria
 	}
-	if _, err := gate(ctx, integration.ID, integration.PRNumber, pr.HeadSHA); err != nil {
-		log.Printf("plan %s: the criteria gate: %s", plan.ID, r.Scrub.String(err.Error()))
+	gctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), criteriaGateBound)
+	defer cancel()
+	res, err := gate(gctx, integration.ID, integration.PRNumber, pr.HeadSHA)
+	if err != nil {
+		log.Printf("plan %s: the criteria gate: %s", id, r.Scrub.String(err.Error()))
 	}
-	return true
+	if err != nil || res.Escalate != "" {
+		record(gateCut, pr.HeadSHA)
+		return
+	}
+	record(gateRan, pr.HeadSHA)
 }
 
 // closePlan closes plan t's issue as factoryd's own close, saying why
@@ -1128,6 +1215,9 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 			verb = "are"
 		}
 		parts = append(parts, human+" "+verb+" yours to settle on this card")
+	}
+	if gate != "" && r.timeline.hasEvent(ctx, t.ID, EventCriteriaGateRun, map[string]string{"outcome": gateNoRoom}) {
+		parts = append(parts, "the card's ceiling left no room for the gate")
 	}
 	why := strings.Join(parts, ". ")
 	ids, lines := criteriaLines(never, " — never judged")

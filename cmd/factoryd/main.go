@@ -413,6 +413,10 @@ func main() {
 		runner.DeltaPass(ctx)
 		return nil
 	})
+	passes.Run(ctx, "criteria_gate", time.Minute, factoryd.CriteriaGatePassBound, func(ctx context.Context) error {
+		runner.CriteriaGatePass(ctx)
+		return nil
+	})
 	passes.Run(ctx, "revert_pause", time.Minute, 2*time.Minute, func(ctx context.Context) error {
 		runner.RevertPausePass(ctx)
 		return nil

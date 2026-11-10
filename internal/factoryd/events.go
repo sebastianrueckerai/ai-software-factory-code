@@ -61,9 +61,11 @@ const (
 	// count, with "backfill": true on a close the schema wrote for a plan
 	// that ended before the second rule. A quiet record, no poke.
 	EventPlanClosed = "plan_closed"
-	// EventCriteriaGateRun records the one run of the criteria gate on a
-	// done plan whose criteria held no verdict row, on the plan task:
-	// detail {"task", "pr", "commit"}. A quiet record, no poke.
+	// EventCriteriaGateRun records a run of the criteria gate on a done
+	// plan whose criteria held no verdict row, on the plan task: detail
+	// {"task", "pr", "commit", "outcome", "attempt"}, the outcome ran, cut
+	// or no_room, the attempt "1" or "2" (a cut run runs once more). A
+	// quiet record, no poke.
 	EventCriteriaGateRun = "criteria_gate_run"
 	// EventProductionReleased records the end of a project's production
 	// hold (roadmap 336), a row of the project: detail {"how", "held_since",

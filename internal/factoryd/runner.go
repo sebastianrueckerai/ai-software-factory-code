@@ -139,6 +139,8 @@ type Runner struct {
 	checkin checkinChat
 	// criteriaGate replaces GateCriteria where the close check runs the
 	// gate; a test scripts it
+	gateMu       sync.Mutex
+	gateQueue    []string // plans whose criteria gate is due, for CriteriaGatePass
 	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test
