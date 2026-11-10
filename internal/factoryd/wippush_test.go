@@ -39,6 +39,7 @@ import (
 	"sync/atomic"
 	"testing"
 	"time"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -1947,7 +1948,7 @@ func TestSizeTripPushesWorkOverTheBoundInParts(t *testing.T) {
 	version.Document.Risk.LargeLines = 1000
 	runner.cfg.Policy = func() policy.Version { return version }
 	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
-	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{{ToolName: "card_facts"}, wipContinue}}
 	runner.checkin = chat
 
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
@@ -1967,10 +1968,86 @@ func TestSizeTripPushesWorkOverTheBoundInParts(t *testing.T) {
 	chat.mu.Lock()
 	defer chat.mu.Unlock()
 	want := "the card's diff is 370 changed lines (added plus deleted), over the 300 its size plans; the work is pushed as the branch's work in progress, its files by changed lines: a.txt 350, b.txt 20"
-	if len(chat.inputs) != 1 || !strings.Contains(chat.inputs[0], want) {
+	if len(chat.inputs) != 2 || !strings.Contains(chat.inputs[0], want) {
 		t.Fatalf("the ask = %q, want the stop naming the bound, the size and the parts: %q", chat.inputs, want)
 	}
-	if got := checkinFacts(supervisedTask("t2"), sessionSpec{}, wipOutcome{head: tip, parts: []wipPart{{"a.txt", 350}, {"b.txt", 20}}}); !strings.Contains(got, `"wip_files":[{"path":"a.txt","lines":350},{"path":"b.txt","lines":20}]`) {
-		t.Fatalf("facts = %s, want the files with their lines", got)
+	// the check-in's card_facts tool answers with the facts runner.go built
+	if facts := `"wip_files":[{"path":"a.txt","lines":350},{"path":"b.txt","lines":20}]`; !strings.Contains(chat.inputs[1], facts) {
+		t.Fatalf("the card_facts answer = %q, want %s", chat.inputs[1], facts)
+	}
+}
+
+// The parts are the card's diff against main, which the line bound
+// measures, not the session's own: a session that starts from an earlier
+// push (a.txt, 200 lines) and adds b.txt names both.
+func TestInterimPushNamesThePartsOfTheCardsWholeDiff(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 30)), 0o644) })
+	os.WriteFile(filepath.Join(serve.seed, "a.txt"), []byte(strings.Repeat("a\n", 200)), 0o644)
+	earlier := wipCommit(t, serve.seed, "earlier work")
+	wipRun(t, "-C", serve.seed, "push", "-q", "-f", serve.fork, earlier+":refs/heads/factory/t2")
+	serve.base = earlier
+
+	runner.kube.(*fakeKube).pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+	spec := sessionSpec{id: "s-1", startRef: earlier, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
+	out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil)
+	want := wipParts{list: []wipPart{{"a.txt", 200}, {"b.txt", 30}}}
+	if out.head == "" || !reflect.DeepEqual(out.parts, want) {
+		t.Fatalf("outcome = %+v, want a landed head and the parts %+v", out, want)
+	}
+}
+
+// Past wipPartsMax files the stop says how many more there are, a path is
+// cut to wipPartPath bytes on a character boundary, and a name with a
+// space and an accent stays readable, not C-quoted.
+func TestInterimPushBoundsAndMarksItsPartsList(t *testing.T) {
+	long := strings.Repeat("é", 100) + ".txt"
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		for i := range 40 {
+			os.WriteFile(filepath.Join(dir, fmt.Sprintf("f%02d.txt", i)), []byte("x\n"), 0o644)
+		}
+		os.WriteFile(filepath.Join(dir, "über wir.txt"), []byte(strings.Repeat("u\n", 9)), 0o644)
+		os.WriteFile(filepath.Join(dir, long), []byte(strings.Repeat("l\n", 8)), 0o644)
+		os.WriteFile(filepath.Join(dir, "g.txt"), []byte("x\n"), 0o644)
+	})
+	runner.kube.(*fakeKube).pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+	spec := sessionSpec{id: "s-1", startRef: serve.base, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
+	out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil)
+	p := out.parts
+	if len(p.list) != wipPartsMax || p.more != 3 {
+		t.Fatalf("parts = %d listed and %d more, want %d and 3 of 43 files", len(p.list), p.more, wipPartsMax)
+	}
+	if p.list[0] != (wipPart{"über wir.txt", 9}) || p.list[1].Lines != 8 || !strings.HasSuffix(p.list[1].Path, "…") || len(p.list[1].Path) > wipPartPath+len("…") || !utf8.ValidString(p.list[1].Path) {
+		t.Fatalf("first parts = %+v, want the accented name raw, then the long one cut on a character", p.list[:2])
+	}
+	if !strings.HasSuffix(p.text(), ", and 3 more files") {
+		t.Fatalf("text = %q, want the count of the rest", p.text())
+	}
+}
+
+func TestWipPartsTextNamesNothingEmpty(t *testing.T) {
+	if got := (wipParts{}).text(); got != "" {
+		t.Fatalf("text of no parts = %q, want none", got)
+	}
+	if got := (wipParts{unread: true}).text(); got != "the list of files could not be read" {
+		t.Fatalf("text of an unread list = %q", got)
+	}
+	if got := (wipParts{list: []wipPart{{"a.go", 5}}}).text(); got != "its files by changed lines: a.go 5" {
+		t.Fatalf("text = %q", got)
+	}
+}
+
+type failingGit struct{}
+
+func (failingGit) Git(string, ...string) (string, error) {
+	return "", errors.New("output past its cap")
+}
+func (failingGit) RunGit(string, []string, ...string) (string, error) {
+	return "", errors.New("output past its cap")
+}
+
+// A listing that fails is information lost, not a push refused.
+func TestWipPartsListingFailureIsUnread(t *testing.T) {
+	if got := listWipParts(failingGit{}, "dir", "start", "head"); !got.unread {
+		t.Fatalf("parts = %+v, want unread", got)
 	}
 }

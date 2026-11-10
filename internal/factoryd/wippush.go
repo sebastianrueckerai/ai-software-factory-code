@@ -13,6 +13,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
 // The interim push of a session's work in progress, factoryd's half of
@@ -29,7 +31,7 @@ import (
 type wipOutcome struct {
 	head    string
 	refusal string
-	parts   []wipPart
+	parts   wipParts
 }
 
 // wipPart is one file of the pushed work and the lines it changes
@@ -37,6 +39,35 @@ type wipOutcome struct {
 type wipPart struct {
 	Path  string `json:"path"`
 	Lines int    `json:"lines"`
+}
+
+// wipParts are the files of the card's work on the pushed branch against
+// main, the one the line bound measures: the largest wipPartsMax of them,
+// the count of the rest, or unread when the listing failed, which costs the
+// push nothing: it is information.
+type wipParts struct {
+	list   []wipPart
+	more   int
+	unread bool
+}
+
+// text is the parts in a stop's words, "" when there are none to name.
+func (p wipParts) text() string {
+	switch {
+	case p.unread:
+		return "the list of files could not be read"
+	case len(p.list) == 0:
+		return ""
+	}
+	items := make([]string, len(p.list))
+	for i, f := range p.list {
+		items[i] = fmt.Sprintf("%s %d", f.Path, f.Lines)
+	}
+	text := "its files by changed lines: " + strings.Join(items, ", ")
+	if p.more > 0 {
+		text += fmt.Sprintf(", and %d more files", p.more)
+	}
+	return text
 }
 
 // interimSlot is the one slot of the interim push's body handling, and
@@ -144,10 +175,10 @@ func (r *Runner) wipFailureFresh(ctx context.Context, t Task, s sessionSpec, at,
 // history kept between check-ins, and the session's end push — which
 // lands its own commit the same way — cannot be refused for the
 // replacement. It answers the commit it landed and the files it holds.
-func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bundle string) (string, []wipPart, error) {
+func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bundle string) (string, wipParts, error) {
 	own, err := bareRepo(ctx)
 	if err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	defer os.RemoveAll(own) // #nosec G104 -- a temporary scratch repository
 	login := basicLogin(r.cfg.ProjectsUser, r.forgejo.ProjectsToken)
@@ -168,22 +199,22 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	switch err := fetch(fork, branch); {
 	case err == nil:
 		if tip, err = run(nil, "rev-parse", "--verify", branch); err != nil {
-			return "", nil, err
+			return "", wipParts{}, err
 		}
 	case strings.Contains(err.Error(), "couldn't find remote ref") || strings.Contains(err.Error(), "not found"):
 		// a first push: the fork has no task branch yet, and main is the start
 		if err := fetch(r.repoURL(s.repo), prBase); err != nil {
-			return "", nil, fmt.Errorf("the fork holds no task branch and main cannot be fetched: %w", err)
+			return "", wipParts{}, fmt.Errorf("the fork holds no task branch and main cannot be fetched: %w", err)
 		}
 	default:
-		return "", nil, fmt.Errorf("fetch the task branch: %w", err)
+		return "", wipParts{}, fmt.Errorf("fetch the task branch: %w", err)
 	}
 	// the header is read and bounded here, in Go, before git sees the file: a
 	// body that is no bundle, whatever it says it ships, costs the interim
 	// push alone, and a header git would spend seconds on never reaches it
 	f, err := os.Open(bundle) // #nosec G304 -- the temporary file postWip made
 	if err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	defer f.Close()
 	size, buf := int64(0), make([]byte, wipHeaderMax)
@@ -193,106 +224,108 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	n, _ := f.ReadAt(buf, 0)
 	hdr, _, ok := bytes.Cut(buf[:n], []byte("\n\n"))
 	if !ok {
-		return "", nil, errors.New("the shipped body is no bundle: no header end")
+		return "", wipParts{}, errors.New("the shipped body is no bundle: no header end")
 	}
 	// the bundle's pack is indexed under git's strict object checks, which
 	// a fetch from a bundle does not apply: a lying object never lands.
 	// The bundle's own ref line names the WIP, and its prerequisites are
 	// the objects fetched above
 	if got := bundleCommit(hdr); got != commit {
-		return "", nil, fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
+		return "", wipParts{}, fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
 	}
 	prerequisites := bundlePrerequisites(hdr)
 	if len(prerequisites) > wipMaxPrerequisites {
-		return "", nil, fmt.Errorf("the bundle lists %d prerequisites, not the worker's one", len(prerequisites))
+		return "", wipParts{}, fmt.Errorf("the bundle lists %d prerequisites, not the worker's one", len(prerequisites))
 	}
 	// list-heads reads the header only, so it maps no pack of the repository
 	if _, err := run(nil, "bundle", "list-heads", bundle); err != nil {
-		return "", nil, fmt.Errorf("the shipped body is no bundle: %w", err)
+		return "", wipParts{}, fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
 	for _, id := range prerequisites {
 		if _, err := run(nil, "cat-file", "-e", id+"^{commit}"); err != nil {
-			return "", nil, fmt.Errorf("the bundle builds on commit %s, which neither the task branch nor main holds: nothing is pushed", id)
+			return "", wipParts{}, fmt.Errorf("the bundle builds on commit %s, which neither the task branch nor main holds: nothing is pushed", id)
 		}
 	}
 	if _, err := gitRun(ctx, own, "", nil, lim(wipGitOutput, io.NewSectionReader(f, int64(len(hdr)+2), size-int64(len(hdr)+2))), "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
-		return "", nil, fmt.Errorf("index the shipped bundle: %w", err)
+		return "", wipParts{}, fmt.Errorf("index the shipped bundle: %w", err)
 	}
 	if _, err := run(nil, "rev-parse", "--verify", "--quiet", commit+"^{commit}"); err != nil {
-		return "", nil, fmt.Errorf("the bundle ships no commit %s: %w", commit, err)
+		return "", wipParts{}, fmt.Errorf("the bundle ships no commit %s: %w", commit, err)
 	}
 	if _, err := run(nil, "merge-base", "--is-ancestor", s.startRef, commit); err != nil {
-		return "", nil, fmt.Errorf("the shipped WIP %s does not descend from the session's start %s: nothing is pushed", commit, s.startRef)
+		return "", wipParts{}, fmt.Errorf("the shipped WIP %s does not descend from the session's start %s: nothing is pushed", commit, s.startRef)
 	}
 	if err := checkShippedSize(ctx, own, commit, s.startRef, lim); err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	tree, err := run(nil, "rev-parse", commit+"^{tree}")
 	if err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	// the pushed commit is factoryd's own: the shipped tree, the start as
 	// its only parent, the factory's identity and message — never the
 	// sandbox's commit
 	head, err := run(wipIdentity, "commit-tree", tree, "-p", s.startRef, "-m", wipMessage(t, s))
 	if err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	// no line bound: the push is the card's work in progress, which
 	// survives a session that cannot finish within the bound, and the end
 	// push owns the line-bound rule
 	g := rulesGit{ctx}
-	parts, err := wipParts(g, own, s.startRef, head)
-	if err != nil {
-		return "", nil, err
+	if tip != "" {
+		// the first push fetched main as its start; a later one reads it
+		// for the parts, which are information, never a reason to refuse
+		_ = fetch(r.repoURL(s.repo), prBase)
 	}
+	parts := listWipParts(g, own, s.startRef, head)
 	if err := RefuseWorkflowDirChange(g, own, s.startRef, head); err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	if err := RefuseMisnamedMigrations(g, s.policy.Risk.MigrationGlobs(), own, s.startRef, head); err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	if _, err := gitRun(ctx, own, login, nil, lim(wipGitOutput, nil), "push", "-q", "--force-with-lease=refs/heads/"+branch+":"+tip, fork, head+":refs/heads/"+branch); err != nil {
-		return "", nil, err
+		return "", wipParts{}, err
 	}
 	return head, parts, nil
 }
 
-// wipPartsText lists the parts as "path lines" pairs for a stop's text.
-func wipPartsText(parts []wipPart) string {
-	items := make([]string, len(parts))
-	for i, p := range parts {
-		items[i] = fmt.Sprintf("%s %d", p.Path, p.Lines)
+// listWipParts lists the files the work changes against the merge base of
+// main and the work, the card's diff, else against the start when main is
+// not there to read. A failed listing is unread, never an error.
+func listWipParts(g PushGit, own, start, head string) wipParts {
+	from := start
+	if mb, err := g.Git(own, "merge-base", prBase, head); err == nil && mb != "" {
+		from = mb
 	}
-	return strings.Join(items, ", ")
-}
-
-// wipParts lists the files the work changes against the start, the most
-// changed lines first, at most wipPartsMax of them.
-func wipParts(g PushGit, own, start, head string) ([]wipPart, error) {
-	out, err := g.Git(own, "diff", "--numstat", "--no-renames", start, head)
+	out, err := g.Git(own, "diff", "--numstat", "-z", "--no-renames", from, head)
 	if err != nil {
-		return nil, err
+		log.Printf("list the interim push's files: %v", err)
+		return wipParts{unread: true}
 	}
-	var parts []wipPart
-	for line := range strings.SplitSeq(out, "\n") {
-		f := strings.SplitN(line, "\t", 3)
+	var all []wipPart
+	for entry := range strings.SplitSeq(out, "\x00") {
+		f := strings.SplitN(entry, "\t", 3)
 		if len(f) != 3 {
 			continue
 		}
 		added, _ := strconv.Atoi(f[0])
 		deleted, _ := strconv.Atoi(f[1])
-		parts = append(parts, wipPart{Path: f[2], Lines: added + deleted})
+		all = append(all, wipPart{Path: textutil.Truncate(f[2], wipPartPath), Lines: added + deleted})
 	}
-	slices.SortStableFunc(parts, func(a, b wipPart) int { return cmp.Compare(b.Lines, a.Lines) })
-	return parts[:min(len(parts), wipPartsMax)], nil
+	slices.SortStableFunc(all, func(a, b wipPart) int { return cmp.Compare(b.Lines, a.Lines) })
+	n := min(len(all), wipPartsMax)
+	return wipParts{list: all[:n], more: len(all) - n}
 }
 
 // The bounds on what a pod ships, all far above any card's real work (a
 // card's diff is bounded at hundreds to a few thousand lines).
 const (
-	// wipPartsMax bounds the files a stop names.
+	// wipPartsMax bounds the files a stop names, wipPartPath each path of
+	// them in bytes.
 	wipPartsMax = 40
+	wipPartPath = 160
 	// wipMaxPrerequisites bounds the prerequisites of a bundle: the
 	// worker's is one, the session's start.
 	wipMaxPrerequisites = 16

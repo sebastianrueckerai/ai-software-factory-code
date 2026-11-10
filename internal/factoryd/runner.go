@@ -951,7 +951,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopPush()
 			out.wip = cmp.Or(wip.head, out.wip)
 			if trip.Kind == TripSize && wip.head != "" {
-				trip.Detail += "; the work is pushed as the branch's work in progress, its files by changed lines: " + wipPartsText(wip.parts)
+				trip.Detail += "; the work is pushed as the branch's work in progress"
+				if text := wip.parts.text(); text != "" {
+					trip.Detail += ", " + text
+				}
 			}
 			if wip.refusal != "" {
 				// a push rule's refusal is a message the agent can act on:
@@ -1523,8 +1526,11 @@ func checkinFacts(t Task, s sessionSpec, wip wipOutcome) string {
 		"attempt": s.attempt, "sessions": s.sessions}
 	if wip.head != "" {
 		facts["wip_head"] = wip.head
-		if len(wip.parts) > 0 {
-			facts["wip_files"] = wip.parts
+		if len(wip.parts.list) > 0 {
+			facts["wip_files"] = wip.parts.list
+			if wip.parts.more > 0 {
+				facts["wip_files_more"] = wip.parts.more
+			}
 		}
 	}
 	b, _ := json.Marshal(facts)
