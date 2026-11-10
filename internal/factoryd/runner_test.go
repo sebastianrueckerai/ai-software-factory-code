@@ -3989,6 +3989,45 @@ func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error)
 	return t, ok, err
 }
 
+// startsFrom runs a session that starts on the branch head w2, spends 2.5
+// of the 4 EUR the card had left and pushes nothing; interim says whether w2
+// is an interim push's head. It reports whether spend_no_push tripped.
+func startsFrom(t *testing.T, interim bool) bool {
+	t.Helper()
+	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
+	hub.branchHead = "w2"
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	store.tasks["t2"] = tk
+	spending := &spendingStore{Store: runner.store}
+	runner.store = spending
+	kube.onCreatePod = func() { spending.added.Store(math.Float64bits(2.5)) }
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for end := time.Now().Add(3 * time.Second); time.Now().Before(end) && !spendTripSeen(hub); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", StartRef: "w2", StartInterim: interim}, nil, hangLogs)
+	return chat.calls == 1 && spendTripSeen(hub)
+}
+
+// An interim push grants no push credit: a session that starts from an
+// interim head and spends past the line with nothing pushed trips
+// spend_no_push, as one that starts from the base does. A session that
+// starts from the head of a push keeps the credit that push earned.
+func TestRunSessionFromAnInterimHeadKeepsSpendNoPush(t *testing.T) {
+	if !startsFrom(t, true) {
+		t.Fatal("a session from an interim head spent past the line with nothing pushed and tripped nothing")
+	}
+	if startsFrom(t, false) {
+		t.Fatal("a session from a pushed head tripped spend_no_push, which its parent's push disarms")
+	}
+}
+
 // A session that spends its share of what the card had left, with nothing
 // pushed, asks the check-in: 1 EUR before the session leaves 4, and 2.5 EUR
 // spent in it is 62.5 percent of 4, past the default 60.
@@ -5555,5 +5594,24 @@ func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
 	}
 	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
 		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)
+	}
+}
+
+// A session that ended without a result carries its last interim head as
+// the commit and says it is interim; its own push is no interim head.
+func TestSessionResultMarksAnInterimCommit(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		out  sessionOutcome
+		want bool
+	}{
+		{"interim head only", sessionOutcome{noResult: "the pod was killed", wip: "w2"}, true},
+		{"own push over an interim head", sessionOutcome{noResult: "stopped", commit: "c1", wip: "w2"}, false},
+		{"no push", sessionOutcome{noResult: "the pod was killed"}, false},
+	} {
+		res := sessionResult(sessionSpec{id: "s1", base: "main"}, tc.out)
+		if res.Interim != tc.want || (tc.want && res.Commit != "w2") {
+			t.Errorf("%s: Interim = %v, Commit = %q, want interim %v", tc.name, res.Interim, res.Commit, tc.want)
+		}
 	}
 }

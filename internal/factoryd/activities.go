@@ -983,6 +983,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("start ref", err)
 	}
 	s.base = t.SHA
+	s.interimStart = in.StartInterim && s.startRef == in.StartRef
 	var dead sessionProgress
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
 		if dead.Events > 0 {
@@ -1248,6 +1249,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
 		return res
 	}
+	res.Interim = out.commit == "" && out.wip != ""
 	res.LastMessage = textutil.Truncate(out.agentText, maxHandoverMessage)
 	if out.trip != nil {
 		// the trip's commit is the session's own push, else the last
@@ -1921,6 +1923,11 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 	}
 	switch {
 	case pr == nil:
+		if !st.FactoryPR && !st.Roll {
+			if st.Head, err = r.BranchHead(ctx, taskID); err != nil {
+				return RunState{}, err
+			}
+		}
 	case pr.Merged:
 		st.Merged = true
 	case pr.State == "closed":

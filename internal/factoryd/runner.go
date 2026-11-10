@@ -502,7 +502,10 @@ type sessionSpec struct {
 	// base is the task's base commit: a session resumed from pushed work in
 	// progress starts past it
 	base string
-	repo Repo
+	// interimStart: startRef is an interim push's head, no push of the
+	// work the supervisor's detectors credit
+	interimStart bool
+	repo         Repo
 	// docs is the project's document repository (chat.doc_repo), which the
 	// session reads at /workspace/docs; the zero Repo when it has none
 	docs Repo
@@ -741,7 +744,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// the agent had
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
-	supCfg.PriorPush = s.startRef != s.base
+	supCfg.PriorPush = s.startRef != s.base && !s.interimStart
 	if spentAtStart != nil {
 		supCfg.SpentAtStart = *spentAtStart
 	} else {

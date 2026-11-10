@@ -351,8 +351,11 @@ type SessionInput struct {
 	Answers []string
 	// PosterInfo is what the issue's author answered the agent's
 	// information requests, oldest first (versionNeedsInfo).
-	PosterInfo      []string
-	StartRef        string
+	PosterInfo []string
+	StartRef   string
+	// StartInterim: StartRef is an interim push's head, which grants no
+	// push credit to the session that starts from it (versionWipStart).
+	StartInterim    bool `json:",omitempty"`
 	ParentSessionID string
 	// ParentStop, ParentOutcome and ParentTrip are how the parent session
 	// ended: its SessionResult's Summary cut at carryStopBytes, its Outcome
@@ -391,8 +394,11 @@ type SessionResult struct {
 	Outcome   SessionOutcome
 	SessionID string
 	Commit    string // pushed; for a supervisor stop, the work in progress
-	Summary   string
-	Findings  []string
+	// Interim: Commit is the session's last interim push, none of its own
+	// end push (versionWipStart).
+	Interim  bool `json:",omitempty"`
+	Summary  string
+	Findings []string
 	// LastMessage is the agent's last message, cut at maxHandoverMessage, ""
 	// when it said none; the next session is told it beside the stop reason.
 	LastMessage string
@@ -645,6 +651,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	run.upstreamCopy = workflow.GetVersion(ctx, "upstream-copy", workflow.DefaultVersion, versionUpstreamCopy)
+	run.wipStart = workflow.GetVersion(ctx, "wip-start", workflow.DefaultVersion, versionWipStart)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1388,6 +1395,13 @@ const (
 	// to the card as a finding and the run goes on. A run from before
 	// copies nothing.
 	versionUpstreamCopy workflow.Version = 1
+	// versionWipStart (change id "wip-start"): a session that pushed and
+	// ended without a verdict (no_push, redirect, retry_stronger,
+	// provider_refused, day_cap, wall_clock) hands its head to the next
+	// session as its start, and a healed card with no pull request starts
+	// its first session from the branch's head. A run from before starts
+	// each from the base.
+	versionWipStart workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1520,6 +1534,7 @@ type taskRun struct {
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
 	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
+	wipStart          workflow.Version // a dead session's pushed head, and a healed branch's, is the next start (versionWipStart)
 	copiedHeads       []string         // the heads whose lines were copied this run, once each
 	holds             int              // heads adopted this run (versionHeadHolds)
 	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
@@ -1682,6 +1697,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// parent is the last session that left a record; parentStop,
 	// parentOutcome and parentTrip say how it ended, for its working state
 	startRef, parent := "", ""
+	startInterim := false
 	var parentStop, parentTrip string
 	var parentOutcome SessionOutcome
 	var parentDeadEnd bool
@@ -2107,6 +2123,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			addFindings(more, "changes")
 		}
+		if t.wipStart >= versionWipStart && startRef == "" && st.PR.Number == 0 {
+			startRef = st.Head
+		}
 		if t.screening {
 			// a healed fresh card answered a wait before its screening
 			// passed: it is screened now, as a live one before its first
@@ -2280,7 +2299,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
-			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
+			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, StartInterim: startInterim, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
@@ -2324,6 +2343,12 @@ func (t *taskRun) lifecycle() (string, error) {
 			continue
 		}
 		t.pendingPods = 0
+		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
+			switch res.Outcome {
+			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock:
+				startRef, startInterim = res.Commit, res.Interim
+			}
+		}
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {
 			if ask := t.providerRefused(&refusals, ProviderWait{Status: res.Status, Reason: res.Reason}); ask != "" {
 				if final, why := held(t.awaitHuman(ask, nil)); final != "" {

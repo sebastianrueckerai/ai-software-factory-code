@@ -68,3 +68,19 @@ func TestSweepBranches(t *testing.T) {
 		t.Fatalf("deleted = %q, want %q", fj.deleted, want)
 	}
 }
+
+// The branch of a running card holds interim tips and no pull request: the
+// sweep keeps it, however old its head.
+func TestSweepBranchesKeepsTheBranchOfARunningCard(t *testing.T) {
+	fj := &prForgejo{head: "w2", branches: []string{"factory/t1"}}
+	r, _, _ := newActivityRunner(t, withStatus(prTask, "running"), fj)
+	v := r.cfg.Policy()
+	v.Tree.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo"}}
+	r.cfg.Policy = func() policy.Version { return v }
+	if err := r.SweepBranches(context.Background(), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.deleted) != 0 {
+		t.Fatalf("deleted = %q, want none", fj.deleted)
+	}
+}
