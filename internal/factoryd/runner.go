@@ -137,10 +137,12 @@ type Runner struct {
 	// checkin is the check-in's model client, wired like the supervisor's
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
-	// criteriaGate replaces GateCriteria where the close check runs the
-	// gate; a test scripts it
-	gateMu       sync.Mutex
-	gateQueue    []string // plans whose criteria gate is due, for CriteriaGatePass
+	// gateQueue holds the plans whose criteria gate is due, which the
+	// close check fills under gateMu and CriteriaGatePass takes
+	gateMu    sync.Mutex
+	gateQueue []string
+	// criteriaGate replaces GateCriteria in the criteria gate pass; a
+	// test scripts it
 	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)
 	// endpointWait bounds how long the worker's message endpoint is given
 	// to come up for a brief, record or proofs list delivery; a test

@@ -9,6 +9,7 @@ import (
 	"log"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"os"
 	"slices"
 	"strings"
@@ -1741,7 +1742,7 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 }
 
 // gatePlan seeds a done plan whose integration card (pull request 9,
-// merged) holds budget and spent, an approver's row on the human
+// merged, its own ceiling 6.00) holds budget and spent, an approver's row on the human
 // criterion c2 and a runner whose gate is gate.
 func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error)) (*Runner, *fakeStore) {
 	t.Helper()
@@ -1749,7 +1750,7 @@ func gatePlan(t *testing.T, budget, spent float64, gate func(*fakeStore) func(co
 	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
 	integration := s.tasks["t-int"]
 	integration.IssueNumber, integration.PRNumber = 1380, 9
-	integration.BudgetEUR, integration.SpentEUR = budget, spent
+	integration.BudgetEUR, integration.SpentEUR, integration.CeilingEUR = budget, spent, 6
 	s.tasks["t-int"] = integration
 	mergeCard(s, "t-int")
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
@@ -1920,4 +1921,299 @@ func TestRunCriteriaGateScrubsItsErrors(t *testing.T) {
 	if strings.Contains(got, "user:pass") || strings.Contains(got, "abcdefghijklmnopqrstuvwx") || !strings.Contains(got, "[redacted]@git.example") || !strings.Contains(got, "Bearer [redacted]") {
 		t.Errorf("log = %q, want the userinfo and the bearer masked", got)
 	}
+}
+
+// ctxObjects is an object store that honours a cancelled context, as S3
+// does.
+type ctxObjects struct{ fakeObjectStore }
+
+func (o *ctxObjects) Put(ctx context.Context, key string, body []byte) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	return o.fakeObjectStore.Put(ctx, key, body)
+}
+
+func (o *ctxObjects) Get(ctx context.Context, key string) ([]byte, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return o.fakeObjectStore.Get(ctx, key)
+}
+
+// A gate that outlives the pass records its outcome all the same: the
+// pass's context ends inside the gate, the run wrote no rows, and the next
+// sweep neither runs it again nor tops the card up again.
+func TestCriteriaGatePassRecordsTheOutcomeAfterThePassEnds(t *testing.T) {
+	calls := 0
+	pass, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+			calls++
+			cancel()
+			return CriteriaResult{}, nil
+		}
+	})
+	r.timeline.Objects = &ctxObjects{}
+	ctx := context.Background()
+	r.CriteriaPass(ctx)
+	r.CriteriaGatePass(pass)
+	sweep(ctx, r)
+	sweep(ctx, r)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if calls != 1 || s.tasks["t-int"].BudgetEUR != 5.4 || len(pending) != 1 {
+		t.Errorf("gate calls %d, budget %.2f, pending %+v, want one run, 5.40 and the ask", calls, s.tasks["t-int"].BudgetEUR, pending)
+	}
+}
+
+// The gate runs for a done plan at rest whose integration card reached
+// main, and only then: not under a replan, not once a person closed the
+// plan after it was queued, not on a failed integration card with an open
+// pull request, which keeps the criteria_rerun ask.
+func TestCriteriaGatePassRunsOnlyForADonePlanAtRest(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name    string
+		prepare func(*Runner, *fakeStore)
+		after   func(*fakeStore) // between the queueing and the gate pass
+		asks    int
+	}{
+		{"under a replan", func(r *Runner, _ *fakeStore) {
+			if err := r.timeline.Append(ctx, "t-plan", stepReplan, map[string]any{"origin": ReplanCut, "card": "t-int"}); err != nil {
+				t.Fatal(err)
+			}
+		}, nil, 0},
+		{"closed after it was queued", nil, func(s *fakeStore) {
+			p := s.tasks["t-plan"]
+			p.Status = "closed"
+			s.tasks["t-plan"] = p
+		}, 0},
+		{"a failed integration card", func(_ *Runner, s *fakeStore) {
+			c := s.tasks["t-int"]
+			c.Status, c.MergeCommit = "failed", ""
+			s.tasks["t-int"] = c
+		}, nil, 1},
+	} {
+		calls := 0
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+				calls++
+				return CriteriaResult{}, nil
+			}
+		})
+		if c.prepare != nil {
+			c.prepare(r, s)
+		}
+		r.CriteriaPass(ctx)
+		if c.after != nil {
+			c.after(s)
+		}
+		r.CriteriaGatePass(ctx)
+		r.CriteriaPass(ctx)
+		pending, _ := s.ApprovalRequests(ctx, "pending")
+		if calls != 0 || len(pending) != c.asks || s.tasks["t-int"].BudgetEUR != 5 {
+			t.Errorf("%s: gate calls %d, budget %.2f, pending %+v, want no run, no raise and %d ask", c.name, calls, s.tasks["t-int"].BudgetEUR, pending, c.asks)
+		}
+	}
+}
+
+// A card with no ceiling of its own is held to the policy's card ceiling
+// (5.00 in the test policy): 5.00 spent of 5.00 cannot take 0.40, and the
+// ask names the ceiling; 4.60 spent leaves 0.40, no raise.
+func TestCriteriaGatePassKeepsToThePolicyCeiling(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		spent float64
+		calls int
+	}{{5, 0}, {4.6, 1}} {
+		calls := 0
+		r, s := gatePlan(t, 5, c.spent, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+				calls++
+				return CriteriaResult{}, nil
+			}
+		})
+		integration := s.tasks["t-int"]
+		integration.CeilingEUR = 0
+		s.tasks["t-int"] = integration
+		sweep(ctx, r)
+		r.CriteriaPass(ctx)
+		if got := s.tasks["t-int"].BudgetEUR; calls != c.calls || got != 5 {
+			t.Errorf("spent %.2f: gate calls %d (want %d), budget %.2f, want 5.00", c.spent, calls, c.calls, got)
+		}
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); c.calls == 0 && (len(pending) != 1 || !strings.Contains(pending[0].Reason, "the card's ceiling left no room for the gate")) {
+			t.Errorf("spent %.2f: pending %+v, want the ask naming the ceiling", c.spent, pending)
+		}
+	}
+}
+
+// An overspent card gets the whole reserve: 5.30 spent of 5.00 (left
+// -0.30) is raised by 0.70 to leave 0.40.
+func TestCriteriaGatePassRaisesAnOverspentCardToTheReserve(t *testing.T) {
+	var left float64
+	r, s := gatePlan(t, 5, 5.3, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+			left = s.tasks[id].Left()
+			return CriteriaResult{}, nil
+		}
+	})
+	sweep(context.Background(), r)
+	if left != 0.4 || s.tasks["t-int"].BudgetEUR != 5.7 {
+		t.Errorf("left %.6f, budget %.2f, want 0.40 and 5.70", left, s.tasks["t-int"].BudgetEUR)
+	}
+}
+
+// A gate that escalates (its sandbox never started) is a cut: it runs
+// twice, then the human is asked.
+func TestCriteriaGatePassCountsAnEscalationAsACut(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+			calls++
+			return CriteriaResult{Escalate: "the sandbox did not start"}, nil
+		}
+	})
+	for range 4 {
+		sweep(ctx, r)
+	}
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 2 || len(pending) != 1 {
+		t.Errorf("gate calls %d, pending %+v, want 2 and the ask", calls, pending)
+	}
+}
+
+// addGatePlan files a second plan p whose integration card i is merged and
+// has pull request 9, beside the plan gatePlan seeded.
+func addGatePlan(t *testing.T, s *fakeStore, p, i string) {
+	t.Helper()
+	newRevision(t, s, p, criteriaPlan())
+	s.tasks[p] = Task{ID: p, Repository: "sf/code", IssueNumber: 8, Source: SourceChat, Status: "done"}
+	s.tasks[p+"-foundation"] = Task{ID: p + "-foundation", Repository: "sf/code", Parent: p, Source: SourcePlan, PlanKey: "foundation", Status: "done"}
+	s.tasks[i] = Task{ID: i, Repository: "sf/code", Parent: p, Source: SourcePlan, PlanKey: "integration", Status: "done", PRNumber: 9, BudgetEUR: 5, CeilingEUR: 6}
+	mergeCard(s, i)
+	if err := s.PutCriteriaVerdicts(context.Background(), i, "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+		t.Fatal(err)
+	}
+}
+
+// A pass with less time left than a whole gate run starts no second run:
+// the plan stays queued and runs on the next pass.
+func TestCriteriaGatePassStartsOnlyARunThatFits(t *testing.T) {
+	ctx := context.Background()
+	var ran []string
+	r, s := gatePlan(t, 5, 1, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+			ran = append(ran, id)
+			return CriteriaResult{}, nil
+		}
+	})
+	addGatePlan(t, s, "t-plan2", "t-int2")
+	r.CriteriaPass(ctx)
+	short, cancel := context.WithTimeout(ctx, time.Minute)
+	defer cancel()
+	r.CriteriaGatePass(short)
+	if !slices.Equal(ran, []string{"t-int"}) {
+		t.Fatalf("a pass of a minute ran %v, want t-int alone", ran)
+	}
+	r.CriteriaGatePass(ctx)
+	if !slices.Equal(ran, []string{"t-int", "t-int2"}) {
+		t.Errorf("the next pass ran %v, want t-int2 after t-int", ran)
+	}
+}
+
+// An unreadable pull request is a cut only when Forgejo refuses it for
+// good: a server error twice leaves the gate due, a missing pull request
+// twice asks the human.
+func TestCriteriaGatePassCutsOnlyAForgejoRefusal(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name   string
+		status int
+		asks   int
+	}{{"a server error", http.StatusInternalServerError, 0}, {"a missing pull request", http.StatusNotFound, 1}} {
+		calls := 0
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+				calls++
+				return CriteriaResult{}, nil
+			}
+		})
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { w.WriteHeader(c.status) }))
+		t.Cleanup(srv.Close)
+		r.forgejo = &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		for range 4 {
+			sweep(ctx, r)
+		}
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 0 || len(pending) != c.asks {
+			t.Errorf("%s: gate calls %d, pending %+v, want none and %d ask", c.name, calls, pending, c.asks)
+		}
+	}
+}
+
+// leakyStore fails the reads and the raise the criteria gate makes with an
+// error that carries a secret.
+type leakyStore struct {
+	*fakeStore
+	rows, fund error
+}
+
+func (s *leakyStore) CriteriaVerdicts(ctx context.Context, id string) ([]CriterionVerdict, error) {
+	if s.rows != nil {
+		return nil, s.rows
+	}
+	return s.fakeStore.CriteriaVerdicts(ctx, id)
+}
+
+func (s *leakyStore) FundCard(ctx context.Context, id string, eur, ceiling float64, e Event) (float64, float64, error) {
+	if s.fund != nil {
+		return 0, 0, s.fund
+	}
+	return s.fakeStore.FundCard(ctx, id, eur, ceiling, e)
+}
+
+// Every log line the criteria gate builds from an error masks the URL's
+// userinfo and the bearer value: the pull request read, the raise and the
+// rows read.
+func TestRunCriteriaGateScrubsEveryErrorLine(t *testing.T) {
+	ctx := context.Background()
+	const leak = "GET https://user:pass@git.example/pulls/9: Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	var logs bytes.Buffer
+	log.SetOutput(&logs)
+	t.Cleanup(func() { log.SetOutput(os.Stderr) })
+	for _, c := range []struct {
+		name string
+		set  func(*Runner, *leakyStore)
+	}{
+		{"the rows read", func(_ *Runner, s *leakyStore) { s.rows = errors.New(leak) }},
+		{"the raise", func(_ *Runner, s *leakyStore) { s.fund = errors.New(leak) }},
+		{"the pull request read", func(r *Runner, _ *leakyStore) {
+			srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { http.Error(w, leak, http.StatusInternalServerError) }))
+			t.Cleanup(srv.Close)
+			r.forgejo = &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		}},
+	} {
+		logs.Reset()
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string) (CriteriaResult, error) { return CriteriaResult{}, nil }
+		})
+		ls := &leakyStore{fakeStore: s}
+		r.store, r.Scrub = ls, redact.New()
+		c.set(r, ls)
+		r.runCriteriaGate(ctx, "t-plan")
+		got := logs.String()
+		if got == "" || strings.Contains(got, "user:pass") || strings.Contains(got, "abcdefghijklmnopqrstuvwx") {
+			t.Errorf("%s: log = %q, want a line with the userinfo and the bearer masked", c.name, got)
+		}
+	}
+}
+
+// beatUntilDone outside an activity (the criteria gate pass) beats
+// nothing and does not panic.
+func TestBeatUntilDoneOutsideAnActivity(t *testing.T) {
+	defer func(d time.Duration) { gateHeartbeatEvery = d }(gateHeartbeatEvery)
+	gateHeartbeatEvery = 2 * time.Millisecond
+	stop := beatUntilDone(context.Background(), "criteria")
+	time.Sleep(20 * time.Millisecond)
+	stop()
 }
