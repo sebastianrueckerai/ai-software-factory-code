@@ -242,3 +242,19 @@ func TestModelReviewKeepsAClaimedFindingWhenTheCheckoutFails(t *testing.T) {
 		t.Fatalf("review = %+v, want the finding kept and the claims spent", rv)
 	}
 }
+
+// git grep output past its cap fails the call rather than returning a
+// cut-off list.
+func TestGitGrepFailsPastItsOutputCap(t *testing.T) {
+	old := grepLimits
+	grepLimits.maxOut = 1 << 10
+	t.Cleanup(func() { grepLimits = old })
+	t.Setenv("HOME", t.TempDir())
+	dir := t.TempDir()
+	wipRun(t, "init", "-q", "-b", "main", dir)
+	os.WriteFile(filepath.Join(dir, "a.go"), []byte(strings.Repeat("Sym()\n", 500)), 0o644)
+	wipCommit(t, dir, "x")
+	if _, err := gitGrep(context.Background(), dir, []namedRef{{"main", "main"}}, "Sym"); !errors.Is(err, errGitOutput) {
+		t.Fatalf("gitGrep = %v, want the output cap's failure", err)
+	}
+}

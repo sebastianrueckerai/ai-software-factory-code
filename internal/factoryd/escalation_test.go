@@ -830,7 +830,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatal(err)
 	}
-	check("fresh", store, fj, []string{comment}, "closed", true, "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
+	check("fresh", store, fj, []string{comment}, "closed", true, "GET issues/5/dependencies", "POST issues/5/comments", "PATCH issues/5")
 	if got := recorded(store); !reflect.DeepEqual(got, intent(comment)) {
 		t.Fatalf("intake events %+v, want %+v", got, intent(comment))
 	}
@@ -840,12 +840,12 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
 		t.Fatal("a failed close returned no error")
 	}
-	check("close failed", store, fj, []string{comment}, "open", false, "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
+	check("close failed", store, fj, []string{comment}, "open", false, "GET issues/5/dependencies", "POST issues/5/comments", "PATCH issues/5")
 	fj.calls = nil
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatal(err)
 	}
-	check("close retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
+	check("close retried", store, fj, []string{comment}, "closed", true, "GET issues/5/dependencies", "GET issues/5/comments", "PATCH issues/5")
 	if got := recorded(store); !reflect.DeepEqual(got, intent(comment)) {
 		t.Fatalf("intake events %+v, want one intent %+v", got, intent(comment))
 	}
@@ -866,12 +866,12 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
 		t.Fatal("a failed comment returned no error")
 	}
-	check("comment failed", store, fj, nil, "open", false, "POST issues/5/comments")
+	check("comment failed", store, fj, nil, "open", false, "GET issues/5/dependencies", "POST issues/5/comments")
 	fj.calls = nil
 	if err := closeIssueAsFactory(ctx, store, f, card, "factoryd: closing this issue for another reason."); err != nil {
 		t.Fatal(err)
 	}
-	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/comments", "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
+	check("comment retried", store, fj, []string{comment}, "closed", true, "GET issues/5/dependencies", "GET issues/5/comments", "POST issues/5/comments", "PATCH issues/5")
 
 	// (e) Forgejo refuses the comment: the issue closes without it
 	store, fj, f = rig("POST issues/5/comments")
@@ -879,7 +879,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err != nil {
 		t.Fatalf("a refused comment: %v, want the close", err)
 	}
-	check("comment refused", store, fj, nil, "closed", true, "POST issues/5/comments", "GET issues/5/dependencies", "PATCH issues/5")
+	check("comment refused", store, fj, nil, "closed", true, "GET issues/5/dependencies", "POST issues/5/comments", "PATCH issues/5")
 
 	// (f) a record from before the comment was kept has none to post
 	store, fj, f = rig("")
@@ -895,7 +895,7 @@ func TestCloseIssueAsFactory(t *testing.T) {
 	if err := closeIssueAsFactory(ctx, store, f, card, comment); err == nil {
 		t.Fatal("a failed record returned no error")
 	}
-	check("record failed", store, fj, nil, "open", false)
+	check("record failed", store, fj, nil, "open", false, "GET issues/5/dependencies")
 }
 
 // A repository with issue dependencies switched off answers their read
@@ -927,6 +927,9 @@ func TestCloseIssueAsFactoryDropsADependencyOfAnotherRepository(t *testing.T) {
 			json.NewDecoder(r.Body).Decode(&body)
 			deleted = append(deleted, fmt.Sprintf("%v/%v#%v", body["owner"], body["repo"], body["index"]))
 			io.WriteString(w, `{}`)
+		case r.Method == "POST" && p == "issues/5/comments":
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1}`)
 		case r.Method == "PATCH" && p == "issues/5":
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
@@ -955,8 +958,32 @@ func TestCloseIssueAsFactoryDropsOpenDependencies(t *testing.T) {
 	if err := closeIssueAsFactory(context.Background(), store, f, Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}, ""); err != nil {
 		t.Fatal(err)
 	}
-	if want := []string{"GET issues/5/dependencies", "DELETE issues/5/dependencies 6", "PATCH issues/5"}; !slices.Equal(fj.calls, want) ||
-		!slices.Equal(fj.issues[5].deps, []int64{7}) || fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] {
-		t.Fatalf("calls %q, #5 on %v and %s; want %q, #5 on #7 alone and closed, the close confirmed", fj.calls, fj.issues[5].deps, fj.issues[5].state, want)
+	var on5 []string
+	for _, c := range fj.comments {
+		if c.issue == 5 {
+			on5 = append(on5, c.body)
+		}
+	}
+	if want := []string{"GET issues/5/dependencies", "DELETE issues/5/dependencies 6", "POST issues/5/comments", "PATCH issues/5"}; !slices.Equal(fj.calls, want) ||
+		!slices.Equal(fj.issues[5].deps, []int64{7}) || fj.issues[5].state != "closed" || !store.confirmedCloses[[2]any{"t-a", int64(5)}] ||
+		!slices.Equal(on5, []string{"It no longer waits on #6."}) {
+		t.Fatalf("calls %q, #5 on %v and %s, comments %q; want %q, #5 on #7 alone and closed, the close confirmed, the comment %q", fj.calls, fj.issues[5].deps, fj.issues[5].state, on5,
+			want, "It no longer waits on #6.")
+	}
+}
+
+// A failed removal refuses the factory close before a record, a comment or
+// the close, with Forgejo's reason in the error.
+func TestCloseIssueAsFactoryRefusedWhenARemovalFails(t *testing.T) {
+	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open", deps: []int64{6}}, 6: {state: "open"}}, failCall: "DELETE issues/5/dependencies", failStatus: http.StatusInternalServerError}
+	f := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	store := newFakeStore()
+	err := closeIssueAsFactory(t.Context(), store, f, Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}, "x")
+	if err == nil || fj.issues[5].state != "open" || len(fj.comments) != 0 || len(store.intakeEvents) != 0 {
+		t.Fatalf("err = %v, #5 %s, comments %d, rows %d; want the refusal and nothing written", err, fj.issues[5].state, len(fj.comments), len(store.intakeEvents))
+	}
+	var dr *DependencyRefusal
+	if !errors.As(err, &dr) || dr.Dep.Number != 6 || !strings.Contains(err.Error(), "remove its dependency on linkshort/linkshort#6") || !strings.Contains(err.Error(), "forgejo down") {
+		t.Fatalf("err = %v, want the refusal to name #6 and carry Forgejo's reason", err)
 	}
 }

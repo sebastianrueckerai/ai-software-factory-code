@@ -306,6 +306,9 @@ func (e *apiError) reason() string {
 	return strings.TrimSpace(fmt.Sprintf("%d %s", e.status, http.StatusText(e.status)))
 }
 
+// anyStatus as the wanted status accepts any 2xx answer.
+const anyStatus = 0
+
 // answerMax bounds the answer api reads: it keeps the first answerMax
 // bytes of a longer one.
 const answerMax = 1 << 20
@@ -387,7 +390,7 @@ func (c *Console) call(ctx context.Context, token, method, path string, payload 
 	if err != nil {
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}
-	if res.StatusCode != want {
+	if res.StatusCode != want && (want != anyStatus || res.StatusCode/100 != 2) {
 		return nil, &apiError{method: method, path: path, status: res.StatusCode, body: bytes.TrimSpace(b)}
 	}
 	return b, nil

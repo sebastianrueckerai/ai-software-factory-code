@@ -3825,8 +3825,12 @@ func TestSessionFactsSpendIncludesHolds(t *testing.T) {
 	if got := podEnv(kube.podAt(0))["FACTS"]; !strings.HasPrefix(got, "factoryd's facts for this session: 0.10 of the 5.00 EUR budget left for its calls (the model review and the audit hold 0.40 EUR of it); ") {
 		t.Fatalf("FACTS = %q, want 0.10 of 5.00 EUR left for its calls", got)
 	}
-	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}), `{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.5}`; got != want {
+	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}, ""), `{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.5}`; got != want {
 		t.Fatalf("card facts = %s, want %s", got, want)
+	}
+	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}, "abc123"),
+		`{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.5,"wip_head":"abc123"}`; got != want {
+		t.Fatalf("card facts = %s, want %s naming the interim push's head", got, want)
 	}
 }
 
