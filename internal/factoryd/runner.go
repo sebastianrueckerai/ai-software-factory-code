@@ -27,6 +27,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/temporal"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/cloudres"
@@ -143,6 +144,10 @@ type Runner struct {
 	// shortens it
 	endpointWait time.Duration
 	stopWait     time.Duration
+	// grace is the worker pod's termination grace: a stopped worker's time
+	// to commit and push its work before the kubelet kills it; a test
+	// shortens it
+	grace time.Duration
 	// checksMargin is how long before its activity deadline WaitChecks ends
 	// its poll with the checks timeout
 	checksMargin time.Duration
@@ -418,7 +423,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	}
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
-		objects: objects, timeline: cfg.Timeline, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
+		objects: objects, timeline: cfg.Timeline, grace: workerTerminationGrace, stopWait: workerTerminationGrace + 5*time.Second, cheapCap: cheapAttemptCap,
 		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
@@ -487,9 +492,11 @@ func (s sessionSpec) readable(extra ...Repo) []Repo {
 // continues, and where it starts.
 type sessionSpec struct {
 	id string
-	// owner is the RunSession attempt that runs the session (LiveSession.Owner)
-	owner  string
-	parent string
+	// owner is the RunSession attempt that runs the session
+	// (LiveSession.Owner), activity the activity it is an attempt of
+	// (LiveSession.Activity)
+	owner, activity string
+	parent          string
 	// parentStop, parentOutcome and parentTrip are how the parent ended:
 	// its stop reason and its trip, which the copied working state names,
 	// and its outcome, which it names too and which decides whether one is
@@ -641,9 +648,9 @@ var errSuperseded = errors.New("another attempt supervises the session")
 var errWorkerStop = errors.New("factoryd stopping; the session's work in progress is on the branch for the retry")
 
 // workerTerminationGrace is how long a stopped worker gets to commit and
-// push its work in progress before the kubelet kills it; runSession reads
-// its log five seconds longer.
-const workerTerminationGrace = 60
+// push its work in progress before the kubelet kills it (Runner.grace);
+// runSession reads its log five seconds longer.
+const workerTerminationGrace = 60 * time.Second
 
 // runSession runs one worker pod in the task namespace until it yields a
 // result, hits the wall-clock cap (deadline), or dies. Every other trip
@@ -698,7 +705,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, fmt.Errorf("create pod: %w", err)
 		}
 		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner}); err != nil {
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner, Activity: s.activity}); err != nil {
 			return out, err
 		}
 	}
@@ -714,7 +721,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		defer cancel()
 		// the delete of the attempt's own row is the claim: an attempt that
 		// deletes none, or cannot tell, holds nothing of the pod and leaves
-		// it, the namespace and the tokens to whoever does
+		// it, the namespace and the tokens to whoever does. A row left
+		// behind leads no later session to the pod: only this activity's
+		// retry reattaches to it, and the result it reads is its own
 		var owned bool
 		var err error
 		for try := 0; try < 3; try++ {
@@ -723,13 +732,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			time.Sleep(time.Duration(try+1) * 100 * time.Millisecond)
 		}
-		switch {
-		case err != nil && out.result != nil:
-			// the session ended in this attempt, and a row left behind must
-			// not lead a later attempt to a finished pod and its old result:
-			// without the pod the row reads as dead
-			log.Printf("task %s: release live session %s: %v", t.ID, s.id, err)
-		case err != nil || !owned:
+		if err != nil || !owned {
 			if err != nil {
 				log.Printf("task %s: release live session %s: %v", t.ID, s.id, err)
 			}
@@ -816,13 +819,23 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	var podStopped atomic.Int64
 	defer func() {
 		out.model, out.reads = s.model, sup.Reads()
-		// an over-bound push under way finishes before the outcome is read
-		// (its own bound, at most 30 s here)
-		pushed := make(chan struct{})
-		go func() { refused.running.Wait(); close(pushed) }()
-		select {
-		case <-pushed:
-		case <-time.After(30 * time.Second):
+		// an over-bound push under way ends before the outcome is read, at
+		// most within its own bounds, and before the activity's deadline
+		// less the half minute the release and the pod's delete take. A
+		// factoryd that stops does not wait: its retry reads the session on.
+		if !detached {
+			pushed := make(chan struct{})
+			go func() { refused.running.Wait(); close(pushed) }()
+			bound := min(wipSlotWait+wipPushBound, time.Until(activity.GetInfo(ctx).Deadline)-30*time.Second)
+			select {
+			case <-pushed:
+			case <-time.After(bound):
+				refused.mu.Lock()
+				if refused.head == "" && refused.unpushed == "" {
+					refused.unpushed = "the push had not ended when the session's result was due"
+				}
+				refused.mu.Unlock()
+			}
 		}
 		refused.mu.Lock()
 		defer refused.mu.Unlock()
@@ -866,37 +879,60 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			// refused, until the finished work is shipped: it is the card's
 			// work, though over the bound, and no pod keeps it. Every path
 			// takes it here, a stop and a check-in among them; the worker's
-			// result line waits behind this call
+			// result line waits behind the ask
 			if !r.holds(sessCtx, t.ID, s.owner) {
 				return
 			}
 			refused.running.Add(1)
 			defer refused.running.Done()
+			settle := func(landed wipOutcome) {
+				refused.mu.Lock()
+				defer refused.mu.Unlock()
+				if landed.head == "" && landed.unpushed == "" && s.startRef != s.base {
+					// the pod held nothing past its start, a head an earlier
+					// interim push left on the branch: the work is there
+					landed.head = s.startRef
+				}
+				refused.head = landed.head
+				if landed.head == "" {
+					refused.unpushed = cmp.Or(landed.unpushed, "the pod held no work factoryd could take")
+				}
+			}
 			// after a stop the worker has what is left of its grace, less a
 			// margin for the result line, to hand the work over
-			pushCtx, cancel := sessCtx, context.CancelFunc(func() {})
+			askCtx, cancel := sessCtx, context.CancelFunc(func() {})
 			if at := podStopped.Load(); at != 0 {
-				pushCtx, cancel = context.WithDeadline(sessCtx, time.Unix(0, at).Add((workerTerminationGrace-5)*time.Second))
+				askCtx, cancel = context.WithDeadline(sessCtx, time.Unix(0, at).Add(r.grace-5*time.Second))
 			}
 			defer cancel()
 			// a failed ask of the worker, which holds its endpoint for it, is
 			// asked again inside the hold
+			var commit, bundle string
 			var landed wipOutcome
 			for try := 0; try < 3; try++ {
-				if landed = r.interimPush(pushCtx, t, s, ns, podName, workerStop); !landed.askFailed {
+				if commit, bundle, landed = r.askWip(askCtx, t, s, ns, podName, workerStop); !landed.askFailed {
 					break
 				}
 				select {
-				case <-pushCtx.Done():
+				case <-askCtx.Done():
 				case <-time.After(2 * time.Second):
 				}
+				if askCtx.Err() != nil {
+					landed.unpushed = "the time left for the push ran out before the pod handed the work over"
+					break
+				}
 			}
-			refused.mu.Lock()
-			defer refused.mu.Unlock()
-			refused.head = landed.head
-			if landed.head == "" {
-				refused.unpushed = cmp.Or(landed.unpushed, "the pod held no work factoryd could take")
+			if bundle == "" {
+				settle(landed)
+				return
 			}
+			// the bundle is in hand: the pod's grace no longer bounds the
+			// push, and the result line need not wait for it
+			refused.running.Add(1)
+			go func() {
+				defer refused.running.Done()
+				settle(r.shipWip(context.WithoutCancel(sessCtx), t, s, commit, bundle))
+			}()
 		}
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
@@ -1078,6 +1114,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				}
 			}
 			if wip.refusal != "" {
+				// the push may have taken minutes: the session may be
+				// another attempt's by now
+				if !r.holds(ctx, t.ID, s.owner) {
+					out.superseded = true
+					return true, errSuperseded
+				}
 				// a push rule's refusal is a message the agent can act on:
 				// it reaches the running session — a write answers it, so
 				// an agent that ignores it meets the stuck rule — and the
@@ -2700,7 +2742,7 @@ func (r *Runner) sandboxPodSpec(t Task, image, cache string, env []map[string]an
 				"seccompProfile": map[string]any{"type": "RuntimeDefault"},
 			},
 			"imagePullSecrets":              pullSecrets,
-			"terminationGracePeriodSeconds": workerTerminationGrace,
+			"terminationGracePeriodSeconds": int(r.grace / time.Second),
 			// FQDN service names resolve on the first query; search-path
 			// expansions would be refused by the DNS allowlist
 			"dnsConfig": map[string]any{"options": []any{map[string]any{"name": "ndots", "value": "1"}}},

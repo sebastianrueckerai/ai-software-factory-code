@@ -96,60 +96,70 @@ var (
 // whose start never resolved pushes nothing either. A push that lands
 // records the wip_pushed timeline step with the commit it landed.
 func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) wipOutcome {
+	commit, bundle, out := r.askWip(ctx, t, s, ns, pod, workerStop)
+	if bundle == "" {
+		return out
+	}
+	return r.shipWip(ctx, t, s, commit, bundle)
+}
+
+// askWip is the interim push's ask of the pod: the WIP commit and the
+// bundle the pod shipped, or no bundle and the outcome that says why.
+func (r *Runner) askWip(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) (string, string, wipOutcome) {
 	if s.report != "" || !wipCommitID.MatchString(s.startRef) {
-		return wipOutcome{}
+		return "", "", wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
-	if bundle != "" {
-		defer os.Remove(bundle) // #nosec G104 -- the shipped bundle's temporary file
-	}
 	switch {
-	case err != nil:
+	case errors.Is(err, errWorkerStop):
 		// factoryd stopping cuts the ask: its own shutdown is the last
 		// word, and the stop's logs already say it
-		if !errors.Is(err, errWorkerStop) {
-			text := r.Scrub.String(err.Error())
-			r.wipFailure(ctx, t, s, "ask", text)
-			return wipOutcome{unpushed: "the ask of the pod failed: " + text, askFailed: true}
-		}
-	case commit == "":
-		// the tree equals the start's: there is nothing to ship
-	default:
-		// one interim push at a time past the ask: each holds a capped git
-		// and the shipped bundle, and the container has room for one. The
-		// wait has its own bound, so a slow push ahead delays a check-in
-		// by minutes, not by its session's deadline
-		wait := time.NewTimer(wipSlotWait)
-		defer wait.Stop()
-		select {
-		case interimSlot <- struct{}{}:
-			defer func() { <-interimSlot }()
-		case <-wait.C:
-			text := "another interim push held the slot for " + wipSlotWait.String()
-			r.wipFailureFresh(ctx, t, s, "queue", text)
-			return wipOutcome{unpushed: text}
-		case <-ctx.Done():
-			return wipOutcome{unpushed: "the time left for the push ran out before the slot was free"}
-		}
-		// the bundle is in hand, so the pod and the caller's deadline no
-		// longer matter: the push runs to its own bound
-		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wipPushBound)
-		defer cancel()
-		head, parts, err := r.pushWip(pushCtx, t, s, commit, bundle)
-		if err != nil {
-			text := r.Scrub.String(err.Error())
-			r.wipFailure(ctx, t, s, "push", text)
-			if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
-				// the rules judged the work itself, and the work can
-				// change: the refusal is the agent's to act on
-				return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text, unpushed: text}
-			}
-			return wipOutcome{unpushed: text}
-		}
-		r.record(ctx, t.ID, "wip_pushed", map[string]any{"session": s.id, "commit": head})
-		return wipOutcome{head: head, parts: parts}
+		return "", "", wipOutcome{unpushed: "factoryd stopped before the pod handed the work over"}
+	case err != nil:
+		text := r.Scrub.String(err.Error())
+		r.wipFailure(ctx, t, s, "ask", text)
+		return "", "", wipOutcome{unpushed: "the ask of the pod failed: " + text, askFailed: true}
 	}
-	return wipOutcome{}
+	// no bundle: the tree equals the start's, there is nothing to ship
+	return commit, bundle, wipOutcome{}
+}
+
+// shipWip pushes the bundle askWip took, and removes it. One interim push
+// at a time past the ask: each holds a capped git and the shipped bundle,
+// and the container has room for one. The wait has its own bound, so a
+// slow push ahead delays a check-in by minutes, not by its session's
+// deadline.
+func (r *Runner) shipWip(ctx context.Context, t Task, s sessionSpec, commit, bundle string) wipOutcome {
+	defer os.Remove(bundle) // #nosec G104 -- the shipped bundle's temporary file
+	wait := time.NewTimer(wipSlotWait)
+	defer wait.Stop()
+	select {
+	case interimSlot <- struct{}{}:
+		defer func() { <-interimSlot }()
+	case <-wait.C:
+		text := "another interim push held the slot for " + wipSlotWait.String()
+		r.wipFailureFresh(ctx, t, s, "queue", text)
+		return wipOutcome{unpushed: text}
+	case <-ctx.Done():
+		return wipOutcome{unpushed: "the wait for the slot was cut"}
+	}
+	// the bundle is in hand, so the pod and the caller's deadline no
+	// longer matter: the push runs to its own bound
+	pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wipPushBound)
+	defer cancel()
+	head, parts, err := r.pushWip(pushCtx, t, s, commit, bundle)
+	if err != nil {
+		text := r.Scrub.String(err.Error())
+		r.wipFailure(ctx, t, s, "push", text)
+		if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
+			// the rules judged the work itself, and the work can
+			// change: the refusal is the agent's to act on
+			return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text, unpushed: text}
+		}
+		return wipOutcome{unpushed: text}
+	}
+	r.record(ctx, t.ID, "wip_pushed", map[string]any{"session": s.id, "commit": head})
+	return wipOutcome{head: head, parts: parts}
 }
 
 // wipFailure records one interim push that did not land: logged for the

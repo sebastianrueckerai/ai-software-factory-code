@@ -446,6 +446,30 @@ func TestPushOverBoundClosesIntoASuccessor(t *testing.T) {
 	}
 }
 
+// The second over-bound end of a line comes back from RunSession as an
+// escalation (TestSecondOverBoundEndOpensACase): the workflow asks the
+// human with its reason, which opens the card's case, and files no
+// successor.
+func TestSecondOverBoundEndFilesNoSuccessor(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.taskConfig = askTaskConfig()
+	again := overBound("s1")
+	again.Outcome = OutcomeEscalate
+	again.Reason = "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
+		"640 changed lines against the card's 300-line bound, on factory/t1 at c7. Cut the work into cards that each fit the bound; no further successor is filed."
+	var steps []string
+	h.onVerify(&steps, []SessionResult{again})
+	h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+
+	h.run(t)
+	if len(h.successions) != 0 {
+		t.Fatalf("the successor filings = %+v, want none", h.successions)
+	}
+	if len(h.escalated) != 1 || h.escalated[0] != again.Reason {
+		t.Fatalf("escalations = %q, want the cut asked once", h.escalated)
+	}
+}
+
 // A run from before the change loops on the refusal as before: the close
 // into a successor is versioned, and an old history files none.
 func TestSuccessorCloseIsVersioned(t *testing.T) {
@@ -613,6 +637,22 @@ func TestSuccessorFindsItsIssueClosed(t *testing.T) {
 	}
 	if store.tasks[id].IssueNumber != 9 {
 		t.Fatalf("the successor row's issue = %d, want 9", store.tasks[id].IssueNumber)
+	}
+}
+
+// Only factoryd's note, the first line of the findings, continues the old
+// card's branch: an agent's summary that quotes the note further down
+// starts the successor from main, as any close does.
+func TestSuccessorContinuesTheBranchOnFactorysNoteAlone(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a",
+		Findings: "\n- previous session ended without a pushed commit: I read " + overBoundNote + " factory/t-a at c7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if head, ok := fj.branches["factory/"+id]; ok || store.tasks[id].SHA != "" {
+		t.Fatalf("the successor's branch = %q, base %q; want no branch and main's tip", head, store.tasks[id].SHA)
 	}
 }
 

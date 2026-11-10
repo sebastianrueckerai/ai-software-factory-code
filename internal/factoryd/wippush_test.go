@@ -41,6 +41,8 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"go.temporal.io/sdk/temporal"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -296,6 +298,8 @@ type wipServe struct {
 	err                    error
 	order                  *wipOrder
 	ship                   func(i int, tree string) (string, []byte, error)
+	// hub answers the task branch's head on the Forgejo API
+	hub *forgejoHub
 }
 
 func (s *wipServe) start(t *testing.T, r *Runner) {
@@ -423,9 +427,9 @@ func wipRig(t *testing.T, base func(dir string), edits ...func(dir string)) (*Ru
 	task := supervisedTask("t2")
 	task.SHA = baseSHA
 	objects := &fakeObjectStore{}
-	runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
+	runner, hub, _ := newTestRunner(t, task, newFakeKube(), objects)
 	runner.cfg.GitBaseURL = gitDir
-	serve := &wipServe{status: http.StatusNoContent, base: baseSHA, seed: seed, fork: fork, dir: t.TempDir(), edits: edits, order: &wipOrder{}}
+	serve := &wipServe{status: http.StatusNoContent, base: baseSHA, seed: seed, fork: fork, dir: t.TempDir(), edits: edits, order: &wipOrder{}, hub: hub}
 	serve.start(t, runner)
 	return runner, objects, serve
 }
@@ -2171,5 +2175,159 @@ func TestOverBoundWorkThatCannotBePushedIsSaidOnTheResult(t *testing.T) {
 	}
 	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
 		t.Fatalf("the branch moved to %s although the push could not start", tip)
+	}
+}
+
+// startAtInterimWork puts the task branch at a commit of 350 lines of b.txt
+// over the base, as an earlier session's interim push of over-bound work
+// leaves it, so the session starts there; it answers that head.
+func startAtInterimWork(t *testing.T, serve *wipServe) string {
+	t.Helper()
+	os.WriteFile(filepath.Join(serve.seed, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
+	head := wipCommit(t, serve.seed, "interim work")
+	wipRun(t, "-C", serve.seed, "push", "-q", "-f", serve.fork, head+":refs/heads/factory/t2")
+	serve.hub.mu.Lock()
+	defer serve.hub.mu.Unlock()
+	serve.hub.branches = map[string]string{"factory/t2": head}
+	return head
+}
+
+// A session that starts at an over-bound interim head and adds nothing ends
+// with its end push refused over the bound and a pod with nothing past its
+// start: the work is on the branch at that start, and the result says so,
+// so the successor continues it instead of starting from main.
+func TestOverBoundStartWithNothingNewKeepsThePointerToTheWork(t *testing.T) {
+	runner, _, serve := wipRig(t, nil)
+	head := startAtInterimWork(t, serve)
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		pushRefusedOverTheBound()+resultLine(false, "push failed: "+ErrPushOverBound.Error()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != head {
+		t.Fatalf("the branch moved to %s, want the start %s kept", tip, head)
+	}
+	if want := overBoundNote + " factory/t2 at " + head; res.Commit != head || len(res.Findings) == 0 || res.Findings[0] != want {
+		t.Fatalf("commit %q, findings %q; want the start %s and %q first", res.Commit, res.Findings, head, want)
+	}
+}
+
+// After a stop the worker has the pod's grace, less five seconds for its
+// result line, to hand the refused work over. A grace of 5.2 s leaves
+// 200 ms; the pod's /wip fails, so the asks end at that bound with the
+// reason, and the result line is read. Without the bound three asks 2 s
+// apart take 4 s and end on the ask's failure.
+func TestOverBoundAskEndsWhenTheStoppedPodsGraceRunsOut(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
+	})
+	serve.wipStatus = http.StatusInternalServerError
+	runner.grace = 5200 * time.Millisecond
+	runner.stopWait = 20 * time.Second
+	runner.tick = 20 * time.Millisecond
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+	summary := "push failed: " + ErrPushOverBound.Error()
+	start := time.Now()
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+pushRefusedOverTheBound()+resultLine(false, summary))
+	if err != nil || res.Outcome != OutcomeWallClock {
+		t.Fatalf("result = (%+v, %v), want a wall-clock stop", res, err)
+	}
+	if took := time.Since(start); took > 3*time.Second {
+		t.Fatalf("the session took %s: the asks ran past the grace", took)
+	}
+	want := []string{overBoundUnpushed + "the time left for the push ran out before the pod handed the work over", "the stopped worker reported: " + summary}
+	if !slices.Equal(res.Findings, want) {
+		t.Fatalf("findings = %q, want %q", res.Findings, want)
+	}
+}
+
+// The second over-bound end of a line is cut by a human: a successor that
+// continues work an earlier card left over its line bound and ends over the
+// bound again escalates with the branch, its line count against the bound
+// and the cut, where the first end closes into the successor. The branch
+// holds b.txt, 350 lines over main, against the small card's 300.
+func TestSecondOverBoundEndOpensACase(t *testing.T) {
+	refusal := "push failed: " + ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound; merge main, run the checks, and push again"
+	for name, successor := range map[string]bool{"first": false, "second": true} {
+		t.Run(name, func(t *testing.T) {
+			runner, _, serve := wipRig(t, nil)
+			head := startAtInterimWork(t, serve)
+			if successor {
+				store := runner.store.(*fakeStore)
+				card := store.tasks["t2"]
+				card.Source = SourceSuccessor
+				card.Objective += "\n\nFindings so far:\n- " + overBoundNote + " factory/t1 at " + head + "\n- previous session ended without a pushed commit: " + refusal
+				store.tasks["t2"] = card
+			}
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				pushRefusedOverTheBound()+resultLine(false, refusal))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if !successor {
+				if res.Outcome != OutcomeNoPush || res.Reason != "" {
+					t.Fatalf("result = %+v, want the no_push the workflow closes into a successor", res)
+				}
+				return
+			}
+			want := "This card continues work an earlier card left over its line bound, and its session ended over the bound again: " +
+				"350 changed lines against the card's 300-line bound, on factory/t2 at " + head + ". Cut the work into cards that each fit the bound; no further successor is filed."
+			if res.Outcome != OutcomeEscalate || res.Reason != want {
+				t.Fatalf("result = %+v, want the escalation %q", res, want)
+			}
+		})
+	}
+}
+
+// Once the bundle is in factoryd's hands the pod's grace no longer bounds
+// its push: a slot held past the stopped pod's grace, 200 ms left of 5.2 s,
+// delays the push to the second after the pod started, and the push then
+// lands and the result reads its head.
+func TestOverBoundBundleInHandOutlivesThePodsGrace(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
+	})
+	runner.grace = 5200 * time.Millisecond
+	runner.stopWait = 20 * time.Second
+	runner.tick = 20 * time.Millisecond
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+	interimSlot <- struct{}{}
+	runner.kube.(*fakeKube).onCreatePod = func() { go func() { time.Sleep(time.Second); <-interimSlot }() }
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+pushRefusedOverTheBound()+
+			resultLine(false, "push failed: "+ErrPushOverBound.Error()))
+	if err != nil || res.Outcome != OutcomeWallClock {
+		t.Fatalf("result = (%+v, %v), want a wall-clock stop", res, err)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if want := overBoundNote + " factory/t2 at " + tip; tip == serve.base || res.Commit != tip || len(res.Findings) == 0 || res.Findings[0] != want {
+		t.Fatalf("branch %s, commit %q, findings %q; want the work pushed after the slot came free and %q first", tip, res.Commit, res.Findings, want)
+	}
+}
+
+// A check-in's interim push may take minutes: when the newer attempt took
+// the session meanwhile, the stale attempt sends the push's refusal to no
+// pod. Its owner checks are onTrip's and the one before the message.
+func TestStaleAttemptSendsNoInterimRefusal(t *testing.T) {
+	ci := func(body string) func(dir string) {
+		return func(dir string) {
+			os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
+			os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte(body), 0o644)
+		}
+	}
+	runner, _, serve := wipRig(t, ci("gate: true\n"), ci("gate: false\n"))
+	chat := &scriptedChat{answers: []CheckinResponse{wipGoOn}}
+	runner.checkin = chat
+	runner.store = &takeAtStore{Store: runner.store, n: 2}
+	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24)+hangLogs)
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Message() != errSuperseded.Error() {
+		t.Fatalf("err = %v, want the session left to the newer attempt", err)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	if len(serve.commits) != 1 || len(serve.msgs) != 0 || chat.calls != 0 {
+		t.Fatalf("WIPs shipped %d, messages %q, check-in calls %d; want the refused push and nothing after it", len(serve.commits), serve.msgs, chat.calls)
 	}
 }

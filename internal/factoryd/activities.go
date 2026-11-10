@@ -425,9 +425,40 @@ type SuccessorInput struct {
 	PR       int64
 }
 
-// SourceSuccessor is a card a stuck card closed into, which starts from
-// main's tip carrying the patch and the findings.
+// SourceSuccessor is a card a stuck card closed into, carrying the patch
+// and the findings: it starts from main's tip, or from the old card's
+// branch when that holds the old card's work over its line bound.
 const SourceSuccessor = "successor"
+
+// successorFindings heads the findings a successor's objective carries.
+const successorFindings = "Findings so far:"
+
+// continuesOverBoundWork: t is a successor in a line where a card already
+// closed on work over its line bound, as factoryd's note, the first
+// finding that close carried, says. One successor per line takes such
+// work on.
+func continuesOverBoundWork(t Task) bool {
+	return t.Source == SourceSuccessor && (strings.Contains(t.Objective, successorFindings+"\n- "+overBoundNote) ||
+		strings.Contains(t.Objective, successorFindings+"\n- "+overBoundUnpushed))
+}
+
+// overBoundAgain is the case of a successor of over-bound work whose own
+// work ended over the bound again: the branch, its line count against the
+// bound, and the cut a human makes.
+func overBoundAgain(t Task, res SessionResult) string {
+	measure := "over the card's line bound"
+	if m := overBoundMeasure.FindStringSubmatch(res.Summary); m != nil {
+		over, _ := strconv.Atoi(m[1])
+		bound, _ := strconv.Atoi(m[2])
+		measure = fmt.Sprintf("%d changed lines against the card's %d-line bound", over+bound, bound)
+	}
+	where := taskBranch(t)
+	if res.Commit != "" {
+		where += " at " + res.Commit
+	}
+	return fmt.Sprintf("This card continues work an earlier card left over its line bound, and its session ended over the bound again: %s, on %s. "+
+		"Cut the work into cards that each fit the bound; no further successor is filed.", measure, where)
+}
 
 // SuccessorID is the id of card id's successor, so a filing that stopped
 // part way finds it.
@@ -445,10 +476,13 @@ func successorMarker(id string) string {
 // Successor files the successor of the stuck card in (task 6): a card of
 // the same objective with the findings so far, the carried pull request
 // and the card's size and budget, queued on the direct track under the
-// work bound with no base of its own — its first session starts from
-// main's tip. The row lands first and its issue after, so a filing that
-// stops part way runs again to the same one card: the row's identity holds
-// the card and the marker holds the issue.
+// work bound. Its first session starts from main's tip, with no base of
+// its own, unless the findings' first line, factoryd's note, says the old
+// card's work over its line bound is an interim commit on its branch: then
+// the successor continues that branch with the old card's base. The row
+// lands first and its issue after, so a filing that stops part way runs
+// again to the same one card: the row's identity holds the card and the
+// marker holds the issue.
 func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, error) {
 	old, repo, err := r.task(ctx, in.TaskID)
 	if err != nil {
@@ -469,7 +503,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		}
 		var lines []string
 		if in.Findings != "" {
-			lines = append(lines, "Findings so far:"+in.Findings)
+			lines = append(lines, successorFindings+in.Findings)
 		}
 		if pr > 0 {
 			lines = append(lines, fmt.Sprintf("Carries: #%d", pr))
@@ -483,7 +517,7 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		// as a plan card that goes on from another does, so its first session
 		// starts at that head and its clone holds the work
 		head, err := "", error(nil)
-		if strings.Contains(in.Findings, overBoundNote) {
+		if strings.HasPrefix(in.Findings, "\n- "+overBoundNote) {
 			head, err = r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
 			if err != nil && !errors.Is(err, ErrNoBranch) {
 				return "", err
@@ -969,7 +1003,8 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("task", err)
 	}
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
+	info := activity.GetInfo(ctx)
+	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), activity: info.WorkflowExecution.RunID + "/" + info.ActivityID, parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
 		lastGates: in.LastGates, handover: in.Handover}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
@@ -1070,20 +1105,23 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 	}
 	// a session the stopped factoryd detached from runs on in its pod:
-	// this retry reattaches to it; a dead pod's row goes and the attempt
-	// starts over from the branch; a pod that finished while factoryd was
-	// away still holds the result line the old factoryd had not read
+	// this activity's retry reattaches to it; a dead pod's row goes and the
+	// attempt starts over from the branch; a pod that finished while
+	// factoryd was away still holds the result line the old factoryd had
+	// not read. Another activity's row, a session that ended without its
+	// release or a pod whose delete is pending, is no session of this one:
+	// it goes, and its pod with the fresh start's namespace, unread
 	var live *LiveSession
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
 	} else if ok {
 		phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod)
-		if perr != nil && !errors.Is(perr, ErrNotFound) {
+		switch {
+		case perr != nil && !errors.Is(perr, ErrNotFound):
 			// an unknown status is no dead pod: nothing is deleted or
 			// revoked, and the activity runs again
 			return SessionResult{}, named("pod status", perr)
-		}
-		if perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
+		case perr == nil && l.Activity == s.activity && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed"):
 			// the takeover is a compare-and-set: a row another attempt took
 			// since the read is theirs, and this attempt starts fresh
 			if taken, err := r.store.TakeLiveSession(ctx, t.ID, l.Owner, s.owner); err != nil {
@@ -1092,8 +1130,14 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 				live = &l
 				s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.parentDeadEnd, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.ParentDeadEnd, in.Findings
 			}
-		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
-			return SessionResult{}, named("live session", err)
+		case perr == nil && l.Activity == s.activity:
+			// the phase Unknown, or none: the node may be lost while the
+			// pod runs, so it is no dead pod either
+			return SessionResult{}, named("pod status", fmt.Errorf("pod %s is in phase %q", l.Pod, phase))
+		default:
+			if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
+				return SessionResult{}, named("live session", err)
+			}
 		}
 	}
 	hb := startHeartbeat(ctx, s.id)
@@ -1217,6 +1261,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 			res.Outcome, res.Status, res.Reason = OutcomeProviderRefused, refused.Status, refused.Reason
 		}
 	}
+	if res.Outcome == OutcomeNoPush && strings.Contains(res.Summary, pushOverBoundMark) && continuesOverBoundWork(t) {
+		// the workflow closes an over-bound end into a successor: a line
+		// that already passed such work on goes to a human instead
+		res.Outcome, res.Reason = OutcomeEscalate, overBoundAgain(t, res)
+	}
 	events := r.sessionTranscript(ctx, t.ID, s.id)
 	r.record(ctx, t.ID, "session_end", map[string]any{"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt,
 		"outcome": res.Outcome, "summary": res.Summary, "started": began})
@@ -1320,8 +1369,14 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 }
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
-func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
-	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn}
+// Where the over-bound work went leads the findings on every path.
+func sessionResult(s sessionSpec, out sessionOutcome) (res SessionResult) {
+	defer func() {
+		if out.overBound != "" {
+			res.Findings = slices.Insert(res.Findings, 0, out.overBound)
+		}
+	}()
+	res = SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn}
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session
@@ -1372,9 +1427,6 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	switch {
 	case out.trip != nil && out.trip.Kind == TripWallClock:
 		res.Outcome, res.Summary = OutcomeWallClock, "supervision trip: "+string(TripWallClock)
-		if out.overBound != "" {
-			res.Findings = []string{out.overBound}
-		}
 		return res
 	case out.trip != nil && out.decision != nil:
 		d := out.decision
@@ -1431,9 +1483,6 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		ended = "previous session ended unfinished: "
 	}
 	res.Findings = []string{ended + res.Summary}
-	if out.overBound != "" {
-		res.Findings = slices.Insert(res.Findings, 0, out.overBound)
-	}
 	if out.pending != nil {
 		res.Outcome = OutcomeNotStarted
 	}

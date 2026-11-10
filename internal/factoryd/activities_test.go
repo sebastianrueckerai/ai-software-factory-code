@@ -4092,6 +4092,38 @@ func TestSessionResultOfAReplan(t *testing.T) {
 	}
 }
 
+// Where the over-bound work went leads the findings on every path a session
+// ends by, and the path's own findings follow it: the wall-clock stop's
+// report, a check-in's handover and decision, the content filter's
+// escalation and the plain result.
+func TestTheOverBoundNoteLeadsTheFindingsOnEveryPath(t *testing.T) {
+	note := overBoundNote + " factory/t1 at c-wip"
+	refused := &harness.Result{Summary: "push failed: " + ErrPushOverBound.Error()}
+	trip := &Trip{Kind: TripRepetition, Detail: "ls 24 times"}
+	for name, tc := range map[string]struct {
+		out  sessionOutcome
+		next string // the path's own first finding
+	}{
+		"wall clock": {sessionOutcome{trip: &Trip{Kind: TripWallClock}, result: refused}, "the stopped worker reported: " + refused.Summary},
+		"check-in handover": {sessionOutcome{trip: trip, result: refused,
+			checkIn: &CheckInOutcome{Decision: CheckHandover, Handover: "split it"}}, ""},
+		"check-in decision": {sessionOutcome{trip: trip, decision: &Decision{Action: ActionRedirect, Guidance: "split it"}}, "supervisor guidance: split it"},
+		"content filter":    {sessionOutcome{result: &harness.Result{Summary: "DataInspectionFailed: the brief"}}, ""},
+		"result":            {sessionOutcome{result: refused}, "previous session ended without a pushed commit: " + refused.Summary},
+	} {
+		t.Run(name, func(t *testing.T) {
+			tc.out.overBound = note
+			res := sessionResult(sessionSpec{id: "s1"}, tc.out)
+			if len(res.Findings) == 0 || res.Findings[0] != note {
+				t.Fatalf("findings = %q, want the note first", res.Findings)
+			}
+			if tc.next != "" && (len(res.Findings) < 2 || res.Findings[1] != tc.next) {
+				t.Fatalf("findings = %q, want %q after the note", res.Findings, tc.next)
+			}
+		})
+	}
+}
+
 // The planner's text quotes no call of the agent: past a trip other than
 // size it names the trip's kind alone. The whole text is cut at 2000 bytes.
 func TestReplanTextQuotesNoCallAndIsBounded(t *testing.T) {

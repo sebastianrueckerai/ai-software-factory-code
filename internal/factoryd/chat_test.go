@@ -693,12 +693,12 @@ func TestPGStoreLiveSessionKeepsItsSpendBaseline(t *testing.T) {
 	}
 	base := 3.54
 	for name, want := range map[string]*float64{"known": &base, "unread": nil} {
-		l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now(), SpentAtStart: want, Owner: "o1"}
+		l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now(), SpentAtStart: want, Owner: "o1", Activity: "run-1/7"}
 		if err := s.PutLiveSession(ctx, l); err != nil {
 			t.Fatal(err)
 		}
 		got, ok, err := s.LiveSession(ctx, task.ID)
-		if err != nil || !ok || got.Owner != "o1" || (want == nil) != (got.SpentAtStart == nil) || (want != nil && *got.SpentAtStart != *want) {
+		if err != nil || !ok || got.Owner != "o1" || got.Activity != "run-1/7" || (want == nil) != (got.SpentAtStart == nil) || (want != nil && *got.SpentAtStart != *want) {
 			t.Fatalf("%s: read back %+v, %v, %v; want baseline %v", name, got, ok, err, want)
 		}
 	}
@@ -724,6 +724,10 @@ func TestPGStoreLiveSessionOwnerIsACompareAndSet(t *testing.T) {
 	}
 	if l, _, _ := s.LiveSession(ctx, task.ID); l.Owner != "b" {
 		t.Fatalf("owner = %q, want b", l.Owner)
+	}
+	// holds(): the owner's take of its own row changes nothing and answers held
+	if ok, err := s.TakeLiveSession(ctx, task.ID, "b", "b"); err != nil || !ok {
+		t.Fatalf("the owner's own take = %v, %v, want held", ok, err)
 	}
 	if ok, err := s.ReleaseLiveSession(ctx, task.ID, "a"); err != nil || ok {
 		t.Fatalf("release by the old owner = %v, %v, want no row deleted", ok, err)
