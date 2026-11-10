@@ -145,14 +145,14 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	}
 	var commit string
 	var pushErr error
-	res = deliver(res, stopped, func() (string, error) {
+	res = deliver(res, stopped, s.env, func(e workerEnv) (string, error) {
 		endPush := s.tel.phase("push")
-		commit, pushErr = commitAndPush(s.repoDir, s.env, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
+		commit, pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
 			return s.gate.ask(commit, pushWait, stdout)
 		})
 		endPush(pushErr)
 		return commit, pushErr
-	}, s.env.branch, emit)
+	}, emit)
 	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
 	s.writeResult(stdout, res)
 	if !res.Success {
@@ -385,10 +385,13 @@ func sessionOutcome(res harness.Result, stopped bool, commit string, pushErr err
 
 // deliver pushes the session's work at every end: a finished session's
 // result, a stopped or failed session's work in progress, and says so in
-// the result; a failed session's summary keeps its failure.
-func deliver(res harness.Result, stopped bool, push func() (string, error), branch string, emit func(harness.Event)) harness.Result {
-	failed := !res.Success && !stopped
-	commit, err := push()
+// the result; a failed session's summary keeps its failure. Only a session
+// that ended well found an interim start's work done and lands its finished
+// commit on it.
+func deliver(res harness.Result, stopped bool, e workerEnv, push func(workerEnv) (string, error), emit func(harness.Event)) harness.Result {
+	failed, branch := !res.Success && !stopped, e.branch
+	e.startWip = e.startWip && res.Success && !stopped
+	commit, err := push(e)
 	switch {
 	case err != nil:
 		emit(harness.Event{Time: time.Now(), Kind: harness.EventPushFailed, Detail: map[string]any{"branch": branch, "error": err.Error()}})
@@ -1061,6 +1064,10 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 		return "", err
 	}
 	if head, guard, err = fitBound(e, send, head, tree, base, guard, mainHead, e.lineBound); err != nil {
+		if tree == baseTree && errors.Is(err, errPushOverBound) {
+			// the start is over the bound and the session added nothing
+			return "", nil
+		}
 		return "", err
 	}
 	if err := refuseWorkflowDirChange(e, send, guard, head); err != nil {

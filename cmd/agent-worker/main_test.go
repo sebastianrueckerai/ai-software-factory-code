@@ -1777,37 +1777,40 @@ func TestDeliverPushesEverySessionsWork(t *testing.T) {
 	var emitted []harness.Event
 	emit := func(ev harness.Event) { emitted = append(emitted, ev) }
 	pushes := 0
-	push := func(commit string) func() (string, error) {
-		return func() (string, error) { pushes++; return commit, nil }
+	push := func(commit string) func(workerEnv) (string, error) {
+		return func(workerEnv) (string, error) { pushes++; return commit, nil }
 	}
 	const refused = "APIError: Repetitive tool calls detected in the conversation history (status 400)"
-	res := deliver(harness.Result{Success: false, Summary: refused}, false, push("c1"), "factory/t1", emit)
+	t1Env := workerEnv{branch: "factory/t1"}
+	res := deliver(harness.Result{Success: false, Summary: refused}, false, t1Env, push("c1"), emit)
 	if res.Success || res.Summary != refused+"; work in progress pushed to factory/t1 at c1" || pushes != 1 {
 		t.Fatalf("failed session: %+v after %d pushes, want its work pushed", res, pushes)
 	}
 	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushed || emitted[0].Detail["commit"] != "c1" {
 		t.Fatalf("events = %+v, want the pushed event", emitted)
 	}
-	if res := deliver(harness.Result{Success: false, Summary: "model refused"}, false, push(""), "factory/t1", emit); res.Summary != "model refused" || pushes != 2 {
+	if res := deliver(harness.Result{Success: false, Summary: "model refused"}, false, t1Env, push(""), emit); res.Summary != "model refused" || pushes != 2 {
 		t.Fatalf("failed session without changes: %+v after %d pushes", res, pushes)
 	}
 	emitted = nil
-	res = deliver(harness.Result{Success: false, Summary: "opencode exited: signal: killed"}, true, push("c-wip"), "factory/t1", emit)
+	res = deliver(harness.Result{Success: false, Summary: "opencode exited: signal: killed"}, true, t1Env, push("c-wip"), emit)
 	if res.Success || res.Summary != "stopped; work in progress pushed to factory/t1 at c-wip" || pushes != 3 {
 		t.Fatalf("stopped session: %+v after %d pushes", res, pushes)
 	}
 	if len(emitted) != 1 || emitted[0].Kind != harness.EventPushed || emitted[0].Detail["commit"] != "c-wip" {
 		t.Fatalf("events = %+v, want the pushed event", emitted)
 	}
-	if res := deliver(harness.Result{Success: false}, true, push(""), "factory/t1", emit); res.Summary != "stopped; no work in progress to push" {
+	if res := deliver(harness.Result{Success: false}, true, t1Env, push(""), emit); res.Summary != "stopped; no work in progress to push" {
 		t.Fatalf("stopped without changes: %+v", res)
 	}
-	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, push("c2"), "factory/t1", emit); !res.Success || res.Summary != "pushed branch factory/t1 at c2" {
+	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, t1Env, push("c2"), emit); !res.Success || res.Summary != "pushed branch factory/t1 at c2" {
 		t.Fatalf("finished session: %+v", res)
 	}
-	failing := func() (string, error) { return "", fmt.Errorf("refusing to push: .forgejo/x changes .forgejo/") }
+	failing := func(workerEnv) (string, error) {
+		return "", fmt.Errorf("refusing to push: .forgejo/x changes .forgejo/")
+	}
 	emitted = nil
-	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, failing, "factory/t1", emit); res.Success || !strings.Contains(res.Summary, "push failed: refusing") {
+	if res := deliver(harness.Result{Success: true, Summary: "done"}, false, t1Env, failing, emit); res.Success || !strings.Contains(res.Summary, "push failed: refusing") {
 		t.Fatalf("refused push: %+v", res)
 	}
 	// the session record must say the push failed, not end on the agent's "finished"
@@ -1815,9 +1818,87 @@ func TestDeliverPushesEverySessionsWork(t *testing.T) {
 		emitted[0].Detail["error"] != "refusing to push: .forgejo/x changes .forgejo/" {
 		t.Fatalf("events = %+v, want one push_failed event with branch and error", emitted)
 	}
-	if res := deliver(harness.Result{Success: false, Summary: refused}, false, failing, "factory/t1", emit); res.Success ||
+	if res := deliver(harness.Result{Success: false, Summary: refused}, false, t1Env, failing, emit); res.Success ||
 		res.Summary != refused+"; push failed: refusing to push: .forgejo/x changes .forgejo/" {
 		t.Fatalf("failed session, refused push: %+v", res)
+	}
+}
+
+// A session that starts on an interim head and changes nothing lands the
+// finished commit on it only when it ended well. A stopped or failed one
+// lands nothing: the branch keeps the interim head, which the next session
+// starts on as one that earns no push credit. A finished one whose interim
+// head is over the card's line bound pushes nothing either: the bound
+// refuses no work of the session's own.
+func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	remote := filepath.Join(t.TempDir(), "remote.git")
+	fork := filepath.Join(t.TempDir(), "fork.git")
+	seed := t.TempDir()
+	run("init", "-q", "-b", "main", seed)
+	run("-C", seed, "-c", "user.name=Human", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "init")
+	run("clone", "-q", "--bare", seed, remote)
+	run("clone", "-q", "--bare", remote, fork)
+	run("-C", seed, "checkout", "-q", "-b", "wip")
+	os.WriteFile(filepath.Join(seed, "wip.txt"), []byte(strings.Repeat("wip\n", 20)), 0o644)
+	run("-C", seed, "add", "wip.txt")
+	run("-C", seed, "-c", "user.name=factory-wip", "-c", "user.email=factory-wip@factory.local", "commit", "-q", "-m", "factory task t1: work in progress")
+	wip := run("-C", seed, "rev-parse", "HEAD")
+
+	for _, tc := range []struct {
+		name    string
+		res     harness.Result
+		stopped bool
+		bound   int
+		landed  bool
+		summary string // "" for a landed commit's
+	}{
+		{name: "stopped", res: harness.Result{Success: false}, stopped: true, summary: "stopped; no work in progress to push"},
+		{name: "failed", res: harness.Result{Success: false, Summary: "model refused"}, summary: "model refused"},
+		{name: "finished and stopped", res: harness.Result{Success: true, Summary: "done"}, stopped: true, summary: "no changes to push"},
+		{name: "finished", res: harness.Result{Success: true, Summary: "done"}, landed: true},
+		{name: "finished over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, summary: "no changes to push"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
+			run("-C", seed, "push", "-q", fork, "wip:"+branch)
+			e := workerEnv{taskID: "t1", sessionID: "s-2", author: "alice", objective: "o", repoSHA: wip, branch: branch, repoURL: remote, pushURL: fork,
+				startWip: true, lineBound: tc.bound}
+			dir := filepath.Join(t.TempDir(), "repo")
+			if err := cloneBase(e, dir); err != nil {
+				t.Fatal(err)
+			}
+			base, mainHead, err := prepareRepo(dir, e)
+			if err != nil || base != wip {
+				t.Fatalf("base = %s (%v), want %s", base, err, wip)
+			}
+			res := deliver(tc.res, tc.stopped, e, func(e workerEnv) (string, error) {
+				return commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
+			}, func(harness.Event) {})
+			head := run("-C", fork, "rev-parse", "refs/heads/"+branch)
+			if !tc.landed {
+				if head != wip || res.Summary != tc.summary || res.Success != tc.res.Success {
+					t.Fatalf("branch at %s, result %+v; want the branch kept at the interim head %s and %q", head, res, wip, tc.summary)
+				}
+				if committer := run("-C", fork, "log", "-1", "--format=%ce", head); committer != "factory-wip@factory.local" {
+					t.Fatalf("the next start's committer = %q, want the interim push's", committer)
+				}
+				return
+			}
+			if !res.Success || res.Summary != "pushed branch "+branch+" at "+head || run("-C", fork, "rev-parse", head+"^") != wip ||
+				run("-C", fork, "log", "-1", "--format=%ce", head) != "factory-agent@factory.local" {
+				t.Fatalf("branch at %s, result %+v; want one finished factory-agent commit on %s", head, res, wip)
+			}
+		})
 	}
 }
 
@@ -1935,11 +2016,11 @@ func TestNoPushTokenNoPush(t *testing.T) {
 	gate := newPushGate()
 	var request bytes.Buffer
 	var events []harness.Event
-	res := deliver(harness.Result{Success: true, Summary: "done"}, false, func() (string, error) {
+	res := deliver(harness.Result{Success: true, Summary: "done"}, false, e, func(e workerEnv) (string, error) {
 		return commitAndPush(dir, e, base, mainHead, func() error { return nil }, func(commit string) (string, error) {
 			return gate.ask(commit, 50*time.Millisecond, &request)
 		})
-	}, e.branch, func(ev harness.Event) { events = append(events, ev) })
+	}, func(ev harness.Event) { events = append(events, ev) })
 	if res.Success || res.Summary != "push failed: no push token from factoryd within 50ms" {
 		t.Fatalf("result = %+v, want the push failed for want of a token", res)
 	}
