@@ -250,8 +250,10 @@ jobs:
               sleep 30
               kill -0 "$pid" 2>/dev/null && echo "building $df, $SECONDS s: $(tail -n 1 "$logdir/$df.log" | cut -c1-200)"
             done
-            wait "$pid"
-            case $? in
+            # the job's shell runs with -e: a failed build's wait must not end
+            # the step before its log is printed
+            rc=0; wait "$pid" || rc=$?
+            case $rc in
               0) result="ok: $df" ;;
               124) status=1; result="FAILED: $df, no end within 45 minutes" ;;
               *) status=1; result="FAILED: $df" ;;
