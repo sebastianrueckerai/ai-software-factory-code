@@ -2136,7 +2136,8 @@ func FirstLine(s string) string {
 // WaitChecks polls the combined commit status of sha (Forgejo Actions is the
 // first verification gate, architecture 7) until it settles or the checks
 // timeout passes. Forgejo combines worst-state-wins, so a failed job
-// settles the verdict while slower jobs still run.
+// settles the verdict while slower jobs still run, except that a job killed
+// by a signal is re-run once first (killedChecks) and its re-run awaited.
 func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {

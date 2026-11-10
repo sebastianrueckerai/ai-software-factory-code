@@ -12,12 +12,20 @@ import (
 	"strings"
 )
 
-// killMarkers are what a tool killed by a signal leaves in a job's log, as
-// opposed to a test that failed.
-var killMarkers = regexp.MustCompile(`(?i)signal: killed|exit (?:status|code) 137\b|OOMKilled`)
+// killMarkers match a line a tool killed by a signal ends on: the marker
+// alone or after one tool word ("vet: signal: killed"). A test's own
+// output, indented or prefixed by its file and line, is not one.
+var killMarkers = regexp.MustCompile(`(?i)^(?:[a-z]+: )?(signal: killed|exit (?:status|code) 137|OOMKilled)\s*$`)
 
-// killMarker is the kill marker log shows, "" for none.
-func killMarker(log []byte) string { return string(killMarkers.Find(log)) }
+// killMarker is the kill marker a line of log shows, "" for none.
+func killMarker(log []byte) string {
+	for _, line := range strings.Split(string(log), "\n") {
+		if m := killMarkers.FindStringSubmatch(stripLogTimestamp(strings.TrimRight(line, "\r"))); m != nil {
+			return m[1]
+		}
+	}
+	return ""
+}
 
 func killedBySignal(log []byte) bool { return killMarker(log) != "" }
 
@@ -34,8 +42,8 @@ type rerunNote struct {
 // killedChecks reads the runs of the failing checks of cs. A job killed at
 // its first attempt is re-run once (the attempt is the once-marker: a job
 // at attempt 2 or up is never re-run, whoever re-ran it first); unsettled
-// answers true while a run still has jobs that wait or run, or a re-run
-// was just asked for. notes name, for the red verdict, each kill and the
+// answers true while a re-run is queued or running, or one was just asked
+// for; a sibling job that merely runs holds nothing back. notes name, for the red verdict, each kill and the
 // re-run or the missing one, and a job that failed again at its re-run.
 // Anything it cannot read leaves the check red as it stands.
 func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs CombinedStatus, logOf func(string) ([]byte, error), reran *[]rerunNote) (unsettled bool, notes []string) {
@@ -57,7 +65,7 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 			continue
 		}
 		seen[n] = true
-		jobs, run, err := r.runJobs(ctx, token, repo, n)
+		jobs, err := r.runJobs(ctx, token, repo, n)
 		if err != nil {
 			if marker := killMarkerOf(logOf, s.TargetURL); marker != "" {
 				notes = append(notes, fmt.Sprintf("check %q was killed (%s) and no re-run was offered: run %d is not readable (%s)",
@@ -69,9 +77,9 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 		var red []ActionJob
 		for _, j := range jobs {
 			switch {
-			case !doneStatus(j.Status) && (run.Status != "blocked" || j.Status != "blocked"):
-				wait = true
-			case j.Status == "failure" || j.Status == "cancelled":
+			case !doneStatus(j.Status):
+				wait = wait || rerunning(j, *reran)
+			case j.Status == "failure":
 				red = append(red, j)
 			}
 		}
@@ -90,6 +98,12 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 	return unsettled, notes
 }
 
+// rerunning is whether j, not done, is a re-run in progress: past its first
+// attempt, or one this gate asked for.
+func rerunning(j ActionJob, reran []rerunNote) bool {
+	return j.Attempt > 1 || slices.ContainsFunc(reran, func(n rerunNote) bool { return n.id == j.ID })
+}
+
 func killMarkerOf(logOf func(string) ([]byte, error), target string) string {
 	if logOf == nil {
 		return ""
@@ -102,17 +116,16 @@ func killMarkerOf(logOf func(string) ([]byte, error), target string) string {
 }
 
 // runJobs lists the jobs of run number n.
-func (r *Runner) runJobs(ctx context.Context, token string, repo Repo, n int64) ([]ActionJob, ActionRun, error) {
+func (r *Runner) runJobs(ctx context.Context, token string, repo Repo, n int64) ([]ActionJob, error) {
 	runs, err := r.forgejo.ActionRuns(ctx, token, repo.Owner, repo.Name, url.Values{"run_number": {strconv.FormatInt(n, 10)}})
 	if err != nil {
-		return nil, ActionRun{}, err
+		return nil, err
 	}
 	i := slices.IndexFunc(runs, func(a ActionRun) bool { return a.Index == n })
 	if i < 0 {
-		return nil, ActionRun{}, fmt.Errorf("forgejo lists no run %d", n)
+		return nil, fmt.Errorf("forgejo lists no run %d", n)
 	}
-	jobs, err := r.forgejo.ActionRunJobs(ctx, token, repo.Owner, repo.Name, runs[i].ID)
-	return jobs, runs[i], err
+	return r.forgejo.ActionRunJobs(ctx, token, repo.Owner, repo.Name, runs[i].ID)
 }
 
 // killedJob judges one red job: it re-runs the job when its first attempt
@@ -124,14 +137,15 @@ func (r *Runner) killedJob(ctx context.Context, token string, repo Repo, run int
 		return false, ""
 	}
 	marker := killMarker(body)
+	ours := slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID })
 	switch {
-	case j.Attempt > 1 && marker != "":
+	case j.Attempt > 1 && ours && marker != "":
 		return false, fmt.Sprintf("job %q of run %d was killed again (%s) at attempt %d, its one re-run: no second re-run follows", j.Name, run, marker, j.Attempt)
-	case j.Attempt > 1:
+	case j.Attempt > 1 && ours:
 		return false, fmt.Sprintf("job %q of run %d failed again at attempt %d, its re-run: a test failure, not a kill", j.Name, run, j.Attempt)
-	case marker == "":
+	case j.Attempt > 1 || marker == "":
 		return false, ""
-	case slices.ContainsFunc(*reran, func(n rerunNote) bool { return n.id == j.ID }):
+	case ours:
 		return true, ""
 	}
 	err = r.forgejo.RerunActionJob(ctx, token, repo.Owner, repo.Name, j.ID)

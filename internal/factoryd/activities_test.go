@@ -93,6 +93,7 @@ type prForgejo struct {
 	jobLogs    map[string]string // "job/attempt" -> GET /actions/jobs/{id}/logs, as a suffix Range reads it
 	rerunCode  int               // POST /actions/jobs/{id}/rerun answers this status; 200 when zero
 	rerunBody  string            // the rerun's answer body
+	logGets    []string          // "job/attempt" of every job log read
 	reruns     []int64           // POST /actions/jobs/{id}/rerun, by job id
 	sessionLog string            // the session-cookie job log (login, job page, /logs) JobLog reads
 }
@@ -311,7 +312,9 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			if r.Header.Get("Range") == "" {
 				t.Error("job log read without a Range")
 			}
-			io.WriteString(w, f.jobLogs[strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs")+"/"+r.URL.Query().Get("attempt")])
+			key := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs") + "/" + r.URL.Query().Get("attempt")
+			f.logGets = append(f.logGets, key)
+			io.WriteString(w, f.jobLogs[key])
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun"), 10, 64)
 			f.reruns = append(f.reruns, id)
@@ -4154,8 +4157,8 @@ func TestWaitChecksRedAfterTheOneRerun(t *testing.T) {
 		want string
 	}{
 		"killed again": {"go vet ./...\nsignal: killed\n", `job "test" of run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`},
-		"oom":          {"container OOMKilled\n", `job "test" of run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
-		"exit 137":     {"process exited: exit code 137\n", `job "test" of run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
+		"oom":          {"OOMKilled\n", `job "test" of run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
+		"exit 137":     {"exit code 137\n", `job "test" of run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
 		"real failure": {"--- FAIL: TestX\nFAIL\n", `job "test" of run 7 failed again at attempt 2, its re-run: a test failure, not a kill`},
 	} {
 		r, fj, _ := killedRig(t, []string{killedFail},
@@ -4178,18 +4181,41 @@ func TestWaitChecksRedAfterTheOneRerun(t *testing.T) {
 func TestWaitChecksNeverRerunsAnAttemptTwoJob(t *testing.T) {
 	r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
 	res := waitChecksOf(t, r)
-	if res.State != ChecksFailure || len(fj.reruns) != 0 {
-		t.Fatalf("result = %+v, reruns = %v, want failure and no rerun", res, fj.reruns)
+	if res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 {
+		t.Fatalf("result = %+v, reruns = %v, want failure with the plain finding and no rerun", res, fj.reruns)
 	}
 }
 
-// A real test failure is red as before, its finding unchanged, no re-run.
+// A real test failure is red as before at the first poll, its finding
+// unchanged, no re-run, though a sibling job of the run still runs; the
+// failed job's log was read and judged.
 func TestWaitChecksNeverRerunsAFailingTest(t *testing.T) {
-	r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 12, Name: "test", Status: "failure", Attempt: 1}})
+	r, fj, _ := killedRig(t, []string{killedFail},
+		[]ActionJob{{ID: 12, Name: "test", Status: "failure", Attempt: 1}, {ID: 14, Name: "image-build", Status: "running", Attempt: 1}})
 	res := waitChecksOf(t, r)
 	want := `check "pr / test (pull_request)": failure — Failure after 2m (/sf/repo/actions/runs/7/jobs/0)`
 	if res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 || res.Findings[0] != want {
 		t.Fatalf("result = %+v, reruns = %v, want failure with the plain finding %q and no rerun", res, fj.reruns, want)
+	}
+	if !reflect.DeepEqual(fj.logGets, []string{"12/1"}) || fj.jobGets != 1 {
+		t.Fatalf("job logs read = %v, job lists read = %d, want [12/1] and 1: the verdict came at the first poll", fj.logGets, fj.jobGets)
+	}
+}
+
+// A job a human cancelled, or a test whose own output prints a kill
+// marker, is not a killed tool: no re-run.
+func TestWaitChecksOnlyRerunsAKillThatEndsTheTool(t *testing.T) {
+	for name, tc := range map[string]struct {
+		status, log string
+	}{
+		"cancelled":           {"cancelled", "go vet ./...\nsignal: killed\n"},
+		"a test printing one": {"failure", "--- FAIL: TestExec\n    exec_test.go:9: signal: killed\n    exec_test.go:10: exit status 137\nFAIL\n"},
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: tc.status, Attempt: 1}})
+		fj.jobLogs["11/1"] = tc.log
+		if res := waitChecksOf(t, r); res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 {
+			t.Fatalf("%s: result = %+v, reruns = %v, want failure with the plain finding and no rerun", name, res, fj.reruns)
+		}
 	}
 }
 
@@ -4241,7 +4267,9 @@ func TestWaitChecksScrubsForgejoErrorsInItsFindings(t *testing.T) {
 
 func TestKilledBySignal(t *testing.T) {
 	for log, want := range map[string]bool{
-		"signal: killed": true, "exit status 137": true, "exit code 137": true, "pod OOMKilled": true,
+		"signal: killed": true, "exit status 137": true, "exit code 137": true, "OOMKilled": true,
+		"vet: signal: killed": true, "2026-09-30T22:50:22.9434409Z signal: killed\r\n": true, "ok\nsignal: killed\nFAIL": true,
+		"    x_test.go:9: signal: killed": false, "container OOMKilled": false, "signal: killed by the test": false,
 		"exit status 1370": false, "exit status 1": false, "--- FAIL: TestKilled": false, "": false,
 	} {
 		if got := killedBySignal([]byte(log)); got != want {

@@ -1675,6 +1675,9 @@ func TestCIMemoryLimitFitsTheSuitesPeak(t *testing.T) {
 	if req := resources["requests"].(map[string]any)["memory"]; req != "1Gi" {
 		t.Fatalf("requests.memory = %v, want 1Gi", req)
 	}
+	if req := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any)["requests.memory"]; req != "1Gi" {
+		t.Fatalf("quota requests.memory = %v, want 1Gi", req)
+	}
 	var procs any
 	for _, e := range container["env"].([]any) {
 		if m := e.(map[string]any); m["name"] == "GOMAXPROCS" {
