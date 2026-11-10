@@ -95,3 +95,29 @@ func TestApproveReadsTheGateRowsBeforeTheReview(t *testing.T) {
 		t.Fatalf("reviews posted: %v", r.fg.reviews)
 	}
 }
+
+// The refusal of the agent's approval of an unreviewed merge offers a
+// request for changes only where an agent can take the card back: a factory
+// pull request and a roll have none.
+func TestUnreviewedRefusalPicksTheRemedy(t *testing.T) {
+	err := &factoryd.UnreviewedMergeError{Stages: []string{"audit"}}
+	const state = "The audit did not run, so the project agent cannot approve this merge."
+	for _, c := range []struct {
+		name string
+		task factoryd.Task
+		spec factoryd.MergeSpec
+		want string
+	}{
+		{"agent card", factoryd.Task{}, factoryd.MergeSpec{}, state + " Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."},
+		{"factory pull request", factoryd.Task{}, factoryd.MergeSpec{Factory: true}, state + " Leave the call to a human: no agent works on this pull request."},
+		{"roll", factoryd.Task{Source: factoryd.SourceRoll}, factoryd.MergeSpec{}, state + " Leave the call to a human: no agent works on this pull request."},
+	} {
+		got, ok := unreviewedRefusal(fmt.Errorf("approve: %w", err), c.task, c.spec)
+		if r, isRefusal := got.(*refusal); !ok || !isRefusal || r.status != http.StatusConflict || r.msg != c.want {
+			t.Errorf("%s: %v, want 409 %q", c.name, got, c.want)
+		}
+	}
+	if _, ok := unreviewedRefusal(fmt.Errorf("the store is down"), factoryd.Task{}, factoryd.MergeSpec{}); ok {
+		t.Error("another error read as a refusal")
+	}
+}

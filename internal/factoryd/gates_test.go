@@ -3871,18 +3871,18 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 		refused  string
 		note     string
 	}{
-		{"no rows, agent", []Event{pushed}, ChatUser, "The review and the audit did not run,", ""},
-		{"no audit row, agent", []Event{pushed, review("c1", true)}, ChatUser, "The audit did not run,", ""},
-		{"no review row, agent", []Event{pushed, audit("c1", true)}, ChatUser, "The review did not run,", ""},
-		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "The review did not run,", ""},
-		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "The review and the audit did not run,", ""},
-		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "The review and the audit did not run,", ""},
+		{"no rows, agent", []Event{pushed}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
+		{"no audit row, agent", []Event{pushed, review("c1", true)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
+		{"no review row, agent", []Event{pushed, audit("c1", true)}, ChatUser, "The review did not run, so the project agent cannot approve this merge.", ""},
+		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "The review did not run, so the project agent cannot approve this merge.", ""},
+		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
+		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "The review and the audit did not run, so the project agent cannot approve this merge.", ""},
 		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
 		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", consoleApproved},
 		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", consoleApproved},
 		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", consoleApproved},
-		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "The audit did not run,", ""},
-		{"a failed audit after its skip is required, agent", []Event{pushed, skipAudit, review("c1", true), audit("c1", false)}, ChatUser, "The audit did not run,", ""},
+		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
+		{"a failed audit after its skip is required, agent", []Event{pushed, skipAudit, review("c1", true), audit("c1", false)}, ChatUser, "The audit did not run, so the project agent cannot approve this merge.", ""},
 		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run"},
 		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run"},
 	}
@@ -3895,9 +3895,8 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 			err := ApproveMerge(ctx, store, wf, "t1", 9, c.approver)
 			if c.refused != "" {
 				var u *UnreviewedMergeError
-				if !errors.As(err, &u) || !strings.Contains(err.Error(), c.refused) ||
-					!strings.Contains(err.Error(), "deny_merge with request_changes") || !strings.Contains(err.Error(), "a human") || strings.Contains(err.Error(), "reverify") {
-					t.Fatalf("err = %v, want the refusal starting %q", err, c.refused)
+				if !errors.As(err, &u) || err.Error() != c.refused {
+					t.Fatalf("err = %v, want %q", err, c.refused)
 				}
 				if a := store.approvals[0]; a.Status != "pending" || len(wf.sent) != 0 {
 					t.Fatalf("approval %+v, signals %v: want pending, none", a, wf.sent)

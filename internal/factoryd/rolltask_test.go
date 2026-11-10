@@ -1538,7 +1538,7 @@ func TestRollCommitRefusesAnAgentTask(t *testing.T) {
 // A roll's model review makes no model call (the test runner's supervisor
 // endpoint fails the test on any call): the card reads the note.
 func TestModelReviewOfARollCallsNoModel(t *testing.T) {
-	runner, _, _ := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "in-review", Repository: codeRepo, Kind: "agent",
+	runner, _, store := newTestRunner(t, Task{ID: "t-roll", Source: SourceRoll, Status: "in-review", Repository: codeRepo, Kind: "agent",
 		RequiredCapabilities: []string{"coder"}, Track: "direct"}, newFakeKube(), &fakeObjectStore{})
 	var rv Review
 	out, err := execActivity(t, runner, ActivityModelReview, "t-roll", PullRequest{Number: 9}, "r1", GateResults{})
@@ -1547,6 +1547,10 @@ func TestModelReviewOfARollCallsNoModel(t *testing.T) {
 	}
 	if rv.Verdict != "" || rv.Note != "no model review: a roll task only bumps image digests main CI built, and makes no model call" {
 		t.Fatalf("review %+v", rv)
+	}
+	events, _ := store.TaskEvents(context.Background(), "t-roll", 10)
+	if got := unreadGates(events); !slices.Equal(got, []string{"audit"}) {
+		t.Fatalf("gates unread after the roll's review = %v, want only the audit", got)
 	}
 }
 

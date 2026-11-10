@@ -1798,6 +1798,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if t.Source == SourceRoll {
 		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call"}
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
+		r.record(ctx, t.ID, StepStageSkipped, map[string]any{"stage": policy.StageReview, "reason": "a roll task makes no model call"})
 		return rv, nil
 	}
 	pinned, err := r.pinned(ctx, gates.Pin)
@@ -2600,8 +2601,7 @@ func CheckMergeApproval(ctx context.Context, store Store, taskID, approver strin
 type UnreviewedMergeError struct{ Stages []string }
 
 func (e *UnreviewedMergeError) Error() string {
-	return "The " + strings.Join(e.Stages, " and the ") + " did not run, so the project agent cannot approve this merge. " +
-		"Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."
+	return "The " + strings.Join(e.Stages, " and the ") + " did not run, so the project agent cannot approve this merge."
 }
 
 // RerunFactoryChecks is the console's re-run of a factory pull request
