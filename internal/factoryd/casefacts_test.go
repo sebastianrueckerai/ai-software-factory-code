@@ -181,6 +181,14 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 3, TaskID: "t1", Kind: CaseSessionCap, Facts: map[string]any{"head": "h2"},
 		Resolution: &CaseResolution{Action: ActRerunChecks}})
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || waited.WaitedOnHead {
+		t.Errorf("before a case waited on h2: waited on head %v (%v), want false", waited.WaitedOnHead, err)
+	}
+	g.store.cases = append(g.store.cases, Case{ID: 4, TaskID: "t1", Kind: CaseGateStop, Facts: map[string]any{"head": "h2", "gate": ActivityWaitChecks},
+		Resolution: &CaseResolution{Action: ActWaitChecks}})
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !waited.WaitedOnHead {
+		t.Errorf("after a case on h2 waited on its checks again: waited on head %v (%v), want true", waited.WaitedOnHead, err)
+	}
 	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !again.RerunOnHead {
 		t.Errorf("after a case on h2 ran its checks again: rerun on head %v (%v), want true", again.RerunOnHead, err)
 	}

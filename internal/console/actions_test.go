@@ -738,3 +738,18 @@ func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {
 		}
 	}
 }
+
+// A checks-wait stop opened before keep_checking existed still carries
+// keep_waiting on its button: on that stop it runs the wait again too.
+func TestAnswerActionKeepWaitingOnAChecksWaitStopRunsTheWait(t *testing.T) {
+	stop := factoryd.Case{Kind: factoryd.CaseGateStop, Facts: map[string]any{"gate": factoryd.ActivityWaitChecks}}
+	merge := factoryd.Case{Kind: factoryd.CaseGateStop, Facts: map[string]any{"gate": factoryd.ActivityMerge}}
+	for name, c := range map[string]struct {
+		k    factoryd.Case
+		want string
+	}{"checks wait": {stop, factoryd.ActWaitChecks}, "merge": {merge, factoryd.ActNote}, "no case": {factoryd.Case{}, factoryd.ActNote}} {
+		if got := answerAction(factoryd.AnswerKeepWaiting, "Keep waiting", 0, c.k, time.Hour).Action; got != c.want {
+			t.Errorf("%s: keep_waiting answers with %q, want %q", name, got, c.want)
+		}
+	}
+}

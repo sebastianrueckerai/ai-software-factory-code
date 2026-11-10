@@ -29,6 +29,7 @@ type CaseFacts struct {
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
 	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
+	WaitedOnHead   bool   `json:"waited_on_head,omitempty"`  // a case on Head ran its stopped checks wait again
 	Stage          string `json:"stage,omitempty"`           // the gate the card is in
 	Attempts       int    `json:"attempts"`
 	SessionCap     int    `json:"session_cap"`
@@ -160,6 +161,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 			f.RerunOnHead = f.Head != "" && (slices.Contains(reran, f.Head) || (err == nil && slices.ContainsFunc(cases, func(c Case) bool {
 				return c.Resolution != nil && c.Resolution.Action == ActRerunChecks && c.Facts["head"] == f.Head
 			})))
+			f.WaitedOnHead = f.Head != "" && err == nil && slices.ContainsFunc(cases, func(c Case) bool {
+				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
+			})
 			return err
 		}},
 		{"pool", func() error {

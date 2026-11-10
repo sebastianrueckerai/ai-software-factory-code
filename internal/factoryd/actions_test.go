@@ -575,7 +575,7 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 // wait_checks applies to a checks wait's stop with a pull request open,
 // whatever the checks and the agent time left, and to no other case.
 func TestWaitChecksAppliesToAChecksWaitStop(t *testing.T) {
-	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", AgentTimeCapS: 600, AgentTimeS: 600}
+	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", SessionCap: 3, AgentTimeCapS: 600, AgentTimeS: 600}
 	merge, noPR, quiet := stop, stop, stop
 	merge.Gate, noPR.PROpen, quiet.Kind = ActivityMerge, false, CaseSessionCap
 	for _, c := range []struct {
@@ -594,5 +594,27 @@ func TestWaitChecksAppliesToAChecksWaitStop(t *testing.T) {
 	}
 	if !slices.Contains(offeredNames(stop, 2), ActWaitChecks) || slices.Contains(offeredNames(stop, 2), ActResume) {
 		t.Errorf("rung 2 is offered %v at the cap, want wait_checks and no resume", offeredNames(stop, 2))
+	}
+}
+
+// Rungs 0 to 2 take wait_checks once per head, as rerun_checks; a human
+// may press it again.
+func TestWaitChecksIsOncePerHeadBelowTheHuman(t *testing.T) {
+	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Head: "h1", Checks: "green"}
+	waited := stop
+	waited.WaitedOnHead = true
+	a, _ := ActionByName(ActWaitChecks)
+	for _, c := range []struct {
+		rung   int
+		f      CaseFacts
+		refuse bool
+	}{{0, stop, false}, {1, stop, false}, {2, stop, false}, {0, waited, true}, {1, waited, true}, {2, waited, true}, {3, waited, false}} {
+		got := a.refusal(c.f, c.rung, Resolution{Action: ActWaitChecks})
+		if (got != "") != c.refuse {
+			t.Errorf("rung %d, waited %v: refusal %q, want refused %v", c.rung, c.f.WaitedOnHead, got, c.refuse)
+		}
+	}
+	if got := a.refusal(waited, 2, Resolution{Action: ActWaitChecks}); got != "the checks wait on this head was run again once already" {
+		t.Errorf("refusal = %q", got)
 	}
 }

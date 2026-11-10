@@ -116,7 +116,7 @@ var Actions = []Action{
 		}
 		return ""
 	}},
-	{Name: ActWaitChecks, Rungs: rungs(1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
+	{Name: ActWaitChecks, Rungs: rungs(0, 1, 2, 3), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
 		case f.Kind != CaseGateStop || f.Gate != ActivityWaitChecks:
 			return "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"
@@ -300,6 +300,9 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 		case a.Name != ActClose && !slices.Contains(monitorActions, a.Name):
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 		}
+	}
+	if a.Name == ActWaitChecks && rung < 3 && f.WaitedOnHead {
+		return "the checks wait on this head was run again once already"
 	}
 	if why := a.Applies(f, r); why != "" {
 		return why
