@@ -161,6 +161,52 @@ func TestSlowAliasReturnsWhenTheMedianIsBackAtTheBound(t *testing.T) {
 	}
 }
 
+// switchedThenAged switches big on 20 slow calls, then ages them out of the
+// window: the window is empty and two minutes have passed.
+func switchedThenAged(t *testing.T) *routeRig {
+	r := newRouteRig(t)
+	seedSlow(r.store, "big", "zai/glm-5.3", 20, 39)
+	r.call(t, 1)
+	r.store.mu.Lock()
+	r.store.audits = nil
+	r.store.mu.Unlock()
+	r.advance(2 * time.Minute)
+	return r
+}
+
+// A switched alias returns on 3 probes at 25 s per 1000 tokens: the median
+// is 25, at or under 30. Two probes are too few: it stays on its twin.
+func TestSwitchedAliasReturnsOnThreeProbes(t *testing.T) {
+	r := switchedThenAged(t)
+	seedSlow(r.store, "big", "zai/glm-5.3", 3, 25)
+	r.call(t, 1)
+	if got := r.modelsSent(t); got[1] != "big" {
+		t.Fatalf("upstream models = %v, want the second call on big", got)
+	}
+	if sw := r.store.switchRows(); len(sw) != 2 || sw[1].Kind != policy.SwitchReturn || sw[1].Median != 25 {
+		t.Fatalf("switch rows = %+v, want a switch then a return at 25", sw)
+	}
+}
+
+func TestSwitchedAliasStaysOnTwoProbes(t *testing.T) {
+	r := switchedThenAged(t)
+	seedSlow(r.store, "big", "zai/glm-5.3", 2, 25)
+	r.call(t, 1)
+	if got := r.modelsSent(t); got[1] != "big-alibaba" || len(r.store.switchRows()) != 1 {
+		t.Fatalf("upstream models %v, switches %+v, want big-alibaba and the one switch", got, r.store.switchRows())
+	}
+}
+
+// With no primary call in the window, the next call goes to the primary and
+// the one after to the twin again; no return is stored.
+func TestSwitchedAliasProbesAfterAQuietHour(t *testing.T) {
+	r := switchedThenAged(t)
+	r.call(t, 2)
+	if got := r.modelsSent(t); got[1] != "big" || got[2] != "big-alibaba" || len(r.store.switchRows()) != 1 {
+		t.Fatalf("upstream models %v, switches %+v, want big then big-alibaba and the one switch", got, r.store.switchRows())
+	}
+}
+
 // An alias without a twin never switches, however slow.
 func TestAliasWithoutTwinNeverSwitches(t *testing.T) {
 	r := newRouteRig(t)

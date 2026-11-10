@@ -131,7 +131,7 @@ An explicit `bounds: WaitChecks` still overrides the field.
 `routing` steers a slow alias to its twin: `slow_seconds_per_1000_tokens` (absent or 0: 30) and `twins`, the twin of each alias by alias (absent: `big` to `big-alibaba` and `small` to `small-alibaba`; an alias without a twin never switches).
 The gateway measures each alias from its audit rows: the median of seconds per 1000 output tokens over the last hour's successful calls that the alias's primary deployment answered, counting only calls of at least 100 output tokens and only when at least 20 count.
 When the median is above the bound, the gateway names the twin as the model of the alias's calls, prices and holds them at the twin's price (a twin without its own `prices.max_output_tokens` takes its alias's limit), audits them on the twin and shows the switch on the status line.
-Every 10th call of a switched alias still goes to the primary, so the window keeps measuring it, and when the median is at or under the bound the alias returns.
+Every 10th call of a switched alias still goes to the primary, so the window keeps measuring it. The alias returns when the median of the primary's calls in the last hour, at least 3 of them, is at or under the bound; the calls from before the switch count until they age out. When the primary served no call in the last hour, the next call goes to it.
 Each switch and each return is a row of `alias_switches`; a task's key allows every twin of its aliases.
 
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,

@@ -13,13 +13,16 @@ import (
 // The slow-alias rule: an alias whose median over the last latencyWindow of
 // the primary deployment's calls is above the policy's bound serves from its
 // twin. Only calls of minLatencyTokens output tokens or more count, and the
-// median needs minLatencyCalls of them. A switched alias still sends every
+// median that switches needs minLatencyCalls of them; the median that
+// returns needs minReturnCalls, and a switched alias whose primary served no
+// call in the window sends its next call there. A switched alias still sends every
 // primaryEvery-th call to its primary, so the window keeps measuring it. The
 // window is the audit table, so a restart or a second replica reads the
 // same one; the call counter is per replica.
 const (
 	latencyWindow    = time.Hour
 	minLatencyCalls  = 20
+	minReturnCalls   = 3
 	minLatencyTokens = 100
 	primaryEvery     = 10
 	routeTTL         = time.Minute
@@ -32,6 +35,7 @@ type aliasRoute struct {
 	checked  time.Time
 	switched bool
 	calls    int
+	quiet    bool // the primary served no call in the window
 }
 
 // route answers the alias that serves a call for alias, and a note for the
@@ -66,6 +70,10 @@ func (s *Server) route(ctx context.Context, pv *policy.Version, alias string) (s
 	if !r.switched {
 		return alias, ""
 	}
+	if r.quiet {
+		r.quiet = false
+		return alias, ""
+	}
 	if r.calls++; r.calls%primaryEvery == 0 {
 		return alias, ""
 	}
@@ -83,19 +91,18 @@ func (s *Server) reread(ctx context.Context, alias, twin string, bound float64, 
 		log.Printf("read the latency of %s: %v", alias, err)
 		return
 	}
-	median, deployment, ok := latencyMedian(alias, twin, samples)
-	if !ok {
-		return
-	}
+	l := latencyOf(alias, twin, samples)
+	r.quiet = r.switched && l.primary == 0
 	kind := ""
 	switch {
-	case !r.switched && median > bound:
+	case !r.switched && l.counted >= minLatencyCalls && l.median > bound:
 		kind = policy.SwitchOn
-	case r.switched && median <= bound:
+	case r.switched && l.counted >= minReturnCalls && l.median <= bound:
 		kind = policy.SwitchReturn
 	default:
 		return
 	}
+	median, deployment := l.median, l.deployment
 	sw := policy.AliasSwitch{Alias: alias, Twin: twin, Kind: kind, Median: median, Deployment: deployment}
 	if err := s.opts.Store.RecordAliasSwitch(ctx, sw); err != nil {
 		log.Printf("record the %s of %s: %v", kind, alias, err)
@@ -105,39 +112,49 @@ func (s *Server) reread(ctx context.Context, alias, twin string, bound float64, 
 	log.Printf("alias %s: %s at a median of %.1f s per 1000 output tokens (bound %g)", alias, kind, median, bound)
 }
 
-// latencyMedian is the median seconds per 1000 output tokens of alias's
-// calls that its primary deployment answered, and that deployment (the most
-// frequent), when at least minLatencyCalls calls of minLatencyTokens count.
-// A deployment that answered a call of the twin is no primary: LiteLLM's
-// fallback served that call of alias.
-func latencyMedian(alias, twin string, samples []policy.LatencySample) (float64, string, bool) {
+// latency is the window of an alias's primary deployment: how many calls it
+// answered, how many of minLatencyTokens or more, their median seconds per
+// 1000 output tokens, and the deployment that answered most.
+type latency struct {
+	primary, counted int
+	median           float64
+	deployment       string
+}
+
+// latencyOf reads the window's samples. A deployment that answered a call of
+// the twin is no primary: LiteLLM's fallback served that call of alias.
+func latencyOf(alias, twin string, samples []policy.LatencySample) latency {
 	twins := map[string]bool{}
 	for _, s := range samples {
 		if s.Alias == twin {
 			twins[s.Deployment] = true
 		}
 	}
+	var l latency
 	var rates []float64
 	deployments := map[string]int{}
 	for _, s := range samples {
-		if s.Alias == alias && !twins[s.Deployment] && s.OutputTokens >= minLatencyTokens {
+		if s.Alias != alias || twins[s.Deployment] {
+			continue
+		}
+		l.primary++
+		if s.OutputTokens >= minLatencyTokens {
 			rates = append(rates, float64(s.DurationMS)/float64(s.OutputTokens))
 			deployments[s.Deployment]++
 		}
 	}
-	if len(rates) < minLatencyCalls {
-		return 0, "", false
+	if l.counted = len(rates); l.counted == 0 {
+		return l
 	}
 	slices.Sort(rates)
-	median := rates[len(rates)/2]
+	l.median = rates[len(rates)/2]
 	if len(rates)%2 == 0 {
-		median = (rates[len(rates)/2-1] + median) / 2
+		l.median = (rates[len(rates)/2-1] + l.median) / 2
 	}
-	top := ""
 	for d, n := range deployments {
-		if n > deployments[top] || n == deployments[top] && d < top {
-			top = d
+		if n > deployments[l.deployment] || n == deployments[l.deployment] && d < l.deployment {
+			l.deployment = d
 		}
 	}
-	return median, top, true
+	return l
 }
