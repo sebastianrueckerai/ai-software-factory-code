@@ -514,8 +514,8 @@ func tripDep(kind CaseKind, f CaseFacts) *DepFact {
 }
 
 // tripMoney is the money fact of a case of kind on facts f, nil for none:
-// a budget floor's names what the next opening needs past what is left, in
-// cents as the store keeps them, and what that buys. The other stops on
+// a budget floor's names what the next opening needs past what a session may spend, in
+// cents rounded up, and what that buys. The other stops on
 // the card's own budget name the budget and what is spent.
 func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 	switch {
@@ -524,7 +524,10 @@ func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 		if f.Model != "" {
 			buys += " on " + f.Model
 		}
-		need := float64(max(0, Cents(f.FloorEUR)-Cents(f.LeftEUR))) / 100
+		var need float64
+		if f.SessionLeft() < f.FloorEUR {
+			need = fundFor(f.FloorEUR, f.SessionLeft())
+		}
 		return &CaseMoney{Kind: "budget", BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR, NeedEUR: need, Buys: buys}
 	case slices.Contains(cardMoneyKinds, kind):
 		return &CaseMoney{Kind: string(kind), BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR}

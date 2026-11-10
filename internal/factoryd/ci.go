@@ -216,8 +216,9 @@ func (s *CISpawner) poll(ctx context.Context) {
 		return
 	}
 	slots := s.cfg.MaxConcurrent - s.reconcile(ctx, repos)
+	fit := &fitReader{read: func() (*storageFit, error) { return s.storageFit(ctx) }}
 
-	s.serveSmoke(ctx, repos, &slots)
+	s.serveSmoke(ctx, repos, &slots, fit)
 	s.jobs(ctx, repos, s.cfg.TrustedLabel)
 	for _, kind := range s.jobKinds() {
 		for _, rj := range s.jobs(ctx, repos, kind.label) {
@@ -235,6 +236,9 @@ func (s *CISpawner) poll(ctx context.Context) {
 			}
 			if slots <= 0 {
 				log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, kind.label, s.cfg.MaxConcurrent)
+				continue
+			}
+			if !s.fitsStorage(fit, job.ID, rj.repo, kind) {
 				continue
 			}
 			if kind.build {
@@ -255,9 +259,106 @@ func (s *CISpawner) poll(ctx context.Context) {
 				log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, rj.repo.Repo, err)
 				continue
 			}
+			fit.take(s.podStorage(kind, rj.repo.Cache))
 			slots--
 		}
 	}
+}
+
+// storageFit is the free ephemeral storage of each node, in bytes, as one
+// poll reads it and then spends it on the pods it spawns: a node's
+// allocatable less what its pods request, the pods no node holds yet placed
+// on the roomiest nodes.
+type storageFit struct{ free []int64 }
+
+func (s *CISpawner) storageFit(ctx context.Context) (*storageFit, error) {
+	nodes, unplaced, err := s.kube.NodeStorage(ctx)
+	if err != nil {
+		return nil, err
+	}
+	f := &storageFit{}
+	for _, n := range nodes {
+		f.free = append(f.free, n.Allocatable-n.Requested)
+	}
+	for _, req := range unplaced {
+		f.take(req)
+	}
+	return f, nil
+}
+
+// fitReader reads the nodes' storage once per poll, at the first job that
+// waits for a pod.
+type fitReader struct {
+	read func() (*storageFit, error)
+	fit  *storageFit
+	err  error
+	done bool
+}
+
+func (r *fitReader) get() (*storageFit, error) {
+	if !r.done {
+		r.fit, r.err = r.read()
+		r.done = true
+	}
+	return r.fit, r.err
+}
+
+// take spends a spawned pod's storage; a poll that read none spends none.
+func (r *fitReader) take(req int64) {
+	if r.fit != nil {
+		r.fit.take(req)
+	}
+}
+
+// roomiest is the index of the node with the most free storage, -1 for none.
+func (f *storageFit) roomiest() int {
+	best := -1
+	for i, n := range f.free {
+		if best < 0 || n > f.free[best] {
+			best = i
+		}
+	}
+	return best
+}
+
+// take places a pod of req bytes on the roomiest node, free or not.
+func (f *storageFit) take(req int64) {
+	if i := f.roomiest(); i >= 0 {
+		f.free[i] -= req
+	}
+}
+
+// podStorage is the ephemeral storage a runner pod of kind for a project
+// cache requests, in bytes.
+func (s *CISpawner) podStorage(kind ciJobKind, cache string) int64 {
+	pod := s.runnerPodSpec(kind, cache, nil, false)
+	c := pod["spec"].(map[string]any)["containers"].([]any)[0].(map[string]any)
+	q, _ := c["resources"].(map[string]any)["requests"].(map[string]any)["ephemeral-storage"].(string)
+	n, _ := parseBytes(q)
+	return n
+}
+
+// fitsStorage reports whether the runner pod of job fits on a node's free
+// ephemeral storage; when it does not (or the nodes cannot be read) the job
+// stays queued in Forgejo and the log names the shortfall.
+func (s *CISpawner) fitsStorage(reader *fitReader, jobID int64, repo CIRepo, kind ciJobKind) bool {
+	fit, fitErr := reader.get()
+	if fitErr != nil {
+		log.Printf("ci spawner: job %d (%s) stays queued: node storage: %v", jobID, kind.label, fitErr)
+		return false
+	}
+	req := s.podStorage(kind, repo.Cache)
+	i := fit.roomiest()
+	if i >= 0 && fit.free[i] >= req {
+		return true
+	}
+	var most int64
+	if i >= 0 {
+		most = fit.free[i]
+	}
+	log.Printf("ci spawner: job %d (%s) stays queued: the pod requests %d GiB of ephemeral storage and no node has it free, the roomiest lacks %d GiB",
+		jobID, kind.label, req>>30, (req-most+1<<30-1)>>30)
+	return false
 }
 
 // smokeLabel is the runner label of a project's smoke job, the one job
@@ -271,7 +372,7 @@ func smokeLabel(project string) string { return project + "-smoke" }
 // admitSmoke reads the job's run. A smoke namespace whose job Forgejo no
 // longer lists waiting or running, or lists waiting as another attempt, is
 // torn down: a bound runner never serves another job.
-func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) {
+func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int, fit *fitReader) {
 	listed := map[int64]bool{}
 	complete := true
 	for _, r := range repos {
@@ -307,11 +408,14 @@ func (s *CISpawner) serveSmoke(ctx context.Context, repos []CIRepo, slots *int) 
 					s.teardown(ctx, nss[0].Name, repos)
 				case *slots <= 0:
 					log.Printf("ci spawner: job %d (%s) stays queued: %d runners live, the cap", job.ID, label, s.cfg.MaxConcurrent)
+				case !s.fitsStorage(fit, job.ID, r, ciJobKind{label: label, smoke: true, handle: job.Handle}):
 				default:
-					if err := s.spawn(ctx, r, job.ID, ciJobKind{label: label, smoke: true, handle: job.Handle}); err != nil {
+					kind := ciJobKind{label: label, smoke: true, handle: job.Handle}
+					if err := s.spawn(ctx, r, job.ID, kind); err != nil {
 						log.Printf("ci spawner: spawn for job %d of %s: %v", job.ID, r.Repo, err)
 						continue
 					}
+					fit.take(s.podStorage(kind, r.Cache))
 					*slots--
 				}
 			case job.TaskID != 0:

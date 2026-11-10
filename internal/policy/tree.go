@@ -361,6 +361,9 @@ func parseBody[T any](b []byte, kind fileKind, check func(T) error) (T, error) {
 	if err := decodeOne(b, &out, true); err != nil {
 		return out, err
 	}
+	if c, ok := any(&out).(interface{ canonicalTools() }); ok {
+		c.canonicalTools()
+	}
 	if err := check(out); err != nil {
 		return out, err
 	}
@@ -396,6 +399,7 @@ func decodeOne(b []byte, out any, strict bool) error {
 func DecodeProject(b []byte) (ProjectConfig, error) {
 	var p ProjectConfig
 	err := decodeOne(b, &p, true)
+	p.canonicalTools()
 	return p, err
 }
 

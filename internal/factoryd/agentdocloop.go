@@ -98,10 +98,10 @@ func agentDocLoopBrief(id string, v policy.Version) harness.TaskBrief {
 	b.Tools = v.Document.Tools([]string{agentDocLoopClass(id)}, "github")
 	b.PosterInfo, b.LeftOut = agentDocLoopPosters()
 	if id == "coding" || id == "message-responder" {
-		b.Facts = SessionFacts{BudgetEUR: 5, SpentEUR: 1.25, TimeLeft: 97 * time.Minute,
+		b.Facts = SessionFacts{BudgetEUR: 5, SpentEUR: 1.25, ReserveEUR: v.Document.Limits.GateReserve(), TimeLeft: 97 * time.Minute,
 			Attempt: 2, Sessions: 3, Size: "medium", LargeLines: v.Document.Risk.LargeLines}.Line()
 	} else {
-		b.Facts = SessionFacts{BudgetEUR: 5, TimeLeft: 29 * time.Minute}.Line()
+		b.Facts = SessionFacts{BudgetEUR: 5, ReserveEUR: v.Document.Limits.GateReserve(), TimeLeft: 29 * time.Minute}.Line()
 	}
 	switch id {
 	case "screening":

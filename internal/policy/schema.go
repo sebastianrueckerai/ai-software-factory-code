@@ -39,7 +39,7 @@ func (k fileKind) schemaFile() string { return k.name + ".schema.json" }
 
 // minimums and maximums bound integer fields, keyed Type.Field.
 var (
-	minimums = map[string]float64{"ChatConfig.MonthlyEUR": 0, "ProjectBudget.TaskMaxEUR": 0, "Limits.Steps": 1, "Risk.LargeLines": 0, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "Limits.ReviewDiffKiB": DefaultReviewDiffKiB, "Limits.WarnAt": 1, "Limits.PlanWarnAt": 1, "Limits.NoPushSpend": 1, "PlanShape.MinCards": 1, "PlanShape.MaxCards": 2, "ProjectConfig.QueueCap": 0, "ChatConfig.ParallelTurns": 1, "ChatConfig.Window": 1000, "Draw.Sessions": 1, "Draw.EUR": 0, "Waits.NoPushSessions": 0}
+	minimums = map[string]float64{"ChatConfig.MonthlyEUR": 0, "ProjectBudget.TaskMaxEUR": 0, "Limits.Steps": 1, "Risk.LargeLines": 0, "Limits.NudgeAfter": 2, "Limits.Nudges": 1, "Limits.SameCall": 2, "Limits.ReviewDiffKiB": DefaultReviewDiffKiB, "Limits.WarnAt": 1, "Limits.PlanWarnAt": 1, "Limits.NoPushSpend": 1, "Limits.GateReserveEUR": 0, "PlanShape.MinCards": 1, "PlanShape.MaxCards": 2, "ProjectConfig.QueueCap": 0, "ChatConfig.ParallelTurns": 1, "ChatConfig.Window": 1000, "Draw.Sessions": 1, "Draw.EUR": 0, "Waits.NoPushSessions": 0}
 	maximums = map[string]float64{"PlanShape.MinCards": 20, "PlanShape.MaxCards": 20, "Limits.ReviewDiffKiB": MaxReviewDiffKiB, "Limits.WarnAt": 99, "Limits.PlanWarnAt": 99, "Limits.NoPushSpend": 99}
 )
 
@@ -199,7 +199,7 @@ func schemaFor(t reflect.Type, docs map[string]string) (*jsonschema.Schema, erro
 			if p.Description = docs[id]; p.Description == "" {
 				return nil, fmt.Errorf("%s has no doc comment", id)
 			}
-			if values, ok := enums[id]; ok {
+			if values, ok := enumOf(id); ok {
 				enum := make([]any, len(values))
 				for i, v := range values {
 					enum[i] = v
@@ -260,34 +260,43 @@ func (k fileKind) schema() (*jsonschema.Schema, error) {
 }
 
 var (
-	resolvedOnce sync.Once
-	resolved     map[string]*jsonschema.Resolved
-	resolvedErr  error
+	resolvedMu  sync.Mutex
+	resolved    map[string]*jsonschema.Resolved
+	resolvedErr error
 )
+
+func resolvedSchemas() (map[string]*jsonschema.Resolved, error) {
+	resolvedMu.Lock()
+	defer resolvedMu.Unlock()
+	if resolved != nil || resolvedErr != nil {
+		return resolved, resolvedErr
+	}
+	out := map[string]*jsonschema.Resolved{}
+	for _, kind := range fileKinds {
+		s, err := kind.schema()
+		if err == nil {
+			out[kind.name], err = s.Resolve(nil)
+		}
+		if err != nil {
+			resolvedErr = err
+			return nil, err
+		}
+	}
+	resolved = out
+	return resolved, nil
+}
 
 // validate checks a decoded YAML document against the kind's schema.
 func (k fileKind) validate(doc any) error {
-	resolvedOnce.Do(func() {
-		resolved = map[string]*jsonschema.Resolved{}
-		for _, kind := range fileKinds {
-			s, err := kind.schema()
-			if err == nil {
-				resolved[kind.name], err = s.Resolve(nil)
-			}
-			if err != nil {
-				resolvedErr = err
-				return
-			}
-		}
-	})
-	if resolvedErr != nil {
-		return resolvedErr
+	schemas, err := resolvedSchemas()
+	if err != nil {
+		return err
 	}
 	v, err := jsonValue(doc)
 	if err != nil {
 		return err
 	}
-	return resolved[k.name].Validate(v)
+	return schemas[k.name].Validate(v)
 }
 
 // Schemas are the generated schema files by name, as `factoryd schema`

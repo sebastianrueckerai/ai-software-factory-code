@@ -240,6 +240,9 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		ActivityBranchHead:   func(ctx context.Context, taskID string) (string, error) { return "", nil },
 		ActivityDependencies: func(ctx context.Context, taskID string) (DepState, error) { return DepState{}, nil },
 		ActivityEnterQueue:   func(ctx context.Context, taskID string) (int, error) { return 0, nil },
+		ActivityAdmitResume: func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+			return ResumeSlot{Granted: true}, nil
+		},
 		ActivitySyncWithMain: func(ctx context.Context, taskID string, pr int64, from string) (SyncResult, error) {
 			return SyncResult{}, nil
 		},

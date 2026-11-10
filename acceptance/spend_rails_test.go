@@ -80,6 +80,7 @@ func wantSpendRailKeys() []string {
 		"limits.nudges", "limits.same_call", "limits.review_diff_kib", "limits.checkin_calls",
 		"limits.checkin_time", "limits.checkin_share", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
 		"limits.checkin_sessions", "limits.warn_at", "limits.plan_warn_at", "limits.no_push_spend",
+		"limits.gate_reserve_eur",
 		"budget.task_default_eur", "budget.task_max_eur", "budget.day_eur", "budget.month_eur",
 		"budget.session_floor_cheap_eur", "budget.session_floor_frontier_eur", "budget.premium_month_eur",
 		"escalation.pool.sessions", "escalation.pool.agent_time", "escalation.pool.eur",
@@ -90,7 +91,7 @@ func wantSpendRailKeys() []string {
 
 // TestAccManualHoldsAllCaps reads docs/manual/policy.md as an outsider and
 // holds the section between the markers against what policy.SpendRailTable()
-// generates: 36 rows in order - 20 limits, 7 budget, 3 escalation.pool, 3
+// generates: 37 rows in order - 21 limits, 7 budget, 3 escalation.pool, 3
 // escalation.card_draw, 1 chat.monthly_eur, then the two matrix rows
 // classes.<c>.tools and envelope_default - every row's three authored
 // columns non-empty, and no key without a row and no row without a key.
@@ -108,7 +109,7 @@ func TestAccManualHoldsAllCaps(t *testing.T) {
 		name  string
 		count int
 	}{
-		{"limits", 20}, {"budget", 7},
+		{"limits", 21}, {"budget", 7},
 		{"escalation.pool", 3}, {"escalation.card_draw", 3},
 		{"chat.monthly_eur", 1},
 	} {

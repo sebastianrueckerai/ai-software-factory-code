@@ -153,8 +153,9 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 			projectHeld += h.EUR
 		}
 	}
-	taskHeadroom, dayHeadroom, monthHeadroom, projectHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal, r.ProjectEUR-projectTotal
-	free := policy.Free{Task: taskHeadroom - taskHeld, Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld, Project: projectHeadroom - projectHeld}
+	dayHeadroom, monthHeadroom, projectHeadroom := r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal, r.ProjectEUR-projectTotal
+	free := policy.Free{Task: policy.SessionHeadroom(policy.Left(t.BudgetEUR, t.SpentEUR, taskHeld), r.ReserveEUR), Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld, Project: projectHeadroom - projectHeld,
+		Reserve: r.ReserveEUR, Spent: t.SpentEUR}
 	if r.PremiumEUR > 0 {
 		premium := r.PremiumEUR
 		onPremium := func(kind, ref string) bool {
@@ -3063,5 +3064,37 @@ func TestImageDimsReadsFillBytesAndTheTrueCanvas(t *testing.T) {
 	}
 	if w, h, ok := imageDims(webpVP8X(100, 50)); !ok || w != 100 || h != 50 {
 		t.Fatalf("a VP8X canvas = %d×%d %v, want 100×50", w, h, ok)
+	}
+}
+
+// A session's call holds the gate reserve out of its card's headroom, and
+// factoryd's call keeps the full headroom. A card of 5.00 EUR with 4.60
+// spent has 0.40 free, which the 0.40 EUR default reserve takes whole: the
+// worker pod's call carries ReserveEUR 0.40, finds a ceiling of 0 and is
+// refused with 402 refused_budget naming the card's spent 4.60 EUR and the
+// 0.40 EUR held for the review and the audit; factoryd's call carries
+// none and is served.
+func TestASessionsCallHoldsTheGateReserveOut(t *testing.T) {
+	stub := newStubUpstream(t)
+	call := func(id Identity) (*httptest.ResponseRecorder, *memStore) {
+		stub.setResp(stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.01"}})
+		store := newMemStore(Task{Classes: coder, ModelAlias: "small", ID: "a", BudgetEUR: 5, SpentEUR: 4.6, Status: "running", Repository: "sf/code"})
+		s := NewServer(ServerOptions{Auth: fakeAuth{id: id}, Store: store, Minter: &fakeMinter{}, LiteLLMURL: stub.URL, Prices: testPrices})
+		r := httptest.NewRequest("POST", "/v1/chat/completions", strings.NewReader(chatBody("small")))
+		rr := httptest.NewRecorder()
+		s.Routes("test").ServeHTTP(rr, r)
+		return rr, store
+	}
+	rr, store := call(Identity{TaskID: "a", SAUID: "u", Session: "s-1"})
+	if rr.Code != http.StatusPaymentRequired || rr.Header().Get(HeaderDecision) != policy.RefusedBudget ||
+		!strings.Contains(rr.Body.String(), "the card spent 4.60 EUR, and 0.40 EUR is held for the review and the audit") {
+		t.Fatalf("session call = %d %s %s, want 402 refused_budget naming the spent and held EUR", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
+	}
+	if len(store.reqs) != 1 || store.reqs[0].ReserveEUR != policy.DefaultGateReserveEUR {
+		t.Fatalf("session hold requests = %+v, want ReserveEUR %v", store.reqs, policy.DefaultGateReserveEUR)
+	}
+	rr, store = call(Identity{TaskID: "a", SAUID: "u"})
+	if rr.Code != http.StatusOK || len(store.reqs) != 1 || store.reqs[0].ReserveEUR != 0 {
+		t.Fatalf("factoryd call = %d %s with requests %+v, want 200 and no reserve", rr.Code, rr.Body.String(), store.reqs)
 	}
 }

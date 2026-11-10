@@ -62,7 +62,9 @@ const maxDecisionText = 2000
 type CostState struct {
 	BudgetEUR    float64 `json:"budget_eur"`
 	SpentEUR     float64 `json:"spent_eur"`
+	HeldEUR      float64 `json:"held_eur,omitempty"`
 	RemainingEUR float64 `json:"remaining_eur"`
+	ReserveEUR   float64 `json:"reserve_eur,omitempty"`
 	Calls        int     `json:"calls"`
 	PromptTokens int     `json:"prompt_tokens"`
 	CachedTokens int     `json:"cached_tokens"`

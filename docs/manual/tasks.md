@@ -83,6 +83,21 @@ slot. A card that ends or parks on a person or its image frees its slot,
 and the oldest queued card of its project starts (the pull, in filing
 order); the heal pass re-derives the same admission every minute.
 
+A card back from a wait (a human's answer, an approval, a dependency, a
+fund after a cap) passes the same bound at its session start
+(`AdmitResume`): it starts while the project's live count is under
+`work_in_progress` plus `surge` (2 unless the project's file says
+otherwise), else it waits queued, holding no slot. The queue admits the
+resumed cards, oldest resumption first (by when the wait ended), before any
+never-started card. The planner's sessions pass the same step.
+
+CI pods are bound apart from the work bound. The CI spawner starts a
+runner pod only while some node has its ephemeral-storage request free,
+reading the nodes' allocatable storage and the requests of the pods placed
+and of the pods still unplaced; a job that does not fit stays queued in
+Forgejo, and the log names the shortfall. `CI_MAX_CONCURRENT` stays the
+outer cap.
+
 Priority is the higher of two label scales, default 0 if neither is present:
 
 | label | priority |

@@ -41,6 +41,7 @@ type CaseFacts struct {
 	BudgetEUR  float64  `json:"budget_eur"`
 	SpentEUR   float64  `json:"spent_eur"`          // Task.EnforcedSpent()
 	LeftEUR    float64  `json:"left_eur"`           // Task.Left()
+	ReserveEUR float64  `json:"reserve_eur"`        // the gate reserve a session's ceiling holds out of LeftEUR
 	FloorEUR   float64  `json:"floor_eur"`          // what the next opening needs, as the opening's floor reads it (needOf)
 	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
 	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
@@ -87,6 +88,10 @@ type DrawFacts struct {
 	Revised  bool      `json:"revised,omitempty"`
 }
 
+// SessionLeft is the budget a session may spend, the headroom SessionFunded
+// reads: what the card has left less the gate reserve held for its gates.
+func (f CaseFacts) SessionLeft() float64 { return policy.SessionHeadroom(f.LeftEUR, f.ReserveEUR) }
+
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
@@ -115,7 +120,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
-		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
+		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
 		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
 	if Final(t.Status) {
 		f.Final = t.Status

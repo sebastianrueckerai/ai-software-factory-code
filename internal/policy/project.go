@@ -60,6 +60,10 @@ var DefaultProject = ProjectDefault{Quota: Quota{CPU: "2", Memory: "4Gi", Storag
 // slot at once when its file sets no work_in_progress.
 const DefaultWorkInProgress = 5
 
+// DefaultSurge is how many sessions beyond work_in_progress a project's
+// resumed cards may hold at once when its file sets no surge.
+const DefaultSurge = 2
+
 // Project is the policy's project_default, else DefaultProject.
 func (d Document) Project() ProjectDefault {
 	if d.ProjectDefault == nil {
@@ -132,6 +136,16 @@ func (t Tree) WorkInProgressOf(repository string) int {
 		return p.WorkInProgress
 	}
 	return DefaultWorkInProgress
+}
+
+// SurgeOf is how many live sandboxes beyond work_in_progress a resumed
+// card of repository may start: its project file's surge, else the
+// default. A surge of 0 is a bound with no overshoot.
+func (t Tree) SurgeOf(repository string) int {
+	if _, p, ok := t.ProjectOf(repository); ok && p.Surge != nil {
+		return *p.Surge
+	}
+	return DefaultSurge
 }
 
 // ApproversOf are the approvers of repository's project: its file's,
@@ -283,6 +297,11 @@ type ProjectConfig struct {
 	// or queued and admitted); a queued card starts only under it. Absent:
 	// the default, 5.
 	WorkInProgress int `yaml:"work_in_progress,omitempty" json:"work_in_progress,omitempty"`
+	// Surge is how many sessions beyond work_in_progress a card back from a
+	// wait (an answer, an approval, a dependency, a fund) may start: it
+	// starts while the live count is under work_in_progress plus surge, else
+	// it waits queued. Absent: the default, 2. 0 allows no overshoot.
+	Surge *int `yaml:"surge,omitempty" json:"surge,omitempty"`
 	// Model runs a coding card's first session on Models.Stronger instead
 	// of the ladder's first rung; the only accepted value is "stronger".
 	// Absent: a coding card starts on the first rung. The planner and
@@ -641,6 +660,9 @@ func (p ProjectConfig) Validate(name string) error {
 	}
 	if p.WorkInProgress < 0 {
 		bad("work_in_progress %d: a count of cards", p.WorkInProgress)
+	}
+	if p.Surge != nil && *p.Surge < 0 {
+		bad("surge %d: a count of cards", *p.Surge)
 	}
 	for _, u := range p.Notify {
 		if !forgejoLogin.MatchString(u) {

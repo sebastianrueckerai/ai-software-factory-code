@@ -3416,6 +3416,19 @@ func TestBoardCardShowsWaitingOn(t *testing.T) {
 	}
 }
 
+// A card queued for a work slot reads how many wait ahead of it and the
+// live count.
+func TestBoardCardShowsSlotWait(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-s", Kind: "agent", Status: "queued", Track: "direct", Objective: "waits for room",
+		Repository: "sf/code", IssueNumber: 7}, SlotWait: "waits for a slot, 2 ahead (7 live)"}}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?view=wide", nil), ck).Body.String()
+	if c := col(t, body, "Queued"); !strings.Contains(c, `<span class="chip waiting">waits for a slot, 2 ahead (7 live)</span>`) {
+		t.Fatalf("Queued column = %s, want the slot wait", c)
+	}
+}
+
 // A card waiting in its project's merge queue reads how many entries are
 // ahead of it and since when it waits; a card held out of the queue
 // (QueueAhead -1) waits after the open plan.

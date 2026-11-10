@@ -297,8 +297,9 @@ func TestEscalateOpensItsCaseBeforeItsFace(t *testing.T) {
 }
 
 // A budget floor's case carries the money: 0.30 EUR an opening needs less
-// the 0.15 left of 3 EUR with 2.85 spent is 0.15 EUR, which buys one
-// session on the card's model.
+// what a session may spend, the 0.15 left of 3 EUR with 2.85 spent less
+// the 0.40 gate reserve, -0.25, is 0.55 EUR, which buys one session on
+// the card's model.
 func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	g := newTripRig(t, "success")
 	if _, err := g.s.db.ExecContext(context.Background(), `UPDATE tasks SET spent_eur = 2.85, model_alias = 'factory/small' WHERE id = 't1'`); err != nil {
@@ -307,7 +308,7 @@ func TestOpenTripCarriesTheMoneyFact(t *testing.T) {
 	out := g.trip(t, budgetRefused+": 0.150 EUR of the 3.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR")
 
 	c := caseByID(t, g.s, out.CaseID)
-	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.85, NeedEUR: 0.15, Buys: "one session on factory/small"}
+	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.85, NeedEUR: 0.55, Buys: "one session on factory/small"}
 	if c.Kind != CaseBudgetFloor || c.Money == nil || *c.Money != want || out.Comment != 501 {
 		t.Fatalf("case %+v, money %+v; want the budget floor at the human with %+v", c, c.Money, want)
 	}
