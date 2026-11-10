@@ -686,8 +686,9 @@ type accReply struct {
 
 // accGateway answers every chat call with the reply the test set last.
 type accGateway struct {
-	mu    sync.Mutex
-	reply accReply
+	mu     sync.Mutex
+	reply  accReply
+	inputs []string // each call's user message
 }
 
 func (g *accGateway) answer(r accReply) {
@@ -697,13 +698,22 @@ func (g *accGateway) answer(r accReply) {
 }
 
 func (g *accGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	g.mu.Lock()
-	reply := g.reply
-	g.mu.Unlock()
 	if r.URL.Path != "/v1/chat/completions" {
 		http.NotFound(w, r)
 		return
 	}
+	var body struct {
+		Messages []struct {
+			Content string `json:"content"`
+		} `json:"messages"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&body)
+	g.mu.Lock()
+	reply := g.reply
+	if n := len(body.Messages); n > 0 {
+		g.inputs = append(g.inputs, body.Messages[n-1].Content)
+	}
+	g.mu.Unlock()
 	if reply.status != 0 {
 		w.Header().Set(gwhdr.HeaderDecision, reply.decision)
 		w.WriteHeader(reply.status)

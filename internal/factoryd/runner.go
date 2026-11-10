@@ -1190,7 +1190,7 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 
 // costState assembles the cost and state block from the store: the task
 // row's settled figures and status, and the model-call and token totals of
-// its audit rows. Never from the agent.
+// its audit rows. Never from the agent; nil when the totals cannot be read.
 func (r *Runner) costState(ctx context.Context, t Task) *CostState {
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
@@ -1198,7 +1198,7 @@ func (r *Runner) costState(ctx context.Context, t Task) *CostState {
 	totals, err := r.store.TaskCallTotals(ctx, t.ID)
 	if err != nil {
 		log.Printf("task %s: read the call totals: %v", t.ID, err)
-		totals = TaskCallTotals{}
+		return nil
 	}
 	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, RemainingEUR: t.BudgetEUR - t.SpentEUR,
 		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,
