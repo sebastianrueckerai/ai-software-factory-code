@@ -177,7 +177,7 @@ func (r *Runner) SuperviseGate(ctx context.Context, taskID string, in GateSuperv
 
 // rollChecksLine is the one-line state of a roll task's checks at a trip:
 // the combined status and its jobs by state (green, failed, errored,
-// warning, running), or why they are unreadable, scrubbed.
+// warning, skipped, running), or why they are unreadable, scrubbed.
 func (r *Runner) rollChecksLine(ctx context.Context, t Task, in GateSupervision) string {
 	repo, err := SplitRepo(t.Repository)
 	sha := ""
@@ -194,7 +194,7 @@ func (r *Runner) rollChecksLine(ctx context.Context, t Task, in GateSupervision)
 		return "checks unreadable: " + redact.New().String(err.Error())
 	}
 	line := "checks: combined status " + cs.State
-	for _, g := range []struct{ label, state string }{{"green", "success"}, {"failed", "failure"}, {"errored", "error"}, {"warning", "warning"}, {"running", "pending"}} {
+	for _, g := range []struct{ label, state string }{{"green", "success"}, {"failed", "failure"}, {"errored", "error"}, {"warning", "warning"}, {"skipped", "skipped"}, {"running", "pending"}} {
 		var names []string
 		for _, s := range cs.Statuses {
 			if s.State == g.state {

@@ -503,3 +503,51 @@ func TestPinnedBoundOfTheChecksWaitIsTheWaitsRow(t *testing.T) {
 		t.Fatalf("waits.checks unset: bound = %s, want 50m0s", got)
 	}
 }
+
+// flakyTasks is a store whose task read fails its first n calls.
+type flakyTasks struct {
+	*fakeStore
+	mu sync.Mutex
+	n  int
+}
+
+func (f *flakyTasks) Task(ctx context.Context, id string) (Task, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if f.n > 0 {
+		f.n--
+		return Task{}, false, errors.New("store down")
+	}
+	return f.fakeStore.Task(ctx, id)
+}
+
+// A checks wait whose task cannot be read has no bound to trip at: it does
+// not trip on the policy's, and each retry tick reads the task again. A
+// task that stays unreadable never trips; one that reads on the third tick
+// arms the project's bound (60 ms here) from the attempt's start.
+func TestGateWatchChecksWaitRetriesItsTaskLookup(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fails int
+		trips int
+	}{"never readable": {1 << 30, 0}, "readable on the third try": {2, 1}} {
+		base := newFakeStore()
+		base.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: "demo-app/demo-app"})
+		store := &flakyTasks{fakeStore: base, n: tc.fails}
+		sig := &signalled{}
+		bound := func(ctx context.Context, _ string, _ int64, _ int) time.Duration {
+			if repo, _ := ctx.Value(repositoryKey{}).(string); repo != "demo-app/demo-app" {
+				t.Errorf("%s: bound asked without the task's repository: %q", name, repo)
+			}
+			return 60 * time.Millisecond
+		}
+		env := signallingEnv(&GateWatch{Store: store, Bound: bound, Signal: sig.signal, LookupRetry: 20 * time.Millisecond})
+		env.RegisterActivityWithOptions(func(context.Context, string, string) error { time.Sleep(300 * time.Millisecond); return nil },
+			activity.RegisterOptions{Name: ActivityWaitChecks})
+		if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		if trips, _ := sig.got(); len(trips) != tc.trips || len(base.alertRows()) != tc.trips {
+			t.Fatalf("%s: trips %+v, alerts %d, want %d", name, trips, len(base.alertRows()), tc.trips)
+		}
+	}
+}

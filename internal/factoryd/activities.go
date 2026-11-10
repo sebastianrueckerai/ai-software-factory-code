@@ -1817,7 +1817,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.StrongerAfter = 1
 	}
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
-	tc.ChecksBound = v.ChecksBound(t.Repository)
+	tc.ChecksBound, tc.SupervisorTimeout = v.ChecksBound(t.Repository), v.Document.Limits.SupervisorTimeout
 	tc.NoAudit = !project.Audit
 	tc.Sessions = SessionCap(t, 0)
 	return tc, nil

@@ -2694,17 +2694,17 @@ func TestTaskConfigFromProcess(t *testing.T) {
 		"spec project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "linkshort/linkshort", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "spec", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
 				Stages: pinned.Processes["spec"].Stages, Queue: policy.QueueProject,
-				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, NoAudit: true}},
+				Dependencies: &policy.Dependencies{WaitUntil: "done", OnFailed: "human"}, PlanShape: &shape, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 		"maintenance project": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
-				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, NoAudit: true}},
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 		"a project that switches the audit on": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "sf/ai-software-factory-code", Track: "direct", RequiredCapabilities: []string{policy.ClassCoder}},
 			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
-				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute}},
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute}},
 		"screening report": {Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Parent: "t0", Source: SourceScreening,
 			Track: "direct", RequiredCapabilities: []string{policy.ClassAnalyzer}},
 			TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassAnalyzer, Session: policy.SessionReport,
-				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, NoAudit: true}},
+				Stages: pinned.Processes["maintenance"].Stages, Queue: policy.QueueNone, AgentTime: 20 * time.Minute, ChecksBound: 40 * time.Minute, SupervisorTimeout: 6 * time.Minute, NoAudit: true}},
 	} {
 		t.Run(name, func(t *testing.T) {
 			r, _, _ := newActivityRunner(t, tc.task, &prForgejo{})
