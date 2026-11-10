@@ -689,7 +689,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if err != nil || n.unread != "" {
 		return n.unread, err
 	}
-	req, need := n.req, policy.CeilMicro(n.eur)
+	req, need := n.req, n.eur
 	own, free, err := r.store.Free(ctx, req)
 	if err != nil {
 		return "", err
@@ -756,7 +756,8 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 // session's opening calls as the newest recorded openings made them, and
 // at least the floor of the model's rung. Beside the amount it keeps the
 // hold request, the call it is for, how it was measured and what an
-// attempt short of it meets. A price that cannot be read leaves unread
+// attempt short of it meets. The amount is rounded up to the micro-euro,
+// the grain the stop prints and every admission compares at. A price that cannot be read leaves unread
 // the refusal that names it, and no amount.
 type attemptNeed struct {
 	req                         policy.HoldRequest
@@ -833,7 +834,7 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 				"a session started now would run out of money before its work is done"
 		}
 	}
-	return attemptNeed{req: req, eur: need, call: call, measure: measure, then: then}, nil
+	return attemptNeed{req: req, eur: policy.CeilMicro(need), call: call, measure: measure, then: then}, nil
 }
 
 // CapCheck is a wait on the cap Decision refused: Turned says its period

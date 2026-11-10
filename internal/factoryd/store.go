@@ -176,7 +176,7 @@ func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 func (t Task) EnforcedSpent() float64 { return t.SpentEUR + t.HeldEUR }
 
 // Left is the budget the caps and the floor leave the card.
-func (t Task) Left() float64 { return t.BudgetEUR - t.EnforcedSpent() }
+func (t Task) Left() float64 { return policy.Left(t.BudgetEUR, t.SpentEUR, t.HeldEUR) }
 
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics

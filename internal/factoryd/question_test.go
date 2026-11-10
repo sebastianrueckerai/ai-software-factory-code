@@ -821,3 +821,12 @@ func TestFundRaiseIsZeroWhenTheRoomCoversTheNeed(t *testing.T) {
 		t.Errorf("FundRaise = %v, want 0.01", got)
 	}
 }
+
+// A room above the need needs no raise either: 1.00 - 0.40 = 0.60 covers
+// 0.30, and a raise of -0.30 is none.
+func TestFundRaiseIsZeroWhenTheRoomExceedsTheNeed(t *testing.T) {
+	reason := budgetRefused + ": Raise the budget.\nThe card spent 0.00 EUR of its 1.00 EUR budget, and a session on factory/small needs 0.300000 EUR."
+	if got := FundRaise(reason, 1, 0.4); got != 0 {
+		t.Errorf("FundRaise = %v, want 0", got)
+	}
+}

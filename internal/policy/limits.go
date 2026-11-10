@@ -29,6 +29,12 @@ func RoundMicro(x float64) float64 { return math.Round(x*1e6) / 1e6 }
 // as itself: a price of 0.30 stays 0.30 whatever noise its product left.
 func CeilMicro(x float64) float64 { return math.Ceil(x*1e6-1e-6) / 1e6 }
 
+// Left is the budget a card has left after its spend and its holds, budget
+// less the sum of the two, at the micro-euro. The fund's floor (TaskFree),
+// the ask and the console (Task.Left) all read it here, so each reads one
+// figure of one card whatever order its floats arrive in.
+func Left(budget, spent, held float64) float64 { return RoundMicro(budget - (spent + held)) }
+
 // SessionHeadroom is what a session may spend of left, the EUR a card has
 // free: left less the gate reserve, rounded to the micro-euro. It is
 // negative once the gates spent into the reserve. Every admission reads

@@ -69,6 +69,9 @@ func TestTheFirstRaiseOpensTheSessionOnEveryCent(t *testing.T) {
 					if err != nil {
 						t.Fatal(err)
 					}
+					if own, _, err := s.Free(ctx, policy.HoldRequest{TaskID: "t-grid"}); err != nil || own.Free() != card.Left() {
+						t.Fatalf("%s budget %d spent %d hold %v: the floor reads %v free, the ask %v: %v", model, budget, spent, hold, own.Free(), card.Left(), err)
+					}
 					q := budgetQuestion(why, r.questionFacts(ctx, card, why))
 					raise, err := strconv.ParseFloat(strings.TrimPrefix(q.Choices[0].Value, AnswerFund+":"), 64)
 					if err != nil || !strings.HasPrefix(q.Choices[0].Value, AnswerFund+":") {

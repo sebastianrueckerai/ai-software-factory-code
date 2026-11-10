@@ -645,23 +645,23 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 	return t, f, nil
 }
 
-// TaskFree is a task's own headroom: its budget less its spend before any
-// hold (Headroom), and its outstanding holds, Held EUR in Holds of them,
+// TaskFree is a task's own headroom: its Budget and its Spent EUR, and its
+// outstanding holds, Held EUR in Holds of them,
 // the earliest expiring at Expires (zero without one). Status is the
 // task's, which decides whether it may take a hold. Spent is the card's
 // spent EUR, which a money stop names beside the gate reserve.
 type TaskFree struct {
-	Status   string
-	Headroom float64
-	Held     float64
-	Spent    float64
-	Holds    int
-	Expires  time.Time
+	Status  string
+	Budget  float64
+	Held    float64
+	Spent   float64
+	Holds   int
+	Expires time.Time
 }
 
-// Free is what the task's next call fits into: its headroom after every
-// outstanding hold.
-func (t TaskFree) Free() float64 { return t.Headroom - t.Held }
+// Free is what the task's next call fits into: its budget less its spend
+// and every outstanding hold, as Left counts it.
+func (t TaskFree) Free() float64 { return Left(t.Budget, t.Spent, t.Held) }
 
 // readTaskFree reads taskID's own headroom and outstanding holds in one
 // statement: ReadFree's task figures.
@@ -669,9 +669,9 @@ func readTaskFree(ctx context.Context, q rowQuerier, taskID string) (TaskFree, e
 	var t TaskFree
 	var expires sql.NullTime
 	err := q.QueryRowContext(ctx,
-		`SELECT status, (budget_eur - spent_eur)::float8, h.eur, h.n, h.expires, spent_eur::float8
+		`SELECT status, budget_eur::float8, h.eur, h.n, h.expires, spent_eur::float8
 		 FROM tasks, (SELECT COALESCE(sum(eur), 0)::float8 AS eur, count(*) AS n, min(expires_at) AS expires FROM holds WHERE task_id = $1) h
-		 WHERE id = $1`, taskID).Scan(&t.Status, &t.Headroom, &t.Held, &t.Holds, &expires, &t.Spent)
+		 WHERE id = $1`, taskID).Scan(&t.Status, &t.Budget, &t.Held, &t.Holds, &expires, &t.Spent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskFree{}, fmt.Errorf("hold: no task row for %s", taskID)
 	}

@@ -4059,3 +4059,33 @@ func TestReplanTextOfAnAgentCutKeepsItsParts(t *testing.T) {
 		t.Fatalf("cut text = %q, want %q", got, want)
 	}
 }
+
+// The floor's need is rounded up to the micro-euro where it is read, so the
+// stop, the ask and the case's money fact name one fund. A cheap floor of
+// 0.3000004 reads 0.300001; at a room of 1.00 - 0.30 - 0.40 = 0.30 the
+// shortfall is 0.000001, which rounds up to the cent: 0.01.
+func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 1, SpentEUR: 0.3, Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3000004
+	r := &Runner{store: store, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+	n, err := r.needOf(ctx, v, store.tasks["t-1"], "factory/small", true)
+	if err != nil || n.eur != 0.300001 {
+		t.Fatalf("need = %v, %v; want 0.300001", n.eur, err)
+	}
+	why, err := r.SessionFunded(ctx, "t-1", "factory/small")
+	if err != nil || !strings.Contains(why, "needs 0.300001 EUR") || !strings.Contains(why, "so a fund of 0.01 EUR opens it") {
+		t.Fatalf("stop = (%q, %v), want the need 0.300001 and a fund of 0.01", why, err)
+	}
+	f := CaseFacts{LeftEUR: store.tasks["t-1"].Left(), ReserveEUR: 0.4, FloorEUR: n.eur}
+	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.01 {
+		t.Fatalf("money = %+v, want the need 0.01, the stop's fund", got)
+	}
+}
