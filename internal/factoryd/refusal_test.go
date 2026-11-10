@@ -160,7 +160,7 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 		t.Fatalf("the heal pass filed a card for the refused issue")
 	}
 	edited(t, in, fj)
-	ended := "The factory made no card for this issue: card #1547, closed, already builds roadmap item 66 of sf/ai-software-factory-code. " +
+	ended := "The factory made no card for this issue: card #1547, closed, still holds roadmap item 66 of sf/ai-software-factory-code. " +
 		"Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
 	if got := fj.bodies(); len(store.tasks) != 1 || len(got) != 2 || !strings.HasPrefix(got[1], ended+"\n\n") {
 		t.Fatalf("after the close: %d cards, comments %q; want the holder only and a second comment: %s", len(store.tasks), got, ended)
@@ -186,8 +186,8 @@ func TestRefusalTextByHolderState(t *testing.T) {
 	for status, want := range map[string]string{
 		"running":   "The factory made no card for this issue: card #1547, running, already builds roadmap item 66 of sf/r. Wait for it to end, or close it. The factory looks at this issue again within a day. " + line,
 		"in-review": "The factory made no card for this issue: card #1547, in review, already builds roadmap item 66 of sf/r. Wait for it to end, or close it. The factory looks at this issue again within a day. " + line,
-		"closed":    "The factory made no card for this issue: card #1547, closed, already builds roadmap item 66 of sf/r. " + line,
-		"failed":    "The factory made no card for this issue: card #1547, failed, already builds roadmap item 66 of sf/r. " + line,
+		"closed":    "The factory made no card for this issue: card #1547, closed, still holds roadmap item 66 of sf/r. " + line,
+		"failed":    "The factory made no card for this issue: card #1547, failed, still holds roadmap item 66 of sf/r. " + line,
 		"done":      "The factory made no card for this issue: card #1547, done, already built roadmap item 66 of sf/r. Change or remove the Roadmap line in this issue's description.",
 		"merged":    "The factory made no card for this issue: card #1547, merged, already built roadmap item 66 of sf/r. Change or remove the Roadmap line in this issue's description.",
 	} {
@@ -382,6 +382,7 @@ func TestAskedRefile(t *testing.T) {
 		"nothing here":                       0,
 		"a refile of #12 in the middle line": 0,
 		"> Refile of #1547":                  0,
+		"Refile of #1546\nRefile of #1547":   1547,
 		"- Refile of #1547":                  1547,
 	} {
 		if got := AskedRefile(body); got != want {
@@ -490,8 +491,8 @@ func TestPGStoreIntakeRefusals(t *testing.T) {
 	}
 	got, err := s.IntakeRefusals(ctx, "sf/r", 5)
 	if err != nil || len(got) != 2 || got[0].Key != "roadmap t-b" || got[1].Key != "roadmap t-a" ||
-		got[1].Reason != "first" || got[1].BodySHA != "h2" || got[0].BodySHA != "h1" || got[1].At.Before(got[0].At) {
-		t.Fatalf("refusals = %+v, %v; want t-b then t-a (refused again last), t-a keeping its first reason and taking the new hash", got, err)
+		got[1].Reason != "again" || got[1].BodySHA != "h2" || got[0].BodySHA != "h1" || got[1].At.Before(got[0].At) {
+		t.Fatalf("refusals = %+v, %v; want t-b then t-a (refused again last), t-a holding the current reason (again) and the new hash", got, err)
 	}
 	if got, err := s.IntakeRefusals(ctx, "sf/r", 6); err != nil || len(got) != 0 {
 		t.Fatalf("another issue's refusals = %+v, %v", got, err)

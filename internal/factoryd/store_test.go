@@ -786,7 +786,7 @@ func (s *fakeStore) RecordRefusal(ctx context.Context, repository string, issue 
 		s.refusals = map[string][]IntakeRefusal{}
 	}
 	if i := slices.IndexFunc(s.refusals[k], func(r IntakeRefusal) bool { return r.Key == key }); i >= 0 {
-		s.refusals[k][i].At, s.refusals[k][i].BodySHA = time.Now(), bodySHA
+		s.refusals[k][i].At, s.refusals[k][i].BodySHA, s.refusals[k][i].Reason = time.Now(), bodySHA, reason
 		return nil
 	}
 	s.refusals[k] = append(s.refusals[k], IntakeRefusal{Key: key, Reason: reason, BodySHA: bodySHA, At: time.Now()})

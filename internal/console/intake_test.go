@@ -205,8 +205,8 @@ func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 func TestRoadmapRefusalByHolderState(t *testing.T) {
 	for _, c := range []struct{ status, want string }{
 		{"running", "Card t-h (#1547, running) already builds roadmap item 66. Wait for it to end, or close it and file again with refile_of 1547."},
-		{"closed", "Card t-h (#1547, closed) already builds roadmap item 66. File again with refile_of 1547."},
-		{"failed", "Card t-h (#1547, failed) already builds roadmap item 66. File again with refile_of 1547."},
+		{"closed", "Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547."},
+		{"failed", "Card t-h (#1547, failed) still holds roadmap item 66. File again with refile_of 1547."},
 		{"done", "Card t-h (#1547, done) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
 		{"merged", "Card t-h (#1547, merged) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
 	} {
@@ -247,16 +247,20 @@ func TestNewCardRefileCheckReadsWhatTheIntakeReads(t *testing.T) {
 	}
 	const head = `{"title":"Refile 66","track":"direct","track_reason":"the pull","roadmap_item":66,`
 	wrong := file(head + `"body":"Again.\n\nAcceptance:\n- It files","refile_of":1546}`)
-	if !strings.Contains(wrong[0], `Refused: Card t-h (#1547, closed) already builds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+	if !strings.Contains(wrong[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
 		t.Fatalf("a wrong refile_of = %v, issues %v", wrong, r.fg.issues)
 	}
-	// the body's own line comes first in the issue, so it is the one the intake reads
-	own := file(head + `"body":"Again.\n\nRefile of #1546\n\nAcceptance:\n- It files","refile_of":1547}`)
-	if !strings.Contains(own[0], "Refused: Card t-h") || len(r.fg.issues) != 0 {
-		t.Fatalf("a body line of another issue = %v, issues %v", own, r.fg.issues)
+	// the last line is the one the intake reads: the field's, after a body line of another issue
+	own := file(head + `"body":"Again.\n\nRefile of #1547\n\nAcceptance:\n- It files","refile_of":1546}`)
+	if !strings.Contains(own[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+		t.Fatalf("a body line of the right issue before a wrong field = %v, issues %v", own, r.fg.issues)
 	}
-	file(head + `"body":"Again.\n\nAcceptance:\n- It files","refile_of":1547}`)
+	file(head + `"body":"Again.\n\nRefile of #1546\n\nAcceptance:\n- It files","refile_of":1547}`)
 	if len(r.fg.issues) != 1 {
-		t.Fatalf("the refile of the closed holder filed %d issues, want 1", len(r.fg.issues))
+		t.Fatalf("an older refile line before the field filed %d issues, want 1", len(r.fg.issues))
+	}
+	file(head + `"body":"Again.\n\nRefile of #1547\n\nAcceptance:\n- It files"}`)
+	if len(r.fg.issues) != 2 {
+		t.Fatalf("a body's own refile line filed %d issues in all, want 2", len(r.fg.issues))
 	}
 }

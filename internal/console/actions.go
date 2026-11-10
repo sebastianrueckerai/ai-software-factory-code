@@ -351,7 +351,7 @@ func roadmapRefusal(holder factoryd.Task, item int) string {
 	case "open":
 		return head + fmt.Sprintf(" Wait for it to end, or close it and file again with refile_of %d.", holder.IssueNumber)
 	case "ended":
-		return head + fmt.Sprintf(" File again with refile_of %d.", holder.IssueNumber)
+		return strings.Replace(head, "already builds", "still holds", 1) + fmt.Sprintf(" File again with refile_of %d.", holder.IssueNumber)
 	}
 	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item and refile_of."
 }

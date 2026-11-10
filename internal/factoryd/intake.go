@@ -2097,10 +2097,7 @@ func (in *Intake) refusalText(r *Refusal) string {
 	if scrub == nil {
 		scrub = redact.New()
 	}
-	holder := r.Holder
-	if r.HolderIssue != 0 {
-		holder = fmt.Sprintf("#%d", r.HolderIssue)
-	}
+	holder := fmt.Sprintf("#%d", r.HolderIssue)
 	state := strings.ReplaceAll(r.Status, "-", " ")
 	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description; a comment does not count.", r.HolderIssue)
 	var text string
@@ -2109,7 +2106,7 @@ func (in *Intake) refusalText(r *Refusal) string {
 		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already builds roadmap item %d of %s. "+
 			"Wait for it to end, or close it. The factory looks at this issue again within a day. %s", holder, state, r.Item, r.Repository, line)
 	case "ended":
-		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already builds roadmap item %d of %s. %s", holder, state, r.Item, r.Repository, line)
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, still holds roadmap item %d of %s. %s", holder, state, r.Item, r.Repository, line)
 	default:
 		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already built roadmap item %d of %s. "+
 			"Change or remove the Roadmap line in this issue's description.", holder, state, r.Item, r.Repository)

@@ -71,25 +71,26 @@ func IssueSHA(title, body string) string {
 
 var refileOf = regexp.MustCompile(`(?im)^[ \t]*(?:[-*][ \t]+)?refile of #(\d+)\b`)
 
-// AskedRefile is the number in the body's line "Refile of #<n>", the
+// AskedRefile is the number in the body's last line "Refile of #<n>", the
 // closed or failed card whose roadmap item this issue takes over; 0
-// without one.
+// without one. The last one wins: a line copied from an older issue does
+// not hide the one the filer adds below it.
 func AskedRefile(body string) int64 {
-	m := refileOf.FindStringSubmatch(body)
-	if m == nil {
+	all := refileOf.FindAllStringSubmatch(body, -1)
+	if all == nil {
 		return 0
 	}
-	n, _ := strconv.ParseInt(m[1], 10, 64)
+	n, _ := strconv.ParseInt(all[len(all)-1][1], 10, 64)
 	return n
 }
 
 // RecordRefusal keeps reason as issue's refusal under key, with the hash
-// of the issue's text; a second record of the key keeps the reason and
-// moves the time and the hash.
+// of the issue's text; a second record of the key holds the current
+// reason, time and hash.
 func (s *PGStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason, bodySHA string) error {
 	_, err := s.db.ExecContext(ctx, `INSERT INTO intake_refusals (repository, issue_number, key, reason, body_sha)
 		VALUES ($1, $2, $3, $4, $5)
-		ON CONFLICT (repository, issue_number, key) DO UPDATE SET at = now(), body_sha = EXCLUDED.body_sha`,
+		ON CONFLICT (repository, issue_number, key) DO UPDATE SET at = now(), body_sha = EXCLUDED.body_sha, reason = EXCLUDED.reason`,
 		repository, issue, key, reason, bodySHA)
 	return err
 }
