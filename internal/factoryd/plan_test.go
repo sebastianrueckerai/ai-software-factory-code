@@ -5229,6 +5229,8 @@ func TestFilePlanRefusesADropsMergedOmission(t *testing.T) {
 
 // The plan's comment names the cards its revision takes off main.
 func TestPlanCommentNamesTakeOffMain(t *testing.T) {
+	p := testPlan()
+	p.TakeOffMain = []string{"old-api", "old|ui"}
 	if body := planComment(Task{ID: "t-plan", Objective: "Link shortener"}, 2, p, nil); !strings.Contains(body, "\nTakes off main: old-api, old\\|ui.\n") {
 		t.Fatalf("the comment does not name take_off_main:\n%s", body)
 	}
