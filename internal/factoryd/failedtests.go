@@ -117,12 +117,12 @@ func (s *failScan) line(raw string) {
 		}
 		s.running = false
 	}
-	switch trimmed := strings.TrimSpace(line); {
-	case timeoutLine.MatchString(trimmed):
-		if d := timeoutLine.FindStringSubmatch(trimmed)[1]; durationRe.MatchString(d) {
+	switch {
+	case timeoutLine.MatchString(line):
+		if d := timeoutLine.FindStringSubmatch(line)[1]; durationRe.MatchString(d) {
 			s.timeout = d
 		}
-	case s.timeout != "" && trimmed == "running tests:":
+	case s.timeout != "" && strings.TrimSpace(line) == "running tests:":
 		s.running = true
 	case failedTestLine.MatchString(line):
 		if name := failedTestLine.FindStringSubmatch(line)[1]; testNameRe.MatchString(name) {
@@ -208,6 +208,11 @@ func (r *Runner) failedTests(ctx context.Context, t Task, repo Repo, sha string)
 		jobs, err := r.runJobs(ctx, token, repo, n)
 		if err != nil {
 			log.Printf("task %s: failed tests: run %d: %v", t.ID, n, err)
+			kind := failKindLogMissing
+			if timedOut(err) {
+				kind = failKindLogSlow
+			}
+			out, more = appendFailed(out, more, FailedTest{Job: r.Scrub.String(s.Context), Kind: kind})
 			continue
 		}
 		for _, j := range jobs {
@@ -225,14 +230,14 @@ func (r *Runner) failedTests(ctx context.Context, t Task, repo Repo, sha string)
 			more += scan.more
 			kind := ""
 			switch {
-			case err == nil && len(scan.out) == 0 && scan.more == 0 && j.Status == "cancelled":
-				kind = failKindCancelled
-			case err == nil && len(scan.out) == 0 && scan.more == 0:
-				kind = failKindNoneInLog
 			case errors.Is(err, ErrLogCut):
 				kind = failKindLogCut
 			case err != nil && timedOut(err):
 				kind = failKindLogSlow
+			case len(scan.out) == 0 && scan.more == 0 && j.Status == "cancelled":
+				kind = failKindCancelled
+			case err == nil && len(scan.out) == 0 && scan.more == 0:
+				kind = failKindNoneInLog
 			case err != nil:
 				kind = failKindLogMissing
 			}

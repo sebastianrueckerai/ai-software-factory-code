@@ -310,21 +310,105 @@ func TestRequestApprovalNamesCancelledCutAndTokenJobs(t *testing.T) {
 	}
 }
 
-// A log that stalls mid-read costs its job the rest of the list, not the
-// request: the lines before the stall are kept, the entry says the log
-// could not be read in time, and the merge request opens.
-func TestRequestApprovalOpensWhenALogStalls(t *testing.T) {
+// The red runs share one budget: two stalled logs end together at the
+// budget, long before one read's own timeout, and both jobs say their log
+// could not be read in time, the lines before the stall kept.
+func TestRequestApprovalOpensWhenLogsStall(t *testing.T) {
 	saved := failedTestsBudget
 	failedTestsBudget = 300 * time.Millisecond
 	t.Cleanup(func() { failedTestsBudget = saved })
-	r, fj := redJobsRig(t, []ActionJob{{ID: 41, Name: "test", Status: "failure", Attempt: 1}}, nil)
-	fj.logStall = map[string]string{"41/1": logLines("--- FAIL: TestEarly (0.00s)", "FAIL\texample.com/p\t1s")}
+	r, fj := redJobsRig(t, []ActionJob{
+		{ID: 41, Name: "test", Status: "failure", Attempt: 1},
+		{ID: 42, Name: "security", Status: "failure", Attempt: 1},
+	}, nil)
+	fj.logStall = map[string]string{"41/1": logLines("--- FAIL: TestEarly (0.00s)", "FAIL\texample.com/p\t1s"), "42/1": ""}
+	start := time.Now()
 	spec := requestRed(t, r, true)
+	if took := time.Since(start); took > logScanTimeout/4 {
+		t.Fatalf("the request took %v with two stalled logs; the shared budget is %v", took, failedTestsBudget)
+	}
 	want := []FailedTest{
 		{Job: "test", Test: "TestEarly", Package: "example.com/p", Kind: "failed"},
 		{Job: "test", Kind: "its log could not be read in time"},
+		{Job: "security", Kind: "its log could not be read in time"},
 	}
 	if !reflect.DeepEqual(spec.FailedTests, want) {
 		t.Fatalf("entries %+v, want %+v", spec.FailedTests, want)
+	}
+}
+
+// twoRunsRig is a head whose failing checks sit in runs 7 and 8, each with
+// one red job; run 8 is listed unless unlisted.
+func twoRunsRig(t *testing.T, unlisted bool) (*Runner, *prForgejo) {
+	t.Helper()
+	two := statusBody("failure",
+		[4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "x"},
+		[4]string{"failure", "pr / smoke (pull_request)", "/sf/repo/actions/runs/8/jobs/0", "x"})
+	r, fj, _ := killedRig(t, []string{two},
+		[]ActionJob{{ID: 12, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 13, Name: "smoke", Status: "failure", Attempt: 1}})
+	fj.wholeLogs = true
+	fj.jobLogs["12/1"] = logLines("--- FAIL: TestEarly (0.00s)", "FAIL\texample.com/p\t1s")
+	fj.jobLogs["13/1"] = logLines("--- FAIL: TestSmoke (0.00s)", "FAIL\texample.com/s\t1s")
+	if !unlisted {
+		fj.runs = append(fj.runs, ActionRun{ID: 80, Index: 8, Status: "failure"})
+	}
+	return r, fj
+}
+
+// A run whose jobs cannot be listed is named by its check, not dropped:
+// "log not readable" for a listing that fails, "could not be read in
+// time" when the budget a stalled log spent is gone.
+func TestRequestApprovalNamesARunItCannotList(t *testing.T) {
+	r, _ := twoRunsRig(t, true)
+	spec := requestRed(t, r, true)
+	want := []FailedTest{
+		{Job: "test", Test: "TestEarly", Package: "example.com/p", Kind: "failed"},
+		{Job: "pr / smoke (pull_request)", Kind: "log not readable"},
+	}
+	if !reflect.DeepEqual(spec.FailedTests, want) {
+		t.Fatalf("entries %+v, want %+v", spec.FailedTests, want)
+	}
+
+	saved := failedTestsBudget
+	failedTestsBudget = 300 * time.Millisecond
+	t.Cleanup(func() { failedTestsBudget = saved })
+	r, fj := twoRunsRig(t, false)
+	fj.logStall = map[string]string{"12/1": logLines("--- FAIL: TestEarly (0.00s)", "FAIL\texample.com/p\t1s")}
+	spec = requestRed(t, r, true)
+	want = []FailedTest{
+		{Job: "test", Test: "TestEarly", Package: "example.com/p", Kind: "failed"},
+		{Job: "test", Kind: "its log could not be read in time"},
+		{Job: "pr / smoke (pull_request)", Kind: "its log could not be read in time"},
+	}
+	if !reflect.DeepEqual(spec.FailedTests, want) {
+		t.Fatalf("after a stall: entries %+v, want %+v", spec.FailedTests, want)
+	}
+}
+
+// A cancelled job whose log is missing is still "cancelled".
+func TestRequestApprovalNamesACancelledJobWithoutALog(t *testing.T) {
+	r, fj := redJobsRig(t, []ActionJob{{ID: 51, Name: "build", Status: "cancelled", Attempt: 1}}, nil)
+	fj.logStatus = map[string]int{"51/1": http.StatusNotFound}
+	spec := requestRed(t, r, true)
+	if want := []FailedTest{{Job: "build", Kind: "cancelled"}}; !reflect.DeepEqual(spec.FailedTests, want) {
+		t.Fatalf("entries %+v, want %+v", spec.FailedTests, want)
+	}
+}
+
+// A go test timeout a failing test's message echoes, indented, is no
+// timeout of this job: the tests it names did not run here.
+func TestFailScanIgnoresAnEchoedTimeout(t *testing.T) {
+	s := scanOf(t, logLines(
+		"--- FAIL: TestEchoesASandboxTimeout (0.00s)",
+		"    c_test.go:9: the sandbox said:",
+		"        panic: test timed out after 10m0s",
+		"        \trunning tests:",
+		"        \t\tTestSandboxOnly (10m0s)",
+		"FAIL\texample.com/c\t0.01s",
+	))
+	want := []FailedTest{{Test: "TestEchoesASandboxTimeout", Package: "example.com/c", Kind: "failed"}}
+	if !reflect.DeepEqual(s.out, want) {
+		t.Fatalf("entries %+v, want %+v", s.out, want)
 	}
 }
