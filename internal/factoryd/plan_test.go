@@ -585,7 +585,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 			`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-			"take_off_main: the keys of merged cards whose work comes off main; a card of a later revision that lands it again names it in from.",
+			"take_off_main: only work that must leave main, the keys of merged cards whose work comes off main; a card of a later revision that lands it again names it in from. A done card leaves the card list by itself, with no field: never name one for that.",
 		`"rung_reason": "one line"}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `,
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
 	} {
@@ -5069,8 +5069,10 @@ func TestCardLineBound(t *testing.T) {
 // integration card merged on main at revision 1, and a person's replan
 // pending; revision 2, which leaves both out, adds links-api-2 and
 // integration-2 and names takeOff in take_off_main, is filed with the
-// file_plan tool and its result answered. groupRevertBranch is a stub that
-// records the merges of each call.
+// file_plan tool and its result answered. links_crud, which links-api
+// met, comes off main with it, so revision 2 re-files it as links_crud_2
+// under a new id. groupRevertBranch is a stub that records the merges of
+// each call.
 func dropRig(t *testing.T, takeOff ...string) (*Runner, *fakeStore, *planForgejo, *[][]string, PlanResult) {
 	t.Helper()
 	ctx := context.Background()
@@ -5090,6 +5092,15 @@ func dropRig(t *testing.T, takeOff ...string) (*Runner, *fakeStore, *planForgejo
 		t.Fatal(err)
 	}
 	p := testPlan()
+	p.Criteria[0].ID, p.Criteria[0].Replaces = "links_crud_2", "links_crud"
+	for _, c := range p.Cards {
+		for i, it := range c.Acceptance {
+			if it.Criterion == "links_crud" {
+				it.Criterion = "links_crud_2"
+				c.Acceptance[i] = it
+			}
+		}
+	}
 	p.Cards[1].Key, p.Cards[1].Title = "links-api-2", "Links API, again"
 	p.Cards[2].DependsOn = []string{"links-api-2"}
 	p.Cards[3].Key = "integration-2"
@@ -5218,8 +5229,6 @@ func TestFilePlanRefusesADropsMergedOmission(t *testing.T) {
 
 // The plan's comment names the cards its revision takes off main.
 func TestPlanCommentNamesTakeOffMain(t *testing.T) {
-	p := testPlan()
-	p.TakeOffMain = []string{"old-api", "old|ui"}
 	if body := planComment(Task{ID: "t-plan", Objective: "Link shortener"}, 2, p, nil); !strings.Contains(body, "\nTakes off main: old-api, old\\|ui.\n") {
 		t.Fatalf("the comment does not name take_off_main:\n%s", body)
 	}
