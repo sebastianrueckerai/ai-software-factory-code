@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"reflect"
 	"runtime"
 	"slices"
 	"strconv"
@@ -1083,7 +1084,7 @@ func TestInterimPushesDoNotOverlap(t *testing.T) {
 	if asked != 1 {
 		t.Fatalf("the pod was asked %d times while the slot was held, want once: the ask comes before the slot", asked)
 	}
-	if out != (wipOutcome{}) {
+	if !reflect.DeepEqual(out, wipOutcome{}) {
 		t.Fatalf("outcome %+v while the slot was held, want a push that waited and gave up", out)
 	}
 	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "queue" {
@@ -1303,7 +1304,7 @@ func TestInterimPushUndeliveredRefusalErrorIsScrubbed(t *testing.T) {
 func TestInterimPushRefusesAStartThatIsNoCommitID(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil)
 	out := runner.interimPush(context.Background(), supervisedTask("t2"), sessionSpec{id: "s-1", startRef: "--upload-pack=x", repo: Repo{Owner: "sf", Name: "repo"}}, "ns", "pod", nil)
-	if out != (wipOutcome{}) || len(serve.wipAuth) != 0 || wipSteps(t, objects, "t2", "wip_push_failed") != 0 {
+	if !reflect.DeepEqual(out, wipOutcome{}) || len(serve.wipAuth) != 0 || wipSteps(t, objects, "t2", "wip_push_failed") != 0 {
 		t.Fatalf("outcome %+v, asks %d: want nothing run", out, len(serve.wipAuth))
 	}
 }
@@ -1924,5 +1925,52 @@ func TestCappedGitTimeoutStartsAfterTheSlot(t *testing.T) {
 	}()
 	if out, err := gitRun(context.Background(), t.TempDir(), "", nil, gitLimits{addressSpace: wipGitMemory}, "--version"); err != nil || !strings.HasPrefix(out, "git version") {
 		t.Fatalf("gitRun = (%q, %v), want it to run after waiting longer than its timeout", out, err)
+	}
+}
+
+// A size trip on a session that holds finished work over the card's
+// bound loses nothing: the interim push lands the whole work although it
+// is over the bound (the end push holds that rule), and the stop names
+// the bound, the size and the files by their changed lines, the largest
+// first. A 350-line a.txt and a 20-line b.txt against a small card's 300.
+func TestSizeTripPushesWorkOverTheBoundInParts(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil,
+		func(dir string) {
+			os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 20)), 0o644)
+			os.WriteFile(filepath.Join(dir, "a.txt"), []byte(strings.Repeat("a\n", 350)), 0o644)
+		})
+	store := runner.store.(*fakeStore)
+	tk := store.tasks["t2"]
+	tk.Kind, tk.Size = "agent", "small"
+	store.tasks["t2"] = tk
+	version := testPolicyVersion()
+	version.Document.Risk.LargeLines = 1000
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		cardDiffLine(250, 120)+"\n"+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if tip == serve.base {
+		t.Fatal("the task branch holds the start alone: the size bound refused the interim push")
+	}
+	if got := wipRun(t, "-C", serve.fork, "diff", "--shortstat", serve.base, tip); !strings.Contains(got, "2 files changed, 370 insertions(+)") {
+		t.Fatalf("the pushed work = %q, want both files whole", got)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_push_failed"); n != 0 {
+		t.Fatalf("wip_push_failed steps = %d, want none", n)
+	}
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	want := "the card's diff is 370 changed lines (added plus deleted), over the 300 its size plans; the work is pushed as the branch's work in progress, its files by changed lines: a.txt 350, b.txt 20"
+	if len(chat.inputs) != 1 || !strings.Contains(chat.inputs[0], want) {
+		t.Fatalf("the ask = %q, want the stop naming the bound, the size and the parts: %q", chat.inputs, want)
+	}
+	if got := checkinFacts(supervisedTask("t2"), sessionSpec{}, wipOutcome{head: tip, parts: []wipPart{{"a.txt", 350}, {"b.txt", 20}}}); !strings.Contains(got, `"wip_files":[{"path":"a.txt","lines":350},{"path":"b.txt","lines":20}]`) {
+		t.Fatalf("facts = %s, want the files with their lines", got)
 	}
 }

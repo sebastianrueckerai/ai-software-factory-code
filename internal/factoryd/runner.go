@@ -943,6 +943,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			wip := r.interimPush(pctx, t, s, ns, podName, workerStop)
 			stopPush()
 			out.wip = cmp.Or(wip.head, out.wip)
+			if trip.Kind == TripSize && wip.head != "" {
+				trip.Detail += "; the work is pushed as the branch's work in progress, its files by changed lines: " + wipPartsText(wip.parts)
+			}
 			if wip.refusal != "" {
 				// a push rule's refusal is a message the agent can act on:
 				// it reaches the running session — a write answers it, so
@@ -960,7 +963,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			lines, started := sup.CardLines(), sup.started
 			go func() {
 				defer close(answered)
-				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip.head)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip)
 			}()
 			for answering := true; answering; {
 				select {
@@ -1186,7 +1189,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			}
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
-			facts: checkinFacts(t, s, ""), ask: &ask}
+			facts: checkinFacts(t, s, wipOutcome{}), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
 		out.Share = share
@@ -1266,7 +1269,7 @@ func cuttable(t Task, s sessionSpec) bool {
 // ask's facts name it. d is the action for the trip switch; ck the
 // conversation's outcome with its record (nil only under no alias); ride
 // says the outcome stops the session and rides SessionResult.CheckIn.
-func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wipHead string) (d Decision, ck *CheckInOutcome, ride bool) {
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wip wipOutcome) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
 	// a handover's next session runs on the stronger rung, or on the
 	// session_model of a plan or report class, which this session runs on
@@ -1288,7 +1291,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wipHead), ask: &ask, parent: tr, live: true}
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wip), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
@@ -1485,13 +1488,17 @@ func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, st
 
 // checkinFacts is the small JSON of the card's facts the runner already
 // holds; the check-in's card_facts answers it after the card's digest.
-// wipHead, when an interim push landed before the conversation, names the
-// head the session's work sits on.
-func checkinFacts(t Task, s sessionSpec, wipHead string) string {
+// wip, when an interim push landed before the conversation, names the
+// head the session's work sits on and the files it holds with their
+// changed lines.
+func checkinFacts(t Task, s sessionSpec, wip wipOutcome) string {
 	facts := map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
 		"attempt": s.attempt, "sessions": s.sessions}
-	if wipHead != "" {
-		facts["wip_head"] = wipHead
+	if wip.head != "" {
+		facts["wip_head"] = wip.head
+		if len(wip.parts) > 0 {
+			facts["wip_files"] = wip.parts
+		}
 	}
 	b, _ := json.Marshal(facts)
 	return string(b)
