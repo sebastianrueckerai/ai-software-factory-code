@@ -2760,13 +2760,15 @@ func TestStaleAttemptStopsSupervisingAfterATakeover(t *testing.T) {
 	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
 	runner.store = &takeoverStore{Store: store, hub: hub, cancel: func() {}, when: "supervise"}
 	runner.tick = 20 * time.Millisecond
-	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs)
+	// the pod asks for its push token after the takeover: the stale attempt
+	// mints none
+	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, pushRequestLine("c1")+"\n"+hangLogs)
 	var app *temporal.ApplicationError
 	if !errors.As(err, &app) || app.Message() != errSuperseded.Error() {
 		t.Fatalf("err = %v, want the session left to the newer attempt", err)
 	}
-	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 {
-		t.Fatalf("deleted pods %v, revoked %v; want the newer attempt's session untouched", kube.deletedPods, hub.revoked)
+	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 || len(writeMints(hub)) != 0 {
+		t.Fatalf("deleted pods %v, revoked %v, write mints %v; want the newer attempt's session untouched", kube.deletedPods, hub.revoked, writeMints(hub))
 	}
 	if l, ok, _ := store.LiveSession(context.Background(), "t6"); !ok || l.Owner != "newer" {
 		t.Fatalf("live session = %+v, %v; want the newer attempt's row", l, ok)
@@ -5698,5 +5700,100 @@ func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
 	}
 	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
 		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)
+	}
+}
+
+// takingChat is a check-in during whose conversation the newer attempt takes
+// the session over; the judge answers a handover, which would stop the pod.
+type takingChat struct {
+	store Store
+	calls atomic.Int32
+}
+
+func (c *takingChat) Call(ctx context.Context, _, _ string, _ CheckinRequest) (CheckinResponse, error) {
+	c.calls.Add(1)
+	c.store.TakeLiveSession(ctx, "t2", "own", "newer")
+	return CheckinResponse{Text: `{"decision":"handover","handover":"stop here"}`}, nil
+}
+
+// An attempt the session is taken from during its check-in does not act on
+// the answer: the pod is the newer attempt's, so it is not stopped, and the
+// stale attempt records no end for the session.
+func TestStaleAttemptTakenOverDuringACheckinStopsNothing(t *testing.T) {
+	runner, hub, kube, _, _, store, objects := liveRig(t)
+	chat := &takingChat{store: store}
+	runner.checkin = chat
+	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, commands(0, 24)+hangLogs)
+	var app *temporal.ApplicationError
+	if chat.calls.Load() != 1 || !errors.As(err, &app) || app.Message() != errSuperseded.Error() {
+		t.Fatalf("check-in calls %d, err %v; want one conversation and the session left to the newer attempt", chat.calls.Load(), err)
+	}
+	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 {
+		t.Fatalf("deleted pods %v, revoked %v; want the newer attempt's session untouched", kube.deletedPods, hub.revoked)
+	}
+	if tl := string(objGet(objects, "sessions/t2/timeline.jsonl")); strings.Contains(tl, `"step":"session_end"`) || strings.Contains(tl, `"step":"checkin"`) {
+		t.Fatalf("timeline = %s, want no end and no decision from the stale attempt", tl)
+	}
+}
+
+// A stale attempt's trip does not even open a check-in, and a wall-clock
+// stop does not delete the pod.
+func TestStaleAttemptTripsAndStopsDoNothing(t *testing.T) {
+	for name, logs := range map[string]string{"repetition": commands(0, 24) + hangLogs, "wall clock": envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()}) + "\n" + hangLogs} {
+		t.Run(name, func(t *testing.T) {
+			runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
+			runner.store = &takeoverStore{Store: store, hub: hub, cancel: func() {}, when: "supervise"}
+			runner.tick = time.Hour
+			setLimits(runner, func(l *policy.Limits) { l.AgentTime = time.Nanosecond })
+			runner.stopWait = 100 * time.Millisecond
+			_, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/small"}, nil, logs)
+			var app *temporal.ApplicationError
+			if !errors.As(err, &app) || app.Message() != errSuperseded.Error() {
+				t.Fatalf("err = %v, want the session left to the newer attempt", err)
+			}
+			if chat.calls != 0 || len(kube.deletedPods) != 0 {
+				t.Fatalf("check-in calls %d, deleted pods %v; want neither", chat.calls, kube.deletedPods)
+			}
+		})
+	}
+}
+
+// A session that ended in this attempt leaves no finished pod for a later
+// attempt to read an old result from, although the row's release failed.
+func TestSessionEndedWithAFailedReleaseLeavesNoFinishedPod(t *testing.T) {
+	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
+	kube := newFakeKube()
+	runner, _, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.store = &failingRelease{Store: store}
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if len(kube.deletedPods) == 0 {
+		t.Fatal("the finished pod survived the failed release: a later attempt would read its old result")
+	}
+}
+
+type failingRelease struct{ Store }
+
+func (failingRelease) ReleaseLiveSession(context.Context, string, string) (bool, error) {
+	return false, errors.New("the store is away")
+}
+
+// An unknown pod status is no dead pod: nothing is deleted or revoked, and
+// the activity fails for Temporal to run again.
+func TestUnknownPodStatusDeletesAndRevokesNothing(t *testing.T) {
+	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	store.PutLiveSession(context.Background(), LiveSession{TaskID: "t6", SessionID: "s-old", Namespace: "ns", Pod: "pod", MessageToken: "tok", Owner: "old"})
+	kube.statusErr = map[string]error{"ns/pod": errors.New("the API server is away")}
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil); err == nil {
+		t.Fatal("the activity went on past an unknown pod status")
+	}
+	if _, ok, _ := store.LiveSession(context.Background(), "t6"); !ok {
+		t.Fatal("the live session row was deleted on an unknown pod status")
+	}
+	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 {
+		t.Fatalf("deleted pods %v, revoked %v; want nothing", kube.deletedPods, hub.revoked)
 	}
 }

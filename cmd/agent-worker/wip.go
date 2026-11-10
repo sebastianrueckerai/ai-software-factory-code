@@ -61,7 +61,12 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		w.mu.Lock()
 		defer w.mu.Unlock()
 		w.started.Add(1)
-		defer w.ended.Add(1)
+		served := false // only an answer that shipped its work ends a hold
+		defer func() {
+			if served {
+				w.ended.Add(1)
+			}
+		}()
 		commit, bundle, done, err := w.stage()
 		if done != nil {
 			// the staging repo outlives the body it answers, and a failed
@@ -76,6 +81,7 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		if commit == "" {
 			// the tree is the start's: there is nothing to ship
 			rw.WriteHeader(http.StatusNoContent)
+			served = true
 			return
 		}
 		fi, err := os.Stat(bundle)
@@ -92,19 +98,40 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		rw.Header().Set(wipCommitHeader, commit)
 		rw.Header().Set("Content-Type", "application/x-git-bundle")
 		rw.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
-		io.Copy(rw, f) // #nosec G104 -- best-effort response write
+		if _, err := io.Copy(rw, f); err == nil {
+			served = true
+		}
 	})
 }
 
 // overBoundHold is the longest a session whose end push the line bound
-// refused holds its endpoint for factoryd's ask of the finished work.
-const overBoundHold = 40 * time.Second
+// refused holds its endpoint for factoryd's ask of the finished work; after
+// a stop it is the grace the pod has left, less overBoundMargin for the
+// result line.
+const (
+	overBoundHold   = 40 * time.Second
+	overBoundMargin = 5 * time.Second
+	// stopGrace is the pod's termination grace (workerTerminationGrace in
+	// internal/factoryd)
+	stopGrace = 60 * time.Second
+)
+
+// holdFor is how long a session holds for the ask: overBoundHold, or after
+// a SIGTERM that came at stopped, the grace left less the margin, which the
+// end push's own time has already eaten from.
+func holdFor(stopped, now time.Time) time.Duration {
+	if stopped.IsZero() {
+		return overBoundHold
+	}
+	return max(0, min(overBoundHold, stopGrace-now.Sub(stopped)-overBoundMargin))
+}
 
 // holdForAsk waits until an ask that began after the since-th is answered,
 // or until d: the result line, which ends the pod, waits behind it. A
 // check-in's ask under way at since may have staged the tree before the
-// agent's last write, so it does not end the wait. Asks run one at a time,
-// so the ask that began after the since-th is the since+1-th to end.
+// agent's last write, so it does not end the wait, and an ask that failed
+// does not either: factoryd asks again inside the hold. Asks run one at a
+// time, so the ask that began after the since-th is the since+1-th to end.
 func (w *wipServe) holdForAsk(since int64, d time.Duration) bool {
 	timeout := time.NewTimer(d)
 	defer timeout.Stop()

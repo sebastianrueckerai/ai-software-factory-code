@@ -192,14 +192,21 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 }
 
 // noteFile counts n edits of path. A file the checkpoint's diff names that
-// no event did is added with no edits and the others keep their place; an
+// no event did is added with no edits at the front of the list, where the
+// bound drops from, so edited files outlive the names a checkpoint adds; an
 // edit moves its file to the end, the one edited last last.
 func (b *digestBuilder) noteFile(path string, n int) {
-	if _, known := b.g.Files[path]; known && n == 0 {
+	_, known := b.g.Files[path]
+	if known && n == 0 {
 		return
 	}
 	b.g.Files[path] += n
-	b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
+	b.files = slices.DeleteFunc(b.files, func(p string) bool { return p == path })
+	if n == 0 {
+		b.files = append([]string{path}, b.files...)
+	} else {
+		b.files = append(b.files, path)
+	}
 	if len(b.files) > digestFiles {
 		delete(b.g.Files, b.files[0])
 		b.files = b.files[1:]

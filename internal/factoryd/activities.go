@@ -1077,7 +1077,13 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	if l, ok, err := r.store.LiveSession(ctx, t.ID); err != nil {
 		return SessionResult{}, named("live session", err)
 	} else if ok {
-		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
+		phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod)
+		if perr != nil && !errors.Is(perr, ErrNotFound) {
+			// an unknown status is no dead pod: nothing is deleted or
+			// revoked, and the activity runs again
+			return SessionResult{}, named("pod status", perr)
+		}
+		if perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
 			// the takeover is a compare-and-set: a row another attempt took
 			// since the read is theirs, and this attempt starts fresh
 			if taken, err := r.store.TakeLiveSession(ctx, t.ID, l.Owner, s.owner); err != nil {
@@ -1145,8 +1151,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	began := rfc3339(startedAt)
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)
 	superseded = out.superseded
-	if errors.Is(err, errSuperseded) {
-		return SessionResult{}, err
+	if out.superseded {
+		// the newer attempt records the session's end: this one writes
+		// nothing more
+		return SessionResult{}, errSuperseded
 	}
 	if err != nil {
 		if errors.Is(err, errWorkerStop) {

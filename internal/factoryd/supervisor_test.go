@@ -343,3 +343,27 @@ func TestDigestCheckpointKeepsTheRecencyOfEdits(t *testing.T) {
 		t.Fatalf("recency order ends %q, want the file edited last still last", d.files[len(d.files)-1])
 	}
 }
+
+// At the bound the names a checkpoint adds are dropped first: forty edited
+// files and a checkpoint of fifty keep every edited file with its count.
+func TestDigestBoundDropsCheckpointNamesBeforeEditedFiles(t *testing.T) {
+	d := newDigestBuilder(time.Unix(1000, 0))
+	for i := range digestFiles {
+		d.add(fileEvent(fmt.Sprintf("e%02d.go", i), "h"), time.Unix(1001+int64(i), 0))
+	}
+	var names []any
+	for i := range digestFiles + 10 {
+		names = append(names, fmt.Sprintf("n%02d.go", i))
+	}
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(50), "insertions": float64(1), "deletions": float64(0)}, "files": names}}, time.Unix(2000, 0))
+	files := d.digest().Files
+	for i := range digestFiles {
+		if files[fmt.Sprintf("e%02d.go", i)] != 1 {
+			t.Fatalf("edited file e%02d.go lost: files = %d, want its edit kept", i, len(files))
+		}
+	}
+	if len(files) != digestFiles {
+		t.Fatalf("%d files, want the bound %d", len(files), digestFiles)
+	}
+}

@@ -2148,3 +2148,28 @@ func TestEndPushRefusedOverTheBoundDuringACheckinTakesTheWork(t *testing.T) {
 		t.Fatal("the refused work was not shipped while the check-in conversation ran")
 	}
 }
+
+// Work the over-bound push could not take is no silent loss: when the slot
+// stays taken past its bound, the result's first finding says the work was
+// not pushed and why, so the case reads it.
+func TestOverBoundWorkThatCannotBePushedIsSaidOnTheResult(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
+	})
+	old := wipSlotWait
+	wipSlotWait = 100 * time.Millisecond
+	interimSlot <- struct{}{}
+	t.Cleanup(func() { wipSlotWait = old })
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		pushRefusedOverTheBound()+resultLine(false, "push failed: "+ErrPushOverBound.Error()))
+	<-interimSlot
+	if err != nil {
+		t.Fatal(err)
+	}
+	if want := overBoundUnpushed + "another interim push held the slot for 100ms"; len(res.Findings) == 0 || res.Findings[0] != want {
+		t.Fatalf("findings = %q, want %q first", res.Findings, want)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+		t.Fatalf("the branch moved to %s although the push could not start", tip)
+	}
+}

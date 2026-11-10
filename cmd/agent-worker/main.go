@@ -26,6 +26,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"syscall"
 	"time"
 
@@ -130,6 +131,11 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	// period runs out.
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
+	var stopSignal atomic.Int64
+	go func() {
+		<-runCtx.Done()
+		stopSignal.CompareAndSwap(0, time.Now().UnixNano())
+	}()
 	endRun := s.tel.phase("run")
 	guard := newWorkflowDirGuard(s.repoDir, s.oc.Message, log)
 	res := s.oc.Run(runCtx, s.brief, guard.wrap(s.emitter(stdout)))
@@ -155,8 +161,14 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 		endPush(pushErr)
 		return commit, pushErr
 	}, s.env.branch, emit)
-	if errors.Is(pushErr, errPushOverBound) && !s.wip.holdForAsk(asked, overBoundHold) {
-		log("factoryd did not ask for the work the line bound refused within %s", overBoundHold)
+	if errors.Is(pushErr, errPushOverBound) {
+		var at time.Time
+		if n := stopSignal.Load(); n != 0 {
+			at = time.Unix(0, n)
+		}
+		if hold := holdFor(at, time.Now()); !s.wip.holdForAsk(asked, hold) {
+			log("factoryd did not take the work the line bound refused within %s", hold)
+		}
 	}
 	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
 	s.writeResult(stdout, res)

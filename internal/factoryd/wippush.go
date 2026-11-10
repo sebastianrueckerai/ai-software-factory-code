@@ -32,6 +32,12 @@ type wipOutcome struct {
 	head    string
 	refusal string
 	parts   wipParts
+	// unpushed says why work the pod held did not reach the branch, when
+	// it did not: the ask failed, the slot was not free in time, the push
+	// failed or was refused
+	unpushed string
+	// askFailed: the pod's answer failed, which asking again may mend
+	askFailed bool
 }
 
 // wipPart is one file of the pushed work and the lines it changes
@@ -102,7 +108,9 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 		// factoryd stopping cuts the ask: its own shutdown is the last
 		// word, and the stop's logs already say it
 		if !errors.Is(err, errWorkerStop) {
-			r.wipFailure(ctx, t, s, "ask", r.Scrub.String(err.Error()))
+			text := r.Scrub.String(err.Error())
+			r.wipFailure(ctx, t, s, "ask", text)
+			return wipOutcome{unpushed: "the ask of the pod failed: " + text, askFailed: true}
 		}
 	case commit == "":
 		// the tree equals the start's: there is nothing to ship
@@ -117,21 +125,26 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 		case interimSlot <- struct{}{}:
 			defer func() { <-interimSlot }()
 		case <-wait.C:
-			r.wipFailureFresh(ctx, t, s, "queue", "another interim push held the slot for "+wipSlotWait.String())
-			return wipOutcome{}
+			text := "another interim push held the slot for " + wipSlotWait.String()
+			r.wipFailureFresh(ctx, t, s, "queue", text)
+			return wipOutcome{unpushed: text}
 		case <-ctx.Done():
-			return wipOutcome{}
+			return wipOutcome{unpushed: "the time left for the push ran out before the slot was free"}
 		}
-		head, parts, err := r.pushWip(ctx, t, s, commit, bundle)
+		// the bundle is in hand, so the pod and the caller's deadline no
+		// longer matter: the push runs to its own bound
+		pushCtx, cancel := context.WithTimeout(context.WithoutCancel(ctx), wipPushBound)
+		defer cancel()
+		head, parts, err := r.pushWip(pushCtx, t, s, commit, bundle)
 		if err != nil {
 			text := r.Scrub.String(err.Error())
 			r.wipFailure(ctx, t, s, "push", text)
 			if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
 				// the rules judged the work itself, and the work can
 				// change: the refusal is the agent's to act on
-				return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text}
+				return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text, unpushed: text}
 			}
-			return wipOutcome{}
+			return wipOutcome{unpushed: text}
 		}
 		r.record(ctx, t.ID, "wip_pushed", map[string]any{"session": s.id, "commit": head})
 		return wipOutcome{head: head, parts: parts}
@@ -321,6 +334,9 @@ func listWipParts(g PushGit, own, start, head string) wipParts {
 
 // The bounds on what a pod ships, all far above any card's real work (a
 // card's diff is bounded at hundreds to a few thousand lines).
+// wipPushBound bounds the push of a bundle already in hand.
+const wipPushBound = 2 * time.Minute
+
 const (
 	// wipPartsMax bounds the files a stop names, wipPartPath each path of
 	// them in bytes.
