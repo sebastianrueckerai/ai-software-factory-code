@@ -460,7 +460,7 @@ var checkinTools = []CheckinTool{
 		Parameters: toolSchema(map[string]any{"query": toolArg("the text to find")}, "query")},
 	{Name: "transcript_read", Description: "read a span of the parent session's record by event number",
 		Parameters: toolSchema(map[string]any{"from": map[string]any{"type": "integer"}, "to": map[string]any{"type": "integer"}}, "from", "to")},
-	{Name: "card_facts", Description: "the card's digest, its steps and flags, then its budget, spend, attempt and sessions", Parameters: toolSchema(nil)},
+	{Name: "card_facts", Description: "the card's digest, its steps and flags, then its budget, spend, attempt and sessions, and the interim push's head when one landed", Parameters: toolSchema(nil)},
 	{Name: "card_step", Description: "one step of the card's digest in full, by the number its line starts with",
 		Parameters: toolSchema(map[string]any{"step": map[string]any{"type": "integer", "minimum": 1, "description": "the step's number"}}, "step")},
 	{Name: "gates", Description: "the gates' full results for the round", Parameters: toolSchema(nil)},

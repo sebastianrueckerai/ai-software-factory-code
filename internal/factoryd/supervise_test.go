@@ -1859,6 +1859,66 @@ func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
 	}
 }
 
+// A message factoryd delivers mid-trip (the interim push's refusal) arms
+// the stuck rule while the trip in hand stays: after the check-in resumes
+// the session, a detector trip with no write since is stuck.
+func TestSupervisorStuckAfterMessageInTrip(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2,
+		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	trip := s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	if trip == nil {
+		t.Fatal("no first trip")
+	}
+	s.messagedInTrip(minute(2))
+	if s.tripped != trip {
+		t.Fatal("the message in the trip cleared the trip in hand")
+	}
+	s.Resume(minute(3))
+	s.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(4))
+	trip = s.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(4))
+	if trip == nil || trip.Stuck == "" {
+		t.Fatalf("trip = %+v, want the stuck line after an ignored refusal", trip)
+	}
+}
+
+// An interim push grants no push credit: an EventPushed with detail wip
+// — the check-in's interim push of the work in progress — leaves the
+// cheap cap and the spend-without-push line armed, so both still trip
+// past their bounds; the session's own end push, an EventPushed without
+// the detail, disarms both, as it did.
+func TestWipPushGrantsNoPushCredit(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000,
+		NoWriteAfter: 10 * time.Hour, CheapCap: 8 * time.Minute, NoPushSpend: 0.6}
+	wip := harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"wip": true, "commit": "w1"}}
+
+	s, _ := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	if trip := s.Event(wip, minute(3)); trip != nil {
+		t.Fatalf("the interim push tripped: %+v", trip)
+	}
+	if trip := s.Tick(minute(9)); trip == nil || trip.Kind != TripCheapCap {
+		t.Fatalf("trip = %+v, want the cheap cap past its bound after an interim push alone", trip)
+	}
+
+	s, _ = NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	s.Event(wip, minute(3))
+	if trip := s.Spent(3.1, 5); trip == nil || trip.Kind != TripSpendNoPush {
+		t.Fatalf("trip = %+v, want spend_no_push past its share after an interim push alone", trip)
+	}
+
+	s, _ = NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	if trip := s.Event(harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"commit": "c1"}}, minute(3)); trip != nil {
+		t.Fatalf("the end push tripped: %+v", trip)
+	}
+	if trip := s.Tick(minute(9)); trip != nil {
+		t.Fatalf("tripped past the cheap cap after the session's own push: %+v", trip)
+	}
+	if trip := s.Spent(4.9, 5); trip != nil {
+		t.Fatalf("tripped past the spend line after the session's own push: %+v", trip)
+	}
+}
+
 func spendSupervisor(t *testing.T, mutate func(*SupervisorConfig)) *Supervisor {
 	t.Helper()
 	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 100,

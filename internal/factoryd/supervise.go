@@ -243,7 +243,11 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if lines, ok := cardDiffSize(ev); ok {
 		s.cardLines = lines
 	}
-	if ev.Kind == harness.EventPushed {
+	// the session's own end push is the push that counts: an interim
+	// push of the work in progress (detail wip) leaves the cheap cap
+	// and the no-push spend line armed — the work is on the branch, but
+	// the session has not finished
+	if ev.Kind == harness.EventPushed && !detailBool(ev, "wip") {
 		s.pushed = true
 	}
 	// a file written through a shell shows only as a changed diff
@@ -538,6 +542,15 @@ func (s *Supervisor) Resume(now time.Time) {
 // memory).
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
+	s.messagedInTrip(now)
+}
+
+// messagedInTrip arms the stuck rule for a message factoryd itself
+// delivered into the running session mid-trip — the interim push's
+// refusal (wippush.go) — while the trip in hand stays for the check-in
+// that is still to judge it: everything Messaged arms applies, minus
+// the resume.
+func (s *Supervisor) messagedInTrip(now time.Time) {
 	s.sinceChange = 0
 	s.noWriteFrom = now
 	d := s.traces

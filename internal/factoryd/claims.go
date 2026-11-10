@@ -126,6 +126,10 @@ func applyClaims(rv Review, files []fileDiff, grep func(symbol string) ([]grepHi
 // errNoMatch is git grep's exit status 1: no line names the symbol.
 var errNoMatch = errors.New("git grep: no matches")
 
+// grepLimits caps git grep on an agent-written tree: its output past the cap
+// fails the call, never a cut-off list.
+var grepLimits = gitLimits{maxOut: 16 << 20, addressSpace: wipGitMemory}
+
 // gitGrep lists the whole-word uses of symbol in each ref's tree, at most
 // maxHits a ref; a ref without a match has none, and no match in any ref
 // answers errNoMatch.
@@ -133,7 +137,7 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 	const maxHits = 200
 	var hits []grepHit
 	for _, ref := range refs {
-		out, err := git(ctx, dir, "", "grep", "-n", "-w", "-F", "-I", "--no-color", "-e", symbol, ref.Rev, "--")
+		out, err := gitRun(ctx, dir, "", nil, grepLimits, "grep", "-n", "-w", "-F", "-I", "--no-color", "-e", symbol, ref.Rev, "--")
 		if err != nil {
 			var exit *exec.ExitError
 			if errors.As(err, &exit) && exit.ExitCode() == 1 {
@@ -141,7 +145,7 @@ func gitGrep(ctx context.Context, dir string, refs []namedRef, symbol string) ([
 			}
 			return nil, err
 		}
-		for i, l := range strings.Split(out, "\n") {
+		for i, l := range strings.SplitN(out, "\n", maxHits+1) {
 			if i == maxHits {
 				break
 			}
@@ -171,12 +175,12 @@ var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, co
 	}
 	cleanup = func() { os.RemoveAll(tmp) } // #nosec G104 -- best-effort cleanup of a temporary directory
 	login, src := basicLogin(f.BotUser, f.BotPassword), filepath.Join(tmp, "src")
-	if _, err = git(ctx, tmp, login, "clone", "-q", "--depth=1", "--no-checkout", "--branch", prBase, f.BaseURL+"/"+repo.String()+".git", src); err == nil {
-		_, err = git(ctx, src, login, "fetch", "-q", "--depth=1", "origin", fmt.Sprintf("refs/pull/%d/head:refs/factory/head", pr))
+	if _, err = gitCapped(ctx, tmp, login, "clone", "-q", "--depth=1", "--no-checkout", "--branch", prBase, f.BaseURL+"/"+repo.String()+".git", src); err == nil {
+		_, err = gitCapped(ctx, src, login, "fetch", "-q", "--depth=1", "origin", fmt.Sprintf("refs/pull/%d/head:refs/factory/head", pr))
 	}
 	var head string
 	if err == nil {
-		head, err = git(ctx, src, "", "rev-parse", "refs/factory/head")
+		head, err = gitCapped(ctx, src, "", "rev-parse", "refs/factory/head")
 	}
 	if err == nil && head != commit {
 		err = fmt.Errorf("pull request %d head is %s, not %s", pr, head, commit)
