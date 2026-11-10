@@ -1165,8 +1165,9 @@ func typedAnswer(text, action string, args json.RawMessage, eur float64) (factor
 }
 
 // fundShortfall is what a fund choice of card t raises its budget by: the
-// amount value carries ("fund:0.73"), else the shortfall its budget
-// refusal names; 0 when the budget refuses nothing any more.
+// amount value carries ("fund:0.73"), else the raise that lifts the
+// card's session ceiling (what it has left less the gate reserve) to the
+// need its budget refusal names; 0 when the budget refuses nothing any more.
 func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factoryd.BoardTask, value string) (float64, error) {
 	if eur := fundAmountOf(value); eur > 0 {
 		return eur, nil
@@ -1178,7 +1179,11 @@ func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factory
 	case !factoryd.BudgetRefusal(why):
 		return 0, nil
 	}
-	if eur := cmp.Or(factoryd.FundRaise(why), factoryd.FundRaise(bt.Escalation)); eur > 0 {
+	var reserve float64
+	if c.cfg.GateReserve != nil {
+		reserve = c.cfg.GateReserve()
+	}
+	if eur := cmp.Or(factoryd.FundRaise(why, t.Left(), reserve), factoryd.FundRaise(bt.Escalation, t.Left(), reserve)); eur > 0 {
 		return eur, nil
 	}
 	return 0, refuse(http.StatusConflict, "this budget refusal names no amount: use the Fund form on the card, where you name it")

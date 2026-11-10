@@ -9,7 +9,7 @@ import (
 )
 
 // TestSpendRail is the end-to-end pass over the spend-rail table: it builds
-// from the real schema and the full catalogue, 36 rows in order,
+// from the real schema and the full catalogue, 37 rows in order,
 // byte-stable across two runs, the join refuses a key set and a catalogue
 // that disagree each way, naming the key, and a matrix anchor the schema
 // lacks, and the rewrite replaces the marked section.
@@ -28,6 +28,7 @@ func TestSpendRail(t *testing.T) {
 		"limits.nudges", "limits.same_call", "limits.review_diff_kib", "limits.checkin_calls",
 		"limits.checkin_time", "limits.checkin_share", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
 		"limits.checkin_sessions", "limits.warn_at", "limits.plan_warn_at", "limits.no_push_spend",
+		"limits.gate_reserve_eur",
 		"budget.task_default_eur", "budget.task_max_eur", "budget.day_eur", "budget.month_eur",
 		"budget.session_floor_cheap_eur", "budget.session_floor_frontier_eur", "budget.premium_month_eur",
 		"escalation.pool.sessions", "escalation.pool.agent_time", "escalation.pool.eur",

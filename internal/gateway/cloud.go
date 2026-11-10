@@ -339,11 +339,15 @@ func (s *Server) commission(ctx context.Context, c *toolCaller, in CommissionIn)
 		return s.cloudError(c, tool, "error_store", err)
 	}
 	project, projectEUR := c.pv.ProjectCap(c.task.Repository)
+	var reserve float64
+	if c.session != "" {
+		reserve = c.pv.Document.Limits.GateReserve()
+	}
 	com, err := cloud.Store.Reserve(ctx, cloudres.CommissionRequest{
 		TaskID: c.task.ID, Repo: c.task.Repository, Session: session, ServerType: in.ServerType,
 		Purpose: strings.TrimSpace(in.Purpose), LeaseMinutes: in.LeaseMinutes, VolumeGB: in.VolumeGB,
 		Location: cloudLocation, Quote: q, Envelope: env, DayEUR: c.pv.Document.Budget.DayEUR, MonthEUR: c.pv.Document.Budget.MonthEUR,
-		Project: project, ProjectEUR: projectEUR, Now: cloud.now(),
+		Project: project, ProjectEUR: projectEUR, ReserveEUR: reserve, Now: cloud.now(),
 	})
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {

@@ -1179,3 +1179,32 @@ func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
 		t.Fatalf("size statement of a card that cannot be cut offers replan:\n%s", got)
 	}
 }
+
+// The pace's left is the room of a session, the gate reserve held out:
+// 5.00 - 3.10 - 0.40 = 1.50.
+func TestPaceLineHoldsTheReserveOut(t *testing.T) {
+	got := Pace{Lines: 10, BoundLines: 300, SpentEUR: 3.1, BudgetEUR: 5, ReserveEUR: 0.4, SpentMinutes: 1, LeftMinutes: 2, Attempt: 1, Sessions: 1}.Line()
+	if want := "Pace of the card: 10 changed lines so far against its bound of 300; 3.10 EUR spent, 1.50 left; 1 minutes of agent time spent, 2 left; session 1 of 1."; got != want {
+		t.Fatalf("Line = %q, want %q", got, want)
+	}
+}
+
+// The cost block and the pace read the same room: budget 5.00 with 1.80
+// settled and 0.40 held leaves 2.80, the 0.40 reserve leaves 2.40 for a
+// session, and the block names the reserve.
+func TestCostStateAndPaceAgreeOnTheSessionRoom(t *testing.T) {
+	store := newFakeStore()
+	task := Task{ID: "t1", Status: "running", Track: "direct", BudgetEUR: 5, SpentEUR: 1.8, HeldEUR: 0.4}
+	if err := store.CreateTask(context.Background(), task); err != nil {
+		t.Fatal(err)
+	}
+	r := &Runner{store: store}
+	c := r.costState(context.Background(), task, 0.4)
+	if c.RemainingEUR != 2.4 || c.ReserveEUR != 0.4 || c.SpentEUR != 1.8 || c.HeldEUR != 0.4 {
+		t.Fatalf("cost block = %+v, want remaining 2.40 with reserve 0.40, spent 1.80 and held 0.40", c)
+	}
+	pace := Pace{Lines: -1, SpentEUR: task.EnforcedSpent(), BudgetEUR: 5, ReserveEUR: 0.4}
+	if !strings.Contains(pace.Line(), "2.20 EUR spent, 2.40 left;") {
+		t.Fatalf("pace = %q, want 2.40 left", pace.Line())
+	}
+}

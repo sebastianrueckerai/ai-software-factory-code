@@ -180,7 +180,7 @@ func IsAccent(name string) bool { return slices.Contains(Accents, name) }
 func (t Task) EnforcedSpent() float64 { return t.SpentEUR + t.HeldEUR }
 
 // Left is the budget the caps and the floor leave the card.
-func (t Task) Left() float64 { return t.BudgetEUR - t.EnforcedSpent() }
+func (t Task) Left() float64 { return policy.Left(t.BudgetEUR, t.SpentEUR, t.HeldEUR) }
 
 // Report tells a report task by its source: a plan's cards
 // have a parent too and are no report. The report flow, the analytics
@@ -1302,10 +1302,12 @@ func defaultKind(kind string) string {
 // heldEURSQL is the task row's holds, the calls in flight that the
 // gateway's caps and the floor count before the ledger settles them. It
 // binds to tasks by name: a query that selects taskColumns gives the
-// table no alias.
-const heldEURSQL = "(SELECT COALESCE(sum(eur), 0)::float8 FROM holds WHERE holds.task_id = tasks.id)"
+// table no alias. The money the row carries is rounded to the micro-euro
+// in SQL, as the floor's read is (policy.readTaskFree), so every float sits
+// on the grid money compares at and the ask and the floor read one left.
+const heldEURSQL = "(SELECT round(COALESCE(sum(eur), 0), 6)::float8 FROM holds WHERE holds.task_id = tasks.id)"
 
-const taskColumns = `id, priority, required_capabilities, risk_class, budget_eur::float8, spent_eur::float8, ` + heldEURSQL + `, status,
+const taskColumns = `id, priority, required_capabilities, risk_class, round(budget_eur, 6)::float8, round(spent_eur, 6)::float8, ` + heldEURSQL + `, status,
 	objective, repository, sha, COALESCE(repro_base, ''), kind, issue_number, source, pr_number, carry_pr,
 	agent_time_ns, attempts, extra_time_ns, retry_time_ns, extra_attempts, poster_attempts, extra_checkin_share, last_uncounted, repro_command, extra_lines, proof_lines, raised_sessions, raised_time_s * 1000000000, COALESCE(ceiling_eur, 0)::float8, created_at, finished_at, gate, gate_since,
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
