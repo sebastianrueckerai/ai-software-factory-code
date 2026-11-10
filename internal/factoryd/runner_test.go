@@ -2192,7 +2192,8 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 // anything opens: no token, no session row, no pod. The card gets the
 // floor's refusal as its money ask, and no session burns the rest of its
 // budget on calls the gateway must refuse.
-// 0.100 EUR of 2 is left, and the cheap rung's floor asks 0.30.
+// 0.000 EUR of 2 is left after the 0.25 gate reserve, and the cheap rung's
+// floor asks 0.30.
 func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	task := Task{ID: "t4k", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 1.9}
 	kube := newFakeKube()
@@ -2203,7 +2204,8 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR " +
+		"0.000 EUR of the 2.000 EUR budget remains; the card spent 1.90 EUR, and 0.25 EUR is held for the model review and the audit" +
+		", and a session on factory/small needs 0.300000 EUR " +
 		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
