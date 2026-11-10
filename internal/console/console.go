@@ -181,6 +181,9 @@ type Config struct {
 	// Dependencies reads the factory's own dependency health for the
 	// status line's red dot and the panel's list (roadmap 299).
 	Dependencies Dependencies
+	// Switches reads the aliases served from their twin, for the status
+	// line.
+	Switches AliasSwitches
 	// PoolDrawn is what repository's cards drew from the escalation pool
 	// in the UTC month of month (factoryd.PGStore.PoolDrawn): the pool
 	// line's figures. New refuses a Config without it.

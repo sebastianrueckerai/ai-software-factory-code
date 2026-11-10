@@ -1667,3 +1667,23 @@ func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 		t.Errorf("the drawer lacks its unnamed Plan row:\n%s", d)
 	}
 }
+
+// An alias the gateway serves from its twin shows on the status line, and
+// the chat's status line says it too; none open, no cell.
+func TestStatusLineAliasSwitch(t *testing.T) {
+	r, ck := screenRig(t)
+	body := func() string { return r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String() }
+	if strings.Contains(body(), "serves from") {
+		t.Fatal("no open switch, the status line names one")
+	}
+	r.switches.rows = []policy.AliasSwitch{{Alias: "big", Twin: "big-alibaba", Kind: policy.SwitchOn,
+		At: time.Date(2026, 11, 10, 10, 12, 0, 0, time.UTC), Median: 38.6, Deployment: "zai/glm-5.3"}}
+	const want = `<span class="cell warn" title="the gateway serves this alias from its twin while it runs slower than the bound of the policy's routing block">big serves from big-alibaba since 10:12 (glm-5.3 at 39 s per 1000 tokens)</span>`
+	if !strings.Contains(body(), want) {
+		t.Fatalf("the status line lacks %s", want)
+	}
+	r.switches.err = errors.New("the store is gone")
+	if got := body(); strings.Contains(got, "serves from") || !strings.Contains(got, "the alias switches could not be read") {
+		t.Fatal("a read error shows a switch or hides the problem")
+	}
+}

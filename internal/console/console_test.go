@@ -1206,6 +1206,7 @@ type rig struct {
 	mirrors  *fakeMirrors
 	routines *fakeRoutines
 	deps     *fakeDeps
+	switches *fakeSwitches
 	figures  *fakeFigures
 	// repoWriters are the writers of each project's repository, the
 	// writer lists' map (writers.by)
@@ -1306,6 +1307,7 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
+		switches:    &fakeSwitches{},
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.chatTokens = &fakeChatTokens{}
@@ -1316,7 +1318,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Switches: r.switches,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {

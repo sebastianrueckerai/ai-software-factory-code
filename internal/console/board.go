@@ -1306,8 +1306,11 @@ type statusLine struct {
 	// month and PremiumCapEUR its cap, budget.premium_month_eur; a cap of
 	// 0 shows no premium meter.
 	PremiumEUR, PremiumCapEUR float64
-	GitHub                    string
-	GitHubURL                 string // the export's remote on GitHub, "" when not exported
+	// Switches say which aliases the gateway serves from their twin: "big
+	// serves from big-alibaba since 10:12 (glm-5.3 at 39 s per 1000 tokens)".
+	Switches  []string
+	GitHub    string
+	GitHubURL string // the export's remote on GitHub, "" when not exported
 	// RoutineCell is the strip's routine cell (C16), the first held run
 	// ("↻ bump held", RoutineHeld) else the soonest under an hour away
 	// ("↻ bump in 20 min"), "" for none.
@@ -2562,6 +2565,16 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		s.PremiumEUR = e.Premium
 	}
 	s.Approver = v.approves(p.Repository)
+	if c.cfg.Switches != nil {
+		if open, err := c.cfg.Switches.OpenAliasSwitches(ctx); err != nil {
+			log.Printf("console: the alias switches: %v", err)
+			d.Problems = append(d.Problems, "the alias switches could not be read")
+		} else {
+			for _, sw := range open {
+				s.Switches = append(s.Switches, switchWords(sw))
+			}
+		}
+	}
 	if stop, err := c.chatStopNow(ctx, p); err != nil {
 		log.Printf("console: the chat stop of %s: %v", p.Repository, err)
 		d.Problems = append(d.Problems, "the chat's budget could not be read")
@@ -2601,6 +2614,15 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 		s.GitHub, _, _ = strings.Cut(m.State, ":")
 		s.GitHubURL = "https://github.com/" + m.Remote + "/pulls"
 	}
+}
+
+// switchWords is an open alias switch as the status line says it.
+func switchWords(sw policy.AliasSwitch) string {
+	_, model, found := strings.Cut(sw.Deployment, "/")
+	if !found {
+		model = sw.Deployment
+	}
+	return fmt.Sprintf("%s serves from %s since %s (%s at %.0f s per 1000 tokens)", sw.Alias, sw.Twin, sw.At.UTC().Format("15:04"), model, sw.Median)
 }
 
 // placeGhosts stands each of the shown project's routines as a ghost at
