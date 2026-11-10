@@ -2136,20 +2136,30 @@ func FirstLine(s string) string {
 // WaitChecks polls the combined commit status of sha (Forgejo Actions is the
 // first verification gate, architecture 7) until it settles or the checks
 // timeout passes. Forgejo combines worst-state-wins, so a failed job
-// settles the verdict while slower jobs still run.
+// settles the verdict while slower jobs still run, except that a job killed
+// by a signal is re-run once first (killedChecks) and its re-run awaited.
 func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return ChecksResult{}, err
 	}
 	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-time.Minute), time.Now().Add(r.cfg.ChecksTimeout))
+	var reran []rerunNote
 	for {
 		cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
 		if err != nil {
 			return ChecksResult{}, err
 		}
 		activity.RecordHeartbeat(ctx, cs.State)
-		res := checksResult(cs, r.forgejo.PublicURL, r.jobLogOf(ctx, t, repo))
+		logOf := r.jobLogOf(ctx, t, repo)
+		res := checksResult(cs, r.forgejo.PublicURL, logOf)
+		if res.State == ChecksFailure {
+			if unsettled, notes := r.killedChecks(ctx, t, repo, cs, logOf, &reran); unsettled {
+				res.State = ""
+			} else {
+				res.Findings = append(res.Findings, notes...)
+			}
+		}
 		if res.State == "" && !time.Now().Before(deadline) {
 			res.State = ChecksTimeout
 		}
@@ -2158,6 +2168,9 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 				r.annotateMainFailures(ctx, repo, &res)
 			}
 			detail := map[string]any{"commit": sha, "state": res.State, "findings": res.Findings}
+			if len(reran) > 0 {
+				detail["reran"] = reran
+			}
 			if p, ok, err := r.store.ProjectByRepository(ctx, t.Repository); err != nil || !ok {
 				log.Printf("task %s: ci jobs of %s: no project for %s (%v)", t.ID, sha, t.Repository, err)
 			} else if jobs, err := CIJobsOf(ctx, r.forgejo, r.forgejo.Access(p).Actions, repo.Owner, repo.Name, sha, r.cfg.CIQueue); err != nil {

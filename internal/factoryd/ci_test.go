@@ -1494,7 +1494,7 @@ func TestCISpawnerServesTheSmokeJobOnlyForAPushToMain(t *testing.T) {
 	if want := []string{"/workspace", "/home/runner", "/tmp", "/var/run/secrets/ci"}; !reflect.DeepEqual(mounts, want) {
 		t.Errorf("smoke runner mounts = %v, want %v", mounts, want)
 	}
-	if want := []string{"HOME", "RUNNER_UUID"}; !reflect.DeepEqual(env, want) {
+	if want := []string{"HOME", "GOMAXPROCS", "RUNNER_UUID"}; !reflect.DeepEqual(env, want) {
 		t.Errorf("smoke runner env = %v, want %v (no PATH naming /cache)", env, want)
 	}
 
@@ -1650,4 +1650,41 @@ func TestCIRunnerTmpHoldsAColdMainChecksRun(t *testing.T) {
 		return
 	}
 	t.Fatal("no tmp emptyDir with a size limit found")
+}
+
+// The runner pod's memory limit, the namespace quota's limits.memory and
+// the LimitRange's max are one value, above the 4Gi that vet of the
+// largest package outgrew; the request stays 1Gi.
+func TestCIMemoryLimitFitsTheSuitesPeak(t *testing.T) {
+	kube := newFakeKube()
+	hub := &ciHub{jobs: []CIJob{{ID: 51, RunsOn: []string{"pr-untrusted"}, Status: "waiting"}}}
+	newTestCISpawner(t, kube, hub).poll(context.Background())
+	ns := "factory-agents-ci-51"
+	_, container := podContainer(t, kube, ns)
+	resources := container["resources"].(map[string]any)
+	limit := resources["limits"].(map[string]any)["memory"]
+	quota := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any)["limits.memory"]
+	max := kube.objects["/api/v1/namespaces/"+ns+"/limitranges"]["spec"].(map[string]any)["limits"].([]any)[0].(map[string]any)["max"].(map[string]any)["memory"]
+	if limit != quota || limit != max {
+		t.Fatalf("pod limit %v, quota limits.memory %v, LimitRange max %v: want one value", limit, quota, max)
+	}
+	var gi int64
+	if _, err := fmt.Sscanf(fmt.Sprint(limit), "%dGi", &gi); err != nil || gi<<30 <= 4294967296 {
+		t.Fatalf("memory limit %v, want a whole number of Gi above 4Gi", limit)
+	}
+	if req := resources["requests"].(map[string]any)["memory"]; req != "1Gi" {
+		t.Fatalf("requests.memory = %v, want 1Gi", req)
+	}
+	if req := kube.objects["/api/v1/namespaces/"+ns+"/resourcequotas"]["spec"].(map[string]any)["hard"].(map[string]any)["requests.memory"]; req != "1Gi" {
+		t.Fatalf("quota requests.memory = %v, want 1Gi", req)
+	}
+	var procs any
+	for _, e := range container["env"].([]any) {
+		if m := e.(map[string]any); m["name"] == "GOMAXPROCS" {
+			procs = m["value"]
+		}
+	}
+	if procs != "2" {
+		t.Fatalf("GOMAXPROCS = %v, want 2: go test -p follows it", procs)
+	}
 }
