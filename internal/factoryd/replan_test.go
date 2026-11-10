@@ -1240,6 +1240,35 @@ func TestReplanFindings(t *testing.T) {
 			[]string{"take_off_main names int, the integration card, whose code stays on main; leave it out of take_off_main"}},
 		{"take_off_main names a card the revision keeps", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"api"} },
 			[]string{"take_off_main names api, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main"}},
+		{"take_off_main names a card whose criterion the criteria still cite", func(st *replanState, p *Plan) {
+			st.met = map[string][]string{"api": {"queue_resolves", "all_green"}}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Criteria = []PlanCriterion{{ID: "queue_resolves"}, {ID: "other"}}
+		}, []string{"take_off_main names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; drop them from the criteria, or leave api out of take_off_main"}},
+		{"take_off_main names a card whose criteria the revision dropped", func(st *replanState, p *Plan) {
+			st.met = map[string][]string{"api": {"queue_resolves"}}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Criteria = []PlanCriterion{{ID: "other"}}
+		}, nil},
+		{"take_off_main names a card whose feature the spec still names merged", func(st *replanState, p *Plan) {
+			st.feature = map[string]string{"api": "Case resolution queue"}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Spec = &Spec{Outcome: "Cases wait. The case resolution queue is merged on main.", Glossary: []string{"queue: the list"}}
+		}, []string{`take_off_main names api, whose work the spec still names merged: "The case resolution queue is merged on main"; rewrite the spec without it, or leave api out of take_off_main`}},
+		{"take_off_main names a card whose key the glossary names merged", func(st *replanState, p *Plan) {
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Spec = &Spec{Outcome: "Cases wait.", Glossary: []string{"api: merged and pinned by its replay tests"}}
+		}, []string{`take_off_main names api, whose work the spec still names merged: "api: merged and pinned by its replay tests"; rewrite the spec without it, or leave api out of take_off_main`}},
+		{"take_off_main names a card the spec does not call merged", func(st *replanState, p *Plan) {
+			st.feature = map[string]string{"api": "Case resolution queue"}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Spec = &Spec{Outcome: "The case resolution queue lists open cases."}
+		}, nil},
 		{"a card taken off main kept", func(st *replanState, _ *Plan) { st.reverted = map[string]bool{"t-api": true} },
 			[]string{`card api was taken off main: leave its key out, and add a card with "from": "api" to land it again from salvage`}},
 		{"a card taken off main landed again from salvage", func(st *replanState, p *Plan) {

@@ -5075,6 +5075,12 @@ func TestCardLineBound(t *testing.T) {
 // each call.
 func dropRig(t *testing.T, takeOff ...string) (*Runner, *fakeStore, *planForgejo, *[][]string, PlanResult) {
 	t.Helper()
+	return dropRigCiting(t, false, takeOff...)
+}
+
+// dropRigCiting is dropRig; with cites, revision 2 keeps citing links_crud.
+func dropRigCiting(t *testing.T, cites bool, takeOff ...string) (*Runner, *fakeStore, *planForgejo, *[][]string, PlanResult) {
+	t.Helper()
 	ctx := context.Background()
 	r, store, _, fj, _ := fileRig(t, testPlan())
 	pinned := fixtureVersion(t)
@@ -5092,12 +5098,14 @@ func dropRig(t *testing.T, takeOff ...string) (*Runner, *fakeStore, *planForgejo
 		t.Fatal(err)
 	}
 	p := testPlan()
-	p.Criteria[0].ID, p.Criteria[0].Replaces = "links_crud_2", "links_crud"
-	for _, c := range p.Cards {
-		for i, it := range c.Acceptance {
-			if it.Criterion == "links_crud" {
-				it.Criterion = "links_crud_2"
-				c.Acceptance[i] = it
+	if !cites {
+		p.Criteria[0].ID, p.Criteria[0].Replaces = "links_crud_2", "links_crud"
+		for _, c := range p.Cards {
+			for i, it := range c.Acceptance {
+				if it.Criterion == "links_crud" {
+					it.Criterion = "links_crud_2"
+					c.Acceptance[i] = it
+				}
 			}
 		}
 	}
@@ -5117,6 +5125,20 @@ func dropRig(t *testing.T, takeOff ...string) (*Runner, *fakeStore, *planForgejo
 		return "", nil
 	}
 	return r, store, fj, &calls, res
+}
+
+// A revision that takes links-api off main while its criteria still cite
+// links_crud, which links-api met, and its spec calls the card's feature
+// merged, is refused at the filing with both findings.
+func TestFilingRefusesTakeOffOfWhatTheRevisionRelies(t *testing.T) {
+	_, _, _, _, res := dropRigCiting(t, true, "links-api")
+	if res.Revision != 0 || len(res.Findings) == 0 {
+		t.Fatalf("the filing: %+v, want it refused", res)
+	}
+	want := "take_off_main names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; drop them from the criteria, or leave links-api out of take_off_main"
+	if !slices.Contains(res.Findings, want) {
+		t.Fatalf("findings %q, want %q", res.Findings, want)
+	}
 }
 
 // takeOffAPI is dropRig with links-api named in take_off_main, revision 2

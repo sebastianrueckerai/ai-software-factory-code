@@ -1200,7 +1200,7 @@ func namesAsMerged(spec *Spec, key, feature string) string {
 	if spec == nil {
 		return ""
 	}
-	names := []*regexp.Regexp{regexp.MustCompile(`\b` + regexp.QuoteMeta(key) + `\b`)}
+	names := []*regexp.Regexp{regexp.MustCompile(`\b` + regexp.QuoteMeta(strings.ToLower(key)) + `\b`)}
 	if feature != "" {
 		names = append(names, regexp.MustCompile(`\b`+regexp.QuoteMeta(strings.ToLower(feature))+`\b`))
 	}
