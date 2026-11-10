@@ -373,6 +373,9 @@ func main() {
 		Builder: own.Repo(), BuildToken: forgejo.Access(own).Actions, Ladder: ladder.Aliases(), Now: time.Now, Workflows: workflows,
 		Timeline: runner.Timeline(), OpenBao: registrar.OpenBao}
 	runner.Imager = imager
+	// a branch's new upstream image lines reach the store before its image
+	// build reads it: the same read login, the site admin's write login
+	runner.Upstream = &factoryd.UpstreamCopier{Registry: registry, OpenBao: registrar.OpenBao, Scrub: runner.Scrub}
 	go imager.Run(ctx, time.Minute)
 	// a plan is named when its first revision files; the open plans this
 	// build inherits are named once now, off the startup path
