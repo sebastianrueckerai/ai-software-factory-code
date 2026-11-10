@@ -262,6 +262,14 @@ func (s *acceptanceStore) CountAdmitted(_ context.Context, repository string) (i
 	return n, nil
 }
 
+func (s *acceptanceStore) SetResumeWait(context.Context, string, string, time.Time) error {
+	panic("unused")
+}
+
+func (s *acceptanceStore) ResumeWaiters(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) ListQueuedByRepository(_ context.Context, repository string) ([]factoryd.Task, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

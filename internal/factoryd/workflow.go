@@ -645,6 +645,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	run.upstreamCopy = workflow.GetVersion(ctx, "upstream-copy", workflow.DefaultVersion, versionUpstreamCopy)
+	run.surge = workflow.GetVersion(ctx, "surge-resume", workflow.DefaultVersion, versionSurgeResume)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -697,7 +698,7 @@ func (t *taskRun) isReport(st RunState) bool {
 // now. ReceiveAsync adds no command, so replay is unaffected.
 func drainSignals(ctx workflow.Context) {
 	for _, name := range []string{SignalPRMerged, SignalPRClosed, SignalChangesRequested, SignalIssueClosed, SignalHumanComment, SignalApproved, SignalGateBound, SignalPosterComment, SignalRollFolded, SignalDepEnded, SignalQueueTurn,
-		SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved} {
+		SignalSlotFree, SignalPlanAnswered, SignalAnswerWhole, SignalImageReady, SignalToPlan, SignalCompanionLanded, SignalPolicyLoaded, SignalCaseResolved} {
 		for workflow.GetSignalChannel(ctx, name).ReceiveAsync(nil) {
 		}
 	}
@@ -1333,6 +1334,11 @@ const (
 	// the wait outlives it by the supervisor's whole budget. A run from
 	// before keeps its recorded 45m + 1m options.
 	versionChecksWait workflow.Version = 1
+	// versionSurgeResume (change id "surge-resume"): a card back from a
+	// wait starts its session through the surge bound, AdmitResume: while
+	// its project's live count is under work_in_progress plus surge, else
+	// it waits queued. A run from before resumes at the bound at once.
+	versionSurgeResume workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
 	// started from; the answer to a share stop with the pull request open
@@ -1602,6 +1608,9 @@ type taskRun struct {
 	// checksWait: the checks wait's own timeout follows its bound
 	// (versionChecksWait)
 	checksWait workflow.Version
+	// surge: a resumed card's session passes the surge bound
+	// (versionSurgeResume)
+	surge workflow.Version
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
@@ -2252,6 +2261,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if t.reverify {
 			continue
+		}
+		if t.surge >= versionSurgeResume {
+			if final, why := t.awaitSlot(); final != "" {
+				return t.finish(final, why)
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))

@@ -292,7 +292,9 @@ func HealPass(ctx context.Context, store Store, wf Workflows, in *Intake, comple
 			if !reopenCompleted(ctx, store, wf, completed, t) {
 				if status == "queued" && !t.Unbound() {
 					pulls[t.Repository] = true
-					continue
+					if t.ResumedAt == nil {
+						continue
+					}
 				}
 				if err := wf.Start(ctx, t.ID); err != nil {
 					log.Printf("start open workflows: task %s: %v", t.ID, err)

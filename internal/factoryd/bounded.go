@@ -30,11 +30,12 @@ import (
 // on a dependency (waiting-deps) or on its image (waiting-image) holds no
 // slot (roadmap 233): the bound counts only what runs. Entering the
 // approval gate or waiting-deps pulls the next queued card, and the card
-// keeps its admission stamp, the time of its first admission. A person's
-// answer or approval, the dependency or the image resumes the card even
-// at the bound, an overshoot of one per unblocked card: a finished
-// dependency resumes all its dependents, and each approval while the merge
-// queue is paused adds one.
+// keeps its admission stamp, the time of its first admission. A card
+// back from a wait takes its session start through the same count, with
+// the project's surge on top of the bound (AdmitResume): past it the card
+// waits queued, holding no slot, and the pull wakes the resumed cards, the
+// oldest resumption first, before it starts any never-started card, which
+// waits while a resumed card does.
 type BoundedWorkflows struct {
 	Workflows
 	// Store reads the card, its dependencies and its project's spend, and
@@ -70,6 +71,12 @@ func (w BoundedWorkflows) Start(ctx context.Context, taskID string) error {
 // queued for good: the workflow it starts finds the issue closed and ends
 // the card before any session, holding no slot.
 func (w BoundedWorkflows) Signal(ctx context.Context, taskID, name string, sig TaskSignal) error {
+	if name == SignalSlotFree {
+		room, err := w.surgeRoom(ctx, taskID)
+		if err != nil || !room {
+			return err
+		}
+	}
 	if name != SignalIssueClosed {
 		admit, err := w.admit(ctx, taskID)
 		if err != nil || !admit {
@@ -111,13 +118,51 @@ func (w BoundedWorkflows) admit(ctx context.Context, taskID string) (bool, error
 	if err != nil {
 		return false, err
 	}
-	if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound {
-		return false, w.Store.SetQueueReason(ctx, taskID, fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound), at)
+	waiters, err := w.Store.ResumeWaiters(ctx, t.Repository)
+	if err != nil {
+		return false, err
+	}
+	if bound := w.Policy().WorkInProgressOf(t.Repository); n >= bound || len(waiters) > 0 {
+		reason := fmt.Sprintf(WorkBoundReason+"%d of %d", n, bound)
+		if len(waiters) > 0 {
+			reason += fmt.Sprintf(", %d resumed first", len(waiters))
+		}
+		return false, w.Store.SetQueueReason(ctx, taskID, reason, at)
 	}
 	if err := w.Store.SetAdmitted(ctx, taskID); err != nil {
 		return false, err
 	}
 	return true, nil
+}
+
+// surgeRoom reports whether card taskID's project has a session slot a
+// resumed card may take: its live count is under work_in_progress plus surge.
+func (w BoundedWorkflows) surgeRoom(ctx context.Context, taskID string) (bool, error) {
+	t, ok, err := w.Store.Task(ctx, taskID)
+	if err != nil || !ok {
+		return true, err
+	}
+	n, err := w.Store.CountAdmitted(ctx, t.Repository)
+	v := w.Policy()
+	return n < v.WorkInProgressOf(t.Repository)+v.SurgeOf(t.Repository), err
+}
+
+// wakeResumed tells every card waiting queued to resume in repository that
+// a slot may be free; each asks AdmitResume again, which keeps their order.
+func wakeResumed(ctx context.Context, store Store, wf Workflows, repository string) {
+	if wf == nil {
+		return
+	}
+	waiters, err := store.ResumeWaiters(ctx, repository)
+	if err != nil {
+		log.Printf("wake %s: list resumed: %v", repository, err)
+		return
+	}
+	for _, c := range waiters {
+		if err := wf.Signal(ctx, c.ID, SignalSlotFree, TaskSignal{}); err != nil {
+			log.Printf("wake %s: signal %s: %v", repository, c.ID, err)
+		}
+	}
 }
 
 // waitsForSlot reports whether card t is one admit judges: a queued agent
@@ -165,6 +210,7 @@ func pullQueued(ctx context.Context, store Store, wf Workflows, repository strin
 	if wf == nil {
 		return
 	}
+	wakeResumed(ctx, store, wf, repository)
 	cards, err := store.ListQueuedByRepository(ctx, repository)
 	if err != nil {
 		log.Printf("pull %s: list queued: %v", repository, err)

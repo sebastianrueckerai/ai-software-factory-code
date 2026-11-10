@@ -147,3 +147,65 @@ func TestTaskByIssuePrefersTheLiveCard(t *testing.T) {
 		})
 	}
 }
+
+// A parked card whose resumption the surge bound holds back waits queued:
+// it holds no slot, is no never-started card (the pull never lists it),
+// keeps the time its wait began through every refresh, and lists oldest
+// resumption first. MarkStarted ends the wait.
+func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
+	for name, open := range bothStores {
+		t.Run(name, func(t *testing.T) {
+			ctx, s := context.Background(), open(t)
+			for i, c := range []struct{ id, status string }{{"t-run", "running"}, {"t-a", "waiting-human"}, {"t-b", "waiting-deps"}, {"t-new", "queued"}} {
+				if err := s.CreateTask(ctx, Task{ID: c.id, Repository: "sf/r", Kind: "agent", Track: "direct", Status: c.status, Objective: "b", IssueNumber: int64(i + 1)}); err != nil {
+					t.Fatal(err)
+				}
+				if c.id != "t-new" {
+					if err := s.SetAdmitted(ctx, c.id); err != nil {
+						t.Fatal(err)
+					}
+				}
+			}
+			at := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+			for _, w := range []struct {
+				id     string
+				at     time.Time
+				reason string
+			}{{"t-b", at, "resumed: first"}, {"t-a", at.Add(time.Minute), "resumed: second"}, {"t-b", at.Add(2 * time.Minute), "resumed: refreshed"}} {
+				if err := s.SetResumeWait(ctx, w.id, w.reason, w.at); err != nil {
+					t.Fatal(err)
+				}
+			}
+			waiters, err := s.ResumeWaiters(ctx, "sf/r")
+			if err != nil || len(waiters) != 2 || waiters[0].ID != "t-b" || waiters[1].ID != "t-a" {
+				t.Fatalf("waiters = %+v (err %v), want t-b then t-a", waiters, err)
+			}
+			b := waiters[0]
+			if b.Status != "queued" || b.QueueReason != "resumed: refreshed" || !b.ResumedAt.Equal(at) || !b.QueueSince.Equal(at) {
+				t.Fatalf("t-b = %s, %q, resumed %v, since %v; want queued, the refreshed reason, the first wait's time", b.Status, b.QueueReason, b.ResumedAt, b.QueueSince)
+			}
+			if n, err := s.CountAdmitted(ctx, "sf/r"); err != nil || n != 1 {
+				t.Fatalf("CountAdmitted = %d (err %v), want 1: the waiters hold no slot", n, err)
+			}
+			if queued, err := s.ListQueuedByRepository(ctx, "sf/r"); err != nil || len(queued) != 1 || queued[0].ID != "t-new" {
+				t.Fatalf("queued = %+v (err %v), want only the never-started t-new", queued, err)
+			}
+			if err := s.SetResumeWait(ctx, "t-new", "resumed: no", at); err != nil {
+				t.Fatal(err)
+			}
+			if n, _ := s.ResumeWaiters(ctx, "sf/r"); len(n) != 2 {
+				t.Fatalf("a never-started card became a resumed waiter: %+v", n)
+			}
+			if err := s.MarkStarted(ctx, "t-b"); err != nil {
+				t.Fatal(err)
+			}
+			started, _, _ := s.Task(ctx, "t-b")
+			if started.Status != "running" || started.ResumedAt != nil || started.QueueReason != "" || started.QueueSince != nil {
+				t.Fatalf("t-b after MarkStarted = %s, resumed %v, reason %q, since %v", started.Status, started.ResumedAt, started.QueueReason, started.QueueSince)
+			}
+			if n, _ := s.CountAdmitted(ctx, "sf/r"); n != 2 {
+				t.Fatalf("CountAdmitted = %d, want 2 with t-b running", n)
+			}
+		})
+	}
+}
