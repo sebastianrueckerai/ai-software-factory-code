@@ -92,6 +92,7 @@ type session struct {
 	brief          harness.TaskBrief
 	oc             *factoryd.Opencode
 	gate           *pushGate
+	wip            *wipServe
 	ck             *checkpointer // nil for a report session
 	tel            *sessionTelemetry
 	outcome        string // for the session's duration metric
@@ -145,6 +146,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	}
 	var commit string
 	var pushErr error
+	asked := s.wip.asks.Load()
 	res = deliver(res, stopped, func() (string, error) {
 		endPush := s.tel.phase("push")
 		commit, pushErr = commitAndPush(s.repoDir, s.env, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
@@ -153,6 +155,9 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 		endPush(pushErr)
 		return commit, pushErr
 	}, s.env.branch, emit)
+	if errors.Is(pushErr, errPushOverBound) && !s.wip.holdForAsk(asked, overBoundHold) {
+		log("factoryd did not ask for the work the line bound refused within %s", overBoundHold)
+	}
 	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
 	s.writeResult(stdout, res)
 	if !res.Success {
@@ -284,6 +289,7 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	s.gate = newPushGate()
 	checkin := newCheckinServe(ws, log)
 	wip := newWipServe(s.env, s.repoDir, s.base, s.mainHead, log)
+	s.wip = wip
 	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
 		if model != "" {
 			s.oc.SetModel(model)

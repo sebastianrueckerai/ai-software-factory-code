@@ -2051,3 +2051,30 @@ func TestWipPartsListingFailureIsUnread(t *testing.T) {
 		t.Fatalf("parts = %+v, want unread", got)
 	}
 }
+
+// A session whose end push the line bound refuses (work that came after the
+// size trip, or inside the last checkpoint window) is not lost with its
+// pod: factoryd takes the finished work through the interim push when the
+// worker reports the refusal, and the result carries the head.
+func TestEndPushRefusedOverTheBoundTakesTheWorkThroughTheInterimPush(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
+	})
+	refused := harness.Event{Kind: harness.EventPushFailed, Time: time.Now(), Detail: map[string]any{"branch": "factory/t2",
+		"error": ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound"}}
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		envLine(refused)+"\n"+resultLine(false, "push failed: "+ErrPushOverBound.Error()))
+	if err != nil {
+		t.Fatal(err)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if tip == serve.base {
+		t.Fatal("the task branch holds the start alone: the refused work died with the pod")
+	}
+	if res.Commit != tip {
+		t.Fatalf("result commit = %q, want the interim head %s", res.Commit, tip)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
+		t.Fatalf("wip_pushed steps = %d, want the one interim push", n)
+	}
+}

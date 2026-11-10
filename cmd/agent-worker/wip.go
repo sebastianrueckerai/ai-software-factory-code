@@ -20,6 +20,8 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"time"
 )
 
 // wipBundleCap bounds the bundle one answer streams: factoryd's own bound
@@ -39,7 +41,8 @@ type wipServe struct {
 	// from
 	base, mainHead string
 	log            func(string, ...any)
-	mu             sync.Mutex // one /wip at a time
+	mu             sync.Mutex   // one /wip at a time
+	asks           atomic.Int64 // the /wip asks answered
 	// probe is a test's look at the staging repo before it is removed,
 	// probeEnv at the environment of each git the /wip path spawns.
 	probe, probeEnv func(dirOrEnv string)
@@ -57,6 +60,7 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		}
 		w.mu.Lock()
 		defer w.mu.Unlock()
+		defer w.asks.Add(1)
 		commit, bundle, done, err := w.stage()
 		if done != nil {
 			// the staging repo outlives the body it answers, and a failed
@@ -89,6 +93,28 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		rw.Header().Set("Content-Length", strconv.FormatInt(fi.Size(), 10))
 		io.Copy(rw, f) // #nosec G104 -- best-effort response write
 	})
+}
+
+// overBoundHold is the longest a session whose end push the line bound
+// refused holds its endpoint for factoryd's ask of the finished work.
+const overBoundHold = 90 * time.Second
+
+// holdForAsk waits until a /wip ask after the one that made since is
+// answered, or until d: the result line, which ends the pod, waits behind
+// it.
+func (w *wipServe) holdForAsk(since int64, d time.Duration) bool {
+	timeout := time.NewTimer(d)
+	defer timeout.Stop()
+	tick := time.NewTicker(50 * time.Millisecond)
+	defer tick.Stop()
+	for w.asks.Load() <= since {
+		select {
+		case <-timeout.C:
+			return false
+		case <-tick.C:
+		}
+	}
+	return true
 }
 
 // stage builds snapshot's answer with the staging repo held open: the

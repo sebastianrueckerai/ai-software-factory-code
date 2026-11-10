@@ -1137,6 +1137,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			now := time.Now()
 			digest.add(*ev, now)
+			// the worker holds its endpoint after an end push the line bound
+			// refused, until the finished work is shipped: it is the card's
+			// work, though over the bound, and no pod keeps it
+			if ev.Kind == harness.EventPushFailed && strings.Contains(detailString(*ev, "error"), ErrPushOverBound.Error()) {
+				out.wip = cmp.Or(r.interimPush(ctx, t, s, ns, podName, workerStop).head, out.wip)
+			}
 			trip := sup.Event(*ev, now)
 			if n := sup.TakeNudge(); n != nil && trip == nil {
 				trip = r.nudge(ctx, t, s, sup, ns, podName, s.messageToken, *n)

@@ -318,3 +318,26 @@ func TestWipFailedStageRemovesStagingDir(t *testing.T) {
 		t.Fatalf("the failed POST left %d staging dir(s) behind: %v", len(leaks), leaks)
 	}
 }
+
+// A session whose end push the line bound refused holds its result until
+// factoryd's /wip ask is answered, so the finished work leaves the pod; with
+// no ask it lets go at its bound.
+func TestWipHoldForAskWaitsForTheNextAnswer(t *testing.T) {
+	h, wip, _, _, _, _, _, _ := seedWipSession(t)
+	if wip.holdForAsk(wip.asks.Load(), 100*time.Millisecond) {
+		t.Fatal("the hold ended with no ask")
+	}
+	since := wip.asks.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	time.Sleep(100 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the hold ended before any ask")
+	default:
+	}
+	postWip(t, h)
+	if !<-done {
+		t.Fatal("the hold ran out although an ask was answered")
+	}
+}
