@@ -10,6 +10,7 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -45,6 +46,7 @@ type PriceBook struct {
 	mu       sync.Mutex
 	prices   map[string]Price
 	unpriced map[string]bool
+	deploys  map[string][]string
 	at       time.Time
 }
 
@@ -62,22 +64,8 @@ const (
 func (b *PriceBook) Price(ctx context.Context, alias string) (Price, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
-	ttl := b.TTL
-	if ttl == 0 {
-		ttl = PriceTTL
-	}
-	if b.prices == nil || time.Since(b.at) >= ttl {
-		prices, unpriced, err := b.fetch(ctx)
-		switch {
-		case err == nil:
-			b.prices, b.unpriced, b.at = prices, unpriced, time.Now()
-		case b.prices == nil:
-			return Price{}, fmt.Errorf("LiteLLM prices: %w", err)
-		case time.Since(b.at) >= PriceStaleAfter*ttl:
-			return Price{}, fmt.Errorf("LiteLLM prices: %w; the table from %s is too old to use", err, b.at.Format(time.RFC3339))
-		default:
-			log.Printf("LiteLLM prices: %v; keeping the table from %s", err, b.at.Format(time.RFC3339))
-		}
+	if err := b.load(ctx); err != nil {
+		return Price{}, err
 	}
 	p, ok := b.prices[alias]
 	if !ok {
@@ -89,10 +77,50 @@ func (b *PriceBook) Price(ctx context.Context, alias string) (Price, error) {
 	return p, nil
 }
 
-func (b *PriceBook) fetch(ctx context.Context) (map[string]Price, map[string]bool, error) {
+// Deployments are the deployments of alias as LiteLLM names them in
+// litellm_params.model (provider/model), from the same table the prices
+// come from, so a failed refresh keeps the last good answer.
+func (b *PriceBook) Deployments(ctx context.Context, alias string) ([]string, error) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if err := b.load(ctx); err != nil {
+		return nil, err
+	}
+	d, ok := b.deploys[alias]
+	if !ok {
+		return nil, fmt.Errorf("LiteLLM has no model %q", alias)
+	}
+	return d, nil
+}
+
+// load refreshes the table when it is older than the TTL; the caller holds
+// b.mu.
+func (b *PriceBook) load(ctx context.Context) error {
+	ttl := b.TTL
+	if ttl == 0 {
+		ttl = PriceTTL
+	}
+	if b.prices != nil && time.Since(b.at) < ttl {
+		return nil
+	}
+	prices, unpriced, deploys, err := b.fetch(ctx)
+	switch {
+	case err == nil:
+		b.prices, b.unpriced, b.deploys, b.at = prices, unpriced, deploys, time.Now()
+	case b.prices == nil:
+		return fmt.Errorf("LiteLLM prices: %w", err)
+	case time.Since(b.at) >= PriceStaleAfter*ttl:
+		return fmt.Errorf("LiteLLM prices: %w; the table from %s is too old to use", err, b.at.Format(time.RFC3339))
+	default:
+		log.Printf("LiteLLM prices: %v; keeping the table from %s", err, b.at.Format(time.RFC3339))
+	}
+	return nil
+}
+
+func (b *PriceBook) fetch(ctx context.Context) (map[string]Price, map[string]bool, map[string][]string, error) {
 	req, err := http.NewRequestWithContext(ctx, http.MethodGet, b.BaseURL+"/model/info", nil)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	req.Header.Set("Authorization", "Bearer "+b.MasterKey)
 	client := b.HTTP
@@ -101,17 +129,21 @@ func (b *PriceBook) fetch(ctx context.Context) (map[string]Price, map[string]boo
 	}
 	res, err := client.Do(req)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	defer res.Body.Close()
 	body, err := io.ReadAll(io.LimitReader(res.Body, 8<<20))
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	if res.StatusCode != http.StatusOK {
-		return nil, nil, fmt.Errorf("GET /model/info: status %d", res.StatusCode)
+		return nil, nil, nil, fmt.Errorf("GET /model/info: status %d", res.StatusCode)
 	}
-	return parseModelInfo(body)
+	prices, unpriced, err := parseModelInfo(body)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	return prices, unpriced, parseDeployments(body), nil
 }
 
 func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
@@ -164,6 +196,28 @@ func parseModelInfo(body []byte) (map[string]Price, map[string]bool, error) {
 // second, image, character, ...) is a charge the hold cannot bound, and so
 // is any cost multiplier (regional uplifts): the deployment counts as
 // unpriced.
+// parseDeployments reads each model_name's litellm_params.model.
+func parseDeployments(body []byte) map[string][]string {
+	var info struct {
+		Data []struct {
+			ModelName     string `json:"model_name"`
+			LiteLLMParams struct {
+				Model string `json:"model"`
+			} `json:"litellm_params"`
+		} `json:"data"`
+	}
+	out := map[string][]string{}
+	if json.Unmarshal(body, &info) != nil {
+		return out
+	}
+	for _, d := range info.Data {
+		if m := d.LiteLLMParams.Model; m != "" && !slices.Contains(out[d.ModelName], m) {
+			out[d.ModelName] = append(out[d.ModelName], m)
+		}
+	}
+	return out
+}
+
 func deploymentPrice(mi map[string]json.RawMessage, residency bool) (Price, error) {
 	var p Price
 	openai := string(mi["litellm_provider"]) == `"openai"`
