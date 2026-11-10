@@ -1817,6 +1817,7 @@ func (r *Runner) TaskConfig(ctx context.Context, taskID string, pin int64) (Task
 		tc.StrongerAfter = 1
 	}
 	tc.AgentTime, tc.CheckIn = v.Document.TimeOf(tc.Class, p, project)
+	tc.ChecksBound, tc.SupervisorTimeout = v.ChecksBound(t.Repository), v.Document.Limits.SupervisorTimeout
 	tc.NoAudit = !project.Audit
 	tc.Sessions = SessionCap(t, 0)
 	return tc, nil
@@ -2143,7 +2144,7 @@ func (r *Runner) WaitChecks(ctx context.Context, taskID, sha string) (ChecksResu
 	if err != nil {
 		return ChecksResult{}, err
 	}
-	deadline := earliest(activity.GetInfo(ctx).Deadline.Add(-time.Minute), time.Now().Add(r.cfg.ChecksTimeout))
+	deadline := activity.GetInfo(ctx).Deadline.Add(-r.checksMargin)
 	var reran []rerunNote
 	for {
 		cs, err := r.forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)

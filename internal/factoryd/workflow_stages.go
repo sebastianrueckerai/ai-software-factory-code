@@ -642,7 +642,7 @@ func (t *taskRun) runStage(name string, head *string, g *GateResults, review *Re
 		case ChecksSuccess:
 			g.ChecksPassed = true
 		case ChecksTimeout:
-			return nil, verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}, true
+			return nil, verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.checksBound())}, true
 		case ChecksFailure:
 			findings := checks.Findings
 			if len(findings) == 0 {
@@ -1148,7 +1148,7 @@ func (t *taskRun) headGreen(commit string, g GateResults, card *[]string) (v ver
 	case ChecksSuccess:
 		return verdict{}, false, false
 	case ChecksTimeout:
-		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}, true, false
+		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.checksBound())}, true, false
 	}
 	// ChecksFailure lands here, and ChecksPending with it on a run from
 	// before versionApprovalPending, whose guard sent the pending checks

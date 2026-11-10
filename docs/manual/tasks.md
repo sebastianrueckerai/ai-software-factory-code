@@ -163,7 +163,7 @@ its number on the task; a commit whose `.forgejo`, `.gitea` or `.github`
 tree entry differs from the base's gets no PR, and an already open one is
 closed with the reason), `SetState in-review`, `WaitChecks` on the head commit's
 combined status, which Forgejo records on the base repository
-(`CHECKS_TIMEOUT`, default 45m). A task that fails (its issue closed,
+(bound `waits.checks`, default 50m). A task that fails (its issue closed,
 its PR closed unmerged, the ladder exhausted) closes its open PR, found
 by number or, when none was recorded, by its branch on the fork, and
 then comments the reason on it once (the comment follows the close, so a

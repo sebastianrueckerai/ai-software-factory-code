@@ -52,7 +52,6 @@ type RunnerConfig struct {
 	Models               ModelLadder
 	AnswerTokens         int
 	HeadroomTokens       int
-	ChecksTimeout        time.Duration // how long WaitChecks waits for the PR head's combined status
 	ChecksPoll           time.Duration
 	// Bus receives a session_said event for each model call's text, for
 	// the drawer's Chat; nil publishes none.
@@ -140,6 +139,9 @@ type Runner struct {
 	// shortens it
 	endpointWait time.Duration
 	stopWait     time.Duration
+	// checksMargin is how long before its activity deadline WaitChecks ends
+	// its poll with the checks timeout
+	checksMargin time.Duration
 	cheapCap     time.Duration // cheapAttemptCap; a test shortens it
 	tick         time.Duration // the supervision tick; a test sets it
 	// startPoll is how often a pod's start is read, configGrace how long a
@@ -391,9 +393,6 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	if cfg.ReproTimeout > MaxReproTimeout {
 		return nil, fmt.Errorf("runner: a reproduction timeout of %s exceeds %s", cfg.ReproTimeout, MaxReproTimeout)
 	}
-	if cfg.ChecksTimeout <= 0 {
-		cfg.ChecksTimeout = 45 * time.Minute
-	}
 	if cfg.Metrics == nil {
 		cfg.Metrics = telemetry.Noop()
 	}
@@ -411,7 +410,7 @@ func NewRunner(cfg RunnerConfig, store Store, kube Kube, forgejo *Forgejo, compl
 	runner := &Runner{cfg: cfg, store: store, kube: kube, forgejo: forgejo, completion: completion, supervisor: supervisor,
 		checkin: &checkinGateway{URL: supervisor.GatewayURL, Token: supervisor.Token}, endpointWait: checkinBriefWait,
 		objects: objects, timeline: cfg.Timeline, stopWait: (workerTerminationGrace + 5) * time.Second, cheapCap: cheapAttemptCap,
-		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New()}
+		startPoll: 2 * time.Second, configGrace: configErrorGrace, booted: time.Now(), Scrub: redact.New(), checksMargin: checksPollMargin}
 	return runner, nil
 }
 
@@ -424,7 +423,6 @@ func (r *Runner) WorkflowConfig() WorkflowConfig {
 		Models:        r.cfg.Models,
 		MaxSessions:   l.Sessions,
 		WallClockCap:  l.AgentTime,
-		ChecksTimeout: r.cfg.ChecksTimeout,
 		StrongerAfter: l.StrongerAfter,
 		PolicyVersion: v.ID,
 	}

@@ -31,6 +31,10 @@ type Waits struct {
 	// RungAnswer is how long a rung may take to answer a case step.
 	// Default 35m.
 	RungAnswer time.Duration `yaml:"rung_answer,omitempty" json:"rung_answer,omitempty"`
+	// Checks is how long a card may wait on its pull request's checks:
+	// CI's own bound, the longest job's timeout plus a margin. Default
+	// 50m.
+	Checks time.Duration `yaml:"checks,omitempty" json:"checks,omitempty"`
 	// NoPushSessions is how many sessions in a row may end without a push.
 	// Default 3.
 	NoPushSessions int `yaml:"no_push_sessions,omitempty" json:"no_push_sessions,omitempty"`
@@ -38,7 +42,7 @@ type Waits struct {
 
 // DefaultWaits fills what the files leave out, bound by bound.
 var DefaultWaits = Waits{Queued: 2 * time.Hour, Dependency: 48 * time.Hour, Gate: 6 * time.Hour, MergeRetry: time.Hour,
-	ProviderBackoff: 30 * time.Minute, RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, NoPushSessions: 3}
+	ProviderBackoff: 30 * time.Minute, RunQuiet: 30 * time.Minute, RungAnswer: 35 * time.Minute, Checks: 50 * time.Minute, NoPushSessions: 3}
 
 // maxWait is the longest bound a file may give a wait.
 const maxWait = 7 * 24 * time.Hour
@@ -50,9 +54,9 @@ type waitBound struct {
 }
 
 // bounds are w's timed bounds by their keys.
-func (w *Waits) bounds() [7]waitBound {
-	return [7]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
-		{"provider_backoff", &w.ProviderBackoff}, {"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}}
+func (w *Waits) bounds() [8]waitBound {
+	return [8]waitBound{{"queued", &w.Queued}, {"dependency", &w.Dependency}, {"gate", &w.Gate}, {"merge_retry", &w.MergeRetry},
+		{"provider_backoff", &w.ProviderBackoff}, {"run_quiet", &w.RunQuiet}, {"rung_answer", &w.RungAnswer}, {"checks", &w.Checks}}
 }
 
 // Bound is the bound of one wait kind by its key, such as "queued" or
@@ -71,6 +75,15 @@ func (w Waits) Bound(kind string) time.Duration {
 func (t Tree) WaitsOf(repository string) Waits {
 	_, p, _ := t.ProjectOf(repository)
 	return t.Document.waitsOf(p)
+}
+
+// ChecksBound is the checks wait's bound for repository: policy.yaml's
+// bounds: WaitChecks when it names one, else the repository's waits.checks.
+func (t Tree) ChecksBound(repository string) time.Duration {
+	if _, ok := t.Document.Bounds["WaitChecks"]; ok {
+		return t.Document.Bound("WaitChecks")
+	}
+	return t.WaitsOf(repository).Checks
 }
 
 func (d Document) waitsOf(p ProjectConfig) Waits {
@@ -113,12 +126,13 @@ type waitsJSON struct {
 	ProviderBackoff string `json:"provider_backoff,omitempty"`
 	RunQuiet        string `json:"run_quiet,omitempty"`
 	RungAnswer      string `json:"rung_answer,omitempty"`
+	Checks          string `json:"checks,omitempty"`
 	NoPushSessions  int    `json:"no_push_sessions,omitempty"`
 }
 
 // strings are j's bounds in the order of Waits.bounds.
-func (j *waitsJSON) strings() [7]*string {
-	return [7]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.RunQuiet, &j.RungAnswer}
+func (j *waitsJSON) strings() [8]*string {
+	return [8]*string{&j.Queued, &j.Dependency, &j.Gate, &j.MergeRetry, &j.ProviderBackoff, &j.RunQuiet, &j.RungAnswer, &j.Checks}
 }
 
 // MarshalJSON is Waits as waitsJSON, its bounds strings, as Limits'.

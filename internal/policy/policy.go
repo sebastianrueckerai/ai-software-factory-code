@@ -817,8 +817,9 @@ const BoundDefault = "default"
 // DefaultBounds are the bounds a policy without them gets: a merge attempt is one API call under a 2-minute timeout, its
 // retries on workflow timers. RunSession, RunReport, Screen,
 // SuperviseGate, ModelReview and GateAudit follow the limits (Bound).
+// WaitChecks follows the waits row (waits.checks), not a bounds default.
 var DefaultBounds = map[string]int{
-	"WaitChecks": 600, "GateReproduction": 900, "GateCriteria": 900, "ProofsAtMain": 900, "Merge": 90, BoundDefault: 120,
+	"GateReproduction": 900, "GateCriteria": 900, "ProofsAtMain": 900, "Merge": 90, BoundDefault: 120,
 }
 
 // BoundActivities are factoryd's activity names, the keys bounds takes
@@ -836,18 +837,23 @@ var BoundActivities = []string{
 // (a session at the cap is stopped by the cap already), for a screening
 // or a sizing the agent time plus two (its pod start), for the gate
 // supervisor its call's timeout plus two and for the model review and the
-// audit their ReviewParts calls' timeouts plus two (PartsBound); else
-// DefaultBounds' for it, else the policy's default, else DefaultBounds'
+// audit their ReviewParts calls' timeouts plus two (PartsBound); for the
+// checks wait the waits row waits.checks, its default DefaultWaits.Checks;
+// else DefaultBounds' for it, else the policy's default, else DefaultBounds'
 // default.
 func (d Document) Bound(activity string) time.Duration { return d.PartsBound(activity, ReviewParts) }
 
 // PartsBound is Bound for a model review or an audit whose diff reads in
 // parts calls, one part's timeout each: a one-part review is bound at one
-// call's timeout plus two minutes. Any other activity's is Bound's.
+// call's timeout plus two minutes. Any other activity's is Bound's. The
+// checks wait reads its bound from the waits row (an explicit
+// bounds: WaitChecks overrides it).
 func (d Document) PartsBound(activity string, parts int) time.Duration {
 	s, ok := d.Bounds[activity]
 	switch {
 	case ok:
+	case activity == "WaitChecks":
+		return cmp.Or(d.Waits.Checks, DefaultWaits.Checks)
 	case activity == "RunSession" || activity == "RunReport" || activity == "RunPlan":
 		return SizeAgentTime("large", d.Limits.AgentTime) + time.Minute
 	case activity == "Screen" || activity == "SizeCard":

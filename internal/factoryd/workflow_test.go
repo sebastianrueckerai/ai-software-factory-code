@@ -42,7 +42,6 @@ var testWorkflowConfig = WorkflowConfig{
 	MaxSessions:   3,
 	WallClockCap:  20 * time.Minute,
 	AnswerSlice:   10 * time.Minute,
-	ChecksTimeout: 45 * time.Minute,
 	PolicyVersion: 7,
 	StrongerAfter: 1,
 	Stages:        testStages(),
@@ -858,6 +857,31 @@ func TestWorkflowSessionCapAfterAChangeRequestOpensTheCard(t *testing.T) {
 		!slices.Equal(h.sessions[1].Findings, []string{change}) ||
 		!slices.Equal(h.sessions[1].Answers, []string{`sebastian, to "` + capReached + `": alias it`}) {
 		t.Fatalf("sessions = %+v, want the fourth from c3 with the change request and the answer", h.sessions)
+	}
+}
+
+// The checks wait's bound is the card's project's: TaskConfig carries
+// policy.yaml's waits.checks of the pinned version (the fixture's 40m), and
+// a project that shortens it to 30m wins.
+func TestTaskConfigCarriesTheChecksBound(t *testing.T) {
+	for _, tc := range []struct {
+		name    string
+		project *policy.Waits
+		want    time.Duration
+	}{
+		{"policy", nil, 40 * time.Minute},
+		{"project", &policy.Waits{Checks: 30 * time.Minute}, 30 * time.Minute},
+	} {
+		pinned := fixtureVersion(t)
+		demo := pinned.Projects["demo-app"]
+		demo.Waits = tc.project
+		pinned.Projects["demo-app"] = demo
+		r, _, _ := newActivityRunner(t, Task{ID: "t1", Kind: "agent", Status: "queued", Repository: "demo-app/demo-app", Source: "webhook", Track: "direct"}, &prForgejo{})
+		r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+		val, err := execActivity(t, r, ActivityTaskConfig, "t1", int64(7))
+		if got := getInto[TaskConfig](t, val, err); got.ChecksBound != tc.want || got.SupervisorTimeout != pinned.Document.Limits.SupervisorTimeout {
+			t.Errorf("%s: TaskConfig checks bound %s and supervisor timeout %s, want %s and the pinned limit", tc.name, got.ChecksBound, got.SupervisorTimeout, tc.want)
+		}
 	}
 }
 
@@ -2471,7 +2495,7 @@ func TestWorkflowChecksTimeoutFails(t *testing.T) {
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksTimeout})
 
-	if final := h.run(t); final != "failed" || !strings.Contains(h.finals[0][1], "checks did not finish within 45m0s") {
+	if final := h.run(t); final != "failed" || !strings.Contains(h.finals[0][1], "checks did not finish within 50m0s") {
 		t.Fatalf("final = %q, reason = %q", final, h.finals[0][1])
 	}
 }
@@ -6062,6 +6086,52 @@ func TestWorkflowRunsNoProofsAtMainOffAPlanCardOrAfterAPush(t *testing.T) {
 			}
 			if len(*calls) != 0 || len(h.sessions) != len(tc.sessions) {
 				t.Fatalf("calls %q, sessions %d; want none and %d", *calls, len(h.sessions), len(tc.sessions))
+			}
+		})
+	}
+}
+
+// [checks_wait_timeout_50m] A current run schedules WaitChecks with the
+// supervisor's whole budget after the bound: start-to-close = bound + 1m of
+// the supervisor's reads + the pinned supervisor_timeout + 2m, so the trip
+// at the bound is the one stop. At the shipped policy's 6m supervisor_timeout 50m + 1m + 6m + 2m = 59m; at
+// a project bound of 12m and a supervisor_timeout of 3m, 12m + 1m + 3m + 2m
+// = 18m. A run from before the change keeps its recorded 45m + 1m = 46m, and
+// its timeout text names 45m.
+func TestWorkflowChecksWaitTimeoutFollowsItsBound(t *testing.T) {
+	for _, tc := range []struct {
+		name       string
+		bound      time.Duration // TaskConfig.ChecksBound
+		supervisor time.Duration // TaskConfig.SupervisorTimeout
+		before     bool
+		want       time.Duration
+		text       string
+	}{
+		{"default bound", 0, 6 * time.Minute, false, 59 * time.Minute, "50m0s"},
+		{"bound of 12m", 12 * time.Minute, 3 * time.Minute, false, 18 * time.Minute, "12m0s"},
+		{"run from before", 12 * time.Minute, 3 * time.Minute, true, 46 * time.Minute, "45m0s"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: testStages(), Queue: policy.QueueNone, ChecksBound: tc.bound, SupervisorTimeout: tc.supervisor}
+			if tc.before {
+				h.env.OnGetVersion("checks-wait", workflow.DefaultVersion, versionChecksWait).Return(workflow.DefaultVersion)
+			}
+			h.onSessions(pushed("s1", "c1"))
+			h.onChecks(ChecksResult{State: ChecksTimeout})
+			var got time.Duration
+			h.env.SetOnActivityStartedListener(func(info *activity.Info, _ context.Context, _ converter.EncodedValues) {
+				if info.ActivityType.Name == ActivityWaitChecks {
+					got = info.StartToCloseTimeout
+				}
+			})
+			h.run(t)
+			if got != tc.want {
+				t.Fatalf("WaitChecks start-to-close = %s, want %s", got, tc.want)
+			}
+			if r := h.finals[0][1]; !strings.Contains(r, "checks did not finish within "+tc.text) {
+				t.Fatalf("reason = %q, want it to name %s", r, tc.text)
 			}
 		})
 	}

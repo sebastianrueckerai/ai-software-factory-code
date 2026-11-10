@@ -216,8 +216,7 @@ type WorkflowConfig struct {
 	// it bought, for a run from before the change id "answer-slice": kept
 	// only so that history still replays. A current run computes the
 	// slice as a quarter of WallClockCap (grant).
-	AnswerSlice   time.Duration
-	ChecksTimeout time.Duration
+	AnswerSlice time.Duration
 	// StrongerAfter is how many returns from the same stage keep the
 	// model; the next takes the stronger rung (limits.stronger_after).
 	StrongerAfter int
@@ -250,6 +249,13 @@ type TaskConfig struct {
 	// session's own policy limits.
 	AgentTime time.Duration
 	CheckIn   time.Duration
+	// ChecksBound is the checks wait's bound for the task's repository
+	// (policy.Tree.ChecksBound), which its timeout follows; zero for a run
+	// from before versionChecksWait.
+	ChecksBound time.Duration
+	// SupervisorTimeout is the pinned limits.supervisor_timeout, which the
+	// checks wait's timeout leaves the gate supervisor after its trip.
+	SupervisorTimeout time.Duration
 	// Stronger: the project's file sets model: stronger and this is a
 	// coding card (Session code); the card's first session runs on
 	// WorkflowConfig.Models.Stronger instead of Models.Start. A run from
@@ -636,6 +642,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
 	run.caseQueue = workflow.GetVersion(ctx, "case-queue", workflow.DefaultVersion, versionCaseQueue)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
+	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1319,6 +1326,11 @@ const (
 	// run from before holds its entry through the approval wait and the
 	// merge.
 	versionQueueWaits workflow.Version = 1
+	// versionChecksWait (change id "checks-wait"): the checks wait's own
+	// activity timeout follows its bound, the waits row waits.checks, so
+	// the wait outlives it by the supervisor's whole budget. A run from
+	// before keeps its recorded 45m + 1m options.
+	versionChecksWait workflow.Version = 1
 	// versionCheckinAnswer (change id "checkin-answer"): the answer to a
 	// check-in stop goes on from the session's own push, not the head it
 	// started from; the answer to a share stop with the pull request open
@@ -1575,6 +1587,9 @@ type taskRun struct {
 	// changesBy is the writer of the newest change request drained, whose
 	// session a change request at the cap draws (versionCases)
 	changesBy string
+	// checksWait: the checks wait's own timeout follows its bound
+	// (versionChecksWait)
+	checksWait workflow.Version
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
@@ -3182,7 +3197,7 @@ func (t *taskRun) verify(commit string) (v verdict) {
 	case ChecksFailure:
 		return verdict{findings: checks.Findings, stronger: true, reason: "checks failed"}
 	case ChecksTimeout:
-		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.cfg.ChecksTimeout)}
+		return verdict{final: "failed", reason: fmt.Sprintf("checks did not finish within %s", t.checksBound())}
 	}
 	if t.v6 >= versionGates {
 		return t.gate(commit)
@@ -4249,10 +4264,13 @@ func (t *taskRun) endTrips() {
 func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	// a session's wait would trip again past its own start-to-close, and
 	// so would any wait whose doubled bound outlasts the attempt (a merge:
-	// 2 x 90 s against 2 min); a retry on the last attempt would fail the
-	// activity
+	// 2 x 90 s against 2 min; the checks wait from versionChecksWait on,
+	// whose poll ends a minute after the first trip's supervisor budget, so
+	// a second wait could not run, offers none);
+	// a retry on the last attempt would fail the activity
 	maxAttempts := run.opts.RetryPolicy.MaximumAttempts
-	in := GateSupervision{Trip: trip, Input: run.args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < run.opts.StartToCloseTimeout,
+	in := GateSupervision{Trip: trip, Input: run.args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < run.opts.StartToCloseTimeout &&
+		!(trip.Activity == ActivityWaitChecks && t.checksWait >= versionChecksWait),
 		CanRetry: !run.retried && (maxAttempts == 0 || trip.Attempt < maxAttempts), PolicyVersion: t.cfg.PolicyVersion}
 	return workflow.ExecuteActivity(workflow.WithActivityOptions(t.ctx, reviewOptions()), ActivitySuperviseGate, t.taskID, in)
 }
@@ -4310,10 +4328,38 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 	}
 }
 
+// checksPollMargin is how long the checks wait's poll ends before its
+// activity's deadline.
+const checksPollMargin = time.Minute
+
+// legacyChecksTimeout is the checks wait's limit for a run from before
+// versionChecksWait.
+const legacyChecksTimeout = 45 * time.Minute
+
+// checksBound is how long the checks wait runs before the gate watch trips:
+// the bound of the card's project (waits.checks, policy.Tree.ChecksBound);
+// a run from before versionChecksWait keeps 45m.
+func (t *taskRun) checksBound() time.Duration {
+	if t.checksWait < versionChecksWait {
+		return legacyChecksTimeout
+	}
+	return cmp.Or(t.cfg.Task.ChecksBound, policy.DefaultWaits.Checks)
+}
+
+// checksOptions: the checks wait outlives its bound by the gate
+// supervisor's whole budget, so the trip at the bound is the one stop path
+// (versionChecksWait): its start-to-close is the bound, a minute of the
+// supervisor's reads (bundleReads), the pinned supervisor_timeout and two
+// minutes; its poll ends one minute before that. A run from before keeps
+// its recorded 45m + 1m.
 func (t *taskRun) checksOptions() workflow.ActivityOptions {
+	timeout := t.checksBound() + checksPollMargin
+	if t.checksWait >= versionChecksWait {
+		timeout += bundleReads + cmp.Or(t.cfg.Task.SupervisorTimeout, policy.MaxSupervisorTimeout) + time.Minute
+	}
 	return workflow.ActivityOptions{
-		StartToCloseTimeout:    t.cfg.ChecksTimeout + time.Minute,
-		ScheduleToCloseTimeout: t.cfg.ChecksTimeout + time.Minute,
+		StartToCloseTimeout:    timeout,
+		ScheduleToCloseTimeout: timeout,
 		HeartbeatTimeout:       2 * time.Minute,
 		RetryPolicy: &temporal.RetryPolicy{
 			InitialInterval:        10 * time.Second,

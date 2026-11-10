@@ -181,7 +181,6 @@ func main() {
 		Bus:                  eventBus,
 		AnswerTokens:         envInt("ANSWER_TOKENS", 8192),
 		HeadroomTokens:       envInt("HEADROOM_TOKENS", 16384),
-		ChecksTimeout:        envDuration("CHECKS_TIMEOUT", 45*time.Minute),
 		Supervisor: factoryd.SupervisorConfig{
 			RepetitionEvents: envInt("SUPERVISE_READING_WITHOUT_WRITING", 24),
 			SameFailure:      envInt("SUPERVISE_SAME_FAILURE", factoryd.DefaultSameFailure),

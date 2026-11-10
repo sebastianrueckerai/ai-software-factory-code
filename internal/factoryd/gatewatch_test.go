@@ -444,3 +444,133 @@ func TestActivityPin(t *testing.T) {
 		}
 	}
 }
+
+// [no_trip_while_ci_runs] The checks wait's bound is its project's waits.checks
+// under the pinned version, never the old code default of 10 min: a wait of
+// a project that sets 12m is bound at 12m, so no alert has been written at
+// 10m, and the one the bound's timer writes carries Bound 12m0s and trips
+// the workflow; a project that sets none is bound at policy.yaml's 40m.
+func TestGateWatchChecksWaitTripsAtTheProjectBound(t *testing.T) {
+	pinned := fixtureVersion(t)
+	demo := pinned.Projects["demo-app"]
+	demo.Waits = &policy.Waits{Checks: 12 * time.Minute}
+	pinned.Projects["demo-app"] = demo
+	for repository, want := range map[string]time.Duration{"demo-app/demo-app": 12 * time.Minute, "linkshort/linkshort": 40 * time.Minute} {
+		store := newFakeStore()
+		store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: repository})
+		sig := &signalled{}
+		g := &GateWatch{Store: store, Signal: sig.signal, Bound: PinnedBound(func() policy.Version { return pinned },
+			func(context.Context, int64) (policy.Version, bool, error) { return pinned, false, nil })}
+		env := signallingEnv(g)
+		var bound time.Duration
+		var alertsBefore int
+		env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error {
+			info := activity.GetInfo(ctx)
+			g.mu.Lock()
+			run := g.runs[runKey(info.WorkflowExecution.ID, info.ActivityID)]
+			g.mu.Unlock()
+			bound, alertsBefore = run.bound, len(store.alertRows())
+			run.raise(run.bound, false)
+			return nil
+		}, activity.RegisterOptions{Name: ActivityWaitChecks})
+		if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		if bound != want || alertsBefore != 0 {
+			t.Fatalf("%s: bound %s with %d alerts before it, want %s and none (10m is inside it)", repository, bound, alertsBefore, want)
+		}
+		trips, _ := sig.got()
+		rows := store.alertRows()
+		if len(trips) != 1 || trips[0].Bound != want || len(rows) != 1 || rows[0].BoundS != int(want.Seconds()) {
+			t.Fatalf("%s: trips %+v, alerts %+v, want one of each at %s", repository, trips, rows, want)
+		}
+	}
+}
+
+// PinnedBound reads the checks wait's bound from the pinned version's
+// waits row: 12m under waits.checks 12m, the 50m default unset.
+func TestPinnedBoundOfTheChecksWaitIsTheWaitsRow(t *testing.T) {
+	pinned, current := testPolicyVersion(), testPolicyVersion()
+	pinned.Document.Waits.Checks = 12 * time.Minute
+	current.ID = 8
+	bound := PinnedBound(func() policy.Version { return current },
+		func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil })
+	ctx := context.Background()
+	if got := bound(ctx, ActivityWaitChecks, 7, policy.ReviewParts); got != 12*time.Minute {
+		t.Fatalf("pinned waits.checks 12m: bound = %s, want 12m0s", got)
+	}
+	if got := bound(ctx, ActivityWaitChecks, 0, policy.ReviewParts); got != 50*time.Minute {
+		t.Fatalf("waits.checks unset: bound = %s, want 50m0s", got)
+	}
+}
+
+// flakyTasks is a store whose task read fails its first n calls.
+type flakyTasks struct {
+	*fakeStore
+	mu    sync.Mutex
+	n     int
+	calls int
+}
+
+func (f *flakyTasks) Task(ctx context.Context, id string) (Task, bool, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.calls++
+	if f.n > 0 {
+		f.n--
+		return Task{}, false, errors.New("store down")
+	}
+	return f.fakeStore.Task(ctx, id)
+}
+
+// A checks wait whose task cannot be read has no bound to trip at: it does
+// not trip on the policy's, and each retry tick reads the task again. A
+// task that stays unreadable never trips; one that reads on the third tick
+// arms the project's bound (60 ms here) from the attempt's start.
+func TestGateWatchChecksWaitRetriesItsTaskLookup(t *testing.T) {
+	for name, tc := range map[string]struct {
+		fails int
+		trips int
+	}{"never readable": {1 << 30, 0}, "readable on the third try": {2, 1}} {
+		base := newFakeStore()
+		base.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: "demo-app/demo-app"})
+		store := &flakyTasks{fakeStore: base, n: tc.fails}
+		sig := &signalled{}
+		bound := func(ctx context.Context, _ string, _ int64, _ int) time.Duration {
+			if repo, _ := ctx.Value(repositoryKey{}).(string); repo != "demo-app/demo-app" {
+				t.Errorf("%s: bound asked without the task's repository: %q", name, repo)
+			}
+			return 60 * time.Millisecond
+		}
+		env := signallingEnv(&GateWatch{Store: store, Bound: bound, Signal: sig.signal, LookupRetry: 20 * time.Millisecond})
+		env.RegisterActivityWithOptions(func(context.Context, string, string) error { time.Sleep(300 * time.Millisecond); return nil },
+			activity.RegisterOptions{Name: ActivityWaitChecks})
+		if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		if trips, _ := sig.got(); len(trips) != tc.trips || len(base.alertRows()) != tc.trips {
+			t.Fatalf("%s: trips %+v, alerts %d, want %d", name, trips, len(base.alertRows()), tc.trips)
+		}
+	}
+}
+
+// A retry tick arms only the run that is the table's: a later attempt
+// took the same key while the old run's context is still live, and the old
+// run's tick must not arm anything.
+func TestGateWatchLookupTickArmsOnlyTheRunInTheTable(t *testing.T) {
+	base := newFakeStore()
+	base.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: "demo-app/demo-app"})
+	g := &GateWatch{Store: base, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }}
+	gone := &watchedRun{activity: ActivityWaitChecks, started: time.Now()}
+	g.retryBound(gone, "wf/1", context.Background(), "t1", 0)
+	if gone.timer != nil || gone.bound != 0 {
+		t.Fatalf("a run out of the table was armed: bound %s, timer %v", gone.bound, gone.timer)
+	}
+	live := &watchedRun{activity: ActivityWaitChecks, started: time.Now()}
+	g.runs = map[string]*watchedRun{"wf/1": live}
+	g.retryBound(live, "wf/1", context.Background(), "t1", 0)
+	if live.bound != time.Hour || live.timer == nil {
+		t.Fatalf("the run in the table was not armed: bound %s, timer %v", live.bound, live.timer)
+	}
+	live.timer.Stop()
+}

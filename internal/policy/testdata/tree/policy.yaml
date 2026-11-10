@@ -66,6 +66,7 @@ project_default:
   standing: {monthly_eur: 5, server_types: [cx23, cx33], max_count: 2}
 approvers: [sebastian]
 bounds: {GateReproduction: 1800}
+waits: {checks: 40m}
 time_zone: Europe/Berlin
 routines:
   - name: template-pass

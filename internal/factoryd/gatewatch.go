@@ -100,6 +100,7 @@ var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, Act
 type GateStore interface {
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	Task(ctx context.Context, id string) (Task, bool, error)
 }
 
 // SignalGateBound hands a long gate's bound trip to its task's workflow,
@@ -146,6 +147,9 @@ type GateWatch struct {
 	Bound func(ctx context.Context, activity string, pin int64, waves int) time.Duration
 	// Signal delivers a trip to the workflow; nil = the alert only.
 	Signal func(ctx context.Context, workflowID string, trip GateTrip) error
+	// LookupRetry is how long a checks wait whose task could not be read
+	// waits before it reads it again; 30s when zero.
+	LookupRetry time.Duration
 
 	mu   sync.Mutex
 	runs map[string]*watchedRun // the attempt of each run running here, by workflow and activity id
@@ -184,7 +188,21 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	pin := activityPin(in.Args)
-	run := &watchedRun{activity: name, attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, pin, policy.ReviewParts), cancel: cancel}
+	run := &watchedRun{activity: name, attempt: info.Attempt, started: time.Now(), cancel: cancel}
+	// a checks wait's bound is its project's, found through its task: while
+	// the task is unreadable the wait has no bound to trip at, and the
+	// lookup is tried again each retry interval
+	lookup := name == ActivityWaitChecks && taskID != ""
+	if lookup {
+		if t, ok, err := i.g.Store.Task(ctx, taskID); err == nil && ok {
+			ctx, lookup = context.WithValue(ctx, repositoryKey{}, t.Repository), false
+		} else {
+			log.Printf("task %s: the bound of %s waits for its task: %v (found %v)", taskID, name, err, ok)
+		}
+	}
+	if !lookup {
+		run.bound = i.g.Bound(ctx, name, pin, policy.ReviewParts)
+	}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
 	waves := func(n int) { i.g.rebound(run, i.g.Bound(ctx, name, pin, n)) }
 	key := runKey(info.WorkflowExecution.ID, info.ActivityID)
@@ -193,9 +211,14 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 		i.g.runs = map[string]*watchedRun{}
 	}
 	i.g.runs[key] = run
-	run.timer = time.AfterFunc(run.bound, func() { run.raise(run.bound, false) })
+	if lookup {
+		run.timer = time.AfterFunc(i.g.lookupRetry(), func() { i.g.retryBound(run, key, ctx, taskID, pin) })
+	} else {
+		run.timer = time.AfterFunc(run.bound, func() { run.raise(run.bound, false) })
+	}
 	i.g.mu.Unlock()
 	defer func() {
+		cancel(nil)
 		i.g.mu.Lock()
 		defer i.g.mu.Unlock()
 		run.timer.Stop()
@@ -263,6 +286,33 @@ func (g *GateWatch) Wait(workflowID, activityID string, attempt int32) bool {
 	return true
 }
 
+func (g *GateWatch) lookupRetry() time.Duration {
+	if g.LookupRetry > 0 {
+		return g.LookupRetry
+	}
+	return 30 * time.Second
+}
+
+// retryBound is the tick of a checks wait whose task was unreadable at its
+// start: it reads the task again and arms the bound from the attempt's
+// start, or waits for the next tick.
+func (g *GateWatch) retryBound(run *watchedRun, key string, ctx context.Context, taskID string, pin int64) {
+	t, ok, err := g.Store.Task(ctx, taskID)
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	if ctx.Err() != nil || g.runs[key] != run {
+		return
+	}
+	if err != nil || !ok {
+		log.Printf("task %s: the bound of %s still waits for its task: %v (found %v)", taskID, run.activity, err, ok)
+		run.timer = time.AfterFunc(g.lookupRetry(), func() { g.retryBound(run, key, ctx, taskID, pin) })
+		return
+	}
+	run.bound = g.Bound(context.WithValue(ctx, repositoryKey{}, t.Repository), run.activity, pin, policy.ReviewParts)
+	bound := run.bound
+	run.timer = time.AfterFunc(max(time.Until(run.started.Add(bound)), 0), func() { run.raise(bound, false) })
+}
+
 // rebound moves run's bound to bound, from the attempt's start: a model
 // review's or an audit's once it knows its waves of calls. A run that
 // tripped or waited already keeps its own.
@@ -275,6 +325,10 @@ func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 	run.bound = bound
 	run.timer = time.AfterFunc(time.Until(run.started.Add(bound)), func() { run.raise(bound, false) })
 }
+
+// repositoryKey carries the repository of the task a checks wait runs for
+// to the bound: a project may shorten the wait's bound.
+type repositoryKey struct{}
 
 // wavesKey carries an activity's call to rebound in its context.
 type wavesKey struct{}
@@ -353,16 +407,20 @@ func PinnedBound(current func() policy.Version, read func(ctx context.Context, i
 		if activity == ActivityAwaitSessionGap || activity == ActivityAwaitRollHold {
 			return gapBound(current()) + rollWaitSlack
 		}
-		doc := current().Document
+		tree := current().Tree
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)
 			if err == nil && ok {
-				doc = v.Document
+				tree = v.Tree
 			} else {
 				log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
 			}
 		}
-		bound := doc.PartsBound(activity, waves)
+		bound := tree.Document.PartsBound(activity, waves)
+		if activity == ActivityWaitChecks {
+			repository, _ := ctx.Value(repositoryKey{}).(string)
+			bound = tree.ChecksBound(repository)
+		}
 		if activity == ActivityModelReview || activity == ActivityGateAudit {
 			bound = min(bound, reviewActivityMax-fanOutTripMargin)
 		}
