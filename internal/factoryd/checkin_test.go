@@ -634,9 +634,12 @@ func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 	if !reflect.DeepEqual(last.Tools[0], momentAnswerTool(ask)) {
 		t.Fatalf("the last call's tool = %+v, want the moment's answer schema", last.Tools[0])
 	}
-	decision, _ := momentAnswerSchema(ask)["properties"].(map[string]any)["decision"].(map[string]any)
-	if got, want := decision["enum"], any(momentDecisions(ask.Moment, ask.Replan)); !reflect.DeepEqual(got, want) {
-		t.Fatalf("the answer schema's decision enum = %v, want the moment's %v", got, want)
+	decision, _ := last.Tools[0].Parameters.(map[string]any)["properties"].(map[string]any)["decision"].(map[string]any)
+	if got, want := decision["enum"], any([]string{"continue", "message", "handover", "human"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the last call's decision enum = %v, want %v", got, want)
+	}
+	if got, want := last.Tools[0].Parameters.(map[string]any)["required"], any([]string{"decision"}); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the answer schema requires %v, want %v", got, want)
 	}
 	if !reflect.DeepEqual(last.ToolChoice, forcedToolChoice(checkinAnswerTool)) {
 		t.Errorf("the last call's tool_choice = %+v, want the named answer tool", last.ToolChoice)
@@ -732,7 +735,7 @@ func TestCheckinSessionHandoverNeedsItsNote(t *testing.T) {
 	if chat.calls != 2 {
 		t.Fatalf("calls = %d, want one repair round", chat.calls)
 	}
-	if !strings.Contains(chat.gots[1].Input, "Your last answer was unreadable: a handover needs the note to the next session. Answer again as one JSON object.") {
+	if !strings.Contains(chat.gots[1].Input, "Your last answer was unreadable: a handover needs the note to the next session. Answer again through the answer tool.") {
 		t.Errorf("the repair round does not name the missing note:\n%s", chat.gots[1].Input)
 	}
 }
@@ -1093,22 +1096,23 @@ func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
 		"session": {Moment: CheckInSession, ParentSession: "s-live-1"},
 		"dead":    {Moment: CheckInDead, ParentSession: "s-dead-1"},
 	}
+	allowed := map[string]string{
+		"gate":    "handover, human, dropped_all",
+		"session": "continue, message, handover, human",
+		"dead":    "handover, human",
+	}
 	for name, ask := range moments {
 		t.Run(name, func(t *testing.T) {
 			_, err := parseCheckinAnswer(`{"decision":"teleport","reason":"r"}`, ask)
-			if err == nil || err.Error() != `unknown decision "teleport"` {
-				t.Fatalf("a teleport decision = %v, want the decision named", err)
+			if want := `unknown decision "teleport"; allowed: ` + allowed[name]; err == nil || err.Error() != want {
+				t.Fatalf("a teleport decision = %v, want %q", err, want)
 			}
 		})
 	}
 	ask := moments["gate"]
 	_, err := parseCheckinAnswer(`{"decision":"human","reason_kind":"policy class","reason":"r"}`, ask)
-	if err == nil || err.Error() != `unknown reason_kind "policy class"` {
+	if err == nil || err.Error() != `unknown reason_kind "policy class"; allowed: goal_conflict, spend_above_policy, policy_class, access_factory_lacks` {
 		t.Fatalf("a free-text reason_kind = %v, want the reason kind named", err)
-	}
-	_, err = parseCheckinAnswer(`{"findings":[{"text":"f","verdict":"maybe"}],"decision":"handover"}`, ask)
-	if err == nil || err.Error() != `unknown verdict "maybe"` {
-		t.Fatalf("an out-of-enum verdict = %v, want the verdict named", err)
 	}
 }
 
@@ -1280,7 +1284,7 @@ func TestCheckinOffersReplanOnlyWhenTheCardCanBeCut(t *testing.T) {
 	if err != nil || a.Decision != CheckReplan || a.Reason != "two packages left" {
 		t.Fatalf("replan offered = (%+v, %v), want it to parse with its reason", a, err)
 	}
-	if _, err := parseCheckinAnswer(answer, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1"}); err == nil || err.Error() != `unknown decision "replan"` {
+	if _, err := parseCheckinAnswer(answer, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1"}); err == nil || err.Error() != `unknown decision "replan"; allowed: continue, message, handover, human` {
 		t.Fatalf("replan not offered = %v, want unknown decision", err)
 	}
 	if _, err := parseCheckinAnswer(`{"decision":"replan","reason":""}`, &CheckInAsk{Moment: CheckInSession, ParentSession: "s1", Replan: true}); err == nil || err.Error() != "a replan needs its reason" {
@@ -1302,5 +1306,52 @@ func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
 	got := statement(false)
 	if !strings.Contains(got, "Answer message if the agent should wrap up, with the instruction.\n") || strings.Contains(got, "Answer replan") {
 		t.Fatalf("size statement of a card that cannot be cut offers replan:\n%s", got)
+	}
+}
+
+// A malformed answer in the answer tool's arguments reaches the parser as
+// text: one repair round, then the human, never the silent handover of a
+// refused call.
+func TestCheckinGatewayTruncatedAnswerArgumentsGetTheRepairRound(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, raw)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":null,"tool_calls":[{"function":{"name":"answer","arguments":"{\"decision\":\"handover\",\"handover\":\"go"}}]}}],"usage":{"cost":0.01}}`))
+	}))
+	defer srv.Close()
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	for _, callsLeft := range []int{1, 12} {
+		bodies = nil
+		out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, &checkinGateway{URL: srv.URL, Token: "b"}, scriptedTools{}, callsLeft, 1.5, 1, 2000, time.Hour)
+		if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") {
+			t.Fatalf("callsLeft %d: outcome = %+v, want the human with the unreadable answer", callsLeft, out)
+		}
+		if want := map[int]int{1: 1, 12: 2}[callsLeft]; len(bodies) != want {
+			t.Fatalf("callsLeft %d: %d calls, want %d (a repair round only before the last call)", callsLeft, len(bodies), want)
+		}
+	}
+}
+
+// The check-in names no output limit: the gateway holds the call at the
+// alias's whole limit, which leaves a reasoning model room to think and
+// then answer.
+func TestCheckinGatewayPostsNoOutputLimit(t *testing.T) {
+	var body map[string]any
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		json.NewDecoder(r.Body).Decode(&body)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}]}`))
+	}))
+	defer srv.Close()
+	g := &checkinGateway{URL: srv.URL, Token: "b"}
+	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i", ToolChoice: forcedToolChoice(checkinAnswerTool)}); err != nil {
+		t.Fatal(err)
+	}
+	for _, k := range []string{"max_tokens", "max_completion_tokens"} {
+		if _, ok := body[k]; ok {
+			t.Errorf("the check-in call posts %s, which would cap the reasoning", k)
+		}
 	}
 }

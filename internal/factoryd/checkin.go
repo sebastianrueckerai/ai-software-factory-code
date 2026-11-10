@@ -457,8 +457,7 @@ func checkinSystemFor(moment string, replan bool) string {
 }
 
 // checkinToolsLine is the statement's tool line: the evidence tools the
-// check-in's calls post beside the answer tool, one line the agentdoc
-// capture pins under its own name.
+// check-in's calls post beside the answer tool, one line.
 const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace)."
 
 // momentDecisions is one moment's closed decision vocabulary: the gate
@@ -488,13 +487,14 @@ var checkReasonKinds = []string{"", CheckGoalConflict, CheckSpend, CheckPolicyCl
 var checkVerdicts = []string{CheckConfirmed, CheckDropped, CheckRemark}
 
 // enumCheck refuses value unless the closed enum of holds it, naming the
-// kind and the value. The same check closes the rung's answers
-// (ParseRungAnswer) and the moments' (parseCheckinAnswer).
+// kind, the value and the allowed values. It closes the moments' answers
+// (parseCheckinAnswer).
 func enumCheck(kind, value string, of []string) error {
 	if slices.Contains(of, value) {
 		return nil
 	}
-	return fmt.Errorf("unknown %s %q", kind, value)
+	allowed := slices.DeleteFunc(slices.Clone(of), func(v string) bool { return v == "" })
+	return fmt.Errorf("unknown %s %q; allowed: %s", kind, value, strings.Join(allowed, ", "))
 }
 
 // checkinAnswerTool is the answer tool's name: every check-in call posts
@@ -531,7 +531,7 @@ func momentAnswerSchema(ask *CheckInAsk) map[string]any {
 			},
 		}}
 	}
-	return map[string]any{"type": "object", "properties": props, "additionalProperties": false}
+	return map[string]any{"type": "object", "properties": props, "required": []string{"decision"}, "additionalProperties": false}
 }
 
 // momentAnswerTool is the answer tool the check-in's calls post.
@@ -798,7 +798,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			return CheckInOutcome{Decision: CheckHuman, Reason: reason, Record: rec}
 		}
 		repairs++
-		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again as one JSON object."
+		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again through the answer tool."
 	}
 }
 
@@ -932,7 +932,12 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		resp.ToolName = msg.ToolCalls[0].Function.Name
 		if args := msg.ToolCalls[0].Function.Arguments; args != "" {
 			if err := json.Unmarshal([]byte(args), &resp.ToolArgs); err != nil {
-				return CheckinResponse{}, fmt.Errorf("unreadable tool arguments: %w", err)
+				if resp.ToolName != checkinAnswerTool {
+					return CheckinResponse{}, fmt.Errorf("unreadable tool arguments: %w", err)
+				}
+				// a malformed answer reaches the parser as text, so it gets
+				// its repair round and then the human
+				resp.ToolName, resp.ToolArgs, resp.Text = "", nil, args
 			}
 		}
 	}
