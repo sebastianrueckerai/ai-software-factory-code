@@ -39,6 +39,7 @@ type fetchEnv struct {
 
 type reproEnv struct {
 	command string
+	argv    []string
 	timeout time.Duration
 }
 
@@ -75,12 +76,21 @@ func reproTimeout() (time.Duration, error) {
 	return time.Duration(secs) * time.Second, nil
 }
 
+// loadReproEnv reads the command a shell runs, or REPRO_ARGV, a JSON list
+// executed directly with no shell.
 func loadReproEnv() (reproEnv, error) {
-	v, err := required("REPRO_COMMAND")
+	timeout, err := reproTimeout()
 	if err != nil {
 		return reproEnv{}, err
 	}
-	timeout, err := reproTimeout()
+	if list := os.Getenv("REPRO_ARGV"); list != "" {
+		var argv []string
+		if err := json.Unmarshal([]byte(list), &argv); err != nil || len(argv) == 0 {
+			return reproEnv{}, fmt.Errorf("REPRO_ARGV: want a non-empty JSON list of strings")
+		}
+		return reproEnv{argv: argv, timeout: timeout}, nil
+	}
+	v, err := required("REPRO_COMMAND")
 	if err != nil {
 		return reproEnv{}, err
 	}
@@ -382,8 +392,12 @@ func repro(ws string) harness.Repro {
 	return reproduce(e, filepath.Join(ws, "repo"))
 }
 
-// reproduce runs the command under the image's /bin/sh in dir.
+// reproduce runs the command under the image's /bin/sh in dir, or the argv
+// directly.
 func reproduce(e reproEnv, dir string) harness.Repro {
+	if e.argv != nil {
+		return runBounded(dir, nil, e.timeout, fmt.Sprintf("timed out after %s", e.timeout), e.argv[0], e.argv[1:]...)
+	}
 	return runBounded(dir, nil, e.timeout, fmt.Sprintf("timed out after %s", e.timeout), "/bin/sh", "-c", e.command)
 }
 

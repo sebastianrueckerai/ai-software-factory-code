@@ -204,6 +204,20 @@ func TestReproduceRunsTheImagesShell(t *testing.T) {
 	}
 }
 
+// An argv runs with no shell: its metacharacters are plain arguments.
+func TestReproduceRunsAnArgvWithoutAShell(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "injected")
+	got := reproduce(reproEnv{argv: []string{"sh", "-c", `test "$1" = "x; touch ` + marker + `" && exit 7`, "sh", "x; touch " + marker}, timeout: 10 * time.Second}, dir)
+	if got.Exit != 7 {
+		t.Fatalf("repro = %+v, want the argv's exit 7", got)
+	}
+	got = reproduce(reproEnv{argv: []string{"echo", "$(touch " + marker + ")"}, timeout: 10 * time.Second}, dir)
+	if _, err := os.Stat(marker); err == nil || got.Exit != 0 || strings.TrimSpace(got.Output) != "$(touch "+marker+")" {
+		t.Fatalf("repro = %+v, marker written: %v", got, err == nil)
+	}
+}
+
 func TestTailBufferKeepsTheEnd(t *testing.T) {
 	b := &tailBuffer{max: 4}
 	b.Write([]byte("abc"))
@@ -217,9 +231,20 @@ func TestLoadReproEnv(t *testing.T) {
 	t.Setenv("REPRO_COMMAND", "make")
 	t.Setenv("REPRO_TIMEOUT", "600")
 	e, err := loadReproEnv()
-	if err != nil || e != (reproEnv{command: "make", timeout: 10 * time.Minute}) {
+	if err != nil || e.command != "make" || e.argv != nil || e.timeout != 10*time.Minute {
 		t.Fatalf("env = %+v, %v", e, err)
 	}
+	t.Setenv("REPRO_ARGV", `["go","test","-run","^TestY$","./x"]`)
+	if e, err = loadReproEnv(); err != nil || e.command != "" || !slices.Equal(e.argv, []string{"go", "test", "-run", "^TestY$", "./x"}) {
+		t.Fatalf("argv env = %+v, %v", e, err)
+	}
+	for _, bad := range []string{"go test", "[]", `["a",1]`} {
+		t.Setenv("REPRO_ARGV", bad)
+		if _, err := loadReproEnv(); err == nil {
+			t.Fatalf("REPRO_ARGV %q loaded", bad)
+		}
+	}
+	t.Setenv("REPRO_ARGV", "")
 	t.Setenv("REPRO_TIMEOUT", "0")
 	if _, err := loadReproEnv(); err == nil {
 		t.Fatal("a zero timeout loaded")
