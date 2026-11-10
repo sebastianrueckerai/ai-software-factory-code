@@ -325,30 +325,40 @@ func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T)
 	}
 }
 
-// A head the gates refuse again is told once: the session after the second
-// refusal is told what the first one was.
-func TestWorkflowTellsARefusedInterimHeadOnce(t *testing.T) {
-	cfg := testWorkflowConfig
-	cfg.MaxSessions = 5
-	h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
-	h.beforeCases()
-	h.taskConfig = askTaskConfig()
-	h.wipHeads = []string{"w2"}
-	var steps []string
-	dropped := checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll})
-	h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), dropped, deadAfterPushing(OutcomeNoPush), dropped, pushed("s5", "c3")})
-	h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+// The session after a refusal is told of the newest refused head only: a
+// head refused again is told once, and a later head's refusal replaces the
+// earlier one's, whose commit the branch moved past.
+func TestWorkflowTellsTheNewestRefusedInterimHead(t *testing.T) {
+	refused := func(head string) string {
+		return "the branch's head " + head + " is a session's work in progress, which no gate judges: continue from it and finish the work"
+	}
+	for _, later := range []string{"w2", "w3"} {
+		t.Run("then "+later, func(t *testing.T) {
+			cfg := testWorkflowConfig
+			cfg.MaxSessions = 5
+			h := newWorkflowHarness(t, TaskWorkflow{Config: func() WorkflowConfig { return cfg }})
+			h.beforeCases()
+			h.taskConfig = askTaskConfig()
+			h.wipHeads = []string{"w2", "w3"}
+			var steps []string
+			dropped := checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll})
+			again := deadAfterPushing(OutcomeNoPush)
+			again.Commit = later
+			h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), dropped, again, dropped, pushed("s5", "c3")})
+			h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q (%v), want done", final, h.finals)
-	}
-	want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "pr w2 after 0 cards", "session 3 after 0 cards",
-		"session 4 after 0 cards", "pr w2 after 0 cards", "session 5 after 0 cards", "pr c3 after 0 cards", "approval c3"}
-	if !slices.Equal(steps, want) {
-		t.Fatalf("steps = %v, want %v", steps, want)
-	}
-	if got := h.sessions[4].Findings; !slices.Equal(got, []string{"the branch's head w2 is a session's work in progress, which no gate judges: continue from it and finish the work"}) {
-		t.Fatalf("the fifth session told %q, want the refusal once", got)
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q (%v), want done", final, h.finals)
+			}
+			want := []string{"session 1 after 0 cards", "session 2 after 0 cards", "pr w2 after 0 cards", "session 3 after 0 cards",
+				"session 4 after 0 cards", "pr " + later + " after 0 cards", "session 5 after 0 cards", "pr c3 after 0 cards", "approval c3"}
+			if !slices.Equal(steps, want) {
+				t.Fatalf("steps = %v, want %v", steps, want)
+			}
+			if fifth := h.sessions[4]; fifth.StartRef != later || !slices.Equal(fifth.Findings, []string{refused(later)}) {
+				t.Fatalf("the fifth session starts from %s, told %q; want from %s, told of it alone", fifth.StartRef, fifth.Findings, later)
+			}
+		})
 	}
 }
 
@@ -372,6 +382,26 @@ func TestWorkflowARefusedInterimHeadIsNotJudged(t *testing.T) {
 	}
 	if len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, "the branch holds w2; the gates have not judged it") {
 		t.Fatalf("sessions %d, the second told %q; want the handover saying no gate judged w2", len(h.sessions), h.sessions[len(h.sessions)-1].Findings)
+	}
+}
+
+// A run from before the gate counts a healed pull request's head as judged,
+// as before, however Reconcile reads it.
+func TestWorkflowBeforeWipStartJudgesTheHealedHead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
+	h.state = RunState{Status: "running", PR: PullRequest{Number: 9}, Head: "w2", Unfinished: true,
+		Findings: []string{"reviewer sebastian requested changes: rename it"}, Usage: TaskUsage{Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), pushed("s3", "c3")})
+	h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q (%v), want done", final, h.finals)
+	}
+	if len(h.sessions) != 2 || h.sessions[0].StartRef != "w2" || !slices.Contains(h.sessions[1].Findings, "the branch holds w2; the gates have judged it") {
+		t.Fatalf("sessions %d, the first from %q, the second told %q; want the handover saying the gates judged w2",
+			len(h.sessions), h.sessions[0].StartRef, h.sessions[len(h.sessions)-1].Findings)
 	}
 }
 

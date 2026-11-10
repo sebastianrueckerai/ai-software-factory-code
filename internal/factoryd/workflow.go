@@ -1702,6 +1702,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	var findings, own []string
 	var sources []string
 	var handoverNote string // a mid-session check-in's note, riding the next ask-less brief (plan E)
+	var wipLine string      // the newest interim head's refusal among findings (versionWipStart)
 	setFindings := func(fs []string, from string) {
 		findings, sources = fs, slices.Repeat([]string{from}, len(fs))
 	}
@@ -1734,11 +1735,15 @@ func (t *taskRun) lifecycle() (string, error) {
 	// versionCases what it bought is the writer's draw against the pool
 	apply := func(v verdict) (answered bool) {
 		if v.wip {
-			// what the next session was told stays beside the fact
-			if !slices.Contains(findings, v.findings[0]) {
+			// what the next session was told stays beside the fact, which
+			// replaces an earlier interim head's
+			if i := slices.Index(findings, wipLine); wipLine != "" && i >= 0 {
+				findings = slices.Clone(findings)
+				findings[i] = v.findings[0]
+			} else {
 				addFindings(v.findings, "review")
 			}
-			reason = v.reason
+			wipLine, reason = v.findings[0], v.reason
 			return false
 		}
 		if v.stronger {
