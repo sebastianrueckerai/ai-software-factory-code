@@ -236,6 +236,13 @@ type toolEnv struct {
 
 func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	t.Helper()
+	return newToolEnvAs(t, task, pv, "s-1")
+}
+
+// newToolEnvAs is newToolEnv for a token bound to session, "" for a call
+// that comes from no worker pod.
+func newToolEnvAs(t *testing.T, task Task, pv policy.Version, session string) *toolEnv {
+	t.Helper()
 	store := newMemStore(task)
 	store.setPolicy(pv)
 	providers := newFakeProviders(t)
@@ -247,7 +254,7 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	looker := &fakeImageLooker{text: "img1.png (Screenshot.png): a login form, the button grey"}
 	digester := &fakeDigester{text: "docs/plan.md: two cards, the store first"}
 	s := NewServer(ServerOptions{
-		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: "s-1"}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
+		Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: session}}, Store: store, Minter: &fakeMinter{}, Prices: testPrices,
 		Firecrawl: &Firecrawl{BaseURL: providers.URL, Key: "fc-key", HTTP: providers.Client()},
 		Replicate: &Replicate{BaseURL: providers.URL, Key: "r8-key", HTTP: providers.Client(), CancelBackoff: time.Millisecond},
 		Fal:       &Fal{RunURL: providers.URL, APIURL: providers.URL, Key: "fal-key", HTTP: providers.Client()},
@@ -257,12 +264,12 @@ func newToolEnv(t *testing.T, task Task, pv policy.Version) *toolEnv {
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: srv.URL + "/mcp", DisableStandaloneSSE: true}, nil)
+	clientSession, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: srv.URL + "/mcp", DisableStandaloneSSE: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { session.Close() })
-	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, proofs: proofs, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: session}
+	t.Cleanup(func() { clientSession.Close() })
+	return &toolEnv{store: store, providers: providers, escalator: esc, filer: filer, proofs: proofs, delegator: delegator, deployments: deployments, looker: looker, digester: digester, session: clientSession}
 }
 
 func (e *toolEnv) call(t *testing.T, tool string, args map[string]any) (string, bool) {
@@ -497,6 +504,27 @@ func TestToolHoldCarriesTheSession(t *testing.T) {
 	}
 	if len(e.store.reqs) != 1 || e.store.reqs[0].Session != "s-1" {
 		t.Fatalf("hold requests = %+v, want the scrape's under session s-1", e.store.reqs)
+	}
+}
+
+// A session's paid tool call holds the gate reserve out of its card's
+// headroom as its model calls do; a call from no worker pod keeps the full
+// headroom. A card of 1.00 EUR with 0.60 spent has 0.40 free, the 0.40 EUR
+// default reserve takes it whole, and a scrape's hold of at least a cent no
+// longer fits: refused_budget naming the spent 0.60 and the held 0.40 EUR.
+func TestAPaidToolCallHoldsTheGateReserveOut(t *testing.T) {
+	task := running("coder")
+	task.SpentEUR = 0.6
+	args := map[string]any{"url": "https://example.com"}
+	e := newToolEnv(t, task, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
+	text, isErr := e.call(t, policy.ToolWebScrape, args)
+	if !isErr || !strings.Contains(text, "refused_budget") || !strings.Contains(text, "the card spent 0.60 EUR, and 0.40 EUR is held for the model review and the audit") ||
+		len(e.store.reqs) != 1 || e.store.reqs[0].ReserveEUR != policy.DefaultGateReserveEUR {
+		t.Fatalf("session scrape = %q (error %v) with requests %+v, want refused_budget holding the 0.40 EUR reserve", text, isErr, e.store.reqs)
+	}
+	e = newToolEnvAs(t, task, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}), "")
+	if text, isErr := e.call(t, policy.ToolWebScrape, args); isErr || len(e.store.reqs) != 1 || e.store.reqs[0].ReserveEUR != 0 {
+		t.Fatalf("scrape from no pod = %q (error %v) with requests %+v, want it served with no reserve", text, isErr, e.store.reqs)
 	}
 }
 

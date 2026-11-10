@@ -672,8 +672,8 @@ func (s *Server) runPaid(ctx context.Context, c *toolCaller, tool string, toolCa
 	}
 	if c.session != "" {
 		// a session's paid tool call holds the card's gate reserve out
-		// as any of its calls does; the tool door's callers beside a
-		// session (the checkin, the planner) keep the full headroom
+		// as any of its calls does, the planner's among them; the
+		// callers with no session (the checkin) keep the full headroom
 		req.ReserveEUR = c.pv.Document.Limits.GateReserve()
 	}
 	hold, err := s.opts.Store.TakeHold(ctx, req)

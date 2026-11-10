@@ -511,7 +511,7 @@ func tripMoney(kind CaseKind, f CaseFacts) *CaseMoney {
 		if f.Model != "" {
 			buys += " on " + f.Model
 		}
-		need := float64(max(0, Cents(f.FloorEUR)-Cents(f.LeftEUR))) / 100
+		need := float64(max(0, Cents(f.FloorEUR)-Cents(f.SessionLeft()))) / 100
 		return &CaseMoney{Kind: "budget", BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR, NeedEUR: need, Buys: buys}
 	case slices.Contains(cardMoneyKinds, kind):
 		return &CaseMoney{Kind: string(kind), BudgetEUR: f.BudgetEUR, SpentEUR: f.SpentEUR}

@@ -795,3 +795,26 @@ func TestPromoteWithinStandingBlock(t *testing.T) {
 		t.Fatalf("live addresses = %v, %v; want none for a standing server", addrs, err)
 	}
 }
+
+// A commission holds the card's gate reserve out of its headroom when the
+// request carries one: a card of 0.50 EUR with nothing spent and a reserve
+// of 0.50 has a ceiling of 0, so the reservation (about 0.0255 EUR) is
+// refused with the money stop's figures; without the reserve it is held.
+func TestReserveHoldsTheGateReserveOut(t *testing.T) {
+	db := agentDB(t)
+	ctx := context.Background()
+	seedTask(t, db, "t1", 0.5)
+	a := AgentStore{DB: db}
+	req := commissionReq(t, "t1", "cx23", 90, 20)
+	req.ReserveEUR = 0.5
+	_, err := a.Reserve(ctx, req)
+	var ref *policy.Refusal
+	if !errors.As(err, &ref) || ref.Decision != "refused_budget" ||
+		!strings.Contains(ref.Reason, "the card spent 0.00 EUR, and 0.50 EUR is held for the model review and the audit") {
+		t.Fatalf("commission under the reserve: err = %v, want refused_budget naming the spent and held EUR", err)
+	}
+	req.ReserveEUR = 0
+	if c, err := a.Reserve(ctx, req); err != nil || c.Status != Reserved {
+		t.Fatalf("commission with no reserve = %+v, %v; want it reserved", c, err)
+	}
+}

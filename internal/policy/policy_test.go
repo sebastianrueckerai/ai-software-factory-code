@@ -1179,7 +1179,11 @@ func TestGateReserve(t *testing.T) {
 	if got := pinned.GateReserve(); got != DefaultGateReserveEUR {
 		t.Errorf("pinned version without gate_reserve_eur: gate reserve = %g, want %g", got, DefaultGateReserveEUR)
 	}
-	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, gate_reserve_eur: -0.1}", 1)))
+	negative := strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, gate_reserve_eur: -0.1}", 1)
+	if err := resolvedSchema(t, "policy.schema.json").Validate(yamlInstance(t, []byte(negative))); err == nil {
+		t.Error("negative gate_reserve_eur: the schema accepts it, want a minimum of 0")
+	}
+	d, err = Parse([]byte(negative))
 	if err == nil || !strings.Contains(err.Error(), "limits.gate_reserve_eur must not be negative") {
 		t.Errorf("negative gate_reserve_eur: error = %v, want refusal naming limits.gate_reserve_eur", err)
 	}

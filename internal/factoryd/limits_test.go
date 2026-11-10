@@ -13,9 +13,9 @@ func TestLimitWatchWarnsOnBudgetOnce(t *testing.T) {
 	if got := w.due(3.9, 5, time.Unix(0, 0)); len(got) != 0 {
 		t.Fatalf("78 percent warned: %v", got)
 	}
-	// 4.5 of 5 is 90 percent, 0.50 left
+	// 4.5 of 5 is 90 percent, 0.50 left, 0.10 of it past the 0.40 reserve
 	got := w.due(4.5, 5, time.Unix(0, 0))
-	want := "factoryd: 90 percent of this card's budget is spent, 0.50 of 5.00 EUR are left. " + codingWrapUp
+	want := "factoryd: 90 percent of this card's budget is spent, 0.10 of 5.00 EUR are left for its calls (the model review and the audit hold 0.40 EUR of it). " + codingWrapUp
 	if len(got) != 1 || got[0].kind != warnBudget || got[0].text != want {
 		t.Fatalf("due = %+v, want one budget warning %q", got, want)
 	}

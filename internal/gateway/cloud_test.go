@@ -355,6 +355,13 @@ func cloudPolicy() policy.Version {
 // newCloudEnv serves task under cloudPolicy, or under pv when given.
 func newCloudEnv(t *testing.T, task Task, pv ...policy.Version) *cloudEnv {
 	t.Helper()
+	return newCloudEnvAs(t, task, "s-1", pv...)
+}
+
+// newCloudEnvAs is newCloudEnv for a token bound to session, "" for a
+// call that comes from no worker pod.
+func newCloudEnvAs(t *testing.T, task Task, session string, pv ...policy.Version) *cloudEnv {
+	t.Helper()
 	reg := cloudres.NewMemory()
 	reg.Now = func() time.Time { return cloudNow }
 	hz := newFakeHetzner(reg)
@@ -365,17 +372,17 @@ func newCloudEnv(t *testing.T, task Task, pv ...policy.Version) *cloudEnv {
 	cloud := &Cloud{Provider: hz, Store: cs, Registry: reg, Signer: signer, Sources: []string{"198.51.100.1/32", "198.51.100.2/32"},
 		Collector: &cloudres.Collector{Project: cloudres.AgentProject, Registry: reg, Provider: hz, RetryWait: time.Nanosecond, NodeIPs: []string{"198.51.100.1/32"}},
 		Audit:     store, Now: func() time.Time { return cloudNow }}
-	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u"}}, Store: store, Minter: &fakeMinter{},
+	s := NewServer(ServerOptions{Auth: fakeAuth{id: Identity{TaskID: task.ID, SAUID: "u", Session: session}}, Store: store, Minter: &fakeMinter{},
 		Prices: testPrices, Escalator: &fakeEscalator{}, Cloud: cloud})
 	srv := httptest.NewServer(s.Routes("test"))
 	t.Cleanup(srv.Close)
 	client := mcp.NewClient(&mcp.Implementation{Name: "test", Version: "1"}, nil)
-	session, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: srv.URL + "/mcp", DisableStandaloneSSE: true}, nil)
+	clientSession, err := client.Connect(context.Background(), &mcp.StreamableClientTransport{Endpoint: srv.URL + "/mcp", DisableStandaloneSSE: true}, nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	t.Cleanup(func() { session.Close() })
-	return &cloudEnv{toolEnv: &toolEnv{store: store, session: session}, hz: hz, cs: cs, signer: signer, reg: reg, cloud: cloud}
+	t.Cleanup(func() { clientSession.Close() })
+	return &cloudEnv{toolEnv: &toolEnv{store: store, session: clientSession}, hz: hz, cs: cs, signer: signer, reg: reg, cloud: cloud}
 }
 
 const agentKey = "ssh-ed25519 AAAAC3NzaC1lZDI1NTE5AAAAIGJ0ZXN0a2V5 agent@sandbox"
@@ -414,7 +421,7 @@ func TestCommissionRegistersBeforeEachCreate(t *testing.T) {
 	r := e.cs.reqs[0]
 	if r.TaskID != "42" || r.Repo != "sf/app" || r.Session != "s-1" || r.Location != "fsn1" || r.LeaseMinutes != 90 || r.VolumeGB != 20 ||
 		r.Quote.Hours != 2 || !near6(r.Quote.ReservationEUR, 0.0192+2*1.144/730) || r.Envelope.MaxCount != 2 || r.DayEUR != 20 || r.MonthEUR != 50 ||
-		r.Project != "" || !math.IsInf(r.ProjectEUR, 1) {
+		r.Project != "" || !math.IsInf(r.ProjectEUR, 1) || r.ReserveEUR != policy.DefaultGateReserveEUR {
 		t.Fatalf("reserve request = %+v", r)
 	}
 	sr := e.hz.serverReq
@@ -727,5 +734,17 @@ func TestReleaseOfStandingServerIsRefused(t *testing.T) {
 	}
 	if row, _ := e.reg.Get(own.ID); row.State != cloudres.StateLive {
 		t.Fatalf("state = %s", row.State)
+	}
+}
+
+// A commission from no worker pod keeps the card's full headroom: the
+// reserve is a session's alone.
+func TestCommissionFromNoSessionHoldsNoReserve(t *testing.T) {
+	e := newCloudEnvAs(t, coderTask(), "")
+	if text, isErr := e.call(t, policy.ToolCommission, map[string]any{"server_type": "cx23", "purpose": "load test", "lease_minutes": 90, "ssh_public_key": agentKey}); isErr {
+		t.Fatal(text)
+	}
+	if len(e.cs.reqs) != 1 || e.cs.reqs[0].ReserveEUR != 0 {
+		t.Fatalf("reserve requests = %+v, want no reserve", e.cs.reqs)
 	}
 }

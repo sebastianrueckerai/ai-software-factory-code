@@ -495,6 +495,10 @@ type Free struct {
 	Reserve, Spent            float64
 }
 
+// Kept is the EUR the gates still have of the reserve: the reserve, or
+// what the card has left when that is less.
+func (f Free) Kept() float64 { return min(f.Reserve, max(f.Task+f.Reserve, 0)) }
+
 // bound is HeadroomBound over f, and the premium headroom below it.
 func (f Free) bound() (float64, string) {
 	free, decision := HeadroomBound(f.Task, f.Day, f.Month, f.Project)
@@ -525,7 +529,7 @@ func (f Free) figures() string {
 // reads as before.
 func (f Free) stop(decision, reason string) string {
 	if decision == RefusedBudget && f.Reserve > 0 {
-		return reason + fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit", f.Spent, f.Reserve)
+		return reason + fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit", f.Spent, f.Kept())
 	}
 	return reason
 }

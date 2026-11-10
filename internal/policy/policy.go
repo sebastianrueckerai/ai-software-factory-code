@@ -411,9 +411,9 @@ type Limits struct {
 	// DefaultNoPushSpend.
 	NoPushSpend int `yaml:"no_push_spend,omitempty" json:"no_push_spend"`
 	// GateReserveEUR is the EUR held out of a card's budget for its
-	// gates: one model review call and one audit call at their
-	// configured models, which a card whose sessions spend to the
-	// session ceiling still runs without a fund. A session's calls fit
+	// gates: the whole of a model review and of an audit at the models
+	// the gates use, which a card whose sessions spend to the session
+	// ceiling still runs without a fund. A session's calls fit
 	// the task headroom less this reserve; factoryd's own calls (the
 	// review, the audit, a waiting card's brief) keep the full headroom.
 	// Absent: DefaultGateReserveEUR.

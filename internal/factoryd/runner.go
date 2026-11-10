@@ -650,7 +650,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 	} else {
 		s.messageToken = rand.Text()
-		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
+		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), ReserveEUR: s.policy.Limits.GateReserve(), TimeLeft: time.Until(deadline),
 			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
