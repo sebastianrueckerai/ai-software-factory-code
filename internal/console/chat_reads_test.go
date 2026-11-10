@@ -301,6 +301,8 @@ func TestCardMergeLineNamesTheReviewAndHead(t *testing.T) {
 			"merge request 6 pending for pull request #9, risk low, review none, head 0badc0d; checks red"},
 		{`{"risk_class":"low","head_sha":"c0ffee5bb22cc33","red_checks":true}`,
 			"merge request 6 pending for pull request #9, risk low, review none, head c0ffee5; checks red at open, green since"},
+		{`{"risk_class":"low","head_sha":"c0ffee4aa11bb22","red_checks":true,"failed_tests":[{"job":"test","test":"TestA","package":"p/q","kind":"failed"},{"job":"vet","kind":"no test failure in its log"}],"failed_tests_more":2}`,
+			"merge request 6 pending for pull request #9, risk low, review none, head c0ffee4; checks red: test, vet; red in the logs: TestA (p/q): failed (job test), job vet: no test failure in its log, and 2 more"},
 	} {
 		r.approvals.rows = append(slices.Clip(pending), factoryd.ApprovalRequest{ID: 6, Kind: factoryd.ApprovalMerge, TaskID: "t-r", Project: "sf/code",
 			PRNumber: 9, Status: "pending", Spec: json.RawMessage(tc.spec)})

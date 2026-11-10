@@ -163,6 +163,8 @@ func (f *groupForgejo) srv(t *testing.T) *httptest.Server {
 		switch {
 		case r.Method == "GET" && p == "/api/v1/repos/factory-agent/repo":
 			io.WriteString(w, `{"fork":true,"private":true,"has_actions":false,"parent":{"full_name":"sf/repo"}}`)
+		case r.Method == "GET" && p == "/api/v1/repos/sf/repo/commits/rv1/status":
+			io.WriteString(w, `{"state":"failure","statuses":[]}`)
 		case r.Method == "GET" && p == "/api/v1/repos/sf/repo/branches/main":
 			io.WriteString(w, `{"commit":{"id":"h1"}}`)
 		case r.Method == "GET" && strings.HasPrefix(p, "/api/v1/repos/factory-agent/repo/branches/"):

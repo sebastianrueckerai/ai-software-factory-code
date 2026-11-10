@@ -584,7 +584,7 @@ func TestEveryChoiceFitsTheActionTable(t *testing.T) {
 			a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat}
 			var err error
 			if c.Value == factoryd.AnswerExtend {
-				_, err = r.c.doExtend(t.Context(), a, "t-k", 1, 0, 0, c.Label) // the Extend form gives its amounts
+				_, err = r.c.doExtend(t.Context(), a, "t-k", 1, 0, 0, 0, c.Label) // the Extend form gives its amounts
 			} else {
 				_, err = r.c.doAnswerValue(t.Context(), a, "t-k", "", c.Value, "")
 			}

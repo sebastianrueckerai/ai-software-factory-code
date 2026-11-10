@@ -128,7 +128,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		}
 	}
 	waits := t.Status == "waiting-human" && !f.merge && !f.plan
-	f.timeCap = waits && factoryd.AtTimeCap(escalation)
+	f.timeCap = waits && factoryd.AtTimeStop(escalation)
 	f.capped = waits && (factoryd.AtSessionCap(escalation) || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
@@ -656,6 +656,12 @@ func (c *Console) waitsOnRetry(ctx context.Context, t factoryd.Task) ([]waitingC
 	return out, nil
 }
 
+// tailContext is the context of the work after a hand-over: the client
+// cannot cancel it, a minute bounds it.
+func tailContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+}
+
 // goWork hands the work of human card t, which waits on a person, to the
 // factory (factoryd's Go): the card's own words become an agent card and
 // the card closes on the note, so its wait ends at once. It answers the
@@ -670,6 +676,9 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
+	// the agent card is filed: a client that leaves now must not leave the old card waiting
+	ctx, stop := tailContext(ctx)
+	defer stop()
 	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
@@ -1273,18 +1282,22 @@ func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
 }
 
 // doExtend raises card id's caps on any live agent card through Act: its
-// sessions and its line bound as an extend, its budget as the money drawn
-// beside it, or a fund alone when it raises no session or line. On a card
-// waiting at its case the note, or when none a line naming the raise, is
-// the answer Act has posted as the human's comment; a card waiting on no
-// case reads the raise at its next cap check.
-func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines int, eur float64, note string) (string, error) {
+// sessions, its agent time (minutes of it) and its line bound as an
+// extend, its budget as the money drawn beside it, or a fund alone when
+// it raises no session, minute or line. On a card waiting at its case
+// the note, or when none a line naming the raise, is the answer Act has
+// posted as the human's comment; a card waiting on no case reads the
+// raise at its next cap check.
+func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines, minutes int, eur float64, note string) (string, error) {
 	switch {
-	case sessions < 0 || lines < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
-		(sessions == 0 && lines == 0 && !(eur > 0)):
-		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and lines, and an amount in EUR")
+	case sessions < 0 || lines < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
+		(sessions == 0 && lines == 0 && minutes == 0 && !(eur > 0)):
+		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions, minutes, lines and an amount in EUR")
 	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, eur)))
+	if minutes > factoryd.MaxExtendMinutes {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an extend raises at most %d minutes of agent time at once", factoryd.MaxExtendMinutes))
+	}
+	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, minutes, eur)))
 	if err := answerFits(note); err != nil {
 		return "", err
 	}
@@ -1296,8 +1309,8 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
 	}
 	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
-	if sessions > 0 || lines > 0 {
-		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines}
+	if sessions > 0 || lines > 0 || minutes > 0 {
+		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines, "agent_time_s": minutes * 60}
 		if eur > 0 {
 			res.Fund = &policy.Draw{EUR: eur}
 		}
@@ -1310,9 +1323,10 @@ func extendable(t factoryd.Task) bool {
 	return t.Kind == "agent" && t.IssueNumber != 0 && slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
 }
 
-// raiseLine names an extend's raise: the sessions, lines and EUR it adds.
-func raiseLine(sessions, lines int, eur float64) string {
-	return fmt.Sprintf("+%d %s, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), lines, plural(lines, "line"), eur)
+// raiseLine names an extend's raise: the sessions, minutes of agent time,
+// lines and EUR it adds.
+func raiseLine(sessions, lines, minutes int, eur float64) string {
+	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), lines, plural(lines, "line"), eur)
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the
@@ -1354,8 +1368,8 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
-	if label == "" && (value != "" || text == "" || choiceCard(t)) {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
+	if label == "" && (value != "" || text == "" || choiceCard(t) || len(q.Choices) > 0) {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s. A remark goes on the issue.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
 	if err != nil {
@@ -1441,7 +1455,12 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return done(fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), 0, nil, kept)
 	case factoryd.AnswerGo:
 		note, posted, err := c.goWork(ctx, a, t)
-		return done(note, posted, err, chosen)
+		if err != nil {
+			return "", err
+		}
+		tail, stop := tailContext(ctx)
+		defer stop()
+		return c.choiceDone(tail, a, t, k.ID, chosen, note, posted)
 	}
 	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice
 	return done(note, posted, err, chosen)
