@@ -337,3 +337,101 @@ func TestUpstreamCopyErrorTextIsScrubbed(t *testing.T) {
 		}
 	}
 }
+
+func copyRunner(t *testing.T, task Task, fj *prForgejo, c *UpstreamCopier) *Runner {
+	t.Helper()
+	r, _, _ := newActivityRunner(t, task, fj)
+	r.Upstream = c
+	return r
+}
+
+func TestCopyUpstreamImagesActivityReadsHeadOnTheForkAndBaseOnTheRepository(t *testing.T) { // added_image_line_copied, missing_digest_card_finding
+	good, gone := newFakeImage("good"), newFakeImage("gone")
+	up, store := newFakeUpstream(t, good), newFakeImgStore(t)
+	base := "# images\n"
+	fj := &prForgejo{raw: map[string]string{
+		"sf/repo@base":          base,
+		"factory-agent/repo@c1": base + goLine(good.digest) + "\n" + goLine(gone.digest) + "\n",
+	}}
+	r := copyRunner(t, prTask, fj, store.copier(up))
+	val, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
+	if err != nil {
+		t.Fatal(err)
+	}
+	var findings []string
+	if err := val.Get(&findings); err != nil {
+		t.Fatal(err)
+	}
+	if want := goLine(gone.digest) + ": the upstream does not serve this digest"; len(findings) != 1 || findings[0] != want {
+		t.Errorf("findings = %q, want [%q]", findings, want)
+	}
+	if _, ok := store.manifests["upstream/docker.io/library/golang/1.26.11-alpine-"+strings.TrimPrefix(good.digest, "sha256:")[:12]]; !ok {
+		t.Error("the added line is not in the store")
+	}
+}
+
+func TestCopyUpstreamImagesActivityTakesMainsHeadForAnEmptyBase(t *testing.T) {
+	im := newFakeImage("x")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	task := prTask
+	task.SHA = ""
+	fj := &prForgejo{head: "m9", raw: map[string]string{"sf/repo@m9": goLine(im.digest) + "\n", "factory-agent/repo@c1": goLine(im.digest) + "\n"}}
+	r := copyRunner(t, task, fj, store.copier(up))
+	if _, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	if up.manifestReads != 0 || store.writes != 0 {
+		t.Errorf("main's own line was copied: %d reads, %d writes", up.manifestReads, store.writes)
+	}
+}
+
+func TestCopyUpstreamImagesActivityUnchangedOrAbsentListTouchesNoRegistry(t *testing.T) { // no_copy_without_change
+	im := newFakeImage("x")
+	for name, raw := range map[string]map[string]string{
+		"equal":   {"sf/repo@base": goLine(im.digest) + "\n", "factory-agent/repo@c1": goLine(im.digest) + "\n"},
+		"no file": {},
+		"removed": {"sf/repo@base": goLine(im.digest) + "\n"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+			c := store.copier(up)
+			c.OpenBao = &fakeKV{err: fmt.Errorf("no login wanted")}
+			r := copyRunner(t, prTask, &prForgejo{raw: raw}, c)
+			val, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
+			var findings []string
+			if err != nil || val.Get(&findings) != nil || len(findings) != 0 {
+				t.Fatalf("findings %q, err %v", findings, err)
+			}
+			if up.manifestReads+store.writes != 0 {
+				t.Errorf("registry calls: %d upstream reads, %d store writes", up.manifestReads, store.writes)
+			}
+		})
+	}
+}
+
+func TestCopyUpstreamImagesActivityWithoutCopierDoesNothing(t *testing.T) {
+	r := copyRunner(t, prTask, &prForgejo{}, nil)
+	val, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
+	var findings []string
+	if err != nil || val.Get(&findings) != nil || len(findings) != 0 {
+		t.Fatalf("findings %q, err %v", findings, err)
+	}
+}
+
+func TestCopyUpstreamImagesActivityErrorIsScrubbed(t *testing.T) {
+	im := newFakeImage("x")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	c := store.copier(up)
+	c.OpenBao = &fakeKV{err: fmt.Errorf("get https://user:pass@bao.example/v1/x: Authorization: Bearer abcdefgh12345678")}
+	fj := &prForgejo{raw: map[string]string{"sf/repo@base": "", "factory-agent/repo@c1": goLine(im.digest) + "\n"}}
+	r := copyRunner(t, prTask, fj, c)
+	_, err := execActivity(t, r, ActivityCopyUpstreamImages, "t1", "c1")
+	if err == nil {
+		t.Fatal("no error")
+	}
+	for _, leak := range []string{"user:pass", "abcdefgh12345678"} {
+		if strings.Contains(err.Error(), leak) {
+			t.Errorf("error %q carries %q", err, leak)
+		}
+	}
+}
