@@ -912,7 +912,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	s.sessions = cmp.Or(in.Sessions, s.policy.Limits.Sessions)
 	s.agentTime, s.checkIn = cmp.Or(in.AgentTime, s.policy.Limits.AgentTime), cmp.Or(in.CheckIn, s.policy.Limits.CheckIn)
-	s.checkinExtra = in.CheckinExtra
+	s.checkinExtra, s.remaining = in.CheckinExtra, in.Remaining
 	if s.docs, err = r.docRepo(ctx, t, in.PolicyVersion); err != nil {
 		return SessionResult{}, named("document repository", err)
 	}
@@ -1055,7 +1055,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		if s.cache, s.image, err = r.setupNamespace(ctx, &t, base); err != nil {
 			return SessionResult{}, named("namespace", err)
 		}
-		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime+s.checkinExtra), time.Now()
+		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
+		if s.checkinExtra > 0 {
+			deadline = earliest(deadline, startedAt.Add(s.remaining))
+			s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
+		}
 		r.record(ctx, t.ID, "session_start", map[string]any{
 			"session": s.id, "parent": s.parent, "model": s.model, "attempt": in.Attempt, "start_ref": s.startRef, "findings": s.findings, "answers": s.answers,
 			"poster_info": s.posterInfo})

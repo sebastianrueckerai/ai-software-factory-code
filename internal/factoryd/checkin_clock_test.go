@@ -66,6 +66,9 @@ func TestWorkflowSessionWithACheckinGetsTheCheckinsTimeOnTop(t *testing.T) {
 	if got := []time.Duration{h.sessions[0].CheckinExtra, h.sessions[1].CheckinExtra, h.sessions[2].CheckinExtra}; got[0] != 0 || got[1] != 30*time.Minute || got[2] != 0 {
 		t.Fatalf("extra time of the three sessions = %v, want 0, 30m (policy.MaxCheckinTime), 0", got)
 	}
+	if got := h.sessions[1].Remaining; got != 19*time.Minute {
+		t.Fatalf("remaining of the check-in's session = %v, want 19m: the 20m cap less s1's 1m", got)
+	}
 	h = checkinClockRun(t, true)
 	if h.sessions[1].CheckinExtra != 0 {
 		t.Fatalf("a run from before the change gave extra time %v", h.sessions[1].CheckinExtra)
@@ -115,5 +118,21 @@ func TestCheckinTookIsCappedByTheExtra(t *testing.T) {
 		if got := checkinTook(tc.ck, tc.extra); got != tc.want {
 			t.Errorf("%s: checkinTook = %v, want %v", name, got, tc.want)
 		}
+	}
+}
+
+// A deadline moves only as far as the end of the activity's window: a
+// window that ended sooner than the extra the workflow asked for holds it.
+func TestPastCheckinHoldsTheWindowsEnd(t *testing.T) {
+	now := time.Now()
+	s := sessionSpec{ceiling: now.Add(40 * time.Minute)}
+	if got, want := s.pastCheckin(now.Add(30*time.Minute)), now.Add(30*time.Minute); !got.Equal(want) {
+		t.Errorf("inside the window: %v, want %v", got, want)
+	}
+	if got, want := s.pastCheckin(now.Add(50*time.Minute)), now.Add(40*time.Minute); !got.Equal(want) {
+		t.Errorf("past the window: %v, want %v", got, want)
+	}
+	if got, want := (sessionSpec{}).pastCheckin(now.Add(50*time.Minute)), now.Add(50*time.Minute); !got.Equal(want) {
+		t.Errorf("no window: %v, want %v", got, want)
 	}
 }

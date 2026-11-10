@@ -208,6 +208,14 @@ func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 		switch {
 		case strings.Contains(reason, deadlockAskMark):
 			return CaseFindingsRepeated, nil
+		case checkinCapStopOf(reason) != "":
+			kind := CheckTimeCap
+			if checkinCapStopOf(reason) == checkinCallCapStop {
+				kind = CheckCallCap
+			}
+			return CaseCheckinFailed, map[string]any{"reason_kind": kind}
+		case strings.HasPrefix(reason, "check-in: "+CheckUnreadable+":"):
+			return CaseCheckinFailed, map[string]any{"reason_kind": CheckUnreadable}
 		case strings.HasPrefix(reason, checkinSpendAsk):
 			return CaseCheckinShare, nil
 		case strings.HasPrefix(reason, "check-in: "):

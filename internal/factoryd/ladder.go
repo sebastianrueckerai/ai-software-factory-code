@@ -83,7 +83,7 @@ type resolver struct {
 // headKinds are the stops keyed on the card's head, whose way on rung 0
 // may find in the facts: the caps, the floor, the check-in's share and a
 // gate stop.
-var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseGateStop}
+var headKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseBudgetFloor, CaseCheckinShare, CaseCheckinFailed, CaseGateStop}
 
 // rung0 is rung 0's table, in the order its rows are tried. Act carries a
 // row's resolution out on rung 0: it checks the action table again, runs
@@ -559,6 +559,8 @@ func tripNext(c Case, reason string) string {
 		return fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", c.ID)
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
+	case CaseCheckinFailed:
+		return "The factory's own check-in failed, not the card's work, and the project agent answers it first. Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	case CaseBudgetFloor:
 		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}

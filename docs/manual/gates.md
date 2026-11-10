@@ -448,7 +448,10 @@ changed lines are not measured at this moment. A report or plan
 session's statement carries no pace line. A conversation gets
 `limits.checkin_calls` (20) calls, the last without tools, and
 `limits.checkin_time` (90 s a call when absent, 30m at 20 calls, at most
-30m, and never past the session's end); past either, a human.
+30m, and never past the session's end); past either, the check-in has
+failed, which is the factory's own failure: the project agent answers it
+first. The time a check-in takes at a session's start is no agent time of
+the card, and the session's deadline moves out by it.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
 human with no call. Nothing the check-in answers changes a cap or a

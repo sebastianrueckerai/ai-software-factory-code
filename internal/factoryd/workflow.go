@@ -385,6 +385,10 @@ type SessionInput struct {
 	// CheckinExtra is the time the workflow added to the session's activity
 	// beside its own, for the check-in that opens it (versionCheckinClock).
 	CheckinExtra time.Duration `json:",omitempty"`
+	// Remaining is the agent time the card had left when the session was
+	// scheduled, set with CheckinExtra: the session's own time ends there
+	// and the check-in's time comes after it.
+	Remaining time.Duration `json:",omitempty"`
 }
 
 type SessionResult struct {
@@ -2316,7 +2320,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		window := remaining
 		if checkinPending {
 			if t.checkinClock >= versionCheckinClock {
-				in.CheckinExtra = policy.MaxCheckinTime
+				in.CheckinExtra, in.Remaining = policy.MaxCheckinTime, remaining
 				window += in.CheckinExtra
 			}
 			switch {
@@ -2550,7 +2554,7 @@ func (t *taskRun) lifecycle() (string, error) {
 				// session the close makes pointless
 				return t.finish(t.closeIntoSuccessor(workStateLines(res.CheckIn.Findings, res.CheckIn.Review)))
 			}
-			spend := res.CheckIn.ReasonKind == CheckSpend
+			spend := checkinSpendKind(res.CheckIn.ReasonKind)
 			stop := checkinStop{spend: spend, share: spend && res.CheckIn.Reason == CheckinShareSpent,
 				callCap: spend && (strings.HasPrefix(res.Reason, checkinCallCapStop) || strings.HasPrefix(res.Reason, checkinTimeCapStop))}
 			var verify bool
@@ -3052,7 +3056,7 @@ func (t *taskRun) checkinTime(res SessionResult) time.Duration {
 // check-in's own outcome, "" for a stop that is not a spend stop's.
 func checkinStopOf(res SessionResult) string {
 	switch {
-	case res.CheckIn == nil || res.CheckIn.ReasonKind != CheckSpend:
+	case res.CheckIn == nil || !checkinSpendKind(res.CheckIn.ReasonKind):
 		return ""
 	case res.CheckIn.Reason == CheckinShareSpent:
 		return CheckinStopShare

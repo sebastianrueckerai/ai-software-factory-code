@@ -302,8 +302,8 @@ func TestCheckinTimeCapAsksAHuman(t *testing.T) {
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)
 	const reason = "check-in time cap reached after 20ms"
-	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != reason {
-		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's human ask", out.Decision, out.ReasonKind, out.Reason)
+	if out.Decision != CheckHuman || out.ReasonKind != CheckTimeCap || out.Reason != reason {
+		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's stop under its own kind", out.Decision, out.ReasonKind, out.Reason)
 	}
 	if chat.calls != 2 || out.Record.Reason != reason || len(out.Record.Calls) != 2 || chat.gots[1].Tools != nil {
 		t.Fatalf("calls = %d, record %+v; want the evidence call the reserve cut and the answer call the cap cut", chat.calls, out.Record)
@@ -636,8 +636,8 @@ func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
 		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
-	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != "check-in call cap reached after 2 calls" {
-		t.Fatalf("outcome = %+v, want the cap's human ask under spend", out)
+	if out.Decision != CheckHuman || out.ReasonKind != CheckCallCap || out.Reason != "check-in call cap reached after 2 calls" {
+		t.Fatalf("outcome = %+v, want the call cap's stop under its own kind", out)
 	}
 	if chat.calls != 2 {
 		t.Fatalf("calls = %d, want both calls made", chat.calls)
@@ -656,8 +656,8 @@ func TestCheckinUnreadableLastAnswerSaysSo(t *testing.T) {
 	if out.Decision != CheckHuman || !strings.HasPrefix(out.Reason, "check-in answer unreadable: ") || strings.HasPrefix(out.Reason, checkinCallCapStop) {
 		t.Fatalf("outcome = %+v, want the unreadable answer's human ask", out)
 	}
-	if out.ReasonKind != "" || out.Record.Reason != out.Reason {
-		t.Fatalf("outcome kind %q, record reason %q; want no spend kind and the reason recorded", out.ReasonKind, out.Record.Reason)
+	if out.ReasonKind != CheckUnreadable || out.Record.Reason != out.Reason {
+		t.Fatalf("outcome kind %q, record reason %q; want the unreadable kind, not a spend kind, and the reason recorded", out.ReasonKind, out.Record.Reason)
 	}
 	if chat.calls != 1 {
 		t.Fatalf("calls = %d, want the one call", chat.calls)

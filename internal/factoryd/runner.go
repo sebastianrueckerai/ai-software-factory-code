@@ -537,6 +537,12 @@ type sessionSpec struct {
 	// for the check-in that opens it: the deadline moves out by what the
 	// check-in took, so it costs the session none of its own time
 	checkinExtra time.Duration
+	// remaining is the card's agent time at the session's scheduling, which
+	// bounds the session's own time when checkinExtra is set; ceiling is
+	// the end of the activity's window, past which no deadline moves, zero
+	// for none
+	remaining time.Duration
+	ceiling   time.Time
 	// report is a report session's guide; "" for a coding
 	// session
 	report string
@@ -683,9 +689,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// spentAtStart is the card's enforced spend at the session's real
 	// start, nil where it could not be read
 	var spentAtStart *float64
-	if live == nil {
-		deadline = deadline.Add(-s.checkinExtra)
-	}
 	var row LiveSession
 	if live != nil {
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
@@ -764,7 +767,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				return out, nil
 			}
 			if took := checkinTook(out.checkIn, s.checkinExtra); took > 0 {
-				deadline = deadline.Add(took)
+				deadline = s.pastCheckin(deadline.Add(took))
 				row.Deadline = deadline
 				if err := r.store.PutLiveSession(ctx, row); err != nil {
 					log.Printf("task %s: session %s: record the deadline past the check-in: %v", t.ID, s.id, err)
@@ -828,7 +831,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
 			var last string
 			if cs := digest.g.Commands; len(cs) > 0 {
-				last = r.Scrub.String(cs[len(cs)-1].Command)
+				last = r.scrub(cs[len(cs)-1].Command)
 			}
 			if out.killed = killOf(d, last); out.killed != nil {
 				log.Printf("task %s: session %s: the sandbox killed %s for its memory in %q", t.ID, s.id, out.killed.Container, last)
@@ -1233,7 +1236,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s, ""), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline.Add(s.checkinExtra)))
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, s.pastCheckin(deadline.Add(s.checkinExtra))))
 		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id
@@ -1248,6 +1251,14 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	// check-in was asked, and its brief carries no handover note
 	brief("")
 	return nil, false
+}
+
+// pastCheckin is t held to the end of the activity's window.
+func (s sessionSpec) pastCheckin(t time.Time) time.Time {
+	if s.ceiling.IsZero() {
+		return t
+	}
+	return earliest(t, s.ceiling)
 }
 
 // checkinTook is the time a start check-in took that the session's deadline

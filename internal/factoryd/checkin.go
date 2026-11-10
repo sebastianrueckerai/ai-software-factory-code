@@ -14,6 +14,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -63,6 +64,23 @@ const (
 	CheckPolicyClass  = "policy_class"
 	CheckAccess       = "access_factory_lacks"
 )
+
+// The reason kinds of a check-in that failed: the factory's own failure,
+// not a stop only a human can act on. Its cap on time or calls, or an
+// answer it could not give in a readable shape.
+const (
+	CheckTimeCap    = "checkin_time_cap"
+	CheckCallCap    = "checkin_call_cap"
+	CheckUnreadable = "checkin_unreadable"
+)
+
+// checkinSpendKind says kind is a check-in stop on the card's spend or on a
+// cap of the check-in itself, whose answer buys the session or a share: a
+// run recorded before the caps had kinds of their own carries CheckSpend
+// on them.
+func checkinSpendKind(kind string) bool {
+	return kind == CheckSpend || kind == CheckTimeCap || kind == CheckCallCap
+}
 
 // The reason a CheckSpend stop carries on the budget's share: the share
 // of the card's budget the check-in may spend is spent. A human's answer
@@ -644,8 +662,8 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 	rec.StatementBytes = len(conv)
 	timeStop := func() CheckInOutcome {
 		reason := checkinCapStop(checkinTimeCapStop, timeCap.String())
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
-		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
+		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckTimeCap, reason
+		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckTimeCap, Reason: reason, Record: rec}
 	}
 
 	calls, repairs := 0, 0
@@ -678,21 +696,21 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			if !last && ctx.Err() == nil && !time.Now().Before(due()) {
 				continue // the evidence call ran into the answer's reserve
 			}
-			rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+err.Error()
+			rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+oneLine(r.scrub(err.Error()))
 			return CheckInOutcome{Decision: CheckHandover, Record: rec}
 		}
 		if resp.ToolName != "" {
 			if last {
 				reason := checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft))
-				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
-				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
+				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckCallCap, reason
+				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckCallCap, Reason: reason, Record: rec}
 			}
 			args, _ := json.Marshal(resp.ToolArgs)
 			at := time.Now()
 			out, cut, terr := tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
 			d := time.Since(at)
 			if terr != nil {
-				out = "tool error: " + terr.Error()
+				out = "tool error: " + r.scrub(terr.Error())
 			} else if cut {
 				out += "\n(output cut)"
 			}
@@ -706,13 +724,22 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			return checkinOutcome(rec, ask, a, handoverCap, sessions)
 		}
 		if repairs == 1 || last {
-			reason := "check-in answer unreadable: " + perr.Error()
-			rec.Decision, rec.Reason = CheckHuman, reason
-			return CheckInOutcome{Decision: CheckHuman, Reason: reason, Record: rec}
+			reason := "check-in answer unreadable: " + oneLine(r.scrub(perr.Error()))
+			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckUnreadable, reason
+			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckUnreadable, Reason: reason, Record: rec}
 		}
 		repairs++
-		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again as one JSON object."
+		conv += "\n\nYour last answer was unreadable: " + r.scrub(perr.Error()) + ". Answer again as one JSON object."
 	}
+}
+
+// scrub is s through the runner's scrubber, the generic rules alone when it
+// has none.
+func (r *Runner) scrub(s string) string {
+	if r.Scrub == nil {
+		return redact.New().String(s)
+	}
+	return r.Scrub.String(s)
 }
 
 // checkinAnswerDue is how long after the check-in starts its answer call

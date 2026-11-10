@@ -96,8 +96,8 @@ card gets half of it when small and one and a half when large),
 policy loads), `checkin_calls` (20, also when absent: the model calls of
 one check-in conversation, the last without tools), `checkin_time` (90 s
 for each of the `checkin_calls` when absent, so 30m at 20 calls, at most
-30m: how long one check-in conversation may run before its ask goes to a
-human, and never past the session's own end, 1m to 30m when set), `checkin_share` (10,
+30m: how long one check-in conversation may run before it fails and the
+project agent answers, and never past the session's own end, 1m to 30m when set), `checkin_share` (10,
 also when absent: the percent of the card's budget all its check-ins may
 spend), `supervisor_timeout` (6m per supervisor or review call, at most
 15m), `review_diff_kib` (48, also when absent, at most 1024: the size of
@@ -181,8 +181,8 @@ tool-cap and envelope matrices one row per block.
 | limits.nudges | how many nudge messages one repetition gets, at least 1. The next run of the same call trips the supervisor | 0 and absent read DefaultNudges 1 | after its nudges the same call trips: "%s: the same call %d times in a row after %s" |
 | limits.same_call | how many identical tool calls in one session, in a row or not, trip the same_call detector, at least 2 and above nudge_after | 0 and absent read DefaultSameCall 4 | in a row: "%s: the same call %d times in a row after %s". Across the session: "tool %s called %d times with the same arguments %s after %s" |
 | limits.review_diff_kib | the most diff, in KiB, one model review call reads, and the part size when a bigger diff reads in parts | 0 and absent read DefaultReviewDiffKiB 48 | no line the agent reads: the review reads a bigger diff in parts of this size, as many as it needs |
-| limits.checkin_calls | how many model calls one check-in conversation gets. Its last call carries no tools and asks for the answer | 0 and absent read DefaultCheckinCalls 20 | "check-in call cap reached after %d calls", asked of a human under the reason kind spend_above_policy |
-| limits.checkin_time | how long one check-in conversation may run before its ask goes to a human | 0 and absent read the per-call fallback: CheckinCallTime 90s for each of the call cap's calls, at most MaxCheckinTime 30m | "check-in time cap reached after %s" with the cap as a duration string |
+| limits.checkin_calls | how many model calls one check-in conversation gets. Its last call carries no tools and asks for the answer | 0 and absent read DefaultCheckinCalls 20 | "check-in call cap reached after %d calls", a failed check-in the project agent answers first, under the reason kind checkin_call_cap |
+| limits.checkin_time | how long one check-in conversation may run before it fails and the project agent answers | 0 and absent read the per-call fallback: CheckinCallTime 90s for each of the call cap's calls, at most MaxCheckinTime 30m | "check-in time cap reached after %s" with the cap as a duration string, under the reason kind checkin_time_cap |
 | limits.checkin_share | the most percent of the card's budget the check-in's calls may spend | 0 and absent read DefaultCheckinShare 10 | "the check-in's share of the budget is spent", asked as "check-in: spend_above_policy: the check-in's share of the budget is spent". A human's answer grants the card one more share |
 | limits.checkin_tail_kib | the parent session record's tail cut into the check-in's statement | 0 and absent read DefaultCheckinTailKiB 24 | no trip: it shapes the statement the check-in reads |
 | limits.checkin_handover_chars | the check-in's handover note cap, matching the session's last-message cut | 0 and absent read DefaultCheckinHandoverChars 2000 | no trip: the handover note is cut at the cap |
