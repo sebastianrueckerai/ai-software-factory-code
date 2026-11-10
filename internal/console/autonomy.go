@@ -155,7 +155,8 @@ func (c *Console) commitProjectFileGuarded(ctx context.Context, a actor, name, m
 		switch {
 		case err != nil:
 			log.Printf("console: check %s against infra's head: %v", path, err)
-			return 0, refuse(http.StatusBadGateway, "cannot read the configuration at infra's head: "+errText(err)+". Try again in a moment.")
+			return 0, refuse(http.StatusBadGateway, "The configuration at infra's head could not be read: "+errText(err)+
+				". Try the switch again, or edit the project file on Forgejo.")
 		case len(refused) > 0:
 			return 0, refuse(http.StatusUnprocessableEntity, "The project file would not load: "+strings.Join(refused, "; "))
 		}
@@ -443,7 +444,8 @@ func (c *Console) docFileAt(ctx context.Context, repo factoryd.Repo, path, ref s
 		if errors.As(err, &api) && api.status == http.StatusNotFound {
 			return "", "", false, nil
 		}
-		return "", "", false, &forgejoRefusal{"read the document", err}
+		return "", "", false, &forgejoRefusal{what: "read the document", err: err,
+			say: "The document could not be read: %s. Open the document again and save your change once more."}
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(file.Content))
 	if err != nil {

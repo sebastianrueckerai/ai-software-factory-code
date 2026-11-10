@@ -289,7 +289,8 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	refused, err := c.cfg.CheckProject(r.Context(), p.Name, file)
 	if err != nil {
 		log.Printf("console: check projects/%s.yaml against infra's head: %v", p.Name, err)
-		http.Error(w, "cannot read the configuration at infra's head: "+errText(err)+". Try again in a moment.", http.StatusBadGateway)
+		http.Error(w, "The configuration at infra's head could not be read: "+errText(err)+
+			". Try the switch again, or edit the project file on Forgejo.", http.StatusBadGateway)
 		return
 	}
 	if len(refused) > 0 {
@@ -748,7 +749,8 @@ func (c *Console) mergeProject(w http.ResponseWriter, r *http.Request) {
 	pr, ok, err := c.pullOf(r.Context(), name)
 	if err != nil {
 		log.Printf("console: pull request of project-%s: %v", name, err)
-		c.refuse(w, r, name, "Cannot read the pull request: "+errText(err)+". Try again in a moment.", http.StatusBadGateway)
+		c.refuse(w, r, name, "The pull request could not be read: "+forgejoCause(err)+
+			". Load the project's page again, or merge the pull request on Forgejo.", http.StatusBadGateway)
 		return
 	}
 	if !ok || pr.State != "open" || pr.Merged {

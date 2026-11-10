@@ -128,7 +128,11 @@ func (c *Console) docRefused(w http.ResponseWriter, r *http.Request, err error) 
 		}
 	case errors.As(err, &fj):
 		log.Printf("console: %s could not %s: %v", current(r).user, fj.what, fj.err)
-		out.Reason = "Forgejo refused to " + fj.what + ": " + errText(fj.err) + ". Try again in a moment."
+		if fj.say != "" {
+			out.Reason = fmt.Sprintf(fj.say, errText(fj.err))
+		} else {
+			out.Reason = "Forgejo refused to " + fj.what + ": " + errText(fj.err) + ". Try again in a moment."
+		}
 	case errors.As(err, &no):
 		out.Reason, status = no.msg, no.status
 	default:
@@ -226,7 +230,8 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 	if err := c.as(ctx, a.s, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
 		"branch": "master", "message": a.attribution().Message(docPath + ": edited in the console"), "files": []map[string]string{change}},
 		http.StatusCreated, &landed); err != nil {
-		return nil, &forgejoRefusal{"commit the document", err}
+		return nil, &forgejoRefusal{what: "commit the document", err: err,
+			say: "The document could not be committed: %s. Open the document again and save your change once more."}
 	}
 	// The commit is on master: whatever the head-commit read answers a
 	// beat later, the save has landed and owes its event, so it answers

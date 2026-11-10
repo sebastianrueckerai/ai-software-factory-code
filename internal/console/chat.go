@@ -1553,6 +1553,21 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 // sentence is errSentence for the turn's actor.
 func (t *turn) sentence(err error) string { return errSentence(t.a, err) }
 
+// forgejoCause is a Forgejo failure's own sentence: Forgejo's message
+// when its API answered one, else the error's scrubbed words — the <err>
+// a site's own refusal sentence embeds.
+func forgejoCause(err error) string {
+	var fj *forgejoRefusal
+	var api *apiError
+	if errors.As(err, &fj) {
+		err = fj.err
+	}
+	if errors.As(err, &api) {
+		return api.reason()
+	}
+	return errText(err)
+}
+
 // errSentence is err as a's human and the agent read it, the cause of a
 // failure that is no refusal logged.
 func errSentence(a actor, err error) string {
@@ -1563,6 +1578,9 @@ func errSentence(a actor, err error) string {
 	switch {
 	case errors.As(err, &no):
 		return no.msg
+	case errors.As(err, &fj) && fj.say != "":
+		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
+		return fmt.Sprintf(fj.say, forgejoCause(err))
 	case errors.As(err, &fj) && errors.As(fj.err, &api):
 		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 		return "Forgejo refused to " + fj.what + ": " + api.reason()
@@ -1573,7 +1591,7 @@ func errSentence(a actor, err error) string {
 		return stale.Error()
 	}
 	log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
-	return "The action failed: " + errText(err) + ". Try again in a moment."
+	return "The action failed: " + errText(err) + ". Try the call again, or read the board to see the factory's state."
 }
 
 // refusalCode is err's HTTP status when err is a refusal, 0 for any

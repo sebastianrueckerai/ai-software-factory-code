@@ -2108,7 +2108,7 @@ func (t *turn) requestImage(in toolInput) (string, error) {
 		return "", refuse(http.StatusConflict, string(no))
 	case err != nil:
 		log.Printf("console: the tool card of %s on %s: %v", t.a.s.user, t.p.Repository, err)
-		return "", refuse(http.StatusBadGateway, "The tool card could not be filed: "+errText(err)+". Try again in a moment.")
+		return "", refuse(http.StatusBadGateway, "The tool card could not be filed: "+errText(err)+". Ask again, or file the tool card by hand.")
 	}
 	card := ask.Card
 	what := fmt.Sprintf("The ask joined tool card #%d %s %q, which no session has started.", card.IssueNumber, card.ID, factoryd.CardTitle(card))
@@ -2141,7 +2141,8 @@ func (t *turn) diff(in toolInput) (string, error) {
 	var raw []byte
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d.diff", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), k.PRNumber)
 	if err := t.c.as(t.r.Context(), t.a.s, http.MethodGet, path, nil, http.StatusOK, &raw); err != nil {
-		return "", &forgejoRefusal{"read the pull request's diff", err}
+		return "", &forgejoRefusal{what: "read the pull request's diff", err: err,
+			say: "The diff could not be read: %s. Try the diff tool again, or open the pull request on Forgejo."}
 	}
 	if in.Ask != "" {
 		label := fmt.Sprintf("the diff of task %s", k.ID)

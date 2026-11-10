@@ -202,10 +202,12 @@ func fitting(t factoryd.Task, f capFacts) string {
 }
 
 // forgejoRefusal is a Forgejo call of the action that failed: what the
-// action asked Forgejo for.
+// action asked Forgejo for, and say — a %s holding the error's words —
+// the site's own refusal sentence, empty for the generic one.
 type forgejoRefusal struct {
 	what string
 	err  error
+	say  string
 }
 
 func (e *forgejoRefusal) Error() string { return "Forgejo refused to " + e.what + ": " + e.err.Error() }
@@ -570,7 +572,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		return "", refuse(http.StatusConflict, no.Error())
 	case err != nil:
 		log.Printf("console: %s retries %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The card could not be retried: "+errText(err)+". Try again in a moment.")
+		return "", refuse(http.StatusInternalServerError, "The card could not be retried: "+errText(err)+". Press Retry again, or replan the card when it keeps failing.")
 	}
 	log.Printf("console: %s retried %s (%s#%d) as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
