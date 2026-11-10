@@ -167,7 +167,7 @@ func (r *Runner) relabelPlan(ctx context.Context, repo Repo, t Task) error {
 // workSoFar is the planner's input block of card taskID: the head of its
 // branch past the base, the caller's text and the reason for the switch.
 func (r *Runner) workSoFar(ctx context.Context, taskID string, sw PlanSwitch) (string, error) {
-	head, err := r.BranchHead(ctx, taskID)
+	head, err := r.workHead(ctx, taskID)
 	if err != nil {
 		return "", err
 	}

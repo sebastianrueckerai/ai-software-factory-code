@@ -218,3 +218,84 @@ func TestWorkflowReplaysAPushedDeadSessionFromBeforeWipStart(t *testing.T) {
 		t.Fatalf("starts = %+v, want the bought successor to start from the base", starts)
 	}
 }
+
+// An interim head is no finished work: where a path would take it through
+// the gates, the gate's refusal sends the card on in a session that starts
+// from that head, and the card never fails on it. A run from before the
+// gate fails on the refusal, as before.
+func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T) {
+	spendStop := SessionResult{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "w2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
+		CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}
+	for _, tc := range []struct {
+		name     string
+		sessions []SessionResult
+		state    RunState
+		answer   bool
+		checks   []ChecksResult // none: green
+		// the heads that open a pull request, in order, and the session that ran last
+		prs     []string
+		started string
+	}{
+		{"a dropped check-in on an interim head",
+			[]SessionResult{deadAfterPushing(OutcomeNoPush), checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), pushed("s3", "c3")},
+			RunState{}, false, nil, []string{"w2", "c3"}, "w2"},
+		{"the answer to a spend stop whose end push did not land",
+			[]SessionResult{pushed("s1", "c1"), spendStop, pushed("s3", "c3")},
+			RunState{}, true, []ChecksResult{gosecRed, {State: ChecksSuccess}}, []string{"c1", "w2", "c3"}, "w2"},
+		{"a healed card waiting on a spend stop with an interim head",
+			[]SessionResult{pushed("s2", "c3")},
+			RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+				PR: PullRequest{Number: 9}, Head: "w2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}, true, nil, []string{"w2", "c3"}, "w2"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.beforeCases()
+			h.taskConfig = askTaskConfig()
+			h.state = tc.state
+			h.wipHeads = []string{"w2"}
+			var steps []string
+			h.onVerify(&steps, tc.sessions, tc.checks...)
+			if tc.answer {
+				h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			}
+			h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q (%v), want done: no failure on an interim head", final, h.finals)
+			}
+			var prs []string
+			for _, s := range steps {
+				if head, ok := strings.CutPrefix(s, "pr "); ok {
+					prs = append(prs, strings.Fields(head)[0])
+				}
+			}
+			if !slices.Equal(prs, tc.prs) {
+				t.Fatalf("pull requests opened on %v, want %v (steps %v, escalated %q)", prs, tc.prs, steps, h.escalated)
+			}
+			var starts []string
+			for _, in := range h.sessions {
+				starts = append(starts, in.StartRef)
+			}
+			if got := h.sessions[len(h.sessions)-1].StartRef; got != tc.started {
+				t.Fatalf("session starts = %v, want the last from %s, the interim head", starts, tc.started)
+			}
+		})
+	}
+}
+
+// A run from before the gate meets the refusal as before: it fails on it.
+func TestWorkflowBeforeWipStartFailsWhereAGateRefusesAnInterimHead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+		PR: PullRequest{Number: 9}, Head: "w2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	h.beforeCases()
+	h.wipHeads = []string{"w2"}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+
+	if final := h.run(t); final != "failed" || !strings.Contains(h.finals[0][1], "interim push") {
+		t.Fatalf("final = %q (%v), want failed on the refusal", final, h.finals)
+	}
+}

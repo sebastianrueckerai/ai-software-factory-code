@@ -36,6 +36,7 @@ import (
 type gateForgejo struct {
 	mu          sync.Mutex
 	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
+	commitFail  []int             // answers of the next commit reads, each a failure status
 	files       []string          // ChangedFile JSON objects
 	diff        string
 	mergeStatus []int // answers in order, the last repeating
@@ -160,6 +161,12 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			if len(f.commitFail) > 0 {
+				status := f.commitFail[0]
+				f.commitFail = f.commitFail[1:]
+				http.Error(w, "forgejo down", status)
+				return
+			}
 			_, sha, _ := strings.Cut(r.URL.Path, "/git/commits/")
 			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[]}`, cmp.Or(f.committers[sha], "factory-agent@factory.local"))
 		default:

@@ -59,3 +59,22 @@ func TestOpenPullRequestAndChecksRefuseAnInterimHead(t *testing.T) {
 		t.Errorf("pull requests opened = %v, want none for an interim head", fj.created)
 	}
 }
+
+// A failed read of the head's commit is no refusal: the merge is retried,
+// the approval stays, and the second read merges.
+func TestMergeRetriesAFailedCommitRead(t *testing.T) {
+	fj := &gateForgejo{mergeStatus: []int{200}, mergeCommit: "m-f1", commitFail: []int{502}}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+
+	if val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", ""); err == nil {
+		t.Fatalf("first read failed: result %+v, want the error that retries", getInto[MergeResult](t, val, err))
+	}
+	if len(fj.merges) != 0 || store.approvals[0].Status == "denied" {
+		t.Fatalf("merges %d, approval %+v: a failed read neither merges nor spends the approval", len(fj.merges), store.approvals[0])
+	}
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	if res := getInto[MergeResult](t, val, err); !res.Merged || len(fj.merges) != 1 {
+		t.Fatalf("second attempt = %+v with %d merges, want the merge", res, len(fj.merges))
+	}
+}

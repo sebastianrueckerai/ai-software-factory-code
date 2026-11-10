@@ -2341,6 +2341,9 @@ func (r *Runner) workerPodSpec(t Task, s sessionSpec) map[string]any {
 		{"name": "OPENCODE_DISABLE_MODELS_FETCH", "value": "1"},
 		{"name": "OPENCODE_DISABLE_LSP_DOWNLOAD", "value": "1"},
 	}
+	if s.startWip {
+		env = append(env, map[string]any{"name": "START_WIP", "value": "1"})
+	}
 	cloneEnv := []map[string]any{
 		{"name": "MODE", "value": "clone"},
 		{"name": "REPO_URL", "value": r.repoURL(s.repo)},

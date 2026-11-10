@@ -184,6 +184,9 @@ const (
 // the task with its message.
 const errTerminal = "terminal"
 
+// errWipHead types the refusal of a gate asked about an interim commit.
+const errWipHead = "wip_head"
+
 func terminalError(format string, args ...any) error {
 	return temporal.NewNonRetryableApplicationError(fmt.Sprintf(format, args...), errTerminal, nil)
 }
@@ -2370,7 +2373,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.pendingPods = 0
 		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
 			switch res.Outcome {
-			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap:
+			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock:
 				startRef = res.Commit
 				if res.Outcome == OutcomeProviderRefused {
 					parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
@@ -3243,6 +3246,10 @@ func (t *taskRun) verify(commit string) (v verdict) {
 		return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
+		if t.wipStart >= versionWipStart && isWipHead(err) {
+			// an interim head is no finished work: a session goes on from it
+			return verdict{findings: []string{"the branch's head " + commit + " is a session's work in progress, which no gate judges: continue from it and finish the work"}, reason: "work in progress"}
+		}
 		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
@@ -5418,6 +5425,11 @@ func isWallClockTimeout(err error) bool {
 func isTerminal(err error) bool {
 	var app *temporal.ApplicationError
 	return errors.As(err, &app) && app.Type() == errTerminal
+}
+
+func isWipHead(err error) bool {
+	var app *temporal.ApplicationError
+	return errors.As(err, &app) && app.Type() == errWipHead
 }
 
 func isHeadMoved(err error) bool {

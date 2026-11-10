@@ -475,12 +475,15 @@ const (
 // a worker can write, with the token factoryd posts at the push.
 type workerEnv struct {
 	taskID, sessionID, objective, repository, repoSHA, branch string
-	repoURL, repoToken, pushURL, pushToken                    string
-	gatewayURL, tokenFile, model                              string
-	strongerModel                                             string
-	cheapModel                                                string
-	answerTokens, headroomTokens                              int
-	steps                                                     int
+	// startWip (START_WIP) says repoSHA is an interim push's commit: a
+	// session that changes nothing still lands one finished commit on it
+	startWip                               bool
+	repoURL, repoToken, pushURL, pushToken string
+	gatewayURL, tokenFile, model           string
+	strongerModel                          string
+	cheapModel                             string
+	answerTokens, headroomTokens           int
+	steps                                  int
 	// lineBound (LINE_BOUND) is the card's line bound: the changed lines
 	// the pushed diff against its merge base may hold; 0 is off
 	lineBound                            int
@@ -545,6 +548,7 @@ func loadEnv() (workerEnv, error) {
 	e.objective = str("OBJECTIVE")
 	e.repository = str("REPOSITORY")
 	e.repoSHA = str("REPO_SHA")
+	e.startWip = str("START_WIP") == "1"
 	e.branch = str("BRANCH")
 	messageHash := str("MESSAGE_TOKEN_SHA256")
 	// opencode inherits this process's environment
@@ -1010,7 +1014,7 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if err != nil {
 		return "", err
 	}
-	if tree == baseTree {
+	if tree == baseTree && !e.startWip {
 		return "", nil
 	}
 	agent, err := e.git(own, "rev-parse", "refs/heads/agent")

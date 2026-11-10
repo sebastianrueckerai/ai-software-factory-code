@@ -2140,9 +2140,6 @@ func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, app
 	if err != nil {
 		return MergeResult{}, err
 	}
-	if err := r.refuseWip(ctx, repo, commit); err != nil {
-		return r.refuseMerge(ctx, t, repo, pr, commit, approver, errMessage(err)), nil
-	}
 	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, met, lastAttempt(ctx))
 }
 
@@ -2257,6 +2254,11 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 	}
 	if st.Merged {
 		return r.mergedAlready(ctx, t, pr, commit, approver, st), nil
+	}
+	if err := r.refuseWip(ctx, repo, commit); isWipHead(err) {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, errMessage(err)), nil
+	} else if err != nil {
+		return MergeResult{}, err
 	}
 	// the merge refuses a card the newest revision drops (piece 10), the
 	// auto-merge's path and a request opened before the revision landed

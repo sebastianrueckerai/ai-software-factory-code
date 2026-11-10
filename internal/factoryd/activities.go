@@ -1043,11 +1043,6 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("start ref", err)
 	}
 	s.base = t.SHA
-	if s.startRef != s.base {
-		if s.startWip, s.interimStart, err = r.interimStart(ctx, repo, s.startRef, s.base); err != nil {
-			return SessionResult{}, named("start commit", err)
-		}
-	}
 	var dead sessionProgress
 	if activity.HasHeartbeatDetails(ctx) && activity.GetHeartbeatDetails(ctx, &dead) == nil && dead.SessionID != "" {
 		if dead.Events > 0 {
@@ -1077,6 +1072,11 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	hb := startHeartbeat(ctx, s.id)
 	defer hb.stop()
+	if s.startRef != s.base {
+		if s.startWip, s.interimStart, err = r.interimStart(ctx, repo, s.startRef, s.base); err != nil {
+			return SessionResult{}, named("start commit", err)
+		}
+	}
 
 	if live == nil {
 		if err := r.completion.reconcile(ctx, t.ID); err != nil {
@@ -1314,7 +1314,7 @@ func (r *Runner) refuseWip(ctx context.Context, repo Repo, sha string) error {
 	if wip, _, err := r.wipCommit(ctx, repo, sha); err != nil {
 		return fmt.Errorf("read commit %s: %w", sha, err)
 	} else if wip {
-		return temporal.NewNonRetryableApplicationError(fmt.Sprintf("commit %s is an interim push's work in progress, not finished work: no gate judges, approves or merges it, and the session's end push lands the commit they judge", sha), errTerminal, nil)
+		return temporal.NewNonRetryableApplicationError(fmt.Sprintf("commit %s is an interim push's work in progress, not finished work: no gate judges, approves or merges it, and the session's end push lands the commit they judge", sha), errWipHead, nil)
 	}
 	return nil
 }
@@ -2459,6 +2459,16 @@ func (r *Runner) BranchHead(ctx context.Context, taskID string) (string, error) 
 		return "", err
 	}
 	return head, nil
+}
+
+// workHead is the head of taskID's branch past the base, whoever pushed it:
+// the work the card holds on its branch, interim work included.
+func (r *Runner) workHead(ctx context.Context, taskID string) (string, error) {
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	return r.branchHead(ctx, t, repo)
 }
 
 // branchHead is the task's branch head past the base, whoever pushed it.

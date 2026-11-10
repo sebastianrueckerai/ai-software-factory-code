@@ -3115,6 +3115,11 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	if res.Outcome != OutcomeNoPush || res.Commit != "" {
 		t.Fatalf("session resumed from an interim commit without new changes: %+v", res)
 	}
+	// resumed from an interim commit, the worker landed a finished one on it: the gates judge that
+	res = sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main", startWip: true}, sessionOutcome{result: done, commit: "fin"})
+	if res.Outcome != OutcomePushed || res.Commit != "fin" {
+		t.Fatalf("session that landed a finished commit on an interim start: %+v", res)
+	}
 	// started at the base and changed nothing: no push
 	res = sessionResult(sessionSpec{id: "s1", startRef: "main", base: "main"}, sessionOutcome{result: done})
 	if res.Outcome != OutcomeNoPush || res.Commit != "" {
@@ -4023,17 +4028,18 @@ func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error)
 // startsFrom runs a session that starts on the branch head w2, spends 2.5
 // of the 4 EUR the card had left and pushes nothing. committer is who wrote
 // w2 and given the start the workflow's input names; set says who wrote the
-// commits below w2. It reports whether spend_no_push tripped.
-func startsFrom(t *testing.T, committer, given string, set func(*forgejoHub)) bool {
+// commits below w2. It reports whether spend_no_push tripped and the worker's
+// START_WIP.
+func startsFrom(t *testing.T, committer, given string, set func(*forgejoHub)) (tripped bool, startWip string) {
 	t.Helper()
 	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	hub.branchHead = "w2"
-	hub.committers = map[string]string{"w2": committer}
+	hub.committers, hub.parents = map[string]string{"w2": committer}, map[string]string{"w2": "b0"}
 	if set != nil {
 		set(hub)
 	}
 	tk := store.tasks["t2"]
-	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	tk.BudgetEUR, tk.SpentEUR, tk.SHA = 5, 1, "b0"
 	store.tasks["t2"] = tk
 	spending := &spendingStore{Store: runner.store}
 	runner.store = spending
@@ -4048,7 +4054,18 @@ func startsFrom(t *testing.T, committer, given string, set func(*forgejoHub)) bo
 		cancel()
 	}()
 	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", StartRef: given}, nil, hangLogs)
-	return chat.calls == 1 && spendTripSeen(hub)
+	return chat.calls == 1 && spendTripSeen(hub), podEnv(kube.podAt(0))["START_WIP"]
+}
+
+// interimChain makes w2 the top of n interim commits above the base b0.
+func interimChain(h *forgejoHub, n int) {
+	below := "w2"
+	for i := 1; i < n; i++ {
+		next := fmt.Sprintf("x%d", i)
+		h.parents[below], h.committers[next] = next, wipEmail
+		below = next
+	}
+	h.parents[below] = "b0"
 }
 
 // An interim push grants no push credit, whatever the input names as the
@@ -4070,12 +4087,18 @@ func TestRunSessionOnAnInterimHeadKeepsSpendNoPush(t *testing.T) {
 		// push, which a session of the card pushed before
 		{"an interim head on a session's push", wipEmail, "w2", func(h *forgejoHub) { h.parents = map[string]string{"w2": "c2"} }, false},
 		{"stacked interim heads on the base", wipEmail, "w2", func(h *forgejoHub) {
-			h.parents, h.committers["w1"] = map[string]string{"w2": "w1"}, wipEmail
+			h.parents, h.committers["w1"] = map[string]string{"w2": "w1", "w1": "b0"}, wipEmail
 		}, true},
+		{"32 interim heads on the base", wipEmail, "w2", func(h *forgejoHub) { interimChain(h, 32) }, true},
+		{"33 interim heads on the base count as a push", wipEmail, "w2", func(h *forgejoHub) { interimChain(h, 33) }, false},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := startsFrom(t, tc.committer, tc.given, tc.set); got != tc.trips {
+			got, startWip := startsFrom(t, tc.committer, tc.given, tc.set)
+			if got != tc.trips {
 				t.Fatalf("spend_no_push tripped = %v, want %v", got, tc.trips)
+			}
+			if want := map[bool]string{true: "1"}[tc.committer == wipEmail]; startWip != want {
+				t.Fatalf("worker START_WIP = %q, want %q: the worker lands a finished commit on an interim start", startWip, want)
 			}
 		})
 	}
@@ -4087,7 +4110,7 @@ func TestRunSessionOnAnInterimHeadKeepsSpendNoPush(t *testing.T) {
 func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
 	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	tk := store.tasks["t2"]
-	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	tk.BudgetEUR, tk.SpentEUR, tk.SHA = 5, 1, "b0"
 	store.tasks["t2"] = tk
 	spending := &spendingStore{Store: runner.store}
 	runner.store = spending

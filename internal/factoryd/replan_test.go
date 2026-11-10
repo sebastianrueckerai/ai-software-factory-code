@@ -2844,3 +2844,18 @@ func TestReplanOfADependencyAppliesToAFailedOne(t *testing.T) {
 		}
 	}
 }
+
+// A cut card whose branch holds only an interim push holds work: the
+// revision must name it in a from.
+func TestReplanStateCutOfAnInterimBranchHoldsWork(t *testing.T) {
+	ctx := context.Background()
+	r, store, fj := replanRig(t, "running", 0)
+	fj.head, fj.committers = "w2", map[string]string{"w2": wipEmail}
+	if err := r.timeline.Append(ctx, "p", stepReplan, map[string]any{"origin": ReplanCut, "card": "p"}); err != nil {
+		t.Fatal(err)
+	}
+	st, err := r.replanState(ctx, store.tasks["p"], timelineOf(t, r, "p"), 0)
+	if err != nil || st.cut != "p" || !st.cutWork {
+		t.Fatalf("a cut of an interim branch: cut %q, work %t, %v", st.cut, st.cutWork, err)
+	}
+}

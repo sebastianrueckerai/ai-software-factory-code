@@ -791,7 +791,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	run("-C", seed, "add", "wip.txt")
 	run("-C", seed, "-c", "user.name=factory-agent", "-c", "user.email=factory-agent@factory.local", "commit", "-q", "-m", "factory task t1: work in progress")
 	// each resumed case pushes onto its own branch at the work in progress
-	run("-C", seed, "push", "-q", fork, "factory/resumed", "factory/resumed:factory/agent-orphaned-its-history")
+	run("-C", seed, "push", "-q", fork, "factory/resumed", "factory/resumed:factory/agent-orphaned-its-history", "factory/resumed:factory/resumed-from-an-interim-head-and-nothing-changed")
 	wip := run("-C", seed, "rev-parse", "HEAD")
 
 	agentCommits := func(dir string) {
@@ -806,6 +806,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 		name, start string
 		agent       func(dir string)
 		files       string // the pushed tree's files; "" = nothing pushed
+		startWip    bool   // the start is an interim push's commit
 	}{
 		{name: "no changes", start: sha, agent: func(string) {}},
 		{name: "agent committed", start: sha, agent: agentCommits, files: "a.txt\nb.txt"},
@@ -813,6 +814,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 			agentCommits(dir)
 			os.WriteFile(filepath.Join(dir, "c.txt"), []byte("c\n"), 0o644)
 		}},
+		{name: "resumed from an interim head and nothing changed", start: wip, startWip: true, agent: func(string) {}, files: "wip.txt"},
 		{name: "resumed", start: wip, agent: agentCommits, files: "a.txt\nb.txt\nwip.txt"},
 		{name: "agent orphaned its history", start: wip, files: "a.txt\nb.txt\nwip.txt", agent: func(dir string) {
 			run("-C", dir, "checkout", "-q", "--orphan", "other")
@@ -823,7 +825,7 @@ func TestCommitAndPushSquashesOnTheStart(t *testing.T) {
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
-			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork}
+			e := workerEnv{taskID: "t1", sessionID: "s-1", author: "alice", objective: "Fixes #3 for @admin\nbody", repoSHA: tc.start, branch: branch, repoURL: remote, pushURL: fork, startWip: tc.startWip}
 			dir := filepath.Join(t.TempDir(), "repo")
 			if err := cloneBase(e, dir); err != nil {
 				t.Fatal(err)

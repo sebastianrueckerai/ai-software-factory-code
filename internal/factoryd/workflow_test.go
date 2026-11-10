@@ -69,6 +69,7 @@ func testStages() []policy.Stage {
 // the step they are about.
 type workflowHarness struct {
 	env         *testsuite.TestWorkflowEnvironment
+	wipHeads    []string // the heads OpenPullRequest refuses as interim pushes (onVerify)
 	sessions    []SessionInput
 	finals      [][2]string
 	states      []string
@@ -1549,6 +1550,9 @@ func (h *workflowHarness) onVerify(steps *[]string, results []SessionResult, che
 	h.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(
 		func(ctx context.Context, taskID, sha string) (PullRequest, error) {
 			*steps = append(*steps, fmt.Sprintf("pr %s after %d cards", sha, len(h.escalated)))
+			if slices.Contains(h.wipHeads, sha) {
+				return PullRequest{}, temporal.NewNonRetryableApplicationError("commit "+sha+" is an interim push's work in progress", errWipHead, nil)
+			}
 			return PullRequest{Number: 9, URL: "https://git.example/sf/r/pulls/9"}, nil
 		})
 	h.env.OnActivity(ActivityRequestApproval, mock.Anything, "t1", mock.Anything).Return(
