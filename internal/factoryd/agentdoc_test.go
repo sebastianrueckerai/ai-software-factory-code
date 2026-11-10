@@ -55,6 +55,17 @@ func TestAgentDocDirectCapturesEveryDirectAgent(t *testing.T) {
 			if len(spans) == 0 {
 				t.Fatal("no spans registered")
 			}
+			if id == "checkin" {
+				for _, tool := range b.Tools {
+					found := false
+					for _, sp := range spans {
+						found = found || sp.Name == "tool "+tool.Name
+					}
+					if !found {
+						t.Errorf("the request carries tool %q with no span", tool.Name)
+					}
+				}
+			}
 			var decoded strings.Builder
 			for _, m := range b.Messages {
 				decoded.WriteString(m.Content)

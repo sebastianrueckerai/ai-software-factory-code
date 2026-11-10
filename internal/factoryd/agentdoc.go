@@ -157,6 +157,12 @@ func agentDocCheckin(ctx context.Context, gwURL string, v policy.Version, hc *ht
 		spans = append(spans, agentdoc.Span{Name: "tool " + tool.Name, Symbol: "factoryd.checkinToolsFor", Kind: agentdoc.KindBuilder,
 			Place: agentdoc.PlaceTools, Text: string(raw)})
 	}
+	answerTool, err := json.Marshal(momentAnswerTool(ask))
+	if err != nil {
+		return nil, err
+	}
+	spans = append(spans, agentdoc.Span{Name: "tool " + checkinAnswerTool, Symbol: "factoryd.momentAnswerTool", Kind: agentdoc.KindBuilder,
+		Place: agentdoc.PlaceTools, Text: string(answerTool)})
 	(&Runner{}).runCheckin(ctx, agentDocTask, alias, ask, parent,
 		&checkinGateway{URL: gwURL, Token: "agentdoc", HTTP: hc}, agentDocPodTools{}, callsLeft, eurLeft, 1, handoverCap, timeCap)
 	return spans, nil
