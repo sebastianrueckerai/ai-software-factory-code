@@ -894,8 +894,9 @@ func monthCapCardQuestion(limit float64, month string, eur float64, link, refusa
 		return HumanQuestion{
 			Ask: fmt.Sprintf("LiteLLM's outer guard refused calls at %.2f EUR, below the month cap of %.2f EUR: raise max_budget in k8s/platform/litellm/helmrelease.yaml", eur, limit),
 			Why: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %.2f EUR, below the cap of %.2f EUR (`budget.month_eur`), "+
-				"yet LiteLLM's proxy-wide `max_budget` refused a call. `max_budget` is the outer guard behind the cap and counts in USD; "+
-				"scripts/budget-backstop-check keeps it at 1.25 times `budget.month_eur` or more, and it has fallen under that.", month, eur, limit),
+				"yet LiteLLM's proxy-wide `max_budget`, the outer guard behind the cap, refused a call. Either `max_budget` sits under 1.25 times the cap, "+
+				"or LiteLLM's USD counter ran ahead of the ledger in EUR. scripts/budget-backstop-check tells them apart: it fails when `max_budget` is under 1.25 times `budget.month_eur`; "+
+				"if it passes, the counter ran ahead and `max_budget` needs the raise all the same.", month, eur, limit),
 			Info: "Raise `max_budget` in the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
 				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
 			Choices: []QuestionChoice{

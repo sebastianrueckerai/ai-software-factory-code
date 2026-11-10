@@ -15,6 +15,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 const gatewayRefusal = "the month cap budget.month_eur is reached: spent 49.98 EUR of 50.00 EUR"
@@ -173,7 +174,7 @@ func TestMonthAlarmFilesTheCapIssueOnce(t *testing.T) {
 func TestMonthAlarmZeroCap(t *testing.T) {
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 0)
-	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refusal: proxyRefusal, RefusedAt: refusedAt}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 3, Refusal: gatewayRefusal, RefusedAt: refusedAt}
 	if err := alarm.Check(context.Background()); err != nil || len(store.alertRows()) != 0 || len(fj.issues) != 0 {
 		t.Fatalf("check under a cap of 0 = %v, alerts %+v, issues %q", err, store.alertRows(), fj.issues)
 	}
@@ -365,7 +366,7 @@ func TestMonthAlarmClosesTheCardARaiseLifted(t *testing.T) {
 	first := taskOf(t, store, "2026-10/100/544")
 	activated := now.Add(-time.Minute)
 	version(5, 600, activated)
-	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90, Refusal: proxyRefusal, RefusedAt: activated.Add(-5 * time.Minute)}
+	store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90, Refusal: gatewayRefusal, RefusedAt: activated.Add(-5 * time.Minute)}
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
 	}
@@ -411,7 +412,7 @@ func TestMonthAlarmCountsARefusalAfterTheTTL(t *testing.T) {
 		{10 * time.Second, []string{"2026-10/50", "2026-10/80"}},
 		{40 * time.Second, []string{"2026-10/50", "2026-10/80", "2026-10/100/600"}},
 	} {
-		store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90, Refusal: proxyRefusal, RefusedAt: activated.Add(c.after)}
+		store.monthSpend = MonthSpend{Month: "2026-10", EUR: 543.90, Refusal: gatewayRefusal, RefusedAt: activated.Add(c.after)}
 		if err := alarm.Check(ctx); err != nil {
 			t.Fatal(err)
 		}
@@ -545,7 +546,8 @@ func TestMonthAlarmNamesTheOuterGuard(t *testing.T) {
 	ctx := context.Background()
 	store := newFakeStore()
 	alarm, fj := monthAlarm(t, store, 600)
-	refusal := gateway.ProxyBudgetRefusal + "Budget has been exceeded! https://user:pass@litellm.example/v1 Authorization: Bearer abc123def456"
+	alarm.Scrub = redact.New("hunter2hunter2")
+	refusal := gateway.ProxyBudgetRefusal + "Budget has been exceeded! https://user:pass@litellm.example/v1 Authorization: Bearer abc123def456 key hunter2hunter2"
 	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 500, Refusal: refusal, RefusedAt: refusedAt}
 	if err := alarm.Check(ctx); err != nil {
 		t.Fatal(err)
@@ -555,17 +557,57 @@ func TestMonthAlarmNamesTheOuterGuard(t *testing.T) {
 	}
 	got := fj.issues[0]
 	for _, want := range []string{"LiteLLM's outer guard refused calls at 500.00 EUR, below the month cap of 600.00 EUR: raise max_budget in k8s/platform/litellm/helmrelease.yaml",
-		"600.00 EUR (`budget.month_eur`)", "1.25 times", "scripts/budget-backstop-check",
+		"600.00 EUR (`budget.month_eur`)", "1.25 times", "scripts/budget-backstop-check", "USD counter ran ahead of the ledger",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/k8s/platform/litellm/helmrelease.yaml",
 		"litellm proxy budget exceeded"} {
 		if !strings.Contains(got, want) {
 			t.Errorf("issue lacks %q:\n%s", want, got)
 		}
 	}
-	for _, bad := range []string{"raise it", "pass@", "abc123def456"} {
+	for _, bad := range []string{"raise it", "pass@", "abc123def456", "hunter2hunter2"} {
 		if strings.Contains(got, bad) {
 			t.Errorf("issue holds %q:\n%s", bad, got)
 		}
+	}
+	for _, a := range store.alertRows() {
+		if d, _ := a.Detail["refusal"].(string); strings.Contains(d, "hunter2hunter2") || strings.Contains(d, "pass@") || strings.Contains(d, "abc123def456") {
+			t.Errorf("alert %s stores the refusal unmasked: %q", a.Fingerprint, d)
+		}
+	}
+}
+
+// The ledger at the cap of 600.00 is the cap reached, whoever refused last.
+func TestMonthAlarmOuterGuardRefusalAtTheCapIsTheCapCard(t *testing.T) {
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 600)
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 600, Refusal: proxyRefusal, RefusedAt: refusedAt}
+	if err := alarm.Check(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The month cap of 600.00 EUR is reached (2026-09): raise it") ||
+		strings.Contains(fj.issues[0], "raise max_budget") {
+		t.Fatalf("issues = %q", fj.issues)
+	}
+}
+
+// The newest refusal decides the card's text: a filing that failed after an
+// outer-guard refusal is filed at the next check with the refusal then newest.
+func TestMonthAlarmNewestRefusalDecidesTheCardText(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 600)
+	fj.failNext = 1
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 500, Refusal: proxyRefusal, RefusedAt: refusedAt}
+	if err := alarm.Check(ctx); err == nil {
+		t.Fatal("a failed filing raised nothing")
+	}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 500, Refusal: gatewayRefusal, RefusedAt: refusedAt}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "raise it") || strings.Contains(fj.issues[0], "max_budget") ||
+		!strings.Contains(fj.issues[0], gatewayRefusal) {
+		t.Fatalf("issues = %q, want the cap card of the gateway's refusal", fj.issues)
 	}
 }
 

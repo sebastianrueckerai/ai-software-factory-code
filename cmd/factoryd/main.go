@@ -445,7 +445,7 @@ func main() {
 	go policyLoader.Watch(ctx, 30*time.Second)
 	go factoryd.SweepLoop(ctx, store, time.Minute)
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
-		Timeline: runner.Timeline(), Metrics: metrics}
+		Timeline: runner.Timeline(), Metrics: metrics, Scrub: scrub}
 	go monthAlarm.Loop(ctx, time.Minute)
 	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
 	go chatBudgetCards.Loop(ctx, time.Minute)
