@@ -3873,7 +3873,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		var refused *policy.Refusal
 		for _, c := range []policy.OpeningCall{{Ref: "big", Bytes: 44342}, {Ref: "small", Bytes: 7031}} {
 			_, err := policy.TakeHold(ctx, s.db, policy.HoldRequest{TaskID: "t-704", Kind: policy.KindModel, Ref: c.Ref, Session: "s-new",
-				Bytes: c.Bytes, WantOut: 24576, Price: prices[c.Ref], DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
+				Bytes: c.Bytes, WantOut: 24576, Price: prices[c.Ref], ReserveEUR: testPolicyVersion().Document.Limits.GateReserve(), DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
 			if errors.As(err, &refused) {
 				break
 			}
@@ -3897,11 +3897,12 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
 	}
 	agree("0.31 free", 5.2, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
-	agree("0.62 free", 5.51, "", "")
+	agree("0.62 free less the 0.25 reserve", 5.51, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
+	agree("0.62 session headroom", 5.76, "", "")
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, eur) VALUES ('t-y', 'model', 19.45)`); err != nil {
 		t.Fatal(err)
 	}
-	agree("the day spent", 5.51, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
+	agree("the day spent", 5.76, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
 }
 
 // The attempt grant's floor is the hold machinery's own minimum:
