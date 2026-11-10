@@ -4108,7 +4108,7 @@ var (
 
 func waitChecksOf(t *testing.T, r *Runner) ChecksResult {
 	t.Helper()
-	r.cfg.ChecksTimeout, r.cfg.ChecksPoll = 5*time.Second, time.Millisecond
+	r.cfg.ChecksPoll = time.Millisecond
 	var res ChecksResult
 	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
 	if err != nil || val.Get(&res) != nil {
