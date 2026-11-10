@@ -3,6 +3,8 @@ package factoryd
 import (
 	"cmp"
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -386,36 +388,19 @@ func IntegrationCard(ctx context.Context, store interface {
 }
 
 // judgedByPerson: every criterion of p stands on an approver's row, a
-// waiver or a confirmation, or is an invariant its gate met after the
-// card's last push (pushed), so a plan whose integration card ended off
-// main closes on the person's word: no review of that card judged it. An
-// invariant is a deterministic run and needs no person's word.
-func judgedByPerson(p Plan, rows []CriterionVerdict, pushed time.Time) bool {
+// waiver or a confirmation, or is an invariant its gate met, so a plan
+// whose integration card ended off main closes on the person's word: no
+// review of that card judged it. An invariant is a deterministic run and
+// needs no person's word.
+func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
 	return !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool {
 		v, ok := StandingRow(rows, c)
 		if !ok {
 			return true
 		}
 		return v.Source != CriteriaSourceApprover &&
-			!(c.Kind == CriterionInvariant && v.Source == CriteriaSourceGate && v.Verdict == "met" && !v.CreatedAt.Before(pushed))
+			!(c.Kind == CriterionInvariant && v.Source == CriteriaSourceGate && v.Verdict == "met")
 	})
-}
-
-// lastPush is when a session of task id pushed last: the zero time for
-// none, and the far future for an unread history, so no gate row counts
-// as newer than a push it could not see.
-func (r *Runner) lastPush(ctx context.Context, id string) time.Time {
-	events, err := r.store.TaskEvents(ctx, id, cardDigestEvents)
-	if err != nil {
-		log.Printf("task %s: the last push: %v", id, err)
-		return time.Now().Add(time.Hour)
-	}
-	for _, e := range events {
-		if e.Kind == EventSessionPushed {
-			return e.At
-		}
-	}
-	return time.Time{}
 }
 
 // sourceRank orders the sources of verdict rows: the first stands over
@@ -646,7 +631,7 @@ func (r *Runner) reviewCriteriaStep(ctx context.Context, t Task, repo Repo, p Pl
 // deltaSystem is the delta round's system prompt: one card under the open
 // plan that closes the named criteria; %s is the card's image field
 // (imageField).
-const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"key": "...", "title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. The card's key is new. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
+const deltaSystem = `You are the planner of a software factory. A plan's criteria are not met after its cards ran. You draft one more bounded card — a delta card — under the open plan, which closes the gap the criteria name. Answer with one JSON object and nothing else: {"card": {"title": "...", "brief": "...", "directories": ["..."], "depends_on": ["keys of the plan's existing cards"], "acceptance": [{"criterion": "the criterion id", "text": "what the card's tests prove, with the inputs and the numbers they expect"}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "..."%s}}. directories are the directories the card may change. depends_on names only keys the plan holds. acceptance carries every criterion the card closes, its text the criterion's claim, inputs and expected numbers. Keep the card small: it closes the gap, nothing else. refused, when set, holds your earlier answers of this round and the plan rule each broke: answer again with a card that keeps every rule.`
 
 // deltaPrompt is the delta round's system prompt for a project pinning
 // pins.
@@ -756,7 +741,7 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 			log.Printf("plan %s: the delta round's call: %v", t.ID, err)
 			return
 		}
-		if card, merged, why = judgeDelta(p, content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
+		if card, merged, why = judgeDelta(p, deltaKey(t.ID, revision, dues), content, shape, v.Document.Limits, projectPins(v, t.Repository)); why == "" {
 			break
 		}
 		log.Printf("plan %s: the delta round's answer: %s", t.ID, why)
@@ -788,6 +773,19 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 // back to the model with the rule it broke.
 const deltaAttempts = 3
 
+// deltaKey is the key of the card the round for dues files: a hash of the
+// plan, its revision and the dues, so a round that runs again after a
+// restart files the same card, which the store's one row per plan and key
+// and the issue's marker hold to one.
+func deltaKey(plan string, revision int, dues []PlanCatch) string {
+	h := sha256.New()
+	fmt.Fprintf(h, "%s\n%d", plan, revision)
+	for _, d := range dues {
+		fmt.Fprintf(h, "\n%s", d.Detail)
+	}
+	return "delta-" + hex.EncodeToString(h.Sum(nil))[:8]
+}
+
 // deltaRefusal is an answer of the round the plan rules refused, and why.
 type deltaRefusal struct {
 	Answer string `json:"answer"`
@@ -796,8 +794,9 @@ type deltaRefusal struct {
 
 // judgeDelta reads content as the delta card of plan p and judges p with
 // it: the card, the plan it joins and "", or why the plan rules refuse it.
-// The card is a feature card of p's round whatever role it names.
-func judgeDelta(p Plan, content string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (PlanCard, Plan, string) {
+// The card is a feature card of p's round whatever role it names, and its
+// key is key whatever key it names.
+func judgeDelta(p Plan, key, content string, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (PlanCard, Plan, string) {
 	var answer struct {
 		Card PlanCard `json:"card"`
 	}
@@ -806,6 +805,7 @@ func judgeDelta(p Plan, content string, shape policy.PlanShape, limits policy.Li
 	if err := dec.Decode(&answer); err != nil {
 		return PlanCard{}, Plan{}, "the answer is not a card: " + err.Error()
 	}
+	answer.Card.Key = key
 	answer.Card.Role = RoleFeature
 	answer.Card.Round = p.Round
 	merged := p
@@ -963,7 +963,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 	if len(openCriteria(p, rows)) == 0 {
 		reached := integration.Status == "merged" || integration.Status == "done"
-		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows, r.lastPush(ctx, integration.ID))) || !r.planAtRest(ctx, t) {
+		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
 			return
 		}
 		for _, kind := range criteriaKinds {
@@ -1157,9 +1157,8 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // criteria are all met or waived and those without criteria whose cards
 // are all done, opens the gap question of a plan whose cards ran out with
 // a criterion still open, starts the next round of a plan whose round is
-// over, and drafts the delta cards the reviews and the grants asked for.
-// It makes no model call: the delta rounds run in DeltaPass. First it
-// opens the provers due (proverPass).
+// over. It makes no model call: the delta rounds run in DeltaPass. First
+// it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	r.proverPass(ctx)
 	sorted := r.criteriaParents(ctx)
@@ -1171,14 +1170,26 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 
 // DeltaPass drafts the delta cards the reviews and the grants asked for,
 // one round per plan with a due, each under its own bounded context
-// (draftDue). A round starts only while a whole round still fits the pass.
+// (draftDue). A pass starts after the plan the last one ended on, so a
+// plan whose round stays due does not hold back the rest. The first round
+// always starts; a later one only while a whole round still fits the pass.
 func (r *Runner) DeltaPass(ctx context.Context) {
-	bound := r.deltaRoundBound()
-	for _, parent := range r.criteriaParents(ctx) {
-		if dl, ok := ctx.Deadline(); ctx.Err() != nil || ok && time.Until(dl) < bound {
-			return
+	parents := r.criteriaParents(ctx)
+	start := slices.IndexFunc(parents, func(id string) bool { return id > r.deltaLast })
+	if start < 0 {
+		start = 0
+	}
+	ran := 0
+	for _, parent := range append(parents[start:], parents[:start]...) {
+		if ran > 0 {
+			if dl, ok := ctx.Deadline(); ctx.Err() != nil || ok && time.Until(dl) < r.deltaRoundBound() {
+				return
+			}
 		}
-		r.draftDue(ctx, parent)
+		if r.draftDue(ctx, parent) {
+			ran++
+		}
+		r.deltaLast = parent
 	}
 }
 
@@ -1262,27 +1273,28 @@ func (r *Runner) undraftedDues(ctx context.Context, parent string) ([]PlanCatch,
 
 // draftDue drafts the plan's unanswered delta dues: the delta catches no
 // filed or refused catch marks.
-func (r *Runner) draftDue(ctx context.Context, parent string) {
+func (r *Runner) draftDue(ctx context.Context, parent string) bool {
 	due, err := r.undraftedDues(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the delta dues: %v", parent, err)
-		return
+		return false
 	}
 	if len(due) == 0 {
-		return
+		return false
 	}
 	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.deltaRoundBound())
 	defer cancel()
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the delta round: %v", parent, err)
-		return
+		return false
 	}
 	// a person closed the plan: no card is drafted for it
 	if t.Status == "closed" || !r.planAtRest(ctx, t) {
-		return
+		return false
 	}
 	r.draftDelta(ctx, t, repo, due)
+	return true
 }
 
 // criteriaContext is the review's criteria half's context (piece 7): the

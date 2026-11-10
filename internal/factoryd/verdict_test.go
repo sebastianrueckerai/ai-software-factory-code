@@ -1699,10 +1699,8 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 // alone keeps the plan open.
 func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 	ctx := context.Background()
-	pushAt := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
-	rig := func(c1Source string, gateAt time.Time) (*fakeStore, *fakeObjectStore, *Runner) {
+	rig := func(c1Source string) (*fakeStore, *fakeObjectStore, *Runner) {
 		s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
-		s.events = append(s.events, Event{TaskID: "t-int", Kind: EventSessionPushed, At: pushAt})
 		put := func(source string, rows ...CriterionVerdict) {
 			if err := s.PutCriteriaVerdicts(ctx, "t-int", source, FactoryDecider, rows); err != nil {
 				t.Fatal(err)
@@ -1710,7 +1708,7 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 		}
 		put(c1Source, CriterionVerdict{Criterion: "c1", Verdict: "met", Kind: CriterionTest})
 		put(CriteriaSourceApprover, CriterionVerdict{Criterion: "c2", Verdict: "waived", Kind: CriterionHuman})
-		put(CriteriaSourceGate, CriterionVerdict{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant, CreatedAt: gateAt})
+		put(CriteriaSourceGate, CriterionVerdict{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant})
 		if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(`{}`), Reason: "gap"}); err != nil {
 			t.Fatal(err)
 		}
@@ -1722,7 +1720,7 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 		return strings.Count(string(body), `"event":"`+EventPlanClosed+`"`)
 	}
 
-	s, objs, r := rig(CriteriaSourceApprover, pushAt.Add(time.Minute))
+	s, objs, r := rig(CriteriaSourceApprover)
 	r.CriteriaPass(ctx)
 	if got := closes(objs); got != 1 {
 		t.Fatalf("plan_closed recorded %d times, want 1", got)
@@ -1734,16 +1732,9 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 		t.Fatalf("approved approvals %+v, want the criteria request", approved)
 	}
 
-	_, objs, r = rig(CriteriaSourceGate, pushAt.Add(time.Minute))
+	_, objs, r = rig(CriteriaSourceGate)
 	r.CriteriaPass(ctx)
 	if got := closes(objs); got != 0 {
 		t.Fatalf("a test criterion on a gate row alone: plan_closed recorded %d times, want 0", got)
-	}
-
-	// a gate row older than the card's last push says nothing of the head
-	_, objs, r = rig(CriteriaSourceApprover, pushAt.Add(-time.Minute))
-	r.CriteriaPass(ctx)
-	if got := closes(objs); got != 0 {
-		t.Fatalf("an invariant met before the last push: plan_closed recorded %d times, want 0", got)
 	}
 }

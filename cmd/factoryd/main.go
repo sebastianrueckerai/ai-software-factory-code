@@ -409,7 +409,7 @@ func main() {
 		runner.CriteriaPass(ctx)
 		return nil
 	})
-	passes.Run(ctx, "delta", time.Minute, runner.DeltaPassBound(), func(ctx context.Context) error {
+	passes.RunLive(ctx, "delta", time.Minute, runner.DeltaPassBound, func(ctx context.Context) error {
 		runner.DeltaPass(ctx)
 		return nil
 	})

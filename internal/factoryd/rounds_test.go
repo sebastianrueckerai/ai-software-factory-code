@@ -617,6 +617,18 @@ func TestConfirmationNamesTheOutline(t *testing.T) {
 	}
 }
 
+// deltaCard is the delta card filed on t-plan: the card whose key is a
+// deltaKey.
+func deltaCard(t *testing.T, store *fakeStore) (Task, bool) {
+	t.Helper()
+	for key, c := range cardsByKey(t, store) {
+		if strings.HasPrefix(key, "delta-") {
+			return c, true
+		}
+	}
+	return Task{}, false
+}
+
 // deltaRound runs draftDelta on twoRounds with ten more features of
 // round 2 (extras), 12 cards in the round, every card filed and done,
 // redirect_302 unmet in the integration card's review, the plan asking
@@ -689,7 +701,7 @@ func deltaRig(t *testing.T, model *fakeLiteLLM, bound time.Duration, questions .
 func TestDeltaCardJoinsTheLastRound(t *testing.T) {
 	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", `+
 		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
-	fix, filed := cardsByKey(t, store)["fix-stats"]
+	fix, filed := deltaCard(t, store)
 	if !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
@@ -713,7 +725,7 @@ func TestStoredPlanKeepsAQuestionOverTheBound(t *testing.T) {
 
 	store, tl := deltaRound(t, `{"card": {"key": "fix-stats", "role": "feature", "title": "Fix the stats", "brief": "Count each redirect once.", `+
 		`"depends_on": ["redirects", "stats"], "acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`, long...)
-	if _, filed := cardsByKey(t, store)["fix-stats"]; !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
+	if _, filed := deltaCard(t, store); !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
 }
@@ -725,7 +737,7 @@ func TestStoredPlanKeepsAQuestionOverTheBound(t *testing.T) {
 func TestDeltaCardIsAFeature(t *testing.T) {
 	store, tl := deltaRound(t, `{"card": {"key": "stats-proof", "role": "integration", "title": "Stats proof", "brief": "Prove each redirect counts once.", `+
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`)
-	card, filed := cardsByKey(t, store)["stats-proof"]
+	card, filed := deltaCard(t, store)
 	if !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
 		t.Fatalf("stats-proof filed %v; the plan's timeline:\n%s", filed, tl)
 	}
@@ -747,7 +759,7 @@ func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	model := &fakeLiteLLM{contents: []string{broken, fixed}}
 	store, tl := deltaRoundOn(t, model)
-	if _, filed := cardsByKey(t, store)["fix-stats"]; !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
+	if _, filed := deltaCard(t, store); !filed || !strings.Contains(tl, `"step":"delta_card"`) || strings.Contains(tl, `"step":"delta_refused"`) {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
 	if len(model.chats) != 2 {
@@ -765,7 +777,7 @@ func TestDeltaRoundRefusesAfterThreeBrokenAnswers(t *testing.T) {
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	model := &fakeLiteLLM{content: broken}
 	store, tl := deltaRoundOn(t, model)
-	if _, filed := cardsByKey(t, store)["fix-stats"]; filed || !strings.Contains(tl, `"step":"delta_refused"`) ||
+	if _, filed := deltaCard(t, store); filed || !strings.Contains(tl, `"step":"delta_refused"`) ||
 		!strings.Contains(tl, "which is no card of the plan") {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
@@ -866,11 +878,7 @@ func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
 	r, store, objs := deltaPassRig(t, model, 100*time.Millisecond)
 	pass, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	r.DeltaPass(pass) // too little of the pass is left for a whole round: none starts
-	if n := len(model.chats); n != 0 {
-		t.Fatalf("%d calls from a pass with less than a round left", n)
-	}
-	r.draftDue(pass, "t-plan")
+	r.DeltaPass(pass)
 	if pass.Err() == nil {
 		t.Fatal("the round ended inside the pass's bound: the test shows nothing")
 	}
@@ -888,6 +896,90 @@ func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
 	tl, _ := objs.Get(context.Background(), "sessions/t-plan/timeline.jsonl")
 	if !strings.Contains(string(tl), `"step":"delta_refused"`) || !strings.Contains(string(tl), "the model call ran past its bound of") {
 		t.Fatalf("the plan's timeline:\n%s", tl)
+	}
+}
+
+const deltaCardAnswer = `{"card": {"title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
+	`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
+
+// DeltaPass runs a due round: the card is filed under its deterministic
+// key and the due is marked filed. The first round starts although less
+// than a whole round of the live bound is left, as after a supervisor
+// timeout raised since boot.
+func TestDeltaPassRunsADueRound(t *testing.T) {
+	model := &fakeLiteLLM{content: deltaCardAnswer}
+	r, store, _ := deltaPassRig(t, model, time.Second)
+	pass, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	if got := r.DeltaPassBound(); got != 3*time.Second+2*time.Minute {
+		t.Fatalf("DeltaPassBound = %s, want 3 calls of 1s and 2 minutes", got)
+	}
+	r.DeltaPass(pass)
+	card, filed := deltaCard(t, store)
+	due := []PlanCatch{{Detail: "redirect_302 grant 9"}}
+	if !filed || card.PlanKey != deltaKey("t-plan", 1, due) || catchesOfKind(t, store, CatchDeltaFiled) != 1 || len(model.chats) != 1 {
+		t.Fatalf("delta card filed %v with key %q; %d filed marks; %d calls", filed, card.PlanKey, catchesOfKind(t, store, CatchDeltaFiled), len(model.chats))
+	}
+}
+
+// A round that runs twice for the same due, as after a restart between the
+// filing and its mark, files one card, whatever key the second answer names.
+func TestDeltaRoundFilesOneCardForADueRunTwice(t *testing.T) {
+	ctx := context.Background()
+	model := &fakeLiteLLM{content: deltaCardAnswer}
+	r, store, _, _ := deltaRig(t, model, 0)
+	t1, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	due := []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}}
+	r.draftDelta(ctx, t1, repo, due)
+	r.draftDelta(ctx, t1, repo, due)
+	n := 0
+	for key := range cardsByKey(t, store) {
+		if strings.HasPrefix(key, "delta-") {
+			n++
+		}
+	}
+	if n != 1 || len(model.chats) != 2 {
+		t.Fatalf("%d delta cards after two rounds of one due (%d calls), want 1", n, len(model.chats))
+	}
+}
+
+// Each delta pass starts after the plan the last one ended on: a plan
+// whose round stays due (the gateway answers 500) does not hold back the
+// plan after it. A pass with less than a round left runs its first round
+// only.
+func TestDeltaPassGoesRoundRobin(t *testing.T) {
+	model := &fakeLiteLLM{status: 500}
+	r, store, _ := deltaPassRig(t, model, time.Minute)
+	ctx := context.Background()
+	for _, id := range []string{"t-z"} {
+		task := store.tasks[id]
+		task.Process, task.RequiredCapabilities = "spec", []string{policy.ClassCoder}
+		store.tasks[id] = task
+	}
+	if err := store.PutCriteriaVerdicts(ctx, "z-int", "review", FactoryDecider, []CriterionVerdict{{Criterion: "c1", Verdict: "unmet", Kind: CriterionTest, Evidence: "x", Fix: "planner"}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutPlanCatches(ctx, "t-z", 1, CatchDelta, FinderApprover, []string{"c1 grant 3"}); err != nil {
+		t.Fatal(err)
+	}
+	pass := func() {
+		c, cancel := context.WithTimeout(ctx, 5*time.Second)
+		defer cancel()
+		r.DeltaPass(c)
+	}
+	pass()
+	if n := len(model.chats); n != 1 {
+		t.Fatalf("after the first pass %d calls, want 1: the second round did not fit", n)
+	}
+	pass()
+	if n := len(model.chats); n != 2 {
+		t.Fatalf("after the second pass %d calls, want 2: the pass must go on with t-z", n)
+	}
+	if got := userMessage(model.chats[1]); !strings.Contains(got, `"c1"`) {
+		t.Fatalf("the second call is not about t-z:\n%s", got)
 	}
 }
 
@@ -1465,7 +1557,7 @@ func TestOneCardPlanTakesADeltaCard(t *testing.T) {
 	p.Cards[0].Round = 1
 	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestRedirect in internal/links: two redirects: clicks 2"}], "size": "small"}}`
-	card, merged, why := judgeDelta(p, answer, testShape, testLimits, nil)
+	card, merged, why := judgeDelta(p, "delta-1", answer, testShape, testLimits, nil)
 	if why != "" {
 		t.Fatalf("the delta card of a one-card plan: %s", why)
 	}
@@ -1473,7 +1565,7 @@ func TestOneCardPlanTakesADeltaCard(t *testing.T) {
 		t.Fatalf("card %+v, merged cards %+v; want a feature card of round 1 beside the integration card", card, merged.Cards)
 	}
 	wrong := strings.Replace(answer, `"integration"`, `"nowhere"`, 1)
-	if _, _, why := judgeDelta(p, wrong, testShape, testLimits, nil); !strings.Contains(why, `depends on "nowhere", which is no card of the plan`) {
+	if _, _, why := judgeDelta(p, "delta-1", wrong, testShape, testLimits, nil); !strings.Contains(why, `depends on "nowhere", which is no card of the plan`) {
 		t.Fatalf("a delta card on a missing card: %q", why)
 	}
 }
