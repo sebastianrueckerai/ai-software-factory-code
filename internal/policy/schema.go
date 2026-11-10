@@ -198,7 +198,7 @@ func schemaFor(t reflect.Type, docs map[string]string) (*jsonschema.Schema, erro
 			if p.Description = docs[id]; p.Description == "" {
 				return nil, fmt.Errorf("%s has no doc comment", id)
 			}
-			if values, ok := enums[id]; ok {
+			if values, ok := enumOf(id); ok {
 				enum := make([]any, len(values))
 				for i, v := range values {
 					enum[i] = v
