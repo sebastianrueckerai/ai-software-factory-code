@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"strings"
 	"testing"
 	"time"
@@ -60,9 +61,10 @@ func TestErrCaseEndedNamesTheCardNotTheNumber(t *testing.T) {
 
 func TestMonitorFaceMasksASecretAndNeutralisesAMention(t *testing.T) {
 	r, _, _, _, _ := newRetryRig(t)
-	reason := "Monitor flag: Authorization: Bearer abcdefghijklmnop1234567890 @everyone https://user:pass@host.example/x"
+	r.Scrub = redact.New("hunter2-configured-secret")
+	reason := "Monitor flag: hunter2-configured-secret Authorization: Bearer abcdefghijklmnop1234567890 @everyone https://user:pass@host.example/x"
 	q := r.monitorFace(Task{Repository: "linkshort/linkshort"}, reason)
-	for _, leak := range []string{"abcdefghijklmnop1234567890", "@everyone", "user:pass"} {
+	for _, leak := range []string{"hunter2-configured-secret", "abcdefghijklmnop1234567890", "@everyone", "user:pass"} {
 		if strings.Contains(q.Ask, leak) {
 			t.Errorf("Ask = %q holds %q", q.Ask, leak)
 		}

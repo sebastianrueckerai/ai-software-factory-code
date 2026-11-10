@@ -47,7 +47,8 @@ func New(secrets ...string) *Scrubber {
 	return s
 }
 
-// String is v with every rule applied.
+// String is v with every rule applied; a nil scrubber applies the rules
+// with no configured secret.
 func (s *Scrubber) String(v string) string {
 	v = s.Values(pemBlock.ReplaceAllString(v, "[pem redacted]"))
 	v = userinfo.ReplaceAllString(v, "${1}[redacted]@")
@@ -80,6 +81,9 @@ func (s *Scrubber) String(v string) string {
 // applied: for text that a full scrub judges later, whose hashes must stay
 // until then.
 func (s *Scrubber) Values(v string) string {
+	if s == nil {
+		return v
+	}
 	for _, secret := range s.secrets {
 		v = strings.ReplaceAll(v, secret, "[redacted]")
 	}

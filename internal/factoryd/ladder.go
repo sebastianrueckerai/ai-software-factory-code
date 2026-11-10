@@ -14,7 +14,6 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -549,7 +548,7 @@ func replyNext(reason string) string {
 // is agent-derived, so it is fenced and scrubbed as every text a human
 // reads.
 func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
-	return monitorQuestion(redact.New().String(r.untrusted(t, reason)))
+	return monitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
 }
 
 // tripNext is the last line of a trip's face for case c: at a cap, where
