@@ -80,6 +80,9 @@ func (s *Scrubber) String(v string) string {
 // applied: for text that a full scrub judges later, whose hashes must stay
 // until then.
 func (s *Scrubber) Values(v string) string {
+	if s == nil {
+		return v
+	}
 	for _, secret := range s.secrets {
 		v = strings.ReplaceAll(v, secret, "[redacted]")
 	}

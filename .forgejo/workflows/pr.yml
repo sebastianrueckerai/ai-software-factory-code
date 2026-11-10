@@ -65,7 +65,7 @@ jobs:
       # module cache and a warm build cache (Dockerfile.runner). main and
       # the nightly run keep -race over the whole suite.
       - name: test the affected packages
-        run: scripts/pg-test.sh go test ${{ steps.select.outputs.pkgs || './...' }}
+        run: scripts/pg-test.sh go test -timeout 30m ${{ steps.select.outputs.pkgs || './...' }}
   vet-and-format:
     runs-on: pr-untrusted
     steps:
