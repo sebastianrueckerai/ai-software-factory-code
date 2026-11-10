@@ -128,8 +128,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		}
 	}
 	waits := t.Status == "waiting-human" && !f.merge && !f.plan
-	// a planner out of time stops as an agent time cap does, its own words
-	f.timeCap = waits && (factoryd.AtTimeCap(escalation) || strings.HasPrefix(escalation, factoryd.PlannerOutOfTime))
+	f.timeCap = waits && factoryd.AtTimeStop(escalation)
 	f.capped = waits && (factoryd.AtSessionCap(escalation) || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
@@ -1252,6 +1251,9 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 	case sessions < 0 || lines < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
 		(sessions == 0 && lines == 0 && minutes == 0 && !(eur > 0)):
 		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions, minutes, lines and an amount in EUR")
+	}
+	if minutes > factoryd.MaxExtendMinutes {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an extend raises at most %d minutes of agent time at once", factoryd.MaxExtendMinutes))
 	}
 	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, minutes, eur)))
 	if err := answerFits(note); err != nil {

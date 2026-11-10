@@ -134,8 +134,10 @@ var Actions = []Action{
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
 		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
 			return "an extend needs sessions, agent time, lines or check-in shares above 0"
+		case d.AgentTime > MaxExtendMinutes*time.Minute:
+			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
 		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
-			return fmt.Sprintf("the agent time cap of %s is reached: an extend of its agent time starts the session, sessions alone buy none", minutesWord(time.Duration(f.AgentTimeCapS)*time.Second))
+			return "this card stopped for agent time: an extend of its agent time starts the next session, sessions, lines or check-in shares alone buy none"
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -378,7 +380,7 @@ func badDraw(d policy.Draw) bool {
 func extendDraw(args map[string]any) policy.Draw {
 	sessions, _ := toInt(args["sessions"])
 	seconds, _ := toInt(args["agent_time_s"])
-	return policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second}
+	return policy.Draw{Sessions: sessions, AgentTime: time.Duration(min(seconds, math.MaxInt32)) * time.Second}
 }
 
 // raiseRefusal is why a raise of the ceiling by eur is refused, "" when it
@@ -453,20 +455,33 @@ func retryRefusal(d DepFact) string {
 // and no filed revision since, the head, the checks and the findings
 // unchanged since it. A draw whose row recorded no findings, or one on
 // facts whose timeline could not be read, is weighed on the head and the
-// checks. At an agent time stop a draw that raised no agent time raised
-// nothing the stop names and is no draw.
+// checks. At an agent time stop the draw weighed is the newest that
+// raised agent time: one that raised nothing the stop names is no draw.
 func boughtNothing(f CaseFacts) bool {
-	if f.Kind == CaseAgentTimeCap && f.DrawAgentTimeS == 0 {
-		return false
+	d, ok := weighedDraw(f)
+	return ok && !d.Pushed && !d.Revised && d.Head == f.Head && d.Checks == f.Checks &&
+		(d.Findings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(d.Findings, f.Findings))
+}
+
+// weighedDraw is the draw the guard weighs on f.
+func weighedDraw(f CaseFacts) (DrawFacts, bool) {
+	if f.Kind == CaseAgentTimeCap {
+		if f.TimeDraw == nil {
+			return DrawFacts{}, false
+		}
+		return *f.TimeDraw, true
 	}
-	return f.LastDrawAt != nil && !f.PushedSinceDraw && !f.RevisedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks &&
-		(f.DrawFindings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(f.DrawFindings, f.Findings))
+	if f.LastDrawAt == nil {
+		return DrawFacts{}, false
+	}
+	return DrawFacts{At: *f.LastDrawAt, Head: f.DrawHead, Checks: f.DrawChecks, Findings: f.DrawFindings, Pushed: f.PushedSinceDraw, Revised: f.RevisedSinceDraw}, true
 }
 
 // boughtNothingText is boughtNothing's refusal, with the actions that
 // draw nothing.
 func boughtNothingText(f CaseFacts) string {
-	return "the last draw at " + f.LastDrawAt.UTC().Format("15:04") + " UTC bought nothing, with no push since and the head, " +
+	d, _ := weighedDraw(f)
+	return "the last draw at " + d.At.UTC().Format("15:04") + " UTC bought nothing, with no push since and the head, " +
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 

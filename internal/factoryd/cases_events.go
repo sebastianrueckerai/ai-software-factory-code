@@ -200,7 +200,7 @@ var caseSourceKinds = map[string]CaseKind{
 func caseKindOf(source, reason string) (CaseKind, map[string]any) {
 	switch source {
 	case "cap":
-		if AtTimeCap(reason) || strings.HasPrefix(reason, PlannerOutOfTime) {
+		if AtTimeStop(reason) {
 			return CaseAgentTimeCap, nil
 		}
 		return CaseSessionCap, nil

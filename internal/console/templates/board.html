@@ -141,7 +141,7 @@
 {{end}}
 
 {{define "extend-minutes"}}<label for="extend-minutes-{{$.Card.ID}}{{$.Suffix}}">minutes of agent time more</label>
-<input type="number" step="1" min="0" id="extend-minutes-{{$.Card.ID}}{{$.Suffix}}" name="minutes" required>
+<input type="number" step="1" min="0" id="extend-minutes-{{$.Card.ID}}{{$.Suffix}}" name="minutes"{{if $.Card.TimeCapped}} required{{end}}>
 {{end}}{{define "extend-form"}}{{with .Card.Extend}}<form method="post" action="/tasks/{{$.Card.ID}}/extend" hx-post="/tasks/{{$.Card.ID}}/extend" class="inline extend"{{if eq $.Card.Status "waiting-human"}} data-to="running"{{end}}>
 <input type="hidden" name="csrf" value="{{.CSRF}}">{{template "filter" $.Card.Filter}}
 {{if $.Card.TimeCapped}}{{template "extend-minutes" $}}{{end}}<label for="extend-sessions-{{$.Card.ID}}{{$.Suffix}}">sessions more</label>

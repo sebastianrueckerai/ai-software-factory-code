@@ -2773,7 +2773,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
 	}
-	r.record(ctx, taskID, EventPlanRevision, map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+	if st.newest == nil || n > st.revision {
+		r.record(ctx, taskID, EventPlanRevision, map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+	}
 	gate, _, err := r.confirms(ctx, t, p)
 	if err != nil {
 		return PlanResult{}, err

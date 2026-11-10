@@ -552,6 +552,34 @@ func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
 	}
 }
 
+// The extend route reads the minutes field into the card's agent time, as
+// the chat's extend carries it, and bounds it: 20 minutes act as 1200
+// seconds, 601 are refused naming the bound and draw nothing.
+func TestExtendRouteTakesMinutes(t *testing.T) {
+	r := fundRig(t)
+	ck, s := r.loggedIn(t)
+	form := func(minutes string) url.Values {
+		return url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "sessions": {"0"}, "minutes": {minutes}, "lines": {"0"}, "eur": {"0"}}
+	}
+	if rec := r.do(post("/tasks/t-e/extend", form("20")), ck); rec.Code >= 400 {
+		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	equal(t, "the posted minutes", got.Res.Args, map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200})
+	r = fundRig(t)
+	ck, s = r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/extend", form("601")), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "at most 600 minutes") {
+		t.Fatalf("extend of 601 minutes = %d: %s", rec.Code, rec.Body)
+	}
+	if n := len(r.acted); n != 0 {
+		t.Errorf("a refused extend acted %d times", n)
+	}
+	if rec := r.do(post("/tasks/t-e/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "sessions": {"1"}, "lines": {"0"}, "eur": {"0"}}), ck); rec.Code >= 400 {
+		t.Errorf("an extend with no minutes field = %d: %s", rec.Code, rec.Body)
+	}
+}
+
 // setStatus puts card t-e of fundRig in status.
 func setStatus(r *rig, status string) {
 	r.tasks.set("", factoryd.Task{ID: "t-e", Kind: "agent", Status: status,

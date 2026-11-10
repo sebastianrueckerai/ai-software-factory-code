@@ -3094,7 +3094,10 @@ func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
 		return
 	}
-	minutes, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("minutes")))
+	minutes, err := 0, error(nil)
+	if m := strings.TrimSpace(r.PostFormValue("minutes")); m != "" {
+		minutes, err = strconv.Atoi(m)
+	}
 	if err != nil {
 		c.fail(w, r, refuse(http.StatusBadRequest, "minutes is a whole number"))
 		return
