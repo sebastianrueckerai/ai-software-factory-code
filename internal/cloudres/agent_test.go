@@ -810,7 +810,7 @@ func TestReserveHoldsTheGateReserveOut(t *testing.T) {
 	_, err := a.Reserve(ctx, req)
 	var ref *policy.Refusal
 	if !errors.As(err, &ref) || ref.Decision != "refused_budget" ||
-		!strings.Contains(ref.Reason, "the card spent 0.00 EUR, and 0.50 EUR is held for the model review and the audit") {
+		!strings.Contains(ref.Reason, "the card spent 0.00 EUR, and 0.50 EUR is held for the review and the audit") {
 		t.Fatalf("commission under the reserve: err = %v, want refused_budget naming the spent and held EUR", err)
 	}
 	req.ReserveEUR = 0

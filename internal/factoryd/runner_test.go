@@ -5344,7 +5344,7 @@ func TestRunSessionCarriesThePriorStateWithoutACheckinModel(t *testing.T) {
 
 // The statement of every check-in states the card's pace: 350 changed lines
 // against the small card's 300, 1.80 of 5 EUR spent, 5 - 1.80 - 0.40 = 2.80 left for a session
-// with the gate reserve held out (-0.15 for a 0.30 card with 0.05 spent), session 1 of 4.
+// with the gate reserve held out (0 for a 0.30 card with 0.05 spent: 0.30 - 0.05 - 0.40 < 0), session 1 of 4.
 func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 	t.Run("mid-session", func(t *testing.T) {
 		runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
@@ -5365,7 +5365,7 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		}
 		in := chat.gots[0].Input
 		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 2.80 left;", "left; session 1 of 4.",
-			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":2.8,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
+			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":2.8,"reserve_eur":0.4,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
 			if !strings.Contains(in, want) {
 				t.Fatalf("statement lacks %q:\n%s", want, in)
 			}
@@ -5392,7 +5392,7 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "Pace of the card: changed lines are not measured at this moment;") {
 			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
 		}
-		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":-0.15,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
+		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":0,"reserve_eur":0.4,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
 			t.Fatalf("statement lacks the cost and state block:\n%s", chat.gots[0].Input)
 		}
 	})

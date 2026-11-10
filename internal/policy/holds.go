@@ -529,7 +529,7 @@ func (f Free) figures() string {
 // reads as before.
 func (f Free) stop(decision, reason string) string {
 	if decision == RefusedBudget && f.Reserve > 0 {
-		return reason + fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit", f.Spent, f.Kept())
+		return reason + fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit", f.Spent, f.Kept())
 	}
 	return reason
 }

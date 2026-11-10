@@ -672,6 +672,7 @@ func main() {
 		CaseByID:       store.CaseByID,
 		NewestAskCase:  store.NewestAskCase,
 		SessionFunded:  runner.SessionFunded,
+		GateReserve:    func() float64 { return policyLoader.Current().Document.Limits.GateReserve() },
 		Chat:           store,
 		ChatTokens:     store,
 		Notes:          store,

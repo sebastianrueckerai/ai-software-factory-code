@@ -585,3 +585,12 @@ func TestTripMoneyHoldsTheReserveOut(t *testing.T) {
 		t.Fatalf("money = %+v, want %+v", got, want)
 	}
 }
+
+// The money fact rounds up to the cent: an opening of 0.604 against a
+// session ceiling of 0.11 - 0.40 = -0.29 needs 0.894, so 0.90, not 0.89.
+func TestTripMoneyRoundsTheNeedUp(t *testing.T) {
+	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.89, LeftEUR: 0.11, ReserveEUR: 0.4, FloorEUR: 0.604}
+	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.9 {
+		t.Fatalf("money = %+v, want a need of 0.90", got)
+	}
+}

@@ -1191,8 +1191,9 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 // costState assembles the cost and state block from the store: the task
 // row's settled figures and status, and the model-call and token totals of
 // its audit rows. Never from the agent. RemainingEUR is the room a session
-// has, reserve held out (policy.SessionHeadroom): a check-in judges
-// whether a session can go on; the gates' supervisor passes no reserve.
+// has, the holds counted and the reserve held out (policy.SessionHeadroom of
+// Task.Left), as the pace's left reads it: a check-in judges whether a
+// session can go on. The gates' supervisor passes no reserve.
 func (r *Runner) costState(ctx context.Context, t Task, reserve float64) *CostState {
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
@@ -1202,7 +1203,7 @@ func (r *Runner) costState(ctx context.Context, t Task, reserve float64) *CostSt
 		log.Printf("task %s: read the call totals: %v", t.ID, err)
 		totals = TaskCallTotals{}
 	}
-	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, RemainingEUR: math.Round(policy.SessionHeadroom(t.BudgetEUR-t.SpentEUR, reserve)*100) / 100,
+	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, RemainingEUR: math.Round(max(policy.SessionHeadroom(t.Left(), reserve), 0)*100) / 100, ReserveEUR: reserve,
 		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,
 		State: t.Status}
 }

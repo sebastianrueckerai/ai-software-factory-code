@@ -29,7 +29,7 @@ func TestGateReserveCeiling(t *testing.T) {
 	if _, err := TakeHold(ctx, db, session); !errors.As(err, &r) || r.Decision != RefusedBudget {
 		t.Fatalf("session call at the ceiling = %v, want refused_budget", err)
 	}
-	for _, want := range []string{"task 0.000000", "the card spent 4.60 EUR, and 0.40 EUR is held for the model review and the audit"} {
+	for _, want := range []string{"task 0.000000", "the card spent 4.60 EUR, and 0.40 EUR is held for the review and the audit"} {
 		if !strings.Contains(r.Reason, want) {
 			t.Errorf("session refusal = %q, want it to name %q", r.Reason, want)
 		}
@@ -65,7 +65,7 @@ func TestGateReserveCeiling(t *testing.T) {
 	if _, err := TakeHold(ctx, db, session); !errors.As(err, &r) || r.Decision != RefusedBudget {
 		t.Fatalf("session call after the gates = %v, want refused_budget", err)
 	}
-	if !strings.Contains(r.Reason, "the card spent 4.75 EUR, and 0.25 EUR is held for the model review and the audit") {
+	if !strings.Contains(r.Reason, "the card spent 4.75 EUR, and 0.25 EUR is held for the review and the audit") {
 		t.Errorf("session refusal after the gates = %q, want it to name the card's spent 4.75 EUR", r.Reason)
 	}
 
@@ -88,7 +88,7 @@ func TestGateReserveCeiling(t *testing.T) {
 // money stop appended — the stop is a session call's alone.
 func TestGateReserveStopIsTheSessions(t *testing.T) {
 	f := Free{Task: 0, Day: 1, Month: 1, Project: inf, Reserve: DefaultGateReserveEUR, Spent: 4.60}
-	if got := f.stop(RefusedBudget, "headroom"); !strings.Contains(got, "the card spent 4.60 EUR, and 0.40 EUR is held for the model review and the audit") {
+	if got := f.stop(RefusedBudget, "headroom"); !strings.Contains(got, "the card spent 4.60 EUR, and 0.40 EUR is held for the review and the audit") {
 		t.Errorf("session stop = %q, want it to name the card's figures", got)
 	}
 	f.Reserve = 0

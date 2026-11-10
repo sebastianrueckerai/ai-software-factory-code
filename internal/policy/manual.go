@@ -116,7 +116,7 @@ var spendRailRows = []spendRow{
 	{"limits.gate_reserve_eur",
 		"the EUR held out of a card's budget for its gates: the whole of a model review and of an audit at the models the gates use. A session's calls fit budget - spent - this reserve; factoryd's gate calls and a waiting card's brief see the full budget - spent",
 		"0 and absent read DefaultGateReserveEUR 0.40",
-		"the session's call is refused with decision refused_budget, the reason ending \"; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit\". The card's money stop reads \"the remaining budget cannot fund a call\" with the state naming the spent and held EUR; the review and the audit run without a fund"},
+		"the session's call is refused with decision refused_budget, the reason ending \"; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit\". The card's money stop reads \"the remaining budget cannot fund a call\" with the state naming the spent and held EUR; the review and the audit run without a fund"},
 	{"budget.task_default_eur",
 		"a task's budget when its intake asks for none",
 		"0 is refused: \"policy: budget.task_default_eur and task_max_eur must be positive\"",

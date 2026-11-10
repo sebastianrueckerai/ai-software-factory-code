@@ -65,7 +65,7 @@ var wantTrip = map[string][]string{
 	"limits.checkin_share":      {`"check-in: spend_above_policy: the check-in's share of the budget is spent"`},
 	"limits.warn_at":            {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."`},
 	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."`},
-	"limits.gate_reserve_eur":   {`"; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit"`, "refused_budget"},
+	"limits.gate_reserve_eur":   {`"; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit"`, "refused_budget"},
 	"limits.no_push_spend":      {`"%.2f of the card's %.2f EUR are spent (%.0f percent, the line is %.0f) and no work is pushed"`},
 	"budget.task_default_eur":   {`"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d"`},
 	"budget.task_max_eur":       nil, // the cut is silent; only the load refuses

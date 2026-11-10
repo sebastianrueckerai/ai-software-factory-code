@@ -126,6 +126,8 @@ type QuestionFacts struct {
 	BudgetEUR     float64       // the card's budget
 	SpentEUR      float64       // EUR of the budget spent
 	LeftEUR       float64       // EUR of the budget left
+	HeldEUR       float64       // EUR of the budget outstanding calls hold
+	ReserveEUR    float64       // EUR a session's room holds out for the review and the audit
 	PR            int64         // the pull request the card's workflow opened, 0 = none
 	MonthSpentEUR float64       // the factory's EUR spent in the UTC month
 	MonthCapEUR   float64       // the policy's month cap
@@ -454,18 +456,12 @@ func sessionCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 
 // budgetTail parses the refusal's need wherever the state between its
 // head and the need puts its own numbers (holds among them): ", and a
-// session on <model> needs <EUR> EUR". budgetFree parses the free
-// headroom its head states; a session's stop, which holds the gate
-// reserve out, states instead what the card spent (budgetSpent), what is
-// held for the review and the audit (budgetHeld) and the fund that opens
-// a session (budgetFund).
-var (
-	budgetSpent = regexp.MustCompile(`The card spent ([\d.]+) EUR of its ([\d.]+) EUR budget`)
-	budgetHeld  = regexp.MustCompile(`([\d.]+) EUR is held for the review and the audit`)
-	budgetFund  = regexp.MustCompile(`a fund of ([\d.]+) EUR opens it`)
-	budgetTail  = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
-	budgetFree  = regexp.MustCompile(`([\d.]+) EUR of the ([\d.]+) EUR budget remains`)
-)
+// session on <model> needs <EUR> EUR". The need is the one figure that
+// travels in the refusal's text: SessionFunded's result is a string the
+// workflow records, so a typed need would change a recorded shape. The
+// card's own figures (budget, spent, held, left, the gate reserve) are
+// typed (QuestionFacts), and the raise is computed from them (FundRaise).
+var budgetTail = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
 
 // BudgetNeed is the EUR a session needs, as the budget refusal's reason
 // states it; 0 when the reason carries no such number.
@@ -481,46 +477,30 @@ func BudgetNeed(reason string) float64 {
 	return need
 }
 
-// BudgetRemains is the EUR the refusal says the card still has free; 0
-// when the reason states no free headroom.
-func BudgetRemains(reason string) float64 {
-	m := budgetFree.FindStringSubmatch(reason)
-	if m == nil {
-		return 0
-	}
-	remains, err := strconv.ParseFloat(m[1], 64)
-	if err != nil || !(remains > 0) {
-		return 0
-	}
-	return remains
-}
-
 // FundRaise is the EUR raise that funds one more session off a budget
-// refusal: the fund a session's stop names; else the shortfall to the
-// session's need off the free headroom the refusal states, rounded up to
-// a cent, or the need itself when it states none; 0 when the reason
-// carries no amount at all.
-func FundRaise(reason string) float64 {
-	if m := budgetFund.FindStringSubmatch(reason); m != nil {
-		eur, _ := strconv.ParseFloat(m[1], 64)
-		return eur
-	}
+// refusal's need and the card's typed figures: the need less the session
+// ceiling, the card's left (budget - spent - holds) less the gate reserve,
+// rounded up to a cent; 0 when the reason carries no need.
+func FundRaise(reason string, left, reserve float64) float64 {
 	need := BudgetNeed(reason)
 	if need <= 0 {
 		return 0
 	}
-	return fundFor(need, BudgetRemains(reason))
+	return fundFor(need, policy.SessionHeadroom(left, reserve))
 }
 
 // fundFor is the raise in EUR, rounded up to a cent, that lifts a session
 // ceiling of left, which is negative once the gates spent into the
-// reserve, to need; a ceiling that already covers it reads as none.
+// reserve, to need; a ceiling that already covers it reads as none. The
+// ceiling is read down to the tenth of a cent, as the stop prints it, and
+// 1e-6 takes up float noise.
 func fundFor(need, left float64) float64 {
+	left = math.Floor(left*1000+1e-6) / 1000
 	if left >= need {
 		left = 0
 	}
 	cents := Cents(need) - Cents(left)
-	if float64(cents)/100 < need-left {
+	if float64(cents)/100 < need-left-1e-7 { // under the half of a millionth of a euro a price states
 		cents++ // a cent cut short would still refuse the session
 	}
 	return float64(cents) / 100
@@ -530,6 +510,22 @@ func fundFor(need, left float64) float64 {
 // its EUR, so the click's value carries the amount it raises by.
 func FundChoiceValue(eur float64) string {
 	return fmt.Sprintf("%s:%.2f", AnswerFund, eur)
+}
+
+// budgetAsk is the ask of a card whose budget cannot fund a session on
+// model, from the card's typed figures: what it spent, what outstanding
+// calls hold, what the review and the audit keep of the reserve, and the
+// need the stop states, so a human can add them up.
+func budgetAsk(f QuestionFacts, model, need string) string {
+	spent := f.SpentEUR - f.HeldEUR
+	ask := fmt.Sprintf("The card spent €%.2f of its €%.2f budget", spent, f.BudgetEUR)
+	if f.HeldEUR > 0 {
+		ask += fmt.Sprintf(", €%.2f is held by calls in flight", f.HeldEUR)
+	}
+	if f.ReserveEUR > 0 {
+		ask += fmt.Sprintf(", €%.2f is held for the review and the audit", policy.GateHeld(f.LeftEUR, f.ReserveEUR))
+	}
+	return fmt.Sprintf("%s, and one more session on %s needs €%s. Fund it, or park it?", ask, model, need)
 }
 
 // budgetQuestion asks the one question a budget-blocked card has: which
@@ -545,17 +541,14 @@ func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	}
 	floor := f.FloorEUR
 	if tail := budgetTail.FindStringSubmatch(reason); tail != nil {
-		if free := budgetFree.FindStringSubmatch(reason); free != nil {
-			q.Ask = fmt.Sprintf("The card has €%s of its €%s budget left, and one more session on %s needs €%s. Fund it, or park it?",
-				free[1], free[2], tail[1], tail[2])
-		} else if spent, held := budgetSpent.FindStringSubmatch(reason), budgetHeld.FindStringSubmatch(reason); spent != nil && held != nil {
-			q.Ask = fmt.Sprintf("The card spent €%s of its €%s budget, €%s is held for the review and the audit, and one more session on %s needs €%s. Fund it, or park it?",
-				spent[1], spent[2], held[1], tail[1], tail[2])
+		if f.BudgetEUR > 0 {
+			q.Ask = budgetAsk(f, tail[1], tail[2])
 		}
 		if floor == 0 && strings.Contains(reason, "the floor of its rung") {
 			floor, _ = strconv.ParseFloat(tail[2], 64)
 		}
 	}
+	raise := FundRaise(reason, f.LeftEUR, f.ReserveEUR)
 	seen := map[float64]bool{}
 	fund := func(eur float64) {
 		eur = math.Round(eur*100) / 100
@@ -565,11 +558,11 @@ func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 		seen[eur] = true
 		q.Choices = append(q.Choices, QuestionChoice{FundChoiceValue(eur), fmt.Sprintf("Fund %.2f EUR and go on", eur)})
 	}
-	fund(FundRaise(reason))
+	fund(raise)
 	fund(floor)
 	fund(2)
 	q.Choices = append(q.Choices, QuestionChoice{AnswerPark, "Park it"})
-	if raise := FundRaise(reason); raise > 0 && f.PR != 0 {
+	if raise > 0 && f.PR != 0 {
 		q.Recommendation = fmt.Sprintf("Fund the €%.2f raise: the card holds pull request #%d, and the raise funds its next session.", raise, f.PR)
 		q.Source = "the factory's"
 	}
@@ -929,9 +922,14 @@ func issueQuestion(title, body, poster string, agents bool) HumanQuestion {
 // funds. It reads nothing for a reason the templates do not cover.
 func (r *Runner) questionFacts(ctx context.Context, t Task, reason string) QuestionFacts {
 	track := QuestionFacts{PlanTrack: t.Track == policy.TrackPlan}
-	if strings.HasPrefix(reason, budgetRefused) && t.ModelAlias != "" && r.cfg.Policy != nil {
-		track.FloorEUR = r.cfg.Policy().Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+	if strings.HasPrefix(reason, budgetRefused) && r.cfg.Policy != nil {
+		v := r.cfg.Policy()
+		if t.ModelAlias != "" {
+			track.FloorEUR = v.Document.Budget.SessionFloor(r.frontier(t.ModelAlias))
+		}
 		track.PR = t.PRNumber
+		track.BudgetEUR, track.SpentEUR, track.HeldEUR, track.LeftEUR = t.BudgetEUR, t.EnforcedSpent(), t.HeldEUR, t.Left()
+		track.ReserveEUR = v.Document.Limits.GateReserve()
 		return track
 	}
 	f := track

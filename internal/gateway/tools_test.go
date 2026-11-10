@@ -518,7 +518,7 @@ func TestAPaidToolCallHoldsTheGateReserveOut(t *testing.T) {
 	args := map[string]any{"url": "https://example.com"}
 	e := newToolEnv(t, task, toolPolicy(policy.ToolCap{MaxRequests: 2, MaxEUR: 0.2}))
 	text, isErr := e.call(t, policy.ToolWebScrape, args)
-	if !isErr || !strings.Contains(text, "refused_budget") || !strings.Contains(text, "the card spent 0.60 EUR, and 0.40 EUR is held for the model review and the audit") ||
+	if !isErr || !strings.Contains(text, "refused_budget") || !strings.Contains(text, "the card spent 0.60 EUR, and 0.40 EUR is held for the review and the audit") ||
 		len(e.store.reqs) != 1 || e.store.reqs[0].ReserveEUR != policy.DefaultGateReserveEUR {
 		t.Fatalf("session scrape = %q (error %v) with requests %+v, want refused_budget holding the 0.40 EUR reserve", text, isErr, e.store.reqs)
 	}

@@ -729,7 +729,11 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
 	default:
 		if own.Holds > 0 {
-			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+			if free.Reserve > 0 {
+				state += fmt.Sprintf("; %.3f EUR is held by calls in flight (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+			} else {
+				state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
+			}
 			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
 		}
 		if free.Reserve > 0 {

@@ -3695,13 +3695,13 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	ask := func(budget, spent float64, want string, choices ...float64) {
 		t.Helper()
 		k := store.tasks["t-2"]
-		k.BudgetEUR, k.SpentEUR = budget, spent
+		k.BudgetEUR, k.SpentEUR, k.HeldEUR = budget, spent, store.held["t-2"].Held
 		store.tasks["t-2"] = k
 		why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 		if err != nil || !BudgetRefusal(why) {
 			t.Fatalf("%.4f of %.2f spent: (%q, %v), want the money ask", spent, budget, why, err)
 		}
-		q := budgetQuestion(why, QuestionFacts{})
+		q := budgetQuestion(why, r.questionFacts(ctx, k, why))
 		if q.Ask != want {
 			t.Errorf("%.4f of %.2f spent: ask = %q, want %q", spent, budget, q.Ask, want)
 		}
@@ -3723,22 +3723,22 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		}
 	}
 
-	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
-	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.35 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
+	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
+	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
 	k := store.tasks["t-2"]
 	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
 	why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
 		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
-		"The card spent 4.50 EUR of its 5.00 EUR budget after outstanding holds of 0.400 EUR (1, the earliest expiring 2026-10-14T19:35:03Z); " +
+		"The card spent 4.50 EUR of its 5.00 EUR budget; 0.400 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z); " +
 		"0.10 EUR is held for the review and the audit, which need 0.40 EUR, " +
 		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), " +
 		"so a fund of 0.90 EUR opens it; a session started now would run out of money before its work is done."; err != nil || why != want {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
-	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.10 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
+	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
 
 	store.held = nil
 	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)

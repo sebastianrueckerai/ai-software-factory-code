@@ -2992,7 +2992,7 @@ func TestImageDimsReadsFillBytesAndTheTrueCanvas(t *testing.T) {
 // spent has 0.40 free, which the 0.40 EUR default reserve takes whole: the
 // worker pod's call carries ReserveEUR 0.40, finds a ceiling of 0 and is
 // refused with 402 refused_budget naming the card's spent 4.60 EUR and the
-// 0.40 EUR held for the model review and the audit; factoryd's call carries
+// 0.40 EUR held for the review and the audit; factoryd's call carries
 // none and is served.
 func TestASessionsCallHoldsTheGateReserveOut(t *testing.T) {
 	stub := newStubUpstream(t)
@@ -3007,7 +3007,7 @@ func TestASessionsCallHoldsTheGateReserveOut(t *testing.T) {
 	}
 	rr, store := call(Identity{TaskID: "a", SAUID: "u", Session: "s-1"})
 	if rr.Code != http.StatusPaymentRequired || rr.Header().Get(HeaderDecision) != policy.RefusedBudget ||
-		!strings.Contains(rr.Body.String(), "the card spent 4.60 EUR, and 0.40 EUR is held for the model review and the audit") {
+		!strings.Contains(rr.Body.String(), "the card spent 4.60 EUR, and 0.40 EUR is held for the review and the audit") {
 		t.Fatalf("session call = %d %s %s, want 402 refused_budget naming the spent and held EUR", rr.Code, rr.Header().Get(HeaderDecision), rr.Body.String())
 	}
 	if len(store.reqs) != 1 || store.reqs[0].ReserveEUR != policy.DefaultGateReserveEUR {
