@@ -85,6 +85,16 @@ type prForgejo struct {
 	contents      []map[string]any   // POST /contents bodies
 	contentAuths  []string           // POST /contents' Authorization, in order
 	calls         []string
+
+	runs       []ActionRun       // GET /actions/runs?run_number=n lists the one whose index is n
+	runsBody   string            // GET /actions/runs answers 500 with this body when set
+	jobLists   [][]ActionJob     // GET /actions/runs/{id}/jobs, served in order, the last repeating
+	jobGets    int               // the jobs cursor
+	jobLogs    map[string]string // "job/attempt" -> GET /actions/jobs/{id}/logs, as a suffix Range reads it
+	rerunCode  int               // POST /actions/jobs/{id}/rerun answers this status; 200 when zero
+	rerunBody  string            // the rerun's answer body
+	reruns     []int64           // POST /actions/jobs/{id}/rerun, by job id
+	sessionLog string            // the session-cookie job log (login, job page, /logs) JobLog reads
 }
 
 func (f *prForgejo) srv(t *testing.T) *httptest.Server {
@@ -284,6 +294,39 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 				body = string(b)
 			}
 			io.WriteString(w, body)
+		case r.Method == "GET" && p == "/actions/runs" && f.runsBody != "":
+			http.Error(w, f.runsBody, http.StatusInternalServerError)
+		case r.Method == "GET" && p == "/actions/runs":
+			list := []ActionRun{}
+			for _, run := range f.runs {
+				if strconv.FormatInt(run.Index, 10) == r.URL.Query().Get("run_number") {
+					list = append(list, run)
+				}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"workflow_runs": list})
+		case r.Method == "GET" && strings.HasPrefix(p, "/actions/runs/") && strings.HasSuffix(p, "/jobs"):
+			json.NewEncoder(w).Encode(f.jobLists[min(f.jobGets, len(f.jobLists)-1)])
+			f.jobGets++
+		case r.Method == "GET" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/logs"):
+			if r.Header.Get("Range") == "" {
+				t.Error("job log read without a Range")
+			}
+			io.WriteString(w, f.jobLogs[strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs")+"/"+r.URL.Query().Get("attempt")])
+		case r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
+			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun"), 10, 64)
+			f.reruns = append(f.reruns, id)
+			if f.rerunCode != 0 {
+				http.Error(w, f.rerunBody, f.rerunCode)
+				return
+			}
+			w.WriteHeader(http.StatusOK)
+		case r.Method == "POST" && p == "/user/login" && f.sessionLog != "":
+			http.Redirect(w, r, "/", http.StatusSeeOther)
+		case r.Method == "GET" && r.URL.Path == "/" && f.sessionLog != "":
+		case r.Method == "GET" && f.sessionLog != "" && strings.HasPrefix(r.URL.Path, "/sf/repo/actions/runs/"):
+			if strings.HasSuffix(r.URL.Path, "/logs") {
+				io.WriteString(w, f.sessionLog)
+			}
 		case r.Method == "POST" && p == "/user/login",
 			r.Method == "GET" && strings.Contains(p, "/actions/runs/"):
 			// No session/log route modeled here: JobLog fails cleanly on the
@@ -4030,5 +4073,179 @@ func TestReplanTextOfAnAgentCutKeepsItsParts(t *testing.T) {
 	got = replanText(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: r. Its parts: 1. a; 2. b"}, Decision{Action: ActionReplan, Reason: "two parts", Guidance: "store first"})
 	if want := "The check-in decided replan after the agent_cut trip (the agent asks to cut the card: r. Its parts: 1. a; 2. b): two parts\nIts guidance: store first"; got != want {
 		t.Fatalf("cut text = %q, want %q", got, want)
+	}
+}
+
+// killedRig is a head whose check "pr / test" fails in run 7, a job of the
+// project's own repository: statuses are what each poll reads, jobs what
+// each read of the run's jobs lists.
+func killedRig(t *testing.T, statuses []string, jobs ...[]ActionJob) (*Runner, *prForgejo, *fakeObjectStore) {
+	t.Helper()
+	fj := &prForgejo{
+		statuses: statuses,
+		runs:     []ActionRun{{ID: 70, Index: 7, Status: "failure"}},
+		jobLists: jobs,
+		jobLogs: map[string]string{
+			"11/1": "go vet ./...\nsignal: killed\n",
+			"11/2": "go vet ./...\nsignal: killed\n",
+			"12/1": "--- FAIL: TestX\n    x_test.go:9: got 1, want 2\nFAIL\n",
+			"13/1": "go test\nexit status 137\n",
+		},
+	}
+	r, store, objects := newActivityRunner(t, prTask, fj)
+	r.forgejo.ProjectsToken, fj.tasksAuth = "projects-tok", "projects-tok"
+	store.projects = []Project{{Name: "repo", Repository: prTask.Repository, Objects: "factory", Agents: "coder", File: true, MergeRule: "auto", GitToken: "g", MergeToken: "m"}}
+	return r, fj, objects
+}
+
+var (
+	killedFail = statusBody("failure", [4]string{"failure", "pr / test (pull_request)", "/sf/repo/actions/runs/7/jobs/0", "Failure after 2m"})
+	killedOK   = statusBody("success", [4]string{"success", "pr / test (pull_request)", "", ""})
+)
+
+func waitChecksOf(t *testing.T, r *Runner) ChecksResult {
+	t.Helper()
+	r.cfg.ChecksTimeout, r.cfg.ChecksPoll = 5*time.Second, time.Millisecond
+	var res ChecksResult
+	val, err := execActivity(t, r, ActivityWaitChecks, "t1", "c1")
+	if err != nil || val.Get(&res) != nil {
+		t.Fatalf("WaitChecks: %v", err)
+	}
+	return res
+}
+
+func checksDetail(t *testing.T, objects *fakeObjectStore) map[string]any {
+	t.Helper()
+	timeline, _ := objects.Get(context.Background(), "sessions/t1/timeline.jsonl")
+	lines := bytes.Split(bytes.TrimSpace(timeline), []byte("\n"))
+	var step map[string]any
+	if err := json.Unmarshal(lines[len(lines)-1], &step); err != nil || step["step"] != "checks" {
+		t.Fatalf("timeline %s: %v", timeline, err)
+	}
+	return step
+}
+
+// A job killed at attempt 1 is re-run once; the gate keeps waiting while
+// the re-run runs (the status still reads red meanwhile) and answers
+// success when it passes, the re-run in its detail.
+func TestWaitChecksRerunsAKilledJobOnceAndPasses(t *testing.T) {
+	r, fj, objects := killedRig(t, []string{killedFail, killedFail, killedOK},
+		[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+		[]ActionJob{{ID: 11, Name: "test", Status: "running", Attempt: 2}})
+	res := waitChecksOf(t, r)
+	if res.State != ChecksSuccess || len(res.Findings) != 0 {
+		t.Fatalf("result = %+v, want success", res)
+	}
+	if !reflect.DeepEqual(fj.reruns, []int64{11}) {
+		t.Fatalf("rerun POSTs = %v, want [11]", fj.reruns)
+	}
+	want := []any{map[string]any{"job": "test", "run": 7.0, "attempt": 2.0}}
+	if got := checksDetail(t, objects)["reran"]; !reflect.DeepEqual(got, want) {
+		t.Fatalf("detail reran = %v, want %v", got, want)
+	}
+}
+
+// The re-run, attempt 2, ends red: killed again or a real failure. No
+// second re-run follows; the finding names the kill or reads as a test
+// failure.
+func TestWaitChecksRedAfterTheOneRerun(t *testing.T) {
+	for name, tc := range map[string]struct {
+		log  string
+		want string
+	}{
+		"killed again": {"go vet ./...\nsignal: killed\n", `job "test" of run 7 was killed again (signal: killed) at attempt 2, its one re-run: no second re-run follows`},
+		"oom":          {"container OOMKilled\n", `job "test" of run 7 was killed again (OOMKilled) at attempt 2, its one re-run: no second re-run follows`},
+		"exit 137":     {"process exited: exit code 137\n", `job "test" of run 7 was killed again (exit code 137) at attempt 2, its one re-run: no second re-run follows`},
+		"real failure": {"--- FAIL: TestX\nFAIL\n", `job "test" of run 7 failed again at attempt 2, its re-run: a test failure, not a kill`},
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail},
+			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}},
+			[]ActionJob{{ID: 11, Name: "test", Status: "waiting", Attempt: 2}},
+			[]ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
+		fj.jobLogs["11/2"] = tc.log
+		res := waitChecksOf(t, r)
+		if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != tc.want {
+			t.Fatalf("%s: result = %+v, want failure ending in %q", name, res, tc.want)
+		}
+		if !reflect.DeepEqual(fj.reruns, []int64{11}) {
+			t.Fatalf("%s: rerun POSTs = %v, want exactly [11]", name, fj.reruns)
+		}
+	}
+}
+
+// A job already at attempt 2 (a human's re-run, or a restarted wait) is
+// never re-run again.
+func TestWaitChecksNeverRerunsAnAttemptTwoJob(t *testing.T) {
+	r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 2}})
+	res := waitChecksOf(t, r)
+	if res.State != ChecksFailure || len(fj.reruns) != 0 {
+		t.Fatalf("result = %+v, reruns = %v, want failure and no rerun", res, fj.reruns)
+	}
+}
+
+// A real test failure is red as before, its finding unchanged, no re-run.
+func TestWaitChecksNeverRerunsAFailingTest(t *testing.T) {
+	r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 12, Name: "test", Status: "failure", Attempt: 1}})
+	res := waitChecksOf(t, r)
+	want := `check "pr / test (pull_request)": failure — Failure after 2m (/sf/repo/actions/runs/7/jobs/0)`
+	if res.State != ChecksFailure || len(fj.reruns) != 0 || len(res.Findings) != 1 || res.Findings[0] != want {
+		t.Fatalf("result = %+v, reruns = %v, want failure with the plain finding %q and no rerun", res, fj.reruns, want)
+	}
+}
+
+// Without a re-run on offer (404 or 403 on the rerun POST, or a run
+// Forgejo does not list) the check is red, naming the kill and the missing
+// re-run, with no activity error.
+func TestWaitChecksKilledWithoutARerunOffer(t *testing.T) {
+	for name, tc := range map[string]struct {
+		setup func(*prForgejo)
+		want  string
+	}{
+		"rerun 404": {func(f *prForgejo) { f.rerunCode = http.StatusNotFound },
+			`job "test" of run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
+		"rerun 403": {func(f *prForgejo) { f.rerunCode = http.StatusForbidden },
+			`job "test" of run 7 was killed (signal: killed) and no re-run was offered: forgejo has no rerun API, or the project's Actions token lacks the right`},
+		"run unlisted": {func(f *prForgejo) {
+			f.runs = nil
+			f.sessionLog = "go vet ./...\nsignal: killed\n"
+		}, `check "pr / test (pull_request)" was killed (signal: killed) and no re-run was offered: run 7 is not readable (forgejo lists no run 7)`},
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
+		tc.setup(fj)
+		res := waitChecksOf(t, r)
+		if res.State != ChecksFailure || len(res.Findings) != 2 || res.Findings[1] != tc.want {
+			t.Fatalf("%s: result = %+v, want failure ending in %q", name, res, tc.want)
+		}
+	}
+}
+
+// Text built from a Forgejo error reaches the gate's findings scrubbed.
+func TestWaitChecksScrubsForgejoErrorsInItsFindings(t *testing.T) {
+	leak := "https://user:pass@host/x Authorization: Bearer abcdefghijklmnopqrstuvwx"
+	for name, setup := range map[string]func(*prForgejo){
+		"rerun fails": func(f *prForgejo) { f.rerunCode, f.rerunBody = http.StatusInternalServerError, leak },
+		"runs fail": func(f *prForgejo) {
+			f.runsBody = leak
+			f.sessionLog = "signal: killed\n"
+		},
+	} {
+		r, fj, _ := killedRig(t, []string{killedFail}, []ActionJob{{ID: 11, Name: "test", Status: "failure", Attempt: 1}})
+		setup(fj)
+		res := waitChecksOf(t, r)
+		text := strings.Join(res.Findings, "\n")
+		if res.State != ChecksFailure || !strings.Contains(text, "killed") || strings.Contains(text, "pass@") || strings.Contains(text, "abcdefghijklmnop") {
+			t.Fatalf("%s: findings = %q, want the kill named and both secrets masked", name, text)
+		}
+	}
+}
+
+func TestKilledBySignal(t *testing.T) {
+	for log, want := range map[string]bool{
+		"signal: killed": true, "exit status 137": true, "exit code 137": true, "pod OOMKilled": true,
+		"exit status 1370": false, "exit status 1": false, "--- FAIL: TestKilled": false, "": false,
+	} {
+		if got := killedBySignal([]byte(log)); got != want {
+			t.Errorf("killedBySignal(%q) = %v, want %v", log, got, want)
+		}
 	}
 }
