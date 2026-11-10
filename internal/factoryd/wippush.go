@@ -482,8 +482,8 @@ func (g rulesGit) RunGit(dir string, env []string, args ...string) (string, erro
 
 // wipIdentity and wipMessage are the identity and message of every
 // commit the interim push writes: the commit factoryd builds from the
-// shipped tree (pushWip) — the attribution (forgejo.go) of a work-in-progress commit, as the worker's
-// end push writes its own.
+// shipped tree (pushWip) — the attribution (forgejo.go) of a
+// work-in-progress commit, as the worker's end push writes its own.
 var wipIdentity = []string{
 	"GIT_AUTHOR_NAME=factory-agent", "GIT_AUTHOR_EMAIL=factory-agent@factory.local",
 	"GIT_COMMITTER_NAME=factory-agent", "GIT_COMMITTER_EMAIL=factory-agent@factory.local",
