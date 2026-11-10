@@ -204,7 +204,7 @@ func TestCheckModes(t *testing.T) {
 	}{
 		{nil, "go vet\ngo run\nmake test\n"},
 		{[]string{"static"}, "go vet\ngo run\n"},
-		{[]string{"changed"}, "go vet\ngo run\npg-test.sh go test -p 2 example.com/m/a example.com/m/b example.com/m/c\n"},
+		{[]string{"changed"}, "go vet\ngo run\npg-test.sh go test -p 2 -timeout 30m example.com/m/a example.com/m/b example.com/m/c\n"},
 	} {
 		log, err := checkRun(t, tt.args...)
 		if err != nil {
