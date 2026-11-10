@@ -666,14 +666,15 @@ func TestSuperviseGateOfARollAsksNoModel(t *testing.T) {
 func TestSuperviseGateOfARollNamesTheChecksState(t *testing.T) {
 	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, map[string]string{
 		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[` +
-			`{"status":"success","context":"ci/build"},{"status":"success","context":"ci/lint"},{"status":"pending","context":"ci/test"}]}`,
+			`{"status":"success","context":"ci/build"},{"status":"success","context":"ci/lint"},{"status":"error","context":"ci/vet"},` +
+			`{"status":"warning","context":"ci/docs"},{"status":"pending","context":"ci/test"}]}`,
 	})
 	task := c.store.tasks["t1"]
 	task.Source = SourceRoll
 	c.store.tasks["t1"] = task
 	liveRun(c.runner.cfg.Gates, "7", time.Now().Add(-45*time.Second), 30*time.Second)
 	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
-	const state = "checks: combined status pending, green: ci/build, ci/lint, running: ci/test"
+	const state = "checks: combined status pending, green: ci/build, ci/lint, errored: ci/vet, warning: ci/docs, running: ci/test"
 	if d.Action != ActionEscalate || len(c.model.chats) != 0 || !strings.HasSuffix(d.Diagnosis, state) {
 		t.Fatalf("decision %+v after %d model calls", d, len(c.model.chats))
 	}

@@ -445,10 +445,50 @@ func TestActivityPin(t *testing.T) {
 	}
 }
 
-// [no_trip_while_ci_runs] The checks wait's bound is the waits row waits.checks
-// of the pinned version: 12 min under waits.checks: 12m, so a wait at 10 min is
-// inside it and one at 12 min is past it; the row unset, DefaultWaits.Checks
-// (50 min), never the old code default of 10 min.
+// [no_trip_while_ci_runs] The checks wait's bound is its project's waits.checks
+// under the pinned version, never the old code default of 10 min: a wait of
+// a project that sets 12m is bound at 12m, so no alert has been written at
+// 10m, and the one the bound's timer writes carries Bound 12m0s and trips
+// the workflow; a project that sets none is bound at policy.yaml's 40m.
+func TestGateWatchChecksWaitTripsAtTheProjectBound(t *testing.T) {
+	pinned := fixtureVersion(t)
+	demo := pinned.Projects["demo-app"]
+	demo.Waits = &policy.Waits{Checks: 12 * time.Minute}
+	pinned.Projects["demo-app"] = demo
+	for repository, want := range map[string]time.Duration{"demo-app/demo-app": 12 * time.Minute, "linkshort/linkshort": 40 * time.Minute} {
+		store := newFakeStore()
+		store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: repository})
+		sig := &signalled{}
+		g := &GateWatch{Store: store, Signal: sig.signal, Bound: PinnedBound(func() policy.Version { return pinned },
+			func(context.Context, int64) (policy.Version, bool, error) { return pinned, false, nil })}
+		env := signallingEnv(g)
+		var bound time.Duration
+		var alertsBefore int
+		env.RegisterActivityWithOptions(func(ctx context.Context, _, _ string) error {
+			info := activity.GetInfo(ctx)
+			g.mu.Lock()
+			run := g.runs[runKey(info.WorkflowExecution.ID, info.ActivityID)]
+			g.mu.Unlock()
+			bound, alertsBefore = run.bound, len(store.alertRows())
+			run.raise(run.bound, false)
+			return nil
+		}, activity.RegisterOptions{Name: ActivityWaitChecks})
+		if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+			t.Fatal(err)
+		}
+		if bound != want || alertsBefore != 0 {
+			t.Fatalf("%s: bound %s with %d alerts before it, want %s and none (10m is inside it)", repository, bound, alertsBefore, want)
+		}
+		trips, _ := sig.got()
+		rows := store.alertRows()
+		if len(trips) != 1 || trips[0].Bound != want || len(rows) != 1 || rows[0].BoundS != int(want.Seconds()) {
+			t.Fatalf("%s: trips %+v, alerts %+v, want one of each at %s", repository, trips, rows, want)
+		}
+	}
+}
+
+// PinnedBound reads the checks wait's bound from the pinned version's
+// waits row: 12m under waits.checks 12m, the 50m default unset.
 func TestPinnedBoundOfTheChecksWaitIsTheWaitsRow(t *testing.T) {
 	pinned, current := testPolicyVersion(), testPolicyVersion()
 	pinned.Document.Waits.Checks = 12 * time.Minute
@@ -461,8 +501,5 @@ func TestPinnedBoundOfTheChecksWaitIsTheWaitsRow(t *testing.T) {
 	}
 	if got := bound(ctx, ActivityWaitChecks, 0, policy.ReviewParts); got != 50*time.Minute {
 		t.Fatalf("waits.checks unset: bound = %s, want 50m0s", got)
-	}
-	if got := 10 * time.Minute; got >= bound(ctx, ActivityWaitChecks, 7, 1) {
-		t.Fatalf("a checks wait at %s is past its bound", got)
 	}
 }

@@ -100,6 +100,7 @@ var defaultBoundActivities = []string{ActivityDependencies, ActivityRunPlan, Act
 type GateStore interface {
 	SetGate(ctx context.Context, id, gate string, since time.Time) error
 	InsertAlert(ctx context.Context, a Alert) (int64, error)
+	Task(ctx context.Context, id string) (Task, bool, error)
 }
 
 // SignalGateBound hands a long gate's bound trip to its task's workflow,
@@ -184,6 +185,11 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	ctx, cancel := context.WithCancelCause(ctx)
 	defer cancel(nil)
 	pin := activityPin(in.Args)
+	if name == ActivityWaitChecks && taskID != "" {
+		if t, ok, err := i.g.Store.Task(ctx, taskID); err == nil && ok {
+			ctx = context.WithValue(ctx, repositoryKey{}, t.Repository)
+		}
+	}
 	run := &watchedRun{activity: name, attempt: info.Attempt, started: time.Now(), bound: i.g.Bound(ctx, name, pin, policy.ReviewParts), cancel: cancel}
 	run.raise = func(bound time.Duration, extended bool) { i.g.raise(info, taskID, run.started, bound, extended) }
 	waves := func(n int) { i.g.rebound(run, i.g.Bound(ctx, name, pin, n)) }
@@ -276,6 +282,10 @@ func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 	run.timer = time.AfterFunc(time.Until(run.started.Add(bound)), func() { run.raise(bound, false) })
 }
 
+// repositoryKey carries the repository of the task a checks wait runs for
+// to the bound: a project may shorten the wait's bound.
+type repositoryKey struct{}
+
 // wavesKey carries an activity's call to rebound in its context.
 type wavesKey struct{}
 
@@ -353,16 +363,20 @@ func PinnedBound(current func() policy.Version, read func(ctx context.Context, i
 		if activity == ActivityAwaitSessionGap || activity == ActivityAwaitRollHold {
 			return gapBound(current()) + rollWaitSlack
 		}
-		doc := current().Document
+		tree := current().Tree
 		if pin != 0 {
 			v, ok, err := read(ctx, pin)
 			if err == nil && ok {
-				doc = v.Document
+				tree = v.Tree
 			} else {
 				log.Printf("bound of %s: policy version %d unreadable (%v, found %v): the current one's", activity, pin, err, ok)
 			}
 		}
-		bound := doc.PartsBound(activity, waves)
+		bound := tree.Document.PartsBound(activity, waves)
+		if activity == ActivityWaitChecks {
+			repository, _ := ctx.Value(repositoryKey{}).(string)
+			bound = tree.ChecksBound(repository)
+		}
 		if activity == ActivityModelReview || activity == ActivityGateAudit {
 			bound = min(bound, reviewActivityMax-fanOutTripMargin)
 		}

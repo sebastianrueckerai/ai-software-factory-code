@@ -158,3 +158,35 @@ func TestWaitsJSON(t *testing.T) {
 		t.Fatal("a bad duration decoded")
 	}
 }
+
+// The checks wait's bound for a repository is its project's waits.checks
+// (never longer than policy.yaml's: a longer one is refused at parse), else
+// policy.yaml's, else the default; an explicit bounds: WaitChecks overrides
+// both.
+func TestChecksBoundOfARepository(t *testing.T) {
+	with := func(policy, project string) Tree {
+		files := fixtureTree(t)
+		files["policy.yaml"] = bytes.Replace(files["policy.yaml"], []byte("waits: {checks: 40m}\n"), []byte(policy), 1)
+		files["projects/demo-app.yaml"] = append(files["projects/demo-app.yaml"], project...)
+		tree, err := ParseTree(files)
+		if err != nil {
+			t.Fatal(err)
+		}
+		return tree
+	}
+	override := with("", "")
+	override.Document.Bounds = map[string]int{"WaitChecks": 2400}
+	for name, tc := range map[string]struct {
+		tree Tree
+		want time.Duration
+	}{
+		"default":          {with("", ""), 50 * time.Minute},
+		"policy":           {with("waits: {checks: 40m}\n", ""), 40 * time.Minute},
+		"project shortens": {with("waits: {checks: 40m}\n", "waits: {checks: 30m}\n"), 30 * time.Minute},
+		"bounds override":  {override, 40 * time.Minute},
+	} {
+		if got := tc.tree.ChecksBound("demo-app/demo-app"); got != tc.want {
+			t.Errorf("%s: bound = %s, want %s", name, got, tc.want)
+		}
+	}
+}

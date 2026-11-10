@@ -877,10 +877,10 @@ func TestWorkflowConfigTakesTheLimits(t *testing.T) {
 	v := policy.Version{ID: 9, Tree: policy.Tree{Document: policy.Document{
 		Limits: policy.Limits{Sessions: 5, AgentTime: 30 * time.Minute, SupervisorCalls: 2, SupervisorTimeout: 6 * time.Minute, StrongerAfter: 2}},
 		Processes: map[string]policy.Process{"maintenance": {Stages: testStages()}}}}
-	r := &Runner{cfg: RunnerConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, ChecksTimeout: time.Hour,
+	r := &Runner{cfg: RunnerConfig{Models: ModelLadder{Start: "a", Stronger: "b"},
 		Policy: func() policy.Version { return v }}}
 	want := WorkflowConfig{Models: ModelLadder{Start: "a", Stronger: "b"}, MaxSessions: 5, WallClockCap: 30 * time.Minute,
-		ChecksTimeout: time.Hour, ChecksBound: policy.DefaultWaits.Checks, StrongerAfter: 2, PolicyVersion: 9}
+		StrongerAfter: 2, PolicyVersion: 9}
 	if got := r.WorkflowConfig(); !reflect.DeepEqual(got, want) {
 		t.Fatalf("WorkflowConfig = %+v, want %+v", got, want)
 	}

@@ -119,11 +119,13 @@ decided in code. The activity bound of `RunSession` is a large card's agent time
 them.
 
 The checks wait (`WaitChecks`, the poll of a pull request head's combined
-status) takes its bound from the policy field `waits.checks`. Its code
-default is 50m: the pull-request image build's own 2700 s timeout plus a
-five-minute margin. The gate watch alerts past that bound, and the wait's own
-timeout is at least that bound plus a minute. An explicit `bounds: WaitChecks`
-still overrides the field.
+status) takes its bound from the policy field `waits.checks`, which a project
+file may shorten. Its code default is 50m: the pull-request image build's own
+2700 s timeout plus a five-minute margin. The gate watch alerts and the gate
+supervisor decides at that bound. The wait outlives it, so that trip is the
+one stop path: its timeout is the bound plus two minutes and its poll ends at
+the bound plus one. An explicit `bounds: WaitChecks` still overrides the
+field.
 
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over

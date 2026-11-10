@@ -199,7 +199,7 @@ func TestStagesPendingHeadAtApprovalTimesOut(t *testing.T) {
 	g.onChecks(ChecksResult{State: ChecksSuccess}, ChecksResult{State: ChecksTimeout})
 	g.onHeadChecks(ChecksResult{State: ChecksPending, Findings: []string{"no check has reported on c1 yet"}})
 
-	if final := g.run(t); final != "failed" || g.finals[0][1] != "checks did not finish within 45m0s" {
+	if final := g.run(t); final != "failed" || g.finals[0][1] != "checks did not finish within 50m0s" {
 		t.Fatalf("final = %q, finals %v: want the checks stage's timeout", final, g.finals)
 	}
 	if len(g.approvals) != 0 {

@@ -77,6 +77,15 @@ func (t Tree) WaitsOf(repository string) Waits {
 	return t.Document.waitsOf(p)
 }
 
+// ChecksBound is the checks wait's bound for repository: policy.yaml's
+// bounds: WaitChecks when it names one, else the repository's waits.checks.
+func (t Tree) ChecksBound(repository string) time.Duration {
+	if _, ok := t.Document.Bounds["WaitChecks"]; ok {
+		return t.Document.Bound("WaitChecks")
+	}
+	return t.WaitsOf(repository).Checks
+}
+
 func (d Document) waitsOf(p ProjectConfig) Waits {
 	w, proj := DefaultWaits, cmp.Or(p.Waits, &Waits{})
 	doc, pb := d.Waits.bounds(), proj.bounds()
