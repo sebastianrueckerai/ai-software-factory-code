@@ -336,3 +336,61 @@ func TestRepeatAskKeepsTheSpendLabelForTheOtherKinds(t *testing.T) {
 		}
 	}
 }
+
+// The face of a failed check-in's case says a reply starts a new attempt
+// with the comment as guidance. Drive the reply through the run: a card with
+// agent time left starts the session with the comment among its answers; a
+// card whose agent time is spent starts none from the reply alone, and asks
+// again at its agent-time cap.
+func TestFailedCheckinReplyStartsASession(t *testing.T) {
+	for name, tc := range map[string]struct {
+		took     time.Duration
+		sessions int
+	}{
+		"time left":  {time.Minute, 2},
+		"time spent": {20 * time.Minute, 1},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = askTaskConfig()
+			h.onTimedSessions(
+				timedSession{tc.took, checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckTimeCap,
+					Reason: "check-in time cap reached after 10m0s", Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}})},
+				timedSession{time.Minute, pushed("s2", "c2")})
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(24*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "try the narrow test", Comment: 602})
+			h.signalAfter(48*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			h.run(t)
+			if len(h.sessions) != tc.sessions {
+				t.Fatalf("sessions = %d, want %d; asks %q", len(h.sessions), tc.sessions, h.escalated)
+			}
+			if tc.sessions == 2 && !strings.Contains(strings.Join(h.sessions[1].Answers, "\n"), "try the narrow test") {
+				t.Fatalf("second session's answers = %q, want the comment as guidance", h.sessions[1].Answers)
+			}
+			if tc.sessions == 1 && (len(h.escalated) != 2 || !strings.Contains(h.escalated[1], timeCapReached)) {
+				t.Fatalf("asks = %q, want the agent-time cap asked after the reply", h.escalated)
+			}
+		})
+	}
+}
+
+// The face names what starts the attempt by the card's agent time: a reply
+// where a session fits, the cap's Extend where none does, for the stops
+// whose reply buys a session.
+func TestFailedStopFaceByAgentTime(t *testing.T) {
+	facts := func(used int) map[string]any { return map[string]any{"agent_time_cap_s": 7200, "agent_time_s": used} }
+	for _, kind := range []CaseKind{CaseCheckinFailed, CaseCheckinHuman, CaseCheckinShare} {
+		room := tripNext(Case{Kind: kind, Facts: facts(600)}, "check-in: x: y")
+		if !strings.Contains(room, "Reply on this issue to start a new attempt") {
+			t.Errorf("%s with time left: %q", kind, room)
+		}
+		// 7200s cap less 6900s leaves 300s, which is minSession: room; 6901s leaves 299s: none
+		if strings.Contains(tripNext(Case{Kind: kind, Facts: facts(6900)}, "x"), "A reply alone starts no attempt") {
+			t.Errorf("%s with exactly a session left says none fits", kind)
+		}
+		spent := tripNext(Case{Kind: kind, Facts: facts(6901)}, "x")
+		if !strings.Contains(spent, "A reply alone starts no attempt") || strings.Contains(spent, "Reply on this issue to start") {
+			t.Errorf("%s with time spent: %q", kind, spent)
+		}
+	}
+}

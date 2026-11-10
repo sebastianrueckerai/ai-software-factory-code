@@ -552,6 +552,23 @@ func replyNext(reason string) string {
 	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 }
 
+// spentReply is the face's line at a stop whose card has no agent time for a
+// session: a reply starts none, it asks the agent-time cap, which an extend
+// answers.
+const spentReply = "A reply alone starts no attempt: it asks the agent-time cap next, which Extend on the board or the project chat's extend answers. Close this issue to end the task."
+
+// agentTimeSpent: the card's agent time leaves less than a session needs,
+// by the facts the case holds, false when they are unread.
+func agentTimeSpent(c Case) bool {
+	limit, ok := toInt(c.Facts["agent_time_cap_s"])
+	if !ok || limit <= 0 {
+		return false
+	}
+	used, _ := toInt(c.Facts["agent_time_s"])
+	lim := time.Duration(limit) * time.Second
+	return lim-time.Duration(used)*time.Second < min(minSession, lim)
+}
+
 // tripNext is the last line of a trip's face for case c: at a cap, where
 // a reply is a continue that asks again, the Extend form or the chat's
 // extend start the next attempt, at a budget floor the Fund form or the
@@ -564,7 +581,14 @@ func tripNext(c Case, reason string) string {
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseCheckinFailed:
+		if agentTimeSpent(c) {
+			return "The factory's own check-in failed, not the card's work, and the card's agent time is spent. " + spentReply
+		}
 		return "The factory's own check-in failed, not the card's work. Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
+	case CaseCheckinHuman, CaseCheckinShare:
+		if agentTimeSpent(c) {
+			return "The card's agent time is spent. " + spentReply
+		}
 	case CaseBudgetFloor:
 		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}
