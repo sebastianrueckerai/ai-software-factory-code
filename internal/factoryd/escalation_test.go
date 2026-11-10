@@ -971,3 +971,19 @@ func TestCloseIssueAsFactoryDropsOpenDependencies(t *testing.T) {
 			want, "It no longer waits on #6.")
 	}
 }
+
+// A failed removal refuses the factory close before a record, a comment or
+// the close, with Forgejo's reason in the error.
+func TestCloseIssueAsFactoryRefusedWhenARemovalFails(t *testing.T) {
+	fj := &planForgejo{issues: map[int64]*planIssue{5: {state: "open", deps: []int64{6}}, 6: {state: "open"}}, failCall: "DELETE issues/5/dependencies", failStatus: http.StatusInternalServerError}
+	f := &Forgejo{BaseURL: fj.srv(t).URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	store := newFakeStore()
+	err := closeIssueAsFactory(t.Context(), store, f, Task{ID: "t-a", Repository: "linkshort/linkshort", IssueNumber: 5}, "x")
+	if err == nil || fj.issues[5].state != "open" || len(fj.comments) != 0 || len(store.intakeEvents) != 0 {
+		t.Fatalf("err = %v, #5 %s, comments %d, rows %d; want the refusal and nothing written", err, fj.issues[5].state, len(fj.comments), len(store.intakeEvents))
+	}
+	var dr *DependencyRefusal
+	if !errors.As(err, &dr) || dr.Dep.Number != 6 || !strings.Contains(err.Error(), "remove its dependency on linkshort/linkshort#6") || !strings.Contains(err.Error(), "forgejo down") {
+		t.Fatalf("err = %v, want the refusal to name #6 and carry Forgejo's reason", err)
+	}
+}

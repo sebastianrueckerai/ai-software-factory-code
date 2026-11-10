@@ -1928,7 +1928,9 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 // its close (factoryd.DropOpenDependencies, through the human's session) and
 // answers note with the sentence naming them added; a merged card or one
 // without an issue is left as it is. A failed read or removal refuses the
-// close.
+// close. The note names what this call removed: a retry after a failed
+// comment or a partly done removal does not name the edges gone before, and
+// the issue's timeline in Forgejo shows each removal.
 func (c *Console) freeForClose(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		return note, nil
@@ -1939,12 +1941,31 @@ func (c *Console) freeForClose(ctx context.Context, a actor, t factoryd.Task, no
 	}
 	freed, err := factoryd.DropOpenDependencies(ctx, sessionEdges{c, a}, repo, t.IssueNumber)
 	if err != nil {
-		return "", &forgejoRefusal{what: fmt.Sprintf("remove the dependencies of #%d", t.IssueNumber), err: err}
+		return "", dependencyRefused(t, err)
 	}
 	if len(freed) == 0 {
 		return note, nil
 	}
 	return strings.TrimSpace(note + "\n\n" + factoryd.NoLongerWaits(freed)), nil
+}
+
+// dependencyRefused is the refusal of a close whose dependency read or
+// removal failed. A removal Forgejo refuses for good (a 4xx: no right to the
+// edge, a cross-repository edge it will not touch) names the edge and the
+// action that fits, as retrying changes nothing; any other failure is a
+// Forgejo refusal to retry.
+func dependencyRefused(t factoryd.Task, err error) error {
+	var dr *factoryd.DependencyRefusal
+	if !errors.As(err, &dr) {
+		return &forgejoRefusal{what: fmt.Sprintf("read the dependencies of #%d", t.IssueNumber), err: err}
+	}
+	edge := fmt.Sprintf("%s/%s#%d", dr.Dep.Repo.Owner, dr.Dep.Repo.Name, dr.Dep.Number)
+	var ae *apiError
+	if errors.As(dr.Err, &ae) && ae.status >= 400 && ae.status < 500 {
+		return refuse(http.StatusBadGateway, fmt.Sprintf("Forgejo refused to remove #%d's dependency on %s: %s. Remove that dependency in Forgejo, then press Close again.",
+			t.IssueNumber, edge, forgejoCause(dr.Err)))
+	}
+	return &forgejoRefusal{what: fmt.Sprintf("remove #%d's dependency on %s", t.IssueNumber, edge), err: dr.Err}
 }
 
 // sessionEdges is the actor's Forgejo session as factoryd.DependencyEdges.
@@ -1954,32 +1975,27 @@ type sessionEdges struct {
 }
 
 func (e sessionEdges) IssueDependencies(ctx context.Context, owner, name string, number int64) ([]factoryd.IssueDependency, error) {
-	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies", url.PathEscape(owner), url.PathEscape(name), number)
-	var out []factoryd.IssueDependency
-	for page := 1; ; page++ {
-		var got []struct {
-			Number     int64  `json:"number"`
-			State      string `json:"state"`
-			Repository struct {
-				Owner string `json:"owner"`
-				Name  string `json:"name"`
-			} `json:"repository"`
-		}
-		if err := e.c.as(ctx, e.a.s, http.MethodGet, fmt.Sprintf("%s?page=%d&limit=50", path, page), nil, http.StatusOK, &got); err != nil {
-			if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
-				return nil, factoryd.ErrNotFound
-			}
-			return nil, err
-		}
-		if len(got) == 0 {
-			return out, nil
-		}
-		for _, d := range got {
-			out = append(out, factoryd.IssueDependency{
-				Repo:   factoryd.Repo{Owner: cmp.Or(d.Repository.Owner, owner), Name: cmp.Or(d.Repository.Name, name)},
-				Number: d.Number, State: d.State})
-		}
+	got, err := factoryd.GetPages[struct {
+		Number     int64  `json:"number"`
+		State      string `json:"state"`
+		Repository struct {
+			Owner string `json:"owner"`
+			Name  string `json:"name"`
+		} `json:"repository"`
+	}](ctx, e.c.userCall(e.a.s), fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies?", url.PathEscape(owner), url.PathEscape(name), number))
+	if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+		return nil, factoryd.ErrNotFound
 	}
+	if err != nil {
+		return nil, err
+	}
+	out := make([]factoryd.IssueDependency, len(got))
+	for i, d := range got {
+		out[i] = factoryd.IssueDependency{
+			Repo:   factoryd.Repo{Owner: cmp.Or(d.Repository.Owner, owner), Name: cmp.Or(d.Repository.Name, name)},
+			Number: d.Number, State: d.State}
+	}
+	return out, nil
 }
 
 func (e sessionEdges) RemoveIssueDependency(ctx context.Context, repo factoryd.Repo, number int64, dep factoryd.IssueDependency) error {

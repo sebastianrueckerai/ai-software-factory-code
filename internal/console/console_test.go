@@ -97,6 +97,7 @@ type fakeForgejo struct {
 	deps       map[string][]map[string]any
 	depsStay   bool
 	failDeps   string
+	depsStatus int     // failDeps's status, 500 when 0
 	assets     []asset // multipart uploads to an issue's or a comment's assets
 	failAssets bool    // asset uploads answer 500
 
@@ -341,7 +342,7 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			json.NewEncoder(w).Encode(list)
 		case http.MethodDelete:
 			if f.failDeps != "" {
-				http.Error(w, `{"message":`+strconv.Quote(f.failDeps)+`}`, http.StatusInternalServerError)
+				http.Error(w, `{"message":`+strconv.Quote(f.failDeps)+`}`, cmp.Or(f.depsStatus, http.StatusInternalServerError))
 				return
 			}
 			var meta struct {

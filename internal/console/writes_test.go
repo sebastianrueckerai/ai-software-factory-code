@@ -1353,10 +1353,23 @@ func TestCloseRefusedWhenARemovalFails(t *testing.T) {
 			t.Errorf("the refusal %q leaks %q", rec.Body, leak)
 		}
 	}
-	if !strings.HasPrefix(rec.Body.String(), "Forgejo refused to remove the dependencies of #31: ") {
+	if !strings.HasPrefix(rec.Body.String(), "Forgejo refused to remove #31's dependency on sf/code#7: ") {
 		t.Errorf("the refusal = %q", rec.Body)
 	}
 	equal(t, "the writes", writesOf(r.fg), []string{"DELETE " + depsPath})
+}
+
+// A removal Forgejo refuses for good (a 404 permission check) names the edge
+// and the fitting action, not "try again".
+func TestCloseRefusedForGoodNamesTheEdge(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.fg.deps = map[string][]map[string]any{depsPath: dependsOn(7)}
+	r.fg.failDeps, r.fg.depsStatus = "not found", http.StatusNotFound
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
+		"Forgejo refused to remove #31's dependency on sf/code#7: not found. Remove that dependency in Forgejo, then press Close again."})
+	equal(t, "the patches", r.fg.patched, []string(nil))
 }
 
 // An edge Forgejo keeps despite the removal leaves its 412 on the close:

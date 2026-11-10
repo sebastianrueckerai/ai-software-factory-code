@@ -165,17 +165,6 @@ func botCloseRecorded(events []IntakeEvent, t Task) bool {
 	return slices.ContainsFunc(events, func(e IntakeEvent) bool { return e.Kind == IntakeFactoryClosed && e.CommentID == t.IssueNumber })
 }
 
-// closeIssueAsFactory closes t's issue as the bot, the one way factoryd
-// closes a card's issue: it records the close as its own with comment
-// (IntakeFactoryClosed), posts comment unless it is "", drops the issue's
-// dependencies on open issues (an ending card waits on nothing, and
-// Forgejo refuses the close while one stands; the store's edges order the
-// cards, the issues only mirror them), closes the issue and confirms the
-// record. A step that fails returns, the record left
-// unconfirmed for the next call or the heal; only a comment Forgejo
-// refuses (forgejoTerminal) is logged, and the close goes on. A call that
-// finds the record posts the recorded comment, not its own, where the
-// issue lacks it (CommentOnce): one close, one comment.
 // DependencyEdges are the Forgejo calls that read and remove an issue's
 // dependencies: Forgejo itself, or a human's session.
 type DependencyEdges interface {
@@ -198,12 +187,24 @@ func DropOpenDependencies(ctx context.Context, e DependencyEdges, repo Repo, num
 			continue
 		}
 		if err := e.RemoveIssueDependency(ctx, repo, number, d); err != nil {
-			return nil, err
+			return nil, &DependencyRefusal{Dep: d, Err: err}
 		}
 		freed = append(freed, d.Number)
 	}
 	return freed, nil
 }
+
+// DependencyRefusal is the removal of dependency Dep that failed.
+type DependencyRefusal struct {
+	Dep IssueDependency
+	Err error
+}
+
+func (e *DependencyRefusal) Error() string {
+	return fmt.Sprintf("remove its dependency on %s/%s#%d: %v", e.Dep.Repo.Owner, e.Dep.Repo.Name, e.Dep.Number, e.Err)
+}
+
+func (e *DependencyRefusal) Unwrap() error { return e.Err }
 
 // NoLongerWaits is the close note's sentence naming the dependencies a close
 // removed: "It no longer waits on #1659 and #1541."
@@ -215,6 +216,22 @@ func NoLongerWaits(numbers []int64) string {
 	return "It no longer waits on " + textutil.AndList(names) + "."
 }
 
+// closeIssueAsFactory closes t's issue as the bot, the one way factoryd
+// closes a card's issue. It first drops the issue's dependencies on open
+// issues (an ending card waits on nothing, and Forgejo refuses the close
+// while one stands; the store's edges order the cards, the issues only
+// mirror them); a failed read or removal returns before anything is
+// written. It records the close as its own with comment
+// (IntakeFactoryClosed), the sentence naming what it dropped added to it, so
+// an empty comment posts that sentence alone, then posts comment unless it
+// is "", closes the issue and confirms the record. A later step that fails
+// returns, the record left unconfirmed for the next call or the heal; only a
+// comment Forgejo refuses (forgejoTerminal) is logged, and the close goes
+// on. A call that finds the record posts the recorded comment, not its own,
+// where the issue lacks it (CommentOnce): one close, one comment. The
+// sentence names what this call dropped: a retry after a failed record or a
+// partly done removal finds those edges gone and does not name them, and the
+// issue's timeline in Forgejo shows each removal.
 func closeIssueAsFactory(ctx context.Context, store interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
