@@ -1243,7 +1243,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	// a session that finished with nothing new on top of the work in
 	// progress an earlier stop pushed: that work is its result
-	if out.result != nil && out.result.Success && out.commit == "" && s.startRef != "" && s.startRef != s.base {
+	if out.result != nil && out.result.Success && out.commit == "" && out.wip == "" && s.startRef != "" && s.startRef != s.base {
 		res.Outcome, res.Commit, res.Summary = OutcomePushed, s.startRef, out.result.Summary+"; the branch already held "+s.startRef
 		return res
 	}
@@ -1325,6 +1325,11 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
 	}
 	res.Commit = cmp.Or(out.commit, out.wip)
+	if out.result != nil && out.result.Success && out.commit == "" && out.wip != "" {
+		// the end carries nothing past the start, yet an interim push put
+		// work on the branch that the end no longer holds
+		res.Summary += "; the branch still holds the interim push " + out.wip + ", which the session's final tree no longer carries"
+	}
 	ended := "previous session ended without a pushed commit: "
 	if res.Commit != "" {
 		ended = "previous session ended unfinished: "

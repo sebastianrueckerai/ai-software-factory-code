@@ -934,7 +934,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					sup.messagedInTrip(time.Now())
 					messages = append(messages, wip.refusal)
 				} else {
-					log.Printf("task %s: deliver the interim push's refusal to the session: %v", t.ID, err)
+					log.Printf("task %s: deliver the interim push's refusal to the session: %s", t.ID, r.Scrub.String(err.Error()))
 				}
 			}
 			answered := make(chan struct{})
@@ -1406,7 +1406,7 @@ var wipCommitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
 // bounds the record a check-in hands factoryd. wipAskTimeout bounds one
 // ask, which the worker answers by staging a commit: a worker that hangs
 // costs one ask, not the check-in. A var, so a test hangs it shorter.
-const wipBundleCap = 64 << 20
+const wipBundleCap = 16 << 20
 
 var wipAskTimeout = 30 * time.Second
 
@@ -1439,7 +1439,7 @@ func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, []
 	case resp.StatusCode != http.StatusOK:
 		return "", nil, &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
 	case !wipCommitID.MatchString(resp.Header.Get(wipCommitHeader)), len(body) == 0, len(body) > wipBundleCap:
-		return "", nil, fmt.Errorf("the /wip answer names commit %q over %d bytes of bundle", resp.Header.Get(wipCommitHeader), len(body))
+		return "", nil, &workerAnswer{code: resp.StatusCode, text: fmt.Sprintf("the /wip answer names commit %q over %d bytes of bundle", textutil.Truncate(resp.Header.Get(wipCommitHeader), 80), len(body))}
 	}
 	return resp.Header.Get(wipCommitHeader), body, nil
 }

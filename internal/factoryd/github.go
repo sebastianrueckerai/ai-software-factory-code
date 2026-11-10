@@ -131,16 +131,47 @@ func git(ctx context.Context, dir, login string, args ...string) (string, error)
 // file, a commit identity — which reach the process as its environment,
 // never an argument or an error.
 func gitEnv(ctx context.Context, dir, login string, env []string, args ...string) (string, error) {
-	return gitRun(ctx, dir, login, env, nil, args...)
+	return gitRun(ctx, dir, login, env, gitLimits{}, args...)
 }
 
-// gitRun is gitEnv with a standard input, for the commands that read one.
-func gitRun(ctx context.Context, dir, login string, env []string, stdin io.Reader, args ...string) (string, error) {
+// gitLimits bounds a git call that reads bytes the sandbox shipped: stdin
+// is what the command reads, maxOut the output factoryd keeps (the rest is
+// read and dropped), and addressSpace the bytes of address space git may
+// map, enforced by prlimit, so a pack that inflates past it dies in git,
+// not in factoryd's container.
+type gitLimits struct {
+	stdin        io.Reader
+	maxOut       int
+	addressSpace int64
+}
+
+// headWriter keeps the first max bytes written, all of them when max is 0.
+type headWriter struct {
+	bytes.Buffer
+	max int
+}
+
+func (w *headWriter) Write(p []byte) (int, error) {
+	if w.max == 0 {
+		return w.Buffer.Write(p)
+	}
+	if room := w.max - w.Len(); room > 0 {
+		w.Buffer.Write(p[:min(room, len(p))])
+	}
+	return len(p), nil
+}
+
+// gitRun is gitEnv under limits, for the commands that read the sandbox's bytes.
+func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
+	argv := append([]string{"git"}, args...)
+	if lim.addressSpace > 0 {
+		argv = append([]string{"prlimit", "--as=" + strconv.FormatInt(lim.addressSpace, 10), "--"}, argv...)
+	}
+	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
 	cmd.Dir = dir
-	cmd.Stdin = stdin
+	cmd.Stdin = lim.stdin
 	config := gitConfig
 	if login != "" {
 		config = append(slices.Clip(config), "http.extraHeader=Authorization: Basic "+login)
@@ -155,11 +186,12 @@ func gitRun(ctx context.Context, dir, login string, env []string, stdin io.Reade
 	ownProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = 5 * time.Second
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		return "", fmt.Errorf("git %s: %w: %s", args[0], err, textutil.Truncate(strings.ReplaceAll(strings.TrimSpace(string(out)), "\n", "; "), 400))
+	out := &headWriter{max: lim.maxOut}
+	cmd.Stdout, cmd.Stderr = out, out
+	if err := cmd.Run(); err != nil {
+		return "", fmt.Errorf("git %s: %w: %s", args[0], err, textutil.Truncate(strings.ReplaceAll(strings.TrimSpace(out.String()), "\n", "; "), 400))
 	}
-	return strings.TrimSpace(string(out)), nil
+	return strings.TrimSpace(out.String()), nil
 }
 
 func basicLogin(user, token string) string {

@@ -14,12 +14,16 @@ package factoryd
 
 import (
 	"bytes"
+	"compress/zlib"
 	"context"
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
 	"log"
+	"math/rand"
 	"net"
 	"net/http"
 	"net/http/httptest"
@@ -30,10 +34,13 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
+	"syscall"
 	"testing"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // wipGit is the git the push rules' tests run: plain git under the
@@ -274,6 +281,8 @@ type wipServe struct {
 	status    int
 	wipStatus int
 	wipBody   string
+	msgBody   string
+	redirect  string
 	hang      time.Duration
 	// base is the session's start, seed the work repo the WIP commits
 	// are built in, fork the bare fork the interim pushes land on, and
@@ -303,6 +312,7 @@ func (s *wipServe) start(t *testing.T, r *Runner) {
 				s.order.add("message")
 			}
 			w.WriteHeader(s.status)
+			io.WriteString(w, s.msgBody)
 			return
 		}
 		if req.URL.Path != "/wip" {
@@ -315,6 +325,10 @@ func (s *wipServe) start(t *testing.T, r *Runner) {
 		s.wipAuth = append(s.wipAuth, req.Header.Get("Authorization"))
 		if s.hang > 0 {
 			time.Sleep(s.hang)
+		}
+		if s.redirect != "" {
+			http.Redirect(w, req, s.redirect, http.StatusFound)
+			return
 		}
 		if s.wipStatus != 0 {
 			w.WriteHeader(s.wipStatus)
@@ -702,57 +716,338 @@ func TestInterimPushRefusesABodyThatIsNoBundle(t *testing.T) {
 	}
 }
 
-// A malformed object inside a well-formed bundle is refused: the commit
-// carries an author date git's strict object check rejects, so the push
-// that would carry it to the fork never runs. The branch holds the start
-// and nothing reaches the agent.
+// A malformed object inside a well-formed bundle is refused by the
+// strict index: a commit with a bad author date and a tree that holds a
+// .git entry never reach the push. The branch holds the start and
+// nothing reaches the agent.
 func TestInterimPushRefusesAMalformedObject(t *testing.T) {
+	hashObject := func(t *testing.T, seed, typ string, raw []byte) string {
+		t.Helper()
+		cmd := exec.Command("git", "-C", seed, "hash-object", "-t", typ, "-w", "--literally", "--stdin")
+		cmd.Stdin = bytes.NewReader(raw)
+		out, err := cmd.Output()
+		if err != nil {
+			t.Fatal(err)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for name, build := range map[string]func(t *testing.T, seed, base, tree string) string{
+		"bad-author-date": func(t *testing.T, seed, base, tree string) string {
+			return hashObject(t, seed, "commit", []byte("tree "+tree+"\nparent "+base+"\nauthor a <a@a.example> not-a-date +0000\ncommitter a <a@a.example> 1700000000 +0000\n\nwip\n"))
+		},
+		"dot-git-tree-entry": func(t *testing.T, seed, base, tree string) string {
+			blob := hashObject(t, seed, "blob", []byte("x\n"))
+			id, _ := hex.DecodeString(blob)
+			bad := hashObject(t, seed, "tree", append([]byte("100644 .git\x00"), id...))
+			return hashObject(t, seed, "commit", []byte("tree "+bad+"\nparent "+base+"\nauthor a <a@a.example> 1700000000 +0000\ncommitter a <a@a.example> 1700000000 +0000\n\nwip\n"))
+		},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, objects, serve := wipRig(t, nil, func(dir string) {
+				os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+			})
+			serve.ship = func(i int, tree string) (string, []byte, error) {
+				bad := build(t, serve.seed, serve.base, tree)
+				if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", bad); err != nil {
+					return "", nil, err
+				}
+				bundle := filepath.Join(serve.dir, "bad.bundle")
+				if _, err := wipGitRun(serve.seed, nil, "bundle", "create", bundle, serve.base+"..refs/heads/wip"); err != nil {
+					return "", nil, err
+				}
+				b, err := os.ReadFile(bundle)
+				return bad, b, err
+			}
+			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+			runner.checkin = chat
+
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+			if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+				t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in ran on", res, err, chat.calls)
+			}
+			serve.mu.Lock()
+			defer serve.mu.Unlock()
+			if step := timelineStep(t, objects, "t2", "wip_push_failed"); !strings.Contains(fmt.Sprint(step["error"]), "index the shipped bundle") {
+				t.Fatalf("the wip_push_failed step = %v, want the strict index's refusal", step)
+			}
+			if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+				t.Fatalf("wip_pushed steps = %d, want none: the malformed object was refused", n)
+			}
+			if len(serve.msgs) != 0 {
+				t.Fatalf("the pod was messaged %q, want no message", serve.msgs)
+			}
+			if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+				t.Fatalf("task branch = %s, want the start alone", tip)
+			}
+		})
+	}
+}
+
+// bombBundle is a bundle a few KiB long whose one delta copies a 16 MiB
+// zero blob 32 times: the pack index inflates 512 MiB from it.
+func bombBundle(t *testing.T) (string, []byte) {
+	t.Helper()
+	const size = 0xFFFFFF
+	const copies = 32
+	objHeader := func(typ, n int) []byte {
+		b := []byte{byte(typ<<4 | n&0x0F)}
+		for n >>= 4; n > 0; n >>= 7 {
+			b[len(b)-1] |= 0x80
+			b = append(b, byte(n&0x7F))
+		}
+		return b
+	}
+	varint := func(n int) []byte {
+		var b []byte
+		for {
+			c := byte(n & 0x7F)
+			if n >>= 7; n == 0 {
+				return append(b, c)
+			}
+			b = append(b, c|0x80)
+		}
+	}
+	deflate := func(b []byte) []byte {
+		var buf bytes.Buffer
+		w, _ := zlib.NewWriterLevel(&buf, zlib.BestCompression)
+		w.Write(b)
+		w.Close()
+		return buf.Bytes()
+	}
+	zeros := make([]byte, size)
+	pack := append([]byte("PACK"), 0, 0, 0, 2, 0, 0, 0, 2)
+	baseOff := len(pack)
+	pack = append(append(pack, objHeader(3, size)...), deflate(zeros)...)
+	delta := append(varint(size), varint(size*copies)...)
+	for range copies {
+		delta = append(delta, 0xF0, 0xFF, 0xFF, 0xFF)
+	}
+	deltaOff := len(pack)
+	back := deltaOff - baseOff
+	ofs := []byte{byte(back & 0x7F)}
+	for back >>= 7; back > 0; back >>= 7 {
+		back--
+		ofs = append([]byte{0x80 | byte(back&0x7F)}, ofs...)
+	}
+	pack = append(append(append(pack, objHeader(6, len(delta))...), ofs...), deflate(delta)...)
+	sum := sha1.Sum(pack)
+	pack = append(pack, sum[:]...)
+	blob := sha1.Sum(append([]byte(fmt.Sprintf("blob %d\x00", size)), zeros...))
+	id := hex.EncodeToString(blob[:])
+	return id, append([]byte("# v2 git bundle\n"+id+" refs/heads/wip\n\n"), pack...)
+}
+
+// A bundle a few KiB long that inflates to half a gigabyte is refused
+// under the index's memory limit, and factoryd's children stay under it.
+func TestInterimPushRefusesAZipBomb(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil, func(dir string) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
-	serve.ship = func(i int, tree string) (string, []byte, error) {
-		raw := "tree " + tree + "\nparent " + serve.base + "\nauthor a <a@a.example> not-a-date +0000\ncommitter a <a@a.example> 1700000000 +0000\n\nwip\n"
-		cmd := exec.Command("git", "-C", serve.seed, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
-		cmd.Stdin = strings.NewReader(raw)
-		out, err := cmd.Output()
-		if err != nil {
-			return "", nil, err
-		}
-		bad := strings.TrimSpace(string(out))
-		if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", bad); err != nil {
-			return "", nil, err
-		}
-		bundle := filepath.Join(serve.dir, "bad.bundle")
-		if _, err := wipGitRun(serve.seed, nil, "bundle", "create", bundle, serve.base+"..refs/heads/wip"); err != nil {
-			return "", nil, err
-		}
-		b, err := os.ReadFile(bundle)
-		return bad, b, err
+	id, bomb := bombBundle(t)
+	if len(bomb) > 32<<10 {
+		t.Fatalf("the bomb is %d bytes, want a few KiB", len(bomb))
 	}
+	serve.ship = func(i int, tree string) (string, []byte, error) { return id, bomb, nil }
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
 	runner.checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
 	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
-		t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in ran on", res, err, chat.calls)
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the check-in to run on", res, err, chat.calls)
 	}
-	serve.mu.Lock()
-	defer serve.mu.Unlock()
-	if len(serve.commits) != 1 {
-		t.Fatalf("the pod shipped %d WIPs, want the one malformed", len(serve.commits))
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); !strings.Contains(fmt.Sprint(step["error"]), "index the shipped bundle") {
+		t.Fatalf("the wip_push_failed step = %v, want the index's refusal", step)
 	}
-	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step == nil || step["at"] != "push" {
-		t.Fatalf("the wip_push_failed step = %v, want the push's failure", step)
-	}
-	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
-		t.Fatalf("wip_pushed steps = %d, want none: the malformed object was refused", n)
-	}
-	if len(serve.msgs) != 0 {
-		t.Fatalf("the pod was messaged %q, want no message", serve.msgs)
+	var ru syscall.Rusage
+	syscall.Getrusage(syscall.RUSAGE_CHILDREN, &ru)
+	if ru.Maxrss > 400<<10 { // KiB
+		t.Fatalf("a child of factoryd peaked at %d MiB, want under the limit", ru.Maxrss>>10)
 	}
 	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
 		t.Fatalf("task branch = %s, want the start alone", tip)
+	}
+}
+
+// A large card's pack still indexes under the limit: 12 MiB of
+// incompressible data lands.
+func TestInterimPushLandsALargePack(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		big := make([]byte, 12<<20)
+		rand.New(rand.NewSource(1)).Read(big)
+		os.WriteFile(filepath.Join(dir, "big.bin"), big, 0o644)
+	})
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
+		t.Fatalf("wip_pushed steps = %d, want the large pack landed; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip == serve.base {
+		t.Fatal("task branch is still the start")
+	}
+}
+
+// The push carries a lease on the tip pushWip fetched: an end push that
+// lands between the fetch and the push stays, and the interim push
+// fails.
+func TestInterimPushLosesTheLeaseToAnEndPush(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	end := wipRun(t, "-C", serve.seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", wipRun(t, "-C", serve.seed, "rev-parse", "HEAD^{tree}"), "-p", serve.base, "-m", "end")
+	wipRun(t, "-C", serve.seed, "push", "-q", serve.fork, end+":refs/heads/other")
+	// a git that moves the fork's tip to the end push's commit as factoryd
+	// builds its own commit, after the fetch and before the push
+	realGit, err := exec.LookPath("git")
+	if err != nil {
+		t.Fatal(err)
+	}
+	bin := t.TempDir()
+	os.WriteFile(filepath.Join(bin, "git"), []byte("#!/bin/sh\nif [ \"$1\" = commit-tree ] && [ \"${*#*Factory-Role}\" != \"$*\" ]; then '"+realGit+"' --git-dir='"+serve.fork+"' update-ref refs/heads/factory/t2 "+end+"; fi\nexec '"+realGit+"' \"$@\"\n"), 0o755)
+	t.Setenv("PATH", bin+":"+os.Getenv("PATH"))
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+		t.Fatalf("wip_pushed steps = %d, want none: the tip moved under the push", n)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "push" {
+		t.Fatalf("the wip_push_failed step = %v, want the push's failure", step)
+	}
+	if len(serve.msgs) != 0 {
+		t.Fatalf("the pod was messaged %q, want no message: a lost lease is no refusal", serve.msgs)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != end {
+		t.Fatalf("task branch = %s, want the end push's commit %s", tip, end)
+	}
+}
+
+// A pod's redirect is not followed: factoryd makes no request to the
+// Location the pod names.
+func TestInterimPushDoesNotFollowARedirect(t *testing.T) {
+	var hits atomic.Int32
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) { hits.Add(1) }))
+	t.Cleanup(target.Close)
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serve.redirect = target.URL + "/admin"
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if hits.Load() != 0 {
+		t.Fatalf("the redirect target was hit %d times, want none", hits.Load())
+	}
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "ask" || !strings.Contains(fmt.Sprint(step["error"]), "302") {
+		t.Fatalf("the wip_push_failed step = %v, want the ask's 302 refusal", step)
+	}
+}
+
+// A refusal that quotes the agent's own file path reaches the session's
+// /message and the check-in's ask with a bearer value in the path masked.
+func TestInterimPushRefusalTextIsScrubbed(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.MkdirAll(filepath.Join(dir, "internal", "policy", "migrations"), 0o755)
+		os.WriteFile(filepath.Join(dir, "internal", "policy", "migrations", "Bearer abcdefghij0123456789xyz.sql"), []byte("alter table x;\n"), 0o644)
+	})
+	version := testPolicyVersion()
+	version.Document.Risk = policy.Risk{
+		Classes: []policy.RiskClass{{Name: "migration", Outcome: policy.OutcomeRequiresApproval, Migration: true}},
+		Rules:   []policy.RiskRule{{Class: "migration", Paths: []string{"internal/policy/migrations/**"}}},
+	}
+	runner.cfg.Policy = func() policy.Version { return version }
+	runner.cfg.PolicyVersion = func(context.Context, int64) (policy.Version, bool, error) { return version, true, nil }
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	if len(serve.msgs) != 1 || !strings.Contains(serve.msgs[0], "is misnamed") || strings.Contains(serve.msgs[0], "abcdefghij0123456789xyz") {
+		t.Fatalf("the pod was messaged %q, want the misnamed-migration refusal with the bearer masked", serve.msgs)
+	}
+	if len(chat.inputs) != 1 || !strings.Contains(chat.inputs[0], serve.msgs[0]) || strings.Contains(chat.inputs[0], "abcdefghij0123456789xyz") {
+		t.Fatalf("the ask's statement does not carry the masked refusal")
+	}
+}
+
+// A Wip-Commit header that is no commit id is refused, and its quoted
+// value is bounded.
+func TestInterimPushBoundsANonHexCommitHeader(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		return "--" + strings.Repeat("x", 5000), []byte("body"), nil
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	step := timelineStep(t, objects, "t2", "wip_push_failed")
+	if text := fmt.Sprint(step["error"]); step["at"] != "ask" || !strings.Contains(text, "names commit") || len(text) > 300 {
+		t.Fatalf("the wip_push_failed step = %v, want the ask's refusal, bounded", step)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+		t.Fatal("a push ran")
+	}
+}
+
+// A refusal the pod cannot take logs and records the delivery's error
+// scrubbed.
+func TestInterimPushUndeliveredRefusalErrorIsScrubbed(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: false\n"), 0o644)
+	})
+	serve.status = http.StatusInternalServerError
+	serve.msgBody = "upstream https://user:hunter2pass@example.com/x failed; Authorization: Bearer abcdefghij0123456789xyz"
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	step := fmt.Sprint(timelineStep(t, objects, "t2", "message"))
+	for name, text := range map[string]string{"message step": step, "log": logs.String()} {
+		if !strings.Contains(text, "500") || strings.Contains(text, "hunter2pass") || strings.Contains(text, "abcdefghij0123456789xyz") {
+			t.Fatalf("the %s = %q, want the delivery's error with userinfo and bearer masked", name, text)
+		}
+	}
+}
+
+// A start that is no commit id reaches no git call: no ask, no step.
+func TestInterimPushRefusesAStartThatIsNoCommitID(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil)
+	out := runner.interimPush(context.Background(), supervisedTask("t2"), sessionSpec{id: "s-1", startRef: "--upload-pack=x", repo: Repo{Owner: "sf", Name: "repo"}}, "ns", "pod", nil)
+	if out != (wipOutcome{}) || len(serve.wipAuth) != 0 || wipSteps(t, objects, "t2", "wip_push_failed") != 0 {
+		t.Fatalf("outcome %+v, asks %d: want nothing run", out, len(serve.wipAuth))
 	}
 }
 
@@ -797,6 +1092,12 @@ func TestInterimPushRefusalNotDeliveredIsNotNamedAsGuidance(t *testing.T) {
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
 		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
 		t.Fatal(err)
+	}
+	serve.mu.Lock()
+	sent := len(serve.msgs)
+	serve.mu.Unlock()
+	if sent != 1 {
+		t.Fatalf("the pod saw %d messages, want the one refusal that failed", sent)
 	}
 	chat.mu.Lock()
 	defer chat.mu.Unlock()
@@ -1008,7 +1309,7 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 	}
 	chat.mu.Unlock()
 	step := timelineStep(t, objects, "t2", "wip_push_failed")
-	if !strings.Contains(refused, fmt.Sprint(step["error"])) {
+	if refused != "factoryd's interim push of your work in progress was refused: "+fmt.Sprint(step["error"]) {
 		t.Fatalf("the wip_push_failed step = %v, want the rule's sentence the refusal carries", step)
 	}
 	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
@@ -1061,5 +1362,35 @@ func TestStopReportCountsTheInterimHeadAsPushed(t *testing.T) {
 	out = sessionOutcome{result: &harness.Result{Summary: "stopped"}, wip: "w1"}
 	if got := out.stopReport(); got != nil {
 		t.Fatalf("stopReport = %q, want no report: the branch holds the work", got)
+	}
+}
+
+// A session that pushed work in progress and then ended with nothing past
+// its start says the branch still holds the interim push, in a first
+// session and in a resumed one, and does not claim the start as its result.
+func TestASessionThatRevertsItsWorkSaysWhatTheBranchHolds(t *testing.T) {
+	for _, resumed := range []bool{false, true} {
+		t.Run(fmt.Sprint("resumed=", resumed), func(t *testing.T) {
+			runner, _, serve := wipRig(t, nil, func(dir string) {
+				os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+			})
+			if resumed {
+				// the start is an earlier interim head, not main
+				prior := wipRun(t, "-C", serve.seed, "-c", "user.name=t", "-c", "user.email=t@t", "commit-tree", "-p", serve.base, "-m", "prior", wipRun(t, "-C", serve.seed, "rev-parse", "HEAD^{tree}"))
+				wipRun(t, "-C", serve.seed, "push", "-q", serve.fork, "+"+prior+":refs/heads/factory/t2")
+				serve.base = prior
+			}
+			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+			runner.checkin = chat
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				commands(0, 24)+resultLine(true, "no changes to push"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+			if res.Outcome == OutcomePushed || res.Commit != tip || !strings.Contains(res.Summary, "the branch still holds the interim push "+tip) {
+				t.Fatalf("result = %+v, want the interim head %s named as what the branch holds, not a pushed outcome", res, tip)
+			}
+		})
 	}
 }
