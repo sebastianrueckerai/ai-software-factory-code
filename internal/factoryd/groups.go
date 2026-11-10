@@ -136,6 +136,24 @@ func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	return out, nil
 }
 
+func (s *PGStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id, e.detail->>'words' FROM tasks t JOIN events e ON e.task_id = t.id AND e.kind = 'plan_closed'
+		WHERE t.status = 'done' AND t.track = $1 AND COALESCE(e.detail->>'words', '') <> ''`, policy.TrackPlan)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := map[string]string{}
+	for rows.Next() {
+		var id, words string
+		if err := rows.Scan(&id, &words); err != nil {
+			return nil, err
+		}
+		out[id] = words
+	}
+	return out, rows.Err()
+}
+
 func (s *PGStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT r.task_id FROM plan_revisions r JOIN tasks t ON t.id = r.task_id
 		WHERE t.status IN ('done', 'closed')

@@ -592,6 +592,16 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	return out, nil
 }
 
+func (s *fakeStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for _, e := range s.events {
+		if words, _ := e.Detail["words"].(string); e.Kind == EventPlanClosed && words != "" && DonePlan(s.tasks[e.TaskID]) {
+			out[e.TaskID] = words
+		}
+	}
+	return out, nil
+}
+
 func (s *fakeStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {
 	// the same rule as the PG query in the store's PlansBetweenRounds,
 	// stated here through leavesRounds
@@ -4630,13 +4640,27 @@ func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by 
 	return nil
 }
 
-func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, taskID, by string, rows []CriterionVerdict, closed *Event) error {
-	if err := s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceApprover, by, rows); err != nil {
+func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, home, by string, rows []CriterionVerdict, closed Event) error {
+	t, ok := s.tasks[plan]
+	switch _, stands := s.closed[plan]; {
+	case !ok:
+		return ErrNotFound
+	case !DonePlan(t):
+		return ErrNotDonePlan
+	case stands:
+		return ErrPlanClosed
+	}
+	if err := s.PutCriteriaVerdicts(ctx, home, CriteriaSourceApprover, by, rows); err != nil {
 		return err
 	}
-	if closed != nil {
-		_, err := s.Record(ctx, *closed)
+	if _, err := s.Record(ctx, closed); err != nil {
 		return err
+	}
+	words, _ := closed.Detail["words"].(string)
+	for _, kind := range criteriaKinds {
+		if err := s.ResolveApprovals(ctx, plan, kind, "approved", by, words); err != nil {
+			return err
+		}
 	}
 	return nil
 }

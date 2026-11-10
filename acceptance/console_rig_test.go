@@ -1875,3 +1875,7 @@ func (a *AcceptanceRig) SaveSummary(context.Context, string, string, int64, fact
 func (a *AcceptanceRig) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
 
 func (a *AcceptanceRig) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }
+
+func (s *AcceptanceRig) PlanClosed(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}

@@ -108,6 +108,8 @@ type Tasks interface {
 	// done or merged, or cut into a successor that is — and the first
 	// card that is not (factoryd.PlanDelivered).
 	PlanDelivered(ctx context.Context, plan string) (bool, factoryd.Task, error)
+	// PlanClosed says whether plan has its plan_closed row.
+	PlanClosed(ctx context.Context, plan string) (at time.Time, closed bool, err error)
 	// CriteriaVerdicts are task's criteria verdict rows (the spec-intake
 	// concept, pieces 7 and 8), every source's, in criterion order.
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]factoryd.CriterionVerdict, error)
@@ -232,8 +234,9 @@ type Config struct {
 	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
 	// CloseDonePlan waives every open criterion of done plan id with the
 	// note and records its plan_closed in one write, and answers how many
-	// it waived (Runner.CloseDonePlan); approver says by is one.
-	CloseDonePlan func(ctx context.Context, id, by, note string, approver bool) (int, error)
+	// it waived and the words its issue hears (Runner.CloseDonePlan);
+	// approver says by is one.
+	CloseDonePlan func(ctx context.Context, id, by, note string, approver bool) (waived int, words string, err error)
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.

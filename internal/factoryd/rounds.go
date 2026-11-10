@@ -236,9 +236,9 @@ func RoundItems(p Plan, cards []Task) []RoundItem {
 // person's close the webhook missed: the card ends closed and nothing
 // starts. Any other close does not count, as on the webhook: the issue
 // opens again and the round starts. A done plan without later rounds
-// whose issue a close that counts closed ends closed the same way. A
-// closed plan, one under another replan and one whose own group revert
-// runs are left as they are.
+// whose issue a person's close that counts closed is taken the same way
+// (endDonePlan), unless it is under a replan; it reads the issue only. A closed plan, one under
+// another replan and one whose own group revert runs are left as they are.
 func (r *Runner) roundCheck(ctx context.Context, parent string) {
 	if err := r.nextRound(ctx, parent); err != nil {
 		log.Printf("plan %s: the round check: %v", parent, err)
@@ -256,15 +256,18 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 	if err != nil || r.planClosed(ctx, parent) {
 		return err
 	}
+	if pause, paused, err := r.store.QueuePause(ctx, t.Repository); err != nil || paused && pause.Plan == t.ID {
+		return err
+	}
 	if len(p.Outline) == 0 {
 		counts, closer, _, err := r.personClosedIssue(ctx, t, repo)
 		if err != nil || !counts || closer == r.forgejo.BotUser {
 			return err
 		}
-		return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
-	}
-	if pause, paused, err := r.store.QueuePause(ctx, t.Repository); err != nil || paused && pause.Plan == t.ID {
-		return err
+		if _, pending, err := r.pendingReplan(ctx, t); err != nil || pending {
+			return err
+		}
+		return endDonePlan(ctx, r.store, r.forgejo, t)
 	}
 	cards, err := r.store.PlanCards(ctx, parent)
 	if err != nil || !roundComplete(p, cards) {
@@ -279,7 +282,7 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		return err
 	}
 	if counts {
-		return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+		return endDonePlan(ctx, r.store, r.forgejo, t)
 	}
 	if !pending {
 		wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
@@ -337,4 +340,55 @@ func leavesRounds(ctx context.Context, store planRevisions, id string) (bool, er
 // a person's close ends it closed, as a failed card's does, in any round.
 func DonePlan(t Task) bool {
 	return t.Track == policy.TrackPlan && t.Status == "done"
+}
+
+// endDonePlan takes a close that counts of done plan t's issue: the card
+// ends closed once its plan_closed row stands (a console Close wrote it
+// with the waivers) or no criterion is open. A plan that still holds
+// production with open criteria stays done, its issue opens again and says
+// once that an approver's Close with a note ends it: a writer's close of
+// the issue waives nothing.
+func endDonePlan(ctx context.Context, store Store, f *Forgejo, t Task) error {
+	_, closed, err := store.PlanClosed(ctx, t.ID)
+	if err != nil {
+		return err
+	}
+	if !closed {
+		p, _, err := planOfStore(ctx, store, t.ID, "")
+		if err != nil {
+			return err
+		}
+		open, _, err := planOpen(ctx, store, t.ID, p)
+		if err != nil {
+			return err
+		}
+		if len(open) > 0 {
+			return holdDonePlan(ctx, f, t, len(open))
+		}
+	}
+	return store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+}
+
+// holdDonePlan opens plan t's issue again and says once that its n open
+// criteria keep it holding production.
+func holdDonePlan(ctx context.Context, f *Forgejo, t Task, n int) error {
+	repo, err := SplitRepo(t.Repository)
+	if err != nil {
+		return err
+	}
+	if err := f.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+		return err
+	}
+	return f.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, fmt.Sprintf(
+		"factoryd: this plan still holds production with %s. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan.",
+		OpenCriteriaPhrase(n)))
+}
+
+// OpenCriteriaPhrase counts n open criteria in words: "1 open criterion",
+// "3 open criteria".
+func OpenCriteriaPhrase(n int) string {
+	if n == 1 {
+		return "1 open criterion"
+	}
+	return fmt.Sprintf("%d open criteria", n)
 }

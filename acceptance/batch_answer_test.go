@@ -849,6 +849,10 @@ func (s *accBatchStore) PlanClosed(context.Context, string) (time.Time, bool, er
 	panic("unused")
 }
 
+func (s *accBatchStore) PlanClosesToFinish(context.Context) (map[string]string, error) {
+	panic("unused")
+}
+
 func (s *accBatchStore) PlansBetweenRounds(context.Context) ([]string, error) {
 	panic("unused")
 }
@@ -901,7 +905,7 @@ func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, str
 	panic("unused")
 }
 
-func (s *accBatchStore) ClosePlanWithWaivers(context.Context, string, string, []factoryd.CriterionVerdict, *factoryd.Event) error {
+func (s *accBatchStore) ClosePlanWithWaivers(context.Context, string, string, string, []factoryd.CriterionVerdict, factoryd.Event) error {
 	panic("unused")
 }
 
@@ -1801,4 +1805,8 @@ func (s *accBatchStore) MarkReverted(context.Context, string, time.Time) (bool, 
 
 func (s *accBatchStore) ClearRevertPause(context.Context, string, string) error {
 	return nil
+}
+
+func (s *accBatchTasks) PlanClosed(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
 }

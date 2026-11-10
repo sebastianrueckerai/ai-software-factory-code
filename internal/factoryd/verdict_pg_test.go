@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"slices"
 	"testing"
 
@@ -123,7 +124,10 @@ func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
 }
 
 // The waivers and the plan_closed row land together or not at all: a close
-// row Postgres refuses leaves no waiver, and a good one leaves both.
+// row insertEvent refuses (no repository) leaves no waiver, and a good one
+// leaves both. The plan must be done, and closes once: a plan that is not
+// done, or whose row stands, is refused. Two plan_closed rows of one plan
+// collapse to one.
 func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 	dsn := schematest.DSN(t, "factoryd")
 	ctx := context.Background()
@@ -132,25 +136,66 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 		t.Fatalf("OpenStore: %v", err)
 	}
 	defer s.db.Close()
-	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, events CASCADE`); err != nil {
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, events, approval_requests CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "done", Objective: "x", Repository: "sf/r", IssueNumber: 1, Track: "plan"}); err != nil {
-		t.Fatalf("CreateTask: %v", err)
+	for _, id := range []string{"t1", "t2", "t3"} {
+		if err := s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "done", Objective: "x", Repository: "sf/r", IssueNumber: 1, Track: "plan"}); err != nil {
+			t.Fatalf("CreateTask: %v", err)
+		}
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t4", Kind: "agent", Status: "running", Objective: "x", Repository: "sf/r", IssueNumber: 2, Track: "plan"}); err != nil {
+		t.Fatal(err)
 	}
 	waivers := []CriterionVerdict{{Criterion: "c1", Verdict: "waived", Evidence: "why", Kind: CriterionTest}}
-	if err := s.ClosePlanWithWaivers(ctx, "t1", "sebastian", waivers, &Event{TaskID: "t1", Kind: EventPlanClosed}); err == nil {
+	if err := s.ClosePlanWithWaivers(ctx, "t1", "t1", "sebastian", waivers, Event{TaskID: "t1", Kind: EventPlanClosed}); err == nil {
 		t.Fatal("a close row without its repository was accepted")
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "t1"); len(rows) != 0 {
 		t.Fatalf("the failed close left rows %+v", rows)
 	}
-	e := &Event{Repository: "sf/r", TaskID: "t1", Kind: EventPlanClosed, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"criteria": 1}}
-	if err := s.ClosePlanWithWaivers(ctx, "t1", "sebastian", waivers, e); err != nil {
+	if err := s.ClosePlanWithWaivers(ctx, "t4", "t4", "sebastian", waivers, Event{Repository: "sf/r", TaskID: "t4", Kind: EventPlanClosed}); !errors.Is(err, ErrNotDonePlan) {
+		t.Fatalf("a running plan: %v, want ErrNotDonePlan", err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO approval_requests (project, task_id, kind, status, spec) VALUES ('sf/r', 't1', 'criteria', 'pending', '{}'), ('sf/r', 't1', 'merge', 'pending', '{}')`); err != nil {
+		t.Fatal(err)
+	}
+	e := Event{Repository: "sf/r", TaskID: "t1", Kind: EventPlanClosed, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"criteria": 1, "words": "closed by sebastian"}}
+	if err := s.ClosePlanWithWaivers(ctx, "t1", "t1", "sebastian", waivers, e); err != nil {
 		t.Fatal(err)
 	}
 	rows, _ := s.CriteriaVerdicts(ctx, "t1")
 	if _, closed, err := s.PlanClosed(ctx, "t1"); err != nil || !closed || len(rows) != 1 || rows[0].Verdict != "waived" || rows[0].DecidedBy != "sebastian" {
 		t.Fatalf("closed %t (%v), rows %+v; want both written", closed, err, rows)
+	}
+	var pending []string
+	rs, err := s.db.QueryContext(ctx, `SELECT kind FROM approval_requests WHERE task_id = 't1' AND status = 'pending'`)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for rs.Next() {
+		var k string
+		rs.Scan(&k)
+		pending = append(pending, k)
+	}
+	rs.Close()
+	if !slices.Equal(pending, []string{"merge"}) {
+		t.Errorf("pending asks %v, want the merge ask alone: the criteria ask ends with the close", pending)
+	}
+	if err := s.ClosePlanWithWaivers(ctx, "t1", "t1", "sebastian", waivers, e); !errors.Is(err, ErrPlanClosed) {
+		t.Fatalf("a second close: %v, want ErrPlanClosed", err)
+	}
+	both := Event{Repository: "sf/r", TaskID: "t2", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}
+	for range 2 {
+		if _, err := s.Record(ctx, both); err != nil {
+			t.Fatal(err)
+		}
+	}
+	var n int
+	if err := s.db.QueryRowContext(ctx, `SELECT count(*) FROM events WHERE task_id = 't2' AND kind = 'plan_closed'`).Scan(&n); err != nil || n != 1 {
+		t.Fatalf("plan_closed rows of t2: %d (%v), want 1", n, err)
+	}
+	if got, err := s.PlanClosesToFinish(ctx); err != nil || len(got) != 1 || got["t1"] != "closed by sebastian" {
+		t.Fatalf("PlanClosesToFinish = %v, %v; want t1's words alone (a factoryd close carries none)", got, err)
 	}
 }

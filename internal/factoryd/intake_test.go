@@ -92,6 +92,8 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&payload) // #nosec G104 -- test stub, malformed body just yields nil labels
 			labels[r.URL.Path] = payload.Labels
 			io.WriteString(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodGet:
+			io.WriteString(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodPost:
 			var payload struct {
 				Body string `json:"body"`

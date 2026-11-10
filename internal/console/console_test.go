@@ -398,6 +398,8 @@ type fakeTasks struct {
 	questions map[string][]factoryd.PlanQuestion
 	// proofs are the plans' proof rows by task, idx order
 	proofs map[string][]factoryd.PlanProof
+	// planClosed are the plans that hold a plan_closed row
+	planClosed map[string]time.Time
 	// criteria are the criteria verdict rows by task
 	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
@@ -3895,4 +3897,11 @@ func TestPoolReadMonth(t *testing.T) {
 	if want := "the pool is 30 sessions, 30 h of agent time and €60.00 this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
 		t.Errorf("unreadable = %+v; want %q", pl, want)
 	}
+}
+
+func (s *fakeTasks) PlanClosed(_ context.Context, plan string) (time.Time, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, closed := s.planClosed[plan]
+	return at, closed, nil
 }

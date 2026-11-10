@@ -986,6 +986,10 @@ func (s *acceptanceStore) PlanClosed(context.Context, string) (time.Time, bool, 
 	return time.Time{}, false, nil
 }
 
+func (s *acceptanceStore) PlanClosesToFinish(context.Context) (map[string]string, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) PlansBetweenRounds(context.Context) ([]string, error) {
 	return nil, nil
 }
@@ -1038,7 +1042,7 @@ func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, s
 	return nil
 }
 
-func (s *acceptanceStore) ClosePlanWithWaivers(context.Context, string, string, []factoryd.CriterionVerdict, *factoryd.Event) error {
+func (s *acceptanceStore) ClosePlanWithWaivers(context.Context, string, string, string, []factoryd.CriterionVerdict, factoryd.Event) error {
 	return nil
 }
 

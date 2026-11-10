@@ -60,6 +60,8 @@ var funcs = template.FuncMap{
 	"accents": func() []string { return factoryd.Accents },
 	// maxAnswer is the answer box's bound (answerFits)
 	"maxAnswer": func() int { return factoryd.MaxAnswer },
+	// maxWaiverNote is the plan Close's note bound
+	"maxWaiverNote": func() int { return factoryd.MaxWaiverNote },
 	// maxReplan is the Replan box's bound, the replan step's
 	"maxReplan": func() int { return factoryd.MaxReplanComment },
 	// lease renders minutes as whole hours when they are
@@ -578,8 +580,9 @@ type card struct {
 	// (factoryd.RoundLine), shown in place of its rollup; "" for a plan
 	// of one round or filed before rounds.
 	Round string
-	// DonePlan is a plan card that is done (factoryd.DonePlan): a writer's
-	// Close ends it.
+	// DonePlan is a done plan card (factoryd.DonePlan) that still holds
+	// production, open criteria or no plan_closed row: a writer's Close
+	// ends it.
 	DonePlan bool
 	// OpenCriteria counts the done plan's criteria that stand neither met
 	// nor waived: its Close waives each with the note it asks for.
@@ -609,11 +612,23 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed, which has no other way out, or a done plan. A card whose question offers a close, or a choice card, offers
-// its choices alone.
+// a human, or failed, which has no other way out, or a done plan that
+// still holds production. A card whose question offers a close, or a
+// choice card, offers its choices alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
 	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.DonePlan)
+}
+
+// OpenPhrase counts the done plan's open criteria in words.
+func (k card) OpenPhrase() string { return factoryd.OpenCriteriaPhrase(k.OpenCriteria) }
+
+// WaiverNoteLabel says what the plan Close's note becomes.
+func (k card) WaiverNoteLabel() string {
+	if k.OpenCriteria == 1 {
+		return "note: becomes the waiver reason of the open criterion"
+	}
+	return fmt.Sprintf("note: becomes the waiver reason of each of the %d open criteria", k.OpenCriteria)
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free
@@ -1986,7 +2001,6 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 				k.Plan = append(k.Plan, c.card(child))
 			}
 		}
-		k.DonePlan = factoryd.DonePlan(t)
 		_, p, _, err := c.planTable(ctx, t.ID, 0)
 		if err != nil {
 			log.Printf("console: the plan of %s: %v", t.ID, err)
@@ -1994,12 +2008,17 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		} else if cardsErr == nil {
 			k.Round = factoryd.RoundLine(p, cards)
 		}
-		if err == nil && len(p.Criteria) > 0 {
-			k.OpenCriteria, err = c.openCriteria(ctx, t.ID, p)
-			if err != nil {
+		if err == nil && factoryd.DonePlan(t) {
+			// Close is offered while the plan holds production: criteria
+			// open, or no plan_closed row yet
+			open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
+			_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
+			if err = cmp.Or(openErr, closedErr); err != nil {
 				log.Printf("console: the criteria of %s: %v", t.ID, err)
 				v.problems = append(v.problems, "the criteria of "+t.ID+" could not be read")
 			}
+			k.OpenCriteria = len(open)
+			k.DonePlan = err == nil && (len(open) > 0 || !closed)
 		}
 		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
 	}
@@ -3780,18 +3799,4 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 	}
 	return factoryd.GetPagesUpTo[prFile](r.Context(), c.userCall(current(r)),
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
-}
-
-// openCriteria counts the criteria of plan id's p that stand neither met
-// nor waived.
-func (c *Console) openCriteria(ctx context.Context, id string, p factoryd.Plan) (int, error) {
-	integration, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, id, p)
-	if err != nil {
-		return 0, err
-	}
-	rows, err := c.cfg.Tasks.CriteriaVerdicts(ctx, integration.ID)
-	if err != nil {
-		return 0, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
-	}
-	return len(factoryd.OpenCriteria(p, rows)), nil
 }

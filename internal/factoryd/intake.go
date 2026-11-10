@@ -1305,7 +1305,7 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 		if later, err := leavesRounds(ctx, in.Store, t.ID); closer == in.BotUser && (err != nil || !later) {
 			return err
 		}
-		return in.Store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+		return endDonePlan(ctx, in.Store, in.Forgejo, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err
