@@ -78,7 +78,13 @@ activities, each with a timeline step and a comment on the pull request:
    what the approval card offers: read the diff, then Approve the merge or
    Deny it (Close on a pull request factoryd opened). A call the gateway refuses for
    headroom (the task's budget, the day's, the month's or the project's
-   cap) is made again after the others, one at a time. The activity's
+   cap) is made again after the others, one at a time. An answer that does
+   not parse — the model's JSON cut at its output bound, say — is asked
+   once more on the same part and the same model, the retry's input
+   carrying the parse error and the bounds (one JSON object, a summary
+   under 1000 characters, at most 10 findings), and its cost booked to the
+   card like the first call; the second answer that does not parse is the
+   note. The activity's
    bound follows the waves of four calls, plus one for each retried call,
    and stays ten minutes under the six hours of its attempt. The parts'
    findings keep the first 50 and a line that counts the rest; their
