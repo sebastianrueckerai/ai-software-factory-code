@@ -1220,6 +1220,14 @@ func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessa
 	return 0, nil
 }
 
+func (s *acceptanceStore) SetPlanDraft(context.Context, string, json.RawMessage, []string) error {
+	return nil
+}
+
+func (s *acceptanceStore) PlanDraft(context.Context, string) (factoryd.PlanDraft, bool, error) {
+	return factoryd.PlanDraft{}, false, nil
+}
+
 func (s *acceptanceStore) PlanRevision(context.Context, string, int) (factoryd.PlanRevision, bool, error) {
 	return factoryd.PlanRevision{}, false, nil
 }

@@ -1531,9 +1531,43 @@ func (s *PGStore) AddPlanRevision(ctx context.Context, id string, plan json.RawM
 	err := s.db.QueryRowContext(ctx, `WITH newest AS (SELECT revision, sha256 FROM plan_revisions WHERE task_id = $1 ORDER BY revision DESC LIMIT 1),
 		added AS (INSERT INTO plan_revisions (task_id, revision, plan, sha256)
 			SELECT $1, COALESCE((SELECT revision FROM newest), 0) + 1, $2::jsonb, $3
-			WHERE NOT EXISTS (SELECT 1 FROM newest WHERE sha256 = $3) RETURNING revision)
+			WHERE NOT EXISTS (SELECT 1 FROM newest WHERE sha256 = $3) RETURNING revision),
+		dropped AS (DELETE FROM plan_drafts WHERE task_id = $1 AND EXISTS (SELECT 1 FROM added))
 		SELECT revision FROM added UNION ALL SELECT revision FROM newest WHERE sha256 = $3`, id, []byte(plan), sha).Scan(&n)
 	return n, err
+}
+
+// PlanDraft is the plan of a planner's refused filing and the findings it
+// was refused for. It is never a revision: no gate reads it and it opens
+// no card.
+type PlanDraft struct {
+	TaskID   string
+	Plan     json.RawMessage
+	Findings []string
+}
+
+func (s *PGStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	fb, err := json.Marshal(findings)
+	if err != nil {
+		return err
+	}
+	_, err = s.db.ExecContext(ctx, `INSERT INTO plan_drafts (task_id, plan, findings) VALUES ($1, $2::jsonb, $3::jsonb)
+		ON CONFLICT (task_id) DO UPDATE SET plan = EXCLUDED.plan, findings = EXCLUDED.findings, at = now()`, id, []byte(plan), fb)
+	return err
+}
+
+func (s *PGStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
+	d := PlanDraft{TaskID: id}
+	var plan, findings []byte
+	err := s.db.QueryRowContext(ctx, `SELECT plan, findings FROM plan_drafts WHERE task_id = $1`, id).Scan(&plan, &findings)
+	if errors.Is(err, sql.ErrNoRows) {
+		return PlanDraft{}, false, nil
+	}
+	if err != nil {
+		return PlanDraft{}, false, err
+	}
+	d.Plan = plan
+	return d, true, json.Unmarshal(findings, &d.Findings)
 }
 
 func (s *PGStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
@@ -2640,6 +2674,11 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 			}
 		}
 	}
+	if d, ok, err := r.store.PlanDraft(ctx, taskID); err != nil {
+		return PlanResult{}, err
+	} else if ok {
+		findings = append(slices.Clone(findings), r.draftBrief(d))
+	}
 	extra, findings, err := r.planRecord(ctx, t, tl, findings)
 	if err != nil {
 		return PlanResult{}, err
@@ -2684,6 +2723,31 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 		res.NotStarted = why
 	}
 	return res, nil
+}
+
+// draftBrief is the starting point a planner session gets when its last
+// filing was refused: the plan and the findings it was refused for.
+func (r *Runner) draftBrief(d PlanDraft) string {
+	var b strings.Builder
+	b.WriteString("your last filing was refused and kept as a draft: fix the findings it was refused for and file it again, rather than plan again from the top.\nThe findings:\n")
+	for _, f := range d.Findings {
+		b.WriteString("- " + r.Scrub.String(f) + "\n")
+	}
+	b.WriteString("The draft:\n```json\n" + r.Scrub.String(string(d.Plan)) + "\n```")
+	return b.String()
+}
+
+// withPlanDraft is a planner's time-cap ask reason with a sentence that
+// names the draft its refused filing left; any other reason as it is.
+func (r *Runner) withPlanDraft(ctx context.Context, taskID, reason string) (string, error) {
+	if !strings.HasPrefix(reason, PlannerOutOfTime) {
+		return reason, nil
+	}
+	d, ok, err := r.store.PlanDraft(ctx, taskID)
+	if err != nil || !ok {
+		return reason, err
+	}
+	return fmt.Sprintf("%s. The planner's last refused filing is kept as a draft, refused for %s.", strings.TrimSuffix(reason, "."), plural(len(d.Findings), "finding")), nil
 }
 
 // planRecord is what plan t's planner session gets of the work before
@@ -2758,6 +2822,13 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
+	filed, err := json.Marshal(p)
+	if err != nil {
+		return PlanResult{}, err
+	}
+	refuse := func(found []string) (PlanResult, error) {
+		return PlanResult{Findings: found}, r.store.SetPlanDraft(ctx, taskID, filed, found)
+	}
 	// the revision this one changes, when there is one: the amendment
 	// rules judge the pair (piece 10), the replan rules the revision
 	// against the plan's record of cards
@@ -2776,7 +2847,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	pins, unread := r.companionPins(ctx, v, t.Repository)
 	if len(unread) > 0 {
-		return PlanResult{Findings: unread}, nil
+		return refuse(unread)
 	}
 	for i := range p.Cards {
 		p.Cards[i].Companions = pins
@@ -2784,13 +2855,13 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	if st.newest != nil {
 		settled := settledCards(*st.newest, st.old, round)
 		if found := settledFindings(p, settled); len(found) > 0 {
-			return PlanResult{Findings: found}, nil
+			return refuse(found)
 		}
 		p.Cards = append(settled, p.Cards...)
 	}
 	p, found = judgePlan(p, shape, v.Document.Limits, projectPins(v, t.Repository))
 	if found = append(found, questionBounds(p.Questions)...); len(found) > 0 {
-		return PlanResult{Findings: found}, nil
+		return refuse(found)
 	}
 	// a re-file of the newest revision by value: already stored. By
 	// value, not by hash: the stored row's hash can drift (a settled
@@ -2816,7 +2887,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 	}
 	found = append(found, takeOffReasonFindings(p)...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
-		return PlanResult{Findings: found}, nil
+		return refuse(found)
 	}
 	raw, sha, err := planSHA(p)
 	if err != nil {

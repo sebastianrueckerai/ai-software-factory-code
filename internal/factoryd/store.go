@@ -768,6 +768,11 @@ type Store interface {
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
+	// SetPlanDraft keeps plan, the planner's refused filing, and the
+	// findings it was refused for as task id's one draft, replacing the last.
+	SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error
+	// PlanDraft is task id's draft; AddPlanRevision deletes it.
+	PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error)
 	// PlanRevision is revision n of task id's plan, the newest for 0.
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 	// PutPlanQuestions stores revision's questions of plan task id, numbered

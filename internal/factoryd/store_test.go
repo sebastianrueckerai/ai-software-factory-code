@@ -45,6 +45,7 @@ type fakeStore struct {
 	refusals        map[string][]IntakeRefusal
 	released        map[string]bool
 	tasks           map[string]Task
+	drafts          map[string]PlanDraft
 	sessions        map[string]Session
 	started         map[string]bool
 	finished        map[string]time.Time
@@ -492,8 +493,22 @@ func (s *fakeStore) AddPlanRevision(ctx context.Context, id string, plan json.Ra
 	if n := len(revs); n > 0 && revs[n-1].SHA256 == sha {
 		return n, nil
 	}
+	delete(s.drafts, id)
 	s.plans[id] = append(revs, PlanRevision{TaskID: id, Revision: len(revs) + 1, Plan: plan, SHA256: sha, CreatedAt: time.Now()})
 	return len(revs) + 1, nil
+}
+
+func (s *fakeStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	if s.drafts == nil {
+		s.drafts = map[string]PlanDraft{}
+	}
+	s.drafts[id] = PlanDraft{TaskID: id, Plan: plan, Findings: findings}
+	return nil
+}
+
+func (s *fakeStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
+	d, ok := s.drafts[id]
+	return d, ok, nil
 }
 
 func (s *fakeStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {

@@ -1508,6 +1508,9 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
+	if reason, err = r.withPlanDraft(ctx, t.ID, reason); err != nil {
+		return 0, err
+	}
 	var c Case
 	if reason == healedReason {
 		c, err = r.store.NewestAskCase(ctx, t.ID)

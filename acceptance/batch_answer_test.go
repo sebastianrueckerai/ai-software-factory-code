@@ -962,6 +962,12 @@ func (s *accBatchStore) DrawCard(ctx context.Context, taskID string, d factoryd.
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
 	panic("unused")
 }
+func (s *accBatchStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	panic("unused")
+}
+func (s *accBatchStore) PlanDraft(ctx context.Context, id string) (factoryd.PlanDraft, bool, error) {
+	panic("unused")
+}
 func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []factoryd.PlanQuestion) (bool, error) {
 	panic("unused")
 }

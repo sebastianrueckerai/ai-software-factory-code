@@ -225,6 +225,9 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if in.Reason == healedReason && in.Kind == "" {
 		return r.healedTrip(ctx, t, in, at.ID)
 	}
+	if in.Reason, err = r.withPlanDraft(ctx, t.ID, in.Reason); err != nil {
+		return TripOutcome{}, err
+	}
 	f, err := r.tripFacts(ctx, t, in.Head)
 	if err != nil {
 		return TripOutcome{}, err
