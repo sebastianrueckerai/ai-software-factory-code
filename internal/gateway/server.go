@@ -166,6 +166,9 @@ type Server struct {
 	polMu sync.Mutex
 	pol   policy.Version
 	polAt time.Time // when pol was read; zero = never
+
+	routeMu sync.Mutex
+	routes  map[string]*aliasRoute // nil until the open switches are read
 }
 
 // PolicyTTL bounds how long the gateway enforces a policy version after
@@ -297,7 +300,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	price, err := s.price(ctx, pv, task, chatReq.Model)
+	served, routed := s.route(ctx, pv, chatReq.Model)
+	chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
+	price, err := s.price(ctx, pv, task, served)
 	if err != nil {
 		s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 		return
@@ -314,9 +319,9 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slot, models := task.ID, pv.Document.Models(task.Classes)
+	slot, models := task.ID, pv.Document.Routing.WithTwins(pv.Document.Models(task.Classes))
 	if purpose != "" {
-		slot, models = task.ID+"/"+factorydSA, pv.Document.FactoryModels(task.Classes)
+		slot, models = task.ID+"/"+factorydSA, pv.Document.Routing.WithTwins(pv.Document.FactoryModels(task.Classes))
 	}
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	req := policy.HoldRequest{
@@ -335,8 +340,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedPremiumCap {
 		// at the premium cap the call is served on big
 		note = refusal.Reason + "; served on " + policy.Big
-		chatReq.Model, chatReq.fields["model"] = policy.Big, json.RawMessage(strconv.Quote(policy.Big))
-		if req.Price, err = s.price(ctx, pv, task, policy.Big); err != nil {
+		chatReq.Model = policy.Big
+		served, routed = s.route(ctx, pv, policy.Big)
+		chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
+		if req.Price, err = s.price(ctx, pv, task, served); err != nil {
 			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 			return
 		}
@@ -355,8 +362,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
-	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose,
 		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
+	if routed != "" {
+		call.addNote(routed)
+	}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
 		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {
