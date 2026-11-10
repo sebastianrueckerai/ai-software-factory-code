@@ -689,7 +689,7 @@ func (s *accBatchStore) ReleaseLiveSession(ctx context.Context, taskID, owner st
 func (s *accBatchStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
 	return true, nil
 }
-func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error)   { panic("unused") }
+func (s *accBatchStore) ToHumanLane(ctx context.Context, id string) (bool, error) { panic("unused") }
 func (s *accBatchStore) SwitchToPlan(ctx context.Context, id string, capabilities []string) (bool, error) {
 	panic("unused")
 }
