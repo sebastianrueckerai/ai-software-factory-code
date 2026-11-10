@@ -2242,6 +2242,19 @@ func (r *Runner) merge(ctx context.Context, t Task, repo Repo, pr int64, commit,
 		msg = fmt.Sprintf("factoryd task %s (issue #%d): merged by %s on the project's merge rule auto", t.ID, t.IssueNumber, MergeUser)
 	}
 	err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
+	// Forgejo answers 405 "Please try again later" while its own conflict
+	// check on a new head runs (the merge queue's main merge moved it): a
+	// wait, not a conflict. The pull request is read after a short pause
+	// and merged again while it reports mergeable; only a refusal on a
+	// head it reports as not mergeable is a conflict (versionMergeConflict).
+	for waits := 0; mergeWaitRefusal(err) && waits < maxMergeWaits; waits++ {
+		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
+		if serr != nil || st.Merged || st.State != "open" || !st.Mergeable {
+			break
+		}
+		time.Sleep(mergeWaitAfter)
+		err = r.forgejo.MergePullRequest(ctx, token, repo.Owner, repo.Name, pr, commit, Attribution{Role: "merge", Task: t.ID, Human: t.Author, Approver: approver}, msg)
+	}
 	if errors.Is(err, ErrRefused) {
 		st, serr := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, pr)
 		if serr == nil && st.Merged {
@@ -2438,6 +2451,12 @@ func (r *Runner) redHead(ctx context.Context, t Task, repo Repo, pr int64, commi
 // mergeConflict is a merge refused because the pull request no longer
 // merges into main: the workflow sends the task back to the agent
 // (versionMergeConflict), whose new session supersedes the card.
+// mergeWaitRefusal reports whether err is Forgejo's 405 "Please try again
+// later", its answer while its conflict check on the head still runs.
+func mergeWaitRefusal(err error) bool {
+	return err != nil && strings.Contains(err.Error(), ": status 405: ") && strings.Contains(err.Error(), "Please try again later")
+}
+
 func (r *Runner) mergeConflict(ctx context.Context, t Task, repo Repo, pr int64, commit, approver, why string) MergeResult {
 	res := MergeResult{Refusal: textutil.Truncate(why, 500), Conflict: true}
 	r.comment(ctx, t, repo, pr, fmt.Sprintf(

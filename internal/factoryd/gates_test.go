@@ -46,6 +46,7 @@ type gateForgejo struct {
 	head        string   // GET /pulls/9's head sha; "" = c1
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
+	mergeWait   bool     // a 405 answers "Please try again later", Forgejo's conflict check still running
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
@@ -109,7 +110,11 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				f.merged = true
 			}
 			w.WriteHeader(status)
-			io.WriteString(w, `{"message":"not allowed to merge"}`)
+			if f.mergeWait && status == http.StatusMethodNotAllowed && len(f.merges) <= len(f.mergeStatus) {
+				io.WriteString(w, `{"message":"Please try again later"}`)
+			} else {
+				io.WriteString(w, `{"message":"not allowed to merge"}`)
+			}
 		case r.Method == "GET" && p == "/pulls/9":
 			if f.stateFail > 0 {
 				f.stateFail--
@@ -2175,6 +2180,44 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "no longer merges into main") ||
 		!strings.Contains(fj.comments[0], "goes back to the agent") {
 		t.Fatalf("comments = %q", fj.comments)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("no merge_conflict step")
+	}
+}
+
+// A merge refused with 405 "Please try again later" on a head Forgejo
+// still reports mergeable (its conflict check on the new head runs; the
+// merge queue's turn merged main into the branch at 2026-11-09 20:27) is
+// a wait: the merge is tried again and the task merges, with no conflict
+// comment and no session to merge a main that was already merged.
+func TestMergeWaitRefusalWaitsAndMerges(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, mergeStatus: []int{http.StatusMethodNotAllowed, http.StatusOK}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if !res.Merged || len(fj.merges) != 2 {
+		t.Fatalf("result = %+v, merges %d; want a merged task on the second merge call", res, len(fj.merges))
+	}
+	if len(fj.comments) != 0 {
+		t.Fatalf("comments = %q, want none", fj.comments)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"merged"`) || strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("want a merged step and no merge_conflict step")
+	}
+}
+
+// A 405 "Please try again later" on a head Forgejo reports as not
+// mergeable is still a conflict: the task goes back to the agent.
+func TestMergeWaitRefusalOnAnUnmergeableHeadIsAConflict(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, mergeStatus: []int{http.StatusMethodNotAllowed}, conflict: true}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || !res.Conflict || len(fj.merges) != 1 {
+		t.Fatalf("result = %+v, merges %d; want a conflict on the one merge call", res, len(fj.merges))
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
 		t.Fatal("no merge_conflict step")
