@@ -41,6 +41,7 @@ var zeroNamed = []string{
 // row's trip column carries where the gateway decides; the tool caps'
 // two are literals of FitTool, not constants, so they stand as strings.
 var refused = map[string][]string{
+	"limits.gate_reserve_eur":  {policy.RefusedBudget},
 	"budget.task_default_eur":  {policy.RefusedBudget},
 	"budget.day_eur":           {policy.RefusedDayCap},
 	"budget.month_eur":         {policy.RefusedMonthCap, policy.RefusedProjectCap},
@@ -62,8 +63,9 @@ var wantTrip = map[string][]string{
 	"limits.checkin_calls":      {`"check-in call cap reached after %d calls"`},
 	"limits.checkin_time":       {`"check-in time cap reached after %s"`},
 	"limits.checkin_share":      {`"check-in: spend_above_policy: the check-in's share of the budget is spent"`},
-	"limits.warn_at":            {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left. Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."`},
-	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left. File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."`},
+	"limits.warn_at":            {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."`},
+	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."`},
+	"limits.gate_reserve_eur":   {`"; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit"`, "refused_budget"},
 	"limits.no_push_spend":      {`"this session spent %.2f EUR of the %.2f EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed"`},
 	"budget.task_default_eur":   {`"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d"`},
 	"budget.task_max_eur":       nil, // the cut is silent; only the load refuses
@@ -74,7 +76,7 @@ var wantTrip = map[string][]string{
 		`"; the project cap budget.month_eur in projects/<project>.yaml is spent, and only a human raises it, by a commit"`,
 		`"the project's month cap is reached"`, `"The project's month cap is reached"`},
 	"budget.session_floor_cheap_eur": {`"the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card."`,
-		`"%.3f EUR of the %.3f EUR budget remains"`},
+		`"The card spent %.2f EUR of its %.2f EUR budget; %.2f EUR is held for the review and the audit, which need %.2f EUR"`, `"so a fund of %.2f EUR opens it"`},
 	"budget.premium_month_eur": {`"free headroom %.6f EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens); the premium cap budget.premium_month_eur in policy.yaml cannot pay for it"`},
 	"chat.monthly_eur": {`"the chat of %s stands at its budget of €%.2f: the chat's budget is used up"`,
 		`"the chat's monthly budget is spent: the chat stands until it is raised or the month turns"`},
@@ -111,6 +113,7 @@ var wantText = map[string][]string{
 	"limits.warn_at":                  {"DefaultWarnAt 80"},
 	"limits.plan_warn_at":             {"DefaultPlanWarnAt 67"},
 	"limits.no_push_spend":            {"DefaultNoPushSpend 60"},
+	"limits.gate_reserve_eur":         {"DefaultGateReserveEUR 0.40"},
 	"budget.task_default_eur":         {`"policy: budget.task_default_eur and task_max_eur must be positive"`},
 	"budget.task_max_eur":             {`"policy: a session floor of %g exceeds budget.task_max_eur %g, which no card could fund"`},
 	"budget.day_eur":                  {`"policy: budget.day_eur must not be negative (0 stops all spend)"`},
@@ -135,8 +138,8 @@ var wantText = map[string][]string{
 // wantText name only wantTrip's keys, and no wantText key is zero-named.
 func TestAccRowTruthAllCaps(t *testing.T) {
 	rows, byKey := readManualSpendRails(t)
-	if len(wantTrip) != 29 || len(wantText) != 28 || len(zeroNamed) != 3 {
-		t.Fatalf("the row-truth tables hold %d trip, %d text and %d zero-named keys, want 29, 28 and 3",
+	if len(wantTrip) != 30 || len(wantText) != 29 || len(zeroNamed) != 3 {
+		t.Fatalf("the row-truth tables hold %d trip, %d text and %d zero-named keys, want 30, 29 and 3",
 			len(wantTrip), len(wantText), len(zeroNamed))
 	}
 	for key, trips := range wantTrip {

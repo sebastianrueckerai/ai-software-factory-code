@@ -195,6 +195,9 @@ type fakeLiteLLM struct {
 	keys     string // /key/list body; empty = no keys
 	// deployment is the gateway's deployment header on an answer
 	deployment string
+	// book, when set, runs for each chat call served, with the task the
+	// call names: the spend the gateway would book
+	book func(taskID string)
 }
 
 // running is the number of chat calls in the handler now.
@@ -242,6 +245,9 @@ func (f *fakeLiteLLM) srv(t *testing.T) *httptest.Server {
 			content := f.content
 			if n <= len(f.contents) {
 				content = f.contents[n-1]
+			}
+			if f.book != nil {
+				f.book(r.Header.Get(gateway.HeaderFactoryTask))
 			}
 			f.mu.Unlock()
 			if f.answer != nil {

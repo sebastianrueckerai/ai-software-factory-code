@@ -255,3 +255,47 @@ func TestSizeGateBudgetMoveRecordsAFund(t *testing.T) {
 		t.Fatalf("the rows = %+v, %v; want none for a budget that did not move", rows, err)
 	}
 }
+
+// A grant through the fund and extend paths raises the card's budget and
+// its session ceiling by the grant alone, and leaves the gate reserve
+// whole. Card of 5.00 EUR with 4.60 spent has 0.40 free, which the 0.40 EUR
+// reserve takes whole: the session ceiling is 0, the gates' free 0.40. A
+// fund of 1.00 (FundCard, the board's Fund) makes the ceiling 1.00 and the
+// gates' free 1.40; an extend of 1.00 EUR (DrawCard, the rungs' extend)
+// makes them 2.00 and 2.40. The reserve stays 0.40 and still fits inside the
+// gates' free.
+func TestAGrantLeavesTheGateReserveWhole(t *testing.T) {
+	ctx := context.Background()
+	s := drawStore(t, "t-g", 5)
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET spent_eur = 4.60 WHERE id = 't-g'`); err != nil {
+		t.Fatal(err)
+	}
+	reserve := policy.DefaultGateReserveEUR
+	check := func(stage string, wantBudget, wantCeiling float64) {
+		t.Helper()
+		card, _, err := s.Task(ctx, "t-g")
+		if err != nil || math.Abs(card.BudgetEUR-wantBudget) > 1e-9 {
+			t.Fatalf("%s: budget = %v, %v; want %v", stage, card.BudgetEUR, err, wantBudget)
+		}
+		req := policy.HoldRequest{TaskID: "t-g", Kind: policy.KindModel, Ref: "small", Session: "s1", ReserveEUR: reserve, DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)}
+		_, session, err := s.Free(ctx, req)
+		if err != nil || math.Abs(session.Task-wantCeiling) > 1e-9 || session.Reserve != reserve {
+			t.Fatalf("%s: session ceiling = %+v, %v; want %v with the reserve %v", stage, session, err, wantCeiling, reserve)
+		}
+		req.Session, req.ReserveEUR = "", 0
+		_, gates, err := s.Free(ctx, req)
+		if err != nil || math.Abs(gates.Task-(wantCeiling+reserve)) > 1e-9 || gates.Task < reserve {
+			t.Fatalf("%s: the gates' free = %+v, %v; want %v, at least the reserve %v", stage, gates, err, wantCeiling+reserve, reserve)
+		}
+	}
+	check("before", 5, 0)
+	if _, _, err := s.FundCard(ctx, "t-g", 1, 0, Event{Kind: EventCardFunded, Repository: "sf/r", Actor: "sebastian", Via: ViaConsole}); err != nil {
+		t.Fatal(err)
+	}
+	check("after the fund", 6, 1)
+	if err := s.DrawCard(ctx, "t-g", CaseDraw{Rung: 3, Extend: policy.Draw{EUR: 1},
+		Event: Event{Repository: "sf/r", TaskID: "t-g", Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"pool": true, "rung": 3}}}); err != nil {
+		t.Fatal(err)
+	}
+	check("after the extend", 7, 2)
+}

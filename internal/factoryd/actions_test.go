@@ -49,7 +49,10 @@ func TestResumeAppliesOnlyWithRoom(t *testing.T) {
 	}{
 		{"room", ActResume, room, Resolution{}, ""},
 		{"at the cap", ActResume, with(func(f *CaseFacts) { f.Attempts = 3 }), Resolution{}, "the session cap of 3 is reached: extend or close"},
-		{"below the floor", ActResume, with(func(f *CaseFacts) { f.LeftEUR = 0.2 }), Resolution{}, "0.20 EUR is left and an opening needs 0.30 EUR: fund"},
+		{"below the floor", ActResume, with(func(f *CaseFacts) { f.LeftEUR = 0.2 }), Resolution{}, "0.20 EUR is left for a session and an opening needs 0.30 EUR: fund"},
+		// 0.70 left less the 0.40 gate reserve is 0.30 for a session, under the 0.60 floor
+		{"under the reserve", ActResume, with(func(f *CaseFacts) { f.LeftEUR, f.ReserveEUR, f.FloorEUR = 0.7, 0.4, 0.6 }), Resolution{},
+			"0.30 EUR is left for a session and an opening needs 0.60 EUR: fund"},
 		{"running", ActResume, with(func(f *CaseFacts) { f.Running = true }), Resolution{}, "a session is running"},
 		// 1200 s cap, 1100 s used: 100 s left, under the 5 minutes a session needs
 		{"time short", ActResume, with(func(f *CaseFacts) { f.AgentTimeS = 1100 }), Resolution{},
@@ -601,6 +604,26 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
 		"settle ends a monitor flag's case alone, and this case is no monitor flag's"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
+	}
+}
+
+// A budget floor's money fact reads what a session may spend, the gate
+// reserve held out: 0.70 EUR left less the 0.40 reserve is 0.30, and an
+// opening of 0.60 needs 0.30 EUR more.
+func TestTripMoneyHoldsTheReserveOut(t *testing.T) {
+	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.3, LeftEUR: 0.7, ReserveEUR: 0.4, FloorEUR: 0.6, Model: "factory/small"}
+	want := CaseMoney{Kind: "budget", BudgetEUR: 3, SpentEUR: 2.3, NeedEUR: 0.3, Buys: "one session on factory/small"}
+	if got := tripMoney(CaseBudgetFloor, f); got == nil || *got != want {
+		t.Fatalf("money = %+v, want %+v", got, want)
+	}
+}
+
+// The money fact rounds up to the cent: an opening of 0.604 against a
+// session ceiling of 0.11 - 0.40 = -0.29 needs 0.894, so 0.90, not 0.89.
+func TestTripMoneyRoundsTheNeedUp(t *testing.T) {
+	f := CaseFacts{BudgetEUR: 3, SpentEUR: 2.89, LeftEUR: 0.11, ReserveEUR: 0.4, FloorEUR: 0.604}
+	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.9 {
+		t.Fatalf("money = %+v, want a need of 0.90", got)
 	}
 }
 

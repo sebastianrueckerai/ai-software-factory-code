@@ -1859,7 +1859,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		Brief: InboundBrief(harness.TaskBrief{Objective: briefObjective(t.Objective, false), Repository: t.Repository, SHA: t.SHA, Author: t.Author, AuthorStanding: t.Standing()}),
 		PR:    pr.Number, Commit: commit, Concurrency: concurrencyBlock(concurrencySites(prFiles)),
 		Gates: reviewGates{Policy: reviewPolicyOf(gates.Policy), Reproduction: gates.Reproduction, Audit: gates.Audit, Companions: gates.Companions}, LastReview: last,
-		Cost: r.costState(ctx, t),
+		Cost: r.costState(ctx, t, 0),
 	}
 	if len(parts) > 1 {
 		first.Part, first.Files, first.Names = partLabel(parts, 0, len(prFiles)), fileList(parts, "part"), names.Others(0)

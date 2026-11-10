@@ -361,6 +361,9 @@ type Config struct {
 	// its rung's floor on model, else the refusal (factoryd's
 	// Runner.SessionFunded); nil offers no fund and checks no answer.
 	SessionFunded func(ctx context.Context, taskID, model string) (string, error)
+	// GateReserve is the policy's gate reserve in force, which a session's
+	// ceiling holds out of a card's budget; nil reads none.
+	GateReserve func() float64
 	// Chat keeps the project agent's conversations and chat tasks, and
 	// Operator is its model; without either the chat answers 404.
 	Chat     Chat
