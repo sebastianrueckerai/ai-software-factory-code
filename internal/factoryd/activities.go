@@ -1230,7 +1230,7 @@ func (r *Runner) startRef(ctx context.Context, t *Task, repo Repo, given string)
 
 // sessionResult maps a session's end onto the outcome the workflow acts on.
 func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
-	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn}
+	res := SessionResult{SessionID: s.id, Outcome: OutcomeNoPush, CheckIn: out.checkIn, Killed: out.killed}
 	if out.start != nil {
 		// every next session would fail the same way: a human fixes the
 		// cause, and the answer starts the next session

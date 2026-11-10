@@ -598,6 +598,28 @@ type sessionOutcome struct {
 	overHold *OverHoldCall   // the session's newest call booked beyond its hold
 	reads    []string        // the paths a report session read
 	checkIn  *CheckInOutcome // the check-in that ran at the session's start
+	killed   *SessionKill    // the sandbox killed the worker for its memory
+}
+
+// SessionKill is a session the sandbox killed for its memory: the kill as
+// the kubelet reported it and the last command the session ran, the one it
+// was most likely killed in.
+type SessionKill struct {
+	Reason    string `json:"reason"`
+	ExitCode  int32  `json:"exit_code"`
+	Container string `json:"container"`
+	Command   string `json:"command,omitempty"`
+}
+
+// killOf is the memory kill d reports, nil for a pod that ended another way.
+// command is the last command the session ran.
+func killOf(d PodDiagnosis, command string) *SessionKill {
+	for _, c := range d.Containers {
+		if c.State == "terminated" && c.Reason == "OOMKilled" {
+			return &SessionKill{Reason: c.Reason, ExitCode: c.ExitCode, Container: c.Name, Command: command}
+		}
+	}
+	return nil
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -804,6 +826,13 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// own error
 	ended := func(plain string) string {
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
+			var last string
+			if cs := digest.g.Commands; len(cs) > 0 {
+				last = r.Scrub.String(cs[len(cs)-1].Command)
+			}
+			if out.killed = killOf(d, last); out.killed != nil {
+				log.Printf("task %s: session %s: the sandbox killed %s for its memory in %q", t.ID, s.id, out.killed.Container, last)
+			}
 			if how := exitedHow(plain, d); how != "" {
 				return how
 			}

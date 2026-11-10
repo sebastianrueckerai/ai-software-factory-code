@@ -71,6 +71,8 @@ type CaseFacts struct {
 	PoolLeft     policy.Draw `json:"pool_left"`
 	CardDrawLeft policy.Draw `json:"card_draw_left"`
 	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name
+	// Killed is the memory kill that ended the session before the stop.
+	Killed *SessionKill `json:"killed,omitempty"`
 }
 
 // DrawFacts is a draw as the bought-nothing guard weighs it: its time, the

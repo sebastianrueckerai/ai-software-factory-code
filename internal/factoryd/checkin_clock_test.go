@@ -72,16 +72,16 @@ func TestWorkflowSessionWithACheckinGetsTheCheckinsTimeOnTop(t *testing.T) {
 	}
 }
 
-// A history recorded before the change id carries no checkin-clock marker:
-// it replays on the old branch, with the session's activity scheduled for
-// its own time alone.
+// A history recorded before the change ids carries no checkin-clock and no
+// session-kill marker: it replays on the old branch, with the session's
+// activity scheduled for its own time alone.
 func TestWorkflowReplaysAHistoryFromBeforeCheckinClock(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
 	if err != nil {
 		t.Fatal(err)
 	}
-	if strings.Contains(string(data), "checkin-clock") || !strings.Contains(string(data), `"RunSession"`) {
-		t.Fatal("the recording must run a session and hold no checkin-clock marker")
+	if strings.Contains(string(data), "checkin-clock") || strings.Contains(string(data), "session-kill") || !strings.Contains(string(data), `"RunSession"`) {
+		t.Fatal("the recording must run a session and hold no checkin-clock or session-kill marker")
 	}
 	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
 	if err != nil {

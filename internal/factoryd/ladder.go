@@ -42,6 +42,9 @@ type TripInput struct {
 	Kind     CaseKind
 	StateKey string
 	Extra    map[string]any
+	// Killed is the memory kill that ended the session before the stop,
+	// nil for none: the case's facts carry it.
+	Killed *SessionKill `json:",omitempty"`
 }
 
 // The check-in's spend stops, which a check-in share case keeps in its
@@ -229,6 +232,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
+	f.Killed = in.Killed
 	c, cases, err := r.tripCase(ctx, t, f, in)
 	if err != nil {
 		return TripOutcome{}, err

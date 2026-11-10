@@ -429,6 +429,8 @@ type SessionResult struct {
 	Need string `json:",omitempty"`
 	// Replan is a replan session's text for the planner (replanText).
 	Replan string `json:",omitempty"`
+	// Killed is the memory kill that ended the session, nil for none.
+	Killed *SessionKill `json:",omitempty"`
 }
 
 type PullRequest struct {
@@ -624,6 +626,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.criteriaGate = workflow.GetVersion(ctx, "criteria-gate", workflow.DefaultVersion, versionCriteriaGate)
 	run.checkinRaise = workflow.GetVersion(ctx, "checkin-raise", workflow.DefaultVersion, versionCheckinRaise)
 	run.checkinClock = workflow.GetVersion(ctx, "checkin-clock", workflow.DefaultVersion, versionCheckinClock)
+	run.sessionKill = workflow.GetVersion(ctx, "session-kill", workflow.DefaultVersion, versionSessionKill)
 	run.checkinSpend = workflow.GetVersion(ctx, "checkin-spend", workflow.DefaultVersion, versionCheckinSpend)
 	run.checkinGrant = workflow.GetVersion(ctx, "checkin-grant", workflow.DefaultVersion, versionCheckinGrant)
 	run.checkinRepeat = workflow.GetVersion(ctx, "checkin-repeat", workflow.DefaultVersion, versionCheckinRepeat)
@@ -1375,6 +1378,11 @@ const (
 	// is counted and its activity is scheduled. A run from before counts
 	// the check-in's time and gives the session no more.
 	versionCheckinClock workflow.Version = 1
+	// versionSessionKill (change id "session-kill"): a session the sandbox
+	// killed for its memory leaves its kill and last command on the card's
+	// next stops, as a fact of their cases. Read where a session's result
+	// is taken. A run from before carries none.
+	versionSessionKill workflow.Version = 1
 	// versionAuditDraw (change id "audit-draw"): the audit's gap verdict
 	// at a cap — the hold-out settlement's findings, which name no writer —
 	// buys its session as the factory's own draw, rung 0 against the pool,
@@ -1521,6 +1529,8 @@ type taskRun struct {
 	checkinSpend      workflow.Version // a spent check-in's answer verifies the head, not buys a session (versionCheckinSpend)
 	checkinRaise      workflow.Version // a call-cap stop's answer buys the session (versionCheckinRaise)
 	checkinClock      workflow.Version // a session's check-in is no agent time (versionCheckinClock)
+	sessionKill       workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
+	killed            *SessionKill     // the last session's memory kill (versionSessionKill)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
 	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
@@ -2412,6 +2422,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			model = res.Model
 		}
 		reason = res.Summary
+		if t.sessionKill >= versionSessionKill {
+			t.killed = res.Killed
+		}
 		if res.CheckIn != nil {
 			t.recordCheckin(res)
 			if len(res.CheckIn.Verdicts) > 0 {
@@ -4606,7 +4619,7 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	}
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
-	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop}
+	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Killed: t.killed}
 	t.checkinStop = ""
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err
