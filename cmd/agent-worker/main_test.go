@@ -2137,3 +2137,47 @@ func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
 		t.Fatalf("files = %q, want all twelve names", files)
 	}
 }
+
+// The names a checkpoint carries are bounded in count and in bytes, so its
+// line stays under the pod log's cap whatever the agent names its files.
+func TestCheckpointBoundsItsNames(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644)
+	run("-C", seed, "add", "a.txt")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
+	run("clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	deep := filepath.Join(dir, strings.Repeat("d", 200))
+	os.MkdirAll(deep, 0o755)
+	for i := range maxCheckpointFiles + 5 {
+		os.WriteFile(filepath.Join(deep, fmt.Sprintf("n%03d-%s", i, strings.Repeat("x", 100))), []byte("x\n"), 0o644)
+	}
+	_, _, _, files, err := ck.diff(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(files) != maxCheckpointFiles {
+		t.Fatalf("%d names, want %d", len(files), maxCheckpointFiles)
+	}
+	for _, f := range files {
+		if len(f) > maxCheckpointName+len("…") {
+			t.Fatalf("a name of %d bytes, want it cut at %d", len(f), maxCheckpointName)
+		}
+	}
+}

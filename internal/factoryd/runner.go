@@ -622,6 +622,11 @@ func (out sessionOutcome) stopReport() []string {
 	return nil
 }
 
+// errSuperseded ends a session another RunSession attempt took over: the
+// pod is theirs, and this attempt, which Temporal timed out, stops
+// supervising it.
+var errSuperseded = errors.New("another attempt supervises the session")
+
 // errWorkerStop ends a session because factoryd is stopping: retryable,
 // so Temporal runs the attempt on from the heartbeat on the next factoryd.
 var errWorkerStop = errors.New("factoryd stopping; the session's work in progress is on the branch for the retry")
@@ -776,7 +781,21 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	if err != nil {
 		return out, err
 	}
-	defer func() { out.model, out.reads = s.model, sup.Reads() }()
+	// the head an interim push landed for finished work the line bound
+	// refused at the end (the log follower's, below), read once at the end
+	var refused struct {
+		mu   sync.Mutex
+		head string
+	}
+	defer func() {
+		out.model, out.reads = s.model, sup.Reads()
+		refused.mu.Lock()
+		defer refused.mu.Unlock()
+		if refused.head != "" {
+			out.wip = refused.head
+			out.overBound = fmt.Sprintf("the finished work, over the card's line bound, is on %s at %s", taskBranch(t), refused.head)
+		}
+	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
 	digest := newDigestBuilder(time.Now())
 	// messages: the guidance this session's delivered messages carried
@@ -790,13 +809,34 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	var pushToken string
 	answer := func(line []byte) {
 		var env struct {
-			Push *harness.PushRequest `json:"push"`
+			Push  *harness.PushRequest `json:"push"`
+			Event *harness.Event       `json:"event"`
 		}
-		if json.Unmarshal(line, &env) != nil || env.Push == nil {
+		if json.Unmarshal(line, &env) != nil {
 			return
 		}
-		if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
-			log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
+		switch {
+		case env.Push != nil:
+			if !r.holds(sessCtx, t.ID, s.owner) {
+				return
+			}
+			if err := r.answerPush(sessCtx, t, s, ns, podName, &pushToken); err != nil {
+				log.Printf("task %s: push token for %s: %v", t.ID, env.Push.Commit, err)
+			}
+		case env.Event != nil && env.Event.Kind == harness.EventPushFailed && strings.Contains(detailString(*env.Event, "error"), ErrPushOverBound.Error()):
+			// the worker holds its endpoint after an end push the line bound
+			// refused, until the finished work is shipped: it is the card's
+			// work, though over the bound, and no pod keeps it. Every path
+			// takes it here, a stop and a check-in among them; the worker's
+			// result line waits behind this call
+			if !r.holds(sessCtx, t.ID, s.owner) {
+				return
+			}
+			if head := r.interimPush(sessCtx, t, s, ns, podName, workerStop).head; head != "" {
+				refused.mu.Lock()
+				refused.head = head
+				refused.mu.Unlock()
+			}
 		}
 	}
 	followed := followPodLogFrom(sessCtx, r.kube, ns, podName, t.ID, consumed, answer)
@@ -1114,6 +1154,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			stopAt = time.Now()
 			return out, shutdown()
 		case <-tick.C:
+			// another attempt took the session over: it supervises, this one
+			// leaves the pod to it
+			if l, ok, err := r.store.LiveSession(ctx, t.ID); err == nil && ok && l.Owner != s.owner {
+				out.superseded = true
+				return out, errSuperseded
+			}
 			trip := sup.Tick(time.Now())
 			if trip == nil {
 				trip = r.watchLimits(ctx, t, s, ns, podName, watch, sup)
@@ -1148,12 +1194,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			now := time.Now()
 			digest.add(*ev, now)
-			// the worker holds its endpoint after an end push the line bound
-			// refused, until the finished work is shipped: it is the card's
-			// work, though over the bound, and no pod keeps it
-			if ev.Kind == harness.EventPushFailed && strings.Contains(detailString(*ev, "error"), ErrPushOverBound.Error()) {
-				out.wip = cmp.Or(r.interimPush(ctx, t, s, ns, podName, workerStop).head, out.wip)
-			}
 			trip := sup.Event(*ev, now)
 			if n := sup.TakeNudge(); n != nil && trip == nil {
 				trip = r.nudge(ctx, t, s, sup, ns, podName, s.messageToken, *n)
@@ -1281,17 +1321,11 @@ func (r *Runner) ownerID() string {
 	return rand.Text()[:8]
 }
 
-// superseded: a newer RunSession attempt owns the card's live session, so
-// this attempt's cleanup would delete the pod, the namespace and the
-// tokens the newer one runs on. A row that is gone is the attempt's own
-// doing, and its cleanup goes on.
-func (r *Runner) superseded(ctx context.Context, taskID, owner string) bool {
+// holds: the card's live session row names this attempt. A row that cannot
+// be read, or that is gone, is not a row this attempt holds.
+func (r *Runner) holds(ctx context.Context, taskID, owner string) bool {
 	l, ok, err := r.store.LiveSession(ctx, taskID)
-	if err != nil {
-		log.Printf("task %s: read the live session: %v", taskID, err)
-		return false
-	}
-	return ok && l.Owner != owner
+	return err == nil && ok && l.Owner == owner
 }
 
 // sizeBounded: the session codes a card the work bound covers, so the

@@ -1278,6 +1278,10 @@ func (p *opencodeParser) fileChange(path, tool string, duration int64, at time.T
 		if !filepath.IsAbs(path) {
 			path = filepath.Join(p.workDir, path)
 		}
+		// a file in the repository goes by its path there, as the diff names it
+		if rel, err := filepath.Rel(p.workDir, path); err == nil && p.workDir != "" && filepath.IsLocal(rel) {
+			detail["path"] = rel
+		}
 		sum, size := fileSHA256(path)
 		detail["sha256"] = sum
 		if sum != "" {

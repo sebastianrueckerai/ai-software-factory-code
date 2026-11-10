@@ -290,18 +290,50 @@ func TestDigestCountsFilesOnlyAShellWroteFromTheCheckpointFiles(t *testing.T) {
 	}
 }
 
-// A file the shell wrote and an edit tool then changed is one file, named
-// by the diff's relative path and by the tool's absolute one.
+// A file the shell wrote and an edit tool then changed is one file: the
+// parser names a file in the repository by its path there, as the diff does.
+// A root a.go and internal/a.go are two.
 func TestDigestCountsAFileOnceWhateverNamesIt(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	d := newDigestBuilder(t0)
 	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
 		"diff": map[string]any{"files": float64(1), "insertions": float64(1), "deletions": float64(0)}, "files": []any{"internal/a.go"}}}, t0.Add(time.Second))
-	d.add(fileEvent("/workspace/repo/internal/a.go", "h1"), t0.Add(2*time.Second))
+	d.add(fileEvent("internal/a.go", "h1"), t0.Add(2*time.Second))
 	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
 		"diff": map[string]any{"files": float64(1), "insertions": float64(2), "deletions": float64(0)}, "files": []any{"internal/a.go"}}}, t0.Add(3*time.Second))
 	want := "0 commands (0 failed), 1 files changed 1 times, 0 other tool calls, diff 1 files +2/-0"
 	if got := d.digest().Summary(); got != want {
 		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+}
+
+func TestDigestKeepsTwoFilesOfOneBasenameApart(t *testing.T) {
+	d := newDigestBuilder(time.Unix(1000, 0))
+	d.add(fileEvent("a.go", "h1"), time.Unix(1001, 0))
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(2), "insertions": float64(2), "deletions": float64(0)}, "files": []any{"a.go", "internal/a.go"}}}, time.Unix(1002, 0))
+	if got := d.digest().Files; !reflect.DeepEqual(got, map[string]int{"a.go": 1, "internal/a.go": 0}) {
+		t.Fatalf("files = %v, want the root a.go and internal/a.go apart", got)
+	}
+}
+
+// A checkpoint names files in byte order: it keeps the recency order of the
+// edits and never drops an edited file's count for a file the shell wrote.
+func TestDigestCheckpointKeepsTheRecencyOfEdits(t *testing.T) {
+	d := newDigestBuilder(time.Unix(1000, 0))
+	var names []any
+	for i := range digestFiles {
+		path := fmt.Sprintf("f%02d.go", i)
+		names = append(names, path)
+		d.add(fileEvent(path, "h"), time.Unix(1001+int64(i), 0))
+	}
+	d.add(fileEvent("f00.go", "h2"), time.Unix(2000, 0)) // f00 is now the newest edit
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(digestFiles), "insertions": float64(1), "deletions": float64(0)}, "files": names}}, time.Unix(2001, 0))
+	if got := d.digest().Files["f00.go"]; got != 2 {
+		t.Fatalf("f00.go counted %d times, want its two edits kept", got)
+	}
+	if d.files[len(d.files)-1] != "f00.go" {
+		t.Fatalf("recency order ends %q, want the file edited last still last", d.files[len(d.files)-1])
 	}
 }

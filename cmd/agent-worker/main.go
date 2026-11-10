@@ -146,7 +146,7 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	}
 	var commit string
 	var pushErr error
-	asked := s.wip.asks.Load()
+	asked := s.wip.started.Load()
 	res = deliver(res, stopped, func() (string, error) {
 		endPush := s.tel.phase("push")
 		commit, pushErr = commitAndPush(s.repoDir, s.env, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
@@ -1342,7 +1342,11 @@ func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*che
 // the changed file names beside it.
 const (
 	maxPatch           = 8 << 10
-	maxCheckpointFiles = 100
+	maxCheckpointFiles = 40
+	// maxCheckpointName bounds each name in bytes, so the event's line,
+	// every byte of it escaped, stays far under the 1 MiB factoryd reads of
+	// one and its card_diff survives
+	maxCheckpointName = 256
 )
 
 func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch string, files []string, err error) {
@@ -1396,6 +1400,9 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 		files = nil
 	}
 	files = files[:min(len(files), maxCheckpointFiles)]
+	for i, f := range files {
+		files[i] = textutil.Truncate(f, maxCheckpointName)
+	}
 	if len(patch) > maxPatch {
 		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}

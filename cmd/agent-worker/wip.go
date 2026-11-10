@@ -42,7 +42,7 @@ type wipServe struct {
 	base, mainHead string
 	log            func(string, ...any)
 	mu             sync.Mutex   // one /wip at a time
-	asks           atomic.Int64 // the /wip asks answered
+	started, ended atomic.Int64 // the /wip asks begun and answered
 	// probe is a test's look at the staging repo before it is removed,
 	// probeEnv at the environment of each git the /wip path spawns.
 	probe, probeEnv func(dirOrEnv string)
@@ -60,7 +60,8 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 		}
 		w.mu.Lock()
 		defer w.mu.Unlock()
-		defer w.asks.Add(1)
+		w.started.Add(1)
+		defer w.ended.Add(1)
 		commit, bundle, done, err := w.stage()
 		if done != nil {
 			// the staging repo outlives the body it answers, and a failed
@@ -97,17 +98,19 @@ func (w *wipServe) serve(mux *http.ServeMux, authorized func(http.ResponseWriter
 
 // overBoundHold is the longest a session whose end push the line bound
 // refused holds its endpoint for factoryd's ask of the finished work.
-const overBoundHold = 90 * time.Second
+const overBoundHold = 40 * time.Second
 
-// holdForAsk waits until a /wip ask after the one that made since is
-// answered, or until d: the result line, which ends the pod, waits behind
-// it.
+// holdForAsk waits until an ask that began after the since-th is answered,
+// or until d: the result line, which ends the pod, waits behind it. A
+// check-in's ask under way at since may have staged the tree before the
+// agent's last write, so it does not end the wait. Asks run one at a time,
+// so the ask that began after the since-th is the since+1-th to end.
 func (w *wipServe) holdForAsk(since int64, d time.Duration) bool {
 	timeout := time.NewTimer(d)
 	defer timeout.Stop()
 	tick := time.NewTicker(50 * time.Millisecond)
 	defer tick.Stop()
-	for w.asks.Load() <= since {
+	for w.ended.Load() <= since {
 		select {
 		case <-timeout.C:
 			return false

@@ -2717,11 +2717,13 @@ func (s *takeoverStore) PutLiveSession(ctx context.Context, l LiveSession) error
 	if err := s.Store.PutLiveSession(ctx, l); err != nil {
 		return err
 	}
-	if s.when == "put" {
+	if s.when == "put" || s.when == "supervise" {
 		s.newer(l, false)
 	}
 	s.ended = true
-	s.cancel()
+	if s.when != "supervise" {
+		s.cancel()
+	}
 	return nil
 }
 
@@ -2743,6 +2745,29 @@ func (s *takeoverStore) ReleaseLiveSession(ctx context.Context, taskID, owner st
 		s.newer(l, s.when == "gone")
 	}
 	return s.Store.ReleaseLiveSession(ctx, taskID, owner)
+}
+
+// The stale attempt is not cancelled for a while after the takeover: it
+// stops supervising on its own at its next tick and leaves the session to
+// the newer attempt, with its pod, namespace and tokens, and answers no
+// push request.
+func TestStaleAttemptStopsSupervisingAfterATakeover(t *testing.T) {
+	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	runner.store = &takeoverStore{Store: store, hub: hub, cancel: func() {}, when: "supervise"}
+	runner.tick = 20 * time.Millisecond
+	_, err := runSession(t, nil, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs)
+	var app *temporal.ApplicationError
+	if !errors.As(err, &app) || app.Message() != errSuperseded.Error() {
+		t.Fatalf("err = %v, want the session left to the newer attempt", err)
+	}
+	if len(kube.deletedPods) != 0 || len(hub.revoked) != 0 {
+		t.Fatalf("deleted pods %v, revoked %v; want the newer attempt's session untouched", kube.deletedPods, hub.revoked)
+	}
+	if l, ok, _ := store.LiveSession(context.Background(), "t6"); !ok || l.Owner != "newer" {
+		t.Fatalf("live session = %+v, %v; want the newer attempt's row", l, ok)
+	}
 }
 
 // An attempt Temporal timed out keeps running while the next attempt

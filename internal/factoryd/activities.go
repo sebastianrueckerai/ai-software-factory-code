@@ -1100,6 +1100,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	began := rfc3339(startedAt)
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)
 	superseded = out.superseded
+	if errors.Is(err, errSuperseded) {
+		return SessionResult{}, err
+	}
 	if err != nil {
 		if errors.Is(err, errWorkerStop) {
 			// the row and the last heartbeat are what the retry resumes from
@@ -1315,7 +1318,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	switch {
 	case out.trip != nil && out.trip.Kind == TripWallClock:
-		res.Outcome, res.Summary = OutcomeWallClock, "supervision trip: "+string(TripWallClock)
+		res.Outcome, res.Summary = OutcomeWallClock, strings.TrimSuffix("supervision trip: "+string(TripWallClock)+"; "+out.overBound, "; ")
 		return res
 	case out.trip != nil && out.decision != nil:
 		d := out.decision
@@ -1343,7 +1346,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		}
 		return res
 	case out.result != nil:
-		res.Summary = out.result.Summary
+		res.Summary = strings.TrimSuffix(out.result.Summary+"; "+out.overBound, "; ")
 		if !out.result.Success && (strings.Contains(res.Summary, "DataInspectionFailed") || strings.Contains(res.Summary, "data_inspection_failed")) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate

@@ -189,21 +189,12 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 	}
 }
 
-// sameFile: two paths name one file when they are equal or one is the
-// other under a directory, for the diff's repository-relative path and a
-// tool's absolute one.
-func sameFile(a, b string) bool {
-	return a == b || strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
-}
-
-// noteFile counts n edits of path onto the file it names, the file edited
-// last last.
+// noteFile counts n edits of path. A file the checkpoint's diff names that
+// no event did is added with no edits and the others keep their place; an
+// edit moves its file to the end, the one edited last last.
 func (b *digestBuilder) noteFile(path string, n int) {
-	for p := range b.g.Files {
-		if sameFile(p, path) {
-			path = p
-			break
-		}
+	if _, known := b.g.Files[path]; known && n == 0 {
+		return
 	}
 	b.g.Files[path] += n
 	b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)

@@ -1573,3 +1573,16 @@ func TestOpencodeApplyPatchWithoutResultFilesReadsThePatchText(t *testing.T) {
 		t.Fatalf("events = %+v, want one tool call for a patch that names no file", events)
 	}
 }
+
+// A file in the repository goes by its path there, a file outside it by the
+// path the tool named.
+func TestOpencodeFileChangeNamesAFileByItsPathInTheRepository(t *testing.T) {
+	dir := t.TempDir()
+	for input, want := range map[string]string{filepath.Join(dir, "internal", "a.go"): "internal/a.go", "b.go": "b.go", "/elsewhere/c.go": "/elsewhere/c.go"} {
+		part, _ := json.Marshal(map[string]any{"tool": "write", "state": map[string]any{"status": "completed", "input": map[string]any{"filePath": input}}})
+		events := parseLines(&opencodeParser{workDir: dir}, `{"type":"tool_use","part":`+string(part)+`}`)
+		if len(events) != 1 || events[0].Detail["path"] != want {
+			t.Fatalf("path of %q = %+v, want %q", input, events, want)
+		}
+	}
+}

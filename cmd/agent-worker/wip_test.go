@@ -324,10 +324,10 @@ func TestWipFailedStageRemovesStagingDir(t *testing.T) {
 // no ask it lets go at its bound.
 func TestWipHoldForAskWaitsForTheNextAnswer(t *testing.T) {
 	h, wip, _, _, _, _, _, _ := seedWipSession(t)
-	if wip.holdForAsk(wip.asks.Load(), 100*time.Millisecond) {
+	if wip.holdForAsk(wip.started.Load(), 100*time.Millisecond) {
 		t.Fatal("the hold ended with no ask")
 	}
-	since := wip.asks.Load()
+	since := wip.started.Load()
 	done := make(chan bool)
 	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
 	time.Sleep(100 * time.Millisecond)
@@ -339,5 +339,26 @@ func TestWipHoldForAskWaitsForTheNextAnswer(t *testing.T) {
 	postWip(t, h)
 	if !<-done {
 		t.Fatal("the hold ran out although an ask was answered")
+	}
+}
+
+// An ask already under way when the agent stopped may have staged the tree
+// before its last write: its answer does not end the hold.
+func TestWipHoldForAskIgnoresAnAskBegunBeforeTheStop(t *testing.T) {
+	h, wip, _, _, _, _, _, _ := seedWipSession(t)
+	wip.started.Add(1) // an ask under way at the stop
+	since := wip.started.Load()
+	done := make(chan bool)
+	go func() { done <- wip.holdForAsk(since, 10*time.Second) }()
+	wip.ended.Add(1) // ... and it is answered
+	time.Sleep(150 * time.Millisecond)
+	select {
+	case <-done:
+		t.Fatal("the answer of an ask begun before the stop ended the hold")
+	default:
+	}
+	postWip(t, h)
+	if !<-done {
+		t.Fatal("the hold ran out although a later ask was answered")
 	}
 }

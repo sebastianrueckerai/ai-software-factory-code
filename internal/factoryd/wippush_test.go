@@ -2078,3 +2078,70 @@ func TestEndPushRefusedOverTheBoundTakesTheWorkThroughTheInterimPush(t *testing.
 		t.Fatalf("wip_pushed steps = %d, want the one interim push", n)
 	}
 }
+
+func pushRefusedOverTheBound() string {
+	return envLine(harness.Event{Kind: harness.EventPushFailed, Time: time.Now(), Detail: map[string]any{"branch": "factory/t2",
+		"error": ErrPushOverBound.Error() + ": the branch's diff against its merge base is 50 lines over the card's 300-line bound"}}) + "\n"
+}
+
+// The refusal reaches the interim push whatever the session is doing: when
+// the wall-clock cap has stopped it, the SIGTERM end push the bound refused
+// still ships its work, and the result names where the work sits.
+func TestEndPushRefusedOverTheBoundAfterAStopTakesTheWork(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte(strings.Repeat("b\n", 350)), 0o644)
+	})
+	runner.stopWait = 5 * time.Second
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3})
+	setLimits(runner, func(l *policy.Limits) { l.AgentTime = 300 * time.Millisecond })
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		envLine(harness.Event{Kind: harness.EventModelCall, Time: time.Now()})+"\n"+sigtermLogs+pushRefusedOverTheBound()+
+			resultLine(false, "push failed: "+ErrPushOverBound.Error()))
+	if err != nil || res.Outcome != OutcomeWallClock {
+		t.Fatalf("result = (%+v, %v), want a wall-clock stop", res, err)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if tip == serve.base || res.Commit != tip {
+		t.Fatalf("branch %s, result commit %q; want the work shipped at the stop and its head in the result", tip, res.Commit)
+	}
+	if want := "the finished work, over the card's line bound, is on factory/t2 at " + tip; !strings.Contains(res.Summary, want) {
+		t.Fatalf("summary = %q, want it to name %q for the successor", res.Summary, want)
+	}
+}
+
+// waitChat is a check-in that stays in its conversation until the pod's
+// second /wip ask is answered, or 10 s.
+type waitChat struct {
+	serve *wipServe
+	ready atomic.Bool
+}
+
+func (c *waitChat) Call(context.Context, string, string, CheckinRequest) (CheckinResponse, error) {
+	for end := time.Now().Add(10 * time.Second); time.Now().Before(end); time.Sleep(10 * time.Millisecond) {
+		c.serve.mu.Lock()
+		n := len(c.serve.commits)
+		c.serve.mu.Unlock()
+		if n >= 2 {
+			c.ready.Store(true)
+			break
+		}
+	}
+	return wipContinue, nil
+}
+
+// A refusal that arrives while a check-in's conversation runs is not
+// waiting behind it, which can take minutes: the work ships at once.
+func TestEndPushRefusedOverTheBoundDuringACheckinTakesTheWork(t *testing.T) {
+	runner, _, serve := wipRig(t, nil,
+		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
+		func(dir string) { os.WriteFile(filepath.Join(dir, "c.txt"), []byte(strings.Repeat("c\n", 350)), 0o644) })
+	chat := &waitChat{serve: serve}
+	runner.checkin = chat
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushRefusedOverTheBound()+resultLine(false, "push failed: "+ErrPushOverBound.Error())); err != nil {
+		t.Fatal(err)
+	}
+	if !chat.ready.Load() {
+		t.Fatal("the refused work was not shipped while the check-in conversation ran")
+	}
+}
