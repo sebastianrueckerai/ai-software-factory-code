@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"fmt"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -281,5 +282,25 @@ func TestAdmitResumeScrubsItsErrors(t *testing.T) {
 	_, err := execActivity(t, r, ActivityAdmitResume, "p1")
 	if err == nil || !strings.Contains(err.Error(), "count:") || strings.Contains(err.Error(), "pass@") || strings.Contains(err.Error(), "abcdefghijklmnop") {
 		t.Fatalf("err = %v, want the count named and both secrets masked", err)
+	}
+}
+
+// The heal pass restarts a resumed waiter whose workflow died, which a
+// queued card otherwise never gets (the pull lists only never-started
+// cards), and wakes it with slot_free.
+func TestHealPassStartsAndWakesAResumedWaiter(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	at := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	w := Task{ID: "tw", Status: "queued", Kind: "agent", Track: "direct", Repository: "sf/ai-software-factory-code", IssueNumber: 30, AdmittedAt: &at, ResumedAt: &at}
+	if err := store.CreateTask(ctx, w); err != nil {
+		t.Fatal(err)
+	}
+	wf := &fakeWorkflows{}
+	forgejo, _ := resyncForgejoStub(t, "sebastian")
+	HealPass(ctx, store, wf, &Intake{Store: store, Forgejo: forgejo, Workflows: wf, BotUser: "factory-agent",
+		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, nil, noneCompleted)
+	if !slices.Equal(wf.started, []string{"tw"}) || len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "tw "+SignalSlotFree) {
+		t.Fatalf("starts %v, signals %v; want tw started and woken with %s", wf.started, wf.signals, SignalSlotFree)
 	}
 }
