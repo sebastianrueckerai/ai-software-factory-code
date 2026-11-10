@@ -376,7 +376,7 @@ func (t *turn) prText(in toolInput) (string, error) {
 	}
 	files, more, err := t.c.prFiles(t.r, k.Repository, k.PRNumber)
 	if err != nil {
-		return "", &forgejoRefusal{"read the pull request's files", err}
+		return "", &forgejoRefusal{what: "read the pull request's files", err: err}
 	}
 	field := func(m map[string]any, key string) string { s, _ := m[key].(string); return s }
 	var b strings.Builder
@@ -474,7 +474,7 @@ func (t *turn) ciText(in toolInput) (string, error) {
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no branch %s.", ref))
 		}
 		if err != nil {
-			return "", &forgejoRefusal{"read the branch", err}
+			return "", &forgejoRefusal{what: "read the branch", err: err}
 		}
 		sha, head = branch.Commit.ID, ref+" at "
 	}
@@ -483,7 +483,7 @@ func (t *turn) ciText(in toolInput) (string, error) {
 		Statuses []factoryd.CommitStatus `json:"statuses"`
 	}
 	if err := t.c.as(ctx, t.a.s, http.MethodGet, at+"commits/"+url.PathEscape(sha)+"/status", nil, http.StatusOK, &cs); err != nil {
-		return "", &forgejoRefusal{"read the commit's status", err}
+		return "", &forgejoRefusal{what: "read the commit's status", err: err}
 	}
 	head += sha[:min(len(sha), 7)]
 	if len(cs.Statuses) == 0 {
@@ -546,7 +546,7 @@ func (t *turn) fileText(in toolInput) (string, error) {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no %s at %s.", p, in.Ref))
 	}
 	if err != nil {
-		return "", &forgejoRefusal{"read the file", err}
+		return "", &forgejoRefusal{what: "read the file", err: err}
 	}
 	if bytes.IndexByte(raw[:min(len(raw), binarySniff)], 0) >= 0 {
 		return "", refuse(http.StatusConflict, fmt.Sprintf("%s at %s is binary (%s bytes).", p, in.Ref, answered(raw, len(raw))))
@@ -681,7 +681,7 @@ func (t *turn) treeText(in toolInput) (string, error) {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no tree at %s.", in.Ref))
 	}
 	if err != nil {
-		return "", &forgejoRefusal{"read the tree", err}
+		return "", &forgejoRefusal{what: "read the tree", err: err}
 	}
 	var b strings.Builder
 	files := 0
@@ -748,14 +748,14 @@ func (t *turn) grepText(in toolInput) (string, error) {
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no archive at %s.", in.Ref))
 	}
 	if err != nil {
-		return "", &forgejoRefusal{"read the archive", err}
+		return "", &forgejoRefusal{what: "read the archive", err: err}
 	}
 	if int64(len(raw)) > archiveLimit {
 		return "", refuse(http.StatusRequestEntityTooLarge, fmt.Sprintf("The archive of %s is over the grep read's limit of %s.", in.Ref, imageSize(archiveLimit)))
 	}
 	gz, err := gzip.NewReader(bytes.NewReader(raw))
 	if err != nil {
-		return "", &forgejoRefusal{"read the archive", err}
+		return "", &forgejoRefusal{what: "read the archive", err: err}
 	}
 	tr := tar.NewReader(gz)
 	var b strings.Builder
@@ -766,7 +766,7 @@ func (t *turn) grepText(in toolInput) (string, error) {
 			break
 		}
 		if err != nil {
-			return "", &forgejoRefusal{"read the archive", err}
+			return "", &forgejoRefusal{what: "read the archive", err: err}
 		}
 		if hd.Typeflag != tar.TypeReg {
 			continue

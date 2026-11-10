@@ -752,7 +752,7 @@ document.addEventListener("htmx:sendError", drawerFailed);
 // loading line, which htmx keeps on an error
 function lifeFailed(e) {
   var line = e.detail.elt.dataset.sec === "life" && e.detail.target.querySelector("p");
-  if (line) line.textContent = "The card's life could not be read; " + (e.type === "htmx:sendError" ? "the factory did not answer." : "see the factoryd log.");
+  if (line) line.textContent = "The card's life could not be read: " + (e.type === "htmx:sendError" ? "the factory did not answer" : "the read failed") + ". Open the card again, or read the card on its issue.";
 }
 document.addEventListener("htmx:responseError", lifeFailed);
 document.addEventListener("htmx:sendError", lifeFailed);

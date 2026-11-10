@@ -3153,7 +3153,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	http.Error(w, "Forgejo refused to "+what+"; see the factoryd log", http.StatusBadGateway)
+	http.Error(w, "Forgejo refused to "+what+": "+forgejoCause(err)+". Try again in a moment.", http.StatusBadGateway)
 }
 
 // writableCard is the card the path names, built as the board shows it
@@ -3552,21 +3552,21 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 	if headline, _, _ := objectiveParts(bt.Objective); headline != "" && bt.HumanSummary == "" {
 		d.Card.Title = headline
 	}
-	problem := func(what string, err error) {
+	problem := func(what, action string, err error) {
 		log.Printf("console: the drawer of %s could not read %s: %v", bt.ID, what, err)
-		d.Problem = "The " + what + " could not be read; see the factoryd log."
+		d.Problem = "The " + what + " could not be read: " + errText(err) + ". " + action
 	}
 	switch tab {
 	case "overview":
 		d.Headline, d.Provenance, d.Body = objectiveParts(bt.Objective)
 		if bt.Track == policy.TrackPlan {
 			if _, p, _, err := c.planTable(ctx, bt.ID, 0); err != nil {
-				problem("plan", err)
+				problem("plan", "Open the card again, or read the plan on its issue.", err)
 			} else {
 				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
 				if p.Round > 1 || len(p.Outline) > 0 {
 					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
-						problem("plan's cards", err)
+						problem("plan's cards", "Reload the board.", err)
 					} else {
 						d.PlanRounds = slices.DeleteFunc(factoryd.RoundItems(p, cards), func(i factoryd.RoundItem) bool { return i.Still })
 						d.PlanStill = p.Outline
@@ -3596,7 +3596,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		var err error
 		if bt.Source == factoryd.SourceRoutine && c.cfg.Routines != nil {
 			if d.RoutineLine, err = c.routineLineOf(ctx, bt.ID); err != nil {
-				problem("routine", err)
+				problem("routine", "Reload the board.", err)
 			}
 			// a human card's body ends in the line factoryd filed it with, which the routine line says
 			if i := strings.LastIndex(d.Body, "\n"); d.RoutineLine != nil && strings.HasPrefix(d.Body[i+1:], factoryd.RoutineProvenance) {
@@ -3604,12 +3604,12 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			}
 		}
 		if d.Related, err = c.relatedCards(ctx, bt, k); err != nil {
-			problem("related cards", err)
+			problem("related cards", "Reload the board.", err)
 		}
 	case "activity":
 		steps, err := c.readTimeline(ctx, bt.ID)
 		if err != nil {
-			problem("timeline", err)
+			problem("timeline", "Reload the board.", err)
 			break
 		}
 		for _, m := range steps {
@@ -3617,7 +3617,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		d.Gates, d.Longest = gateRows(steps, bt.Task, time.Now())
 		if d.Chain, err = c.chainOf(ctx, bt, v.policy, time.Now()); err != nil {
-			problem("chain", err)
+			problem("chain", "Reload the board.", err)
 		}
 	case "files":
 		if bt.PRNumber == 0 {
@@ -3625,7 +3625,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		}
 		var err error
 		if d.Files, d.MoreFiles, err = c.prFiles(r, bt.Repository, bt.PRNumber); err != nil {
-			problem("pull request's files", err)
+			problem("pull request's files", "Reload the board.", err)
 		}
 	case "chat":
 		var err error
@@ -3634,7 +3634,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 		case errors.As(err, &no):
 			d.Problem = no.msg
 		case err != nil:
-			problem("session", err)
+			problem("session", "Reload the board.", err)
 		}
 		d.Steers = d.Session != nil && d.Session.Ended.IsZero() && bt.Status == "running" && c.cfg.Steer != nil
 	}

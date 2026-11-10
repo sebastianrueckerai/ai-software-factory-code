@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -1122,6 +1123,30 @@ func scrubTokens(text string) (out string, github, chat bool) {
 	return out, gh != text, out != gh
 }
 
+// scrubber masks what redact masks in every text a refusal builds from an
+// error: New sets it to the Config's scrubber, which holds the boot secrets.
+var scrubber = func() *atomic.Pointer[redact.Scrubber] {
+	p := &atomic.Pointer[redact.Scrubber]{}
+	p.Store(redact.New())
+	return p
+}()
+
+// scrubText is text with every token-shaped secret masked by scrubTokens
+// and every other credential by redact.Scrubber.
+func scrubText(text string) string {
+	out, _, _ := scrubTokens(text)
+	return scrubber.Load().String(out)
+}
+
+// errText is err's scrubbed words, the <err> a refusal sentence embeds;
+// "" for no error.
+func errText(err error) string {
+	if err == nil {
+		return ""
+	}
+	return scrubText(err.Error())
+}
+
 // removedTokens names the tokens scrubTokens removed.
 func removedTokens(github, chat bool) string {
 	switch {
@@ -1543,6 +1568,21 @@ func (t *turn) block(name, args string, took time.Duration, result string) {
 // sentence is errSentence for the turn's actor.
 func (t *turn) sentence(err error) string { return errSentence(t.a, err) }
 
+// forgejoCause is a Forgejo failure's own sentence: Forgejo's message
+// when its API answered one, else the error's scrubbed words — the <err>
+// a site's own refusal sentence embeds.
+func forgejoCause(err error) string {
+	var fj *forgejoRefusal
+	var api *apiError
+	if errors.As(err, &fj) {
+		err = fj.err
+	}
+	if errors.As(err, &api) {
+		return api.reason()
+	}
+	return errText(err)
+}
+
 // errSentence is err as a's human and the agent read it, the cause of a
 // failure that is no refusal logged.
 func errSentence(a actor, err error) string {
@@ -1553,17 +1593,20 @@ func errSentence(a actor, err error) string {
 	switch {
 	case errors.As(err, &no):
 		return no.msg
+	case errors.As(err, &fj) && fj.say != "":
+		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
+		return fmt.Sprintf(fj.say, forgejoCause(err))
 	case errors.As(err, &fj) && errors.As(fj.err, &api):
 		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
 		return "Forgejo refused to " + fj.what + ": " + api.reason()
 	case errors.As(err, &fj):
 		log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
-		return "Forgejo refused to " + fj.what + "; see the factoryd log."
+		return "Forgejo refused to " + fj.what + ": " + errText(fj.err) + ". Try again in a moment."
 	case errors.As(err, &stale):
 		return stale.Error()
 	}
 	log.Printf("console: %s via %s: %v", a.s.user, a.via, err)
-	return "The action failed; see the factoryd log."
+	return "The action failed: " + errText(err) + ". Try the call again, or read the board to see the factory's state."
 }
 
 // refusalCode is err's HTTP status when err is a refusal, 0 for any

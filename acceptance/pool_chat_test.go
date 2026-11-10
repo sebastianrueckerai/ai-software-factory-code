@@ -405,7 +405,7 @@ func TestPoolPendingAndFailures(t *testing.T) {
 	token, _, _ := poolOffer(t, r, path, ck, csrf, args)
 	r.RefuseMerge(409, "the branch is protected")
 	code, body := pressPoolRaw(t, r, path, ck, csrf, token, "")
-	if code != http.StatusBadGateway || strings.TrimSpace(body) != "Forgejo refused to merge the pull request #101; see the factoryd log" {
+	if code != http.StatusBadGateway || strings.TrimSpace(body) != "Forgejo refused to merge the pull request #101: the branch is protected. Try again in a moment." {
 		t.Fatalf("the refused merge's press = %d:\n%s", code, body)
 	}
 	equal(t, "main's file after the refused merge", r.InfraFiles()[accInfraFile], accPoolHead)

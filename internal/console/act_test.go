@@ -322,15 +322,16 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 
 // Act's failure reaches the human as what it means: a retry factoryd
 // refuses is a 409 with its sentence, and any other failure a 500 that
-// names the factoryd log and nothing of the store.
-func TestActFailuresAnswerWithoutTheStore(t *testing.T) {
+// names the error and the next step, not the factoryd log.
+func TestActFailuresNameTheErrorAndTheNextStep(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
 		status int
 		body   string
 	}{
 		{factoryd.ErrNoRetry("Card #7 was already retried."), http.StatusConflict, "Card #7 was already retried."},
-		{errors.New(`pq: relation "cases" does not exist`), http.StatusInternalServerError, "The answer failed: see the factoryd log."},
+		{errors.New(`pq: relation "cases" does not exist`), http.StatusInternalServerError,
+			"The answer failed: pq: relation \"cases\" does not exist. Reload the board and press the button again."},
 	} {
 		r := newRig(t)
 		ck, s := r.loggedIn(t)

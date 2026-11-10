@@ -202,10 +202,12 @@ func fitting(t factoryd.Task, f capFacts) string {
 }
 
 // forgejoRefusal is a Forgejo call of the action that failed: what the
-// action asked Forgejo for.
+// action asked Forgejo for, and say — a %s holding the error's words —
+// the site's own refusal sentence, empty for the generic one.
 type forgejoRefusal struct {
 	what string
 	err  error
+	say  string
 }
 
 func (e *forgejoRefusal) Error() string { return "Forgejo refused to " + e.what + ": " + e.err.Error() }
@@ -225,7 +227,7 @@ func (c *Console) fail(w http.ResponseWriter, r *http.Request, err error) {
 		http.Error(w, no.msg, no.status)
 	default:
 		log.Printf("console: %s: %v", current(r).user, err)
-		http.Error(w, "The action failed; see the factoryd log.", http.StatusInternalServerError)
+		http.Error(w, "The action failed: "+errText(err)+". Try again in a moment.", http.StatusInternalServerError)
 	}
 }
 
@@ -439,7 +441,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	repo := ps[i].Repo()
 	labels, err := c.labels(ctx, a.s, repo)
 	if err != nil {
-		return repo, 0, &forgejoRefusal{"read the labels", err}
+		return repo, 0, &forgejoRefusal{what: "read the labels", err: err}
 	}
 	var ids []int64
 	for _, name := range []string{trackLabels[track], priority} {
@@ -458,7 +460,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 	if err := c.as(ctx, a.s, http.MethodPost, path, map[string]any{"title": title, "body": body, "labels": ids},
 		http.StatusCreated, &issue); err != nil {
-		return repo, 0, &forgejoRefusal{"file the issue", err}
+		return repo, 0, &forgejoRefusal{what: "file the issue", err: err}
 	}
 	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, track, a.via)
 	e := c.eventOf(a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
@@ -570,7 +572,7 @@ func (c *Console) doRetry(ctx context.Context, a actor, id string) (string, erro
 		return "", refuse(http.StatusConflict, no.Error())
 	case err != nil:
 		log.Printf("console: %s retries %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, "The card could not be retried; see the factoryd log.")
+		return "", refuse(http.StatusInternalServerError, "The card could not be retried: "+errText(err)+". Press Retry again, or replan the card when it keeps failing.")
 	}
 	log.Printf("console: %s retried %s (%s#%d) as #%d via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, issue, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardRetried, map[string]any{"replacement": issue})
@@ -637,7 +639,7 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		return "", 0, refuse(http.StatusConflict, no.Error())
 	case err != nil:
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
-		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory; see the factoryd log.")
+		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
 	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
@@ -700,11 +702,11 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
 	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
-		return "", &forgejoRefusal{"post the answer on the issue (the answer is recorded)", err}
+		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
 	switch decision {
@@ -791,13 +793,13 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
 			decisionDetail(revision, ans.Idx, ans.Decision, ans.Text))
 		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
-			return "", &forgejoRefusal{"post the answer on the issue (the answers are recorded)", err}
+			return "", &forgejoRefusal{what: "post the answer on the issue (the answers are recorded)", err: err}
 		}
 	}
 	log.Printf("console: %s answered %d questions of plan %s via %s", a.s.user, len(batch), t.ID, a.via)
@@ -836,7 +838,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %v. Reload the board and press Okay or Drop again.", err))
+		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %s. Reload the board and press Okay or Drop again.", errText(err)))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
@@ -856,7 +858,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 		return "", err
 	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
-		return "", &forgejoRefusal{"post the change request", err}
+		return "", &forgejoRefusal{what: "post the change request", err: err}
 	}
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	for _, q := range pending {
@@ -1338,7 +1340,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if label == "" {
 		var posted int64
 		if err := c.comment(ctx, a, t, text, &posted); err != nil {
-			return "", &forgejoRefusal{"post the comment", err}
+			return "", &forgejoRefusal{what: "post the comment", err: err}
 		}
 		return done(fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber), posted, nil, factoryd.Resolution{Action: factoryd.ActNote, Note: text})
 	}
@@ -1383,7 +1385,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusConflict, "No run of the head is pending: a skipped run concluded, and a pending required status is its deployer's; neither is re-run. Check again or dismiss.")
 		case err != nil:
 			log.Printf("console: %s re-runs the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The re-run failed; see the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The re-run failed: "+errText(err)+". Try again in a moment.")
 		}
 		log.Printf("console: %s re-ran the stall of %s via %s", a.s.user, t.Repository, a.via)
 		return done(fmt.Sprintf("Re-ran the pending run; #%d stays open until the chain moves.", t.IssueNumber), 0, nil, kept)
@@ -1393,7 +1395,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d: %s.", t.IssueNumber, gone))
 		case err != nil:
 			log.Printf("console: %s dismisses the stall of %s: %v", a.s.user, t.Repository, err)
-			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed; see the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The stall could not be dismissed: "+errText(err)+". Try again in a moment.")
 		}
 		note, posted, err := c.closeIssue(ctx, a, t, label)
 		return done(note, posted, err, chosen)
@@ -1518,7 +1520,7 @@ func (c *Console) posting(a actor, t factoryd.Task, res factoryd.Resolution) fun
 	return func(ctx context.Context) (int64, error) {
 		var posted int64
 		if err := c.comment(ctx, a, t, text, &posted); err != nil {
-			return 0, &forgejoRefusal{"post the answer", err}
+			return 0, &forgejoRefusal{what: "post the answer", err: err}
 		}
 		return posted, nil
 	}
@@ -1575,7 +1577,7 @@ func (c *Console) actErr(ctx context.Context, a actor, t factoryd.Task, res fact
 		return refuse(http.StatusNotFound, "There is no card "+t.ID+" in this project.")
 	}
 	log.Printf("console: %s answers %s with %s: %v", a.s.user, t.ID, res.Action, err)
-	return refuse(http.StatusInternalServerError, "The answer failed: see the factoryd log.")
+	return refuse(http.StatusInternalServerError, "The answer failed: "+errText(err)+". Reload the board and press the button again.")
 }
 
 // choiceDone ends human card t's case caseID with res once the choice's
@@ -1742,7 +1744,7 @@ func (c *Console) doFund(ctx context.Context, a actor, id string, eur float64, n
 	}
 	if err := c.cfg.Approvals.RetryApprovalBrief(ctx, brief.ID); err != nil {
 		log.Printf("console: %s funded %s, queueing its brief: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Raised #%d's budget by %.2f EUR, but its brief could not be queued again; see the factoryd log.", t.IssueNumber, eur))
+		return "", refuse(http.StatusInternalServerError, fmt.Sprintf("Raised #%d's budget by %.2f EUR, but its brief could not be queued again: %s. Try again in a moment.", t.IssueNumber, eur, errText(err)))
 	}
 	return said + " The factory writes the card's brief within seconds.", nil
 }
@@ -1786,7 +1788,7 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 		return 0, 0, refuse(http.StatusNotFound, "There is no project "+name+".")
 	case err != nil:
 		log.Printf("console: %s funds the chat of %s: %v", a.s.user, p.Repository, err)
-		return 0, 0, refuse(http.StatusInternalServerError, "The budget could not be raised; see the factoryd log.")
+		return 0, 0, refuse(http.StatusInternalServerError, "The budget could not be raised: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s raised the chat of %s's budget by %.2f EUR (%.2f to %.2f) via %s: %s", a.s.user, p.Repository, eur, from, to, a.via, note)
 	c.record(ctx, a, p.Repository, t.ID, 0, factoryd.EventChatFunded,
@@ -1814,7 +1816,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
 		if err != nil {
 			log.Printf("console: %s closes %s: the plan: %v", a.s.user, t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "The plan could not be read; see the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The plan could not be read: "+errText(err)+". Try again in a moment.")
 		}
 		if !between {
 			return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
@@ -1848,13 +1850,13 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 	var posted int64
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, &posted); err != nil {
-			return "", 0, &forgejoRefusal{"post the note", err}
+			return "", 0, &forgejoRefusal{what: "post the note", err: err}
 		}
 	}
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
-			return "", 0, refuse(http.StatusConflict, "The card could not be closed; see the factoryd log.")
+			return "", 0, refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
 		}
 		log.Printf("console: %s closed %s (%s, %s) via %s", a.s.user, t.ID, t.Repository, t.Status, a.via)
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
@@ -1864,7 +1866,7 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 		return "Closed card " + t.ID + ".", posted, nil
 	}
 	if err := c.editIssue(ctx, a, t, map[string]string{"state": "closed"}, nil); err != nil {
-		return "", 0, &forgejoRefusal{"close the issue", err}
+		return "", 0, &forgejoRefusal{what: "close the issue", err: err}
 	}
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
@@ -1898,7 +1900,7 @@ func (c *Console) doReplan(ctx context.Context, a actor, id, note string, offMai
 		if t.IssueNumber != 0 {
 			card = fmt.Sprintf("Card #%d", t.IssueNumber)
 		}
-		return "", refuse(http.StatusInternalServerError, card+" could not go back to the planner: see the factoryd log, then replan it again.")
+		return "", refuse(http.StatusInternalServerError, card+" could not go back to the planner: "+errText(err)+". Try again in a moment, then replan it again.")
 	}
 	comment := factoryd.ReplanComment(note)
 	on := t
@@ -1982,7 +1984,7 @@ func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (
 	}
 	var issue struct{ Title, Body string }
 	if err := c.editIssue(ctx, a, t, fields, &issue); err != nil {
-		return "", &forgejoRefusal{"edit the issue", err}
+		return "", &forgejoRefusal{what: "edit the issue", err: err}
 	}
 	if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, issue.Body)); err != nil {
 		log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
@@ -2064,7 +2066,7 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		store, verb = c.cfg.Tasks.RemoveTaskDeps, "remove"
 	}
 	if err := c.cfg.SetIssueDependency(ctx, repo, t.IssueNumber, d.IssueNumber, remove); err != nil {
-		return "", &forgejoRefusal{fmt.Sprintf("%s the dependency of #%d on #%d", verb, t.IssueNumber, d.IssueNumber), err}
+		return "", &forgejoRefusal{what: fmt.Sprintf("%s the dependency of #%d on #%d", verb, t.IssueNumber, d.IssueNumber), err: err}
 	}
 	if err := store(ctx, t.ID, []string{d.ID}); err != nil {
 		log.Printf("console: %s the dependency of %s on %s: %v", verb, t.ID, d.ID, err)
@@ -2161,7 +2163,7 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 		}
 	}
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
-		return 0, "", &forgejoRefusal{"post the comment", err}
+		return 0, "", &forgejoRefusal{what: "post the comment", err: err}
 	}
 	log.Printf("console: %s commented on %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardCommented, commentDetail(posted))
@@ -2189,7 +2191,7 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), posted)
 	if err := c.as(ctx, a.s, http.MethodDelete, path, nil, http.StatusNoContent, nil); err != nil {
-		return "", &forgejoRefusal{"delete the comment", err}
+		return "", &forgejoRefusal{what: "delete the comment", err: err}
 	}
 	log.Printf("console: %s deleted comment %d of %s via %s", a.s.user, posted, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCommentDeleted, commentDetail(posted))
@@ -2218,7 +2220,7 @@ func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string
 		return "", refuse(http.StatusConflict, fmt.Sprintf("The harness of card #%d takes no messages.", t.IssueNumber))
 	case err != nil:
 		log.Printf("console: %s steers %s: %v", a.s.user, t.ID, err)
-		return "", refuse(http.StatusBadGateway, "The message could not be delivered; see the factoryd log.")
+		return "", refuse(http.StatusBadGateway, "The message could not be delivered: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s steered %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardSteered, map[string]any{"text": text})
@@ -2315,7 +2317,7 @@ func (c *Console) decide(ctx context.Context, a actor, q factoryd.ApprovalReques
 		log.Printf("console: approval request %d was decided by the factory before %s's %s was recorded", q.ID, a.s.user, status)
 	case err != nil:
 		log.Printf("console: decide approval request %d: %v", q.ID, err)
-		return refuse(http.StatusInternalServerError, "cannot record the decision; see the factoryd log")
+		return refuse(http.StatusInternalServerError, "cannot record the decision: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s %s %s request %d of %s via %s: %s", a.s.user, status, q.Kind, q.ID, q.TaskID, a.via, note)
 	return nil
@@ -2366,7 +2368,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 		case err != nil:
 			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
-			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %v. Grant again, or Fund the card when the refusal names money.", err))
+			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %s. Grant again, or Fund the card when the refusal names money.", errText(err)))
 		case n == 0:
 			return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
 		}
@@ -2436,7 +2438,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
-				return "", &forgejoRefusal{"submit the approving review", err}
+				return "", &forgejoRefusal{what: "submit the approving review", err: err}
 			}
 			unsignalled = "your approving review is on the pull request, but " + unsignalled
 		}
@@ -2528,7 +2530,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	switch action {
 	case "request_changes":
 		if err := c.review(ctx, a, q, "REQUEST_CHANGES", note, spec.HeadSHA); err != nil {
-			return "", &forgejoRefusal{"submit the change request", err}
+			return "", &forgejoRefusal{what: "submit the change request", err: err}
 		}
 		if err := c.decide(ctx, a, q, "denied", "changes requested: "+note); err != nil {
 			return "", err
@@ -2537,11 +2539,11 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 		if err := c.as(ctx, a.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
 			map[string]string{"body": "Rejected in the factory console: " + note}, http.StatusCreated, nil); err != nil {
-			return "", &forgejoRefusal{"comment the rejection", err}
+			return "", &forgejoRefusal{what: "comment the rejection", err: err}
 		}
 		if err := c.as(ctx, a.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
 			map[string]string{"state": "closed"}, http.StatusCreated, nil); err != nil {
-			return "", &forgejoRefusal{"close the pull request", err}
+			return "", &forgejoRefusal{what: "close the pull request", err: err}
 		}
 		if err := c.decide(ctx, a, q, "denied", "rejected: "+note); err != nil {
 			return "", err
@@ -2635,7 +2637,7 @@ func (c *Console) doDecide(ctx context.Context, a actor, id int64, cid, verb, re
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", plan))
 		case err != nil:
 			log.Printf("console: %s decides %s of %s %s: %v", a.s.user, cid, plan, verb, err)
-			return "", refuse(http.StatusInternalServerError, "The decision could not be recorded. See the factoryd log.")
+			return "", refuse(http.StatusInternalServerError, "The decision could not be recorded: "+errText(err)+". Try again in a moment.")
 		}
 	}
 	log.Printf("console: %s decided criterion %s of %s %s via %s", a.s.user, cid, plan, verb, a.via)
@@ -2669,7 +2671,7 @@ func (c *Console) doConfirmCriteria(ctx context.Context, a actor, id int64, line
 		return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 	case err != nil:
 		log.Printf("console: %s confirmed the criteria of %s: %v", a.s.user, q.TaskID, err)
-		return "", refuse(http.StatusInternalServerError, "the confirmation could not be recorded; see the factoryd log")
+		return "", refuse(http.StatusInternalServerError, "the confirmation could not be recorded: "+errText(err)+". Try again in a moment.")
 	}
 	log.Printf("console: %s confirmed the delivered cards of %s via %s", a.s.user, q.TaskID, a.via)
 	c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventCriterionDecided, map[string]any{"approval": q.ID, "criteria": n, "verb": "met"})
@@ -2730,7 +2732,7 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Project %s is a seed project, whose collaborators Forgejo keeps: invite %s there.", p.Name, login))
 	}
 	if err := c.cfg.AddCollaborator(ctx, p.Repo(), login, "write"); err != nil {
-		return "", &forgejoRefusal{"add " + login + " as a collaborator", err}
+		return "", &forgejoRefusal{what: "add " + login + " as a collaborator", err: err}
 	}
 	log.Printf("console: %s invited %s to %s via %s", a.s.user, login, p.Repository, a.via)
 	c.record(ctx, a, p.Repository, "", 0, factoryd.EventMemberInvited, map[string]any{"login": login})
@@ -2759,7 +2761,7 @@ func (c *Console) doDeployNow(ctx context.Context, a actor, name string) (string
 			name, red.Commit[:min(7, len(red.Commit))]))
 	case err != nil:
 		log.Printf("console: %s deploys %s now: %v", a.s.user, p.Repository, err)
-		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: see the factoryd log, then press Deploy now again.")
+		return "", refuse(http.StatusInternalServerError, "Production of "+name+" could not be released: "+errText(err)+". Try again in a moment, then press Deploy now again.")
 	}
 	return fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.", name, commit[:min(7, len(commit))]), nil
 }
