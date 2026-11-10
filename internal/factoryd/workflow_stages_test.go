@@ -511,7 +511,7 @@ func TestStagesRowIsInReviewWhileTheStageAwaitsTheReviewBesideTheChecks(t *testi
 	}
 }
 
-// In a run from before versionBesideLadder the review beside the checks
+// In a run from before versionBesideLadder and checks-wait the review beside the checks
 // wait is supervised as the sequential review is (roadmap 246): its trip
 // during the checks wait, or one still unread when the checks wait runs
 // again after a human's answer, is kept for the review stage, which asks
@@ -1582,6 +1582,8 @@ func TestStagesTripsOfTheGatesBesideTheChecksReachOnlyTheirRuns(t *testing.T) {
 // audit answered at 3 h. A run from before the change asks about the
 // checks' at 7 and keeps the others for their stages: the review's at 20,
 // when the checks are green, the audit's at 30, when the review answered.
+// Both rows run as a run from before checks-wait, whose checks trip offers
+// a wait.
 func TestStagesGatesBesideTheChecksAreSupervisedWhenTheyTrip(t *testing.T) {
 	for _, tc := range []struct {
 		name   string
@@ -1888,8 +1890,11 @@ func TestStagesLiveAnswersReadAsReconcileRebuildsThem(t *testing.T) {
 // 18 min starts a 5-min call, and its cancel at 23 min fails the task
 // then. A run from before the change asks about either first trip at 20
 // min, when the stage takes it, the call's cancel failing the task at 25.
+// A third trip at 27 min, after the wait and a retry, may do neither: the
+// run's one retry is spent too, and its cancel fails the task at 27 min.
 func TestStagesGreenChecksKeepTheBesideGatesLadder(t *testing.T) {
 	wait, cancel := GateDecision{Action: ActionWait, Diagnosis: "slow"}, GateDecision{Action: ActionCancel, Diagnosis: "the review model does not answer"}
+	retry := GateDecision{Action: ActionRetry, Diagnosis: "stuck"}
 	for _, tc := range []struct {
 		name      string
 		ladder    workflow.Version
@@ -1901,6 +1906,8 @@ func TestStagesGreenChecksKeepTheBesideGatesLadder(t *testing.T) {
 	}{
 		{"its wait spent", versionBesideLadder, []time.Duration{15 * time.Minute, 25 * time.Minute}, 0, []GateDecision{wait, cancel},
 			[]string{"15m0s [true,true]", "25m0s [false,true]"}, 25 * time.Minute},
+		{"its retry spent", versionBesideLadder, []time.Duration{15 * time.Minute, 25 * time.Minute, 27 * time.Minute}, 0, []GateDecision{wait, retry, cancel},
+			[]string{"15m0s [true,true]", "25m0s [false,true]", "27m0s [false,false]"}, 27 * time.Minute},
 		{"its wait spent, before the change", workflow.DefaultVersion, []time.Duration{15 * time.Minute, 25 * time.Minute}, 0, []GateDecision{wait, cancel},
 			[]string{"20m0s [true,true]", "25m0s [false,true]"}, 25 * time.Minute},
 		{"its call running", versionBesideLadder, []time.Duration{18 * time.Minute}, 5 * time.Minute, []GateDecision{cancel},

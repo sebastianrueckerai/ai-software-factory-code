@@ -554,25 +554,23 @@ func TestGateWatchChecksWaitRetriesItsTaskLookup(t *testing.T) {
 	}
 }
 
-// The retry tick of a checks wait that ended reads the task no more.
-func TestGateWatchLookupTickStopsWithTheWait(t *testing.T) {
+// A retry tick that fires in the window after its wait left the watch's
+// table, before the wait's context is cancelled, arms nothing: it acts only
+// on the run that is still the table's.
+func TestGateWatchLookupTickArmsOnlyTheRunInTheTable(t *testing.T) {
 	base := newFakeStore()
 	base.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: "demo-app/demo-app"})
-	store := &flakyTasks{fakeStore: base, n: 1 << 30}
-	env := signallingEnv(&GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }, LookupRetry: 10 * time.Millisecond})
-	env.RegisterActivityWithOptions(func(context.Context, string, string) error { time.Sleep(60 * time.Millisecond); return nil },
-		activity.RegisterOptions{Name: ActivityWaitChecks})
-	if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
-		t.Fatal(err)
+	g := &GateWatch{Store: base, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }}
+	gone := &watchedRun{activity: ActivityWaitChecks, started: time.Now()}
+	g.retryBound(gone, "wf/1", context.Background(), "t1", 0)
+	if gone.timer != nil || gone.bound != 0 {
+		t.Fatalf("a run out of the table was armed: bound %s, timer %v", gone.bound, gone.timer)
 	}
-	time.Sleep(30 * time.Millisecond)
-	store.mu.Lock()
-	after := store.calls
-	store.mu.Unlock()
-	time.Sleep(100 * time.Millisecond)
-	store.mu.Lock()
-	defer store.mu.Unlock()
-	if store.calls != after {
-		t.Fatalf("task reads grew from %d to %d after the wait ended", after, store.calls)
+	live := &watchedRun{activity: ActivityWaitChecks, started: time.Now()}
+	g.runs = map[string]*watchedRun{"wf/1": live}
+	g.retryBound(live, "wf/1", context.Background(), "t1", 0)
+	defer live.timer.Stop()
+	if live.bound != time.Hour || live.timer == nil {
+		t.Fatalf("the run in the table was not armed: bound %s, timer %v", live.bound, live.timer)
 	}
 }

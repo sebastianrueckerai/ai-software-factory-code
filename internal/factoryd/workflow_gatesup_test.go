@@ -53,7 +53,7 @@ func (h *workflowHarness) onDropTrip(d time.Duration) *[]string {
 	return &got
 }
 
-// One check wait: its first trip may wait or retry; after the wait the
+// In a run from before checks-wait: one check wait: its first trip may wait or retry; after the wait the
 // second may only retry; after the retry the third may do neither. The
 // checks then finish and the task goes on to its merge.
 func TestWorkflowGateTripsOneWaitAndOneRetryPerRun(t *testing.T) {

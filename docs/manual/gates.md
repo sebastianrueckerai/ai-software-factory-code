@@ -517,7 +517,8 @@ The reads have a minute. The `supervisor_model` answers through the gateway
 on the task's account (purpose
 `gate-supervisor`): `wait` (the attempt's bound is extended once by its
 own length, and at least half a bound after the answer; not offered for
-a session, whose start-to-close ends first), `retry` (the attempt is
+a session, whose start-to-close ends first, nor for the checks wait of a
+current run, whose poll ends before a doubled bound), `retry` (the attempt is
 stopped with the retryable error `gate_supervisor_retry`, so the
 activity's retry policy runs it again; not offered on its last allowed
 attempt), `cancel` (the workflow cancels the activity and fails the task
