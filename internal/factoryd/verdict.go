@@ -718,9 +718,17 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	var card PlanCard
 	var merged Plan
 	why := ""
+	bound := r.cfg.Policy().Document.Limits.SupervisorTimeout
 	for range deltaAttempts {
-		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
-			r.cfg.Policy().Document.Limits.SupervisorTimeout, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
+		// the call has its own bound, not the pass's remainder
+		content, _, err := r.supervisor.Chat(context.WithoutCancel(ctx), t.ID, alias, policy.PurposeReview,
+			bound, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
+		if errors.Is(err, context.DeadlineExceeded) {
+			why = fmt.Sprintf("the model call ran past its bound of %s", durationText(bound))
+			log.Printf("plan %s: the delta round: %s", t.ID, why)
+			input.Refused = append(input.Refused, deltaRefusal{Why: why})
+			continue
+		}
 		if err != nil {
 			log.Printf("plan %s: the delta round's call: %v", t.ID, err)
 			return
@@ -779,7 +787,8 @@ func judgeDelta(p Plan, content string, shape policy.PlanShape, limits policy.Li
 	answer.Card.Round = p.Round
 	merged := p
 	merged.Cards = append(slices.Clone(p.Cards), answer.Card)
-	merged, findings := judgePlan(merged, shape, limits, pins)
+	shape.Foundation = false
+	merged, findings := judgePlanWith(merged, shape, limits, pins, answer.Card.Key)
 	if len(findings) > 0 {
 		return PlanCard{}, Plan{}, "the card broke the plan rules: " + strings.Join(findings, "; ")
 	}
@@ -1126,8 +1135,8 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // are all done, opens the gap question of a plan whose cards ran out with
 // a criterion still open, starts the next round of a plan whose round is
 // over, and drafts the delta cards the reviews and the grants asked for.
-// One model call per delta due, in the sweep's own time: no activity
-// holds it. First it opens the provers due (proverPass).
+// Every plan's checks run before any delta draft, and a delta call runs
+// under its own bound, so one plan's round cannot starve the others'. First it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	r.proverPass(ctx)
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
@@ -1162,9 +1171,12 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 	for _, id := range between {
 		parents[id] = true
 	}
-	for _, parent := range slices.Sorted(maps.Keys(parents)) {
+	sorted := slices.Sorted(maps.Keys(parents))
+	for _, parent := range sorted {
 		r.planCloseCheck(ctx, parent)
 		r.roundCheck(ctx, parent)
+	}
+	for _, parent := range sorted {
 		r.draftDue(ctx, parent)
 	}
 }

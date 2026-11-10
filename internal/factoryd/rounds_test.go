@@ -631,11 +631,35 @@ func deltaRound(t *testing.T, answer string, questions ...PlanQuestion) (*fakeSt
 // deltaRoundOn is deltaRound with model as the delta round's model.
 func deltaRoundOn(t *testing.T, model *fakeLiteLLM, questions ...PlanQuestion) (*fakeStore, string) {
 	t.Helper()
+	return deltaRoundBound(t, model, 0, questions...)
+}
+
+// deltaRoundBound is deltaRoundOn with bound the policy's supervisor
+// timeout when it is above zero.
+func deltaRoundBound(t *testing.T, model *fakeLiteLLM, bound time.Duration, questions ...PlanQuestion) (*fakeStore, string) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, objects, _ := deltaRig(t, model, bound, questions...)
+	t1, repo, err := r.task(ctx, "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
+	tl, _ := objects.Get(ctx, "sessions/t-plan/timeline.jsonl")
+	return store, string(tl)
+}
+
+// deltaRig is deltaRoundBound's setup, before the round runs.
+func deltaRig(t *testing.T, model *fakeLiteLLM, bound time.Duration, questions ...PlanQuestion) (*Runner, *fakeStore, *fakeObjectStore, *planForgejo) {
+	t.Helper()
 	ctx := context.Background()
 	p := extras(10)
 	p.Questions = questions
 	r, store, objects, fj, _ := fileRig(t, p)
 	v := fixtureVersion(t)
+	if bound > 0 {
+		v.Document.Limits.SupervisorTimeout = bound
+	}
 	r.cfg.Policy = func() policy.Version { return v }
 	plan := store.tasks["t-plan"]
 	plan.RequiredCapabilities = []string{policy.ClassCoder}
@@ -656,13 +680,7 @@ func deltaRoundOn(t *testing.T, model *fakeLiteLLM, questions ...PlanQuestion) (
 		t.Fatal(err)
 	}
 	r.supervisor = testSupervisorModel(model.srv(t).URL)
-	t1, repo, err := r.task(ctx, "t-plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	r.draftDelta(ctx, t1, repo, []PlanCatch{{TaskID: "t-plan", Revision: 1, Kind: CatchDelta, Finder: FinderApprover, Detail: "redirect_302 grant 9"}})
-	tl, _ := objects.Get(ctx, "sessions/t-plan/timeline.jsonl")
-	return store, string(tl)
+	return r, store, objects, fj
 }
 
 // A delta card joins the last round on top of its 12 cards: the round's
@@ -721,10 +739,9 @@ func TestDeltaCardIsAFeature(t *testing.T) {
 
 // A card that breaks a plan rule goes back to the model with the rule it
 // broke, and the corrected answer files: the grant holds through one
-// wrong answer, as on plan #1344 where the model made its card wait on
-// the integration card.
+// wrong answer.
 func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
-	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
+	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["nowhere"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	fixed := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
@@ -736,7 +753,7 @@ func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
 	if len(model.chats) != 2 {
 		t.Fatalf("model calls = %d, want 2", len(model.chats))
 	}
-	if second := userMessage(model.chats[1]); !strings.Contains(second, "depends on the integration card, which comes last") || !strings.Contains(second, `\"depends_on\": [\"integration\"]`) {
+	if second := userMessage(model.chats[1]); !strings.Contains(second, "which is no card of the plan") || !strings.Contains(second, `\"depends_on\": [\"nowhere\"]`) {
 		t.Fatalf("the second call's input lacks the broken rule or the answer that broke it:\n%s", second)
 	}
 }
@@ -744,16 +761,83 @@ func TestDeltaRoundCorrectsABrokenRule(t *testing.T) {
 // A model that breaks the plan rules on every attempt ends the grant
 // after three answers, naming the last rule broken.
 func TestDeltaRoundRefusesAfterThreeBrokenAnswers(t *testing.T) {
-	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
+	broken := `{"card": {"key": "fix-stats", "title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["nowhere"], ` +
 		`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 	model := &fakeLiteLLM{content: broken}
 	store, tl := deltaRoundOn(t, model)
 	if _, filed := cardsByKey(t, store)["fix-stats"]; filed || !strings.Contains(tl, `"step":"delta_refused"`) ||
-		!strings.Contains(tl, "depends on the integration card, which comes last") {
+		!strings.Contains(tl, "which is no card of the plan") {
 		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
 	}
 	if len(model.chats) != 3 {
 		t.Fatalf("model calls = %d, want 3", len(model.chats))
+	}
+}
+
+// A delta call that runs past the policy's supervisor timeout is a refused
+// attempt: three of them end the round refused, so its dues never stay due.
+func TestDeltaRoundRefusesAfterThreeTimeouts(t *testing.T) {
+	model := &fakeLiteLLM{content: `{}`, delay: 400 * time.Millisecond}
+	store, tl := deltaRoundBound(t, model, 50*time.Millisecond)
+	if _, filed := cardsByKey(t, store)["fix-stats"]; filed || !strings.Contains(tl, `"step":"delta_refused"`) || strings.Contains(tl, `"step":"delta_card"`) {
+		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
+	}
+	catches, err := store.PlanCatches(context.Background(), "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	refused := 0
+	for _, c := range catches {
+		if c.Kind == CatchDeltaRefused {
+			refused++
+		}
+	}
+	if refused != 1 {
+		t.Fatalf("%d delta_refused marks, want 1 for the one due: %+v", refused, catches)
+	}
+}
+
+// One plan's blocked delta round does not starve the pass: every plan's
+// close check runs before the first delta draft, and the draft's call runs
+// under its own bound although the pass's context ends first.
+func TestCriteriaPassClosesAPlanBesideABlockedDeltaRound(t *testing.T) {
+	ctx := context.Background()
+	closedBeforeCall, called := false, false
+	var objs *fakeObjectStore
+	zClosed := func() bool {
+		tl, _ := objs.Get(ctx, "sessions/t-z/timeline.jsonl")
+		return strings.Contains(string(tl), `"event":"`+EventPlanClosed+`"`)
+	}
+	model := &fakeLiteLLM{delay: 200 * time.Millisecond, answer: func(string) string {
+		called, closedBeforeCall = true, zClosed()
+		return `{}`
+	}}
+	r, store, o, fj := deltaRig(t, model, time.Second)
+	objs = o
+	plan := store.tasks["t-plan"]
+	plan.Status = "done"
+	store.tasks["t-plan"] = plan
+	r.timeline = &Timeline{Objects: objs, Events: store, Store: store}
+	fj.issues[99] = &planIssue{title: "Other", poster: "factory-agent", state: "open"}
+	store.tasks["t-z"] = Task{ID: "t-z", Repository: "linkshort/linkshort", IssueNumber: 99, Source: SourceChat, Status: "done"}
+	store.tasks["z-foundation"] = Task{ID: "z-foundation", Repository: "linkshort/linkshort", Parent: "t-z", Source: SourcePlan, PlanKey: "foundation", Status: "done"}
+	store.tasks["z-int"] = Task{ID: "z-int", Repository: "linkshort/linkshort", Parent: "t-z", Source: SourcePlan, PlanKey: "integration", Status: "merged"}
+	newRevision(t, store, "t-z", criteriaPlan())
+	if err := store.PutCriteriaVerdicts(ctx, "z-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+		{Criterion: "c2", Verdict: "met", Kind: CriterionHuman},
+		{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.PutPlanCatches(ctx, "t-plan", 1, CatchDelta, FinderApprover, []string{"redirect_302 grant 9"}); err != nil {
+		t.Fatal(err)
+	}
+	pass, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	defer cancel()
+	r.CriteriaPass(pass)
+	if !called || !closedBeforeCall || !zClosed() {
+		t.Fatalf("the delta call ran %v; plan t-z closed before it %v, after the pass %v; want all three", called, closedBeforeCall, zClosed())
 	}
 }
 
@@ -1303,5 +1387,29 @@ func TestRecordReplanOfARound(t *testing.T) {
 		if _, pending, err := r.pendingReplan(ctx, store.tasks["p"]); err != nil || pending {
 			t.Fatalf("%s: pending %t, %v after the record; want ended", tc.name, pending, err)
 		}
+	}
+}
+
+// A one-card plan whose card is its own integration takes a delta card:
+// the plan's first-round shape (one foundation card, no feature card
+// behind the integration card) does not judge the delta card, and the
+// card may name the integration card it builds on.
+func TestOneCardPlanTakesADeltaCard(t *testing.T) {
+	p := testPlan()
+	p.Round = 1
+	p.Cards = []PlanCard{p.Cards[3]}
+	p.Cards[0].Round = 1
+	answer := `{"card": {"key": "fix-redirects", "title": "Fix the redirects", "brief": "Count each redirect once.", "depends_on": ["integration"], ` +
+		`"acceptance": [{"criterion": "redirect_302", "text": "TestRedirect in internal/links: two redirects: clicks 2"}], "size": "small"}}`
+	card, merged, why := judgeDelta(p, answer, testShape, testLimits, nil)
+	if why != "" {
+		t.Fatalf("the delta card of a one-card plan: %s", why)
+	}
+	if card.Role != RoleFeature || len(merged.Cards) != 2 || merged.Cards[1].Round != 1 {
+		t.Fatalf("card %+v, merged cards %+v; want a feature card of round 1 beside the integration card", card, merged.Cards)
+	}
+	wrong := strings.Replace(answer, `"integration"`, `"nowhere"`, 1)
+	if _, _, why := judgeDelta(p, wrong, testShape, testLimits, nil); !strings.Contains(why, `depends on "nowhere", which is no card of the plan`) {
+		t.Fatalf("a delta card on a missing card: %q", why)
 	}
 }
