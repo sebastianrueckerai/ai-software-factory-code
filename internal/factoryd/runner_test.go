@@ -799,24 +799,20 @@ func (f *fakeLeases) LiveAddresses(context.Context) (map[string][]string, error)
 	return out, nil
 }
 
-// unexpectedSupervisor is a supervisor model whose gateway reports a call
-// that carries the model's own token, which only this runner sends. A
-// request from anywhere else, a stale client of another test or process
-// that reaches the port this server was given after its own was freed, is
-// answered and not reported.
+// unexpectedSupervisor is a supervisor model whose gateway reports every
+// call, with the source that names a stray: the request line, the
+// User-Agent, the remote address and the first 12 characters of the
+// bearer token.
 func unexpectedSupervisor(t *testing.T, report func(format string, args ...any)) *SupervisorModel {
 	t.Helper()
-	srv := httptest.NewServer(nil)
-	t.Cleanup(srv.Close)
-	m := testSupervisorModel(srv.URL)
-	m.Token = "unexpected-" + srv.URL
-	srv.Config.Handler = http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") == "Bearer "+m.Token {
-			report("unexpected supervisor call %s %s", r.Method, r.URL.Path)
-		}
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		token := strings.TrimPrefix(r.Header.Get("Authorization"), "Bearer ")
+		report("unexpected supervisor call %s %s from %s, User-Agent %q, token %q",
+			r.Method, r.URL.Path, r.RemoteAddr, r.UserAgent(), token[:min(12, len(token))])
 		w.WriteHeader(http.StatusInternalServerError)
-	})
-	return m
+	}))
+	t.Cleanup(srv.Close)
+	return testSupervisorModel(srv.URL)
 }
 
 // newTestRunner wires a runner against scripted backends and a queued task.
@@ -5592,26 +5588,21 @@ func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
 	}
 }
 
-// The guard of a runner that expects no supervisor call reports its own
-// runner's call and ignores a stranger's.
-func TestUnexpectedSupervisorReportsOnlyItsOwnCalls(t *testing.T) {
+// The guard of a runner that expects no supervisor call reports each
+// call with its source, and no more of the token than 12 characters.
+func TestUnexpectedSupervisorNamesTheStray(t *testing.T) {
 	var reports []string
 	m := unexpectedSupervisor(t, func(format string, args ...any) { reports = append(reports, fmt.Sprintf(format, args...)) })
-	post := func(token string) {
-		req, _ := http.NewRequest(http.MethodPost, m.GatewayURL+"/v1/chat/completions", nil)
-		req.Header.Set("Authorization", "Bearer "+token)
-		res, err := http.DefaultClient.Do(req)
-		if err != nil {
-			t.Fatal(err)
-		}
-		res.Body.Close()
+	req, _ := http.NewRequest(http.MethodPost, m.GatewayURL+"/v1/chat/completions", nil)
+	req.Header.Set("Authorization", "Bearer 0123456789abcdefSECRET")
+	req.Header.Set("User-Agent", "stray/1")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatal(err)
 	}
-	post("gw-token")
-	if len(reports) != 0 {
-		t.Fatalf("a stranger's call was reported: %q", reports)
-	}
-	post(m.Token)
-	if want := []string{"unexpected supervisor call POST /v1/chat/completions"}; !slices.Equal(reports, want) {
-		t.Fatalf("reports = %q, want %q", reports, want)
+	res.Body.Close()
+	if len(reports) != 1 || !strings.HasPrefix(reports[0], "unexpected supervisor call POST /v1/chat/completions from 127.0.0.1:") ||
+		!strings.HasSuffix(reports[0], `, User-Agent "stray/1", token "0123456789ab"`) || strings.Contains(reports[0], "SECRET") {
+		t.Fatalf("reports = %q", reports)
 	}
 }

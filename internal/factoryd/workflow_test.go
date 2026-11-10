@@ -2626,16 +2626,10 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	}
 	newest := map[string]recordedInput{}
 	for _, f := range files {
-		replayHistory(t, f)
-		data, err := os.ReadFile(f)
-		if err != nil {
-			t.Fatal(err)
-		}
-		hist, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
-		if err != nil {
-			t.Fatalf("%s: %v", f, err)
-		}
-		newestInputs(newest, f, hist)
+		t.Run(filepath.Base(f), func(t *testing.T) {
+			replayHistory(t, f)
+			newestInputs(newest, f, loadHistory(t, f))
+		})
 	}
 	for _, bad := range undecodableInputs(newest, activityParams(), retyped) {
 		t.Error(bad)
@@ -2651,14 +2645,16 @@ func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 		t.Fatal("no dev server histories")
 	}
 	for _, f := range files {
-		replayHistory(t, f)
+		t.Run(filepath.Base(f), func(t *testing.T) { replayHistory(t, f) })
 	}
 }
 
 // replayHistory replays the history in file f against TaskWorkflow. A
 // recording from before the blind proofs' deploy carries no drained
-// marker, which the run now reads; the replay gives it the marker the
-// run would have recorded, as that deploy's own runs carry it.
+// marker, which the run now reads; the inserted marker only passes that
+// gate so the rest of the history replays. The doctored history is no real
+// recording: its replay pins today's code against the old paths these runs
+// took, DefaultVersion branches no live run takes.
 func replayHistory(t *testing.T, f string) {
 	t.Helper()
 	hist := loadHistory(t, f)
@@ -2707,8 +2703,8 @@ func TestReplayOfALiveHistoryIsStrict(t *testing.T) {
 			break
 		}
 	}
-	if err := replayEvents(hist); err == nil {
-		t.Fatal("a history whose first activity is renamed replayed clean")
+	if err := replayEvents(hist); err == nil || !strings.Contains(err.Error(), "NoSuchActivity") {
+		t.Fatalf("replay of a history whose first activity is renamed = %v, want a nondeterminism error naming NoSuchActivity", err)
 	}
 }
 
