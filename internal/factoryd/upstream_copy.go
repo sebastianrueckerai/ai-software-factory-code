@@ -214,7 +214,7 @@ func (j *copyJob) blob(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	head.Body.Close()
+	_ = head.Body.Close()
 	if head.StatusCode == http.StatusOK {
 		return nil
 	}
@@ -244,7 +244,7 @@ func (j *copyJob) blob(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	start.Body.Close()
+	_ = start.Body.Close()
 	if start.StatusCode != http.StatusAccepted {
 		return fmt.Errorf("store blob upload of %s: status %d", digest, start.StatusCode)
 	}
@@ -259,7 +259,7 @@ func (j *copyJob) blob(ctx context.Context, digest string) error {
 	if err != nil {
 		return err
 	}
-	put.Body.Close()
+	_ = put.Body.Close()
 	if put.StatusCode != http.StatusCreated {
 		return fmt.Errorf("store blob put of %s: status %d", digest, put.StatusCode)
 	}
@@ -271,7 +271,7 @@ func (j *copyJob) putManifest(ctx context.Context, reference, contentType string
 	if err != nil {
 		return err
 	}
-	res.Body.Close()
+	_ = res.Body.Close()
 	if res.StatusCode != http.StatusCreated && res.StatusCode != http.StatusOK {
 		return fmt.Errorf("store manifest put of %s: status %d", reference, res.StatusCode)
 	}
@@ -345,16 +345,16 @@ func (j *copyJob) get(ctx context.Context, path, accept string) (*http.Response,
 		switch {
 		case res.StatusCode == http.StatusUnauthorized && try == 0:
 			challenge := res.Header.Get("WWW-Authenticate")
-			res.Body.Close()
+			_ = res.Body.Close()
 			if err := j.login(ctx, challenge); err != nil {
 				return nil, err
 			}
 			continue
 		case res.StatusCode == http.StatusNotFound:
-			res.Body.Close()
+			_ = res.Body.Close()
 			return nil, errUpstreamMissing
 		case res.StatusCode != http.StatusOK:
-			res.Body.Close()
+			_ = res.Body.Close()
 			return nil, fmt.Errorf("upstream GET %s: status %d", path, res.StatusCode)
 		}
 		return res, nil
