@@ -294,15 +294,16 @@ func (e *apiError) Error() string {
 	return fmt.Sprintf("forgejo %s %s: status %d: %s", e.method, e.path, e.status, e.body)
 }
 
-// reason is Forgejo's own sentence: the body's message, else the body.
+// reason is Forgejo's own sentence, scrubbed: the body's message, else the
+// body.
 func (e *apiError) reason() string {
 	var m struct {
 		Message string `json:"message"`
 	}
 	if json.Unmarshal(e.body, &m) == nil && m.Message != "" {
-		return m.Message
+		return scrubText(m.Message)
 	}
-	return string(e.body)
+	return scrubText(string(e.body))
 }
 
 // answerMax bounds the answer api reads: it keeps the first answerMax
