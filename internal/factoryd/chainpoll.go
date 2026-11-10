@@ -497,7 +497,7 @@ type ChainPoller struct {
 	Now  func() time.Time
 	Poll time.Duration
 
-	superseded map[string]bool              // repository, run id, commit -> whether the run's tests were skipped
+	superseded map[string]bool              // repository, commit, test context -> whether the run's tests were skipped
 	ranges     map[[3]string][]string       // repository, base, head -> the commits of that compare
 	watched    map[string]bool              // repository -> true once its pushes run a workflow
 	noted      map[string]bool              // the chain-block complaints logged, once each
@@ -1250,7 +1250,7 @@ func (p *ChainPoller) supersededOf(ctx context.Context, repo Repo, cfg policy.Ch
 		if cfg.TestContext == "" || run.Status != "success" || seen[len(seen)-1].CommitSHA == run.CommitSHA {
 			return false, nil
 		}
-		key := fmt.Sprintf("%s %d %s", repo, run.ID, run.CommitSHA)
+		key := fmt.Sprintf("%s %s %s", repo, run.CommitSHA, cfg.TestContext)
 		if v, ok := p.superseded[key]; ok {
 			return v, nil
 		}

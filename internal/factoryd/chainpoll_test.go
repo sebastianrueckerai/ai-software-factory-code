@@ -445,7 +445,8 @@ type chainForgejo struct {
 	status     []string                                  // the sha of every combined status read
 	reads      []string                                  // "repository dir" of every workflow-list read
 	failing    map[string]bool                           // "base...head" compares that answer 500
-	statusFail map[string]bool                           // shas whose combined status answers 500
+	statusFail map[string]bool                           // shas whose combined status answers 500 once
+	statusGone map[string]bool                           // shas whose combined status answers 404
 	compares   int                                       // the compare calls served
 	rerun      int                                       // the status a run's or a job's re-run answers; 0 is 204
 	reruns     []string                                  // "repository run" of every re-run asked
@@ -521,7 +522,12 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			f.status = append(f.status, sha)
 			if f.statusFail[sha] {
+				delete(f.statusFail, sha)
 				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
+			if f.statusGone[sha] {
+				http.NotFound(w, r)
 				return
 			}
 			state := "success"
@@ -3110,35 +3116,52 @@ func TestASkippedTestOnTheHeadKeepsItsRun(t *testing.T) {
 	})
 }
 
-// A status read that fails leaves the pass running: the head row is
-// written, and the failed test-context read logs once per run.
+// A stale run whose commit reports no test context at all, or answers
+// 404 to the status read, is superseded as one with the context skipped.
+func TestAnAbsentTestContextIsSuperseded(t *testing.T) {
+	for name, gone := range map[string]bool{"absent": false, "not found": true} {
+		t.Run(name, func(t *testing.T) {
+			p, store, f := supersedeRig(t, supersedeTest,
+				[]map[string]string{st("factory/roll", "success")},
+				[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
+			f.statusGone = map[string]bool{commitC1: gone}
+			tickTwice(t, p)
+			chainRows(t, store, []fakeChainRun{
+				{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
+				{repo: codeRepo, pr: 12, sha: commitC2, run: 62, status: "success"},
+				{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: "success"},
+			})
+		})
+	}
+}
+
+// A status read that fails once leaves the pass running and the run not
+// superseded: the head row is written, card #12 records its own run 61
+// (success, its roll green), and the failed read logs once.
 func TestAFailedTestContextReadStopsNothing(t *testing.T) {
 	p, store, f := supersedeRig(t, supersedeTest,
-		[]map[string]string{st(supersedeTest, "skipped")},
+		[]map[string]string{st(supersedeTest, "skipped"), st("factory/roll", "success")},
 		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
 	f.statusFail = map[string]bool{commitC1: true}
 	logs := captureLog(t)
 	tickTwice(t, p)
-	var head fakeChainRun
-	for _, c := range chainOf(store, codeRepo) {
-		if c.pr == 0 {
-			head = c
-		}
-	}
-	if head.run != 62 || head.status != "success" {
-		t.Fatalf("head row %+v, want run 62 success", head)
-	}
+	chainRows(t, store, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC1, run: 61, status: "success"},
+		{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: "success"},
+	})
 	if n := strings.Count(logs.String(), "test context read"); n != 1 {
 		t.Fatalf("the failed read logged %d times over two ticks, want once: %s", n, logs.String())
 	}
 }
 
-// A finished run's answer is kept: a second tick reads its commit's
-// statuses no more.
+// A finished run's answer is kept: with B's roll pending the head stays
+// pending and the green walk reaches A on every tick, yet the second
+// tick reads c1's statuses no more.
 func TestASupersededAnswerIsKeptAcrossTicks(t *testing.T) {
 	p, _, f := supersedeRig(t, supersedeTest,
 		[]map[string]string{st(supersedeTest, "skipped"), st("factory/roll", "success")},
-		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
+		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "pending")})
 	count := func() int {
 		n := 0
 		for _, sha := range f.status {
@@ -3151,15 +3174,30 @@ func TestASupersededAnswerIsKeptAcrossTicks(t *testing.T) {
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	first := count()
-	if first != 1 {
+	if first := count(); first != 1 {
 		t.Fatalf("first tick read c1's statuses %d times, want 1", first)
 	}
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	if got := count(); got != first {
-		t.Fatalf("second tick read c1's statuses %d more times, want none", got-first)
+	if got := count(); got != 1 {
+		t.Fatalf("two ticks read c1's statuses %d times, want 1", got)
+	}
+}
+
+// The kept answer belongs to the context it was read for: after a policy
+// reload names another test context, the run is judged on that one.
+func TestASupersededAnswerIsKeptPerTestContext(t *testing.T) {
+	p, _, _ := supersedeRig(t, supersedeTest,
+		[]map[string]string{st(supersedeTest, "skipped"), st("ci / other", "success")}, nil)
+	p.once()
+	repo, _ := SplitRepo(codeRepo)
+	seen := []ActionRun{{ID: 61, CommitSHA: commitC1, Status: "success"}, {ID: 62, CommitSHA: commitC2, Status: "success"}}
+	for name, want := range map[string]bool{supersedeTest: true, "ci / other": false} {
+		got, err := p.supersededOf(context.Background(), repo, policy.ChainConfig{TestContext: name}, seen)(seen[0])
+		if err != nil || got != want {
+			t.Fatalf("context %q: superseded %v, %v; want %v", name, got, err, want)
+		}
 	}
 }
 
