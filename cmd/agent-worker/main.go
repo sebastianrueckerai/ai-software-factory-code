@@ -132,7 +132,8 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	runCtx, stopRun := signal.NotifyContext(ctx, syscall.SIGTERM)
 	defer stopRun()
 	endRun := s.tel.phase("run")
-	res := s.oc.Run(runCtx, s.brief, emit)
+	guard := newWorkflowDirGuard(s.repoDir, s.oc.Message, log)
+	res := s.oc.Run(runCtx, s.brief, guard.wrap(s.emitter(stdout)))
 	stopped := runCtx.Err() != nil
 	stopCheckpoints()
 	<-ckDone
@@ -284,12 +285,13 @@ func start(ctx context.Context, log func(string, ...any), ws string, initErr err
 	}
 	s.gate = newPushGate()
 	checkin := newCheckinServe(ws, log)
+	wip := newWipServe(s.env, s.repoDir, s.base, s.mainHead, log)
 	stop, err := serveMessages(s.env.messageHash, s.gate, func(ctx context.Context, text, model string) error {
 		if model != "" {
 			s.oc.SetModel(model)
 		}
 		return s.oc.Message(ctx, text)
-	}, checkin, log)
+	}, checkin, wip, log)
 	if err != nil {
 		return s, startError{"message endpoint", err}
 	}
@@ -1068,7 +1070,11 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	if e.pushToken, err = pushToken(head); err != nil {
 		return "", err
 	}
-	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, head+":refs/heads/"+e.branch); err != nil {
+	// the forced refspec: an interim push (factoryd's POST /wip half) may
+	// have replaced the task branch's tip with a WIP commit since the
+	// session's start, and the end push — the session's own commit — lands
+	// on that tip, not refused as non-fast-forward
+	if err := e.gitAuth(e.pushToken, "", "--git-dir="+filepath.Join(send, ".git"), "push", "-q", e.pushURL, "+"+head+":refs/heads/"+e.branch); err != nil {
 		return "", err
 	}
 	return head, nil
@@ -1197,6 +1203,88 @@ func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
 		}
 	}
 	return nil
+}
+
+// workflowDirGuard watches the session's file-change events and, at the
+// first change under a workflow directory, sends the session one message
+// naming the file and the push rule's sentence, so the agent reverts the
+// change while its work is in hand instead of learning the rule only from
+// the push's refusal at the session's end. Self-correction, not a stop:
+// the push rule itself stays as it is.
+type workflowDirGuard struct {
+	repoDir string
+	send    func(ctx context.Context, text string) error
+	log     func(string, ...any)
+	mu      sync.Mutex
+	warned  map[string]bool
+}
+
+func newWorkflowDirGuard(repoDir string, send func(ctx context.Context, text string) error, log func(string, ...any)) *workflowDirGuard {
+	return &workflowDirGuard{repoDir: repoDir, send: send, log: log, warned: map[string]bool{}}
+}
+
+// wrap returns an emitter like emit that observes every event.
+func (g *workflowDirGuard) wrap(emit func(harness.Event)) func(harness.Event) {
+	return func(ev harness.Event) {
+		g.observe(ev)
+		emit(ev)
+	}
+}
+
+// observe sends the guard's message for the first event of each changed
+// file under a workflow directory; a change elsewhere sends nothing.
+func (g *workflowDirGuard) observe(ev harness.Event) {
+	if ev.Kind != harness.EventFileChange {
+		return
+	}
+	raw, _ := ev.Detail["path"].(string)
+	if raw == "" {
+		return
+	}
+	rel := raw
+	if filepath.IsAbs(rel) {
+		if !strings.HasPrefix(rel, g.repoDir+string(filepath.Separator)) {
+			return
+		}
+		if r, err := filepath.Rel(g.repoDir, rel); err == nil {
+			rel = r
+		}
+	}
+	rel = filepath.ToSlash(rel)
+	dir, ok := workflowDirOf(rel)
+	if !ok {
+		return
+	}
+	g.mu.Lock()
+	sent := g.warned[rel]
+	g.warned[rel] = true
+	g.mu.Unlock()
+	if sent {
+		return
+	}
+	go func() {
+		if err := g.send(context.Background(), workflowDirMessage(dir, rel)); err != nil && !errors.Is(err, harness.ErrNotRunning) {
+			g.log("workflow dir warning for %s: %v", rel, err)
+		}
+	}()
+}
+
+// workflowDirOf answers the workflow directory a repository-relative path
+// sits under, if any.
+func workflowDirOf(rel string) (string, bool) {
+	for _, dir := range factoryd.WorkflowDirs {
+		if rel == dir || strings.HasPrefix(rel, dir+"/") {
+			return dir, true
+		}
+	}
+	return "", false
+}
+
+// workflowDirMessage is the message the session gets at the first change
+// under dir: the file, and the push rule's sentence from
+// refuseWorkflowDirChange.
+func workflowDirMessage(dir, file string) string {
+	return fmt.Sprintf("you changed %s under %s/: the push will refuse it — refusing to push: %s/ differs from the base. Revert that file and do the work without touching it.", file, dir, dir)
 }
 
 // workflowTreeEntries maps each workflow directory to the ls-tree lines

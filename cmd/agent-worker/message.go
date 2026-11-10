@@ -51,7 +51,7 @@ func bearer(tokenSHA256 [32]byte, w http.ResponseWriter, r *http.Request) bool {
 // messageHandler serves factoryd's messages: text for the agent's next
 // turn, with model when the session continues on another model from then
 // on (roadmap 222, item 5).
-func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe) http.Handler {
+func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe) http.Handler {
 	mux := http.NewServeMux()
 	authorized := func(w http.ResponseWriter, r *http.Request) bool { return bearer(tokenSHA256, w, r) }
 	mux.HandleFunc("POST /message", func(w http.ResponseWriter, r *http.Request) {
@@ -97,6 +97,9 @@ func messageHandler(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.
 		w.WriteHeader(http.StatusNoContent)
 	})
 	ck.serve(mux, authorized)
+	if wip != nil {
+		wip.serve(mux, authorized)
+	}
 	return mux
 }
 
@@ -171,8 +174,8 @@ func (g *pushGate) ask(commit string, wait time.Duration, w io.Writer) (string, 
 }
 
 // serveMessages serves the session's messageHandler until the returned stop.
-func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, log func(string, ...any)) (stop func(), err error) {
-	return servePort(messageHandler(tokenSHA256, gate, send, ck), log)
+func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.Context, text, model string) error, ck *checkinServe, wip *wipServe, log func(string, ...any)) (stop func(), err error) {
+	return servePort(messageHandler(tokenSHA256, gate, send, ck, wip), log)
 }
 
 // servePort serves h on harness.MessagePort until the returned stop, which

@@ -18,6 +18,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -393,7 +394,7 @@ type labScene struct {
 var labScenes = map[string]func(now time.Time) labScene{"busy": busyScene, "idle": idleScene, "fire": fireScene, "quiet": quietScene,
 	"assisted": assistedScene, "threads": threadsScene, "compacted": compactedScene, "poke": pokeScene, "escalation": escalationScene,
 	"history": historyScene, "wake": wakeScene, "stopped": stoppedScene, "thinking": thinkingScene, "metrics": metricsScene, "tokens": tokensScene, "criteria": criteriaScene,
-	"human": humanScene}
+	"human": humanScene, "document": documentScene}
 
 // threadsScene is the busy board with sebastian's four threads: the open
 // one on the session store, a planning thread with a turn in flight, a
@@ -490,6 +491,26 @@ func wakeScene(now time.Time) labScene {
 		factoryd.ChatMessage{Conversation: 5, Role: "assistant", At: ago(15*time.Minute - 45*time.Second),
 			Content: "Both stores hold the snapshots: the plan names Postgres, the brief allows SQLite for one replica. The night read is small; either keeps it."})
 	s.seen[5] = int64(len(s.chat))
+	return s
+}
+
+// documentScene is the threads scene with the open thread's latest answer
+// naming the build plan and the next turn scripted to show it (roadmap
+// 280): the answer's path renders as the link that opens the plan, and
+// the turn's show_doc opens it in the document view.
+func documentScene(now time.Time) labScene {
+	s := threadsScene(now)
+	ago := func(d time.Duration) time.Time { return now.Add(-d) }
+	s.chat = append(slices.Clone(s.chat),
+		factoryd.ChatMessage{Conversation: 4, Role: "user", Content: "Show me the backlog plan.", At: ago(4 * time.Minute)},
+		factoryd.ChatMessage{Conversation: 4, Role: "assistant", At: ago(4*time.Minute - 30*time.Second),
+			Content: "The backlog plan is docs/plans/2026-09-24-build-plan.md."},
+	)
+	s.open, s.seen[4] = 4, int64(len(s.chat))
+	s.replies = []labReply{
+		{{Call: [][2]string{{"show_doc", `{"path":"docs/plans/2026-09-24-build-plan.md"}`}}}},
+		{{Say: "The build plan is open in your document view."}},
+	}
 	return s
 }
 
@@ -644,7 +665,7 @@ var labPRFiles = map[string]string{
 func (r *rig) labSeed(name string) (string, error) {
 	scene, ok := labScenes[name]
 	if !ok {
-		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria or human", name)
+		return "", fmt.Errorf("no scenario %q: busy, idle, fire, quiet, assisted, threads, compacted, poke, escalation, history, wake, stopped, thinking, metrics, tokens, criteria, human or document", name)
 	}
 	return r.seedScene(scene(time.Now())), nil
 }
@@ -1924,5 +1945,44 @@ func TestBusySceneCheckinAndChildTitles(t *testing.T) {
 		if n := strings.Count(body, ">"+key+"</a>") + strings.Count(body, ">"+key+"</strong>"); n != 0 {
 			t.Errorf("%d faces title child %s by its bare key", n, key)
 		}
+	}
+}
+
+// TestLabDocumentScene pins the document scenario (roadmap 280): seeding
+// lands the open thread whose latest answer names the build plan, a
+// driven turn on its scripted reply calls show_doc on the plan — the
+// block, then the plan's view event — and the scenario list names it.
+func TestLabDocumentScene(t *testing.T) {
+	r := newRig(t)
+	withDocs(t, r, labDocs)
+	r.ledger.chat = &policy.ChatConfig{DocRepo: "sf/docs", Confirm: []string{}}
+	g := &chatGateway{t: t, lenient: true}
+	model := httptest.NewServer(g)
+	t.Cleanup(model.Close)
+	r.c.cfg.Operator = &factoryd.OperatorModel{GatewayURL: model.URL, Token: "lab"}
+	r.gateway = g
+	if _, err := r.labSeed("document"); err != nil {
+		t.Fatalf("labSeed(document): %v", err)
+	}
+	msgs := r.chat.msgs["sf/code sebastian"]
+	if len(msgs) == 0 || msgs[len(msgs)-1].Content != "The backlog plan is docs/plans/2026-09-24-build-plan.md." {
+		t.Fatalf("the open thread's latest answer does not name the plan: %+v", msgs)
+	}
+	ck, s := r.loggedIn(t)
+	_, ev, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"open it"}})
+	at := slices.IndexFunc(ev, func(e string) bool {
+		return strings.HasPrefix(e, "tool ") && strings.Contains(e, `"name":"show_doc"`)
+	})
+	if at < 0 {
+		t.Fatalf("the turn holds no show_doc block:\n%s", strings.Join(ev, "\n"))
+	}
+	if !strings.Contains(ev[at], "docs/plans/2026-09-24-build-plan.md is open in your document view.") {
+		t.Errorf("the block's result does not name the open:\n%s", ev[at])
+	}
+	if at+1 >= len(ev) || ev[at+1] != `view {"doc":"docs/plans/2026-09-24-build-plan.md"}` {
+		t.Errorf("the plan's view event does not follow the block:\n%s", strings.Join(ev, "\n"))
+	}
+	if _, err := r.labSeed("nonsense"); err == nil || !strings.Contains(err.Error(), "document") {
+		t.Errorf("the scenario list does not name document: %v", err)
 	}
 }

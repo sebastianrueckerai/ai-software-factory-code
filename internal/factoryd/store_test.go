@@ -132,6 +132,9 @@ type fakeStore struct {
 	monitorCursor *int64
 	closed        map[string]time.Time // the plans with a plan_closed event row, at its time
 	releases      map[string]Release
+	// mergeReceipts are the stored merge receipts by task; the first
+	// write stands, as PutMergeReceipt keeps it
+	mergeReceipts map[string]MergeReceipt
 	// afterRead runs once OpenGroups or QueuedPlans (the name) has read
 	afterRead func(name string)
 }
@@ -1706,6 +1709,21 @@ func (s *fakeStore) SetTaskMergeCommit(ctx context.Context, id, commit string) e
 		s.tasks[id] = t
 	}
 	return nil
+}
+
+func (s *fakeStore) PutMergeReceipt(ctx context.Context, taskID string, receipt MergeReceipt) error {
+	if s.mergeReceipts == nil {
+		s.mergeReceipts = map[string]MergeReceipt{}
+	}
+	if _, ok := s.mergeReceipts[taskID]; !ok {
+		s.mergeReceipts[taskID] = receipt
+	}
+	return nil
+}
+
+func (s *fakeStore) MergeReceipt(ctx context.Context, taskID string) (MergeReceipt, bool, error) {
+	r, ok := s.mergeReceipts[taskID]
+	return r, ok, nil
 }
 
 func (s *fakeStore) OpenApproval(ctx context.Context, a ApprovalRequest) (int64, error) {
@@ -5168,6 +5186,57 @@ func TestSetPlanNameRoundTrip(t *testing.T) {
 	}
 	if got, ok, err := s.Task(ctx, "p-name"); err != nil || !ok || got.PlanName != "" {
 		t.Fatalf("cleared plan's name = (%q, %v, %v), want (\"\", true, nil)", got.PlanName, ok, err)
+	}
+}
+
+// Requires a disposable Postgres (FACTORYD_TEST_DATABASE_URL). PutMergeReceipt
+// stores the task's receipt and MergeReceipt reads it back; a second put
+// changes nothing, and a task without a receipt has none.
+func TestMergeReceiptRoundTrip(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, events CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-rcpt", Status: "merged", FinishedAt: &[]time.Time{time.Date(2026, 11, 9, 19, 0, 0, 0, time.UTC)}[0],
+		Repository: "sf/r", Kind: "agent", Track: "direct", IssueNumber: 4}); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 9, 18, 5, 0, 0, time.UTC)
+	exit := 1
+	rec := MergeReceipt{Version: MergeReceiptVersion, TaskID: "t-rcpt", Repository: "sf/r", Issue: 4, PR: 9,
+		Base: "base", Head: "c1", MergeCommit: "m1", DiffHash: "9f2c", PolicyVersion: 7,
+		Gates:   []ReceiptGate{{Gate: GatePolicy, Verdict: "auto"}, {Gate: GateReproduction, Command: "bash check", Exit: &exit, Verdict: "failed"}},
+		CostEUR: 3.5,
+		Decisions: []ReceiptDecision{{Kind: ApprovalMerge, Decision: "approved", By: "sebastian", Note: "the strict improvement holds", At: &at},
+			{Kind: "case", Decision: ActExtend, By: "sebastian", Draw: "2 sessions and 60 minutes of agent time", Note: "the flaky checkout needs two more sessions", At: &at}},
+		Assessments: []ReceiptAssessment{{Source: CriteriaSourceReview, Verdict: "approved"}, {Source: CriteriaSourceJudgement, Criterion: "reads_calm", Verdict: "met", Evidence: "the page keeps its calm with 200 rows on it"}},
+	}
+	if err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil {
+		t.Fatal(err)
+	}
+	got, ok, err := s.MergeReceipt(ctx, "t-rcpt")
+	if err != nil || !ok {
+		t.Fatalf("MergeReceipt = (%v, %v), want (true, nil)", ok, err)
+	}
+	if !reflect.DeepEqual(got, rec) {
+		t.Fatalf("stored receipt =\n%+v\nwant\n%+v", got, rec)
+	}
+
+	// the first write stands: a second put changes nothing
+	rec.CostEUR, rec.PolicyVersion = 99, 1
+	if err := s.PutMergeReceipt(ctx, "t-rcpt", rec); err != nil {
+		t.Fatal(err)
+	}
+	if got, ok, err := s.MergeReceipt(ctx, "t-rcpt"); err != nil || !ok || got.CostEUR != 3.5 || got.PolicyVersion != 7 {
+		t.Fatalf("after a second put = (%+v, %v, %v), want the first receipt", got, ok, err)
+	}
+	if got, ok, err := s.MergeReceipt(ctx, "t-none"); err != nil || ok || !reflect.DeepEqual(got, MergeReceipt{}) {
+		t.Fatalf("task without a receipt = (%+v, %v, %v), want none", got, ok, err)
 	}
 }
 

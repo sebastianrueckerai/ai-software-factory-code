@@ -634,6 +634,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.sizeTime = workflow.GetVersion(ctx, "size-time", workflow.DefaultVersion, versionSizeTime)
 	run.cases = workflow.GetVersion(ctx, "cases", workflow.DefaultVersion, versionCases)
 	run.auditDraw = workflow.GetVersion(ctx, "audit-draw", workflow.DefaultVersion, versionAuditDraw)
+	run.caseQueue = workflow.GetVersion(ctx, "case-queue", workflow.DefaultVersion, versionCaseQueue)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
@@ -1356,6 +1357,15 @@ const (
 	// Read where such a verdict buys a session or time. A run from before
 	// buys it ungated, as a writer's did before versionCases.
 	versionAuditDraw workflow.Version = 1
+	// versionCaseQueue (change id "case-queue"): a case_resolved of a
+	// case the run does not wait on, as a beside question the review
+	// asked beside the checks, answered while the run waits on another
+	// case (a session cap, a gate's stop), is kept per case and taken
+	// when a wait comes to that case — the repeat guard holds the case
+	// for its stop — applied as one taken live, its answer counted once.
+	// A run from before drops it, and the comment's words alone answer
+	// the question.
+	versionCaseQueue workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1552,11 +1562,16 @@ type taskRun struct {
 	// gate's wait chose for the next session, "" for none
 	cases           workflow.Version
 	auditDraw       workflow.Version
+	caseQueue       workflow.Version
 	caseID          int64
 	resolution      *Resolution
 	stopFindings    string
 	reverify, rerun bool
 	nextModel       string
+	// resolvedQueue holds the resolutions case_resolved carried for cases
+	// this run does not wait on, by their case's id, taken when a wait
+	// comes to the case (versionCaseQueue)
+	resolvedQueue map[int64]queuedCase
 	// changesBy is the writer of the newest change request drained, whose
 	// session a change request at the cap draws (versionCases)
 	changesBy string
@@ -3706,6 +3721,14 @@ const maxMergeRetries = 6
 // not refusing) waits before the kept approval is tried again.
 const mergeRetryAfter = 10 * time.Minute
 
+// mergeWaitAfter is how long a merge refused with 405 "Please try again
+// later" (Forgejo's conflict check on the head still running) waits
+// before the pull request is read again and the merge tried once more.
+const mergeWaitAfter = 2 * time.Second
+
+// maxMergeWaits bounds those waits within one merge.
+const maxMergeWaits = 5
+
 // conflictVerdict sends a pull request that no longer merges into main
 // back to the agent. The worker bases its commit on the main commit the
 // merge brings in, so main's changes, .forgejo/ among them, stay main's.
@@ -4441,11 +4464,20 @@ func (t *taskRun) awaitHumanUntil(reason string, choices []string, end waitEnd) 
 	return t.awaitAnswer(question, end)
 }
 
+// queuedCase is a case_resolved this run took for a case it did not wait
+// on (versionCaseQueue): its signal, and when the answer came.
+type queuedCase struct {
+	signal CaseSignal
+	at     time.Time
+}
+
 // ask escalates the task with reason, which asks question, and the
 // agent's choices, if any: only comments newer than its comment answer
 // it (answerOf). At versionCases the stop opens its case (OpenTrip). The
 // resolution of one rung 0 resolved is the run's, and no one was asked,
-// else the run waits on the case and its ask's comment.
+// else the run waits on the case and its ask's comment. At versionCaseQueue
+// a wait that comes to a case whose answer came while the run waited on
+// another takes it at once, as one taken live.
 func (t *taskRun) ask(reason, question string, choices []string) error {
 	if t.cases < versionCases {
 		if err := workflow.ExecuteActivity(t.short, ActivityEscalate, t.taskID, reason, choices).Get(t.ctx, &t.escalation); err != nil {
@@ -4467,6 +4499,16 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	}
 	t.caseID, t.escalation = out.CaseID, out.Comment
 	t.anchors = append(t.anchors, anchor{comment: t.escalation, question: question})
+	if q, ok := t.resolvedQueue[out.CaseID]; ok && t.caseQueue >= versionCaseQueue {
+		// the answer came while the run waited on another case: this wait
+		// takes it at once, as one taken live (versionCaseQueue)
+		delete(t.resolvedQueue, out.CaseID)
+		res := q.signal.Res
+		t.resolution = &res
+		if note := strings.TrimSpace(res.Note); note != "" || q.signal.Comment != 0 {
+			t.insertAnswer(answerKey{t.escalation, q.signal.Comment}, answerText(q.signal.By, question, cmp.Or(note, res.Sentence()), q.at))
+		}
+	}
 	return nil
 }
 
@@ -4531,14 +4573,22 @@ func (t *taskRun) awaitAnswer(question string, end waitEnd) (final, why string, 
 		}
 		var done TaskSignal
 		for cases && workflow.GetSignalChannel(t.ctx, SignalCaseResolved).ReceiveAsync(&done) {
-			// another case's, as one rung 0 resolved in place, is dropped
-			if c := done.Case; c != nil && t.caseID != 0 && c.CaseID == t.caseID {
+			switch c := done.Case; {
+			case c != nil && t.caseID != 0 && c.CaseID == t.caseID:
 				res := c.Res
 				t.resolution, resolved = &res, true
 				if note := strings.TrimSpace(res.Note); note != "" || c.Comment != 0 {
 					t.insertAnswer(answerKey{t.escalation, c.Comment}, answerText(c.By, question, cmp.Or(note, res.Sentence()), done.At))
 				}
 				heard = append(heard, c.Comment)
+			case t.caseQueue >= versionCaseQueue && c != nil && c.CaseID != 0:
+				// a case the run does not wait on: another case's answer
+				// waits for the wait that comes to it
+				// (versionCaseQueue)
+				if t.resolvedQueue == nil {
+					t.resolvedQueue = map[int64]queuedCase{}
+				}
+				t.resolvedQueue[c.CaseID] = queuedCase{signal: *c, at: done.At}
 			}
 			done = TaskSignal{}
 		}

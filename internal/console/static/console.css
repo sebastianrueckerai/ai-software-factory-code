@@ -812,6 +812,7 @@ body:has(#screen) #flash { flex: none; }
 .said ul, .said ol { padding-left: 18px; }
 .said, .applied, .refused { overflow-wrap: anywhere; }
 .said code, .applied code, .refused code { font-size: .85em; padding: 0 4px; border: 1px solid var(--line); border-radius: 2px; background: var(--bg-panel); }
+.said a.docref { color: var(--accent); text-decoration: underline; text-underline-offset: 2px; }
 details.tool { margin: 8px 0; border: 1px solid var(--line); background: var(--bg-panel); font: 12px/1.5 var(--font-mono); color: var(--text-muted); }
 details.tool summary { display: flex; align-items: center; gap: 8px; padding: 5px 10px; cursor: pointer; list-style: none; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 details.tool summary::-webkit-details-marker { display: none; }

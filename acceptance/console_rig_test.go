@@ -481,6 +481,14 @@ func (d *AccDocs) serve(w http.ResponseWriter, req *http.Request, proxy *httputi
 			return
 		}
 		_ = json.NewEncoder(w).Encode(map[string]string{"content": base64.StdEncoding.EncodeToString([]byte(text)), "sha": factoryd.ContentHash(text)[:12]})
+	case req.Method == http.MethodGet && strings.HasPrefix(req.URL.Path, "/api/v1/repos/sf/docs/git/trees/"):
+		paths := slices.Sorted(maps.Keys(d.files))
+		tree := make([]map[string]any, len(paths))
+		for i, p := range paths {
+			tree[i] = map[string]any{"path": p}
+		}
+		_ = json.NewEncoder(w).Encode(map[string]any{"sha": accDocSHA(d.version),
+			"total_count": len(paths), "tree": tree})
 	case req.Method == http.MethodGet && req.URL.Path == "/api/v1/repos/sf/docs/commits" && req.URL.Query().Get("path") != "" &&
 		req.URL.Query().Get("sha") == "master":
 		// the path's head commit: the fake's version as its sha
