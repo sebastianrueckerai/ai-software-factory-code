@@ -4630,6 +4630,17 @@ func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by 
 	return nil
 }
 
+func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, taskID, by string, rows []CriterionVerdict, closed *Event) error {
+	if err := s.PutCriteriaVerdicts(ctx, taskID, CriteriaSourceApprover, by, rows); err != nil {
+		return err
+	}
+	if closed != nil {
+		_, err := s.Record(ctx, *closed)
+		return err
+	}
+	return nil
+}
+
 func (s *fakeStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
 	if s.criteriaVerdicts == nil {
 		return nil

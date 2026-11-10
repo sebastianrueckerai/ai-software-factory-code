@@ -196,7 +196,7 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "failed":
 		return "close ends it (close)"
 	case "done", "closed":
-		return "the card is final: a new card continues the work"
+		return "a new card continues the work"
 	}
 	return "wait a moment"
 }
@@ -305,11 +305,16 @@ func (c *Console) approves(ctx context.Context, a actor, repository, what string
 		return nil
 	}
 	log.Printf("console: %s is no approver of %s: %s refused", a.s.user, repository, what)
-	name := repository
+	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", c.projectName(ctx, repository), what))
+}
+
+// projectName is the name of the project of repository, the repository's
+// own when none is read.
+func (c *Console) projectName(ctx context.Context, repository string) string {
 	if p, ok, err := c.projectAt(ctx, repository); err == nil && ok {
-		name = p.Name
+		return p.Name
 	}
-	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", name, what))
+	return repository
 }
 
 // processOfCard is the name of the process card t follows: its project's
@@ -1826,8 +1831,8 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 }
 
 // doClose closes card id as the human, its note commented first when
-// given (closeIssue); a failed card or a done plan between rounds closes
-// too. A card waiting on a live case closes through Act: an agent card's
+// given (closeIssue); a failed card or a done plan closes
+// too, the plan's open criteria waived with the note first (waivePlan). A card waiting on a live case closes through Act: an agent card's
 // Act closes its issue as factoryd's recorded close and has the note
 // posted after it as the human's, and a human card's close resolves its
 // case once its own close went through (choiceDone).
@@ -1840,15 +1845,15 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if err != nil {
 		return "", err
 	}
-	if factoryd.Final(t.Status) && t.Status != "failed" {
-		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
-		if err != nil {
-			log.Printf("console: %s closes %s: the plan: %v", a.s.user, t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "The plan could not be read: "+errText(err)+". Try again in a moment.")
+	plan := factoryd.DonePlan(t)
+	if factoryd.Final(t.Status) && t.Status != "failed" && !plan {
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))
+	}
+	if plan {
+		if err := c.closePlanCriteria(ctx, a, t, note); err != nil {
+			return "", err
 		}
-		if !between {
-			return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
-		}
+		note = factoryd.PlanCloseWords(a.s.user, note)
 	}
 	k, err := c.newestCase(ctx, t)
 	if err != nil {
@@ -1867,6 +1872,27 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 		return said, err
 	}
 	return c.choiceDone(ctx, a, t, k.ID, closing, said, posted)
+}
+
+// closePlanCriteria waives every open criterion of done plan t with the
+// close's note as the reason and records plan_closed with it, before the
+// issue closes: the plan's merged cards stay on main. Waiving is an
+// approver's act, as the waive press is.
+func (c *Console) closePlanCriteria(ctx context.Context, a actor, t factoryd.Task, note string) error {
+	n, err := c.cfg.CloseDonePlan(ctx, t.ID, a.s.user, note, c.isApprover(ctx, a.s.user, t.Repository))
+	switch {
+	case errors.Is(err, factoryd.ErrNotApprover):
+		return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d, which has open criteria and waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNoReason):
+		return refuse(http.StatusBadRequest, fmt.Sprintf("Plan #%d has open criteria, and Close waives each with your note as the reason: write the note and close again.", t.IssueNumber))
+	case err != nil:
+		log.Printf("console: %s closes plan %s, its criteria: %v", a.s.user, t.ID, err)
+		return refuse(http.StatusInternalServerError, "The plan's open criteria could not be waived: "+errText(err)+". Try again in a moment.")
+	case n > 0:
+		log.Printf("console: %s waived %d criteria of %s via %s", a.s.user, n, t.ID, a.via)
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCriterionDecided, map[string]any{"criteria": n, "verb": "waived", "reason": note})
+	}
+	return nil
 }
 
 // closeIssue closes card t's issue as a, its note commented first when

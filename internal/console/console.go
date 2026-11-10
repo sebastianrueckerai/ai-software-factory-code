@@ -230,6 +230,10 @@ type Config struct {
 	// one, with their words (factoryd.DecideCriterion).
 	GrantCriteria   func(ctx context.Context, id, by string, approval int64) (int, error)
 	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
+	// CloseDonePlan waives every open criterion of done plan id with the
+	// note and records its plan_closed in one write, and answers how many
+	// it waived (Runner.CloseDonePlan); approver says by is one.
+	CloseDonePlan func(ctx context.Context, id, by, note string, approver bool) (int, error)
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.

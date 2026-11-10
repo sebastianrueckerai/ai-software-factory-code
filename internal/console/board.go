@@ -578,9 +578,12 @@ type card struct {
 	// (factoryd.RoundLine), shown in place of its rollup; "" for a plan
 	// of one round or filed before rounds.
 	Round string
-	// BetweenRounds is a done plan whose later rounds are still to plan
-	// (factoryd.BetweenRounds).
-	BetweenRounds bool
+	// DonePlan is a plan card that is done (factoryd.DonePlan): a writer's
+	// Close ends it.
+	DonePlan bool
+	// OpenCriteria counts the done plan's criteria that stand neither met
+	// nor waived: its Close waives each with the note it asks for.
+	OpenCriteria int
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
 	Blocked   int
@@ -606,12 +609,11 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed, which has no other way out, or a plan between
-// rounds. A card whose question offers a close, or a choice card, offers
+// a human, or failed, which has no other way out, or a done plan. A card whose question offers a close, or a choice card, offers
 // its choices alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
-	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.BetweenRounds)
+	return k.MayWriteSummary && !k.ChoiceCard() && !ownClose && (k.Status == "waiting-human" || k.Status == "failed" || k.DonePlan)
 }
 
 // ChoiceCard: the card answers by its question's choices alone, no free
@@ -1978,15 +1980,20 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 				k.Plan = append(k.Plan, c.card(child))
 			}
 		}
+		k.DonePlan = factoryd.DonePlan(t)
 		_, p, _, err := c.planTable(ctx, t.ID, 0)
-		if err == nil {
-			k.BetweenRounds, err = factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
-		}
 		if err != nil {
 			log.Printf("console: the plan of %s: %v", t.ID, err)
 			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
 		} else if cardsErr == nil {
 			k.Round = factoryd.RoundLine(p, cards)
+		}
+		if err == nil && len(p.Criteria) > 0 {
+			k.OpenCriteria, err = c.openCriteria(ctx, t.ID, p)
+			if err != nil {
+				log.Printf("console: the criteria of %s: %v", t.ID, err)
+				v.problems = append(v.problems, "the criteria of "+t.ID+" could not be read")
+			}
 		}
 		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
 	}
@@ -3758,4 +3765,18 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 	}
 	return factoryd.GetPagesUpTo[prFile](r.Context(), c.userCall(current(r)),
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
+}
+
+// openCriteria counts the criteria of plan id's p that stand neither met
+// nor waived.
+func (c *Console) openCriteria(ctx context.Context, id string, p factoryd.Plan) (int, error) {
+	integration, err := factoryd.IntegrationCard(ctx, c.cfg.Tasks, id, p)
+	if err != nil {
+		return 0, err
+	}
+	rows, err := c.cfg.Tasks.CriteriaVerdicts(ctx, integration.ID)
+	if err != nil {
+		return 0, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
+	}
+	return len(factoryd.OpenCriteria(p, rows)), nil
 }

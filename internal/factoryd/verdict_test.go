@@ -1738,3 +1738,96 @@ func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
 		t.Fatalf("a test criterion on a gate row alone: plan_closed recorded %d times, want 0", got)
 	}
 }
+
+// tenCriteriaPlan files a plan of ten invariant criteria k1..k10 whose
+// integration card card-1 is merged, under plan t-plan, on a runner.
+func tenCriteriaPlan(t *testing.T, statuses ...string) (*Runner, *fakeStore, *planForgejo) {
+	t.Helper()
+	r, s, _, fj := planWithoutCriteria(t, statuses...)
+	p := Plan{Summary: "the plan", Cards: []PlanCard{{Key: "card-1", Role: RoleIntegration, Title: "Integration", Directories: []string{"a"}}}}
+	for i := 1; i <= 10; i++ {
+		p.Criteria = append(p.Criteria, PlanCriterion{ID: fmt.Sprintf("k%d", i), Kind: CriterionInvariant, Suite: "./..."})
+	}
+	newRevision(t, s, "t-plan", p)
+	mergeCard(s, "card-1")
+	return r, s, fj
+}
+
+// A person's close of a done plan waives every open criterion with the
+// note in one write, leaves the criteria that stand met alone, and is an
+// approver's act that needs the note.
+func TestCloseDonePlanWaives(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done")
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", "review", FactoryDecider, []CriterionVerdict{{Criterion: "k4", Verdict: "met", Kind: CriterionInvariant}}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CloseDonePlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+		t.Fatalf("a writer who is no approver: %v, want ErrNotApprover", err)
+	}
+	if _, err := r.CloseDonePlan(ctx, "t-plan", "sebastian", " \t", true); !errors.Is(err, ErrNoReason) {
+		t.Fatalf("an empty note: %v, want ErrNoReason", err)
+	}
+	if _, err := r.CloseDonePlan(ctx, "t-none", "sebastian", "why", true); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("an unknown plan: %v, want ErrNotFound", err)
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "card-1"); len(rows) != 1 || closeRows(s) != 0 {
+		t.Fatalf("the refusals wrote %d rows and %d closes, want the one met row and no close", len(rows), closeRows(s))
+	}
+	n, err := r.CloseDonePlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
+	if err != nil || n != 9 {
+		t.Fatalf("CloseDonePlan = %d, %v; want 9 (k4 stands met)", n, err)
+	}
+	rows, _ := s.CriteriaVerdicts(ctx, "card-1")
+	waived := 0
+	for _, row := range rows {
+		if row.Verdict == "waived" {
+			waived++
+			if row.Evidence != "the cards moved to the rebuild" || row.Source != "approver" || row.DecidedBy != "sebastian" || row.Criterion == "k4" {
+				t.Errorf("row %+v: want the note on an approver row, not on k4", row)
+			}
+		}
+	}
+	if waived != 9 {
+		t.Errorf("%d waived rows, want 9", waived)
+	}
+}
+
+// A done plan with ten open criteria and a merged card: the close waives
+// all ten with the note and records plan_closed with its words in the same
+// write, so a sweep right after finds the plan closed and changes nothing,
+// whether or not the issue has closed yet.
+func TestCloseDonePlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
+	ctx := context.Background()
+	r, s, fj := tenCriteriaPlan(t, "done")
+	n, err := r.CloseDonePlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
+	if err != nil || n != 10 {
+		t.Fatalf("CloseDonePlan = %d, %v; want 10", n, err)
+	}
+	rows, _ := s.CriteriaVerdicts(ctx, "card-1")
+	if len(rows) != 10 {
+		t.Fatalf("%d rows, want 10", len(rows))
+	}
+	for _, row := range rows {
+		if row.Verdict != "waived" || row.Evidence != "the cards moved to the rebuild" {
+			t.Errorf("row %+v, want a waiver carrying the note", row)
+		}
+	}
+	var closes []Event
+	for _, e := range s.events {
+		if e.Kind == EventPlanClosed {
+			closes = append(closes, e)
+		}
+	}
+	wantWords := "closed by sebastian: the cards moved to the rebuild; its merged cards stay on main"
+	if len(closes) != 1 || closes[0].Detail["criteria"] != 10 || closes[0].Detail["words"] != wantWords || closes[0].Actor != "sebastian" {
+		t.Fatalf("plan_closed rows %+v, want one for sebastian, criteria 10, words %q", closes, wantWords)
+	}
+	// the sweep runs before the issue closes, and again once the card ends
+	r.planCloseCheck(ctx, "t-plan")
+	setStatus(s, "t-plan", "closed")
+	r.planCloseCheck(ctx, "t-plan")
+	if got := commentBodies(fj); len(got) != 0 || closeRows(s) != 1 {
+		t.Errorf("after the sweeps: comments %q, plan_closed rows %d; want none and 1", got, closeRows(s))
+	}
+}

@@ -1038,6 +1038,10 @@ func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, s
 	return nil
 }
 
+func (s *acceptanceStore) ClosePlanWithWaivers(context.Context, string, string, []factoryd.CriterionVerdict, *factoryd.Event) error {
+	return nil
+}
+
 func (s *acceptanceStore) DeleteVerdictsButApprover(context.Context, string, string) error {
 	return nil
 }

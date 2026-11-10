@@ -121,3 +121,36 @@ func TestPGStoreCriteriaVerdictsAndCatches(t *testing.T) {
 		t.Errorf("first catch = %+v, want round %d's first delta c3", first, rev)
 	}
 }
+
+// The waivers and the plan_closed row land together or not at all: a close
+// row Postgres refuses leaves no waiver, and a good one leaves both.
+func TestPGStoreClosePlanWithWaivers(t *testing.T) {
+	dsn := schematest.DSN(t, "factoryd")
+	ctx := context.Background()
+	s, err := OpenStore(ctx, dsn)
+	if err != nil {
+		t.Fatalf("OpenStore: %v", err)
+	}
+	defer s.db.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, events CASCADE`); err != nil {
+		t.Fatalf("truncate: %v", err)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t1", Kind: "agent", Status: "done", Objective: "x", Repository: "sf/r", IssueNumber: 1, Track: "plan"}); err != nil {
+		t.Fatalf("CreateTask: %v", err)
+	}
+	waivers := []CriterionVerdict{{Criterion: "c1", Verdict: "waived", Evidence: "why", Kind: CriterionTest}}
+	if err := s.ClosePlanWithWaivers(ctx, "t1", "sebastian", waivers, &Event{TaskID: "t1", Kind: EventPlanClosed}); err == nil {
+		t.Fatal("a close row without its repository was accepted")
+	}
+	if rows, _ := s.CriteriaVerdicts(ctx, "t1"); len(rows) != 0 {
+		t.Fatalf("the failed close left rows %+v", rows)
+	}
+	e := &Event{Repository: "sf/r", TaskID: "t1", Kind: EventPlanClosed, Actor: "sebastian", Via: ViaConsole, Detail: map[string]any{"criteria": 1}}
+	if err := s.ClosePlanWithWaivers(ctx, "t1", "sebastian", waivers, e); err != nil {
+		t.Fatal(err)
+	}
+	rows, _ := s.CriteriaVerdicts(ctx, "t1")
+	if _, closed, err := s.PlanClosed(ctx, "t1"); err != nil || !closed || len(rows) != 1 || rows[0].Verdict != "waived" || rows[0].DecidedBy != "sebastian" {
+		t.Fatalf("closed %t (%v), rows %+v; want both written", closed, err, rows)
+	}
+}

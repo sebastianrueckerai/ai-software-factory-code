@@ -636,6 +636,9 @@ func main() {
 		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
 			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
 		},
+		CloseDonePlan: func(ctx context.Context, id, by, note string, approver bool) (int, error) {
+			return runner.CloseDonePlan(ctx, id, by, note, approver)
+		},
 		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
 			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)
 		},

@@ -795,6 +795,9 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// ClosePlanWithWaivers writes an approver's waiver rows on task and,
+	// when closed is not nil, that plan_closed event, in one transaction.
+	ClosePlanWithWaivers(ctx context.Context, taskID, by string, rows []CriterionVerdict, closed *Event) error
 	// DeleteVerdictsButApprover deletes task's rows of criterion from
 	// every source but the approver's; none is no error.
 	DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error

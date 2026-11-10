@@ -904,6 +904,8 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && len(parts) == 2 && parts[0] == "issues":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			fmt.Fprintf(w, `{"number":%d,"state":%q}`, n, f.issues[n].state)
+		case r.Method == "GET" && len(parts) == 3 && parts[0] == "issues" && parts[2] == "timeline":
+			w.Write([]byte(`[{"type":"close","user":{"login":"factory-agent"}}]`))
 		case r.Method == "GET" && strings.HasPrefix(rest, "pulls"):
 			json.NewEncoder(w).Encode([]any{})
 		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":

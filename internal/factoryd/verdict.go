@@ -4,6 +4,7 @@ import (
 	"cmp"
 	"context"
 	"crypto/sha256"
+	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -64,6 +65,12 @@ type CriterionVerdict struct {
 // PutCriteriaVerdicts stores task's verdict rows of one source, each row
 // over the row of the same criterion and source.
 func (s *PGStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error {
+	return putCriteriaVerdicts(ctx, s.db, taskID, source, by, rows)
+}
+
+func putCriteriaVerdicts(ctx context.Context, db interface {
+	ExecContext(context.Context, string, ...any) (sql.Result, error)
+}, taskID, source, by string, rows []CriterionVerdict) error {
 	if len(rows) == 0 {
 		return nil
 	}
@@ -71,13 +78,41 @@ func (s *PGStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by st
 	if err != nil {
 		return err
 	}
-	_, err = s.db.ExecContext(ctx, `INSERT INTO criteria_verdicts (task_id, criterion_id, kind, verdict, evidence, fix, source, decided_by)
+	_, err = db.ExecContext(ctx, `INSERT INTO criteria_verdicts (task_id, criterion_id, kind, verdict, evidence, fix, source, decided_by)
 		SELECT $1, (v->>'criterion'), COALESCE(v->>'kind', ''), COALESCE(v->>'verdict', ''), COALESCE(v->>'evidence', ''), COALESCE(v->>'fix', ''), $2, $3
 		FROM jsonb_array_elements($4::jsonb) AS a(v)
 		ON CONFLICT (task_id, criterion_id, source) DO UPDATE SET verdict = EXCLUDED.verdict, evidence = EXCLUDED.evidence,
 			fix = EXCLUDED.fix, decided_by = EXCLUDED.decided_by, created_at = now()`,
 		taskID, source, by, string(b))
 	return err
+}
+
+// ClosePlanWithWaivers writes the approver's waiver rows on card taskID
+// and, when closed is not nil, the plan's plan_closed event in one
+// transaction: the close check never sees the waivers without the close.
+func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, taskID, by string, rows []CriterionVerdict, closed *Event) error {
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if err := putCriteriaVerdicts(ctx, tx, taskID, CriteriaSourceApprover, by, rows); err != nil {
+		return err
+	}
+	var e Event
+	var inserted bool
+	if closed != nil {
+		if e, inserted, err = s.insertEvent(ctx, tx, *closed); err != nil {
+			return err
+		}
+	}
+	if err := tx.Commit(); err != nil {
+		return err
+	}
+	if inserted {
+		s.publish(e)
+	}
+	return nil
 }
 
 func (s *PGStore) DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error {
@@ -223,6 +258,92 @@ func DecideCriterion(ctx context.Context, store Store, id, cid, verdict, by, rea
 	}
 	return store.PutCriteriaVerdicts(ctx, integration.ID, CriteriaSourceApprover, by,
 		[]CriterionVerdict{{Criterion: cid, Verdict: verdict, Evidence: reason, Kind: c.Kind}})
+}
+
+// ErrNoReason refuses a close that must waive criteria without a note.
+var ErrNoReason = errors.New("a waiver needs its reason")
+
+// ErrNotApprover refuses a waiver by anyone who is not an approver.
+var ErrNotApprover = errors.New("only an approver may waive criteria")
+
+// PlanCloseWords is what a person's close of a plan says on its issue and
+// in its plan_closed row.
+func PlanCloseWords(by, note string) string {
+	words := "closed by " + by
+	if note = strings.TrimSpace(note); note != "" {
+		words += ": " + note
+	}
+	return words + "; its merged cards stay on main"
+}
+
+// CloseDonePlan is a person's close of done plan id: it waives every open
+// criterion with note as the reason (an approver's act, and a note is
+// required), and records plan_closed in the same transaction, so the close
+// check never finds waivers without the close. It reports how many
+// criteria it waived. The caller closes the issue afterwards.
+func (r *Runner) CloseDonePlan(ctx context.Context, id, by, note string, approver bool) (int, error) {
+	t, ok, err := r.store.Task(ctx, id)
+	if err != nil {
+		return 0, fmt.Errorf("plan %s: %w", id, err)
+	}
+	if !ok {
+		return 0, fmt.Errorf("plan %s: %w", id, ErrNotFound)
+	}
+	p, _, err := planOfStore(ctx, r.store, id, t.ID)
+	if err != nil {
+		return 0, err
+	}
+	home := id
+	var waivers []CriterionVerdict
+	if len(p.Criteria) > 0 {
+		integration, err := IntegrationCard(ctx, r.store, id, p)
+		if err != nil {
+			return 0, err
+		}
+		rows, err := r.store.CriteriaVerdicts(ctx, integration.ID)
+		if err != nil {
+			return 0, fmt.Errorf("verdicts of %s: %w", integration.ID, err)
+		}
+		home = integration.ID
+		for _, c := range openCriteria(p, rows) {
+			waivers = append(waivers, CriterionVerdict{Criterion: c.ID, Verdict: "waived", Evidence: strings.TrimSpace(note), Kind: c.Kind})
+		}
+	}
+	if len(waivers) > 0 {
+		switch note = strings.TrimSpace(note); {
+		case !approver:
+			return 0, ErrNotApprover
+		case note == "":
+			return 0, ErrNoReason
+		case len(note) > 2000:
+			return 0, errors.New("a note of up to 2000 characters when criteria are open")
+		}
+	}
+	_, closed, err := r.store.PlanClosed(ctx, id)
+	if err != nil {
+		return 0, err
+	}
+	var event *Event
+	if !closed {
+		event = &Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventPlanClosed, Actor: by, Via: ViaConsole,
+			Detail: map[string]any{"criteria": len(p.Criteria), "waived": len(waivers), "words": PlanCloseWords(by, note)}}
+	}
+	if len(waivers) == 0 && event == nil {
+		return 0, nil
+	}
+	if err := r.store.ClosePlanWithWaivers(ctx, home, by, waivers, event); err != nil {
+		return 0, err
+	}
+	if event != nil {
+		if r.timeline != nil {
+			if err := r.timeline.Append(ctx, id, StepEvent, map[string]any{"event": EventPlanClosed, "criteria": len(p.Criteria)}); err != nil {
+				log.Printf("plan %s: timeline plan_closed: %v", id, err)
+			}
+		}
+		r.record(ctx, id, "plan_closed", map[string]any{"criteria": len(p.Criteria)})
+		r.wakeHeld(ctx, t.Repository)
+	}
+	return len(waivers), nil
 }
 
 // GrantCriteria writes the catch rows of an approver's grant of one more
@@ -489,6 +610,10 @@ func openCriteria(p Plan, rows []CriterionVerdict) []PlanCriterion {
 	}
 	return open
 }
+
+// OpenCriteria are the criteria of p that stand neither met nor waived on
+// the integration card's rows.
+func OpenCriteria(p Plan, rows []CriterionVerdict) []PlanCriterion { return openCriteria(p, rows) }
 
 // neverJudged are the plan's criteria no verdict row holds, from any
 // source: a judgement that never happened, which an unmet row is not.

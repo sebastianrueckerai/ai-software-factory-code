@@ -8,6 +8,8 @@ import (
 	"log"
 	"slices"
 	"strings"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // filingRound is the planning round the next revision of a plan files:
@@ -233,8 +235,10 @@ func RoundItems(p Plan, cards []Task) []RoundItem {
 // closed at that point by a close that counts (closeCounts) is a
 // person's close the webhook missed: the card ends closed and nothing
 // starts. Any other close does not count, as on the webhook: the issue
-// opens again and the round starts. A closed plan, one under another
-// replan and one whose own group revert runs are left as they are.
+// opens again and the round starts. A done plan without later rounds
+// whose issue a close that counts closed ends closed the same way. A
+// closed plan, one under another replan and one whose own group revert
+// runs are left as they are.
 func (r *Runner) roundCheck(ctx context.Context, parent string) {
 	if err := r.nextRound(ctx, parent); err != nil {
 		log.Printf("plan %s: the round check: %v", parent, err)
@@ -249,8 +253,15 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		return err
 	}
 	p, revision, err := planOfStore(ctx, r.store, parent, "")
-	if err != nil || len(p.Outline) == 0 || r.planClosed(ctx, parent) {
+	if err != nil || r.planClosed(ctx, parent) {
 		return err
+	}
+	if len(p.Outline) == 0 {
+		counts, closer, _, err := r.personClosedIssue(ctx, t, repo)
+		if err != nil || !counts || closer == r.forgejo.BotUser {
+			return err
+		}
+		return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
 	}
 	if pause, paused, err := r.store.QueuePause(ctx, t.Repository); err != nil || paused && pause.Plan == t.ID {
 		return err
@@ -263,20 +274,12 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 	if err != nil || pending && step.Origin != ReplanRound {
 		return err
 	}
-	closer, err := r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
-	closed := closer != "" || errors.Is(err, errNoCloser)
-	switch {
-	case errors.Is(err, errNoCloser):
-		log.Printf("plan %s: issue #%d closed, its timeline names no closer: not counted", t.ID, t.IssueNumber)
-	case err != nil:
+	counts, _, closed, err := r.personClosedIssue(ctx, t, repo)
+	if err != nil {
 		return err
-	case closed:
-		switch counts, err := closeCounts(ctx, r.store, r.forgejo.BotUser, r.Writes, t, closer); {
-		case err != nil:
-			return err
-		case counts:
-			return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
-		}
+	}
+	if counts {
+		return r.store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
 	}
 	if !pending {
 		wrote, err := r.timeline.AppendUnlessPending(ctx, t.ID, stepReplan,
@@ -286,6 +289,27 @@ func (r *Runner) nextRound(ctx context.Context, parent string) error {
 		}
 	}
 	return r.requeuePlan(ctx, t, closed)
+}
+
+// personClosedIssue reads plan t's issue: closed says it is closed, counts
+// that a close that counts (closeCounts) closed it, as a webhook would
+// have told, closer who.
+func (r *Runner) personClosedIssue(ctx context.Context, t Task, repo Repo) (counts bool, closer string, closed bool, err error) {
+	if t.IssueNumber == 0 {
+		return false, "", false, nil
+	}
+	closer, err = r.forgejo.IssueClosedBy(ctx, repo.Owner, repo.Name, t.IssueNumber)
+	closed = closer != "" || errors.Is(err, errNoCloser)
+	switch {
+	case errors.Is(err, errNoCloser):
+		log.Printf("plan %s: issue #%d closed, its timeline names no closer: not counted", t.ID, t.IssueNumber)
+	case err != nil:
+		return false, "", false, err
+	case closed:
+		counts, err = closeCounts(ctx, r.store, r.forgejo.BotUser, r.Writes, t, closer)
+		return counts, closer, closed, err
+	}
+	return false, closer, closed, nil
 }
 
 // planRevisions reads plan revisions: the Store does, and the console's
@@ -309,12 +333,8 @@ func leavesRounds(ctx context.Context, store planRevisions, id string) (bool, er
 	return len(p.Outline) > 0, nil
 }
 
-// BetweenRounds tells whether plan card t is done while its newest
-// revision leaves parts to later rounds: a person's close ends it closed,
-// as a failed card's does.
-func BetweenRounds(ctx context.Context, store planRevisions, t Task) (bool, error) {
-	if t.Status != "done" {
-		return false, nil
-	}
-	return leavesRounds(ctx, store, t.ID)
+// DonePlan tells whether card t is a plan whose rounds are over for now:
+// a person's close ends it closed, as a failed card's does, in any round.
+func DonePlan(t Task) bool {
+	return t.Track == policy.TrackPlan && t.Status == "done"
 }
