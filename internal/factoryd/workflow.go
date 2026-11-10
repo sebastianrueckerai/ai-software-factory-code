@@ -1424,6 +1424,13 @@ const (
 	// the class's unsized time. A run from before reads that, and such a
 	// card asks the agent-time cap before its first session.
 	versionSizedLeast workflow.Version = 1
+	// versionTripModel (change id "trip-model"): a trip of a run that reads
+	// a session's opening floor (the lifecycle's, a report's) carries the
+	// model its next session opens on, so the stop's facts weigh the floor
+	// of that model, a retry_stronger's the stronger rung's. Read where a
+	// trip opens. A run from before carries none, and the facts weigh the
+	// card's last session's model.
+	versionTripModel workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1548,6 +1555,7 @@ type taskRun struct {
 	checkinClock      workflow.Version // a session's check-in is no agent time (versionCheckinClock)
 	sessionKill       workflow.Version // a memory kill rides the next stops as a fact (versionSessionKill)
 	killed            *SessionKill     // the last session's memory kill (versionSessionKill)
+	floorModel        *string          // the model the next session opens on, whose floor the run reads and a trip carries (versionTripModel)
 	checkinGrant      workflow.Version // the answer to a check-in share stop grants a share (versionCheckinGrant)
 	checkinRepeat     workflow.Version // a stop whose answer changed nothing is not asked again (versionCheckinRepeat)
 	extendRaise       workflow.Version // the answer wake reloads the row's caps (versionExtendRaise)
@@ -1710,6 +1718,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	if t.cfg.Task.Stronger {
 		model = t.cfg.Models.Stronger
 	}
+	t.floorModel = &model
 	// findings come from outside the sessions (a verification, a human, the
 	// issue's author); own are the newest unpushed session's own lines,
 	// which replace an earlier session's. sources names where each of
@@ -4668,6 +4677,9 @@ func (t *taskRun) ask(reason, question string, choices []string) error {
 	t.resolution, t.caseID = nil, 0
 	var out TripOutcome
 	in := TripInput{TaskID: t.taskID, Reason: reason, Choices: choices, Head: t.head, CheckinStop: t.checkinStop, Killed: t.killed}
+	if t.floorModel != nil && workflow.GetVersion(t.ctx, "trip-model", workflow.DefaultVersion, versionTripModel) >= versionTripModel {
+		in.Model = *t.floorModel
+	}
 	t.checkinStop = ""
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenTrip, in).Get(t.ctx, &out); err != nil {
 		return err

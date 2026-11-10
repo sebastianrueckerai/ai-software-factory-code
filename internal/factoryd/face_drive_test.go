@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
@@ -316,5 +317,40 @@ func TestHumanCardRunsNoSession(t *testing.T) {
 	val, err := execActivity(t, r, ActivityReconcile, "t1")
 	if err != nil || val.Get(&got) != nil || !got.Skip {
 		t.Fatalf("Reconcile = (%+v, %v), want the human card skipped", got, err)
+	}
+}
+
+// A trip carries the model the run's next session opens on, the one whose
+// floor the stop's facts weigh: the start rung's after a plain stop, the
+// stronger rung's after a retry_stronger, which the next session runs on.
+// A run from before the change carries none.
+func TestTripCarriesTheNextSessionsModel(t *testing.T) {
+	climb := SessionResult{Outcome: OutcomeRetryStronger, SessionID: "s1", Summary: "too hard", Findings: []string{"needs the stronger rung"}}
+	stop := SessionResult{Outcome: OutcomeEscalate, SessionID: "s2", Summary: "stopped", Reason: "a stop the factory cannot name"}
+	for name, tc := range map[string]struct {
+		sessions []SessionResult
+		before   bool
+		want     string
+	}{
+		"a plain stop":           {[]SessionResult{stop}, false, testWorkflowConfig.Models.Start},
+		"after a retry_stronger": {[]SessionResult{climb, stop}, false, testWorkflowConfig.Models.Stronger},
+		"a run from before":      {[]SessionResult{climb, stop}, true, ""},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			if tc.before {
+				h.env.OnGetVersion("trip-model", workflow.DefaultVersion, versionTripModel).Return(workflow.DefaultVersion)
+			}
+			h.onSessions(tc.sessions...)
+			h.signalAfter(48*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			h.run(t)
+			i := slices.IndexFunc(h.trips, func(in TripInput) bool { return strings.HasPrefix(in.Reason, "a stop") })
+			if i < 0 || h.trips[i].Model != tc.want {
+				t.Fatalf("trips %+v; want the stop to carry %q", h.trips, tc.want)
+			}
+			if last := h.sessions[len(h.sessions)-1]; tc.want != "" && last.Model != tc.want {
+				t.Fatalf("the stopped session ran on %q, want %q", last.Model, tc.want)
+			}
+		})
 	}
 }

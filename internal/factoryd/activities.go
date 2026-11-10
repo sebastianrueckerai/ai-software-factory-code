@@ -1518,7 +1518,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 		c, err = r.store.NewestAskCase(ctx, t.ID)
 	} else {
 		var f CaseFacts
-		if f, err = r.tripFacts(ctx, t, ""); err == nil {
+		if f, err = r.tripFacts(ctx, t, "", ""); err == nil {
 			if c, _, err = r.tripCase(ctx, t, f, TripInput{TaskID: taskID, Reason: reason, Choices: choices}); err == nil {
 				c, _, err = r.store.OpenCase(ctx, c)
 			}

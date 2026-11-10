@@ -1995,6 +1995,8 @@ func (t *taskRun) replanCut(res SessionResult) (final, refused string, done bool
 // session counts against the session cap, where the card waits for a
 // human and a writer's comment buys one more.
 func (t *taskRun) planLoop() (string, error) {
+	// the plan loop reads no opening floor: its trips carry no model
+	t.floorModel = nil
 	if err := workflow.ExecuteActivity(t.short, ActivityEnsureIssue, t.taskID).Get(t.ctx, nil); err != nil {
 		return t.finish("failed", "ensure issue: "+errMessage(err))
 	}

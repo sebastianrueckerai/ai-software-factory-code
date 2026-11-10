@@ -43,13 +43,17 @@ type CaseFacts struct {
 	AgentTimeCapS float64 `json:"agent_time_cap_s"`
 	SessionLeastS float64 `json:"session_least_s"`
 	// Model is the model the next session runs on, "" when none is known
-	// yet: the class's session_model, else the card's last session's.
-	Model      string   `json:"model,omitempty"`
-	BudgetEUR  float64  `json:"budget_eur"`
-	SpentEUR   float64  `json:"spent_eur"`          // Task.EnforcedSpent()
-	LeftEUR    float64  `json:"left_eur"`           // Task.Left()
-	ReserveEUR float64  `json:"reserve_eur"`        // the gate reserve a session's ceiling holds out of LeftEUR
-	FloorEUR   float64  `json:"floor_eur"`          // what the next opening needs, as the opening's floor reads it (needOf)
+	// yet: the class's session_model, else the one the run's trip names,
+	// else the card's last session's.
+	Model      string  `json:"model,omitempty"`
+	BudgetEUR  float64 `json:"budget_eur"`
+	SpentEUR   float64 `json:"spent_eur"`   // Task.EnforcedSpent()
+	LeftEUR    float64 `json:"left_eur"`    // Task.Left()
+	ReserveEUR float64 `json:"reserve_eur"` // the gate reserve a session's ceiling holds out of LeftEUR
+	FloorEUR   float64 `json:"floor_eur"`   // what the next opening on Model needs, as the run's floor reads it (needOf), else the policy's floor
+	// FloorFree: the run's floor funds the next session unweighed, with no
+	// price source or no model to price (funded).
+	FloorFree  bool     `json:"floor_free,omitempty"`
 	CeilingEUR float64  `json:"ceiling_eur"`        // the card's own, else CardCeiling
 	Findings   []string `json:"findings,omitempty"` // the finding ids (findingID) Head's newest checks, review and audit raised
 	// LastDrawAt is the time of the card's newest draw from the pool when
@@ -110,12 +114,14 @@ func (f CaseFacts) agentTime() (limit, left, need time.Duration) {
 func seconds(s float64) time.Duration { return time.Duration(math.Round(s * float64(time.Second))) }
 
 // unfunded: what is left for a session is under what its opening needs,
-// the gateway's own test of the card's headroom (policy.FitResource).
-func (f CaseFacts) unfunded() bool { return f.FloorEUR > f.SessionLeft() }
+// the gateway's own test of the card's headroom (policy.FitResource),
+// where the run's floor weighs it.
+func (f CaseFacts) unfunded() bool { return !f.FloorFree && f.FloorEUR > f.SessionLeft() }
 
 // noSession is the stop the run asks at its loop top on f before a
 // session, "" when one fits, in the run's order: the budget floor when the
-// card's money no longer funds a session's opening, the session cap once
+// card's money no longer funds a session's opening (a plan's loop reads
+// none), the session cap once
 // the attempts reached it, the agent-time cap when less is left than a
 // session needs. A reply that buys back what the stopped session took
 // (refund) leaves the floor alone to weigh. read is false when a limit
@@ -125,7 +131,7 @@ func (f CaseFacts) noSession(refund bool) (asked CaseKind, read bool) {
 	switch {
 	case slices.Contains(f.Partial, "floor"):
 		return "", false
-	case f.unfunded():
+	case !f.Planner && f.unfunded():
 		return CaseBudgetFloor, true
 	case refund:
 		return "", true
@@ -158,15 +164,16 @@ type DepFact struct {
 }
 
 // tripFacts reads every fact of card t on head, the head of the card's
-// newest gate_head row when head is "", and names the readers that failed
-// in Partial, their facts left zero. It fails only when ctx ends, since
-// facts read past that are no facts.
-func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts, error) {
+// newest gate_head row when head is "", with the next session on model,
+// the card's last session's when model is "", and names the readers that
+// failed in Partial, their facts left zero. It fails only when ctx ends,
+// since facts read past that are no facts.
+func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (CaseFacts, error) {
 	v := r.cfg.Policy()
 	_, project, _ := v.ProjectOf(t.Repository)
 	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, t.ModelAlias),
+		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, cmp.Or(model, t.ModelAlias)),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
 		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
 	if Final(t.Status) {
@@ -218,7 +225,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		}},
 		{"floor", func() error {
 			if f.Model == "" || r.cfg.Prices == nil {
-				f.FloorEUR = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model))
+				f.FloorEUR, f.FloorFree = v.Document.Budget.SessionFloor(f.Model != "" && r.frontier(f.Model)), true
 				return nil
 			}
 			n, err := r.needOf(ctx, v, t, f.Model, true)

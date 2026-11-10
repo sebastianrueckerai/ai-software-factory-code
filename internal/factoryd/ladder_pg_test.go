@@ -163,7 +163,7 @@ func TestOpenTripRerunsRedChecksOnceThenAsks(t *testing.T) {
 		t.Fatalf("first outcome = %+v, want rerun_checks with no comment", first)
 	}
 	card, _, _ := g.s.Task(context.Background(), "t1")
-	if f, err := g.r.tripFacts(context.Background(), card, ""); err != nil || !f.RerunOnHead || f.Checks != "red" {
+	if f, err := g.r.tripFacts(context.Background(), card, "", ""); err != nil || !f.RerunOnHead || f.Checks != "red" {
 		t.Fatalf("facts after = %+v, %v; want the checks of red h2 run again", f, err)
 	}
 
@@ -390,7 +390,7 @@ func TestTripFactsCountAHeadARerunMade(t *testing.T) {
 	g.r.record(ctx, "t1", "checks_rerun", map[string]any{"commit": "h2", "head": "h3"})
 	card, _, _ := g.s.Task(ctx, "t1")
 	for head, want := range map[string]bool{"h2": true, "h3": true, "h4": false} {
-		if f, err := g.r.tripFacts(ctx, card, head); err != nil || f.RerunOnHead != want || f.Head != head {
+		if f, err := g.r.tripFacts(ctx, card, head, ""); err != nil || f.RerunOnHead != want || f.Head != head {
 			t.Errorf("facts on %s: head %q, RerunOnHead %v, %v; want %v", head, f.Head, f.RerunOnHead, err, want)
 		}
 	}
@@ -670,7 +670,7 @@ func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
 		t.Fatalf("signals = %+v, want case_resolved of case %d", got, c.ID)
 	}
 	card, _, _ := g.s.Task(context.Background(), "t1")
-	if f, err := g.r.tripFacts(context.Background(), card, ""); err != nil || !f.WaitedOnHead {
+	if f, err := g.r.tripFacts(context.Background(), card, "", ""); err != nil || !f.WaitedOnHead {
 		t.Fatalf("facts after = %+v, %v; want h2 waited on", f, err)
 	}
 	second := g.trip(t, tripChecksWait)

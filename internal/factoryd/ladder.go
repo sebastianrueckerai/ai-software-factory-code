@@ -45,6 +45,10 @@ type TripInput struct {
 	// Killed is the memory kill that ended the session before the stop,
 	// nil for none: the case's facts carry it.
 	Killed *SessionKill `json:",omitempty"`
+	// Model is the model the run's next session opens on, whose opening
+	// floor the facts weigh; "" from a run that reads no floor (the plan
+	// loop) or from before versionTripModel.
+	Model string `json:",omitempty"`
 }
 
 // The check-in's spend stops, which a check-in share case keeps in its
@@ -232,7 +236,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
-	f, err := r.tripFacts(ctx, t, in.Head)
+	f, err := r.tripFacts(ctx, t, in.Head, in.Model)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -349,7 +353,7 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 		if stop, err = r.restartedStop(ctx, t); err != nil {
 			return TripOutcome{}, err
 		}
-		f, err := r.tripFacts(ctx, t, in.Head)
+		f, err := r.tripFacts(ctx, t, in.Head, in.Model)
 		if err != nil {
 			return TripOutcome{}, err
 		}

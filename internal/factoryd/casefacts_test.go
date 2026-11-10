@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"maps"
@@ -10,6 +11,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -153,7 +155,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
 	g.timeline(t)
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -185,15 +187,15 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 3, TaskID: "t1", Kind: CaseSessionCap, Facts: map[string]any{"head": "h2"},
 		Resolution: &CaseResolution{Action: ActRerunChecks}})
-	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || waited.WaitedOnHead {
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || waited.WaitedOnHead {
 		t.Errorf("before a case waited on h2: waited on head %v (%v), want false", waited.WaitedOnHead, err)
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 4, TaskID: "t1", Kind: CaseGateStop, Facts: map[string]any{"head": "h2", "gate": ActivityWaitChecks},
 		Resolution: &CaseResolution{Action: ActWaitChecks}})
-	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !waited.WaitedOnHead {
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || !waited.WaitedOnHead {
 		t.Errorf("after a case on h2 waited on its checks again: waited on head %v (%v), want true", waited.WaitedOnHead, err)
 	}
-	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !again.RerunOnHead {
+	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", ""); err != nil || !again.RerunOnHead {
 		t.Errorf("after a case on h2 ran its checks again: rerun on head %v (%v), want true", again.RerunOnHead, err)
 	}
 }
@@ -213,7 +215,7 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 		}}); err != nil {
 		t.Fatal(err)
 	}
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -228,7 +230,7 @@ func TestTripFactsReadsTheGatesUnmetCriteria(t *testing.T) {
 func TestTripFactsTakesAMissingTimelineAsNoFindings(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -246,7 +248,7 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	g.timeline(t)
 	g.r.objects = unreadable{ObjectStore: g.r.objects, key: "sessions/t1/timeline.jsonl"}
 	g.store.openings["small"] = policy.Opening{Sessions: [][]policy.OpeningCall{{{Ref: "unpriced", Bytes: 7031}}}}
-	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "")
+	got, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -258,8 +260,66 @@ func TestTripFactsNamesWhatItCouldNotRead(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"], ""); !errors.Is(err, context.Canceled) {
+	if _, err := g.r.tripFacts(ctx, g.store.tasks["t1"], "", ""); !errors.Is(err, context.Canceled) {
 		t.Errorf("an ended context: err = %v, want context.Canceled", err)
+	}
+}
+
+// The floor is the one of the model the run's next session opens on. With
+// no opening recorded, small's is the cheap floor, 0.30, and big's the
+// frontier floor, 0.60. Spent 4.10 of 5 with nothing held leaves 0.90,
+// less the 0.40 reserve 0.50 for a session: enough on small, short on big,
+// so a card whose next session climbs to big (a retry_stronger's) reads
+// short, and its face asks the budget floor.
+func TestTripFactsWeighTheFloorOfTheNextSessionsModel(t *testing.T) {
+	g := newFactsRig(t)
+	g.store.openings = nil
+	card := g.store.tasks["t1"]
+	card.SpentEUR, card.HeldEUR = 4.1, 0
+	for model, want := range map[string]struct {
+		floor float64
+		short bool
+	}{"": {0.3, false}, "factory/small": {0.3, false}, "factory/big": {0.6, true}} {
+		f, err := g.r.tripFacts(context.Background(), card, "", model)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if f.FloorEUR != want.floor || f.unfunded() != want.short || f.FloorFree {
+			t.Errorf("next on %q: floor %v, short %v, free %v; want %v, %v", model, f.FloorEUR, f.unfunded(), f.FloorFree, want.floor, want.short)
+		}
+		b, err := json.Marshal(f)
+		if err != nil {
+			t.Fatal(err)
+		}
+		var facts map[string]any
+		if err := json.Unmarshal(b, &facts); err != nil {
+			t.Fatal(err)
+		}
+		if face := tripNext(Case{Kind: CaseContentFilter, Facts: facts}, contentFilterRefusal); strings.Contains(face, "the budget floor next") != want.short {
+			t.Errorf("next on %q: face %q", model, face)
+		}
+	}
+}
+
+// With no price source the run's floor funds every session, so the facts
+// read it funded too, though the card's 0.25 left less the 0.40 reserve
+// is under the cheap floor of 0.30 a priced floor would ask.
+func TestTripFactsFundASessionNoPriceWeighs(t *testing.T) {
+	g := newFactsRig(t)
+	priced, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil || !priced.unfunded() {
+		t.Fatalf("priced: facts %+v, %v; want short", priced, err)
+	}
+	g.r.cfg.Prices = nil
+	f, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], "", "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !f.FloorFree || f.unfunded() || f.FloorEUR != 0.3 {
+		t.Fatalf("unpriced: free %v, short %v, floor %v; want funded beside the policy's 0.30 floor", f.FloorFree, f.unfunded(), f.FloorEUR)
+	}
+	if why := sessionRoom(f); strings.Contains(why, "fund") {
+		t.Errorf("a resume with no price source = %q, want no fund asked", why)
 	}
 }
 

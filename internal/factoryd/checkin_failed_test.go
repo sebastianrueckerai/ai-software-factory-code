@@ -410,6 +410,15 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "the budget floor next") || !strings.Contains(got, "the Fund form on the board") {
 			t.Errorf("%s with the budget short: %q", kind, got)
 		}
+		// a plan's loop reads no opening floor: its reply starts the planner
+		short["planner"] = true
+		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "Reply on this issue to start a new attempt") {
+			t.Errorf("%s of a plan with the budget short: %q", kind, got)
+		}
+		short["planner"], short["floor_free"] = false, true
+		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "Reply on this issue to start a new attempt") {
+			t.Errorf("%s with no price source and the budget short: %q", kind, got)
+		}
 		floorUnread := facts(1, 600)
 		floorUnread["partial"] = []any{"floor"}
 		if got := tripNext(Case{Kind: kind, Facts: floorUnread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "the Fund form") {

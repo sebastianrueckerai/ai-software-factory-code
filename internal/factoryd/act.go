@@ -122,7 +122,8 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		}
 	} else {
 		head, _ := c.Facts["head"].(string)
-		if f, err = r.tripFacts(ctx, t, head); err != nil {
+		model, _ := c.Facts["model"].(string)
+		if f, err = r.tripFacts(ctx, t, head, model); err != nil {
 			return ActResult{}, err
 		}
 		f.atCase(c)
