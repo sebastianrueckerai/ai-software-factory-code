@@ -439,6 +439,9 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// SetQuestionInfo replaces the info of the question task's escalation
+	// at comment commentID asked.
+	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
 	// missing row is left as it is.
@@ -676,6 +679,18 @@ type Store interface {
 	// PlansBetweenRounds are the done or closed plan cards without a
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
+	// PlanMerged says whether a card of plan holds an unreverted merge
+	// (a merge commit, or a pull_request_merged row): the rule that opens
+	// the plan's production group.
+	PlanMerged(ctx context.Context, plan string) (bool, error)
+	// PlanClosesToFinish are the plan cards whose close recorded
+	// plan_closed and is still to finish, by plan id with the closing words
+	// (none for a failed card factoryd closed itself): a done card whose
+	// person's Close left its issue open, a failed card not yet ended. A
+	// row of the last minute is the console's own close in progress: its
+	// four Forgejo calls time out at 15 s each, so it has ended well before
+	// the sweep takes the row.
+	PlanClosesToFinish(ctx context.Context) (map[string]string, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.
 	PlanClosed(ctx context.Context, plan string) (at time.Time, closed bool, err error)
@@ -768,6 +783,13 @@ type Store interface {
 	// AddPlanRevision stores plan as task id's next revision and returns
 	// its number; a plan equal to the newest (sha) is that revision.
 	AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error)
+	// SetPlanDraft keeps plan, the planner's refused filing, and the
+	// findings it was refused for as task id's one draft, replacing the last.
+	SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error
+	// DeletePlanDraft drops task id's draft: a filing was accepted.
+	DeletePlanDraft(ctx context.Context, id string) error
+	// PlanDraft is task id's draft; AddPlanRevision deletes it.
+	PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error)
 	// PlanRevision is revision n of task id's plan, the newest for 0.
 	PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error)
 	// PutPlanQuestions stores revision's questions of plan task id, numbered
@@ -809,6 +831,11 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// ClosePlanWithWaivers writes what prepare decides (a PlanClose) and
+	// ends plan's pending criteria asks in one transaction that locks the
+	// plan's task row, re-checks it is at rest (ErrNotDonePlan) and not
+	// closed (ErrPlanClosed), and runs prepare under the lock.
+	ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error
 	// DeleteVerdictsButApprover deletes task's rows of criterion from
 	// every source but the approver's; none is no error.
 	DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error
@@ -873,6 +900,9 @@ type Store interface {
 	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
 	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
 	SetCaseStatus(ctx context.Context, id int64, status string) error
+	// SetCaseFact sets fact key of live case id to value, or removes it
+	// for the empty value.
+	SetCaseFact(ctx context.Context, id int64, key, value string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
 	// end its wait, and when the sweep wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error
@@ -1473,6 +1503,12 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 		return 0, nil
 	}
 	return id, err
+}
+
+func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
+		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
+	return err
 }
 
 // ConfirmFactoryClose marks task's card-closed comment confirmed: the

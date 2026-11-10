@@ -1463,3 +1463,9 @@ func (f *acceptChat) SaveSummary(context.Context, string, string, int64, factory
 func (f *acceptChat) ThreadTokens(context.Context, string, time.Time) (int, error) { return 0, nil }
 
 func (f *acceptChat) ThreadTotals(context.Context, string) (int, float64, error) { return 0, 0, nil }
+
+func (s *acceptTasks) PlanClosed(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
+func (s *acceptTasks) PlanMerged(context.Context, string) (bool, error) { return false, nil }

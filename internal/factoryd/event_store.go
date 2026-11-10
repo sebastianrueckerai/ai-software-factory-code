@@ -241,6 +241,16 @@ func (s *PGStore) insertEvent(ctx context.Context, tx *sql.Tx, e Event) (_ Event
 	if e.Repository == "" || e.Kind == "" {
 		return e, false, errors.New("event: repository and kind are required")
 	}
+	if e.Kind == EventPlanClosed && e.TaskID != "" {
+		// the plan's task row serializes its closers: one plan_closed row
+		var stands bool
+		if _, err := tx.ExecContext(ctx, `SELECT 1 FROM tasks WHERE id = $1 FOR UPDATE`, e.TaskID); err != nil {
+			return e, false, err
+		}
+		if err := tx.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM events WHERE task_id = $1 AND kind = $2)`, e.TaskID, EventPlanClosed).Scan(&stands); err != nil || stands {
+			return e, false, err
+		}
+	}
 	detail := any(nil)
 	if e.Detail != nil {
 		b, err := json.Marshal(e.Detail)

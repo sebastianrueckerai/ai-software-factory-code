@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -450,6 +451,34 @@ func reproQuestion(title, poster, reason string) HumanQuestion {
 		Ask:     askOf(title, ""),
 		Why:     "filed by " + poster + ": the reproduction command " + reason,
 		Info:    "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again with a command that keeps it, then close this card.",
+		Choices: doneChoices(false),
+	}
+}
+
+// workflowPath tells whether p, a path in the repository, sits under a
+// workflow directory; an absolute path is none.
+func workflowPath(p string) bool {
+	clean := path.Clean(p)
+	top, _, _ := strings.Cut(clean, "/")
+	_, ok := WorkflowDir(top)
+	return ok
+}
+
+// workflowOnly tells whether every path in paths sits under a workflow
+// directory; no paths is false. The worker refuses a push that changes
+// one, so no session lands such a card.
+func workflowOnly(paths []string) bool {
+	return len(paths) > 0 && !slices.ContainsFunc(paths, func(p string) bool { return !workflowPath(p) })
+}
+
+// workflowQuestion is the person's card of a card whose files all sit
+// under a workflow directory: the factory's push rule refuses them, so a
+// human opens the pull request from the brief.
+func workflowQuestion(title, brief string) HumanQuestion {
+	return HumanQuestion{
+		Ask:     askOf(title, ""),
+		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
+		Info:    "No agent session is bought for it. A human opens the pull request; the brief below says what to change, then close this card.\n\n" + brief,
 		Choices: doneChoices(false),
 	}
 }
@@ -1060,6 +1089,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		// under GateReproduction, the poster fixes the issue
 		ask, track = reproQuestion(issue.Title, poster, reason), LabelHuman
 	}
+	if track != LabelHuman && workflowOnly(askedDirectories(issue.Body)) {
+		ask, track = workflowQuestion(issue.Title, issue.Body), LabelHuman
+	}
 	if track == LabelHuman {
 		// no runner ever claims a person's card: it waits on a human from
 		// the start (architecture 5.6's board column) and closing its
@@ -1281,9 +1313,9 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done, a failed
-// card ends closed, and so does a done plan between rounds
-// (BetweenRounds). A merged card is left as it is: its own
-// merge closes its issue (Closes #N), a close no webhook tells from a
+// card ends closed, and so does a done plan (DonePlan) once its
+// production hold is gone (endDonePlan). A merged card is left as it is:
+// its own merge closes its issue (Closes #N), a close no webhook tells from a
 // human's, and its workflow ended at the merge; the chain ends it, or
 // the console's Close (CloseCard). Only a close that counts acts
 // (closeCounts).
@@ -1301,11 +1333,12 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	case t.Status == "merged":
 		return nil
 	}
-	switch between, err := BetweenRounds(ctx, in.Store, t); {
-	case err != nil:
-		return err
-	case between:
-		return in.Store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+	if DonePlan(t) {
+		// factoryd's own close of a finished plan leaves it done
+		if later, err := leavesRounds(ctx, in.Store, t.ID); closer == in.BotUser && (err != nil || !later) {
+			return err
+		}
+		return endDonePlan(ctx, in.Store, in.Forgejo, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err

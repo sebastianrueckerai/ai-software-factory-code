@@ -470,9 +470,11 @@ func (r *Roller) Run(ctx context.Context) {
 	}
 }
 
-// rollRunsRead is how many of the newest push runs a poll reads for the
-// newest green one.
-const rollRunsRead = 20
+// runsPage is how many runs one read of the runs list asks for: a run
+// carries its event payload, so a page of 20 answers about 470 KB and a
+// page of 50 passes maxForgejoAnswer.
+// Walking pages by (page-1)*n needs the forge to honor the limit asked.
+const runsPage = 20
 
 func (r *Roller) poll(ctx context.Context) error {
 	settled, err := r.Store.SettleRollRequests(ctx)
@@ -524,7 +526,7 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err := r.consumeRetry(ctx, held); err != nil {
 		return errors.Join(level, err)
 	}
-	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
+	runs, err := r.Forgejo.ActionRuns(ctx, r.Token, r.Repo.Owner, r.Repo.Name, url.Values{"event": {"push"}, "limit": {strconv.Itoa(runsPage)}})
 	if err != nil {
 		return errors.Join(level, err)
 	}

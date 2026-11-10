@@ -429,6 +429,10 @@ func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issu
 	return held[0], true, nil
 }
 
+func (s *acceptanceStore) SetQuestionInfo(context.Context, string, int64, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -999,6 +1003,14 @@ func (s *acceptanceStore) PlanClosed(context.Context, string) (time.Time, bool, 
 	return time.Time{}, false, nil
 }
 
+func (s *acceptanceStore) PlanClosesToFinish(context.Context) (map[string]string, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) PlanMerged(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) PlansBetweenRounds(context.Context) ([]string, error) {
 	return nil, nil
 }
@@ -1048,6 +1060,10 @@ func (s *acceptanceStore) UpdatePlanCardBrief(context.Context, string, factoryd.
 }
 
 func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, string, []factoryd.CriterionVerdict) error {
+	return nil
+}
+
+func (s *acceptanceStore) ClosePlanWithWaivers(context.Context, string, string, func(context.Context) (factoryd.PlanClose, error)) error {
 	return nil
 }
 
@@ -1220,6 +1236,18 @@ func (s *acceptanceStore) DrawCard(ctx context.Context, id string, d factoryd.Ca
 
 func (s *acceptanceStore) AddPlanRevision(context.Context, string, json.RawMessage, string) (int, error) {
 	return 0, nil
+}
+
+func (s *acceptanceStore) SetPlanDraft(context.Context, string, json.RawMessage, []string) error {
+	return nil
+}
+
+func (s *acceptanceStore) DeletePlanDraft(context.Context, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) PlanDraft(context.Context, string) (factoryd.PlanDraft, bool, error) {
+	return factoryd.PlanDraft{}, false, nil
 }
 
 func (s *acceptanceStore) PlanRevision(context.Context, string, int) (factoryd.PlanRevision, bool, error) {
@@ -1425,6 +1453,10 @@ func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []
 }
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) SetCaseFact(context.Context, int64, string, string) error {
+	return nil
+}
 
 func (s *acceptanceStore) SetCaseWake(context.Context, int64, int, []string, *time.Time) error {
 	return nil

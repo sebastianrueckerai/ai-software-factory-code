@@ -92,6 +92,8 @@ func intakeForgejoStub(t *testing.T) (*Forgejo, *[]string) {
 			json.NewDecoder(r.Body).Decode(&payload) // #nosec G104 -- test stub, malformed body just yields nil labels
 			labels[r.URL.Path] = payload.Labels
 			io.WriteString(w, `[]`)
+		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodGet:
+			io.WriteString(w, `[]`)
 		case strings.HasSuffix(r.URL.Path, "/comments") && r.Method == http.MethodPost:
 			var payload struct {
 				Body string `json:"body"`
@@ -2022,31 +2024,39 @@ func TestClosingAFailedCardEndsItClosed(t *testing.T) {
 	}
 }
 
-// A trusted close of a done plan's issue between rounds, while its newest
-// revision leaves parts to later rounds, ends the plan card closed in the
-// store and signals nothing, under the trust rule of a failed card's
-// close. A done plan in its last round keeps phase 4's way: the close is
-// its workflow's signal.
-func TestClosingAPlanBetweenRoundsEndsItClosed(t *testing.T) {
+// A trusted close of a done plan's issue, in any round, ends the plan card
+// closed in the store and signals nothing, under the trust rule of a
+// failed card's close, once no criterion holds production (endDonePlan;
+// the fixture's three criteria, with no integration card in the last round,
+// are all open there, so that plan stays done and its issue opens again):
+// the plan's workflow ended when it filed its cards
+// (TestPlanLoopAnswersSendThePlannerBack), so no signal has anything to
+// end. Factoryd's own close of a plan with no later round leaves it done.
+func TestClosingADonePlanEndsItClosed(t *testing.T) {
 	last := roundOne()
 	last.Outline = nil
+	free := last
+	free.Criteria = nil
 	for _, tc := range []struct {
 		name, closer, after string
 		plan                Plan
 		recorded            bool
-		signals             []string
 	}{
 		{name: "between rounds", plan: roundOne(), closer: "sebastian", after: "closed"},
 		{name: "between rounds, factoryd's recorded close", plan: roundOne(), closer: "factory-agent", recorded: true, after: "closed"},
 		{name: "between rounds, the bot's unrecorded close", plan: roundOne(), closer: "factory-agent", after: "done"},
 		{name: "between rounds, a stranger's close", plan: roundOne(), closer: "mallory", after: "done"},
-		{name: "the last round", plan: last, closer: "sebastian", after: "done", signals: []string{"t-plan issue_closed sebastian #0: "}},
+		{name: "the last round, no criteria", plan: free, closer: "sebastian", after: "closed"},
+		{name: "the last round, three criteria and no integration card", plan: last, closer: "sebastian", after: "done"},
+		{name: "the last round, factoryd's recorded close", plan: free, closer: "factory-agent", recorded: true, after: "done"},
 	} {
 		in, store, _ := newTestIntake(t)
 		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", Status: "done", Kind: "agent", Track: policy.TrackPlan, IssueNumber: 4}
 		if _, err := store.AddPlanRevision(context.Background(), "t-plan", json.RawMessage(planJSON(t, tc.plan)), "sha-1"); err != nil {
 			t.Fatal(err)
 		}
+		// a merged card makes the plan hold production
+		store.tasks["t-card"] = Task{ID: "t-card", Repository: "sf/ai-software-factory-code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done", MergeCommit: "abc"}
 		if tc.recorded {
 			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t-plan", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
 		}
@@ -2059,8 +2069,8 @@ func TestClosingAPlanBetweenRoundsEndsItClosed(t *testing.T) {
 		if rr := postWebhook(in, "issues", body, sign(webhookSecret, body)); rr.Code != http.StatusOK {
 			t.Fatalf("%s: status = %d", tc.name, rr.Code)
 		}
-		if after := store.tasks["t-plan"].Status; after != tc.after || !slices.Equal(workflowsOf(in).signals, tc.signals) {
-			t.Errorf("%s: status %q, signals %q; want %q, %q", tc.name, after, workflowsOf(in).signals, tc.after, tc.signals)
+		if after := store.tasks["t-plan"].Status; after != tc.after || len(workflowsOf(in).signals) != 0 {
+			t.Errorf("%s: status %q, signals %q; want %q and none", tc.name, after, workflowsOf(in).signals, tc.after)
 		}
 	}
 }
@@ -2730,5 +2740,67 @@ func TestAnUnknownEventTypeLogsOnce(t *testing.T) {
 	postWebhook(in, "workflow_run_success", body, sign(webhookSecret, body))
 	if strings.Contains(logs.String(), "unhandled") {
 		t.Fatalf("a known type logged: %s", logs.String())
+	}
+}
+
+// An issue whose Directories line names only paths under workflow
+// directories is a human's card from its filing: the worker refuses the
+// push, so no session is bought. One path elsewhere, or no line, files the
+// agent card as before.
+func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
+	for issue, tc := range map[int64]struct {
+		dirs  string
+		human bool
+	}{
+		31: {".forgejo/workflows/pr.yml", true},
+		32: {".forgejo/workflows/pr.yml, internal/x.go", false},
+		33: {".github/x.yml, .gitea/y.yml", true},
+		34: {"", false},
+	} {
+		t.Run(tc.dirs, func(t *testing.T) {
+			in, store, _ := trackIntake(t, "maintenance", maintenanceTracks)
+			body := "Fix the CI.\n"
+			if tc.dirs != "" {
+				body += "\nDirectories: " + tc.dirs + "\n"
+			}
+			post(t, in, "issues", issueOpenedBody(issue, "sebastian", []string{"agent"}, "A card", body))
+			got, started := card(store, issue), workflowsOf(in).started
+			if !tc.human {
+				if got.Kind != "agent" || len(started) != 1 {
+					t.Fatalf("card = %+v, started %q; want the agent card started", got, started)
+				}
+				return
+			}
+			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(started) != 0 || got.EnforcedSpent() != 0 {
+				t.Fatalf("card = %+v, started %q; want a human's card, no start, no spend", got, started)
+			}
+			var asks []HumanQuestion
+			for _, e := range store.intakeEvents {
+				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+					asks = append(asks, *e.Question)
+				}
+			}
+			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") || !strings.Contains(asks[0].Info, "Fix the CI.") {
+				t.Fatalf("asks = %+v, want one that names the push rule and carries the brief", asks)
+			}
+		})
+	}
+}
+
+func TestWorkflowOnly(t *testing.T) {
+	for _, tc := range []struct {
+		paths []string
+		want  bool
+	}{
+		{[]string{".forgejo/workflows/pr.yml"}, true},
+		{[]string{"./.github", ".Gitea/y.yml"}, true},
+		{[]string{".forgejo/x", "internal/x.go"}, false},
+		{[]string{"/.forgejo/x"}, false},
+		{[]string{".forgejo-helper/x"}, false},
+		{nil, false},
+	} {
+		if got := workflowOnly(tc.paths); got != tc.want {
+			t.Errorf("workflowOnly(%q) = %v, want %v", tc.paths, got, tc.want)
+		}
 	}
 }

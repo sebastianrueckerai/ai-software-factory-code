@@ -1219,12 +1219,8 @@ func (g *workflowDirGuard) observe(ev harness.Event) {
 // workflowDirOf answers the workflow directory a repository-relative path
 // sits under, if any.
 func workflowDirOf(rel string) (string, bool) {
-	for _, dir := range factoryd.WorkflowDirs {
-		if rel == dir || strings.HasPrefix(rel, dir+"/") {
-			return dir, true
-		}
-	}
-	return "", false
+	top, _, _ := strings.Cut(rel, "/")
+	return factoryd.WorkflowDir(top)
 }
 
 // workflowDirMessage is the message the session gets at the first change
