@@ -3587,11 +3587,15 @@ func (p aliasPrices) Price(_ context.Context, alias string) (policy.Price, error
 // earlier call of the task: 44,342 × 3e-6 + 24,576 × 1.5e-5 = 0.501666 on
 // big and 7,031 × 1e-6 + 24,576 × 4e-6 = 0.105335 on
 // small, 0.607001 together, more than s2's one call of 43,683 bytes
-// (0.499689). The fund's floor refuses, and the card is fundable. At 0.56
-// free it still refuses; an earlier big call of 10,144 prompt
+// (0.499689). The fund's floor refuses — the session's ceiling holds the
+// 0.40 gate reserve out of the 0.11 free, -0.29, and the refusal names
+// what the card spent and the 0.11 the review and the audit still keep —
+// and the card is fundable. At 0.71 free (0.31 under the ceiling) it still refuses; an
+// earlier big call of 10,144 prompt
 // tokens in 44,342 bytes calibrates that call's prompt to 10,144 tokens
 // with a quarter's margin, 0.03804 + 0.36864 + 0.105335 = 0.512015 EUR,
-// which 0.56 funds. An opening call on an alias nobody prices refuses the
+// which 0.96 free (0.56 under the ceiling) funds. An opening call on an
+// alias nobody prices refuses the
 // fund. With no opening on the alias the floor measures every alias's;
 // with none at all, the cheapest call.
 func TestSessionFundedPricesASessionsOpening(t *testing.T) {
@@ -3612,23 +3616,28 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 	}
 	why, err := r.SessionFunded(ctx, "t-704", "factory/big")
 	if want := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.110 EUR of the 5.000 EUR budget remains, and a session's opening on factory/big needs 0.607001 EUR " +
+		"The card spent 4.89 EUR of its 5.00 EUR budget; 0.11 EUR is held for the review and the audit, which need 0.40 EUR, " +
+		"and a session's opening on factory/big needs 0.607001 EUR " +
 		"(2 calls at once: 44342 bytes on big asking 24576 output tokens, 7031 bytes on small asking 24576 output tokens; " +
-		"the largest of the newest 2 sessions' openings on it, as the holds take them); a session started now could not make its opening calls."; err != nil || why != want || !BudgetRefusal(why) {
+		"the largest of the newest 2 sessions' openings on it, as the holds take them), " +
+		"so a fund of 0.90 EUR opens it; a session started now could not make its opening calls."; err != nil || why != want || !BudgetRefusal(why) {
 		t.Fatalf("the fund's floor = (%q, %v), want %q", why, err, want)
 	}
 
 	raised := store.tasks["t-704"]
-	raised.BudgetEUR = 5.45
+	raised.BudgetEUR = 5.6
 	store.tasks["t-704"] = raised
-	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || !strings.Contains(why, "0.560 EUR of the 5.450 EUR budget remains") {
-		t.Fatalf("0.56 free: (%q, %v), want the opening refused", why, err)
+	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || !strings.Contains(why, "The card spent 4.89 EUR of its 5.60 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
+		!strings.Contains(why, "so a fund of 0.30 EUR opens it") {
+		t.Fatalf("0.31 under the ceiling: (%q, %v), want the opening refused", why, err)
 	}
 	calibrated := slices.Clone(s1)
 	calibrated[0].Earlier = policy.Usage{PromptTokens: 10144, BodyBytes: 44342}
 	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{calibrated}}
+	raised.BudgetEUR = 5.85
+	store.tasks["t-704"] = raised
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil || why != "" {
-		t.Fatalf("calibrated at 0.56 free: (%q, %v), want the opening to fit", why, err)
+		t.Fatalf("calibrated at 0.56 under the ceiling: (%q, %v), want the opening to fit", why, err)
 	}
 	store.openings["big"] = policy.Opening{Sessions: [][]policy.OpeningCall{{s1[0], {Ref: "coding-unpriced", Bytes: 7031}}}}
 	if why, err := r.SessionFunded(ctx, "t-704", "factory/big"); err != nil ||
@@ -3653,8 +3662,10 @@ func TestSessionFundedPricesASessionsOpening(t *testing.T) {
 }
 
 // A session needs more than its opening calls: the floor of its rung (budget.session_floor_*_eur)
-// is the least free budget it starts on. Card of 5 EUR with 4.50 spent has 0.50 free: the frontier
-// floor 0.60 refuses, naming 0.600000 EUR; the cheap floor 0.30 funds. At 4.80 spent (0.20 free) the
+// is the least free budget it starts on. Card of 5 EUR with 4.50 spent has 0.50 free, 0.40 of it
+// the session's ceiling with the 0.10 gate reserve (limits.gate_reserve_eur) held out: the
+// frontier floor 0.60 refuses, naming 0.600000 EUR and the spent and held EUR; the cheap
+// floor 0.30 funds. At 4.80 spent (0.20 free, 0.10 under the ceiling) the
 // cheap floor refuses too. With the floor absent only the opening decides.
 func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	store := newFakeStore()
@@ -3662,6 +3673,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := testPolicyVersion()
+	v.Tree.Document.Limits.GateReserveEUR = 0.1
 	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3
 	v.Tree.Document.Budget.SessionFloorFrontierEUR = 0.6
 	r := &Runner{store: store, cfg: RunnerConfig{
@@ -3671,16 +3683,16 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	ctx := context.Background()
 
 	why, err := r.SessionFunded(ctx, "t-1", "factory/big")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on factory/big needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done.") {
-		t.Fatalf("frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.10 EUR, and a session on factory/big needs 0.600000 EUR "+
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), so a fund of 0.20 EUR opens it; a session started now would run out of money before its work is done.") {
+		t.Fatalf("frontier at 0.40 under the ceiling = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "big"); err != nil || !BudgetRefusal(why) ||
 		!strings.Contains(why, "a session on big needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
 		t.Fatalf("unprefixed frontier at 0.50 free = (%q, %v), want the 0.600000 EUR floor named", why, err)
 	}
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
-		t.Fatalf("cheap at 0.50 free = (%q, %v), want funded", why, err)
+		t.Fatalf("cheap at 0.40 under the ceiling = (%q, %v), want funded", why, err)
 	}
 	raised := store.tasks["t-1"]
 	raised.SpentEUR = 4.8
@@ -3691,7 +3703,7 @@ func TestSessionFundedAsksTheFloorOfTheRung(t *testing.T) {
 	}
 	v.Tree.Document.Budget.SessionFloorCheapEUR = 0
 	if why, err := r.SessionFunded(ctx, "t-1", "factory/small"); err != nil || why != "" {
-		t.Fatalf("cheap without a floor at 0.20 free = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
+		t.Fatalf("cheap without a floor at 0.10 under the ceiling = (%q, %v), want the opening alone to decide (0.01536 EUR)", why, err)
 	}
 }
 
@@ -3724,14 +3736,20 @@ func TestSessionFundedPricesTheClassSessionModel(t *testing.T) {
 	}
 }
 
-// The money ask states the figure the floor counts, and its first raise
+// The money ask states the figures the floor counts, and its first raise
 // funds the session. The planner's premium session asks the frontier
-// floor 0.60. Budget 5.00, spent 4.50 and a hold of 0.40 leave 0.10 free,
-// as the face's 4.90 of 5.00 does: the ask reads €0.100 left, the first
-// raise is the shortfall 0.50, and at 5.50 the floor funds the session.
-// With no hold and 4.5004 spent, 0.4996 is free: the ask reads it down to
-// €0.499, never up to €0.500, so the first raise is 0.11, not 0.10, and
-// at 5.11 (0.6096 free) the floor funds the session.
+// floor 0.60, and the ceiling is budget - spent - holds - the 0.40 gate
+// reserve; the ask reads what the card spent and what is left of the
+// reserve for the review and the audit, min(0.40, budget - spent - holds).
+// Budget 5.00, spent 3.80 and a hold of 0.40 leave 0.80 free, 0.40 of it
+// held for the gates, and a ceiling of 0.40: the first raise is the
+// shortfall 0.20, and at 5.20 (0.60) the floor funds the session. At 4.25
+// spent 0.35 is free and held, the ceiling is -0.05, and the raise covers
+// the 0.05 the gates spent of the reserve too: 0.60 + 0.05 = 0.65; at 4.50
+// spent 0.10 is held and the ceiling -0.30: 0.90. With no hold and
+// 4.5004 spent, the ceiling 0.0996 is read down to 0.099, never up to
+// 0.100, so the raise is 0.60 - 0.099 = 0.501, rounded up to 0.51, and at
+// 5.51 (0.6096) the floor funds the session.
 func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	store := newFakeStore()
 	if err := store.CreateTask(context.Background(), Task{ID: "t-2", Status: "waiting-human", BudgetEUR: 5, SpentEUR: 4.5, Track: "plan",
@@ -3753,13 +3771,13 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 	ask := func(budget, spent float64, want string, choices ...float64) {
 		t.Helper()
 		k := store.tasks["t-2"]
-		k.BudgetEUR, k.SpentEUR = budget, spent
+		k.BudgetEUR, k.SpentEUR, k.HeldEUR = budget, spent, store.held["t-2"].Held
 		store.tasks["t-2"] = k
 		why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 		if err != nil || !BudgetRefusal(why) {
 			t.Fatalf("%.4f of %.2f spent: (%q, %v), want the money ask", spent, budget, why, err)
 		}
-		q := budgetQuestion(why, QuestionFacts{})
+		q := budgetQuestion(why, r.questionFacts(ctx, k, why))
 		if q.Ask != want {
 			t.Errorf("%.4f of %.2f spent: ask = %q, want %q", spent, budget, q.Ask, want)
 		}
@@ -3781,21 +3799,25 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		}
 	}
 
-	ask(5, 4.5, "The card has €0.100 of its €5.000 budget left, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.5, 0.6, 2)
+	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
+	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
 	k := store.tasks["t-2"]
-	k.BudgetEUR = 5
+	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
 	why, err := r.SessionFunded(ctx, "t-2", "factory/big")
 	if want := budgetRefused + ": Wait for the holds to settle and answer (a released hold books its call's cost, " +
 		"an expired one is booked in full), or raise the budget (Fund on the board) and answer.\n" +
-		"0.100 EUR of the 5.000 EUR budget remains after outstanding holds of 0.400 EUR (1, the earliest expiring 2026-10-14T19:35:03Z), " +
-		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); " +
-		"a session started now would run out of money before its work is done."; err != nil || why != want {
+		"The card spent 4.50 EUR of its 5.00 EUR budget; 0.400 EUR is held by calls in flight (1, the earliest expiring 2026-10-14T19:35:03Z); " +
+		"0.10 EUR is held for the review and the audit, which need 0.40 EUR, " +
+		"and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), " +
+		"so a fund of 0.90 EUR opens it; a session started now would run out of money before its work is done."; err != nil || why != want {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
+	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
+
 	store.held = nil
-	ask(5, 4.5004, "The card has €0.499 of its €5.000 budget left, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.11, 0.6, 2)
+	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
 }
 
 // A card with no model yet (the console passes its row's empty alias)
@@ -3826,9 +3848,9 @@ func TestFundedPassesACardWhoseClassHasNoSessionModel(t *testing.T) {
 		t.Fatalf("coder card with no model = (%q, %v), prices read %q; want not judged, nothing read", why, err, asked.aliases)
 	}
 	why, err := r.SessionFunded(ctx, "t-plan", "")
-	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "0.500 EUR of the 5.000 EUR budget remains, and a session on premium needs 0.600000 EUR "+
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml)") {
-		t.Fatalf("plan card with no model at 0.50 free = (%q, %v), want the frontier floor on premium", why, err)
+	if err != nil || !BudgetRefusal(why) || !strings.Contains(why, "The card spent 4.50 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR, and a session on premium needs 0.600000 EUR "+
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), so a fund of 0.50 EUR opens it") {
+		t.Fatalf("plan card with no model at 0.10 under the ceiling = (%q, %v), want the frontier floor on premium", why, err)
 	}
 }
 
@@ -3896,9 +3918,12 @@ func TestAttemptFloorsCheckTheCaps(t *testing.T) {
 // 44,342 bytes on big and 7,031 on small, each asking
 // 24,576 output tokens (0.607001 EUR together); its third call started
 // after the first ended and is no part of it. Taken in that order, each at
-// its alias's price, at 0.11 free the first hold is refused; at 0.31 the
-// first takes it all, clamped, and the second is refused — the trap of a
-// floor that prices one call; at 0.62 both fit. The day cap is read the
+// its alias's price and the session ceiling holding the 0.40 gate reserve
+// out, at 0.11 free the first hold is refused; at 0.31 free (-0.09
+// under the ceiling) too; at 0.71 free (0.31 under it) the first takes it
+// all, clamped, and the second is refused — the trap of a floor that
+// prices one call; at 1.02 free (0.62 under it) both fit, while 0.62
+// free (0.22 under it) refuses, the reserve unpaid. The day cap is read the
 // same: 19.45 EUR booked today beside s-x's 0.05 leaves 0.50 of the day's
 // 20, which the first hold takes nearly all of, clamped to 24,464 output
 // tokens, and the second cannot fit, refused at the day cap.
@@ -3937,7 +3962,7 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		var refused *policy.Refusal
 		for _, c := range []policy.OpeningCall{{Ref: "big", Bytes: 44342}, {Ref: "small", Bytes: 7031}} {
 			_, err := policy.TakeHold(ctx, s.db, policy.HoldRequest{TaskID: "t-704", Kind: policy.KindModel, Ref: c.Ref, Session: "s-new",
-				Bytes: c.Bytes, WantOut: 24576, Price: prices[c.Ref], DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
+				Bytes: c.Bytes, WantOut: 24576, Price: prices[c.Ref], ReserveEUR: testPolicyVersion().Document.Limits.GateReserve(), DayEUR: 20, MonthEUR: 50, ProjectEUR: math.Inf(1)})
 			if errors.As(err, &refused) {
 				break
 			}
@@ -3961,11 +3986,13 @@ func TestSessionFundedAgreesWithTheGateway(t *testing.T) {
 		t.Fatalf("the answer path's floor = (%q, %v), want a call to fit", why, err)
 	}
 	agree("0.31 free", 5.2, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
-	agree("0.62 free", 5.51, "", "")
+	agree("0.31 under the ceiling", 5.6, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
+	agree("0.62 free less the 0.40 reserve", 5.51, "refused_budget", "the remaining budget cannot fund a call: Raise the budget")
+	agree("0.62 session headroom", 5.91, "", "")
 	if _, err := s.db.ExecContext(ctx, `INSERT INTO ledger (task_id, kind, eur) VALUES ('t-y', 'model', 19.45)`); err != nil {
 		t.Fatal(err)
 	}
-	agree("the day spent", 5.51, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
+	agree("the day spent", 5.91, "refused_day_cap", "the day cap cannot fund a call: Answer, and the attempt waits on its own")
 }
 
 // The attempt grant's floor is the hold machinery's own minimum:
@@ -4106,6 +4133,36 @@ func TestReplanTextOfAnAgentCutKeepsItsParts(t *testing.T) {
 	got = replanText(&Trip{Kind: TripAgentCut, Detail: "the agent asks to cut the card: r. Its parts: 1. a; 2. b"}, Decision{Action: ActionReplan, Reason: "two parts", Guidance: "store first"})
 	if want := "The check-in decided replan after the agent_cut trip (the agent asks to cut the card: r. Its parts: 1. a; 2. b): two parts\nIts guidance: store first"; got != want {
 		t.Fatalf("cut text = %q, want %q", got, want)
+	}
+}
+
+// The floor's need is rounded up to the micro-euro where it is read, so the
+// stop, the ask and the case's money fact name one fund. A cheap floor of
+// 0.3000004 reads 0.300001; at a room of 1.00 - 0.30 - 0.40 = 0.30 the
+// shortfall is 0.000001, which rounds up to the cent: 0.01.
+func TestTheFloorIsRoundedUpWhereItIsRead(t *testing.T) {
+	store := newFakeStore()
+	if err := store.CreateTask(context.Background(), Task{ID: "t-1", Status: "waiting-human", BudgetEUR: 1, SpentEUR: 0.3, Track: "direct"}); err != nil {
+		t.Fatal(err)
+	}
+	v := testPolicyVersion()
+	v.Tree.Document.Budget.SessionFloorCheapEUR = 0.3000004
+	r := &Runner{store: store, cfg: RunnerConfig{
+		Prices: stubPrices{price: policy.Price{In: 3e-6, CacheRead: 3e-7, Out: 1.5e-5, MaxOutput: 32768}},
+		Policy: func() policy.Version { return v },
+		Models: ModelLadder{Start: "factory/small", Stronger: "factory/big"}}}
+	ctx := context.Background()
+	n, err := r.needOf(ctx, v, store.tasks["t-1"], "factory/small", true)
+	if err != nil || n.eur != 0.300001 {
+		t.Fatalf("need = %v, %v; want 0.300001", n.eur, err)
+	}
+	why, err := r.SessionFunded(ctx, "t-1", "factory/small")
+	if err != nil || !strings.Contains(why, "needs 0.300001 EUR") || !strings.Contains(why, "so a fund of 0.01 EUR opens it") {
+		t.Fatalf("stop = (%q, %v), want the need 0.300001 and a fund of 0.01", why, err)
+	}
+	f := CaseFacts{LeftEUR: store.tasks["t-1"].Left(), ReserveEUR: 0.4, FloorEUR: n.eur}
+	if got := tripMoney(CaseBudgetFloor, f); got == nil || got.NeedEUR != 0.01 {
+		t.Fatalf("money = %+v, want the need 0.01, the stop's fund", got)
 	}
 }
 

@@ -118,6 +118,7 @@ type CheckInAsk struct {
 type Pace struct {
 	Lines, BoundLines                            int
 	SpentEUR, BudgetEUR                          float64
+	ReserveEUR                                   float64 // the gate reserve a session's room holds out
 	SpentMinutes, LeftMinutes, Attempt, Sessions int
 }
 
@@ -128,7 +129,7 @@ func (p Pace) Line() string {
 		lines = fmt.Sprintf("%d changed lines so far against its bound of %d", p.Lines, p.BoundLines)
 	}
 	return fmt.Sprintf("Pace of the card: %s; %.2f EUR spent, %.2f left; %d minutes of agent time spent, %d left; session %d of %d.",
-		lines, p.SpentEUR, max(0, p.BudgetEUR-p.SpentEUR), p.SpentMinutes, max(0, p.LeftMinutes), p.Attempt, p.Sessions)
+		lines, p.SpentEUR, max(0, policy.SessionHeadroom(p.BudgetEUR-p.SpentEUR, p.ReserveEUR)), p.SpentMinutes, max(0, p.LeftMinutes), p.Attempt, p.Sessions)
 }
 
 // CheckInOutcome is the check-in's answer: the decision, the reason and its

@@ -413,6 +413,14 @@ type Limits struct {
 	// that the session spends with nothing pushed, at which the supervisor
 	// is called, 1 to 99. Absent: DefaultNoPushSpend.
 	NoPushSpend int `yaml:"no_push_spend,omitempty" json:"no_push_spend"`
+	// GateReserveEUR is the EUR held out of a card's budget for its
+	// gates: the whole of a model review and of an audit at the models
+	// the gates use, which a card whose sessions spend to the session
+	// ceiling still runs without a fund. A session's calls fit
+	// the task headroom less this reserve; factoryd's own calls (the
+	// review, the audit, a waiting card's brief) keep the full headroom.
+	// Absent: DefaultGateReserveEUR.
+	GateReserveEUR float64 `yaml:"gate_reserve_eur,omitempty" json:"gate_reserve_eur,omitempty"`
 }
 
 // DefaultSameCall is the same_call detector's threshold of a policy
@@ -570,8 +578,9 @@ type limitsJSON struct {
 	// PlanWarnAt is limits.plan_warn_at, left out when 0.
 	PlanWarnAt int `json:"plan_warn_at,omitempty"`
 	// NoPushSpend is limits.no_push_spend, left out when 0.
-	NoPushSpend int    `json:"no_push_spend,omitempty"`
-	CheckinTime string `json:"checkin_time,omitempty"`
+	NoPushSpend    int     `json:"no_push_spend,omitempty"`
+	GateReserveEUR float64 `json:"gate_reserve_eur,omitempty"`
+	CheckinTime    string  `json:"checkin_time,omitempty"`
 }
 
 // MarshalJSON is Limits as limitsJSON, its durations as strings, as in
@@ -582,7 +591,7 @@ func (l Limits) MarshalJSON() ([]byte, error) {
 		checkinTime = l.CheckinTime.String()
 	}
 	return json.Marshal(limitsJSON{l.Sessions, l.AgentTime.String(), l.CheckIn.String(), l.SupervisorCalls, l.SupervisorTimeout.String(), l.StrongerAfter, l.Steps, l.NudgeAfter, l.Nudges, l.SameCall, l.ReviewDiffKiB,
-		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, checkinTime})
+		l.CheckinCalls, l.CheckinShare, l.CheckinTailKiB, l.CheckinHandoverChars, l.CheckinSessions, l.WarnAt, l.PlanWarnAt, l.NoPushSpend, l.GateReserveEUR, checkinTime})
 }
 
 // UnmarshalJSON reads limitsJSON back into Limits, its duration strings
@@ -595,7 +604,7 @@ func (l *Limits) UnmarshalJSON(b []byte) error {
 	out := Limits{Sessions: j.Sessions, SupervisorCalls: j.SupervisorCalls, StrongerAfter: j.StrongerAfter, Steps: j.Steps,
 		NudgeAfter: j.NudgeAfter, Nudges: j.Nudges, SameCall: j.SameCall, ReviewDiffKiB: j.ReviewDiffKiB,
 		CheckinCalls: j.CheckinCalls, CheckinShare: j.CheckinShare, CheckinTailKiB: j.CheckinTailKiB, CheckinHandoverChars: j.CheckinHandoverChars, CheckinSessions: j.CheckinSessions,
-		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend}
+		WarnAt: j.WarnAt, PlanWarnAt: j.PlanWarnAt, NoPushSpend: j.NoPushSpend, GateReserveEUR: j.GateReserveEUR}
 	for _, d := range []struct {
 		s  string
 		to *time.Duration
@@ -673,6 +682,8 @@ func (l Limits) validate() error {
 		return fmt.Errorf("policy: limits.checkin_handover_chars must be 0 or lie between 200 and 8000, is %d", l.CheckinHandoverChars)
 	case l.CheckinSessions != 0 && (l.CheckinSessions < 1 || l.CheckinSessions > 3):
 		return fmt.Errorf("policy: limits.checkin_sessions must be 0 or lie between 1 and 3, is %d", l.CheckinSessions)
+	case l.GateReserveEUR < 0:
+		return fmt.Errorf("policy: limits.gate_reserve_eur must not be negative (0 means absent, as in a version pinned before the key), is %g", l.GateReserveEUR)
 	}
 	if after, _ := l.Nudge(); after >= l.SameCallAfter() {
 		return fmt.Errorf("policy: limits.nudge_after (%d) must be below limits.same_call (%d): a repetition gets its nudge before the trip", after, l.SameCallAfter())

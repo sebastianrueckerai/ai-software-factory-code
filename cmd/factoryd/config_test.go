@@ -438,6 +438,7 @@ func TestManualHoldsAllCaps(t *testing.T) {
 		"limits.nudges", "limits.same_call", "limits.review_diff_kib", "limits.checkin_calls",
 		"limits.checkin_time", "limits.checkin_share", "limits.checkin_tail_kib", "limits.checkin_handover_chars",
 		"limits.checkin_sessions", "limits.warn_at", "limits.plan_warn_at", "limits.no_push_spend",
+		"limits.gate_reserve_eur",
 		"budget.task_default_eur", "budget.task_max_eur", "budget.day_eur", "budget.month_eur",
 		"budget.session_floor_cheap_eur", "budget.session_floor_frontier_eur", "budget.premium_month_eur",
 		"escalation.pool.sessions", "escalation.pool.agent_time", "escalation.pool.eur",

@@ -62,6 +62,10 @@ type fakeKube struct {
 	statusErr    map[string]error             // ns/name → injected PodStatus failure
 	initFinished map[string]time.Time         // ns/name → the first init container's successful finish
 	onDeletePod  func()                       // runs on every DeletePod
+	nodes        []NodeStorage                // the cluster's nodes; nil is one node nothing fills
+	unplaced     []int64                      // requests of pods no node holds
+	nodesErr     error                        // injected NodeStorage failure
+	nodeReads    int                          // NodeStorage calls
 	ops          []string                     // namespace deletions and pod creations, in order
 	applies      []string                     // ns/name of every applied CNP, in order
 	onCreatePod  func()                       // runs on every CreatePod
@@ -167,6 +171,16 @@ func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]
 		names = append(names, ns.Name)
 	}
 	return names, nil
+}
+
+func (k *fakeKube) NodeStorage(context.Context) ([]NodeStorage, []int64, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.nodeReads++
+	if k.nodes == nil && k.nodesErr == nil {
+		return []NodeStorage{{Name: "n1", Allocatable: 1 << 50}}, nil, nil
+	}
+	return slices.Clone(k.nodes), slices.Clone(k.unplaced), k.nodesErr
 }
 
 // ListNamespacesByLabel reports the deletion state fakeKube's namespaces
@@ -2202,7 +2216,9 @@ func TestRunSessionThatCannotStartEscalatesAtOnce(t *testing.T) {
 // anything opens: no token, no session row, no pod. The card gets the
 // floor's refusal as its money ask, and no session burns the rest of its
 // budget on calls the gateway must refuse.
-// 0.100 EUR of 2 is left, and the cheap rung's floor asks 0.30.
+// 0.10 EUR of 2 is free, -0.30 under the ceiling with the 0.40 gate
+// reserve held out, of which 0.10 is what the gates keep; the cheap rung's
+// floor asks 0.30.
 func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	task := Task{ID: "t4k", Status: "running", Objective: "fix vet", Repository: "sf/repo", SHA: "base", Track: "direct", BudgetEUR: 2, SpentEUR: 1.9}
 	kube := newFakeKube()
@@ -2213,8 +2229,9 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"0.100 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.300000 EUR " +
-		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
+		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
+		", and a session on factory/small needs 0.300000 EUR " +
+		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml), so a fund of 0.60 EUR opens it; a session started now would run out of money before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
 	}
@@ -3817,30 +3834,30 @@ func TestRunSessionStatesTheFactsInThePodEnv(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := podEnv(kube.podAt(0))["FACTS"]
-	if !regexp.MustCompile(`^factoryd's facts for this session: budget 3\.20 of 5\.00 EUR left; \d+ minutes of agent time left; this is session 1 of the 4 `).MatchString(got) {
+	if !regexp.MustCompile(`^factoryd's facts for this session: 2\.80 of the 5\.00 EUR budget left for its calls \(the model review and the audit hold 0\.40 EUR of it\); \d+ minutes of agent time left; this is session 1 of the 4 `).MatchString(got) {
 		t.Fatalf("FACTS = %q", got)
 	}
 }
 
 // The session's facts and the check-in's card facts state the spend the
-// gateway counts: 4.50 settled and 0.40 held of 5.00 is 4.90 spent and
-// 0.10 left.
+// gateway counts: 4.00 settled and 0.50 held of 5.00 is 4.50 spent and
+// 0.50 left, 0.10 of it past the 0.40 gate reserve.
 func TestSessionFactsSpendIncludesHolds(t *testing.T) {
-	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 4.5, HeldEUR: 0.4, Track: "direct"}
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/repo", SHA: "base", BudgetEUR: 5, SpentEUR: 4, HeldEUR: 0.5, Track: "direct"}
 	kube := newFakeKube()
 	runner, _, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
 	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Sessions: 4, Model: "factory/small"}, nil,
 		pushedLine("c0ffee")+"\n"+resultLine(true, "done")); err != nil {
 		t.Fatal(err)
 	}
-	if got := podEnv(kube.podAt(0))["FACTS"]; !strings.HasPrefix(got, "factoryd's facts for this session: budget 0.10 of 5.00 EUR left; ") {
-		t.Fatalf("FACTS = %q, want 0.10 of 5.00 EUR left", got)
+	if got := podEnv(kube.podAt(0))["FACTS"]; !strings.HasPrefix(got, "factoryd's facts for this session: 0.10 of the 5.00 EUR budget left for its calls (the model review and the audit hold 0.40 EUR of it); ") {
+		t.Fatalf("FACTS = %q, want 0.10 of 5.00 EUR left for its calls", got)
 	}
-	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}, ""), `{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.9}`; got != want {
+	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}, ""), `{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.5}`; got != want {
 		t.Fatalf("card facts = %s, want %s", got, want)
 	}
 	if got, want := checkinFacts(task, sessionSpec{attempt: 1, sessions: 4}, "abc123"),
-		`{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.9,"wip_head":"abc123"}`; got != want {
+		`{"attempt":1,"budget_eur":5,"sessions":4,"spent_eur":4.5,"wip_head":"abc123"}`; got != want {
 		t.Fatalf("card facts = %s, want %s naming the interim push's head", got, want)
 	}
 }
@@ -3865,8 +3882,8 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.10 of 5.00 EUR are left. ") {
-		t.Fatalf("worker got %q, want the budget warning at 4.90 of 5.00", texts)
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.00 of 5.00 EUR are left for its calls (the model review and the audit hold 0.10 EUR of it). ") {
+		t.Fatalf("worker got %q, want the budget warning at 4.90 of 5.00: 0.10 left, under the 0.40 reserve", texts)
 	}
 	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "this session spent 4.90 EUR of the 5.00 EUR the card had left at its start (98 percent, the line is 60) and no work is pushed" {
 		t.Fatalf("trip = %+v, want the no-push trip at 4.90 of 5.00", trip)
@@ -3939,7 +3956,7 @@ func TestRunSessionWarnsNearTheBudget(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: 90 percent of this card's budget is spent, 0.50 of 5.00 EUR are left.") {
+	if len(texts) != 2 || texts[0] != "POST /brief " || !strings.HasPrefix(texts[1], "POST /message factoryd: 90 percent of this card's budget is spent, 0.10 of 5.00 EUR are left for its calls (the model review and the audit hold 0.40 EUR of it).") {
 		t.Fatalf("worker got %q, want the brief and one budget warning", texts)
 	}
 }
@@ -5554,7 +5571,8 @@ func TestRunSessionCarriesThePriorStateWithoutACheckinModel(t *testing.T) {
 }
 
 // The statement of every check-in states the card's pace: 350 changed lines
-// against the small card's 300, 1.80 of 5 EUR spent, session 1 of 4.
+// against the small card's 300, 1.80 of 5 EUR spent, 5 - 1.80 - 0.40 = 2.80 left for a session
+// with the gate reserve held out (0 for a 0.30 card with 0.05 spent: 0.30 - 0.05 - 0.40 < 0), session 1 of 4.
 func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 	t.Run("mid-session", func(t *testing.T) {
 		runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
@@ -5574,8 +5592,8 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 			t.Fatalf("chat = %d calls, want one", chat.calls)
 		}
 		in := chat.gots[0].Input
-		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 3.20 left;", "left; session 1 of 4.",
-			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":3.2,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
+		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 2.80 left;", "left; session 1 of 4.",
+			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":2.8,"reserve_eur":0.4,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
 			if !strings.Contains(in, want) {
 				t.Fatalf("statement lacks %q:\n%s", want, in)
 			}
@@ -5602,7 +5620,7 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "Pace of the card: changed lines are not measured at this moment;") {
 			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
 		}
-		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":0.25,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
+		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":0,"reserve_eur":0.4,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
 			t.Fatalf("statement lacks the cost and state block:\n%s", chat.gots[0].Input)
 		}
 	})
