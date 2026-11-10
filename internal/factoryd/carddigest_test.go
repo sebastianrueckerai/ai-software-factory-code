@@ -1493,6 +1493,5 @@ func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
 	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
 	if got := g.digest(t).Flags; !slices.Equal(got, want) {
 		t.Fatalf("Flags = %v, want %v", got, want)
-}
 	}
 }

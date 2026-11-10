@@ -1795,7 +1795,9 @@ func (t *taskRun) lifecycle() (string, error) {
 	// it join the next session's findings (the human's comments are in
 	// t.answers) and its resolution is taken (versionCases)
 	held := func(final, why string, answer []string) (string, string) {
-		t.waitEnded = workflow.Now(t.ctx)
+		if t.waitEnded.IsZero() {
+			t.waitEnded = workflow.Now(t.ctx)
+		}
 		if final == "" {
 			t.readRaise(&u)
 			addFindings(answer, "changes")
@@ -2167,6 +2169,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			// (versionCases)
 			head := cmp.Or(startRef, t.head)
 			t.reverify = false
+			t.waitEnded = time.Time{}
 			if t.rerun {
 				t.rerun = false
 				if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, head).Get(t.ctx, &head); err != nil {

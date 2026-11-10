@@ -21,8 +21,8 @@ const (
 	SignalSlotFree = "slot_free"
 )
 
-// ResumeSlot is AdmitResume's answer: Granted when the card runs (SetState
-// moved it), else Ahead resumed cards come before it.
+// ResumeSlot is AdmitResume's answer: Granted when the card holds a slot (a
+// grant has moved it to running), else Ahead resumed cards come before it.
 type ResumeSlot struct {
 	Granted bool
 	Ahead   int

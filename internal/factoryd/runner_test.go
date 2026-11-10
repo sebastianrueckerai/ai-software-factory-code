@@ -64,6 +64,7 @@ type fakeKube struct {
 	nodes        []NodeStorage                // the cluster's nodes; nil is one node nothing fills
 	unplaced     []int64                      // requests of pods no node holds
 	nodesErr     error                        // injected NodeStorage failure
+	nodeReads    int                          // NodeStorage calls
 	ops          []string                     // namespace deletions and pod creations, in order
 	applies      []string                     // ns/name of every applied CNP, in order
 	onCreatePod  func()                       // runs on every CreatePod
@@ -174,6 +175,7 @@ func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]
 func (k *fakeKube) NodeStorage(context.Context) ([]NodeStorage, []int64, error) {
 	k.mu.Lock()
 	defer k.mu.Unlock()
+	k.nodeReads++
 	if k.nodes == nil && k.nodesErr == nil {
 		return []NodeStorage{{Name: "n1", Allocatable: 1 << 50}}, nil, nil
 	}

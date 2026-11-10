@@ -448,3 +448,48 @@ func TestWorkflowReplaysARunRecordedBeforeTheSurgeResume(t *testing.T) {
 		t.Fatalf("the replay scheduled %d SetState, the recording holds %d", states, recorded)
 	}
 }
+
+// [prechange_run_replays] A plan card's run recorded on a dev server before
+// the surge-resume change (a question, its answers and three planner
+// sessions, under stub activities) replays at today's code: it carries no
+// marker, the plan loop's session starts add no command, and the recorded
+// SetState commands match with no AdmitResume among them.
+func TestWorkflowReplaysAPlanRunRecordedBeforeTheSurgeResume(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-plan-question-answer-sessions.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	recordedStates, recordedPlans := 0, 0
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"surge-resume"` {
+			t.Fatal("the recording holds the surge-resume marker: it is no run from before")
+		}
+		switch e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName() {
+		case ActivitySetState:
+			recordedStates++
+		case ActivityRunPlan:
+			recordedPlans++
+		}
+	}
+	if recordedPlans != 3 {
+		t.Fatalf("the recording holds %d planner sessions, want 3", recordedPlans)
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	states := 0
+	for _, a := range got {
+		switch a {
+		case ActivityAdmitResume:
+			t.Fatal("the replay of a plan run from before scheduled AdmitResume")
+		case ActivitySetState:
+			states++
+		}
+	}
+	if states != recordedStates || recordedStates == 0 {
+		t.Fatalf("the replay scheduled %d SetState, the recording holds %d", states, recordedStates)
+	}
+}

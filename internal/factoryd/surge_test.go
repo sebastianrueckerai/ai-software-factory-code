@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/stretchr/testify/mock"
 	"go.temporal.io/sdk/workflow"
@@ -315,15 +316,14 @@ func TestPlanLoopSessionsPassTheSurgeBound(t *testing.T) {
 			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"}, PlanResult{Revision: 3, SHA256: "sha-3"})
 			h.open, h.file = []int{1, 0, 0}, map[int]bool{3: true}
 			asks := 0
+			h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+				asks++
+				return ResumeSlot{Granted: asks != 2, Ahead: 1}, nil
+			})
 			if before {
 				h.env.OnGetVersion("surge-resume", workflow.DefaultVersion, versionSurgeResume).Return(workflow.DefaultVersion)
-			} else {
-				h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
-					asks++
-					return ResumeSlot{Granted: asks != 2, Ahead: 1}, nil
-				})
-				h.signalAfter(time.Minute, SignalSlotFree, TaskSignal{})
 			}
+			h.signalAfter(time.Minute, SignalSlotFree, TaskSignal{})
 			h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
 			h.signalAfter(2*time.Hour, SignalPlanAnswered, TaskSignal{Author: "bob", Revision: 1, Index: 2})
 			h.signalAfter(3*time.Hour, SignalPlanAnswered, TaskSignal{Author: "carol", Revision: 1, Index: 2})
@@ -380,5 +380,67 @@ func TestBoundedPassesAResumedWaiterWithoutAnAdmissionStamp(t *testing.T) {
 	}
 	if got, _, _ := store.Task(ctx, "t-w"); got.QueueReason != w.QueueReason || len(rec.signals) != 1 {
 		t.Fatalf("reason %q, signals %v; want the reason kept and the signal delivered", got.QueueReason, rec.signals)
+	}
+}
+
+// An outsider's answer is screened for 30 minutes before the session
+// starts; the card queues by when its wait ended, not by when the
+// screening did.
+func TestAwaitSlotKeepsTheTimeTheAnswerArrived(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil))
+	g.state.Standing = harness.StandingOutside
+	g.onScreen(ScreenResult{Verdict: ScreenClear})
+	g.env.OnActivity(ActivityScreenAnswer, mock.Anything, "t1", mock.Anything, mock.Anything).After(30 * time.Minute).Return(
+		func(ctx context.Context, taskID, text string, pin int64) (ScreenResult, error) {
+			return ScreenResult{Verdict: ScreenClear}, nil
+		})
+	g.onAnswers(clearAnswer, needsInfo("s1"), pushed("s2", "c2"))
+	g.onChecks(ChecksResult{State: ChecksSuccess})
+	var answeredAt time.Time
+	var sinces []time.Time
+	g.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+			sinces = append(sinces, since)
+			return ResumeSlot{Granted: true}, nil
+		})
+	g.env.RegisterDelayedCallback(func() {
+		answeredAt = g.env.Now()
+		g.env.SignalWorkflow(SignalPosterComment, TaskSignal{Author: "visitor", Body: "Firefox 131", Comment: 700})
+	}, time.Hour)
+	g.signalAfter(3*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+	g.run(t)
+	if len(sinces) != 2 {
+		t.Fatalf("AdmitResume asked %d times, want 2 (the first session, the resumed one)", len(sinces))
+	}
+	if d := sinces[1].Sub(answeredAt); d < 0 || d >= 10*time.Minute {
+		t.Fatalf("since = %v after the answer at %v, want within the answer's quiet window, before the 30-minute screening ends", d, answeredAt)
+	}
+}
+
+// A card sent from its wait to the planner asks for its slot first: the
+// ask that is refused holds the switch, and BecomePlan runs only after the
+// ask that is granted.
+func TestSwitchFromWaitWaitsForASlot(t *testing.T) {
+	h, _ := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	order := h.activityOrder()
+	asks := 0
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+		asks++
+		return ResumeSlot{Granted: asks != 2, Ahead: 1}, nil
+	})
+	h.signalAfter(time.Minute, SignalSlotFree, TaskSignal{})
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(time.Hour+2*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	var asked []string
+	for _, a := range *order {
+		if a == ActivityAdmitResume || a == ActivityBecomePlan {
+			asked = append(asked, a)
+		}
+	}
+	if want := []string{ActivityAdmitResume, ActivityAdmitResume, ActivityAdmitResume, ActivityBecomePlan, ActivityAdmitResume}; !slices.Equal(asked, want) {
+		t.Fatalf("order = %v, want the first session's ask, the switch's refused and granted asks, BecomePlan, then the planner's ask", asked)
 	}
 }

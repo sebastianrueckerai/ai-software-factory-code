@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/tls"
 	"crypto/x509"
@@ -12,6 +13,7 @@ import (
 	"io"
 	"log"
 	"maps"
+	"math/big"
 	"net"
 	"net/http"
 	"net/url"
@@ -1279,52 +1281,61 @@ func (k *InClusterKube) Deployments(ctx context.Context, namespace string) ([]De
 	return out, nil
 }
 
-// NodeStorage is one node's allocatable ephemeral storage and the
-// ephemeral storage its live pods request, in bytes.
+// NodeStorage is one schedulable node's allocatable ephemeral storage and
+// the ephemeral storage its live pods request, in bytes.
 type NodeStorage struct {
 	Name        string
 	Allocatable int64
 	Requested   int64
 }
 
-// NodeStorage reads the nodes and every pod not yet ended. A pod's request
-// is the larger of its containers' sum and its largest init container's,
-// as the scheduler counts it.
+// podListPage is how many pods one list call asks for, so no response
+// outgrows the client's read bound.
+const podListPage = 200
+
+// storageNamespaces are the namespaces besides the task namespaces
+// (factory.ai/task) whose pods request ephemeral storage: the forgejo
+// namespace holds the Actions runner.
+var storageNamespaces = []string{"forgejo"}
+
+// NodeStorage reads the schedulable nodes (not cordoned, Ready) and the
+// pods not yet ended in the task namespaces and storageNamespaces. A pod's
+// request is the larger of its containers' sum and its largest init
+// container's, as the scheduler counts it; a pod whose request cannot be
+// read counts as filling its node.
 func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64, error) {
 	var nodeList struct {
 		Items []struct {
 			Metadata struct {
 				Name string `json:"name"`
 			} `json:"metadata"`
+			Spec struct {
+				Unschedulable bool `json:"unschedulable"`
+			} `json:"spec"`
 			Status struct {
 				Allocatable map[string]string `json:"allocatable"`
+				Conditions  []struct {
+					Type   string `json:"type"`
+					Status string `json:"status"`
+				} `json:"conditions"`
 			} `json:"status"`
 		} `json:"items"`
 	}
 	if err := k.getJSON(ctx, "/api/v1/nodes", &nodeList); err != nil {
 		return nil, nil, err
 	}
-	type container struct {
-		Resources struct {
-			Requests map[string]string `json:"requests"`
-		} `json:"resources"`
-	}
-	var podList struct {
-		Items []struct {
-			Spec struct {
-				NodeName       string      `json:"nodeName"`
-				Containers     []container `json:"containers"`
-				InitContainers []container `json:"initContainers"`
-			} `json:"spec"`
-		} `json:"items"`
-	}
-	q := url.Values{"fieldSelector": []string{"status.phase!=Succeeded,status.phase!=Failed"}}
-	if err := k.getJSON(ctx, "/api/v1/pods?"+q.Encode(), &podList); err != nil {
-		return nil, nil, err
-	}
 	nodes := make([]NodeStorage, 0, len(nodeList.Items))
 	at := map[string]int{}
 	for _, n := range nodeList.Items {
+		ready := false
+		for _, c := range n.Status.Conditions {
+			if c.Type == "Ready" {
+				ready = c.Status == "True"
+			}
+		}
+		if n.Spec.Unschedulable || !ready {
+			continue
+		}
 		alloc, err := parseBytes(n.Status.Allocatable["ephemeral-storage"])
 		if err != nil {
 			return nil, nil, fmt.Errorf("node %s ephemeral-storage: %w", n.Metadata.Name, err)
@@ -1332,54 +1343,126 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 		at[n.Metadata.Name] = len(nodes)
 		nodes = append(nodes, NodeStorage{Name: n.Metadata.Name, Allocatable: alloc})
 	}
+	task, err := k.NamespacesByLabel(ctx, "factory.ai/task", "")
+	if err != nil {
+		return nil, nil, err
+	}
 	var unplaced []int64
-	for _, p := range podList.Items {
-		var sum, most int64
-		for _, c := range p.Spec.Containers {
-			b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
-			if err != nil {
-				return nil, nil, err
+	for _, ns := range append(task, storageNamespaces...) {
+		err := k.eachPod(ctx, ns, func(nodeName string, req int64, readable bool) {
+			switch i, placed := at[nodeName]; {
+			case placed && !readable:
+				nodes[i].Requested = nodes[i].Allocatable
+			case placed:
+				nodes[i].Requested += req
+			case nodeName == "" && readable && req > 0:
+				unplaced = append(unplaced, req)
 			}
-			sum += b
+		})
+		if errors.Is(err, ErrForbidden) || errors.Is(err, ErrNotFound) {
+			// a namespace torn down since the listing
+			continue
 		}
-		for _, c := range p.Spec.InitContainers {
-			b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
-			if err != nil {
-				return nil, nil, err
-			}
-			most = max(most, b)
-		}
-		req := max(sum, most)
-		if i, ok := at[p.Spec.NodeName]; ok {
-			nodes[i].Requested += req
-		} else if p.Spec.NodeName == "" && req > 0 {
-			unplaced = append(unplaced, req)
+		if err != nil {
+			return nil, nil, err
 		}
 	}
 	return nodes, unplaced, nil
 }
 
-// parseBytes reads a Kubernetes quantity of bytes: a plain integer or one
-// with a binary (Ki..Ti) or decimal (k..T) suffix; "" is 0.
+// eachPod pages through namespace's pods not yet ended and calls fn with
+// each one's node ("" before it has one) and its ephemeral-storage
+// request; readable is false when a quantity of the pod does not parse,
+// which is logged.
+func (k *InClusterKube) eachPod(ctx context.Context, namespace string, fn func(nodeName string, req int64, readable bool)) error {
+	type container struct {
+		Resources struct {
+			Requests map[string]string `json:"requests"`
+		} `json:"resources"`
+	}
+	cont := ""
+	for {
+		q := url.Values{"fieldSelector": []string{"status.phase!=Succeeded,status.phase!=Failed"}, "limit": []string{strconv.Itoa(podListPage)}}
+		if cont != "" {
+			q.Set("continue", cont)
+		}
+		var list struct {
+			Metadata struct {
+				Continue string `json:"continue"`
+			} `json:"metadata"`
+			Items []struct {
+				Metadata struct {
+					Name string `json:"name"`
+				} `json:"metadata"`
+				Spec struct {
+					NodeName       string      `json:"nodeName"`
+					Containers     []container `json:"containers"`
+					InitContainers []container `json:"initContainers"`
+				} `json:"spec"`
+			} `json:"items"`
+		}
+		if err := k.getJSON(ctx, "/api/v1/namespaces/"+namespace+"/pods?"+q.Encode(), &list); err != nil {
+			return err
+		}
+		for _, p := range list.Items {
+			var sum, most int64
+			var bad error
+			for _, c := range p.Spec.Containers {
+				b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
+				sum, bad = sum+b, cmp.Or(bad, err)
+			}
+			for _, c := range p.Spec.InitContainers {
+				b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
+				most, bad = max(most, b), cmp.Or(bad, err)
+			}
+			if bad != nil {
+				log.Printf("kube: pod %s/%s: %v: counted as filling its node", namespace, p.Metadata.Name, bad)
+			}
+			fn(p.Spec.NodeName, max(sum, most), bad == nil)
+		}
+		if cont = list.Metadata.Continue; cont == "" {
+			return nil
+		}
+	}
+}
+
+// byteUnits are the Kubernetes quantity suffixes as exact ratios; the
+// binary ones are checked before the single letters they end in.
+var byteUnits = []struct {
+	suffix string
+	mult   *big.Rat
+}{
+	{"Ki", big.NewRat(1<<10, 1)}, {"Mi", big.NewRat(1<<20, 1)}, {"Gi", big.NewRat(1<<30, 1)}, {"Ti", big.NewRat(1<<40, 1)},
+	{"Pi", big.NewRat(1<<50, 1)}, {"Ei", big.NewRat(1<<60, 1)},
+	{"n", big.NewRat(1, 1e9)}, {"u", big.NewRat(1, 1e6)}, {"m", big.NewRat(1, 1e3)},
+	{"k", big.NewRat(1e3, 1)}, {"M", big.NewRat(1e6, 1)}, {"G", big.NewRat(1e9, 1)}, {"T", big.NewRat(1e12, 1)},
+	{"P", big.NewRat(1e15, 1)}, {"E", big.NewRat(1e18, 1)},
+}
+
+// parseBytes reads a Kubernetes quantity as whole bytes, rounded up: a
+// decimal with an optional binary or decimal suffix or an exponent (1e9,
+// 129e6, 1.5Gi, 500m); "" is 0.
 func parseBytes(q string) (int64, error) {
 	if q == "" {
 		return 0, nil
 	}
-	units := []struct {
-		suffix string
-		mult   int64
-	}{{"Ki", 1 << 10}, {"Mi", 1 << 20}, {"Gi", 1 << 30}, {"Ti", 1 << 40}, {"k", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12}}
-	mult := int64(1)
-	num := q
-	for _, u := range units {
-		if strings.HasSuffix(q, u.suffix) {
-			mult, num = u.mult, strings.TrimSuffix(q, u.suffix)
-			break
+	r, ok := new(big.Rat).SetString(q)
+	if !ok {
+		for _, u := range byteUnits {
+			if num, found := strings.CutSuffix(q, u.suffix); found {
+				if r, ok = new(big.Rat).SetString(num); ok {
+					r.Mul(r, u.mult)
+				}
+				break
+			}
 		}
 	}
-	n, err := strconv.ParseInt(num, 10, 64)
-	if err != nil {
-		return 0, fmt.Errorf("quantity %q: %w", q, err)
+	if !ok || r.Sign() < 0 {
+		return 0, fmt.Errorf("quantity %q is not one", q)
 	}
-	return n * mult, nil
+	n := new(big.Int).Div(new(big.Int).Add(r.Num(), new(big.Int).Sub(r.Denom(), big.NewInt(1))), r.Denom())
+	if !n.IsInt64() {
+		return 0, fmt.Errorf("quantity %q is too large", q)
+	}
+	return n.Int64(), nil
 }
