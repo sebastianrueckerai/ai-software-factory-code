@@ -20,7 +20,6 @@ import (
 	"os"
 	"os/exec"
 	"os/signal"
-	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -34,7 +33,6 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/imagegen"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
@@ -1075,77 +1073,34 @@ func commitAndPush(agentRepo string, e workerEnv, base, mainHead string, killAge
 	return head, nil
 }
 
-// errPushOverBound is the named refusal of the card's line bound: the
-// branch's diff against its merge base does not fit it, and no shape the
-// worker can give the push changes that.
-var errPushOverBound = errors.New("push refused: over the card's line bound")
+// The push rules live in internal/factoryd/pushrules.go now — one rule
+// set, run by the worker's end push and factoryd's interim push alike —
+// and the local names stay as thin aliases delegating to factoryd's, so
+// commitAndPush and its tests read as today.
 
-// fitBound is the card's line-bound rule on one push, and the shape the
-// sync lands in. A tree that already holds main's content — the sync the
-// session performed without main's ancestry — is recorded as the merge it
-// is, whatever its size, so main's commits stay main's in the pull
-// request's diff. A branch whose diff against its merge base is over the
-// bound is merged with main by the rule when that fits; what no merge can
-// fit is refused by name.
+// pushRulesGit is the worker's hardened git as the push rules run it.
+type pushRulesGit struct{ e workerEnv }
+
+func (p pushRulesGit) Git(dir string, args ...string) (string, error) { return p.e.git(dir, args...) }
+
+func (p pushRulesGit) RunGit(dir string, env []string, args ...string) (string, error) {
+	return p.e.runGit(dir, env, args...)
+}
+
+// errPushOverBound is the named refusal of the card's line bound, now
+// factoryd's (pushrules.go).
+var errPushOverBound = factoryd.ErrPushOverBound
+
+// fitBound is the card's line-bound rule on the end push, with the
+// worker's own merge commit: the session's attribution message.
 func fitBound(e workerEnv, send, head, tree, base, guard, mainHead string, bound int) (string, string, error) {
-	if bound <= 0 {
-		return head, guard, nil
-	}
-	mb, err := e.git(send, "merge-base", head, mainHead)
-	if err != nil {
-		return "", "", err
-	}
-	billed, err := changedLines(e, send, mb, head)
-	if err != nil {
-		return "", "", err
-	}
-	merge := func(t string) (string, string, error) {
-		h, err := e.runGit(send, botIdentity, "commit-tree", t, "-p", base, "-p", mainHead, "-m", commitMessage(e))
-		return h, mainHead, err
-	}
-	merged, mErr := mergedTree(e, send, mb, head, mainHead)
-	// the faithful sync: the tree is what a merge with main would give, on
-	// a branch main has moved past; one that holds main already has none
-	if mErr == nil && mb != mainHead && merged == tree && fits(e, send, mainHead, tree, bound) {
-		return merge(tree)
-	}
-	if billed <= bound {
-		return head, guard, nil
-	}
-	if mErr == nil && fits(e, send, mainHead, merged, bound) {
-		return merge(merged)
-	}
-	return "", "", fmt.Errorf("%w: the branch's diff against its merge base is %d lines over the card's %d-line bound; merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor",
-		errPushOverBound, billed-bound, bound)
+	return factoryd.FitBound(pushRulesGit{e}, send, head, tree, base, guard, mainHead, bound, botIdentity, commitMessage(e))
 }
 
 // changedLines is the insertions plus deletions between two commits,
 // trees or both; a diff git cannot run is an error, never zero lines.
 func changedLines(e workerEnv, send, a, b string) (int, error) {
-	short, err := e.git(send, "diff", "--shortstat", a, b)
-	if err != nil {
-		return 0, err
-	}
-	d := parseShortstat(short)
-	return d.Insertions + d.Deletions, nil
-}
-
-// fits is whether the diff between a and b holds the bound; a diff that
-// cannot run does not.
-func fits(e workerEnv, send, a, b string, bound int) bool {
-	n, err := changedLines(e, send, a, b)
-	return err == nil && n <= bound
-}
-
-// mergedTree is the three-way merge of head and mainHead over base as a
-// tree, when git can make it without conflicts.
-func mergedTree(e workerEnv, send, base, head, mainHead string) (string, error) {
-	idx := filepath.Join(send, "fit-index")
-	defer os.Remove(idx)
-	if _, err := e.runGit(send, []string{"GIT_INDEX_FILE=" + idx}, "read-tree", "-m", base, head, mainHead); err != nil {
-		return "", err
-	}
-	return e.runGit(send, []string{"GIT_INDEX_FILE=" + idx}, "write-tree")
+	return factoryd.ChangedLines(pushRulesGit{e}, send, a, b)
 }
 
 // sessionParents answers the pushed commit's parents and the commit whose
@@ -1174,30 +1129,11 @@ func sessionParents(e workerEnv, send, base, mainHead, agent string) ([]string, 
 	return []string{"-p", base, "-p", tip}, tip
 }
 
-// refuseWorkflowDirChange stops a push whose tree entries for the workflow
-// directories (.forgejo, .gitea, .github) differ from the base's:
-// Forgejo's protected_file_patterns rejects every new factory/*
-// branch outright, so branch protection cannot gate this — the worker,
-// trusted and running with the agent already dead, is where the guard
-// lives. Object ids are compared, never a diff's path listing, so a
-// rename out of the directory, a quoted non-ASCII name or a mode change
-// all show. Computed against own, the repo the worker itself fetched and
-// staged, never against the agent-controlled repo.
+// refuseWorkflowDirChange is the workflow-directory rule, now factoryd's
+// (pushrules.go): no agent changes a workflow directory, and the refusal
+// names the action.
 func refuseWorkflowDirChange(e workerEnv, own, base, head string) error {
-	was, err := workflowTreeEntries(e, own, base)
-	if err != nil {
-		return err
-	}
-	now, err := workflowTreeEntries(e, own, head)
-	if err != nil {
-		return err
-	}
-	for _, dir := range factoryd.WorkflowDirs {
-		if was[dir] != now[dir] {
-			return fmt.Errorf("refusing to push: %s/ differs from the base (%s)", dir, base)
-		}
-	}
-	return nil
+	return factoryd.RefuseWorkflowDirChange(pushRulesGit{e}, own, base, head)
 }
 
 // workflowDirGuard watches the session's file-change events and, at the
@@ -1282,64 +1218,11 @@ func workflowDirMessage(dir, file string) string {
 	return fmt.Sprintf("you changed %s under %s/: the push will refuse it — refusing to push: %s/ differs from the base. Revert that file and do the work without touching it.", file, dir, dir)
 }
 
-// workflowTreeEntries maps each workflow directory to the ls-tree lines
-// (mode, type, object id, name) of every top-level entry in commit naming
-// it in any case (factoryd.WorkflowDir); an absent directory has no key.
-// A commit that does not exist fails, it never reads as "no workflow
-// directories".
-func workflowTreeEntries(e workerEnv, own, commit string) (map[string]string, error) {
-	out, err := e.git(own, "ls-tree", commit)
-	if err != nil {
-		return nil, err
-	}
-	entries := map[string]string{}
-	for _, line := range strings.Split(out, "\n") {
-		_, name, _ := strings.Cut(line, "\t")
-		if dir, ok := factoryd.WorkflowDir(name); ok {
-			entries[dir] += line + "\n"
-		}
-	}
-	return entries, nil
-}
-
-// migrationName is the pattern a migration file carries: a UTC timestamp
-// and a slug, never the next number (roadmap 186's guide sentence, now a
-// guard).
-var migrationName = regexp.MustCompile(`^[0-9]{14}_[a-z0-9_]+\.sql$`)
-
-// refuseMisnamedMigrations stops a push that adds a .sql file under one
-// of the policy's migration directory globs — a glob with ** in it; an
-// exact path like internal/policy/schema.sql marks one file for review,
-// not a directory of timestamped migrations — whose name is off the
-// pattern. Only added files are judged: an edited migration keeps its
-// name. The listing runs with --no-renames and core.quotePath off, so a
-// rename into a bad name lists as an add and a non-ASCII path prints raw
-// (refuseWorkflowDirChange's comment names the same holes). Like it a
-// guard of the trusted worker, run in the repo it built itself; the
-// refusal reaches the next session as a finding.
+// refuseMisnamedMigrations is the migration-naming rule, now factoryd's
+// (pushrules.go): it judges the added .sql files under the policy's
+// migration directory globs.
 func refuseMisnamedMigrations(e workerEnv, own, base, head string) error {
-	var globs []string
-	for _, g := range e.migrationGlobs {
-		if strings.Contains(g, "**") {
-			globs = append(globs, g)
-		}
-	}
-	if len(globs) == 0 {
-		return nil
-	}
-	out, err := e.git(own, "-c", "core.quotePath=off", "diff", "--name-only", "--diff-filter=A", "--no-renames", base, head)
-	if err != nil {
-		return err
-	}
-	for _, p := range strings.Split(out, "\n") {
-		if !strings.HasSuffix(p, ".sql") || !slices.ContainsFunc(globs, func(g string) bool { return policy.GlobMatch(g, p) }) {
-			continue
-		}
-		if !migrationName.MatchString(path.Base(p)) {
-			return fmt.Errorf("refusing to push: migration %s is misnamed: <UTC yyyymmddhhmmss>_<slug>.sql, never the next number", p)
-		}
-	}
-	return nil
+	return factoryd.RefuseMisnamedMigrations(pushRulesGit{e}, e.migrationGlobs, own, base, head)
 }
 
 var botIdentity = []string{

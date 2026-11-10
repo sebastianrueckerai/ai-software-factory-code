@@ -46,6 +46,7 @@ type gateForgejo struct {
 	head        string   // GET /pulls/9's head sha; "" = c1
 	base        string   // and its base; "" = main
 	conflict    bool     // and it no longer merges into its base (mergeable false)
+	mergeWait   bool     // a 405 answers "Please try again later", Forgejo's conflict check still running
 	status      string   // the combined status of every commit; "" = success, "none" = no status reported
 	statusReads []string // the commits whose status was read
 	stateFail   int      // GET /pulls/9 answers 502 this many times first
@@ -109,7 +110,11 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 				f.merged = true
 			}
 			w.WriteHeader(status)
-			io.WriteString(w, `{"message":"not allowed to merge"}`)
+			if f.mergeWait && status == http.StatusMethodNotAllowed && len(f.merges) <= len(f.mergeStatus) {
+				io.WriteString(w, `{"message":"Please try again later"}`)
+			} else {
+				io.WriteString(w, `{"message":"not allowed to merge"}`)
+			}
 		case r.Method == "GET" && p == "/pulls/9":
 			if f.stateFail > 0 {
 				f.stateFail--
@@ -819,15 +824,15 @@ func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
 
 // A task at its budget cap: the gateway refuses the review with
 // refused_budget, and again on the one retry, which becomes the review's
-// note on the pull request and the card; an upstream error and an invalid
-// answer are notes too, after one call. None fails the gate.
+// note on the pull request and the card; an upstream error is a note too,
+// and an invalid answer one after its one re-ask. None fails the gate.
 func TestModelReviewNotes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		model *fakeLiteLLM
 		note  string
 		calls int
 	}{
-		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 1},
+		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 2},
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
 			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
 		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 1},
@@ -851,6 +856,67 @@ func TestModelReviewNotes(t *testing.T) {
 				t.Fatalf("model_review step = %v", step)
 			}
 		})
+	}
+}
+
+// An answer that does not parse — the model's JSON cut inside its summary
+// at the output bound — is asked once more on the same part and the same
+// model, the retry's input carrying the parse error and the bounds: the
+// second answer's verdict is the review's, and the round records no
+// not-run row.
+func TestModelReviewAsksAnAnswerThatDoesNotParseOnceMore(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	cut := `{"verdict": "approve", "summary": "Roadmap 280 delivered as briefed: ...`
+	ll := &fakeLiteLLM{contents: []string{cut, `{"verdict":"approve","summary":"the retry answers","findings":[]}`}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || rv.Summary != "the retry answers" || rv.Note != "" {
+		t.Fatalf("review = %+v, want the second answer's verdict", rv)
+	}
+	if len(ll.chats) != 2 || ll.purposes[1] != "review" {
+		t.Fatalf("calls = %d, want the part's call and its one retry", len(ll.chats))
+	}
+	// the retry's input carries the parse error and the bounds
+	var in struct {
+		Retry struct {
+			ParseError string `json:"parse_error"`
+			Bounds     string `json:"bounds"`
+		} `json:"answer_retry"`
+	}
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[1])), &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Retry.ParseError != "unexpected EOF" || in.Retry.Bounds != reviewAnswerBounds {
+		t.Fatalf("answer_retry = %+v, want the parse error and the bounds", in.Retry)
+	}
+	if first := userMessage(ll.chats[0]); strings.Contains(first, "answer_retry") {
+		t.Fatalf("the first call carries a retry: %s", first)
+	}
+	// the round reviewed the head: no not-run row
+	rows := eventsOfKind(store, EventModelReview)
+	if len(rows) != 1 || rows[0].Detail["verdict"] != "approve" || rows[0].Detail["reviewed"] != true {
+		t.Fatalf("model_review rows = %+v, want the round reviewed", rows)
+	}
+}
+
+// The second answer that does not parse is the note as today, and the
+// round records the not-run row.
+func TestModelReviewNotesTheSecondAnswerThatDoesNotParse(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	cut := `{"verdict": "approve", "summary": "Roadmap 280 delivered as briefed: ...`
+	ll := &fakeLiteLLM{content: cut}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, "model review answer invalid (unexpected EOF)") || len(ll.chats) != 2 {
+		t.Fatalf("review = %+v after %d calls, want the note of the second answer", rv, len(ll.chats))
+	}
+	rows := eventsOfKind(store, EventModelReview)
+	if len(rows) != 1 || rows[0].Detail["reviewed"] != false || rows[0].Detail["verdict"] != "" {
+		t.Fatalf("model_review rows = %+v, want the not-run row", rows)
 	}
 }
 
@@ -1218,7 +1284,7 @@ func chatPart(chat map[string]any) string {
 }
 
 // One part answers invalid: the note names that part, and every part's
-// call is made.
+// call is made, its own one re-ask among them.
 func TestModelReviewNamesTheInvalidPart(t *testing.T) {
 	fj := &gateForgejo{diff: fourParts}
 	r, _, _ := newGateRunner(t, gateTask, fj)
@@ -1231,7 +1297,7 @@ func TestModelReviewNamesTheInvalidPart(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review answer invalid") || len(ll.chats) != 4 {
+	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review answer invalid") || len(ll.chats) != 5 {
 		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
 	}
 }
@@ -2175,6 +2241,44 @@ func TestMergeConflictIsNotARefusal(t *testing.T) {
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "no longer merges into main") ||
 		!strings.Contains(fj.comments[0], "goes back to the agent") {
 		t.Fatalf("comments = %q", fj.comments)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("no merge_conflict step")
+	}
+}
+
+// A merge refused with 405 "Please try again later" on a head Forgejo
+// still reports mergeable (its conflict check on the new head runs; the
+// merge queue's turn merged main into the branch at 2026-11-09 20:27) is
+// a wait: the merge is tried again and the task merges, with no conflict
+// comment and no session to merge a main that was already merged.
+func TestMergeWaitRefusalWaitsAndMerges(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, mergeStatus: []int{http.StatusMethodNotAllowed, http.StatusOK}}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if !res.Merged || len(fj.merges) != 2 {
+		t.Fatalf("result = %+v, merges %d; want a merged task on the second merge call", res, len(fj.merges))
+	}
+	if len(fj.comments) != 0 {
+		t.Fatalf("comments = %q, want none", fj.comments)
+	}
+	if !strings.Contains(timeline(t, objects), `"step":"merged"`) || strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
+		t.Fatal("want a merged step and no merge_conflict step")
+	}
+}
+
+// A 405 "Please try again later" on a head Forgejo reports as not
+// mergeable is still a conflict: the task goes back to the agent.
+func TestMergeWaitRefusalOnAnUnmergeableHeadIsAConflict(t *testing.T) {
+	fj := &gateForgejo{mergeWait: true, mergeStatus: []int{http.StatusMethodNotAllowed}, conflict: true}
+	r, store, objects := newGateRunner(t, gateTask, fj)
+	store.OpenApproval(context.Background(), ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	val, err := execActivity(t, r, ActivityMerge, "t1", int64(9), "c1", "sebastian", "")
+	res := getInto[MergeResult](t, val, err)
+	if res.Merged || !res.Conflict || len(fj.merges) != 1 {
+		t.Fatalf("result = %+v, merges %d; want a conflict on the one merge call", res, len(fj.merges))
 	}
 	if !strings.Contains(timeline(t, objects), `"step":"merge_conflict"`) {
 		t.Fatal("no merge_conflict step")

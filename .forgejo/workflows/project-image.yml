@@ -24,7 +24,6 @@ on:
         required: true
 env:
   CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
-  BUILDKIT: git.aisoftwarefactory.world/upstream/docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
   FACTORYD_IMAGE: git.aisoftwarefactory.world/sf/factory-gateway:main
 concurrency:
   group: project-image-${{ inputs.project }}-${{ inputs.image }}
@@ -83,6 +82,8 @@ jobs:
           # buildx takes no TLS endpoint from the environment, only a context
           docker context rm -f "$B-tls" >/dev/null 2>&1 || true
           docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
+          # the buildkitd image is the moby/buildkit line of upstream-images.txt at the store, as in ci.yml
+          BUILDKIT=git.aisoftwarefactory.world/upstream/$(awk '$1 ~ /^docker\.io\/moby\/buildkit:/ {print $1; exit}' upstream-images.txt)
           # a cancelled run leaves its buildkitd behind: clear it first
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image="$BUILDKIT" --buildkitd-config /tmp/buildkitd.toml "$B-tls"

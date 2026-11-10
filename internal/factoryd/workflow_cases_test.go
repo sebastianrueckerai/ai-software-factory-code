@@ -569,6 +569,82 @@ func TestStagesRungZeroAnswersTheReviewBesideTheChecks(t *testing.T) {
 	})
 }
 
+// The typed answer of a case the run does not wait on, as the question
+// the review asked beside the checks answered while the run waits on the
+// session cap, is kept for the wait that comes to the case: the extend
+// buys the fourth session, its pass trips the review's stop, whose case
+// the repeat guard holds, and the wait takes the answer at once — no one
+// is asked, the review runs again sequentially after the green checks,
+// and the answer buys no session of its own.
+func TestWorkflowKeepsAnotherCasesResolutionForItsOwnWait(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+	g.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	g.escalationIDs = []int64{601, 602}
+	g.onSessions(pushed("s4", "c4"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the review model hangs", Recommendation: "look at the gateway"})
+	g.signalAfter(30*time.Minute, SignalCaseResolved, caseResolved(702, Resolution{Action: ActReverify}, 610))
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more, then stop"}
+	g.env.RegisterDelayedCallback(func() {
+		g.rowUsage.RaisedSessions = 1
+		g.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 605))
+	}, time.Hour)
+	g.runTripAfter(time.Hour+15*time.Minute, ActivityModelReview, 1, 2)
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.trips) != 2 || !strings.HasPrefix(g.trips[0].Reason, capReached) {
+		t.Fatalf("trips = %+v, want the session cap's and the review stop's", g.trips)
+	}
+	want := []string{`sebastian, to "` + capReached + `": one more, then stop`}
+	if len(g.sessions) != 1 || g.sessions[0].Attempt != 4 || g.sessions[0].Sessions != 4 || !slices.Equal(g.sessions[0].Answers, want) {
+		t.Fatalf("sessions = %+v, want the extend's fourth of four with %q", g.sessions, want)
+	}
+	if last := g.reviewGates[len(g.reviewGates)-1]; !last.ChecksPassed || last.Beside {
+		t.Fatalf("review gates %+v: want the last review after the green checks, not beside them", g.reviewGates)
+	}
+	if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 4*time.Hour+20*time.Minute {
+		t.Fatalf("approval requested %v, want once at 4h20m: the extend's hour, the checks' 20 min and the sequential review's 3h", g.requested)
+	}
+}
+
+// In a run from before the case queue the same answer is dropped, and the
+// question must be answered again once it is asked: the run waits the
+// quarter hour between the stop's ask and the second answer, so its
+// approval comes at 4h30m, not 4h20m.
+func TestWorkflowBeforeCaseQueueWaitsForTheAnswerAgain(t *testing.T) {
+	g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
+	g.beforeCaseQueue()
+	g.state = RunState{Status: "running", Usage: TaskUsage{AgentTime: 12 * time.Minute, Attempts: 3}}
+	g.escalationIDs = []int64{601, 602}
+	g.onSessions(pushed("s4", "c4"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(20*time.Minute).Return(ChecksResult{State: ChecksSuccess}, nil)
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the review model hangs", Recommendation: "look at the gateway"})
+	g.signalAfter(30*time.Minute, SignalCaseResolved, caseResolved(702, Resolution{Action: ActReverify}, 610))
+	extend := Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Note: "one more, then stop"}
+	g.env.RegisterDelayedCallback(func() {
+		g.rowUsage.RaisedSessions = 1
+		g.env.SignalWorkflow(SignalCaseResolved, caseResolved(701, extend, 605))
+	}, time.Hour)
+	g.runTripAfter(time.Hour+15*time.Minute, ActivityModelReview, 1, 2)
+	g.signalAfter(time.Hour+30*time.Minute, SignalCaseResolved, caseResolved(702, Resolution{Action: ActReverify}, 611))
+	g.signalAfter(10*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if len(g.trips) != 2 {
+		t.Fatalf("trips = %+v, want the session cap's and the review stop's", g.trips)
+	}
+	if len(g.requested) != 1 || g.requested[0].Sub(g.started) != 4*time.Hour+30*time.Minute {
+		t.Fatalf("approval requested %v, want once at 4h30m: the answer had to come again after the ask", g.requested)
+	}
+}
+
 // A healed run's waits take the case's resolution: the human's wait
 // reverifies the pull request's head with no session, the cap's wait
 // hands the next session to the stronger model, and the screening's

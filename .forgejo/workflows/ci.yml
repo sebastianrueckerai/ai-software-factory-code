@@ -8,8 +8,11 @@ env:
   # it; plain HTTP inside the cluster. A cache outage never fails main: the
   # import only warns, the export ignores errors.
   CACHE: build-cache.forgejo.svc.cluster.local:5000/cache
-  # main's image builder (roadmap 242), the buildkitd release the pull
-  # request build VM runs. The dind's builtin builder takes the exporter's
+  # main's image builder (roadmap 242) is the moby/buildkit line of
+  # upstream-images.txt at the store, the buildkitd release the pull
+  # request build VM runs: each image job reads it from the list as it
+  # runs, so the weekly bump moves the pin there and touches nothing under
+  # .forgejo/. The dind's builtin builder takes the exporter's
   # rewrite-timestamp and still writes the wall clock into the layers; a
   # buildkitd rewrites every layer time to the image's epoch. Each image job
   # makes its own on the pod's network, as the job runs, to reach the build
@@ -23,7 +26,6 @@ env:
   # the sandbox's base stage copies nothing from the context
   SANDBOX_BASE_INPUTS: Dockerfile.sandbox
   RUNNER_INPUTS: Dockerfile.runner .dockerignore go.mod go.sum cmd internal acceptance scripts
-  BUILDKIT: git.aisoftwarefactory.world/upstream/docker.io/moby/buildkit:v0.33.0@sha256:a461e7f0ce921972028acfbed628d45663d83e67ac1230722c2b34cf72760a0d
 # One main run at a time: a newer push waits out the running one instead of
 # cancelling it (Forgejo's default), so no half-tested run is wasted; the
 # roller still judges the newest green build.
@@ -108,6 +110,7 @@ jobs:
           # buildx takes no TLS endpoint from the environment, only a context
           docker context rm -f "$B-tls" >/dev/null 2>&1 || true
           docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
+          BUILDKIT=git.aisoftwarefactory.world/upstream/$(awk '$1 ~ /^docker\.io\/moby\/buildkit:/ {print $1; exit}' upstream-images.txt)
           # a cancelled run leaves its buildkitd behind: clear it first
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
@@ -151,6 +154,7 @@ jobs:
           # buildx takes no TLS endpoint from the environment, only a context
           docker context rm -f "$B-tls" >/dev/null 2>&1 || true
           docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
+          BUILDKIT=git.aisoftwarefactory.world/upstream/$(awk '$1 ~ /^docker\.io\/moby\/buildkit:/ {print $1; exit}' upstream-images.txt)
           # a cancelled run leaves its buildkitd behind: clear it first
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
@@ -197,6 +201,7 @@ jobs:
           # buildx takes no TLS endpoint from the environment, only a context
           docker context rm -f "$B-tls" >/dev/null 2>&1 || true
           docker context create "$B-tls" --docker "host=$DOCKER_HOST,ca=$DOCKER_CERT_PATH/ca.pem,cert=$DOCKER_CERT_PATH/cert.pem,key=$DOCKER_CERT_PATH/key.pem" >/dev/null 2>&1
+          BUILDKIT=git.aisoftwarefactory.world/upstream/$(awk '$1 ~ /^docker\.io\/moby\/buildkit:/ {print $1; exit}' upstream-images.txt)
           # a cancelled run leaves its buildkitd behind: clear it first
           docker buildx create --name "$B" "$B-tls" >/dev/null && docker buildx rm "$B"
           docker buildx create --name "$B" --driver docker-container --driver-opt network=host --driver-opt image=$BUILDKIT --buildkitd-config /tmp/buildkitd.toml "$B-tls"
