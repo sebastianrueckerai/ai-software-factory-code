@@ -3723,8 +3723,8 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		}
 	}
 
-	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
-	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
+	ask(5, 3.8, "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.2, 0.6, 2)
+	ask(5, 4.25, "The card spent €4.25 of its €5.00 budget, €0.40 is held by calls in flight, €0.35 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.65, 0.6, 2)
 	k := store.tasks["t-2"]
 	k.BudgetEUR, k.SpentEUR = 5, 4.5
 	store.tasks["t-2"] = k
@@ -3738,10 +3738,10 @@ func TestBudgetAskFirstRaiseFundsTheSession(t *testing.T) {
 		t.Errorf("the held refusal = (%q, %v), want %q", why, err, want)
 	}
 
-	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
+	ask(5, 4.5, "The card spent €4.50 of its €5.00 budget, €0.40 is held by calls in flight, €0.10 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.9, 0.6, 2)
 
 	store.held = nil
-	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
+	ask(5, 4.5004, "The card spent €4.50 of its €5.00 budget, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?", 0.51, 0.6, 2)
 }
 
 // A card with no model yet (the console passes its row's empty alias)

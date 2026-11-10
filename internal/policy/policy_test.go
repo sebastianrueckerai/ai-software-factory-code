@@ -1534,3 +1534,26 @@ func TestOffersToolFollowsWhereTheProjectRuns(t *testing.T) {
 		}
 	}
 }
+
+// Money compares at the micro-euro: 1.01 - 0.31 is 0.7000000000000001 and
+// less the 0.40 reserve 0.30000000000000004, and 0.7 - 0.4 is
+// 0.29999999999999993; both read 0.30 here, as the 0.30 EUR floor does.
+func TestSessionHeadroomRoundsToTheMicroEuro(t *testing.T) {
+	for _, left := range []float64{1.01 - 0.31, 0.7} {
+		if got := SessionHeadroom(left, 0.4); got != 0.3 {
+			t.Errorf("SessionHeadroom(%v, 0.4) = %v, want 0.3", left, got)
+		}
+	}
+	if got := GateHeld(0.7-0.4, 0.4); got != 0.3 {
+		t.Errorf("GateHeld = %v, want 0.3", got)
+	}
+	if got := GateHeld(-0.2, 0.4); got != 0 {
+		t.Errorf("GateHeld of an overspent card = %v, want 0", got)
+	}
+	if got := CeilMicro(0.6070005); got != 0.607001 {
+		t.Errorf("CeilMicro(0.6070005) = %v, want 0.607001", got)
+	}
+	if got := CeilMicro(0.3); got != 0.3 {
+		t.Errorf("CeilMicro(0.3) = %v, want 0.3", got)
+	}
+}

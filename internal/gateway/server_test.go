@@ -138,7 +138,7 @@ func (m *memStore) TakeHold(_ context.Context, r policy.HoldRequest) (policy.Hol
 		}
 	}
 	taskHeadroom, dayHeadroom, monthHeadroom, projectHeadroom := t.BudgetEUR-t.SpentEUR, r.DayEUR-dayTotal, r.MonthEUR-m.month-dayTotal, r.ProjectEUR-projectTotal
-	free := policy.Free{Task: taskHeadroom - taskHeld - r.ReserveEUR, Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld, Project: projectHeadroom - projectHeld,
+	free := policy.Free{Task: policy.SessionHeadroom(policy.RoundMicro(taskHeadroom)-taskHeld, r.ReserveEUR), Day: dayHeadroom - dayHeld, Month: monthHeadroom - dayHeld, Project: projectHeadroom - projectHeld,
 		Reserve: r.ReserveEUR, Spent: t.SpentEUR}
 	if r.PremiumEUR > 0 {
 		premium := r.PremiumEUR

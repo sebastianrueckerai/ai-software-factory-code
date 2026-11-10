@@ -689,7 +689,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	if err != nil || n.unread != "" {
 		return n.unread, err
 	}
-	req, need := n.req, n.eur
+	req, need := n.req, policy.CeilMicro(n.eur)
 	own, free, err := r.store.Free(ctx, req)
 	if err != nil {
 		return "", err
@@ -703,11 +703,9 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		return "", err
 	}
 
-	// the free figure rounds down to the tenth of a cent it prints, so a
-	// raise read off it (FundRaise) covers the need; 1e-6 takes up float
-	// noise. A session's figure is its ceiling, the reserve held out: it
-	// is negative once the gates spent into the reserve, and the raise
-	// the stop names (fundFor) covers that part too
+	// A session's figure is its ceiling, the reserve held out: it is
+	// negative once the gates spent into the reserve, and the raise the
+	// stop names (fundFor) covers that part too
 	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
 	left := math.Floor(ceiling*1000+1e-6) / 1000
 	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
@@ -742,7 +740,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 			// keep of the reserve the ceiling held out and what they
 			// need, and what a fund that opens a session costs
 			state += fmt.Sprintf("; %.2f EUR is held for the review and the audit, which need %.2f EUR", free.Kept(), free.Reserve)
-			fund = fmt.Sprintf(", so a fund of %.2f EUR opens it", fundFor(need, left))
+			fund = fmt.Sprintf(", so a fund of %.2f EUR opens it", fundFor(need, ceiling))
 		}
 	}
 	if o, ok := capRefusals[refused.Decision]; ok {

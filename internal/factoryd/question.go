@@ -491,19 +491,13 @@ func FundRaise(reason string, left, reserve float64) float64 {
 
 // fundFor is the raise in EUR, rounded up to a cent, that lifts a session
 // ceiling of left, which is negative once the gates spent into the
-// reserve, to need; a ceiling that already covers it reads as none. The
-// ceiling is read down to the tenth of a cent, as the stop prints it, and
-// 1e-6 takes up float noise.
+// reserve, to need; 0 when the ceiling already covers it. Both are read at
+// the micro-euro, as the admission compares them.
 func fundFor(need, left float64) float64 {
-	left = math.Floor(left*1000+1e-6) / 1000
 	if left >= need {
-		left = 0
+		return 0
 	}
-	cents := Cents(need) - Cents(left)
-	if float64(cents)/100 < need-left-1e-7 { // under the half of a millionth of a euro a price states
-		cents++ // a cent cut short would still refuse the session
-	}
-	return float64(cents) / 100
+	return math.Ceil(policy.RoundMicro(need-left)*100-1e-6) / 100
 }
 
 // FundChoiceValue is a premade fund answer's value: the fund marker and
@@ -523,7 +517,7 @@ func budgetAsk(f QuestionFacts, model, need string) string {
 		ask += fmt.Sprintf(", €%.2f is held by calls in flight", f.HeldEUR)
 	}
 	if f.ReserveEUR > 0 {
-		ask += fmt.Sprintf(", €%.2f is held for the review and the audit", policy.GateHeld(f.LeftEUR, f.ReserveEUR))
+		ask += fmt.Sprintf(", €%.2f is held for the review and the audit, which need €%.2f", policy.GateHeld(f.LeftEUR, f.ReserveEUR), f.ReserveEUR)
 	}
 	return fmt.Sprintf("%s, and one more session on %s needs €%s. Fund it, or park it?", ask, model, need)
 }

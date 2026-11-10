@@ -1200,8 +1200,8 @@ func TestCostStateAndPaceAgreeOnTheSessionRoom(t *testing.T) {
 	}
 	r := &Runner{store: store}
 	c := r.costState(context.Background(), task, 0.4)
-	if c.RemainingEUR != 2.4 || c.ReserveEUR != 0.4 || c.SpentEUR != 1.8 {
-		t.Fatalf("cost block = %+v, want remaining 2.40 with reserve 0.40 and spent 1.80", c)
+	if c.RemainingEUR != 2.4 || c.ReserveEUR != 0.4 || c.SpentEUR != 1.8 || c.HeldEUR != 0.4 {
+		t.Fatalf("cost block = %+v, want remaining 2.40 with reserve 0.40, spent 1.80 and held 0.40", c)
 	}
 	pace := Pace{Lines: -1, SpentEUR: task.EnforcedSpent(), BudgetEUR: 5, ReserveEUR: 0.4}
 	if !strings.Contains(pace.Line(), "2.20 EUR spent, 2.40 left;") {

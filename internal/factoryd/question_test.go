@@ -803,10 +803,21 @@ func TestBudgetAskNamesTheHoldsAndTheReserve(t *testing.T) {
 	reason := budgetRefused + ": Raise the budget.\nThe card spent 3.80 EUR of its 5.00 EUR budget; 0.400 EUR is held by calls in flight, and a session on factory/premium needs 0.600000 EUR (the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), so a fund of 0.20 EUR opens it."
 	f := QuestionFacts{BudgetEUR: 5, SpentEUR: 4.2, HeldEUR: 0.4, LeftEUR: 0.8, ReserveEUR: 0.4}
 	q := ShapedQuestion(reason, f, nil)
-	if want := "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, and one more session on factory/premium needs €0.600000. Fund it, or park it?"; q.Ask != want {
+	if want := "The card spent €3.80 of its €5.00 budget, €0.40 is held by calls in flight, €0.40 is held for the review and the audit, which need €0.40, and one more session on factory/premium needs €0.600000. Fund it, or park it?"; q.Ask != want {
 		t.Errorf("ask = %q, want %q", q.Ask, want)
 	}
 	if len(q.Choices) == 0 || q.Choices[0].Value != FundChoiceValue(0.2) {
 		t.Errorf("choices = %v, want the first to fund 0.20", q.Choices)
+	}
+}
+
+// A room that already covers the need needs no raise.
+func TestFundRaiseIsZeroWhenTheRoomCoversTheNeed(t *testing.T) {
+	reason := budgetRefused + ": Raise the budget.\nThe card spent 0.30 EUR of its 1.00 EUR budget, and a session on factory/small needs 0.300000 EUR."
+	if got := FundRaise(reason, 0.7, 0.4); got != 0 {
+		t.Errorf("FundRaise = %v, want 0: 0.70 - 0.40 = 0.30 covers 0.30", got)
+	}
+	if got := FundRaise(reason, 0.7, 0.41); got != 0.01 {
+		t.Errorf("FundRaise = %v, want 0.01", got)
 	}
 }
