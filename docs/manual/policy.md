@@ -214,6 +214,13 @@ tool-cap and envelope matrices one row per block.
 | envelope_default | what a project's tasks may commission in the agent cloud without a human: EUR per calendar month (reservations and accrued cost together), the server types, how many servers at once, the longest lease, the largest volume. It is also the most any project file's envelope may set | monthly_eur 0 is refused at load: "envelope_default.monthly_eur must be positive". volume_max_gb 0 means no volumes | "pending human approval %d: the request is beyond the project's envelope (%s). Nothing was created or charged. Poll with resource_request_status (request_id %d); once approved, call commission_server again with the same arguments." with the violation, e.g. "the project already holds %d of its %d servers" or "the reservation of %.6f EUR on top of %.6f EUR this month exceeds the envelope's %.2f EUR a month" |
 <!-- spend-rail: end -->
 
+A project file (`projects/<project>.yaml`) bounds the live sandboxes with two keys beside the spend rails:
+
+| key | what it stops | 0 and absent read as | what it says when it trips |
+| --- | --- | --- | --- |
+| work_in_progress | in a project's file: how many of the project's cards hold a work slot at once (running, closing, in review in any gate but the approval's, queued and admitted). A never-started card starts only under it | 0 and absent read DefaultWorkInProgress 5. A negative one is refused: "project %s: work_in_progress %d: a count of cards" | the card waits queued and its face reads "waits for a slot, %d ahead (%d live)"; the reason is "work bound %d of %d", with ", %d resumed first" while a resumed card is ahead of it |
+| surge | in a project's file: how many sessions beyond work_in_progress a card back from a wait (a human's answer, an approval, a dependency, a fund after a cap) may start. It starts while the live count is under work_in_progress plus surge, and the queue admits the resumed cards, oldest resumption first, before any never-started card | absent reads DefaultSurge 2. 0 is a bound with no overshoot. A negative one is refused: "project %s: surge %d: a count of cards" | the card waits queued, holding no slot, and its face reads "waits for a slot, %d ahead (%d live)"; the reason is "resumed: work bound %d of %d live, %d ahead", which the monitor's queued_over_bound flag carries |
+
 The gateway checks a model call in this order: the caller (a sandbox's
 JWT, or factoryd's `gateway-factoryd` token with its `X-Factory-*`
 headers, which are read only behind that token), the task status (an
