@@ -87,6 +87,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivitySetGate:                     r.SetGate,
 		ActivityRunSession:                  r.RunSession,
 		ActivityOpenPullRequest:             r.OpenPullRequest,
+		ActivityCopyUpstreamImages:          r.CopyUpstreamImages,
 		ActivityWaitChecks:                  r.WaitChecks,
 		ActivityHeadChecks:                  r.HeadChecks,
 		ActivityRerunChecks:                 r.RerunChecks,
@@ -1654,6 +1655,52 @@ func (r *Runner) OpenPullRequest(ctx context.Context, taskID, commit string) (Pu
 	}
 	r.record(ctx, taskID, "pr_opened", map[string]any{"number": ref.Number, "url": ref.URL, "commit": commit, "reused": existing != nil})
 	return PullRequest{Number: ref.Number, URL: ref.URL}, nil
+}
+
+// upstreamImagesPath is the list of upstream images the factory's store
+// holds copies of.
+const upstreamImagesPath = "upstream-images.txt"
+
+// CopyUpstreamImages copies the image lines the task's branch head adds to
+// upstream-images.txt, against its base's, into the store before the
+// pull request's checks read it; its findings are the lines it could not
+// copy. Without a copier it does nothing.
+func (r *Runner) CopyUpstreamImages(ctx context.Context, taskID, commit string) ([]string, error) {
+	if r.Upstream == nil {
+		return nil, nil
+	}
+	t, repo, err := r.task(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	base := t.SHA
+	if base == "" {
+		if base, err = r.forgejo.BranchHeadSHA(ctx, repo.Owner, repo.Name, prBase); err != nil {
+			return nil, err
+		}
+	}
+	holder := r.forgejo.Fork(repo)
+	if t.PRNumber != 0 {
+		st, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, t.PRNumber)
+		if err != nil {
+			return nil, err
+		}
+		if holder, err = SplitRepo(cmp.Or(st.HeadRepo, repo.String())); err != nil {
+			return nil, err
+		}
+	}
+	head, err := r.forgejo.FileAt(ctx, holder.Owner, holder.Name, commit, upstreamImagesPath)
+	if errors.Is(err, ErrNotFound) {
+		return nil, nil
+	}
+	if err != nil {
+		return nil, err
+	}
+	was, err := r.forgejo.FileAt(ctx, repo.Owner, repo.Name, base, upstreamImagesPath)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	return r.Upstream.Copy(ctx, string(was), string(head))
 }
 
 // refuseWorkflowDirChange returns a terminal error when any workflow

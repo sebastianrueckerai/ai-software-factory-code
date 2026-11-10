@@ -884,6 +884,21 @@ spec:
         - matchName: api.github.com
         - matchName: api.telegram.org
         - matchName: discord.com
+        - matchName: registry-1.docker.io
+        - matchName: auth.docker.io
+        - matchName: production.cloudfront.docker.com
+        - matchName: production.cloudflare.docker.com
+        - matchName: docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
+        - matchName: ghcr.io
+        - matchName: pkg-containers.githubusercontent.com
+        - matchName: quay.io
+        - matchName: registry.k8s.io
+        - matchName: cdn.registry.k8s.io
+        - matchName: code.forgejo.org
+        - matchName: factory.talos.dev
+        - matchName: cdn.factory.talos.dev
+        - matchPattern: "cdn*.quay.io"
+        - matchPattern: "*-docker.pkg.dev"
   - toEntities: [kube-apiserver]
   - toEndpoints:
     - matchLabels:
@@ -954,6 +969,27 @@ spec:
   - toFQDNs:
     - matchName: api.telegram.org
     - matchName: discord.com
+    toPorts:
+    - ports: [{port: "443", protocol: TCP}]
+  # the upstream registries upstream-images.txt names, their token endpoints
+  # and the hosts their blobs redirect to: the upstream copy pulls a branch's
+  # new image lines into the store before its image build
+  - toFQDNs:
+    - matchName: registry-1.docker.io
+    - matchName: auth.docker.io
+    - matchName: production.cloudfront.docker.com
+    - matchName: production.cloudflare.docker.com
+    - matchName: docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com
+    - matchName: ghcr.io
+    - matchName: pkg-containers.githubusercontent.com
+    - matchName: quay.io
+    - matchName: registry.k8s.io
+    - matchName: cdn.registry.k8s.io
+    - matchName: code.forgejo.org
+    - matchName: factory.talos.dev
+    - matchName: cdn.factory.talos.dev
+    - matchPattern: "cdn*.quay.io"
+    - matchPattern: "*-docker.pkg.dev"
     toPorts:
     - ports: [{port: "443", protocol: TCP}]
   - toEndpoints:
