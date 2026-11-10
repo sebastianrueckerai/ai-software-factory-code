@@ -1,6 +1,7 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -454,7 +455,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		return r.do(req, ck)
 	}
 	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusBadRequest ||
-		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done." || len(r.handed) != 0 {
+		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done. A remark goes on the issue." || len(r.handed) != 0 {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
@@ -488,21 +489,116 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	}
 }
 
-// A revision that takes merged cards off main says which, in each view
-// that lists it: the plan's approval card, its drawer and the chat's plan
-// read.
+// A revision that takes merged cards off main names them on the confirm
+// button's own line (the plan approval card), and as a footnote in the
+// plan card's drawer. The chat's read keeps its own line.
 func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
-	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"old-api", "old-ui"},
-		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"k2", "k4", "k5"},
+		TakeOffReasons: map[string]string{"k2": "its queue cannot run", "k4": "its schema rejects notes", "k5": "  "},
+		Cards:          []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
 	r.tasks.plans["t-plan"][1].Plan = plan
+	for _, t := range planTasks() {
+		if t.Parent == "t-plan" && (t.PlanKey == "k2" || t.PlanKey == "k4" || t.PlanKey == "k5") {
+			r.tasks.tasks = append(r.tasks.tasks, t)
+		}
+	}
 	ck, _ := r.loggedIn(t)
-	want := "<p>Takes off main: old-api, old-ui</p>"
-	if card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you"); !strings.Contains(card, want) {
+	want := "<button type=\"submit\">Confirm reverts #2, #4 and #5 from main</button>"
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, want) {
-		t.Errorf("the drawer lacks %q:\n%s", want, d)
+	for _, why := range []string{"#2: its queue cannot run", "#4: its schema rejects notes"} {
+		if !strings.Contains(card, why) {
+			t.Errorf("the plan card lacks the reason %q:\n%s", why, card)
+		}
+	}
+	if strings.Contains(card, "#5:") {
+		t.Errorf("the plan card shows a line for #5, which has a blank reason:\n%s", card)
+	}
+	if strings.Contains(card, "Takes off main:") {
+		t.Errorf("the plan card still holds the take-off-main footnote:\n%s", card)
+	}
+	footnote := "<p>Takes off main: k2: its queue cannot run; k4: its schema rejects notes; k5</p>"
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, footnote) {
+		t.Errorf("the drawer lacks %q:\n%s", footnote, d)
+	}
+}
+
+// A typed or chat answer that is a choice's label up to case, surrounding
+// space and end punctuation is that choice: the chat's "Have the factory
+// do it." hands the routine card over, files no comment of its own words,
+// and closes the card on the factory's note. Words that match no choice on
+// a card that offers choices are refused with the labels, on the chat's
+// answer tool as on the button, and post nothing.
+func TestWordsThatNameTheGoChoiceHandTheCardOver(t *testing.T) {
+	const comments = "/api/v1/repos/sf/code/issues/15/comments"
+	newCard := func() *rig {
+		r := newRig(t)
+		waiting := humanAsk("t-wait", 15, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
+		waiting.Objective, waiting.Source = "Bump the weekly numbers.", factoryd.SourceRoutine
+		r.tasks.tasks = []factoryd.BoardTask{waiting}
+		return r
+	}
+	for _, words := range []string{"Have the factory do it.", "  have the FACTORY do it!  ", "Have the factory do it"} {
+		r := newCard()
+		if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-wait", Text: words}); err != nil {
+			t.Fatalf("%q: %v", words, err)
+		}
+		if !slices.Equal(r.handed, []string{"t-wait by sebastian"}) {
+			t.Errorf("%q: GoCard calls %v, want one", words, r.handed)
+		}
+		if got := r.fg.commentBodies(comments); !slices.Equal(got, []string{"The factory runs it as #16."}) {
+			t.Errorf("%q: comments %q, want only the factory's note", words, got)
+		}
+	}
+
+	const refusal = "Card #15 takes one of its choices: Have the factory do it, Done. A remark goes on the issue."
+	r := newCard()
+	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-wait", Text: "Please do it"})
+	if err == nil || err.Error() != refusal {
+		t.Errorf("the chat's stray words = %v, want %q", err, refusal)
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "answer": {"Please do it"}}), ck)
+	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != refusal {
+		t.Errorf("the button's stray words = %d %q, want 400 %q", rec.Code, rec.Body, refusal)
+	}
+	if len(r.handed) != 0 || len(r.fg.commentBodies(comments)) != 0 {
+		t.Errorf("handed %v, comments %q; want nothing", r.handed, r.fg.commentBodies(comments))
+	}
+}
+
+// A client that leaves once the agent card is filed does not leave the old
+// card waiting: the comment, the close and Act's answer still go through.
+func TestGoTailSurvivesTheClientLeaving(t *testing.T) {
+	r := newRig(t)
+	waiting := humanAsk("t-wait", 15, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"})
+	waiting.Source = factoryd.SourceRoutine
+	r.tasks.tasks = []factoryd.BoardTask{waiting}
+	ctx, leave := context.WithCancel(t.Context())
+	defer leave()
+	act := r.c.cfg.Act
+	r.c.cfg.Act = func(c context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
+		if err := c.Err(); err != nil {
+			return factoryd.ActResult{}, err
+		}
+		return act(c, in)
+	}
+	filed := r.c.cfg.GoCard
+	r.c.cfg.GoCard = func(c context.Context, id, by string) (int64, error) {
+		n, err := filed(c, id, by)
+		leave()
+		return n, err
+	}
+	ck, s := r.loggedIn(t)
+	req := post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "value": {"go"}})
+	r.do(req.WithContext(ctx), ck)
+	if got := r.fg.commentBodies("/api/v1/repos/sf/code/issues/15/comments"); !slices.Equal(got, []string{"The factory runs it as #16."}) ||
+		!slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/15 {"state":"closed"}`}) || len(r.acted) != 1 {
+		t.Errorf("comments %q, patched %v, acted %d; want the note, the close and Act's answer", got, r.fg.patched, len(r.acted))
 	}
 }

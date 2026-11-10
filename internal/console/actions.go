@@ -128,7 +128,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		}
 	}
 	waits := t.Status == "waiting-human" && !f.merge && !f.plan
-	f.timeCap = waits && factoryd.AtTimeCap(escalation)
+	f.timeCap = waits && factoryd.AtTimeStop(escalation)
 	f.capped = waits && (factoryd.AtSessionCap(escalation) || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
@@ -342,6 +342,20 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, policy.TrackPlan: factoryd.LabelPlan,
 	factoryd.LabelHuman: factoryd.LabelHuman}
 
+// roadmapRefusal is the refusal of a filing for roadmap item that holder
+// holds, naming its state and the way forward by it. A holder that is
+// built (done or merged) is no card to refile.
+func roadmapRefusal(holder factoryd.Task, item int) string {
+	head := fmt.Sprintf("Card %s (#%d, %s) already builds roadmap item %d.", holder.ID, holder.IssueNumber, holder.Status, item)
+	switch factoryd.RoadmapHold(holder.Status) {
+	case "open":
+		return head + fmt.Sprintf(" Wait for it to end, or close it and file again with refile_of %d.", holder.IssueNumber)
+	case "ended":
+		return strings.Replace(head, "already builds", "still holds", 1) + fmt.Sprintf(" File again with refile_of %d.", holder.IssueNumber)
+	}
+	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item and refile_of."
+}
+
 // doFileCard files an issue on project's repository as the member, labelled
 // with track's label (agent for direct, plan, human for a person's card)
 // and priority when given, reason the one line why the card takes the
@@ -349,15 +363,18 @@ var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, pol
 // line, with the field lines the intake reads, each when given: "Size: <size>",
 // "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
 // "Carries: #<n>", the pull request whose head the card's clone
-// supplies as its pull branch, and "Roadmap: #<n>", the docs/roadmap.md
-// item the card builds; the webhook or the heal pass makes it a
-// task. A filing that names a roadmap item is the roadmap pull: one card
-// per item, whatever its state, so an item another card already builds is
-// refused naming it before any issue is posted. It answers the repository
+// supplies as its pull branch, "Roadmap: #<n>", the docs/roadmap.md
+// item the card builds, and "Refile of #<n>", the issue of the closed or
+// failed card that held the item and which this card replaces; the
+// webhook or the heal pass makes it a task. A filing that names a roadmap
+// item is the roadmap pull: one card per item, held by any card that cites
+// it, open or done, unless a closed or failed card's issue is named as
+// refiled, so an item another card holds is refused, naming it, before
+// any issue is posted. It answers the repository
 // and the issue's number. In a wake the chat bot posts the issue, and the
 // card_filed row that names the member is written before the answer: an
 // unrecorded filing closes its issue and refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -372,6 +389,8 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
 	case rung != "" && rung != factoryd.RungCheap && rung != factoryd.RungFrontier:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "rung must be cheap or frontier")
+	case refileOf > 0 && roadmapItem == 0:
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "refile_of needs roadmap_item: it frees that item from the card it names")
 	case rung != "" && strings.TrimSpace(rungReason) == "":
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a rung needs its one-line reason")
 	}
@@ -390,16 +409,6 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	}
 	if _, ok := ps[i].Tracks.Track(track); !ok && track != factoryd.LabelHuman {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
-	}
-	if roadmapItem > 0 {
-		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem)
-		if err != nil {
-			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
-			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
-		}
-		if held {
-			return factoryd.Repo{}, 0, refuse(http.StatusConflict, fmt.Sprintf("Card %s already builds roadmap item %d.", holder, roadmapItem))
-		}
 	}
 	detail := map[string]any{"track": track, "title": title}
 	if reason = strings.TrimSpace(reason); reason != "" {
@@ -425,9 +434,24 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if roadmapItem > 0 {
 		fields = append(fields, fmt.Sprintf("Roadmap: #%d", roadmapItem))
 		detail["roadmap_item"] = roadmapItem
+		if refileOf > 0 {
+			fields = append(fields, fmt.Sprintf("Refile of #%d", refileOf))
+			detail["refile_of"] = refileOf
+		}
 	}
 	if len(fields) > 0 {
 		body += "\n\n" + strings.Join(fields, "\n")
+	}
+	if roadmapItem > 0 {
+		refile := factoryd.AskedRefile(factoryd.IssueObjective(title, body))
+		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem, refile)
+		if err != nil {
+			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
+			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
+		}
+		if held {
+			return factoryd.Repo{}, 0, refuse(http.StatusConflict, roadmapRefusal(holder, roadmapItem))
+		}
 	}
 	var check func(policy.Tree) string
 	if track != factoryd.LabelHuman {
@@ -627,6 +651,12 @@ func (c *Console) waitsOnRetry(ctx context.Context, t factoryd.Task) ([]waitingC
 	return out, nil
 }
 
+// tailContext is the context of the work after a hand-over: the client
+// cannot cancel it, a minute bounds it.
+func tailContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+}
+
 // goWork hands the work of human card t, which waits on a person, to the
 // factory (factoryd's Go): the card's own words become an agent card and
 // the card closes on the note, so its wait ends at once. It answers the
@@ -641,6 +671,9 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
+	// the agent card is filed: a client that leaves now must not leave the old card waiting
+	ctx, stop := tailContext(ctx)
+	defer stop()
 	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
@@ -1244,18 +1277,22 @@ func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
 }
 
 // doExtend raises card id's caps on any live agent card through Act: its
-// sessions and its line bound as an extend, its budget as the money drawn
-// beside it, or a fund alone when it raises no session or line. On a card
-// waiting at its case the note, or when none a line naming the raise, is
-// the answer Act has posted as the human's comment; a card waiting on no
-// case reads the raise at its next cap check.
-func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines int, eur float64, note string) (string, error) {
+// sessions, its agent time (minutes of it) and its line bound as an
+// extend, its budget as the money drawn beside it, or a fund alone when
+// it raises no session, minute or line. On a card waiting at its case
+// the note, or when none a line naming the raise, is the answer Act has
+// posted as the human's comment; a card waiting on no case reads the
+// raise at its next cap check.
+func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines, minutes int, eur float64, note string) (string, error) {
 	switch {
-	case sessions < 0 || lines < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
-		(sessions == 0 && lines == 0 && !(eur > 0)):
-		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and lines, and an amount in EUR")
+	case sessions < 0 || lines < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
+		(sessions == 0 && lines == 0 && minutes == 0 && !(eur > 0)):
+		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions, minutes, lines and an amount in EUR")
 	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, eur)))
+	if minutes > factoryd.MaxExtendMinutes {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an extend raises at most %d minutes of agent time at once", factoryd.MaxExtendMinutes))
+	}
+	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, minutes, eur)))
 	if err := answerFits(note); err != nil {
 		return "", err
 	}
@@ -1267,8 +1304,8 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
 	}
 	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
-	if sessions > 0 || lines > 0 {
-		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines}
+	if sessions > 0 || lines > 0 || minutes > 0 {
+		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines, "agent_time_s": minutes * 60}
 		if eur > 0 {
 			res.Fund = &policy.Draw{EUR: eur}
 		}
@@ -1281,9 +1318,10 @@ func extendable(t factoryd.Task) bool {
 	return t.Kind == "agent" && t.IssueNumber != 0 && slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
 }
 
-// raiseLine names an extend's raise: the sessions, lines and EUR it adds.
-func raiseLine(sessions, lines int, eur float64) string {
-	return fmt.Sprintf("+%d %s, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), lines, plural(lines, "line"), eur)
+// raiseLine names an extend's raise: the sessions, minutes of agent time,
+// lines and EUR it adds.
+func raiseLine(sessions, lines, minutes int, eur float64) string {
+	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), lines, plural(lines, "line"), eur)
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the
@@ -1325,8 +1363,8 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
-	if label == "" && (value != "" || text == "" || choiceCard(t)) {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
+	if label == "" && (value != "" || text == "" || choiceCard(t) || len(q.Choices) > 0) {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s. A remark goes on the issue.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
 	if err != nil {
@@ -1412,7 +1450,12 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return done(fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), 0, nil, kept)
 	case factoryd.AnswerGo:
 		note, posted, err := c.goWork(ctx, a, t)
-		return done(note, posted, err, chosen)
+		if err != nil {
+			return "", err
+		}
+		tail, stop := tailContext(ctx)
+		defer stop()
+		return c.choiceDone(tail, a, t, k.ID, chosen, note, posted)
 	}
 	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice
 	return done(note, posted, err, chosen)
@@ -2206,6 +2249,9 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 // supervisor's message path, marked as theirs, every GitHub token in it
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
+	if c.cfg.Steer == nil {
+		return "", refuse(http.StatusNotImplemented, "This console cannot message a running session: it runs without factoryd's steer.")
+	}
 	text, github, chat := scrubTokens(strings.TrimSpace(text))
 	if text == "" || len(text) > 8<<10 {
 		return "", refuse(http.StatusBadRequest, "a message of up to 8 KiB is required")

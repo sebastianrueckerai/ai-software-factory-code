@@ -230,8 +230,8 @@ func (w *Waker) passProject(ctx context.Context, v policy.Version, name string, 
 		if e.Via == ViaChat {
 			continue // the agent's own doing wakes nobody
 		}
-		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && source == SourceMonthCap {
-			continue // the month cap refuses the agent's own calls: its ask wakes nobody
+		if source, _ := e.Detail["source"].(string); e.Kind == EventQuestionAsked && (source == SourceMonthCap || source == SourceChatBudget) {
+			continue // the month cap and the chat budget refuse the agent's own calls: their asks wake nobody
 		}
 		if settled, _ := e.Detail["settled"].(string); e.Kind == EventQuestionAsked && settled != "" {
 			continue // the factory answered the ask as it asked it: it wakes nobody

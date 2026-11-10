@@ -20,6 +20,11 @@ type Passes struct {
 
 // Run starts pass name on its own goroutine (passLoop) until ctx ends.
 func (p *Passes) Run(ctx context.Context, name string, every, bound time.Duration, fn func(context.Context) error) {
+	p.RunLive(ctx, name, every, func() time.Duration { return bound }, fn)
+}
+
+// RunLive is Run with the bound read anew at the start of every run.
+func (p *Passes) RunLive(ctx context.Context, name string, every time.Duration, bound func() time.Duration, fn func(context.Context) error) {
 	p.mark(name, time.Now(), false)
 	go p.passLoop(ctx, name, every, bound, fn)
 }
@@ -36,13 +41,13 @@ func (p *Passes) Ages(now time.Time) map[string]time.Duration {
 }
 
 // passLoop runs fn at once, then every `every`, each run under a context
-// bounded by bound. A run past its bound is logged with its name and the
+// bounded by bound, read at its start. A run past its bound is logged with its name and the
 // time over, sets the gauge factory.pass.late{pass} to 1 until a run ends
 // within the bound, and is cancelled by the context. Its error is then
 // the deadline the bound lines already say, so it is not logged. A run
 // never overlaps the one before it: one that ignores its context holds its
 // own loop, and the watchdog shows it late at the bound.
-func (p *Passes) passLoop(ctx context.Context, name string, every, bound time.Duration, fn func(context.Context) error) {
+func (p *Passes) passLoop(ctx context.Context, name string, every time.Duration, bound func() time.Duration, fn func(context.Context) error) {
 	tick := time.NewTicker(every)
 	defer tick.Stop()
 	for {
@@ -55,8 +60,9 @@ func (p *Passes) passLoop(ctx context.Context, name string, every, bound time.Du
 	}
 }
 
-func (p *Passes) once(ctx context.Context, name string, bound time.Duration, fn func(context.Context) error) {
+func (p *Passes) once(ctx context.Context, name string, boundOf func() time.Duration, fn func(context.Context) error) {
 	start := time.Now()
+	bound := boundOf()
 	run, cancel := context.WithTimeout(ctx, bound)
 	defer cancel()
 	done := make(chan error, 1)

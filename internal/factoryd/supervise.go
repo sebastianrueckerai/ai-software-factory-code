@@ -90,11 +90,16 @@ type SupervisorConfig struct {
 	// CheapCap: a session on the start rung's first attempt has this long
 	// to push before it climbs in place (roadmap 222, item 5); 0 = none.
 	CheapCap time.Duration
-	// NoPushSpend is the share of the card's budget (0 to under 1) whose
-	// spend with nothing pushed trips the supervisor; 0 = off. PriorPush:
+	// NoPushSpend is the share (0 to under 1) of what the card had left at
+	// the session's start that the session's own spend may reach with
+	// nothing pushed before the supervisor trips; 0 = off. PriorPush:
 	// an earlier session of the card already pushed work.
 	NoPushSpend float64
 	PriorPush   bool
+	// SpentAtStart is the card's enforced spend when the session started:
+	// the line weighs the session's own spend against what the card had
+	// left then.
+	SpentAtStart float64
 	// SizeLines is the line bound the card's size plans (cardLineBound);
 	// 0 = off.
 	SizeLines int
@@ -238,7 +243,11 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if lines, ok := cardDiffSize(ev); ok {
 		s.cardLines = lines
 	}
-	if ev.Kind == harness.EventPushed {
+	// the session's own end push is the push that counts: an interim
+	// push of the work in progress (detail wip) leaves the cheap cap
+	// and the no-push spend line armed — the work is on the branch, but
+	// the session has not finished
+	if ev.Kind == harness.EventPushed && !detailBool(ev, "wip") {
 		s.pushed = true
 	}
 	// a file written through a shell shows only as a changed diff
@@ -407,18 +416,21 @@ func (s *Supervisor) cheapCap(at time.Time) *Trip {
 	return s.trip(&Trip{Kind: TripCheapCap, Detail: detail, decided: &Decision{Action: ActionRetryStronger, Reason: detail}})
 }
 
-// Spent trips once per session when the card has spent its share of the
-// budget with nothing pushed (roadmap 199): a session that reads and
-// edits for hours without a push is what the budget pays for. A report
-// session pushes nothing and is warned instead.
+// Spent trips once per session when the session's own spend passes the
+// policy share of what the card had left when the session started, with
+// nothing pushed (roadmap 199). A fund during the session raises budget
+// and so what the card had left. A report session pushes nothing and is
+// warned instead.
 func (s *Supervisor) Spent(spent, budget float64) *Trip {
+	left := budget - s.cfg.SpentAtStart
+	own := spent - s.cfg.SpentAtStart
 	if s.tripped != nil || s.spendTripped || s.cfg.NoPushSpend <= 0 || s.cfg.ReadOnly || s.cfg.PriorPush || s.pushed ||
-		budget <= 0 || spent < s.cfg.NoPushSpend*budget {
+		left <= 0 || own < s.cfg.NoPushSpend*left {
 		return nil
 	}
 	s.spendTripped = true
-	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("%.2f of the card's %.2f EUR are spent (%.0f percent, the line is %.0f) and no work is pushed",
-		spent, budget, 100*spent/budget, 100*s.cfg.NoPushSpend)})
+	return s.trip(&Trip{Kind: TripSpendNoPush, Detail: fmt.Sprintf("this session spent %.2f EUR of the %.2f EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed",
+		own, left, 100*own/left, 100*s.cfg.NoPushSpend)})
 }
 
 // Climbed: the session switched to the stronger rung in place; the cheap
@@ -530,6 +542,15 @@ func (s *Supervisor) Resume(now time.Time) {
 // memory).
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
+	s.messagedInTrip(now)
+}
+
+// messagedInTrip arms the stuck rule for a message factoryd itself
+// delivered into the running session mid-trip — the interim push's
+// refusal (wippush.go) — while the trip in hand stays for the check-in
+// that is still to judge it: everything Messaged arms applies, minus
+// the resume.
+func (s *Supervisor) messagedInTrip(now time.Time) {
 	s.sinceChange = 0
 	s.noWriteFrom = now
 	d := s.traces
@@ -626,7 +647,7 @@ const (
 	// TripCheapCap: the start rung's first attempt ran its cap without a
 	// push (roadmap 222, item 5)
 	TripCheapCap TripKind = "cheap_cap"
-	// TripSpendNoPush: the card spent its policy share of the budget and nothing is pushed
+	// TripSpendNoPush: the session spent its policy share of what the card had left at its start and nothing is pushed
 	TripSpendNoPush TripKind = "spend_no_push"
 )
 

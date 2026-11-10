@@ -1012,8 +1012,8 @@ func TestRecordGrantIsOnceByItsIdentity(t *testing.T) {
 func TestRungZerosExtendOnAFreshTripCaseRaisesTheRow(t *testing.T) {
 	g := newActRig(t)
 	ctx := context.Background()
-	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseAgentTimeCap, StateKey: "h2",
-		Problem: "Card #12 used its agent time", Facts: map[string]any{"trip": "run-1/7"}})
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseSessionCap, StateKey: "h2",
+		Problem: "Card #12 used its sessions", Facts: map[string]any{"trip": "run-1/7"}})
 	if err != nil {
 		t.Fatal(err)
 	}

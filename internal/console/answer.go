@@ -370,7 +370,7 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 	case len(choices) < 2 || len(choices) > factoryd.MaxChoices ||
 		slices.ContainsFunc(choices, func(c string) bool { return c == "" || utf8.RuneCountInString(c) > factoryd.MaxChoice }):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("choices: 2 to %d answers of 1 to %d characters", factoryd.MaxChoices, factoryd.MaxChoice))
-	case len(slices.Compact(slices.Sorted(slices.Values(choices)))) != len(choices):
+	case repeats(choices):
 		return "", refuse(http.StatusBadRequest, "choices: each answer once")
 	}
 	q := factoryd.HumanQuestion{Ask: ask, Why: why, Info: info, Recommendation: recommendation, Source: "the agent's"}
@@ -383,4 +383,17 @@ func (t *turn) escalate(ask, why, info, recommendation string, choices []string)
 		return "", refuse(http.StatusBadGateway, "The escalation could not be filed: "+errText(err)+". Try again, or post the question on the card's issue.")
 	}
 	return fmt.Sprintf("Filed the escalation as #%d in Needs you; the inbox carries it to the project's humans with its choices.", n), nil
+}
+
+// repeats reports whether two of choices read as one answer to the matcher.
+func repeats(choices []string) bool {
+	seen := map[string]bool{}
+	for _, c := range choices {
+		k := factoryd.ChoiceKey(c)
+		if seen[k] {
+			return true
+		}
+		seen[k] = true
+	}
+	return false
 }

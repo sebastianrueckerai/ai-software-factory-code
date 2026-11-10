@@ -1,0 +1,49 @@
+2026-11-10T17:33:49.9264347Z Runner 710a900f-246d-4c30-b7c5-12ab7d3c732a (version:v13.2.0) received task 17382 of job test, triggered by event: pull_request
+2026-11-10T17:33:49.9297903Z workflow prepared
+2026-11-10T17:33:49.9367762Z   ☁️  git clone 'https://data.forgejo.org/actions/checkout' # ref=v4
+2026-11-10T17:41:51.7951452Z 2026/11/10 17:41:07 httptest.Server blocked in Close after 5 seconds, waiting for connections:
+2026-11-10T17:41:51.7951500Z   *net.TCPConn 0x38fa2cf03f0 127.0.0.1:45768 in state active
+2026-11-10T17:41:51.7951546Z --- FAIL: TestInterimPushRefusesTooLargeWorkBeforeReadingIt (57.67s)
+2026-11-10T17:41:51.7951591Z     --- FAIL: TestInterimPushRefusesTooLargeWorkBeforeReadingIt/wide-tree (56.31s)
+2026-11-10T17:41:51.7951641Z         wippush_test.go:919: the wip_push_failed step = map[at:ask error:Post "http://127.0.0.1:50424/wip": context deadline exceeded session:s-d0a88840bc81 step:wip_push_failed time:2026-11-10T17:41:02.444075863Z], want the size r
+2026-11-10T17:41:51.7951703Z 2026/11/10 17:41:32 task t2: session s-1: interim push, at the queue: another interim push held the slot until the check-in's deadline
+2026-11-10T17:41:51.7951755Z 2026/11/10 17:41:34 task t2: session s-f6a0d3022271: interim push, at the push: git push: exit status 1: To [redacted].git;  ! [rejected]        d2b5cfb921438159969d5dc73e6267c114dd9713 -> factory/t2 (stale info); error: failed to 
+2026-11-10T17:41:51.7951812Z 2026/11/10 17:41:35 task t2: session s-d3cdf7ffa1a5: interim push, at the ask: worker answered 302: 
+2026-11-10T17:41:51.7951855Z 2026/11/10 17:41:36 task t2: session s-0dd61dc4f5c4: interim push, at the push: refusing to push: migration internal/policy/migrations/Bearer [redacted] is misnamed: <UTC yyyymmddhhmmss>_<slug>.sql, never the next number
+2026-11-10T17:41:51.7951907Z 2026/11/10 17:41:36 task t2: session s-0ee4a41a4dd7: interim push, at the ask: worker answered 200: the /wip answer names commit "--xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx…" over 4 bytes of 
+2026-11-10T17:41:51.7951987Z 2026/11/10 17:41:39 task t2: deliver the brief: worker answered 500: 
+2026-11-10T17:41:51.7952032Z 2026/11/10 17:41:39 task t2: session s-e07752293bc5: interim push, at the push: refusing to push: .forgejo/ differs from the base (2386751be8ceef9c02d666d82b0f9fb80b3179c5): revert the workflow directory change; the rule lets no ag
+2026-11-10T17:41:51.7952091Z 2026/11/10 17:41:39 task t2: deliver the interim push's refusal to the session: worker answered 500: 
+2026-11-10T17:41:51.7952136Z 2026/11/10 17:41:40 task t2: session s-3af5af3ab51f: interim push, at the push: the shipped WIP b4d4279c240f09996c5e1f28cff3d3a0e05e9bd7 does not descend from the session's start 2386751be8ceef9c02d666d82b0f9fb80b3179c5: nothing is
+2026-11-10T17:41:51.7952193Z 2026/11/10 17:41:43 task t2: session s-d9c3f5905c4d: interim push, at the push: refusing to push: .forgejo/ differs from the base (dd850d90f007435271c4a33aa066b56396e65a36): revert the workflow directory change; the rule lets no ag
+2026-11-10T17:41:51.7952252Z 2026/11/10 17:41:50 config: version 1 loaded, commit c1
+2026-11-10T17:41:51.7952299Z 2026/11/10 17:41:50 config: version 2 loaded, commit c2
+2026-11-10T17:41:51.7952343Z 2026/11/10 17:41:50 config: version 2 loaded, 1 cap waits woken
+2026-11-10T17:41:51.7952379Z FAIL
+2026-11-10T17:41:51.7952415Z FAIL	github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd	386.838s
+2026-11-10T17:41:51.7952462Z ok  	github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway	11.439s
+2026-11-10T17:41:51.7954403Z ok  	github.com/sebastianrueckerai/ai-software-factory-code/internal/sealed	0.019s
+2026-11-10T17:41:51.7954448Z ok  	github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry	0.086s
+2026-11-10T17:41:51.7954495Z ok  	github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil	0.029s
+2026-11-10T17:41:51.7954538Z ?   	github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide	[no test files]
+2026-11-10T17:41:51.7954585Z ok  	github.com/sebastianrueckerai/ai-software-factory-code/scripts	10.004s
+2026-11-10T17:41:51.7954624Z FAIL
+2026-11-10T17:41:58.2626580Z ⚙️ [runner]: RUN exit status 1
+2026-11-10T17:41:58.2628300Z ⭐ Run Post actions/checkout@v4
+2026-11-10T17:41:58.4110291Z [command]/usr/bin/git version
+2026-11-10T17:41:58.4261704Z git version 2.39.5
+2026-11-10T17:41:58.4289514Z   ⚙  ***
+2026-11-10T17:41:58.4367113Z Temporarily overriding HOME='/home/runner/.cache/act/3b96d35b140de07a/tmp/0f670469-7b89-4d43-a702-a0f197f1246b' before making global git config changes
+2026-11-10T17:41:58.4367661Z Adding repository directory to the temporary git global config as a safe directory
+2026-11-10T17:41:58.4367740Z [command]/usr/bin/git config --global --add safe.directory /home/runner/.cache/act/3b96d35b140de07a/hostexecutor
+2026-11-10T17:41:58.4548302Z [command]/usr/bin/git config --local --name-only --get-regexp core\.sshCommand
+2026-11-10T17:41:58.4701588Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'core\.sshCommand' && git config --local --unset-all 'core.sshCommand' || :"
+2026-11-10T17:41:58.6926548Z [command]/usr/bin/git config --local --name-only --get-regexp http\.http\:\/\/forgejo\-http\.forgejo\.svc\.cluster\.local\:3000\/\.extraheader
+2026-11-10T17:41:58.7094353Z http.http://forgejo-http.forgejo.svc.cluster.local:3000/.extraheader
+2026-11-10T17:41:58.7128267Z [command]/usr/bin/git config --local --unset-all http.http://forgejo-http.forgejo.svc.cluster.local:3000/.extraheader
+2026-11-10T17:41:58.7359470Z [command]/usr/bin/git submodule foreach --recursive sh -c "git config --local --name-only --get-regexp 'http\.http\:\/\/forgejo\-http\.forgejo\.svc\.cluster\.local\:3000\/\.extraheader' && git config --local --unset-all 'http.http://forgejo-http.forgejo.svc.cluster.local:3000/.extraheader' || :"
+2026-11-10T17:41:58.9348885Z [command]/usr/bin/git config --local --name-only --get-regexp ^includeIf\.gitdir:
+2026-11-10T17:41:58.9502881Z [command]/usr/bin/git submodule foreach --recursive git config --local --show-origin --name-only --get-regexp remote.origin.url
+2026-11-10T17:41:59.1676415Z   ✅  Success - Post actions/checkout@v4
+2026-11-10T17:41:59.2117403Z 🏁  Job failed
+2026-11-10T17:41:59.3273519Z Job 'test' failed

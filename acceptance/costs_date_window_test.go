@@ -396,8 +396,12 @@ type acceptEvents struct {
 }
 
 func (*acceptTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
-func (*acceptTasks) RoadmapHolder(context.Context, string, int) (string, bool, error) {
-	return "", false, nil
+func (*acceptTasks) IntakeRefusals(context.Context, string, int64) ([]factoryd.IntakeRefusal, error) {
+	return nil, nil
+}
+
+func (*acceptTasks) RoadmapHolder(context.Context, string, int, int64) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, nil
 }
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {
@@ -460,6 +464,18 @@ func (f *acceptEvents) TaskEventsFor(ctx context.Context, ids []string, limit in
 			return nil, err
 		}
 		out[id] = evs
+	}
+	return out, nil
+}
+
+func (f *acceptEvents) TaskEventsOfKind(_ context.Context, id, kind string, limit int) ([]factoryd.Event, error) {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	var out []factoryd.Event
+	for i := len(f.rows) - 1; i >= 0 && len(out) < limit; i-- {
+		if f.rows[i].TaskID == id && f.rows[i].Kind == kind {
+			out = append(out, f.rows[i])
+		}
 	}
 	return out, nil
 }

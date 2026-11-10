@@ -98,6 +98,9 @@ type Plan struct {
 	// TakeOffMain are the keys of the merged cards whose work the revision
 	// takes off main once it filed
 	TakeOffMain []string `json:"take_off_main,omitempty"`
+	// TakeOffReasons say, by key, what breaks if the card's work stays on
+	// main; a revision as filed has one for every key of TakeOffMain
+	TakeOffReasons map[string]string `json:"take_off_reasons,omitempty"`
 	// Round is the planning round this revision files, factoryd's stamp: 1
 	// for a plan's first, 0 on a plan filed before rounds
 	Round int `json:"round,omitempty"`
@@ -110,6 +113,44 @@ type Plan struct {
 type Spec struct {
 	Outcome  string   `json:"outcome"`
 	Glossary []string `json:"glossary,omitempty"`
+}
+
+// TakeOffReason is the reason the plan gives for taking key off main, ""
+// when it gives none.
+func (p Plan) TakeOffReason(key string) string {
+	return strings.TrimSpace(p.TakeOffReasons[key])
+}
+
+// TakeOffLine is ref, a name for the card key, and the plan's reason for
+// taking it off main after a colon when it gives one.
+func (p Plan) TakeOffLine(ref, key string) string {
+	if why := p.TakeOffReason(key); why != "" {
+		return ref + ": " + why
+	}
+	return ref
+}
+
+// TakeOffLines are the plan's take-off-main entries, one per key in
+// order, each as TakeOffLine gives it.
+func (p Plan) TakeOffLines() []string {
+	lines := make([]string, len(p.TakeOffMain))
+	for i, k := range p.TakeOffMain {
+		lines[i] = p.TakeOffLine(k, k)
+	}
+	return lines
+}
+
+// takeOffReasonFindings refuses a take-off with no reason. It judges only
+// a revision as the planner files it: a reason is text of the revision
+// alone, so the stored revision is not judged on it again.
+func takeOffReasonFindings(p Plan) []string {
+	var found []string
+	for _, x := range p.TakeOffMain {
+		if p.TakeOffReason(x) == "" {
+			found = append(found, fmt.Sprintf("take_off_main names %s with no reason: say in take_off_reasons what breaks if its work stays on main, or leave %s out of take_off_main", x, x))
+		}
+	}
+	return slices.Compact(found)
 }
 
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
@@ -378,6 +419,13 @@ func decodePlan(text string) (Plan, []string) {
 // rounds files every card at once and holds no outline. take_off_main is
 // replanFindings' to judge.
 func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
+	return judgePlanWith(p, shape, limits, pins, "")
+}
+
+// judgePlanWith is judgePlan with delta the key of a delta card that joins
+// the round: the card may depend on the integration card the round already
+// holds.
+func judgePlanWith(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin, delta string) (Plan, []string) {
 	round := roundCards(p)
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf("plan: "+format, args...)) }
@@ -431,7 +479,7 @@ func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[st
 				add("card %s: depends on itself", c.Key)
 			case keys[d] == 0:
 				add("card %s: depends on %q, which is no card of the plan", c.Key, d)
-			case slices.Contains(integration, d):
+			case c.Key != delta && slices.Contains(integration, d):
 				add("card %s: depends on the integration card, which comes last", c.Key)
 			}
 		}
@@ -1019,11 +1067,11 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		b.WriteString("\n")
 	}
 	if len(p.TakeOffMain) > 0 {
-		keys := make([]string, len(p.TakeOffMain))
-		for i, k := range p.TakeOffMain {
+		keys := p.TakeOffLines()
+		for i, k := range keys {
 			keys[i] = cell(k)
 		}
-		fmt.Fprintf(&b, "\nTakes off main: %s.\n", strings.Join(keys, ", "))
+		fmt.Fprintf(&b, "\nTakes off main: %s.\n", strings.Join(keys, "; "))
 	}
 	if len(p.Criteria) > 0 {
 		cited := citations(p)
@@ -1194,7 +1242,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
@@ -1214,7 +1262,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-		"take_off_main: the keys of merged cards whose work comes off main; a card of a later revision that lands it again names it in from. " +
+		"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main; take_off_reasons: by key, what breaks if that card's work stays on main; " +
+		"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	g += imagesLine(pins)
 	if shape.Foundation {
@@ -2237,9 +2286,9 @@ func (t *taskRun) planAsksAgain(u TaskUsage) bool {
 	return u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.plannerRetry >= versionPlannerRetry && short && !retry
 }
 
-// plannerOutOfTime opens the question of a plan card whose planner is out
+// PlannerOutOfTime is the head of the question of a plan card whose planner is out
 // of time with no automatic session to come.
-const plannerOutOfTime = "the planner used its agent time"
+const PlannerOutOfTime = "the planner used its agent time"
 
 // plannerTimeCard is that question: the automatic session used, or the cap
 // too short for one, and what buys the next session: an extend of the
@@ -2250,10 +2299,10 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
 	}
 	if t.cases >= versionCases {
-		return plannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
+		return PlannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
 	}
 	return fmt.Sprintf("%s%s: an answer starts one more planner session with %g minutes of agent time and the answer among its findings",
-		plannerOutOfTime, what, t.answerTime().Minutes())
+		PlannerOutOfTime, what, t.answerTime().Minutes())
 }
 
 // confirmedByAnswers tells whether every question of a revision is
@@ -2765,6 +2814,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		found = revisionFindings(revisions, p)
 	}
+	found = append(found, takeOffReasonFindings(p)...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}
@@ -2783,7 +2833,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
 	}
-	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+	if st.newest == nil || n > st.revision {
+		detail := map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha}
+		r.record(ctx, taskID, "plan_revision", detail)
+		r.timeline.RecordRow(ctx, taskID, EventPlanRevision, FactoryDecider, ViaFactoryd, detail)
+	}
 	gate, _, err := r.confirms(ctx, t, p)
 	if err != nil {
 		return PlanResult{}, err
@@ -3506,18 +3560,19 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 		return err
 	}
 	var dropped []Task
-	var refs []string
+	var refs, whys []string
 	for _, k := range onMain(cards) {
 		if slices.Contains(p.TakeOffMain, k.PlanKey) {
 			dropped = append(dropped, k)
-			refs = append(refs, fmt.Sprintf("#%d", k.IssueNumber))
+			refs = append(refs, p.TakeOffLine(fmt.Sprintf("#%d", k.IssueNumber), k.PlanKey))
+			whys = append(whys, p.TakeOffLine(k.PlanKey, k.PlanKey))
 		}
 	}
 	if len(dropped) == 0 {
 		return nil
 	}
 	stopBeats := beatUntilDone(ctx, "revert")
-	_, err = r.RevertGroup(ctx, t, dropped, fmt.Sprintf("plan revision %d drops them", n))
+	_, err = r.RevertGroup(ctx, t, dropped, fmt.Sprintf("plan revision %d drops them: %s", n, strings.Join(whys, "; ")))
 	stopBeats()
 	var no ErrNoReplan
 	if !errors.As(err, &no) {
@@ -3528,7 +3583,7 @@ func (r *Runner) revertTakenOff(ctx context.Context, t Task, repo Repo, n int, p
 		stay = "it stays"
 	}
 	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: revision %d drops %s (%s), and %s on main. %s",
-		n, plural(len(dropped), "merged card"), strings.Join(refs, ", "), stay, no))
+		n, plural(len(dropped), "merged card"), strings.Join(refs, "; "), stay, no))
 	return nil
 }
 

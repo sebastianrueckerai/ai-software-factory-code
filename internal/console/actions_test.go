@@ -311,7 +311,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose, "comment": int64(1)}})
 
 	r, ev, before, code, body = click(t, "", "retry it next week")
-	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close.\n" || ev.count() != before || len(r.fg.patched) != 0 {
+	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close. A remark goes on the issue.\n" || ev.count() != before || len(r.fg.patched) != 0 {
 		t.Fatalf("words = %d %q, %d rows, patched %v; want 400 naming the choices, nothing done", code, body, ev.count()-before, r.fg.patched)
 	}
 }
@@ -341,25 +341,27 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 
 // A human card's answers act by its choices: park keeps the card, posts
 // nothing and leaves a note on its case, close ends it on the label and
-// resolves its case with the value, free words are the human's comment
-// and a note, and the card keeps waiting; a value the question does not
-// offer is refused with the labels. The go choice is
+// resolves its case with the value, free words on a card that offers no
+// choice are the human's comment and a note, and the card keeps waiting;
+// on a card that offers choices, words that match none and a value the
+// question does not offer are refused with the labels. The go choice is
 // TestGoHandsTheWaitingCardOver's.
 func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
-	q := func() factoryd.BoardTask {
-		return humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
-			factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
-	}
-	click := func(t *testing.T, form url.Values) (*rig, *fakeEvents, int, int, string) {
+	choices := []factoryd.QuestionChoice{{Value: "go", Label: "Have the factory do it"},
+		{Value: "park", Label: "Wait for it"}, {Value: "close", Label: "Done"}}
+	clickOn := func(t *testing.T, form url.Values, choices ...factoryd.QuestionChoice) (*rig, *fakeEvents, int, int, string) {
 		t.Helper()
 		r, ev := newRigWithEvents(t)
-		r.tasks.tasks = []factoryd.BoardTask{q()}
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, choices...)}
 		ck, s := r.loggedIn(t)
 		form.Set("csrf", s.csrf)
 		before := ev.count()
 		rec := r.do(post("/tasks/t-hq/answer", form), ck)
 		return r, ev, before, rec.Code, rec.Body.String()
+	}
+	click := func(t *testing.T, form url.Values) (*rig, *fakeEvents, int, int, string) {
+		return clickOn(t, form, choices...)
 	}
 	act := func(action, note string) factoryd.ActInput {
 		return factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
@@ -380,12 +382,17 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	got, _ = actedOnce(t, r)
 	equal(t, "the close", got, act(factoryd.AnswerClose, "Done"))
 
-	r, _, _, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
+	r, _, _, code, _ = clickOn(t, url.Values{"answer": {"Use Postgres."}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Use Postgres." || len(r.fg.patched) != 0 {
 		t.Errorf("free text = %d, comment %q, patched %v; want one comment and the card kept", code, r.fg.comments[comments], r.fg.patched)
 	}
 	got, _ = actedOnce(t, r)
 	equal(t, "the words", got, act(factoryd.ActNote, "Use Postgres."))
+
+	r, _, _, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
+	if code != http.StatusBadRequest || r.fg.comments[comments] != "" || len(r.fg.patched) != 0 || len(r.acted) != 0 {
+		t.Errorf("words on a choice card = %d, comment %q, patched %v, acted %d; want a refusal and nothing posted", code, r.fg.comments[comments], r.fg.patched, len(r.acted))
+	}
 
 	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
 	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
@@ -439,25 +446,35 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "the restructure is worth it"); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, "the restructure is worth it"); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the extend", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 500}, Fund: &policy.Draw{EUR: 2},
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 500, "agent_time_s": 0}, Fund: &policy.Draw{EUR: 2},
 			Note: "the restructure is worth it"}}, true})
 	r.fg.mu.Lock()
 	posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
 	r.fg.mu.Unlock()
 	equal(t, "the answer posted", posted, "the restructure is worth it")
 
+	// the Extend form's minutes field raises the card's agent time, the
+	// chat's extend's agent_time_s by its own door
 	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 1.5, ""); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 20, 0, ""); err != nil {
+		t.Fatalf("extend by minutes: %v", err)
+	}
+	got, _ = actedOnce(t, r)
+	equal(t, "the minutes alone", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200},
+		Note: "Extended the card: +0 sessions, +20 minutes of agent time, +0 lines, +0.00 EUR."})
+
+	r = fundRig(t)
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 0, 1.5, ""); err != nil {
 		t.Fatalf("extend by money alone: %v", err)
 	}
 	got, _ = actedOnce(t, r)
 	equal(t, "the money alone", got.Res, factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.5},
-		Note: "Extended the card: +0 sessions, +0 lines, +1.50 EUR."})
+		Note: "Extended the card: +0 sessions, +0 minutes of agent time, +0 lines, +1.50 EUR."})
 }
 
 // Nothing extends when the raise names nothing or names a negative: the
@@ -466,12 +483,12 @@ func TestExtendRefusesWhatChangesNothing(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
 	for _, in := range []struct {
-		sessions, lines int
-		eur             float64
+		sessions, lines, minutes int
+		eur                      float64
 	}{
-		{0, 0, 0}, {-1, 0, 0}, {0, -500, 0}, {0, 0, -2}, {1, 0, -5},
+		{0, 0, 0, 0}, {-1, 0, 0, 0}, {0, -500, 0, 0}, {0, 0, -20, 0}, {0, 0, 0, -2}, {1, 0, 0, -5},
 	} {
-		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.eur, "")
+		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.minutes, in.eur, "")
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusBadRequest {
 			t.Errorf("extend %+v = %v, want a 400 refusal", in, err)
@@ -515,10 +532,58 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="sessions"`, `name="lines"`, `name="eur"`, `value="overrule"`} {
+	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="minutes"`, `name="sessions"`, `name="lines"`, `name="eur"`, `value="overrule"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
 		}
+	}
+}
+
+// A planner's time stop shows the Extend form's minutes field first: the
+// stop asks agent time, and the form's own order says so.
+func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
+	r := fundRig(t)
+	r.tasks.set(factoryd.PlannerOutOfTime+" and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings",
+		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
+			Objective: "Plan the API.", BudgetEUR: 2, ModelAlias: "factory/small"})
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	i := strings.Index(body, `action="/tasks/t-e/extend"`)
+	if i < 0 {
+		t.Fatalf("the board lacks the extend form of t-e")
+	}
+	form := body[i:]
+	minutes, sessions := strings.Index(form, `name="minutes"`), strings.Index(form, `name="sessions"`)
+	if minutes < 0 || sessions < 0 || minutes > sessions {
+		t.Fatalf("the extend form at the planner's stop leads with %q; want the minutes field before the sessions", form[:min(len(form), 300)])
+	}
+}
+
+// The extend route reads the minutes field into the card's agent time, as
+// the chat's extend carries it, and bounds it: 20 minutes act as 1200
+// seconds, 601 are refused naming the bound and draw nothing.
+func TestExtendRouteTakesMinutes(t *testing.T) {
+	r := fundRig(t)
+	ck, s := r.loggedIn(t)
+	form := func(minutes string) url.Values {
+		return url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "sessions": {"0"}, "minutes": {minutes}, "lines": {"0"}, "eur": {"0"}}
+	}
+	if rec := r.do(post("/tasks/t-e/extend", form("20")), ck); rec.Code >= 400 {
+		t.Fatalf("extend = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	equal(t, "the posted minutes", got.Res.Args, map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200})
+	r = fundRig(t)
+	ck, s = r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/extend", form("601")), ck)
+	if rec.Code != http.StatusBadRequest || !strings.Contains(rec.Body.String(), "at most 600 minutes") {
+		t.Fatalf("extend of 601 minutes = %d: %s", rec.Code, rec.Body)
+	}
+	if n := len(r.acted); n != 0 {
+		t.Errorf("a refused extend acted %d times", n)
+	}
+	if rec := r.do(post("/tasks/t-e/extend", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "sessions": {"1"}, "lines": {"0"}, "eur": {"0"}}), ck); rec.Code >= 400 {
+		t.Errorf("an extend with no minutes field = %d: %s", rec.Code, rec.Body)
 	}
 }
 
@@ -535,7 +600,7 @@ func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 		r := fundRig(t)
 		setStatus(r, status)
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, ""); err != nil {
+		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, ""); err != nil {
 			t.Fatalf("%s: extend: %v", status, err)
 		}
 		got, _ := actedOnce(t, r)
@@ -556,7 +621,7 @@ func TestExtendRefusesADoneCard(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "done")
 	_, s := r.loggedIn(t)
-	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "")
+	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, "")
 	var no *refusal
 	if !errors.As(err, &no) || no.status != http.StatusConflict {
 		t.Fatalf("extend of a done card = %v, want a 409 refusal", err)
@@ -573,7 +638,7 @@ func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	setStatus(r, "running")
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="sessions"`, `name="lines"`, `name="eur"`} {
+	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="minutes"`, `name="sessions"`, `name="lines"`, `name="eur"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the running card's drawer lacks %s", want)
 		}

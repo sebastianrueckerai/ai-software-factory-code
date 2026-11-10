@@ -136,10 +136,13 @@ type Tasks interface {
 	// its unstarted filings, the ready check's room (roadmap 239).
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	CountQueue(ctx context.Context, repository string) (int, error)
-	// RoadmapHolder is the card that builds repository's docs/roadmap.md
-	// item, whatever its state (the roadmap pull, 2026-11-01); false
-	// when no card cites it.
-	RoadmapHolder(ctx context.Context, repository string, item int) (string, bool, error)
+	// RoadmapHolder is the card (id, status, issue) that holds repository's
+	// docs/roadmap.md item, open or done; false when none does. A closed or
+	// failed card of the issue refile (a "Refile of #N" line) does not
+	// hold it.
+	RoadmapHolder(ctx context.Context, repository string, item int, refile int64) (factoryd.Task, bool, error)
+	// IntakeRefusals are the reasons the intake made no card for issue.
+	IntakeRefusals(ctx context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error)
 	// ProjectImageParks are the parks of project's cards that wait for an
 	// image, the oldest first, each with its tool card's issue.
 	ProjectImageParks(ctx context.Context, project string) ([]factoryd.ImagePark, error)
@@ -287,6 +290,10 @@ type Config struct {
 	// Chat): every Forgejo call of a wake goes out with it; "" or nil
 	// refuses the wake.
 	ChatToken func(p factoryd.Project) string
+	// FileChatBudgetCard opens the human card of project p's chat task
+	// once its budget is spent (factoryd.ChatBudgetCards.File); nil files
+	// none.
+	FileChatBudgetCard func(ctx context.Context, p factoryd.Project, chat factoryd.Task) error
 	// DocsToken is the docs writer's Forgejo token, which write_doc
 	// commits documents with (FORGEJO_DOCS_TOKEN); empty: no chat writes
 	// documents.
@@ -620,6 +627,48 @@ func New(cfg Config) (*Console, error) {
 		return nil, errors.New("console: no PoolDrawn")
 	case cfg.CheckMerge == nil:
 		return nil, errors.New("console: no CheckMerge")
+	case cfg.Writers == nil:
+		return nil, errors.New("console: no Writers")
+	case cfg.Writes == nil:
+		return nil, errors.New("console: no Writes")
+	case cfg.DeploymentHealth == nil:
+		return nil, errors.New("console: no DeploymentHealth")
+	case cfg.AnswerPlan == nil:
+		return nil, errors.New("console: no AnswerPlan")
+	case cfg.AnswerPlanQuestions == nil:
+		return nil, errors.New("console: no AnswerPlanQuestions")
+	case cfg.DecideHoldout == nil:
+		return nil, errors.New("console: no DecideHoldout")
+	case cfg.GrantCriteria == nil:
+		return nil, errors.New("console: no GrantCriteria")
+	case cfg.DecideCriterion == nil:
+		return nil, errors.New("console: no DecideCriterion")
+	case cfg.ConfirmDeliveredCriteria == nil:
+		return nil, errors.New("console: no ConfirmDeliveredCriteria")
+	case cfg.RetryCard == nil:
+		return nil, errors.New("console: no RetryCard")
+	case cfg.GoCard == nil:
+		return nil, errors.New("console: no GoCard")
+	case cfg.CloseCard == nil:
+		return nil, errors.New("console: no CloseCard")
+	case cfg.RerunStall == nil:
+		return nil, errors.New("console: no RerunStall")
+	case cfg.DismissStall == nil:
+		return nil, errors.New("console: no DismissStall")
+	case cfg.Replan == nil:
+		return nil, errors.New("console: no Replan")
+	case cfg.DeployNow == nil:
+		return nil, errors.New("console: no DeployNow")
+	case cfg.CheckProject == nil:
+		return nil, errors.New("console: no CheckProject")
+	case cfg.MainExists == nil:
+		return nil, errors.New("console: no MainExists")
+	case cfg.ReconcileError == nil:
+		return nil, errors.New("console: no ReconcileError")
+	case cfg.AddCollaborator == nil:
+		return nil, errors.New("console: no AddCollaborator")
+	case cfg.SetIssueDependency == nil:
+		return nil, errors.New("console: no SetIssueDependency")
 	}
 	if cfg.Scrub == nil {
 		cfg.Scrub = redact.New()

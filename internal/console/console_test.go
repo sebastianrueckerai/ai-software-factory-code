@@ -404,9 +404,10 @@ type fakeTasks struct {
 	carries  map[string][]string // the cards a roll task carries
 	// roadmap names, by "repository item", the card that builds a roadmap
 	// item (the roadmap pull of 2026-11-01)
-	roadmap map[string]string
-	chain   map[string]factoryd.ChainFacts
-	read    func(s *fakeTasks, id string)
+	roadmap  map[string]factoryd.Task
+	refusals map[string][]factoryd.IntakeRefusal
+	chain    map[string]factoryd.ChainFacts
+	read     func(s *fakeTasks, id string)
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -486,11 +487,20 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 }
 
 // RoadmapHolder names the card that builds repository's roadmap item.
-func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int) (string, bool, error) {
+func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int, refile int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	holder, ok := s.roadmap[fmt.Sprintf("%s %d", repository, item)]
+	if ok && refile > 0 && holder.IssueNumber == refile && (holder.Status == "closed" || holder.Status == "failed") {
+		return factoryd.Task{}, false, nil
+	}
 	return holder, ok, nil
+}
+
+func (s *fakeTasks) IntakeRefusals(_ context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refusals[fmt.Sprintf("%s %d", repository, issue)], nil
 }
 
 func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error) {
@@ -1282,7 +1292,7 @@ func newRig(t *testing.T) *rig {
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely",` +
 					`"verdicts":{"internal/api.go: the handler leaks the client":{"state":"dropped","evidence":"grep finds the client closed in handler.go:40","round":1},` +
 					`"a follow-up files the docs":{"state":"remark"}}},"head_sha":"abc123",` +
-					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
+					`"failed_tests":[{"job":"test","test":"TestA","package":"p/q","kind":"failed"}],"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
 					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"],` +
 					`"verdicts":{"0018_x.sql: add a default":{"state":"dropped","evidence":"main already held the default","round":1}}}],` +
 					`"audit":{"verdict":"findings","model":"big","deployment":"zai/glm-5.3","findings":[` +
@@ -1516,7 +1526,14 @@ func newRig(t *testing.T) *rig {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
 			return nil
 		},
-		DeployNow: func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
+		DeployNow:                func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
+		GrantCriteria:            func(context.Context, string, string, int64) (int, error) { return 0, nil },
+		DecideCriterion:          func(context.Context, string, string, string, string, string) error { return nil },
+		ConfirmDeliveredCriteria: func(context.Context, string, string, string) (int, error) { return 0, nil },
+		Replan:                   func(context.Context, string, string, string, bool) (string, error) { return "", nil },
+		CheckProject:             func(context.Context, string, []byte) ([]string, error) { return nil, nil },
+		MainExists:               func(context.Context, factoryd.Repo) (bool, error) { return false, nil },
+		ReconcileError:           func(string) string { return "" },
 		SetIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error {
 			edge := fmt.Sprintf("%s#%d on #%d", repo, number, dependency)
 			r.issueDeps = slices.DeleteFunc(r.issueDeps, func(e string) bool { return e == edge })
@@ -1752,14 +1769,35 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 func TestNewRefusesAMissingCardRead(t *testing.T) {
 	r := newRig(t)
 	for name, drop := range map[string]func(*Config){
-		"CardDigest":    func(c *Config) { c.CardDigest = nil },
-		"CardStep":      func(c *Config) { c.CardStep = nil },
-		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
-		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
-		"CaseByID":      func(c *Config) { c.CaseByID = nil },
-		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
-		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
-		"CheckMerge":    func(c *Config) { c.CheckMerge = nil },
+		"CardDigest":               func(c *Config) { c.CardDigest = nil },
+		"CardStep":                 func(c *Config) { c.CardStep = nil },
+		"BoardDigest":              func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf":              func(c *Config) { c.OpenCasesOf = nil },
+		"CaseByID":                 func(c *Config) { c.CaseByID = nil },
+		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
+		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
+		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
+		"Writers":                  func(c *Config) { c.Writers = nil },
+		"Writes":                   func(c *Config) { c.Writes = nil },
+		"DeploymentHealth":         func(c *Config) { c.DeploymentHealth = nil },
+		"AnswerPlan":               func(c *Config) { c.AnswerPlan = nil },
+		"AnswerPlanQuestions":      func(c *Config) { c.AnswerPlanQuestions = nil },
+		"DecideHoldout":            func(c *Config) { c.DecideHoldout = nil },
+		"GrantCriteria":            func(c *Config) { c.GrantCriteria = nil },
+		"DecideCriterion":          func(c *Config) { c.DecideCriterion = nil },
+		"ConfirmDeliveredCriteria": func(c *Config) { c.ConfirmDeliveredCriteria = nil },
+		"RetryCard":                func(c *Config) { c.RetryCard = nil },
+		"GoCard":                   func(c *Config) { c.GoCard = nil },
+		"CloseCard":                func(c *Config) { c.CloseCard = nil },
+		"RerunStall":               func(c *Config) { c.RerunStall = nil },
+		"DismissStall":             func(c *Config) { c.DismissStall = nil },
+		"Replan":                   func(c *Config) { c.Replan = nil },
+		"DeployNow":                func(c *Config) { c.DeployNow = nil },
+		"CheckProject":             func(c *Config) { c.CheckProject = nil },
+		"MainExists":               func(c *Config) { c.MainExists = nil },
+		"ReconcileError":           func(c *Config) { c.ReconcileError = nil },
+		"AddCollaborator":          func(c *Config) { c.AddCollaborator = nil },
+		"SetIssueDependency":       func(c *Config) { c.SetIssueDependency = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)
@@ -2580,12 +2618,12 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	// the drawer carries the merge request's five-part ask: why a
 	// human, the model review's verdict and summary, the recommendation
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}
 	}
-	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation"} {
+	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
 		if strings.Contains(lane, wall) {
 			t.Errorf("the wide approval card shows the facts wall %q", wall)
 		}

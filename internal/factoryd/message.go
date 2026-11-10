@@ -28,12 +28,24 @@ func messageTokenHash(token string) string {
 
 // workerMessages waits briefly (a nudge holds up the session's event loop)
 // but past the worker's own bound on the hand-over.
-var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout}
+var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout, CheckRedirect: noRedirect, Transport: podTransport()}
 
 // workerReads has no timeout of its own: a check-in tool call or an image
 // read runs as long as its own bound (checkinToolTimeout, fileReadTimeout)
 // says, and the context holds it.
-var workerReads = &http.Client{}
+var workerReads = &http.Client{CheckRedirect: noRedirect, Transport: podTransport()}
+
+// podTransport bounds the response headers a sandbox's pod may send: the
+// default allows 10 MiB.
+func podTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxResponseHeaderBytes = 64 << 10
+	return t
+}
+
+// noRedirect keeps factoryd from following a sandbox's redirect to a URL
+// of the pod's choosing.
+func noRedirect(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 
 // messageWorker posts text to the running worker's POST /message, which
 // hands it to the harness. The worker's 501 is harness.ErrNotSupported,
@@ -138,7 +150,7 @@ func (r *Runner) nudge(ctx context.Context, t Task, s sessionSpec, sup *Supervis
 	case errors.Is(err, harness.ErrNotSupported):
 		detail["fallback"] = "redirect"
 	default:
-		detail["error"] = err.Error()
+		detail["error"] = r.Scrub.String(err.Error())
 	}
 	r.record(ctx, t.ID, "nudge", detail)
 	if err == nil || errors.Is(err, harness.ErrNotRunning) {
@@ -167,7 +179,7 @@ func (r *Runner) MessageSession(ctx context.Context, taskID, user, text string) 
 	err := r.messageWorker(ctx, w.ns, w.pod, w.token, sessionMessage(taskID, user, text, basics))
 	detail := map[string]any{"session": w.session, "from": user}
 	if err != nil {
-		detail["error"] = err.Error()
+		detail["error"] = r.Scrub.String(err.Error())
 	}
 	r.record(ctx, taskID, "message", detail)
 	return err
@@ -194,7 +206,7 @@ func (r *Runner) message(ctx context.Context, t Task, s sessionSpec, ns, pod, te
 	err := r.messageWorker(ctx, ns, pod, s.messageToken, text)
 	detail := map[string]any{"session": s.id}
 	if err != nil {
-		detail["error"] = err.Error()
+		detail["error"] = r.Scrub.String(err.Error())
 	}
 	r.record(ctx, t.ID, "message", detail)
 	return err

@@ -362,8 +362,12 @@ func (s *accBatchTasks) openCount() int {
 }
 
 func (*accBatchTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
-func (*accBatchTasks) RoadmapHolder(context.Context, string, int) (string, bool, error) {
-	return "", false, nil
+func (*accBatchTasks) IntakeRefusals(context.Context, string, int64) ([]factoryd.IntakeRefusal, error) {
+	return nil, nil
+}
+
+func (*accBatchTasks) RoadmapHolder(context.Context, string, int, int64) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, nil
 }
 
 // accBatchApprovals are the approval_requests rows in memory;
@@ -549,6 +553,12 @@ func (s *accBatchStore) UnsettledTasks(ctx context.Context, olderThan time.Durat
 	panic("unused")
 }
 func (s *accBatchStore) SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error) {
+	panic("unused")
+}
+func (s *accBatchStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason, bodySHA string) error {
+	panic("unused")
+}
+func (s *accBatchStore) IntakeRefusals(ctx context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error) {
 	panic("unused")
 }
 func (s *accBatchStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {

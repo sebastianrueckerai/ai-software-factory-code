@@ -910,7 +910,9 @@ func (r *Runner) oldCardsOf(ctx context.Context, p Task, step ReplanStep, pendin
 // in the revision it started against by key, the pending cut's card and
 // whether its branch holds a commit past its base, and the old cards with
 // a merge commit, those of them taken off main, and those that are the
-// integration card of the revision they ran against, by id; read holds
+// integration card of the revision they ran against, by id; met holds,
+// by key, the criteria each merged card's acceptance items cited in the
+// revision it ran against; read holds
 // the revisions it read, by number, so a later read of the plan's
 // history reads each revision once.
 type replanState struct {
@@ -926,6 +928,7 @@ type replanState struct {
 	merged      map[string]bool
 	reverted    map[string]bool
 	integration map[string]bool
+	met         map[string][]string
 	read        map[int]*Plan
 }
 
@@ -935,7 +938,7 @@ type replanState struct {
 // step's: a revision refused at its filing holds nothing a later one is
 // judged by. A plan that never wrote one has the newest stored before of.
 func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (replanState, error) {
-	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}, reverted: map[string]bool{}, integration: map[string]bool{}}
+	st := replanState{plan: p, started: map[string]PlanCard{}, merged: map[string]bool{}, reverted: map[string]bool{}, integration: map[string]bool{}, met: map[string][]string{}}
 	var err error
 	if st.newest, st.revision, err = r.planAt(ctx, p.ID, 0); err != nil {
 		return replanState{}, err
@@ -979,8 +982,20 @@ func (r *Runner) replanState(ctx context.Context, p Task, tl []byte, of int) (re
 			if err != nil {
 				return replanState{}, err
 			}
-			if ran != nil && roleOf(*ran, k.PlanKey) == RoleIntegration {
-				st.integration[k.ID] = true
+			if ran != nil {
+				if roleOf(*ran, k.PlanKey) == RoleIntegration {
+					st.integration[k.ID] = true
+				}
+				if k.PlanKey != "" {
+					if i := slices.IndexFunc(ran.Cards, func(c PlanCard) bool { return c.Key == k.PlanKey }); i >= 0 {
+						e := ran.Cards[i]
+						for _, it := range e.Acceptance {
+							if it.Criterion != "" && !slices.Contains(st.met[k.PlanKey], it.Criterion) {
+								st.met[k.PlanKey] = append(st.met[k.PlanKey], it.Criterion)
+							}
+						}
+					}
+				}
 			}
 		}
 		if k.RevertedAt != nil {
@@ -1037,10 +1052,11 @@ func fromRef(k Task) string {
 // replanFindings judges revision next against the plan's record st: a
 // card is kept by its key, changed by a new card whose from names it, and
 // dropped by leaving its key out. A merged card on main stays unless
-// take_off_main names it, which takes its work off main after the filing;
-// one taken off main lands again from salvage. An old key is a key with a
-// card row. A from the revision before held for the same key was judged
-// at its filing.
+// take_off_main names it, which takes its work off main after the filing
+// and which the revision's criteria must not still
+// rely on: a criterion the card met is cited by none; one taken off main
+// lands again from salvage. An old key is a key with a card row. A from the
+// revision before held for the same key was judged at its filing.
 func replanFindings(st replanState, next Plan) []string {
 	old := map[string]Task{}
 	for _, k := range st.old {
@@ -1115,6 +1131,10 @@ func replanFindings(st replanState, next Plan) []string {
 			found = append(found, fmt.Sprintf("take_off_main names %s, the integration card, whose code stays on main; leave it out of take_off_main", x))
 		case keeps:
 			found = append(found, fmt.Sprintf("take_off_main names %s, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main", x))
+		default:
+			if still := metStill(next, st.met[x]); len(still) > 0 {
+				found = append(found, fmt.Sprintf("take_off_main names %s, which met %s that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep %s's key and leave it out of take_off_main, or file %s again, each under a new id with replaces", x, strings.Join(still, ", "), x, strings.Join(still, ", ")))
+			}
 		}
 	}
 	for _, k := range st.old {
@@ -1122,7 +1142,6 @@ func replanFindings(st replanState, next Plan) []string {
 			continue
 		}
 		c, keeps := kept[k.PlanKey]
-		_, held := prev[k.PlanKey]
 		integration := st.prev != nil && roleOf(*st.prev, k.PlanKey) == RoleIntegration
 		switch {
 		case keeps && (k.Status == "closed" || k.Status == "failed") && k.PlanRevision == 0:
@@ -1133,8 +1152,6 @@ func replanFindings(st replanState, next Plan) []string {
 			found = append(found, fmt.Sprintf(`card %s was taken off main: leave its key out, and add a card with "from": "%s" to land it again from salvage`, k.PlanKey, k.PlanKey))
 		case st.merged[k.ID] && integration && keeps && adds:
 			found = append(found, "card "+k.PlanKey+" is the integration card and merged: leave its key out; the revision's new integration card checks the whole feature again")
-		case st.merged[k.ID] && !st.reverted[k.ID] && !integration && held && !keeps && !off[k.PlanKey]:
-			found = append(found, "card "+k.PlanKey+" is merged on main: keep its key, or name it in take_off_main to take its work off main")
 		}
 		if entry, ok := st.started[k.PlanKey]; ok && keeps && !sameEntry(c, entry) {
 			found = append(found, fmt.Sprintf("card %s started against revision %d: keep its entry as revision %d has it, or leave its key out to stop it",
@@ -1150,6 +1167,20 @@ func replanFindings(st replanState, next Plan) []string {
 		}
 	}
 	return found
+}
+
+// metStill is which of met next's criteria still cite: the criteria a
+// card taken off main met and the revision kept, so its proof leaves
+// main with the card's work. An invariant stays green whatever a card
+// holds, so it is no proof of one.
+func metStill(next Plan, met []string) []string {
+	var still []string
+	for _, m := range met {
+		if slices.ContainsFunc(next.Criteria, func(c PlanCriterion) bool { return c.ID == m && c.Kind != CriterionInvariant }) {
+			still = append(still, m)
+		}
+	}
+	return still
 }
 
 // sameEntry tells whether a and b are one card entry; a list left out is
@@ -1230,11 +1261,11 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 	var off []string
 	for _, k := range cards {
 		if k.PlanKey != "" && slices.Contains(next.TakeOffMain, k.PlanKey) {
-			off = append(off, fmt.Sprintf("#%d (%s)", k.IssueNumber, k.PlanKey))
+			off = append(off, next.TakeOffLine(fmt.Sprintf("#%d (%s)", k.IssueNumber, k.PlanKey), k.PlanKey))
 		}
 	}
 	if len(off) > 0 {
-		note += fmt.Sprintf(" It takes %s off main.", strings.Join(off, ", "))
+		note += fmt.Sprintf(" It takes %s off main.", strings.Join(off, "; "))
 	}
 	i := slices.IndexFunc(cards, func(k Task) bool { return k.ID == step.Card })
 	switch {

@@ -178,3 +178,27 @@ func TestPassesAgesNameEveryPass(t *testing.T) {
 		t.Fatalf("stale's age = %s, want younger than heal's %s: it ended since heal started", stale, ages["heal"])
 	}
 }
+
+// RunLive reads its bound at the start of every run: a bound raised after
+// the first run holds for the second.
+func TestRunLiveReadsTheBoundEachRun(t *testing.T) {
+	p, _ := latePasses(t)
+	ctx, cancel := context.WithCancel(context.Background())
+	t.Cleanup(cancel)
+	var bound atomic.Int64
+	bound.Store(int64(time.Second))
+	left := make(chan time.Duration, 2)
+	p.RunLive(ctx, "delta", time.Millisecond, func() time.Duration { return time.Duration(bound.Load()) }, func(ctx context.Context) error {
+		dl, _ := ctx.Deadline()
+		select {
+		case left <- time.Until(dl):
+		default:
+		}
+		bound.Store(int64(time.Hour))
+		return nil
+	})
+	first, second := nextRun(t, left), nextRun(t, left)
+	if first > time.Second || second < 30*time.Minute {
+		t.Fatalf("time left at the start of the runs: %s then %s, want at most 1s then about an hour", first, second)
+	}
+}

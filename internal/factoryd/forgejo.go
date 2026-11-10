@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/base64"
@@ -707,6 +708,66 @@ func (f *Forgejo) ActionJobLog(ctx context.Context, token, owner, repo string, j
 		r.Header.Set("Range", fmt.Sprintf("bytes=-%d", tail))
 	})
 }
+
+// ErrLogCut is what ScanActionJobLog answers when the log is longer than
+// its limit: the lines before the limit were passed on, the line the limit
+// falls in was not.
+var ErrLogCut = errors.New("the log is longer than the limit")
+
+// ScanActionJobLog reads the whole log of owner/repo's job jobID at attempt
+// through Forgejo's job log API, line by line into line, never holding it:
+// a line keeps its first jobLogLine bytes, and a log past limit bytes ends
+// the read with ErrLogCut. Only whole lines pass, except one cut at
+// jobLogLine bytes: a read that fails mid-line drops that line.
+func (f *Forgejo) ScanActionJobLog(ctx context.Context, token, owner, repo string, jobID, attempt, limit int64, line func(string)) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/actions/jobs/%d/logs?attempt=%d", owner, repo, jobID, attempt)
+	req, err := http.NewRequestWithContext(ctx, http.MethodGet, f.BaseURL+path, nil)
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Authorization", "token "+token)
+	client := f.HTTP
+	if client == nil {
+		client = &http.Client{Timeout: logScanTimeout}
+	}
+	res, err := client.Do(req)
+	if err != nil {
+		return fmt.Errorf("forgejo GET %s: %w", path, err)
+	}
+	defer res.Body.Close()
+	if res.StatusCode/100 != 2 {
+		return fmt.Errorf("forgejo GET %s: status %d", path, res.StatusCode)
+	}
+	rd := bufio.NewReaderSize(io.LimitReader(res.Body, limit+1), jobLogLine)
+	var off int64
+	for {
+		b, err := rd.ReadSlice('\n')
+		off += int64(len(b))
+		head := string(b)
+		for errors.Is(err, bufio.ErrBufferFull) {
+			b, err = rd.ReadSlice('\n')
+			off += int64(len(b))
+		}
+		switch {
+		case off > limit:
+			return ErrLogCut
+		case err != nil && !errors.Is(err, io.EOF):
+			return fmt.Errorf("forgejo GET %s: %w", path, err)
+		case head != "":
+			line(head)
+		}
+		if err != nil {
+			return nil
+		}
+	}
+}
+
+// jobLogLine is what a streamed log line keeps; logScanTimeout bounds one
+// read of a whole job log, and stays under failedTestsBudget.
+const (
+	jobLogLine     = 8 << 10
+	logScanTimeout = 40 * time.Second
+)
 
 // DispatchWorkflow runs workflow, a file of repo's .forgejo/workflows/, on
 // ref with inputs through token (workflow_dispatch).
