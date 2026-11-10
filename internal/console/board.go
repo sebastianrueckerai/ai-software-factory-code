@@ -393,6 +393,7 @@ func faceWords(k card, a *approvalCard) string {
 	if k.WaitingOn != "" {
 		w = append(w, "waiting on "+k.WaitingOn)
 	}
+	w = append(w, k.SlotWait)
 	if k.Checks != "" {
 		w = append(w, k.Checks+" checks")
 	}
@@ -536,6 +537,7 @@ type card struct {
 	Stage, StageAge, StageURL string
 	GateText                  string
 	WaitingOn                 string // a card in waiting-deps: the issues it waits on
+	SlotWait                  string // a card queued for a work slot: "waits for a slot, N ahead (L live)"
 	PlanIssue                 int64  // a plan's card: the plan's issue
 	PlanURL                   string // a plan's card: the plan's issue on the forge
 	PlanName                  string // a plan's card: the plan's name, on the face's plan chip
@@ -1948,7 +1950,7 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		k.Cover = fmt.Sprintf("live through run %d, %s after merge", bt.ChainGreen,
 			minutes(max(bt.ChainGreenAt.Sub(*bt.FinishedAt), 0)))
 	}
-	k.WaitingOn = bt.WaitingOn
+	k.WaitingOn, k.SlotWait = bt.WaitingOn, bt.SlotWait
 	// "blocked by n" counts the dependencies that are not done yet;
 	// WaitingOn already says so for a card in waiting-deps, where the
 	// face shows that chip and never both.

@@ -1481,3 +1481,17 @@ func TestSkippedStageWritesItsEventRow(t *testing.T) {
 		t.Fatalf("events = %+v, want one stage_skipped row for audit", g.store.events)
 	}
 }
+
+// A resumed card the surge bound holds back flags its wait by its own
+// reason, which names it as resumed.
+func TestQueuedOverBoundNamesAResumedWait(t *testing.T) {
+	since := digestAt(60)
+	g := newDigestRig(func(c *Task) {
+		c.Status, c.QueueReason, c.QueueSince, c.ResumedAt = "queued", ResumedWaitReason+"7 of 7 live, 1 ahead", &since, &since
+	})
+	g.at(240)
+	want := []DigestFlag{{"queued_over_bound", "resumed: work bound 7 of 7 live, 1 ahead for 3h"}, {"wait_over_bound", "queued since +1:00"}}
+	if got := g.digest(t).Flags; !slices.Equal(got, want) {
+		t.Fatalf("Flags = %v, want %v", got, want)
+	}
+}

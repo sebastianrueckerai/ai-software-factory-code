@@ -62,6 +62,10 @@ type fakeKube struct {
 	statusErr    map[string]error             // ns/name → injected PodStatus failure
 	initFinished map[string]time.Time         // ns/name → the first init container's successful finish
 	onDeletePod  func()                       // runs on every DeletePod
+	nodes        []NodeStorage                // the cluster's nodes; nil is one node nothing fills
+	unplaced     []int64                      // requests of pods no node holds
+	nodesErr     error                        // injected NodeStorage failure
+	nodeReads    int                          // NodeStorage calls
 	ops          []string                     // namespace deletions and pod creations, in order
 	applies      []string                     // ns/name of every applied CNP, in order
 	onCreatePod  func()                       // runs on every CreatePod
@@ -167,6 +171,16 @@ func (k *fakeKube) NamespacesByLabel(ctx context.Context, key, value string) ([]
 		names = append(names, ns.Name)
 	}
 	return names, nil
+}
+
+func (k *fakeKube) NodeStorage(context.Context) ([]NodeStorage, []int64, error) {
+	k.mu.Lock()
+	defer k.mu.Unlock()
+	k.nodeReads++
+	if k.nodes == nil && k.nodesErr == nil {
+		return []NodeStorage{{Name: "n1", Allocatable: 1 << 50}}, nil, nil
+	}
+	return slices.Clone(k.nodes), slices.Clone(k.unplaced), k.nodesErr
 }
 
 // ListNamespacesByLabel reports the deletion state fakeKube's namespaces

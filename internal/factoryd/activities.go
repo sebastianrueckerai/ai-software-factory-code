@@ -130,6 +130,7 @@ func (r *Runner) RegisterActivities(w interface {
 		ActivityTaskConfig:                  r.TaskConfig,
 		ActivityDependencies:                r.Dependencies,
 		ActivityEnterQueue:                  r.EnterQueue,
+		ActivityAdmitResume:                 r.AdmitResume,
 		ActivitySyncWithMain:                r.SyncWithMain,
 		ActivityLeaveQueue:                  r.LeaveQueue,
 		ActivityWithdrawApproval:            r.WithdrawApproval,

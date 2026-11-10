@@ -84,6 +84,10 @@ type Task struct {
 	// once the card is admitted.
 	QueueReason string
 	QueueSince  *time.Time
+	// ResumedAt is when a card back from a wait began to wait queued for a
+	// session slot under the surge bound (SetResumeWait); nil for every
+	// other card, and once the card runs. Such a card holds no slot.
+	ResumedAt *time.Time
 	// Gate is the gate the task is in (Gate* constants) since GateSince;
 	// none once it finished, and never for the human lane.
 	Gate      string
@@ -352,6 +356,13 @@ type Store interface {
 	// moment it took one of its project's work_in_progress slots. The
 	// same write clears its queue reason and queue_since.
 	SetAdmitted(ctx context.Context, id string) error
+	// SetResumeWait parks card id, back from a wait, queued behind the surge
+	// bound with reason, keeping the time its resumption first waited
+	// (ResumedAt, QueueSince). The card holds no slot; MarkStarted ends it.
+	SetResumeWait(ctx context.Context, id, reason string, now time.Time) error
+	// ResumeWaiters lists repository's cards waiting queued to resume, the
+	// oldest resumption first (resumed_at, then id).
+	ResumeWaiters(ctx context.Context, repository string) ([]Task, error)
 	// SetQueueReason records why card id was refused a slot at now, keeping
 	// queue_since from the first refusal with a reason of that kind, the
 	// count's at any numbers.
@@ -367,7 +378,8 @@ type Store interface {
 	// (waiting-image) holds none either: no session runs and no spend
 	// accrues, so its slot frees at once (the tool card the image waits on
 	// may need it), and the answer, the approval, the dependency or the
-	// image that resumes it overshoots the bound for one gate pass.
+	// image that resumes it starts a session only under the bound plus
+	// the surge (AdmitResume). A card waiting queued to resume holds none.
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	// CountQueue counts repository's queued cards not yet admitted
 	// (roadmap 239's queue cap).
@@ -1301,7 +1313,7 @@ const taskColumns = `id, priority, required_capabilities, risk_class, round(budg
 	author, author_writer, agent_summary, COALESCE(parent_task, ''), model_alias, reverted_at, COALESCE(track, ''), COALESCE(process, ''), COALESCE(plan_key, ''), COALESCE(plan_name, ''),
 	COALESCE(human_summary, ''), COALESCE(accent, ''), github_pr, github_pr_url, github_pr_state,
 	COALESCE(alert_fingerprint, ''), admitted_at, rung, size, plan_revision, ships_ruling, ships_clauses, COALESCE(merge_commit, ''),
-	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since`
+	image, image_digest, image_egress, COALESCE(roadmap_item, 0), queue_reason, queue_since, resumed_at`
 
 // scanTask scans one taskColumns row into a Task: oneTask and the task
 // lists scan through it here, the console's two reads in console_store.
@@ -1316,7 +1328,7 @@ func scanTask(scan func(dest ...any) error) (Task, error) {
 		&t.CreatedAt, &t.FinishedAt, &t.Gate, &t.GateSince, &t.Author, &t.AuthorWriter, &t.AgentSummary, &t.Parent,
 		&t.ModelAlias, &t.RevertedAt, &t.Track, &t.Process, &t.PlanKey, &t.PlanName, &t.HumanSummary, &t.Accent,
 		&t.GitHubPR, &t.GitHubPRURL, &t.GitHubPRState, &t.AlertFingerprint, &t.AdmittedAt, &t.Rung, &t.Size, &t.PlanRevision, &t.ShipsRuling, &ships, &t.MergeCommit,
-		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince); err != nil {
+		&t.Image, &t.ImageDigest, &egress, &t.RoadmapItem, &t.QueueReason, &t.QueueSince, &t.ResumedAt); err != nil {
 		return Task{}, err
 	}
 	var err error
@@ -2185,13 +2197,17 @@ func (s *PGStore) Ping(ctx context.Context) error {
 // transitionSet and transitionWhere are TransitionTask's update: $1 the
 // task, $2 the status it moves to, $3 the statuses it may move from. A
 // card that moves back from a final status (a reopen) is unfinished and
-// unsettled again.
+// unsettled again, and any move ends a wait to resume: the card is no
+// resumed waiter, and its reason and time go with the wait.
 const (
 	transitionSet = `status = $2,
 		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE NULL END,
 		 settled_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN settled_at ELSE NULL END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
-		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`
+		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END,
+		 queue_reason = CASE WHEN resumed_at IS NOT NULL THEN '' ELSE queue_reason END,
+		 queue_since = CASE WHEN resumed_at IS NOT NULL THEN NULL ELSE queue_since END,
+		 resumed_at = NULL`
 	transitionWhere = `id = $1 AND status = ANY($3)`
 )
 
@@ -2223,10 +2239,10 @@ func (s *PGStore) SetGate(ctx context.Context, id, gate string, since time.Time)
 // MarkStarted moves a startable card — queued, held, in review,
 // waiting-human and the like — to running. A card back from a wait takes
 // its slot again by its status, over the bound, and keeps its first
-// admission. SetState's running branch is its sole caller; a card outside
-// the startable set answers ErrNotFound.
+// admission. SetState's running branch and AdmitResume's grant are its
+// callers; a card outside the startable set answers ErrNotFound.
 func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
-	changed, err := s.changeStatus(ctx, `status = 'running'`,
+	changed, err := s.changeStatus(ctx, `status = 'running', resumed_at = NULL, queue_reason = '', queue_since = NULL`,
 		`id = $1 AND status IN ('queued', 'waiting-deps', 'running', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image')`, id)
 	if err == nil && !changed {
 		err = fmt.Errorf("task %s: %w", id, ErrNotFound)
@@ -2241,6 +2257,23 @@ func (s *PGStore) MarkStarted(ctx context.Context, id string) error {
 func (s *PGStore) SetAdmitted(ctx context.Context, id string) error {
 	_, err := s.db.ExecContext(ctx, `UPDATE tasks SET admitted_at = now(), queue_reason = '', queue_since = NULL WHERE id = $1 AND admitted_at IS NULL`, id)
 	return err
+}
+
+// SetResumeWait is the store's: a parked card, or one already waiting to
+// resume, goes queued with its reason, its first wait's time kept. A queued
+// card that never resumed (admitted, its workflow not yet running) takes none.
+func (s *PGStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
+	_, err := s.changeStatus(ctx, `status = 'queued', resumed_at = COALESCE(resumed_at, $3::timestamptz), queue_reason = $2, queue_since = COALESCE(resumed_at, $3::timestamptz)`,
+		`id = $1 AND (status IN ('waiting-deps', 'in-review', 'waiting-human', 'waiting-poster', 'waiting-image') OR status = 'queued' AND resumed_at IS NOT NULL)`, id, reason, now)
+	return err
+}
+
+// ResumeWaiters lists repository's bound cards waiting queued to resume,
+// the oldest resumption first.
+func (s *PGStore) ResumeWaiters(ctx context.Context, repository string) ([]Task, error) {
+	return s.tasks(ctx, `SELECT `+taskColumns+`
+		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued' AND resumed_at IS NOT NULL
+		ORDER BY resumed_at, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
 // SetQueueReason writes reason on card id, with now as queue_since when
@@ -2270,7 +2303,7 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 		WHERE repository = $1 AND `+boundCards+`
 			AND (status IN ('running', 'closing')
 				OR (status = 'in-review' AND gate <> $2)
-				OR (status = 'queued' AND admitted_at IS NOT NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- boundCards is built from constants
+				OR (status = 'queued' AND admitted_at IS NOT NULL AND resumed_at IS NULL))`, repository, GateApproval).Scan(&n) // #nosec G202 -- boundCards is built from constants
 	return n, err
 }
 
@@ -2282,7 +2315,7 @@ func (s *PGStore) CountAdmitted(ctx context.Context, repository string) (int, er
 // admission pass, is its sole caller.
 func (s *PGStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+`
-		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued' AND issue_number > 0
+		FROM tasks WHERE repository = $1 AND `+boundCards+` AND status = 'queued' AND issue_number > 0 AND resumed_at IS NULL
 		ORDER BY created_at, issue_number, id`, repository) // #nosec G202 -- boundCards is built from constants
 }
 
