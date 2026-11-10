@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -10,6 +11,7 @@ import (
 	"reflect"
 	"strings"
 	"testing"
+	"time"
 )
 
 const factorydPkg = "github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
@@ -46,11 +48,15 @@ func TestFailScanReadsARealJobLog(t *testing.T) {
 	}
 }
 
-// go test's own timeout names the tests it killed, with its duration, and
-// not "no test ran".
+// Real go1.26.10 output of a package whose test failed, then whose slow
+// test ran into go test -timeout 1s: both are named, the slow one with the
+// duration, its subtest folded into it.
 func TestFailScanNamesTheTestsATimeoutKilled(t *testing.T) {
 	s := scanOf(t, fixture(t, "gotest-timeout.log"))
-	want := []FailedTest{{Test: "TestSlow", Package: "example.com/to", Kind: "timed out after 1s"}}
+	want := []FailedTest{
+		{Test: "TestFailsFirst", Package: "example.com/to", Kind: "failed"},
+		{Test: "TestSlow", Package: "example.com/to", Kind: "timed out after 1s"},
+	}
 	if !reflect.DeepEqual(s.out, want) {
 		t.Fatalf("entries %+v, want %+v", s.out, want)
 	}
@@ -84,7 +90,7 @@ func TestFailScanPackageLines(t *testing.T) {
 func TestFailScanKeepsOnlyGrammarNames(t *testing.T) {
 	s := scanOf(t, logLines(
 		"--- FAIL: TestLeak/sk-abcdef0123456789abcdef (0.00s)",
-		"--- FAIL: Test\"; Bearer abcdef0123456789 (0.00s)",
+		"--- FAIL: Test-Dash (0.00s)",
 		"--- FAIL: TestKept (0.00s)",
 		"FAIL\thttps://user:pass@host/factoryd\t3.1s",
 		"--- FAIL: TestCut (0.00s)",
@@ -107,6 +113,20 @@ func TestFailScanCapsAndCountsTheRest(t *testing.T) {
 	s := scanOf(t, logLines(lines...))
 	if len(s.out) != maxFailedTests || s.more != 3 {
 		t.Fatalf("%d entries, more %d; want %d and 3", len(s.out), s.more, maxFailedTests)
+	}
+}
+
+// Tests past the pending bound before their package line are counted, not
+// lost silently.
+func TestFailScanCountsTestsPastThePendingBound(t *testing.T) {
+	s := newFailScan()
+	for i := range maxPendingTests + 5 {
+		s.line(fmt.Sprintf("--- FAIL: TestP%d (0.00s)\n", i))
+	}
+	s.line("FAIL\texample.com/p\t1s\n")
+	s.end()
+	if len(s.out) != maxFailedTests || s.more != maxPendingTests-maxFailedTests+5 {
+		t.Fatalf("%d entries, more %d; want %d and %d", len(s.out), s.more, maxFailedTests, maxPendingTests-maxFailedTests+5)
 	}
 }
 
@@ -146,8 +166,13 @@ func TestScanActionJobLogStreamsBoundedLines(t *testing.T) {
 		t.Fatalf("lines %d, first %q", len(got), got[0])
 	}
 	got = nil
-	if err := f.ScanActionJobLog(context.Background(), "tok", "o", "r", 1, 1, 3, func(l string) { got = append(got, l) }); err != nil || !reflect.DeepEqual(got, []string{"a\n", "b"}) {
-		t.Fatalf("limited read = %q, %v; want the first 3 bytes", got, err)
+	err := f.ScanActionJobLog(context.Background(), "tok", "o", "r", 1, 1, 3, func(l string) { got = append(got, l) })
+	if !errors.Is(err, ErrLogCut) || !reflect.DeepEqual(got, []string{"a\n"}) {
+		t.Fatalf("read past the limit = %q, %v; want the whole line before it and ErrLogCut", got, err)
+	}
+	got = nil
+	if err := f.ScanActionJobLog(context.Background(), "tok", "o", "r", 1, 1, int64(4+len(long)+1+4), func(l string) { got = append(got, l) }); err != nil || len(got) != 4 {
+		t.Fatalf("a log of exactly the limit = %d lines, %v; want all 4 and no cut", len(got), err)
 	}
 }
 
@@ -254,5 +279,52 @@ func TestBriefFactsCarryTheFailedTests(t *testing.T) {
 	m := facts.(map[string]any)
 	if !reflect.DeepEqual(m["failed_tests"], tests) || m["failed_tests_more"] != 4 {
 		t.Fatalf("facts = %+v", m)
+	}
+}
+
+// A cancelled job is red like a failed one; a log longer than the read's
+// bound says so, with the tests before the cut kept and no test named from
+// the line the cut falls in; a package that is a token is masked.
+func TestRequestApprovalNamesCancelledCutAndTokenJobs(t *testing.T) {
+	big := logLines("--- FAIL: TestBeforeTheCut (0.00s)", "FAIL\texample.com/big\t1s") +
+		strings.Repeat("2026-11-10T10:48:40.1723690Z "+strings.Repeat("x", 500)+"\n", maxJobLog/530+1) +
+		logLines("--- FAIL: TestPastTheCut (0.00s)", "FAIL\texample.com/big\t1s")
+	r, _ := redJobsRig(t, []ActionJob{
+		{ID: 31, Name: "build", Status: "cancelled", Attempt: 1},
+		{ID: 32, Name: "huge", Status: "failure", Attempt: 1},
+		{ID: 33, Name: "tok", Status: "failure", Attempt: 1},
+	}, map[string]string{
+		"31/1": logLines("Job cancelled"),
+		"32/1": big,
+		"33/1": logLines("--- FAIL: TestTok (0.00s)", "FAIL\tsk-abcdef0123456789abcdef0123456789"),
+	})
+	spec := requestRed(t, r, true)
+	want := []FailedTest{
+		{Job: "build", Kind: "cancelled"},
+		{Job: "huge", Test: "TestBeforeTheCut", Package: "example.com/big", Kind: "failed"},
+		{Job: "huge", Kind: "its log is longer than 8 MiB; failures past that are not read"},
+		{Job: "tok", Test: "TestTok", Package: "[redacted]", Kind: "failed"},
+	}
+	if !reflect.DeepEqual(spec.FailedTests, want) {
+		t.Fatalf("entries %+v, want %+v", spec.FailedTests, want)
+	}
+}
+
+// A log that stalls mid-read costs its job the rest of the list, not the
+// request: the lines before the stall are kept, the entry says the log
+// could not be read in time, and the merge request opens.
+func TestRequestApprovalOpensWhenALogStalls(t *testing.T) {
+	saved := failedTestsBudget
+	failedTestsBudget = 300 * time.Millisecond
+	t.Cleanup(func() { failedTestsBudget = saved })
+	r, fj := redJobsRig(t, []ActionJob{{ID: 41, Name: "test", Status: "failure", Attempt: 1}}, nil)
+	fj.logStall = map[string]string{"41/1": logLines("--- FAIL: TestEarly (0.00s)", "FAIL\texample.com/p\t1s")}
+	spec := requestRed(t, r, true)
+	want := []FailedTest{
+		{Job: "test", Test: "TestEarly", Package: "example.com/p", Kind: "failed"},
+		{Job: "test", Kind: "its log could not be read in time"},
+	}
+	if !reflect.DeepEqual(spec.FailedTests, want) {
+		t.Fatalf("entries %+v, want %+v", spec.FailedTests, want)
 	}
 }

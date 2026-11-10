@@ -94,6 +94,7 @@ type prForgejo struct {
 	rerunCode  int               // POST /actions/jobs/{id}/rerun answers this status; 200 when zero
 	rerunBody  string            // the rerun's answer body
 	wholeLogs  bool              // the log is read whole, with no Range
+	logStall   map[string]string // "job/attempt" -> the lines its log answers before it stalls
 	logStatus  map[string]int    // "job/attempt" -> the status its log answers instead of the log
 	logGets    []string          // "job/attempt" of every job log read
 	reruns     []int64           // POST /actions/jobs/{id}/rerun, by job id
@@ -325,6 +326,12 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			key := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs") + "/" + r.URL.Query().Get("attempt")
 			f.logGets = append(f.logGets, key)
+			if lead, ok := f.logStall[key]; ok {
+				io.WriteString(w, lead)
+				w.(http.Flusher).Flush()
+				<-r.Context().Done()
+				return
+			}
 			if code := f.logStatus[key]; code != 0 {
 				w.WriteHeader(code)
 				return

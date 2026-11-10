@@ -2,9 +2,12 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"log"
+	"net"
 	"regexp"
 	"strings"
+	"time"
 )
 
 // What a red job's log says is red, one entry each. Kind is one of the
@@ -23,7 +26,15 @@ const (
 	failKindNoneNamed  = "no test named"
 	failKindNoneInLog  = "no test failure in its log"
 	failKindLogMissing = "log not readable"
+	failKindCancelled  = "cancelled"
+	failKindLogCut     = "its log is longer than 8 MiB; failures past that are not read"
+	failKindLogSlow    = "its log could not be read in time"
 )
+
+// failedTestsBudget bounds every log read of one request together, well
+// inside the activity's own time: a stalled read costs the list, never the
+// request.
+var failedTestsBudget = 45 * time.Second
 
 // String is the entry as a human reads it.
 func (f FailedTest) String() string {
@@ -99,23 +110,23 @@ func (s *failScan) line(raw string) {
 	if s.running {
 		if m := runningLine.FindStringSubmatch(line); m != nil {
 			name, _, _ := strings.Cut(m[1], "/")
-			if testNameRe.MatchString(name) && len(s.pending) < maxPendingTests {
-				s.pending = append(s.pending, FailedTest{Test: name, Kind: "timed out after " + s.timeout})
+			if testNameRe.MatchString(name) {
+				s.hold(FailedTest{Test: name, Kind: "timed out after " + s.timeout})
 			}
 			return
 		}
 		s.running = false
 	}
-	switch {
-	case timeoutLine.MatchString(line):
-		if d := timeoutLine.FindStringSubmatch(line)[1]; durationRe.MatchString(d) {
+	switch trimmed := strings.TrimSpace(line); {
+	case timeoutLine.MatchString(trimmed):
+		if d := timeoutLine.FindStringSubmatch(trimmed)[1]; durationRe.MatchString(d) {
 			s.timeout = d
 		}
-	case s.timeout != "" && strings.HasPrefix(line, "running tests:"):
+	case s.timeout != "" && trimmed == "running tests:":
 		s.running = true
 	case failedTestLine.MatchString(line):
-		if name := failedTestLine.FindStringSubmatch(line)[1]; testNameRe.MatchString(name) && len(s.pending) < maxPendingTests {
-			s.pending = append(s.pending, FailedTest{Test: name, Kind: failKindFailed})
+		if name := failedTestLine.FindStringSubmatch(line)[1]; testNameRe.MatchString(name) {
+			s.hold(FailedTest{Test: name, Kind: failKindFailed})
 		}
 	case failedPkgLine.MatchString(line):
 		m := failedPkgLine.FindStringSubmatch(line)
@@ -125,6 +136,15 @@ func (s *failScan) line(raw string) {
 		}
 		s.closePackage(pkg, m[2])
 	}
+}
+
+// hold keeps f until its package line; past maxPendingTests it is counted.
+func (s *failScan) hold(f FailedTest) {
+	if len(s.pending) >= maxPendingTests {
+		s.more++
+		return
+	}
+	s.pending = append(s.pending, f)
 }
 
 // closePackage puts the pending tests in pkg; with none pending the
@@ -158,12 +178,15 @@ func (s *failScan) end() {
 
 // failedTests are the entries of the red jobs of sha's failing checks, read
 // from their whole logs through Forgejo's job log API: every red job
-// appears, naming the tests its log shows failing, or saying its log shows
-// none or cannot be read. more counts the entries past maxFailedTests.
-// Anything else it cannot read logs and leaves out: a request opens without
-// the list rather than not at all. Job names are the only free text kept,
-// and go through the scrubber.
+// appears, naming the tests its log shows failing, or saying why its log
+// shows none: it has none, it is cancelled, it is too long, it could not be
+// read (in time). more counts the entries past maxFailedTests. Any other
+// failure logs and leaves the list out: a request opens without it rather
+// than not at all. Job names and packages are the free text kept, and go
+// through the scrubber.
 func (r *Runner) failedTests(ctx context.Context, t Task, repo Repo, sha string) (out []FailedTest, more int) {
+	ctx, cancel := context.WithTimeout(ctx, failedTestsBudget)
+	defer cancel()
 	p, ok, err := r.store.ProjectByRepository(ctx, t.Repository)
 	if err != nil || !ok {
 		log.Printf("task %s: failed tests: no project for %s (%v)", t.ID, t.Repository, err)
@@ -188,29 +211,45 @@ func (r *Runner) failedTests(ctx context.Context, t Task, repo Repo, sha string)
 			continue
 		}
 		for _, j := range jobs {
-			if j.Status != "failure" {
+			if j.Status != "failure" && j.Status != "cancelled" {
 				continue
 			}
 			name := r.Scrub.String(j.Name)
 			scan := newFailScan()
-			if err := r.forgejo.ScanActionJobLog(ctx, token, repo.Owner, repo.Name, j.ID, j.Attempt, maxJobLog, scan.line); err != nil {
-				log.Printf("task %s: failed tests: log of job %s of run %d: %v", t.ID, j.Name, n, err)
-				out, more = appendFailed(out, more, FailedTest{Job: name, Kind: failKindLogMissing})
-				continue
-			}
+			err := r.forgejo.ScanActionJobLog(ctx, token, repo.Owner, repo.Name, j.ID, j.Attempt, maxJobLog, scan.line)
 			scan.end()
-			if len(scan.out) == 0 && scan.more == 0 {
-				out, more = appendFailed(out, more, FailedTest{Job: name, Kind: failKindNoneInLog})
-				continue
-			}
 			for _, f := range scan.out {
-				f.Job = name
+				f.Job, f.Package = name, r.Scrub.String(f.Package)
 				out, more = appendFailed(out, more, f)
 			}
 			more += scan.more
+			kind := ""
+			switch {
+			case err == nil && len(scan.out) == 0 && scan.more == 0 && j.Status == "cancelled":
+				kind = failKindCancelled
+			case err == nil && len(scan.out) == 0 && scan.more == 0:
+				kind = failKindNoneInLog
+			case errors.Is(err, ErrLogCut):
+				kind = failKindLogCut
+			case err != nil && timedOut(err):
+				kind = failKindLogSlow
+			case err != nil:
+				kind = failKindLogMissing
+			}
+			if err != nil {
+				log.Printf("task %s: failed tests: log of job %s of run %d: %v", t.ID, j.Name, n, err)
+			}
+			if kind != "" {
+				out, more = appendFailed(out, more, FailedTest{Job: name, Kind: kind})
+			}
 		}
 	}
 	return out, more
+}
+
+func timedOut(err error) bool {
+	var ne net.Error
+	return errors.Is(err, context.DeadlineExceeded) || errors.As(err, &ne) && ne.Timeout()
 }
 
 func appendFailed(out []FailedTest, more int, f FailedTest) ([]FailedTest, int) {

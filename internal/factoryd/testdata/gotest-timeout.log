@@ -1,8 +1,48 @@
+2026-11-10T10:00:00.0000000Z --- FAIL: TestFailsFirst (0.00s)
+2026-11-10T10:00:00.0000000Z     to_test.go:8: got 1, want 2
 2026-11-10T10:00:00.0000000Z panic: test timed out after 1s
-2026-11-10T10:00:00.0000000Z running tests:
-2026-11-10T10:00:00.0000000Z 	TestSlow (1s)
-2026-11-10T10:00:00.0000000Z 	TestSlow/sub (1s)
+2026-11-10T10:00:00.0000000Z 	running tests:
+2026-11-10T10:00:00.0000000Z 		TestSlow (1s)
+2026-11-10T10:00:00.0000000Z 		TestSlow/sub (1s)
 2026-11-10T10:00:00.0000000Z 
 2026-11-10T10:00:00.0000000Z goroutine 17 [running]:
-2026-11-10T10:00:00.0000000Z FAIL	example.com/to	1.004s
-2026-11-10T10:00:01.0000000Z FAIL
+2026-11-10T10:00:00.0000000Z testing.(*M).startAlarm.func1()
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2802 +0x354
+2026-11-10T10:00:00.0000000Z created by time.goFunc
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/time/sleep.go:215 +0x2d
+2026-11-10T10:00:00.0000000Z 
+2026-11-10T10:00:00.0000000Z goroutine 1 [chan receive]:
+2026-11-10T10:00:00.0000000Z testing.(*T).Run(0x3be108014008, {0x5857ea?, 0x0?}, 0x592e50)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2109 +0x4e5
+2026-11-10T10:00:00.0000000Z testing.runTests.func1(0x3be108014008)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2585 +0x3e
+2026-11-10T10:00:00.0000000Z testing.tRunner(0x3be108014008, 0x3be107fe4c58)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2036 +0xea
+2026-11-10T10:00:00.0000000Z testing.runTests({0x5872c5, 0xe}, {0x5872c5, 0xe}, 0x3be107f04060, {0x6d27c0, 0x2, 0x2}, {0xc2b4f76ab1bad133, 0x3b9ddeb6, ...})
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2583 +0x505
+2026-11-10T10:00:00.0000000Z testing.(*M).Run(0x3be107fe8140)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2443 +0x6ac
+2026-11-10T10:00:00.0000000Z main.main()
+2026-11-10T10:00:00.0000000Z 	_testmain.go:48 +0x9b
+2026-11-10T10:00:00.0000000Z 
+2026-11-10T10:00:00.0000000Z goroutine 8 [chan receive]:
+2026-11-10T10:00:00.0000000Z testing.(*T).Run(0x3be108014488, {0x584d6c?, 0x4ea5f3?}, 0x592ef8)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2109 +0x4e5
+2026-11-10T10:00:00.0000000Z example.com/to.TestSlow(0x3be108014488?)
+2026-11-10T10:00:00.0000000Z 	/tmp/t212fix/to/to_test.go:11 +0x26
+2026-11-10T10:00:00.0000000Z testing.tRunner(0x3be108014488, 0x592e50)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2036 +0xea
+2026-11-10T10:00:00.0000000Z created by testing.(*T).Run in goroutine 1
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2101 +0x4c5
+2026-11-10T10:00:00.0000000Z 
+2026-11-10T10:00:00.0000000Z goroutine 9 [sleep]:
+2026-11-10T10:00:00.0000000Z time.Sleep(0x12a05f200)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/runtime/time.go:363 +0x165
+2026-11-10T10:00:00.0000000Z example.com/to.TestSlow.func1(0x3be1080146c8?)
+2026-11-10T10:00:00.0000000Z 	/tmp/t212fix/to/to_test.go:11 +0x1d
+2026-11-10T10:00:00.0000000Z testing.tRunner(0x3be1080146c8, 0x592ef8)
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2036 +0xea
+2026-11-10T10:00:00.0000000Z created by testing.(*T).Run in goroutine 8
+2026-11-10T10:00:00.0000000Z 	/home/runner/go/pkg/mod/golang.org/toolchain@v0.0.1-go1.26.10.linux-amd64/src/testing/testing.go:2101 +0x4c5
+2026-11-10T10:00:00.0000000Z FAIL	example.com/to	1.008s
+2026-11-10T10:00:00.0000000Z FAIL
