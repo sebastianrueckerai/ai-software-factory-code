@@ -460,7 +460,7 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	case err == nil && u.held:
 		msg += "; another filing of " + p.Name + " holds the name."
 	case err == nil:
-		msg += "; branch " + branch + " is left: its head is not this filing's commit. Delete branch " + branch + " on Forgejo, then file the project again."
+		msg += ". Branch " + branch + " may be left. If no other filing of " + p.Name + " is in progress, delete it on Forgejo, then file the project again."
 	default:
 		msg += "; delete branch " + branch + " to file the name again."
 	}

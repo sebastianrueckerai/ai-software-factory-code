@@ -912,7 +912,7 @@ func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	infra.mu.Unlock()
 	rec = r.do(post("/projects", linkshortForm(s.csrf)), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusBadGateway ||
-		!strings.Contains(body, "Forgejo refused to commit the project's file: 500 Internal Server Error; branch project-linkshort is left: its head is not this filing's commit. Delete branch project-linkshort on Forgejo, then file the project again.") {
+		!strings.Contains(body, "Forgejo refused to commit the project's file: 500 Internal Server Error. Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again.") {
 		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the branch is left", rec.Code, body)
 	}
 	infra.mu.Lock()
