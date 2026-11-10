@@ -794,7 +794,9 @@ func (s *fakeStore) RecordRefusal(ctx context.Context, repository string, issue 
 }
 
 func (s *fakeStore) IntakeRefusals(ctx context.Context, repository string, issue int64) ([]IntakeRefusal, error) {
-	return s.refusals[fmt.Sprintf("%s %d", repository, issue)], nil
+	out := slices.Clone(s.refusals[fmt.Sprintf("%s %d", repository, issue)])
+	slices.SortStableFunc(out, func(a, b IntakeRefusal) int { return a.At.Compare(b.At) })
+	return out, nil
 }
 
 func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {

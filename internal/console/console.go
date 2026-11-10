@@ -136,11 +136,10 @@ type Tasks interface {
 	// its unstarted filings, the ready check's room (roadmap 239).
 	CountAdmitted(ctx context.Context, repository string) (int, error)
 	CountQueue(ctx context.Context, repository string) (int, error)
-	// RoadmapHolder is the card (id, status, issue) that builds repository's docs/roadmap.md
-	// item, whatever its state (the roadmap pull, 2026-11-01); false
-	// when no card cites it.
-	// A closed or failed card of the issue refile (a "Refile of #N"
-	// line) does not hold it.
+	// RoadmapHolder is the card (id, status, issue) that holds repository's
+	// docs/roadmap.md item, open or done; false when none does. A closed or
+	// failed card of the issue refile (a "Refile of #N" line) does not
+	// hold it.
 	RoadmapHolder(ctx context.Context, repository string, item int, refile int64) (factoryd.Task, bool, error)
 	// IntakeRefusals are the reasons the intake made no card for issue.
 	IntakeRefusals(ctx context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error)

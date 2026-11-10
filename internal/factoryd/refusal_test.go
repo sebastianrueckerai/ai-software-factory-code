@@ -127,8 +127,9 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	open := "The factory made no card for this issue: card t-holder already builds roadmap item 66 of sf/ai-software-factory-code. " +
-		"Wait for it to end, or close it and add the line \"Refile of #1547\" to this issue, then edit this issue."
+	open := "The factory made no card for this issue: card #1547, running, already builds roadmap item 66 of sf/ai-software-factory-code. " +
+		"Wait for it to end, or close it. The factory looks at this issue again within a day. " +
+		"Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
 	if got := fj.bodies(); len(got) != 1 || !strings.HasPrefix(got[0], open+"\n\n<!-- factoryd refusal") {
 		t.Fatalf("comments = %q, want exactly one: %s", got, open)
 	}
@@ -159,8 +160,8 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 		t.Fatalf("the heal pass filed a card for the refused issue")
 	}
 	edited(t, in, fj)
-	ended := "The factory made no card for this issue: card t-holder already builds roadmap item 66 of sf/ai-software-factory-code. " +
-		"Add the line \"Refile of #1547\" to this issue, then edit this issue."
+	ended := "The factory made no card for this issue: card #1547, closed, already builds roadmap item 66 of sf/ai-software-factory-code. " +
+		"Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
 	if got := fj.bodies(); len(store.tasks) != 1 || len(got) != 2 || !strings.HasPrefix(got[1], ended+"\n\n") {
 		t.Fatalf("after the close: %d cards, comments %q; want the holder only and a second comment: %s", len(store.tasks), got, ended)
 	}
@@ -181,17 +182,40 @@ func TestRefusedIssueIsToldOnceAndLeftBe(t *testing.T) {
 // Each holder state names its own way forward, whole.
 func TestRefusalTextByHolderState(t *testing.T) {
 	in := &Intake{}
-	head := "The factory made no card for this issue: card t-h already builds roadmap item 66 of sf/r. "
+	line := "Add the line \"Refile of #1547\" to this issue's description; a comment does not count."
 	for status, want := range map[string]string{
-		"running": head + "Wait for it to end, or close it and add the line \"Refile of #1547\" to this issue, then edit this issue.",
-		"closed":  head + "Add the line \"Refile of #1547\" to this issue, then edit this issue.",
-		"failed":  head + "Add the line \"Refile of #1547\" to this issue, then edit this issue.",
-		"done":    head + "That item is built. Cite a new roadmap item or remove the Roadmap line, then edit this issue.",
+		"running":   "The factory made no card for this issue: card #1547, running, already builds roadmap item 66 of sf/r. Wait for it to end, or close it. The factory looks at this issue again within a day. " + line,
+		"in-review": "The factory made no card for this issue: card #1547, in review, already builds roadmap item 66 of sf/r. Wait for it to end, or close it. The factory looks at this issue again within a day. " + line,
+		"closed":    "The factory made no card for this issue: card #1547, closed, already builds roadmap item 66 of sf/r. " + line,
+		"failed":    "The factory made no card for this issue: card #1547, failed, already builds roadmap item 66 of sf/r. " + line,
+		"done":      "The factory made no card for this issue: card #1547, done, already built roadmap item 66 of sf/r. Change or remove the Roadmap line in this issue's description.",
+		"merged":    "The factory made no card for this issue: card #1547, merged, already built roadmap item 66 of sf/r. Change or remove the Roadmap line in this issue's description.",
 	} {
 		r := &Refusal{Kind: RefusalRoadmap, Holder: "t-h", Status: status, HolderIssue: 1547, Item: 66, Repository: "sf/r"}
 		if got := in.refusalText(r); got != want {
 			t.Errorf("%s: text %q, want %q", status, got, want)
 		}
+	}
+}
+
+// Two refusals of one issue at once post one comment.
+func TestConcurrentRefusalsPostOnce(t *testing.T) {
+	fj := &refusalForgejo{body: "Build 66.\n\nRoadmap: #66", labels: []string{"agent"}}
+	in := refusalIntake(newFakeStore(), fj.serve(t))
+	r := &Refusal{Kind: RefusalRoadmap, Holder: "t-holder", Status: "running", HolderIssue: 1547, Item: 66, Repository: refusalRepo}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := in.refused(context.Background(), "test", Repo{Owner: "sf", Name: "ai-software-factory-code"}, webhookIssue{Index: 67, Title: "Plan", Body: fj.body}, r); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	if fj.commentCount() != 1 {
+		t.Errorf("comments = %q, want one", fj.bodies())
 	}
 }
 
@@ -320,10 +344,18 @@ func TestOutsiderRoadmapAndRefileLinesAreIgnored(t *testing.T) {
 // A second reason on the same issue is told too: the key is the reason.
 func TestRefusalKeyDiffersByHolder(t *testing.T) {
 	a := &Refusal{Kind: RefusalRoadmap, Holder: "t-a", Status: "running", Item: 1}
-	for _, b := range []*Refusal{{Kind: RefusalRoadmap, Holder: "t-b", Status: "running"}, {Kind: RefusalRoadmap, Holder: "t-a", Status: "closed"}} {
+	for _, b := range []*Refusal{{Kind: RefusalRoadmap, Holder: "t-b", Status: "running"}, {Kind: RefusalRoadmap, Holder: "t-a", Status: "closed"}, {Kind: RefusalRoadmap, Holder: "t-a", Status: "done"}} {
 		if a.Key() == b.Key() {
 			t.Errorf("keys %q and %q are one reason", a.Key(), b.Key())
 		}
+	}
+	for _, status := range []string{"in-review", "queued", "waiting-human", "closing"} {
+		if b := (&Refusal{Kind: RefusalRoadmap, Holder: "t-a", Status: status}); a.Key() != b.Key() {
+			t.Errorf("keys %q and %q differ for a holder that stays open", a.Key(), b.Key())
+		}
+	}
+	if (&Refusal{Kind: RefusalRoadmap, Holder: "t-a", Status: "done"}).Key() != (&Refusal{Kind: RefusalRoadmap, Holder: "t-a", Status: "merged"}).Key() {
+		t.Errorf("done and merged hold the item alike")
 	}
 }
 
@@ -331,7 +363,7 @@ func TestRefusalKeyDiffersByHolder(t *testing.T) {
 // message is masked.
 func TestRefusalTextMasksCredentials(t *testing.T) {
 	in := &Intake{}
-	r := &Refusal{Kind: RefusalRoadmap, Holder: "https://user:pass@host/x Authorization: Bearer abcdef0123456789abcdef", Item: 66, Repository: "sf/r"}
+	r := &Refusal{Kind: RefusalRoadmap, Holder: "t-h", Status: "running", HolderIssue: 1547, Item: 66, Repository: "https://user:pass@host/x Authorization: Bearer abcdef0123456789abcdef"}
 	text := in.refusalText(r)
 	for _, leak := range []string{"user:pass", "abcdef0123456789abcdef"} {
 		if strings.Contains(text, leak) {

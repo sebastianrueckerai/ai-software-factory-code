@@ -2089,21 +2089,30 @@ func (in *Intake) refusedStale(ctx context.Context, repo string, issue webhookIs
 	return last.BodySHA != IssueSHA(issue.Title, issue.Body) || time.Since(last.At) >= 24*time.Hour, nil
 }
 
-// refusalText is what the issue's comment says: the refusal, then the way
-// to a card by the holder's state.
+// refusalText is what the issue's comment says to the human who filed
+// it: which card holds the item, in which state, and the one step to a
+// card by that state.
 func (in *Intake) refusalText(r *Refusal) string {
 	scrub := in.Scrub
 	if scrub == nil {
 		scrub = redact.New()
 	}
-	text := "The factory made no card for this issue: " + scrub.String(r.Error()) + "."
+	holder := r.Holder
+	if r.HolderIssue != 0 {
+		holder = fmt.Sprintf("#%d", r.HolderIssue)
+	}
+	state := strings.ReplaceAll(r.Status, "-", " ")
+	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description; a comment does not count.", r.HolderIssue)
+	var text string
 	switch RoadmapHold(r.Status) {
 	case "open":
-		text += fmt.Sprintf(" Wait for it to end, or close it and add the line \"Refile of #%d\" to this issue, then edit this issue.", r.HolderIssue)
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already builds roadmap item %d of %s. "+
+			"Wait for it to end, or close it. The factory looks at this issue again within a day. %s", holder, state, r.Item, r.Repository, line)
 	case "ended":
-		text += fmt.Sprintf(" Add the line \"Refile of #%d\" to this issue, then edit this issue.", r.HolderIssue)
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already builds roadmap item %d of %s. %s", holder, state, r.Item, r.Repository, line)
 	default:
-		text += " That item is built. Cite a new roadmap item or remove the Roadmap line, then edit this issue."
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already built roadmap item %d of %s. "+
+			"Change or remove the Roadmap line in this issue's description.", holder, state, r.Item, r.Repository)
 	}
-	return text
+	return scrub.String(text)
 }

@@ -38,17 +38,19 @@ func (r *Refusal) Error() string {
 	return fmt.Sprintf("card %s already holds issue %d of %s and is still %s", r.Holder, r.IssueNo, r.Repository, r.Status)
 }
 
-// Key tells one reason from another on the same issue: the holder and its
-// state, since the way forward differs by state.
-func (r *Refusal) Key() string { return r.Kind + " " + r.Holder + " " + r.Status }
+// Key tells one reason from another on the same issue: the holder and
+// how it holds the item, since the way forward differs by that and by
+// nothing else.
+func (r *Refusal) Key() string { return r.Kind + " " + r.Holder + " " + RoadmapHold(r.Status) }
 
 // RoadmapHold is how a card holds a roadmap item: "open" while it works,
-// "ended" once closed or failed, "built" once done.
+// "ended" once closed or failed, "built" once its change is in main
+// (merged or done).
 func RoadmapHold(status string) string {
 	switch status {
 	case "closed", "failed":
 		return "ended"
-	case "done":
+	case "done", "merged":
 		return "built"
 	}
 	return "open"
