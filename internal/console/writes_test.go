@@ -1353,7 +1353,7 @@ func TestCloseRefusedWhenARemovalFails(t *testing.T) {
 			t.Errorf("the refusal %q leaks %q", rec.Body, leak)
 		}
 	}
-	if !strings.HasPrefix(rec.Body.String(), "Forgejo refused to remove the dependency of #31 on #7: ") {
+	if !strings.HasPrefix(rec.Body.String(), "Forgejo refused to remove the dependencies of #31: ") {
 		t.Errorf("the refusal = %q", rec.Body)
 	}
 	equal(t, "the writes", writesOf(r.fg), []string{"DELETE " + depsPath})

@@ -176,6 +176,45 @@ func botCloseRecorded(events []IntakeEvent, t Task) bool {
 // refuses (forgejoTerminal) is logged, and the close goes on. A call that
 // finds the record posts the recorded comment, not its own, where the
 // issue lacks it (CommentOnce): one close, one comment.
+// DependencyEdges are the Forgejo calls that read and remove an issue's
+// dependencies: Forgejo itself, or a human's session.
+type DependencyEdges interface {
+	IssueDependencies(ctx context.Context, owner, repo string, number int64) ([]IssueDependency, error)
+	RemoveIssueDependency(ctx context.Context, repo Repo, number int64, dep IssueDependency) error
+}
+
+// DropOpenDependencies removes the open issues issue number of repo depends
+// on, which Forgejo refuses to close it over, and answers their numbers.
+// The edges other issues hold on it stay. A repository with issue
+// dependencies switched off answers 404: none.
+func DropOpenDependencies(ctx context.Context, e DependencyEdges, repo Repo, number int64) ([]int64, error) {
+	deps, err := e.IssueDependencies(ctx, repo.Owner, repo.Name, number)
+	if err != nil && !errors.Is(err, ErrNotFound) {
+		return nil, err
+	}
+	var freed []int64
+	for _, d := range deps {
+		if d.State != "open" {
+			continue
+		}
+		if err := e.RemoveIssueDependency(ctx, repo, number, d); err != nil {
+			return nil, err
+		}
+		freed = append(freed, d.Number)
+	}
+	return freed, nil
+}
+
+// NoLongerWaits is the close note's sentence naming the dependencies a close
+// removed: "It no longer waits on #1659 and #1541."
+func NoLongerWaits(numbers []int64) string {
+	names := make([]string, len(numbers))
+	for i, n := range numbers {
+		names[i] = fmt.Sprintf("#%d", n)
+	}
+	return "It no longer waits on " + textutil.AndList(names) + "."
+}
+
 func closeIssueAsFactory(ctx context.Context, store interface {
 	InsertIntakeEvent(context.Context, IntakeEvent) (int64, error)
 	IntakeEvents(context.Context, string) ([]IntakeEvent, error)
@@ -184,6 +223,13 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
+	}
+	freed, err := DropOpenDependencies(ctx, forgejo, repo, t.IssueNumber)
+	if err != nil {
+		return err
+	}
+	if len(freed) > 0 {
+		comment = strings.TrimSpace(comment + "\n\n" + NoLongerWaits(freed))
 	}
 	id, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: t.ID, Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: t.IssueNumber, Body: comment})
 	if err != nil {
@@ -210,19 +256,6 @@ func closeIssueAsFactory(ctx context.Context, store interface {
 		log.Printf("task %s: issue #%d closes without its comment, which Forgejo refused: %v", t.ID, t.IssueNumber, err)
 	} else if err != nil {
 		return err
-	}
-	// a repository with issue dependencies switched off answers 404: none
-	deps, err := forgejo.IssueDependencies(ctx, repo.Owner, repo.Name, t.IssueNumber)
-	if err != nil && !errors.Is(err, ErrNotFound) {
-		return err
-	}
-	for _, d := range deps {
-		if d.State != "open" {
-			continue
-		}
-		if err := forgejo.RemoveIssueDependency(ctx, repo, t.IssueNumber, d); err != nil {
-			return err
-		}
 	}
 	if err := forgejo.CloseIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
 		return err

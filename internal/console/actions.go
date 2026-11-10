@@ -1875,9 +1875,6 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	}
 	closing := factoryd.Resolution{Action: factoryd.ActClose, Note: note}
 	if k.ID != 0 && t.Kind != "human" {
-		if closing.Note, err = c.freeForClose(ctx, a, t, note); err != nil {
-			return "", err
-		}
 		out, err := c.actOn(ctx, a, t, k.ID, closing, c.posting(a, t, closing))
 		if err != nil {
 			return "", err
@@ -1927,73 +1924,67 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), posted, nil
 }
 
-// freeForClose removes the dependencies card t's issue holds before a close
-// of it (dropDependencies) and answers note with the sentence naming them
-// added; a merged card or one without an issue is left as it is. Every
-// close of a card calls it: closeIssue, and doClose before it hands a close
-// to Act.
+// freeForClose removes the open dependencies card t's issue holds before
+// its close (factoryd.DropOpenDependencies, through the human's session) and
+// answers note with the sentence naming them added; a merged card or one
+// without an issue is left as it is. A failed read or removal refuses the
+// close.
 func (c *Console) freeForClose(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		return note, nil
 	}
-	freed, err := c.dropDependencies(ctx, a, t)
-	if err != nil || len(freed) == 0 {
-		return note, err
-	}
-	return strings.TrimSpace(note + "\n\n" + noLongerWaits(freed)), nil
-}
-
-// noLongerWaits is the close note's sentence naming the dependencies a close
-// removed: "It no longer waits on #1659 and #1541."
-func noLongerWaits(numbers []int64) string {
-	names := make([]string, len(numbers))
-	for i, n := range numbers {
-		names[i] = fmt.Sprintf("#%d", n)
-	}
-	return "It no longer waits on " + textutil.AndList(names) + "."
-}
-
-// dropDependencies removes the issues card t's issue depends on, which
-// Forgejo refuses to close it over while one is open, and answers their
-// numbers. The edges other cards hold on t stay. A failed read or removal
-// refuses the close before anything is closed.
-func (c *Console) dropDependencies(ctx context.Context, a actor, t factoryd.Task) ([]int64, error) {
-	path, err := issuePath(t, "/dependencies")
-	if err != nil {
-		return nil, err
-	}
 	repo, err := factoryd.SplitRepo(t.Repository)
 	if err != nil {
-		return nil, err
+		return "", err
 	}
-	type dep struct {
-		Number     int64 `json:"number"`
-		Repository struct {
-			Owner string `json:"owner"`
-			Name  string `json:"name"`
-		} `json:"repository"`
+	freed, err := factoryd.DropOpenDependencies(ctx, sessionEdges{c, a}, repo, t.IssueNumber)
+	if err != nil {
+		return "", &forgejoRefusal{what: fmt.Sprintf("remove the dependencies of #%d", t.IssueNumber), err: err}
 	}
-	var have []dep
+	if len(freed) == 0 {
+		return note, nil
+	}
+	return strings.TrimSpace(note + "\n\n" + factoryd.NoLongerWaits(freed)), nil
+}
+
+// sessionEdges is the actor's Forgejo session as factoryd.DependencyEdges.
+type sessionEdges struct {
+	c *Console
+	a actor
+}
+
+func (e sessionEdges) IssueDependencies(ctx context.Context, owner, name string, number int64) ([]factoryd.IssueDependency, error) {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies", url.PathEscape(owner), url.PathEscape(name), number)
+	var out []factoryd.IssueDependency
 	for page := 1; ; page++ {
-		var got []dep
-		if err := c.as(ctx, a.s, http.MethodGet, fmt.Sprintf("%s?page=%d&limit=50", path, page), nil, http.StatusOK, &got); err != nil {
-			return nil, &forgejoRefusal{what: "read the issue's dependencies", err: err}
+		var got []struct {
+			Number     int64  `json:"number"`
+			State      string `json:"state"`
+			Repository struct {
+				Owner string `json:"owner"`
+				Name  string `json:"name"`
+			} `json:"repository"`
+		}
+		if err := e.c.as(ctx, e.a.s, http.MethodGet, fmt.Sprintf("%s?page=%d&limit=50", path, page), nil, http.StatusOK, &got); err != nil {
+			if ae := (*apiError)(nil); errors.As(err, &ae) && ae.status == http.StatusNotFound {
+				return nil, factoryd.ErrNotFound
+			}
+			return nil, err
 		}
 		if len(got) == 0 {
-			break
+			return out, nil
 		}
-		have = append(have, got...)
-	}
-	var freed []int64
-	for _, d := range have {
-		owner, name := cmp.Or(d.Repository.Owner, repo.Owner), cmp.Or(d.Repository.Name, repo.Name)
-		meta := map[string]any{"owner": owner, "repo": name, "index": d.Number}
-		if err := c.as(ctx, a.s, http.MethodDelete, path, meta, anyStatus, nil); err != nil {
-			return nil, &forgejoRefusal{what: fmt.Sprintf("remove the dependency of #%d on #%d", t.IssueNumber, d.Number), err: err}
+		for _, d := range got {
+			out = append(out, factoryd.IssueDependency{
+				Repo:   factoryd.Repo{Owner: cmp.Or(d.Repository.Owner, owner), Name: cmp.Or(d.Repository.Name, name)},
+				Number: d.Number, State: d.State})
 		}
-		freed = append(freed, d.Number)
 	}
-	return freed, nil
+}
+
+func (e sessionEdges) RemoveIssueDependency(ctx context.Context, repo factoryd.Repo, number int64, dep factoryd.IssueDependency) error {
+	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/%d/dependencies", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), number)
+	return e.c.as(ctx, e.a.s, http.MethodDelete, path, map[string]any{"owner": dep.Repo.Owner, "repo": dep.Repo.Name, "index": dep.Number}, anyStatus, nil)
 }
 
 // doReplan sends card id, or the plan it belongs to, back to the planner

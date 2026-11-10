@@ -916,33 +916,33 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
 }
 
-// A card with a live case closes through Act, and its own dependencies are
-// removed first: #13 depends on #7, so Act sees the removal done and the
-// note "Done." with "It no longer waits on #7." after a blank line. A
-// failed removal refuses the close before Act is called.
-func TestCloseThroughActRemovesTheCardsDependencies(t *testing.T) {
-	const path = "/api/v1/repos/sf/code/issues/13/dependencies"
+// A card with a live case closes through Act, which removes its dependencies
+// itself (factoryd's close): the console sends the close as typed and removes
+// nothing first (its only write is the note's comment). A refusal of Act's close, whose error carries
+// URL userinfo and a bearer value, reaches the human with both masked.
+func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
 	r := newRig(t)
 	caseCard(r)
-	r.fg.deps = map[string][]map[string]any{path: dependsOn(7)}
-	var removedAtAct []string
-	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction {
-		removedAtAct = slices.Clone(r.fg.deleted)
-		return nil
-	}
+	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/13/dependencies": dependsOn(7)}
 	ck, s := r.loggedIn(t)
 	if rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}, "note": {"Done."}}), ck); rec.Code != http.StatusSeeOther {
 		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
 	}
-	equal(t, "removed when Act ran", removedAtAct, []string{path + " 7"})
 	got, _ := actedOnce(t, r)
-	equal(t, "the close", got.Res, factoryd.Resolution{Action: factoryd.ActClose, Note: "Done.\n\nIt no longer waits on #7."})
+	equal(t, "the close", []any{got.Res, writesOf(r.fg)}, []any{factoryd.Resolution{Action: factoryd.ActClose, Note: "Done."}, []string{"POST /api/v1/repos/sf/code/issues/13/comments"}})
 
 	r = newRig(t)
 	caseCard(r)
-	r.fg.deps = map[string][]map[string]any{path: dependsOn(7)}
-	r.fg.failDeps = "edge refused"
+	r.actErr = errors.New("forgejo PATCH https://user:pass@git.example/x: edge refused, Authorization: Bearer abcdef0123456789")
 	ck, s = r.loggedIn(t)
 	rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}}), ck)
-	equal(t, "the refusal", []any{rec.Code, len(r.acted)}, []any{http.StatusBadGateway, 0})
+	equal(t, "the status", rec.Code, http.StatusInternalServerError)
+	for _, leak := range []string{"user:pass", "abcdef0123456789"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("the refusal %q leaks %q", rec.Body, leak)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), "edge refused") {
+		t.Errorf("the refusal %q lost Forgejo's reason", rec.Body)
+	}
 }
