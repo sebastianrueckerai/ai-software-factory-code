@@ -704,8 +704,8 @@ func TestWakerHoldsWhatAStoppedChatRefuses(t *testing.T) {
 }
 
 // A factory ask wakes the agent, the roll ladder's for the analysis it
-// attaches; a month cap's ask wakes nobody, since the cap refuses the
-// agent's own calls, nor does an ask the factory answered as it asked it
+// attaches; a month cap's or a chat budget's ask wakes nobody, since each refuses
+// the agent's own calls, nor does an ask the factory answered as it asked it
 // (an identical plan re-file's confirmation), and the cursor moves past
 // them.
 func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
@@ -720,6 +720,7 @@ func TestWakerWakesOnFactoryAsksButNotTheMonthCap(t *testing.T) {
 	}
 	for _, detail := range []map[string]any{
 		{"ask": "The month cap is reached. Raise it?", "source": SourceMonthCap},
+		{"ask": "The chat budget of 50.00 EUR for 2026-11 is spent: raise it?", "source": SourceChatBudget},
 		{"question": "Confirmation of the spec and the criteria of plan revision 6", "revision": 6, "index": 1, "kind": QuestionConfirmation,
 			"settled": "the same plan as revision 5, confirmed there"},
 	} {
