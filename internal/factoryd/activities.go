@@ -1249,7 +1249,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	res.LastMessage = textutil.Truncate(out.agentText, maxHandoverMessage)
 	if out.trip != nil {
-		res.Trip, res.Commit = string(out.trip.Kind), out.commit
+		// the trip's commit is the session's own push, else the last
+		// interim push of its work in progress
+		res.Trip, res.Commit = string(out.trip.Kind), cmp.Or(out.commit, out.wip)
 		res.Findings = out.stopReport()
 		if out.trip.Stuck != "" {
 			res.Findings = append([]string{out.trip.Stuck}, res.Findings...)
@@ -1291,7 +1293,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		case out.trip.Kind == TripAgentInfoRequest:
 			res.Outcome, res.Reason = OutcomeNeedsInfo, d.Reason
 		case out.trip.Kind == TripAgentToolRequest:
-			res.Outcome, res.Reason, res.Tool, res.Need, res.Commit = OutcomeMissingTool, d.Reason, d.Tool, d.Need, out.commit
+			res.Outcome, res.Reason, res.Tool, res.Need, res.Commit = OutcomeMissingTool, d.Reason, d.Tool, d.Need, cmp.Or(out.commit, out.wip)
 		case d.Action == ActionRedirect:
 			res.Outcome, res.DeadEnd = OutcomeRedirect, d.Judged
 		case d.Action == ActionRetryStronger:
@@ -1311,8 +1313,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
 			return res
 		}
-		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
-			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), out.commit
+	if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
+		res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), cmp.Or(out.commit, out.wip)
 			res.Findings = []string{loopFinding("the model provider refused its repeated tool calls: " + res.Summary)}
 			return res
 		}
@@ -1326,7 +1328,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	if out.commit != "" {
 		ended = "previous session ended unfinished: "
 	}
-	res.Commit = out.commit
+	res.Commit = cmp.Or(out.commit, out.wip)
 	res.Findings = []string{ended + res.Summary}
 	if out.pending != nil {
 		res.Outcome = OutcomeNotStarted

@@ -238,7 +238,11 @@ func (s *Supervisor) Event(ev harness.Event, at time.Time) *Trip {
 	if lines, ok := cardDiffSize(ev); ok {
 		s.cardLines = lines
 	}
-	if ev.Kind == harness.EventPushed {
+	// the session's own end push is the push that counts: an interim
+	// push of the work in progress (detail wip) leaves the cheap cap
+	// and the no-push spend line armed — the work is on the branch, but
+	// the session has not finished
+	if ev.Kind == harness.EventPushed && !detailBool(ev, "wip") {
 		s.pushed = true
 	}
 	// a file written through a shell shows only as a changed diff

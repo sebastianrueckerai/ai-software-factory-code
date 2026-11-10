@@ -576,6 +576,10 @@ type sessionOutcome struct {
 	// agentText is the agent's last message (the adapter's finished event)
 	agentText string
 	commit    string
+	// wip is the last interim push's commit (wippush.go): the work the
+	// session left on the branch without its own end push, which its
+	// result keeps when the session died with no other
+	wip       string
 	trip      *Trip
 	decision  *Decision
 	digest    string
@@ -908,9 +912,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			// (interimPush, wippush.go), joined before anything below
 			// acts on the answer, so it cannot race the stop's end push
 			wipDone := make(chan struct{})
+			var wip string
 			go func() {
 				defer close(wipDone)
-				r.interimPush(callCtx, t, s, ns, podName, workerStop)
+				wip = r.interimPush(callCtx, t, s, ns, podName, workerStop)
 			}()
 			answered := make(chan struct{})
 			lines, started := sup.CardLines(), sup.started
@@ -948,8 +953,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			}
 			// the interim push is done — landed, refused or given up —
 			// before any decision acts on the check-in: a stop's end
-			// push builds on the tip it left
+			// push builds on the tip it left, and the last head it
+			// landed is the session's work on the branch
 			<-wipDone
+			out.wip = cmp.Or(wip, out.wip)
 		}
 		if esc != nil {
 			log.Printf("task %s: the agent escalated during the check-in for %s", t.ID, trip.Kind)

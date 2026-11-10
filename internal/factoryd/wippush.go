@@ -25,10 +25,11 @@ import (
 // report session ships no card's code and pushes nothing, and a session
 // whose start never resolved pushes nothing either. The refusal's
 // delivery into the session and the timeline's wip_pushed step are the
-// next card's.
-func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) {
+// next card's. It answers the commit the push landed, "" when none did,
+// which the session's result keeps as its work on the branch.
+func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) string {
 	if s.report != "" || s.startRef == "" {
-		return
+		return ""
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
 	switch {
@@ -41,10 +42,13 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 	case commit == "":
 		// the tree equals the start's: there is nothing to ship
 	default:
-		if err := r.pushWip(ctx, t, s, commit, bundle); err != nil {
+		head, err := r.pushWip(ctx, t, s, commit, bundle)
+		if err != nil {
 			r.wipFailure(ctx, t, s, "push", err)
 		}
+		return head
 	}
+	return ""
 }
 
 // wipFailure records one interim push that did not land: logged for the
@@ -55,48 +59,73 @@ func (r *Runner) wipFailure(ctx context.Context, t Task, s sessionSpec, at strin
 	r.record(ctx, t.ID, "wip_push_failed", map[string]any{"session": s.id, "at": at, "error": err.Error()})
 }
 
-// pushWip guards and pushes the WIP commit the pod shipped. The scratch
-// repo factoryd builds itself — bare, temporary, fetched by name, never
-// touching the sandbox — holds the session's start first: the fork's
-// task branch when a past push left one, else the repository's main,
-// which a first session starts from. Then it takes the bundle, the push
-// rules judge the diff start..WIP as they judge the end push's, and a
-// clean diff pushes the commit with a forced refspec under the projects
-// token's basic login, as the GitHub pass fetches the factory's
-// repositories with it (github.go): each interim push replaces the
-// branch's tip with the newest WIP tree, no history kept between
-// check-ins, and the session's end push — which lands its own commit
-// the same way — cannot be refused for the replacement.
-func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit string, bundle []byte) error {
+// pushWip guards and pushes the work in progress the pod shipped. The
+// scratch repo factoryd builds itself — bare, temporary, fetched by
+// name, never touching the sandbox — holds the session's start first:
+// the fork's task branch when a past push left one, else the repository's
+// main, which a first session starts from. Then it takes the bundle —
+// verified as a bundle before anything is taken from it, its objects
+// fscked as they arrive — and refuses a WIP that does not descend from
+// the session's start, the shape the worker's own /wip builds its WIP
+// in: a commit from another history is not the session's work. What it
+// pushes is factoryd's own commit, built from the shipped tree alone —
+// the start as its only parent, the factory's identity and attribution
+// message (wipIdentity, wipMessage) — never the sandbox's commit, whose
+// author and message are the agent's to forge. The push rules judge the
+// diff start..WIP as they judge the end push's, and a clean diff pushes
+// under the projects token's basic login, as the GitHub pass fetches the
+// factory's repositories with it (github.go), a forced refspec: each
+// interim push replaces the branch's tip with the newest WIP tree, no
+// history kept between check-ins, and the session's end push — which
+// lands its own commit the same way — cannot be refused for the
+// replacement. It answers the commit it landed.
+func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit string, bundle []byte) (string, error) {
 	own, err := bareRepo(ctx)
 	if err != nil {
-		return err
+		return "", err
 	}
 	defer os.RemoveAll(own) // #nosec G104 -- a temporary scratch repository
 	login := basicLogin(r.cfg.ProjectsUser, r.forgejo.ProjectsToken)
 	fork, branch := r.repoURL(r.forgejo.Fork(s.repo)), taskBranch(t)
 	if _, err := git(ctx, own, login, "fetch", "-q", fork, "+"+branch+":"+branch); err != nil {
 		if _, err := git(ctx, own, login, "fetch", "-q", r.repoURL(s.repo), "+"+prBase+":"+prBase); err != nil {
-			return fmt.Errorf("the repositories hold neither the task branch nor main: %w", err)
+			return "", fmt.Errorf("the repositories hold neither the task branch nor main: %w", err)
 		}
 	}
 	file := filepath.Join(own, "wip.bundle")
 	if err := os.WriteFile(file, bundle, 0o600); err != nil {
-		return err
+		return "", err
+	}
+	// the body is verified as a bundle before anything is taken from it:
+	// a body that is no bundle, whatever its header says it ships, costs
+	// the interim push alone
+	if _, err := git(ctx, own, "", "bundle", "verify", file); err != nil {
+		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
 	// the bundle carries the WIP on its own branch, with the start as
-	// its prerequisite, so the fetch is answered from the bundle alone
-	if _, err := git(ctx, own, "", "fetch", "-q", file, "+refs/heads/wip:refs/heads/wip"); err != nil {
-		return fmt.Errorf("fetch the shipped bundle: %w", err)
+	// its prerequisite, so the fetch is answered from the bundle alone;
+	// fscking the transfer keeps a lying object from landing in the repo
+	if _, err := git(ctx, own, "", "-c", "transfer.fsckObjects=true", "fetch", "-q", file, "+refs/heads/wip:refs/heads/wip"); err != nil {
+		return "", fmt.Errorf("fetch the shipped bundle: %w", err)
 	}
 	if _, err := git(ctx, own, "", "rev-parse", "--verify", "--quiet", commit+"^{commit}"); err != nil {
-		return fmt.Errorf("the bundle ships no commit %s: %w", commit, err)
+		return "", fmt.Errorf("the bundle ships no commit %s: %w", commit, err)
+	}
+	if _, err := git(ctx, own, "", "merge-base", "--is-ancestor", s.startRef, commit); err != nil {
+		return "", fmt.Errorf("the shipped WIP %s does not descend from the session's start %s: nothing is pushed", commit, s.startRef)
 	}
 	tree, err := git(ctx, own, "", "rev-parse", commit+"^{tree}")
 	if err != nil {
-		return err
+		return "", err
 	}
-	g, start, bound := rulesGit{ctx}, s.startRef, 0
+	// the pushed commit is factoryd's own: the shipped tree, the start as
+	// its only parent, the factory's identity and message — never the
+	// sandbox's commit
+	head, err := gitEnv(ctx, own, "", wipIdentity, "commit-tree", tree, "-p", s.startRef, "-m", wipMessage(t, s))
+	if err != nil {
+		return "", err
+	}
+	g, bound := rulesGit{ctx}, 0
 	if sizeBounded(t, s) {
 		bound = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 	}
@@ -104,18 +133,19 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 	// line-bound rule judges the session's own diff and its
 	// merge-with-main recovery cannot land — what no merge can fit waits
 	// for the session's end push, which owns the recovery
-	head, _, err := FitBound(g, own, commit, tree, start, start, start, bound, wipIdentity, wipMessage(t, s))
-	if err != nil {
-		return err
+	if head, _, err = FitBound(g, own, head, tree, s.startRef, s.startRef, s.startRef, bound, wipIdentity, wipMessage(t, s)); err != nil {
+		return "", err
 	}
-	if err := RefuseWorkflowDirChange(g, own, start, head); err != nil {
-		return err
+	if err := RefuseWorkflowDirChange(g, own, s.startRef, head); err != nil {
+		return "", err
 	}
-	if err := RefuseMisnamedMigrations(g, s.policy.Risk.MigrationGlobs(), own, start, head); err != nil {
-		return err
+	if err := RefuseMisnamedMigrations(g, s.policy.Risk.MigrationGlobs(), own, s.startRef, head); err != nil {
+		return "", err
 	}
-	_, err = git(ctx, own, login, "push", "-q", fork, "+"+head+":refs/heads/"+branch)
-	return err
+	if _, err := git(ctx, own, login, "push", "-q", fork, "+"+head+":refs/heads/"+branch); err != nil {
+		return "", err
+	}
+	return head, nil
 }
 
 // rulesGit is the push rules' git (PushGit) over factoryd's own: the
@@ -131,18 +161,17 @@ func (g rulesGit) RunGit(dir string, env []string, args ...string) (string, erro
 	return gitEnv(g.ctx, dir, "", env, args...)
 }
 
-// wipIdentity and wipMessage make the line-bound rule's merge commit for
-// the interim push — a shape its judging cannot reach, as pushWip's
-// comment says, but a parameter the rule demands: the attribution of
-// every commit the factory writes.
+// wipIdentity and wipMessage are the identity and message of every
+// commit the interim push writes: the commit factoryd builds from the
+// shipped tree (pushWip) and the line-bound rule's merge of it — the
+// attribution (forgejo.go) of a work-in-progress commit, as the worker's
+// end push writes its own.
 var wipIdentity = []string{
 	"GIT_AUTHOR_NAME=factory-agent", "GIT_AUTHOR_EMAIL=factory-agent@factory.local",
 	"GIT_COMMITTER_NAME=factory-agent", "GIT_COMMITTER_EMAIL=factory-agent@factory.local",
 }
 
-// wipMessage is the interim push's commit message: the attribution
-// (forgejo.go) of a work-in-progress commit, as the worker's end push
-// writes its own.
+// wipMessage is the interim push's commit message.
 func wipMessage(t Task, s sessionSpec) string {
 	return Attribution{Role: "agent", Task: t.ID, Session: s.id, Human: t.Author}.
 		Message("factory task " + t.ID + ": work in progress")

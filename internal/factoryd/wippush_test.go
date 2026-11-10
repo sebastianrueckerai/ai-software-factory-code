@@ -256,7 +256,11 @@ func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
 // fake does. wipStatus answers /wip with that status instead, and hang
 // holds each /wip ask. It records each ask's bearer, each answer's
 // commit, the task branch's tip as each ask arrived, and the first
-// error a shipped answer met.
+// error a shipped answer met. ship, when set, replaces the WIP commit
+// and bundle the fake would build: it answers the commit to name in the
+// Wip-Commit header and the body to answer with, so a test can ship a
+// commit that does not descend from the start, a forged author and
+// message, or a body that is no bundle.
 type wipServe struct {
 	mu        sync.Mutex
 	status    int
@@ -269,6 +273,7 @@ type wipServe struct {
 	edits                  []func(dir string)
 	wipAuth, commits, tips []string
 	err                    error
+	ship                   func(i int, tree string) (string, []byte, error)
 }
 
 func (s *wipServe) start(t *testing.T, r *Runner) {
@@ -308,22 +313,30 @@ func (s *wipServe) start(t *testing.T, r *Runner) {
 		if s.err == nil {
 			s.err = err
 		}
-		worker := []string{"GIT_AUTHOR_NAME=factory-agent", "GIT_AUTHOR_EMAIL=factory-agent@factory.local",
-			"GIT_COMMITTER_NAME=factory-agent", "GIT_COMMITTER_EMAIL=factory-agent@factory.local"}
-		commit, err := wipGitRun(s.seed, worker, "commit-tree", tree, "-p", s.base, "-m", "work in progress")
-		if s.err == nil {
-			s.err = err
-		}
-		if _, err := wipGitRun(s.seed, nil, "update-ref", "refs/heads/wip", commit); s.err == nil {
-			s.err = err
-		}
-		bundle := filepath.Join(s.dir, fmt.Sprintf("wip-%d.bundle", i))
-		if _, err := wipGitRun(s.seed, nil, "bundle", "create", bundle, s.base+"..refs/heads/wip"); s.err == nil {
-			s.err = err
-		}
-		body, err := os.ReadFile(bundle)
-		if s.err == nil {
-			s.err = err
+		commit, body := "", []byte(nil)
+		if s.ship != nil {
+			commit, body, err = s.ship(i, tree)
+			if s.err == nil {
+				s.err = err
+			}
+		} else {
+			worker := []string{"GIT_AUTHOR_NAME=factory-agent", "GIT_AUTHOR_EMAIL=factory-agent@factory.local",
+				"GIT_COMMITTER_NAME=factory-agent", "GIT_COMMITTER_EMAIL=factory-agent@factory.local"}
+			commit, err = wipGitRun(s.seed, worker, "commit-tree", tree, "-p", s.base, "-m", "work in progress")
+			if s.err == nil {
+				s.err = err
+			}
+			if _, err := wipGitRun(s.seed, nil, "update-ref", "refs/heads/wip", commit); s.err == nil {
+				s.err = err
+			}
+			bundle := filepath.Join(s.dir, fmt.Sprintf("wip-%d.bundle", i))
+			if _, err := wipGitRun(s.seed, nil, "bundle", "create", bundle, s.base+"..refs/heads/wip"); s.err == nil {
+				s.err = err
+			}
+			body, err = os.ReadFile(bundle)
+			if s.err == nil {
+				s.err = err
+			}
 		}
 		if s.err != nil {
 			w.WriteHeader(http.StatusInternalServerError)
