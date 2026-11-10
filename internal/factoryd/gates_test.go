@@ -824,15 +824,15 @@ func TestModelReviewTakesThePinnedTimeout(t *testing.T) {
 
 // A task at its budget cap: the gateway refuses the review with
 // refused_budget, and again on the one retry, which becomes the review's
-// note on the pull request and the card; an upstream error and an invalid
-// answer are notes too, after one call. None fails the gate.
+// note on the pull request and the card; an upstream error is a note too,
+// and an invalid answer one after its one re-ask. None fails the gate.
 func TestModelReviewNotes(t *testing.T) {
 	for name, tc := range map[string]struct {
 		model *fakeLiteLLM
 		note  string
 		calls int
 	}{
-		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 1},
+		"invalid answer": {&fakeLiteLLM{content: "LGTM"}, "model review answer invalid", 2},
 		"refused_budget": {&fakeLiteLLM{status: http.StatusPaymentRequired, decision: "refused_budget"},
 			"model review refused by the gateway (refused_budget): task headroom 0.000000 EUR", 2},
 		"upstream error": {&fakeLiteLLM{status: http.StatusBadGateway}, "model review failed: status 502", 1},
@@ -856,6 +856,67 @@ func TestModelReviewNotes(t *testing.T) {
 				t.Fatalf("model_review step = %v", step)
 			}
 		})
+	}
+}
+
+// An answer that does not parse — the model's JSON cut inside its summary
+// at the output bound — is asked once more on the same part and the same
+// model, the retry's input carrying the parse error and the bounds: the
+// second answer's verdict is the review's, and the round records no
+// not-run row.
+func TestModelReviewAsksAnAnswerThatDoesNotParseOnceMore(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	cut := `{"verdict": "approve", "summary": "Roadmap 280 delivered as briefed: ...`
+	ll := &fakeLiteLLM{contents: []string{cut, `{"verdict":"approve","summary":"the retry answers","findings":[]}`}}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || rv.Summary != "the retry answers" || rv.Note != "" {
+		t.Fatalf("review = %+v, want the second answer's verdict", rv)
+	}
+	if len(ll.chats) != 2 || ll.purposes[1] != "review" {
+		t.Fatalf("calls = %d, want the part's call and its one retry", len(ll.chats))
+	}
+	// the retry's input carries the parse error and the bounds
+	var in struct {
+		Retry struct {
+			ParseError string `json:"parse_error"`
+			Bounds     string `json:"bounds"`
+		} `json:"answer_retry"`
+	}
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[1])), &in); err != nil {
+		t.Fatal(err)
+	}
+	if in.Retry.ParseError != "unexpected EOF" || in.Retry.Bounds != reviewAnswerBounds {
+		t.Fatalf("answer_retry = %+v, want the parse error and the bounds", in.Retry)
+	}
+	if first := userMessage(ll.chats[0]); strings.Contains(first, "answer_retry") {
+		t.Fatalf("the first call carries a retry: %s", first)
+	}
+	// the round reviewed the head: no not-run row
+	rows := eventsOfKind(store, EventModelReview)
+	if len(rows) != 1 || rows[0].Detail["verdict"] != "approve" || rows[0].Detail["reviewed"] != true {
+		t.Fatalf("model_review rows = %+v, want the round reviewed", rows)
+	}
+}
+
+// The second answer that does not parse is the note as today, and the
+// round records the not-run row.
+func TestModelReviewNotesTheSecondAnswerThatDoesNotParse(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"}
+	r, store, _ := newGateRunner(t, gateTask, fj)
+	cut := `{"verdict": "approve", "summary": "Roadmap 280 delivered as briefed: ...`
+	ll := &fakeLiteLLM{content: cut}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}, nil, 1)
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "" || !strings.HasPrefix(rv.Note, "model review answer invalid (unexpected EOF)") || len(ll.chats) != 2 {
+		t.Fatalf("review = %+v after %d calls, want the note of the second answer", rv, len(ll.chats))
+	}
+	rows := eventsOfKind(store, EventModelReview)
+	if len(rows) != 1 || rows[0].Detail["reviewed"] != false || rows[0].Detail["verdict"] != "" {
+		t.Fatalf("model_review rows = %+v, want the not-run row", rows)
 	}
 }
 
@@ -1223,7 +1284,7 @@ func chatPart(chat map[string]any) string {
 }
 
 // One part answers invalid: the note names that part, and every part's
-// call is made.
+// call is made, its own one re-ask among them.
 func TestModelReviewNamesTheInvalidPart(t *testing.T) {
 	fj := &gateForgejo{diff: fourParts}
 	r, _, _ := newGateRunner(t, gateTask, fj)
@@ -1236,7 +1297,7 @@ func TestModelReviewNamesTheInvalidPart(t *testing.T) {
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
 	rv := getInto[Review](t, val, err)
-	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review answer invalid") || len(ll.chats) != 4 {
+	if rv.Verdict != "" || rv.Findings != nil || !strings.HasPrefix(rv.Note, "part 3 of 4: model review answer invalid") || len(ll.chats) != 5 {
 		t.Fatalf("review = %+v after %d calls", rv, len(ll.chats))
 	}
 }

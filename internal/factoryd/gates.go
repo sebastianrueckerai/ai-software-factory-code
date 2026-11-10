@@ -1431,6 +1431,9 @@ type reviewInput struct {
 	LastReview   *Review           `json:"last_review,omitempty"`
 	OpenedProofs []reviewProof     `json:"opened_proofs,omitempty"`
 	AgentSummary string            `json:"agent_summary,omitempty"`
+	// AnswerRetry, on the one retry of an answer that did not parse,
+	// carries the parse error and the bounds the answer must keep.
+	AnswerRetry *answerRetry `json:"answer_retry,omitempty"`
 }
 
 // reviewProof is an opened proof as the review reads it.
@@ -1450,6 +1453,16 @@ type reviewPartInput struct {
 	Files        string   `json:"files"`
 	Names        string   `json:"names_in_other_parts,omitempty"`
 	LastFindings []string `json:"last_findings,omitempty"`
+	// AnswerRetry, on the one retry of an answer that did not parse,
+	// carries the parse error and the bounds the answer must keep.
+	AnswerRetry *answerRetry `json:"answer_retry,omitempty"`
+}
+
+// answerRetry is the review's one retry of an answer that did not parse:
+// why it did not, and the bounds the answer must keep.
+type answerRetry struct {
+	ParseError string `json:"parse_error"` // why the first answer did not parse
+	Bounds     string `json:"bounds"`      // the bounds the answer must keep (reviewAnswerBounds)
 }
 
 // reviewGates are the gate results as the review reads them: the checks'
@@ -1528,12 +1541,19 @@ const (
 // verdict, a summary, no field beyond claims; a markdown fence is
 // tolerated. An invalid answer is a note, never a failure.
 func parseReview(content string) Review {
+	rv, _ := parseReviewWhy(content)
+	return rv
+}
+
+// parseReviewWhy is parseReview that also names why an invalid answer
+// does not parse, for the review's one retry of it.
+func parseReviewWhy(content string) (Review, string) {
 	s := strings.TrimSpace(content)
 	if strings.HasPrefix(s, "```") && strings.HasSuffix(s, "```") && len(s) >= 6 {
 		s = strings.TrimSpace(strings.TrimPrefix(strings.TrimSuffix(s, "```")[3:], "json"))
 	}
-	invalid := func(why string) Review {
-		return Review{Note: invalidNote(why, content)}
+	invalid := func(why string) (Review, string) {
+		return Review{Note: invalidNote(why, content)}, why
 	}
 	dec := json.NewDecoder(strings.NewReader(s))
 	dec.DisallowUnknownFields()
@@ -1580,7 +1600,7 @@ func parseReview(content string) Review {
 		}
 	}
 	rv.Findings, rv.Claims = findings, claims
-	return rv
+	return rv, ""
 }
 
 // invalidNote is the note on a review call's answer that does not parse,
@@ -1667,6 +1687,40 @@ func reviewAnswer(content string, err error) Review {
 		return Review{Note: note}
 	}
 	return parseReview(content)
+}
+
+// reviewAnswerBounds are the bounds the review's one retry of an answer
+// that does not parse names in its input, of the answer its prompts
+// already describe (reviewFormat).
+const reviewAnswerBounds = "one JSON object, a summary under 1000 characters, at most 10 findings"
+
+// retriedInput is a review call's input carrying the retry of its answer
+// that did not parse.
+func retriedInput(in any, retry *answerRetry) any {
+	switch v := in.(type) {
+	case reviewInput:
+		v.AnswerRetry = retry
+		return v
+	case reviewPartInput:
+		v.AnswerRetry = retry
+		return v
+	}
+	return in
+}
+
+// reviewRetry makes the review's one more call on an answer that did not
+// parse, why naming the parse error: the same part, the same prompt and
+// the same model, and the input carrying the parse error and the bounds
+// the answer must keep (reviewAnswerBounds), so the model answers within
+// them — the review's own step checks its work and corrects itself. The
+// retry's cost books to the card like the first call; an answer that
+// parses is the review's, and the second one that does not parse, or a
+// failed or refused call, is the note as today.
+func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, call reviewCall, why string) Review {
+	boundByParts(ctx, 1)
+	content, _, err := r.supervisor.Chat(ctx, taskID, model, policy.PurposeReview, timeout, call.Prompt,
+		retriedInput(call.Input(), &answerRetry{ParseError: why, Bounds: reviewAnswerBounds}))
+	return reviewAnswer(content, err)
 }
 
 // combineReviews joins the verdicts of a diff's parts: concerns with every
@@ -1863,6 +1917,16 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	var answers []Review
 	for i, res := range results[:len(parts)] {
 		a := reviewAnswer(res.Content, res.Err)
+		if a.Verdict == "" && res.Err == nil {
+			// an answer that does not parse — the model's JSON cut at its
+			// output bound, say, two characters short of a verdict — is
+			// asked once more on the same part and the same model, the
+			// input carrying the parse error and the bounds the answer
+			// must keep (reviewRetry); the second answer that does not
+			// parse is the note as today
+			_, why := parseReviewWhy(res.Content)
+			a = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, calls[i], why)
+		}
 		if a.Verdict == "" {
 			if len(parts) > 1 {
 				// the parts after it that share its note, a refusal the
