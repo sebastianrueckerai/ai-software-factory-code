@@ -77,10 +77,10 @@ func (w *writeSeams) wire(cfg *console.Config) {
 		w.log("criterion %s %s %s by %s: %s", id, cid, verdict, by, reason)
 		return nil
 	}
-	cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
-	cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
+	cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
 		w.log("close plan %s by %s: %s", id, by, note)
-		return 0, factoryd.PlanCloseWords(by, note, false), nil
+		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
 	}
 	cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
 		w.log("confirm %s by %s: %s", id, by, line)

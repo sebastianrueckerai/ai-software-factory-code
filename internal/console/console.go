@@ -239,13 +239,13 @@ type Config struct {
 	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
 	// CheckClosePlan refuses a CloseHeldPlan that would be refused, without
 	// writing (Runner.CheckClosePlan).
-	CheckClosePlan func(ctx context.Context, id, by, note string, approver bool) error
+	CheckClosePlan func(ctx context.Context, id, note string, approver bool) error
 	// CloseHeldPlan waives every open criterion of plan id at rest (done,
 	// failed or closed) with the note, ends its criteria asks and, once
 	// every card is final, records its plan_closed, in one write. It answers
-	// how many it waived and the words its issue hears
-	// (Runner.CloseHeldPlan); approver says by is one.
-	CloseHeldPlan func(ctx context.Context, id, by, note string, approver bool) (waived int, words string, err error)
+	// how many it waived, the words its issue hears and whether it holds a
+	// merge (Runner.CloseHeldPlan); approver says by is one.
+	CloseHeldPlan func(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error)
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the
 	// plan not done or merged is factoryd.ErrChildOpen.

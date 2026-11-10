@@ -1910,7 +1910,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // that fails after the write is finished by the sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	approver := c.isApprover(ctx, a.s.user, t.Repository)
-	if err := c.cfg.CheckClosePlan(ctx, t.ID, a.s.user, note, approver); err != nil {
+	if err := c.cfg.CheckClosePlan(ctx, t.ID, note, approver); err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
 	freed := ""
@@ -1920,7 +1920,7 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 			return "", err
 		}
 	}
-	n, words, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, approver)
+	n, words, merged, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, approver)
 	if err != nil {
 		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
@@ -1945,13 +1945,12 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 	if t.IssueNumber != 0 {
 		card = fmt.Sprintf("plan #%d", t.IssueNumber)
 	}
-	merged, err := c.cfg.Tasks.PlanMerged(ctx, t.ID)
 	switch {
-	case err == nil && n > 0 && merged:
+	case n > 0 && merged:
 		return fmt.Sprintf("Closed %s: its open criteria are waived, and its merged cards stay on main.", card), nil
-	case err == nil && n > 0:
+	case n > 0:
 		return fmt.Sprintf("Closed %s: its open criteria are waived.", card), nil
-	case err == nil && merged:
+	case merged:
 		return fmt.Sprintf("Closed %s: its merged cards stay on main.", card), nil
 	}
 	return fmt.Sprintf("Closed %s.", card), nil

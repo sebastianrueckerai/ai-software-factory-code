@@ -139,7 +139,7 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 	ctx := context.Background()
 	t.Run("between rounds, no integration card", func(t *testing.T) {
 		r, s, fj := plannedCards(t, []string{"later"}, "done", "running")
-		n, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false)
+		n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false)
 		if err != nil || n != 0 || closeRows(s) != 0 {
 			t.Fatalf("CloseHeldPlan = %d, %v, plan_closed rows %d; want 0, no error, 0", n, err, closeRows(s))
 		}
@@ -158,7 +158,7 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 	t.Run("ten open criteria, the integration card running", func(t *testing.T) {
 		r, s, _ := tenCriteriaPlan(t, "running")
 		setStatus(s, "card-1", "running")
-		n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved to the rebuild", true)
+		n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved to the rebuild", true)
 		if err != nil || n != 10 || closeRows(s) != 0 {
 			t.Fatalf("CloseHeldPlan = %d, %v, plan_closed rows %d; want 10, no error, 0", n, err, closeRows(s))
 		}
@@ -176,13 +176,13 @@ func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
 func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
 	ctx := context.Background()
 	r, s, _ := plannedCards(t, nil, "done")
-	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 		t.Fatalf("a writer's close: %v, want ErrNotApprover", err)
 	}
 	if closeRows(s) != 0 {
 		t.Fatalf("a refused close recorded plan_closed")
 	}
-	n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved to the rebuild", true)
+	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved to the rebuild", true)
 	rows, _ := s.CriteriaVerdicts(ctx, "t-plan")
 	if err != nil || n != 3 || len(rows) != 3 || closeRows(s) != 1 {
 		t.Fatalf("CloseHeldPlan = %d, %v, rows %d, plan_closed rows %d; want 3 waived on the plan card and 1 row", n, err, len(rows), closeRows(s))
@@ -206,10 +206,10 @@ func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
 		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{hold})) {
 			t.Fatalf("closed plan: comments %q, plan_closed rows %d; want the hold said once and no row", got, closeRows(s))
 		}
-		if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+		if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 			t.Fatalf("%s plan, a writer's Close: %v, want ErrNotApprover", status, err)
 		}
-		if n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 10 || closeRows(s) != 1 {
+		if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 10 || closeRows(s) != 1 {
 			t.Fatalf("%s plan, an approver's Close = %d, %v, plan_closed rows %d; want 10, no error, 1", status, n, err, closeRows(s))
 		}
 	}
@@ -253,7 +253,7 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 		t.Fatalf("holdDonePlan with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
 	}
 	r, s, _ := tenCriteriaPlan(t, "done")
-	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
 		t.Fatal(err)
 	}
 	r.forgejo = f
@@ -279,7 +279,7 @@ func TestPlanWithoutAMergeHoldsNothing(t *testing.T) {
 	card.MergeCommit = ""
 	s.tasks["card-1"] = card
 	setStatus(s, "t-plan", "failed")
-	if n, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 {
+	if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 {
 		t.Fatalf("a writer's Close of an unmerged failed plan = %d, %v; want 0 and no error", n, err)
 	}
 	_, s, _ = plannedCards(t, nil, "done")
@@ -324,7 +324,7 @@ func TestCriteriaPassFinishesAFailedPlanClose(t *testing.T) {
 	ctx := context.Background()
 	r, s, fj := tenCriteriaPlan(t, "done")
 	setStatus(s, "t-plan", "failed")
-	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
 		t.Fatal(err)
 	}
 	r.CriteriaPass(ctx)
@@ -349,10 +349,10 @@ func TestPlanMergedByARowAloneHolds(t *testing.T) {
 	if merged, err := s.PlanMerged(ctx, "t-plan"); err != nil || !merged {
 		t.Fatalf("PlanMerged with a pull_request_merged row = %t, %v; want true", merged, err)
 	}
-	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
 		t.Errorf("a writer's Close: %v, want ErrNotApprover", err)
 	}
-	if err := r.CheckClosePlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+	if err := r.CheckClosePlan(ctx, "t-plan", "why", false); !errors.Is(err, ErrNotApprover) {
 		t.Errorf("a writer's check: %v, want ErrNotApprover", err)
 	}
 }
@@ -363,14 +363,14 @@ func TestPlanMergedByARowAloneHolds(t *testing.T) {
 func TestFailedPlanClosedByFactorydEnds(t *testing.T) {
 	ctx := context.Background()
 	for _, byPerson := range []bool{true, false} {
-		r, s, _ := plannedCards(t, nil, "done")
+		r, s, fj := plannedCards(t, nil, "done")
 		card := s.tasks["card-1"]
 		card.MergeCommit = ""
 		s.tasks["card-1"] = card
 		setStatus(s, "t-plan", "failed")
 		s.Record(ctx, Event{Repository: "linkshort/linkshort", TaskID: "t-plan", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd})
 		if byPerson {
-			if n, words, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 || words != "closed by mallory" {
+			if n, words, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 || words != "closed by mallory" {
 				t.Fatalf("a person's Close = %d, %q, %v; want 0, the words without merged cards, no error", n, words, err)
 			}
 		} else {
@@ -378,6 +378,54 @@ func TestFailedPlanClosedByFactorydEnds(t *testing.T) {
 		}
 		if got := s.tasks["t-plan"].Status; got != "closed" {
 			t.Errorf("by a person %t: status %q, want closed", byPerson, got)
+		}
+		if len(fj.comments) != 0 {
+			t.Errorf("by a person %t: comments %q, want none (a close without words posts no empty comment)", byPerson, commentBodies(fj))
+		}
+	}
+}
+
+// The check and the Close answer alike over every shape of a plan's state:
+// status, merge (none, commit, row only, reverted), plan_closed row,
+// approver and note. The check is what keeps a refused Close from touching
+// the issue, so it must refuse exactly what the Close refuses.
+func TestCheckClosePlanAgreesWithCloseHeldPlan(t *testing.T) {
+	ctx := context.Background()
+	shape := func(status, merge string, row bool) (*Runner, *fakeStore) {
+		r, s, _ := tenCriteriaPlan(t, "done")
+		setStatus(s, "t-plan", status)
+		card := s.tasks["card-1"]
+		switch merge {
+		case "none":
+			card.MergeCommit = ""
+		case "row":
+			card.MergeCommit = ""
+			s.Record(ctx, Event{Repository: "sf/code", TaskID: "card-1", Kind: "pull_request_merged"})
+		case "reverted":
+			now := time.Now()
+			card.RevertedAt = &now
+		}
+		s.tasks["card-1"] = card
+		if row {
+			s.Record(ctx, Event{Repository: "linkshort/linkshort", TaskID: "t-plan", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd})
+		}
+		return r, s
+	}
+	for _, status := range []string{"done", "failed", "closed", "running"} {
+		for _, merge := range []string{"none", "commit", "row", "reverted"} {
+			for _, row := range []bool{false, true} {
+				for _, approver := range []bool{false, true} {
+					for _, note := range []string{"", "why", strings.Repeat("x", MaxWaiverNote+1)} {
+						r, _ := shape(status, merge, row)
+						check := r.CheckClosePlan(ctx, "t-plan", note, approver)
+						r, _ = shape(status, merge, row)
+						_, _, _, closeErr := r.CloseHeldPlan(ctx, "t-plan", "mallory", note, approver)
+						if !errors.Is(check, closeErr) && !errors.Is(closeErr, check) {
+							t.Errorf("status %s, merge %s, row %t, approver %t, note %d bytes: check %v, Close %v", status, merge, row, approver, len(note), check, closeErr)
+						}
+					}
+				}
+			}
 		}
 	}
 }

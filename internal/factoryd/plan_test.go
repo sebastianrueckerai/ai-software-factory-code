@@ -893,6 +893,9 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 				}
 			}
 			json.NewEncoder(w).Encode(list)
+		case r.Method == "POST" && len(parts) == 3 && parts[2] == "comments" && strings.TrimSpace(body["body"].(string)) == "":
+			// Forgejo requires a comment's body
+			http.Error(w, `{"message":"Body is empty"}`, http.StatusUnprocessableEntity)
 		case r.Method == "POST" && len(parts) == 3 && parts[2] == "comments":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			c := &stubComment{id: int64(700 + len(f.comments)), issue: n, body: body["body"].(string), author: "factory-agent"}

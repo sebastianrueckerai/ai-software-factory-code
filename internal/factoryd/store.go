@@ -683,9 +683,10 @@ type Store interface {
 	// PlanClosesToFinish are the plan cards whose close recorded
 	// plan_closed and is still to finish, by plan id with the closing words
 	// (none for a failed card factoryd closed itself): a done card whose
-	// person's Close left its issue open, a failed card not yet ended. A row of the last minute is the
-	// console's own close in progress: its four Forgejo calls time out at
-	// 15 s each, so it has ended well before the sweep takes the row.
+	// person's Close left its issue open, a failed card not yet ended. A
+	// row of the last minute is the console's own close in progress: its
+	// four Forgejo calls time out at 15 s each, so it has ended well before
+	// the sweep takes the row.
 	PlanClosesToFinish(ctx context.Context) (map[string]string, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.

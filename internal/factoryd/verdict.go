@@ -421,21 +421,32 @@ func (r *Runner) closablePlan(ctx context.Context, id, note string) (Task, error
 	return t, nil
 }
 
-// CheckClosePlan says whether CloseHeldPlan would take plan id now, by the
-// same refusals and without writing: the console asks before it removes the
-// issue's dependencies, so a refused Close changes nothing.
-func (r *Runner) CheckClosePlan(ctx context.Context, id, by, note string, approver bool) error {
-	note = strings.TrimSpace(note)
-	t, err := r.closablePlan(ctx, id, note)
-	if err != nil {
-		return err
+// closeGate is every refusal of a plan's Close, for the check and the Close
+// alike: the plan is at rest, the note fits, the plan_closed row does not
+// stand (a failed card whose row stands is ended by the Close, endFailed),
+// and an approver with a note answers for open criteria.
+func (r *Runner) closeGate(ctx context.Context, id, note string, approver bool) (t Task, endFailed bool, err error) {
+	if t, err = r.closablePlan(ctx, id, note); err != nil {
+		return t, false, err
 	}
-	if _, closed, err := r.store.PlanClosed(ctx, id); err != nil {
-		return err
-	} else if closed && t.Status != "failed" {
-		return ErrPlanClosed
+	_, closed, err := r.store.PlanClosed(ctx, id)
+	switch {
+	case err != nil:
+		return t, false, err
+	case closed && t.Status == "failed":
+		return t, true, nil
+	case closed:
+		return t, false, ErrPlanClosed
 	}
 	_, _, _, err = r.planCloseOpen(ctx, t, note, approver)
+	return t, false, err
+}
+
+// CheckClosePlan says whether CloseHeldPlan would take plan id now, by the
+// same refusals (closeGate) and without writing: the console asks before it
+// removes the issue's dependencies, so a refused Close changes nothing.
+func (r *Runner) CheckClosePlan(ctx context.Context, id, note string, approver bool) error {
+	_, _, err := r.closeGate(ctx, id, strings.TrimSpace(note), approver)
 	return err
 }
 
@@ -447,25 +458,23 @@ func (r *Runner) CheckClosePlan(ctx context.Context, id, by, note string, approv
 // close. While a card still runs the sweep records plan_closed when the
 // last one ends. A failed plan whose plan_closed row stands (factoryd
 // closed it, and the bot's close does not end a failed card) ends closed.
-// It reports how many criteria it waived and the words the close says on
-// the plan's issue. The caller closes the issue afterwards.
-func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (int, string, error) {
+// It reports how many criteria it waived, the words the close says on the
+// plan's issue and whether the plan holds a merge. The caller closes the
+// issue afterwards.
+func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (waived int, words string, merged bool, err error) {
 	note = strings.TrimSpace(note)
-	t, err := r.closablePlan(ctx, id, note)
+	t, endFailed, err := r.closeGate(ctx, id, note, approver)
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
-	merged, err := r.store.PlanMerged(ctx, id)
-	if err != nil {
-		return 0, "", err
+	if merged, err = r.store.PlanMerged(ctx, id); err != nil {
+		return 0, "", false, err
 	}
-	words := PlanCloseWords(by, note, merged)
-	if _, closed, err := r.store.PlanClosed(ctx, id); err != nil {
-		return 0, "", err
-	} else if closed && t.Status == "failed" {
-		return 0, words, r.store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+	words = PlanCloseWords(by, note, merged)
+	if endFailed {
+		return 0, words, merged, r.store.TransitionTask(ctx, id, []string{"failed"}, "closed")
 	}
-	criteria, waived := 0, 0
+	criteria := 0
 	recorded := false
 	err = r.store.ClosePlanWithWaivers(ctx, id, by, func(ctx context.Context) (PlanClose, error) {
 		p, open, home, err := r.planCloseOpen(ctx, t, note, approver)
@@ -489,7 +498,7 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 		return pc, nil
 	})
 	if err != nil {
-		return 0, "", err
+		return 0, "", false, err
 	}
 	if recorded {
 		if r.timeline != nil {
@@ -500,7 +509,7 @@ func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approve
 		r.record(ctx, id, "plan_closed", map[string]any{"criteria": criteria})
 		r.wakeHeld(ctx, t.Repository)
 	}
-	return waived, words, nil
+	return waived, words, merged, nil
 }
 
 // GrantCriteria writes the catch rows of an approver's grant of one more

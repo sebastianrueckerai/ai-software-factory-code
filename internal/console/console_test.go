@@ -438,6 +438,9 @@ type fakeTasks struct {
 	questions map[string][]factoryd.PlanQuestion
 	// proofs are the plans' proof rows by task, idx order
 	proofs map[string][]factoryd.PlanProof
+	// mergedRows are the cards with a pull_request_merged row, which merges
+	// a card without a merge commit
+	mergedRows map[string]bool
 	// planClosed are the plans that hold a plan_closed row
 	planClosed map[string]time.Time
 	// criteria are the criteria verdict rows by task
@@ -3993,7 +3996,7 @@ func (s *fakeTasks) PlanMerged(_ context.Context, plan string) (bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for _, t := range s.tasks {
-		if t.Parent == plan && t.Source == factoryd.SourcePlan && t.MergeCommit != "" && t.RevertedAt == nil {
+		if t.Parent == plan && t.Source == factoryd.SourcePlan && t.PlanKey != "" && t.RevertedAt == nil && (t.MergeCommit != "" || s.mergedRows[t.ID]) {
 			return true, nil
 		}
 	}

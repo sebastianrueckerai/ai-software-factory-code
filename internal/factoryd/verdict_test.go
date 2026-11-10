@@ -1516,7 +1516,7 @@ func TestClosedPlanCardKeepsItsCriteriaApprovalUntilAnApproverCloses(t *testing.
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); closeRows(s) != 0 || len(pending) != 1 {
 		t.Fatalf("after the card's close: plan_closed %d, pending %+v; want none and the ask standing", closeRows(s), pending)
 	}
-	if n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 2 {
+	if n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 2 {
 		t.Fatalf("an approver's Close = %d, %v; want 2 waived (c2 and c3; c1 stands met)", n, err)
 	}
 	pending, _ := s.ApprovalRequests(ctx, "pending")
@@ -1789,14 +1789,14 @@ func TestCloseHeldPlanWaives(t *testing.T) {
 		{"an unknown plan", "t-none", "sebastian", "why", true, ErrNotFound},
 		{"a card that is no done plan", "card-1", "sebastian", "why", true, ErrNotDonePlan},
 	} {
-		if _, _, err := r.CloseHeldPlan(ctx, tc.id, tc.by, tc.note, tc.approver); !errors.Is(err, tc.want) {
+		if _, _, _, err := r.CloseHeldPlan(ctx, tc.id, tc.by, tc.note, tc.approver); !errors.Is(err, tc.want) {
 			t.Errorf("%s: %v, want %v", tc.name, err, tc.want)
 		}
 	}
 	if rows, _ := s.CriteriaVerdicts(ctx, "card-1"); len(rows) != 1 || closeRows(s) != 0 {
 		t.Fatalf("the refusals wrote %d rows and %d closes, want the one met row and no close", len(rows), closeRows(s))
 	}
-	n, words, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
+	n, words, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
 	if err != nil || n != 9 || words != "closed by sebastian: the cards moved to the rebuild; its merged cards stay on main" {
 		t.Fatalf("CloseHeldPlan = %d, %q, %v; want 9 (k4 stands met) and the words", n, words, err)
 	}
@@ -1813,7 +1813,7 @@ func TestCloseHeldPlanWaives(t *testing.T) {
 	if waived != 9 {
 		t.Errorf("%d waived rows, want 9", waived)
 	}
-	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "again", true); !errors.Is(err, ErrPlanClosed) {
+	if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "again", true); !errors.Is(err, ErrPlanClosed) {
 		t.Errorf("a second close: %v, want ErrPlanClosed", err)
 	}
 }
@@ -1849,7 +1849,7 @@ func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
 		t.Fatalf("the sweep's ask: %+v, want one pending criteria_rerun", pending)
 	}
-	n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
+	n, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true)
 	if err != nil || n != 10 {
 		t.Fatalf("CloseHeldPlan = %d, %v; want 10", n, err)
 	}
@@ -1895,7 +1895,7 @@ func TestCloseHeldPlanBetweenRoundsWithoutAnIntegrationCard(t *testing.T) {
 	task := s.tasks["t-plan"]
 	task.Track = policy.TrackPlan
 	s.tasks["t-plan"] = task
-	n, words, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false)
+	n, words, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false)
 	if err != nil || n != 0 || words != "closed by mallory; its merged cards stay on main" || closeRows(s) != 1 {
 		t.Fatalf("CloseHeldPlan = %d, %q, %v, plan_closed rows %d; want 0, the words, no error, 1", n, words, err, closeRows(s))
 	}
@@ -1916,7 +1916,7 @@ func TestCriteriaPassFinishesAPlanClose(t *testing.T) {
 	ctx := context.Background()
 	for _, posted := range []bool{false, true} {
 		r, s, fj := tenCriteriaPlan(t, "done")
-		if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true); err != nil {
+		if _, _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "the cards moved to the rebuild", true); err != nil {
 			t.Fatal(err)
 		}
 		words := "closed by sebastian: the cards moved to the rebuild; its merged cards stay on main"
