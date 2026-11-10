@@ -458,10 +458,10 @@ func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
 		want string
 	}{
 		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}},
-			"this card stopped for agent time: an extend of its agent time starts the next session, sessions, lines or check-in shares alone buy none"},
+			"this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
 		{"lines alone", Resolution{Args: map[string]any{"lines": 200}},
-			"this card stopped for agent time: an extend of its agent time starts the next session, sessions, lines or check-in shares alone buy none"},
-		{"check-in share alone", Resolution{Args: map[string]any{"checkin_shares": 1}}, "this card stopped for agent time: an extend of its agent time starts the next session, sessions, lines or check-in shares alone buy none"},
+			"this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
+		{"check-in share alone", Resolution{Args: map[string]any{"checkin_shares": 1}}, "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
 		{"agent time", Resolution{Args: map[string]any{"agent_time_s": 600}}, ""},
 		{"agent time past the bound", Resolution{Args: map[string]any{"agent_time_s": 36001}}, "an extend raises at most 600 minutes of agent time at once"},
 		{"agent time and sessions", Resolution{Args: map[string]any{"agent_time_s": 600, "sessions": 1}}, ""},
@@ -676,5 +676,29 @@ func TestExtendAtATimeCapNeedsPoolTime(t *testing.T) {
 	f.PoolLeft.AgentTime = time.Hour
 	if got := offeredNames(f, 2); !slices.Contains(got, ActExtend) {
 		t.Errorf("rung 2 on a pool with agent time is offered %v, want the extend", got)
+	}
+}
+
+// At a time stop the refusal names the agent-time draw it weighs, not the
+// card's last draw of any kind, and a planner's is measured on its revision
+// where an agent's is on its push.
+func TestBoughtNothingTextNamesTheDrawAndWhatItWasMeasuredOn(t *testing.T) {
+	at := time.Date(2026, 11, 10, 11, 29, 0, 0, time.UTC)
+	tail := " UTC bought nothing, with no %s since and the head, the checks and the findings unchanged: hand over, start a successor, replan or close"
+	for _, tc := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"planner at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Planner: true, TimeDraw: &DrawFacts{At: at}},
+			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "plan revision")},
+		{"agent at a time stop", CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}},
+			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "push")},
+		{"agent at a session cap", CaseFacts{Kind: CaseSessionCap, LastDrawAt: &at},
+			"the last draw at 11:29" + fmt.Sprintf(tail, "push")},
+	} {
+		if got := boughtNothingText(tc.f); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }

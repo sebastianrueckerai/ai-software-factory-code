@@ -300,7 +300,7 @@ func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
 		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
 	var refused ErrActRefused
 	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
-		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session, sessions, lines or check-in shares alone buy none") {
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none") {
 		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
 	}
 	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||

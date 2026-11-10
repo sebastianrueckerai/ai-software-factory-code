@@ -137,7 +137,7 @@ var Actions = []Action{
 		case d.AgentTime > MaxExtendMinutes*time.Minute:
 			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
 		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
-			return "this card stopped for agent time: an extend of its agent time starts the next session, sessions, lines or check-in shares alone buy none"
+			return "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -481,7 +481,14 @@ func weighedDraw(f CaseFacts) (DrawFacts, bool) {
 // draw nothing.
 func boughtNothingText(f CaseFacts) string {
 	d, _ := weighedDraw(f)
-	return "the last draw at " + d.At.UTC().Format("15:04") + " UTC bought nothing, with no push since and the head, " +
+	what, since := "draw", "push"
+	if f.Kind == CaseAgentTimeCap {
+		what = "agent-time draw"
+	}
+	if f.Planner {
+		since = "plan revision"
+	}
+	return "the last " + what + " at " + d.At.UTC().Format("15:04") + " UTC bought nothing, with no " + since + " since and the head, " +
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 

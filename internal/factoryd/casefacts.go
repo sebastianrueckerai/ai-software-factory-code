@@ -61,6 +61,7 @@ type CaseFacts struct {
 	TimeDraw     *DrawFacts  `json:"time_draw,omitempty"`
 	Pushed       bool        `json:"pushed,omitempty"` // a session pushed a branch head
 	Dependencies []DepFact   `json:"dependencies,omitempty"`
+	Planner      bool        `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
 	Plan         string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
 	Running      bool        `json:"running,omitempty"` // a session is live
 	Autonomy     string      `json:"autonomy"`
@@ -102,7 +103,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Running: t.Status == "running", Autonomy: project.AutonomyState()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}
@@ -202,8 +203,10 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 // gate_head row unless f has one, the newest model_review of the head,
 // and the newest draw from the pool, when its row recorded the head and
 // the checks, with the findings it recorded and whether a session pushed
-// after it. A row of no sessions, no agent time and no money, an extend
-// of lines or of a check-in share alone, drew nothing and is no draw.
+// after it or a planner filed a revision. A row of no sessions, no agent
+// time and no money, an extend of lines or of a check-in share alone,
+// drew nothing and is no draw. TimeDraw is the newest draw that raised
+// agent time, read the same way: the one an agent time stop weighs.
 func (f *CaseFacts) eventFacts(events []Event) {
 	word := func(e Event, k string) string { s, _ := e.Detail[k].(string); return s }
 	pushed := func(e Event) bool { return e.Kind == EventSessionPushed }

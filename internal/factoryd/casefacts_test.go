@@ -146,6 +146,9 @@ func (g factsRig) timeline(t *testing.T) {
 //   - the card draw 2, 1h, 4 of a medium card is 3, 1h30m, 6 for a large
 //     one, less t1's draws of rungs 0 and 1: 1 session, 5 minutes, and
 //     October's 2.00 = 2, 1h25m, 4.00
+//   - the time draw is the newest pool row that raised agent time: the
+//     09:00 extend of 300 s on h1, red, no findings recorded, with the
+//     pushes of s2 and s3 after it
 func TestTripFactsReadsTheCard(t *testing.T) {
 	g := newFactsRig(t)
 	g.card()
