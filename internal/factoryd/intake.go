@@ -461,7 +461,7 @@ func workflowPath(p string) bool {
 	clean := path.Clean(p)
 	top, _, _ := strings.Cut(clean, "/")
 	_, ok := WorkflowDir(top)
-	return ok && !path.IsAbs(clean)
+	return ok
 }
 
 // workflowOnly tells whether every path in paths sits under a workflow

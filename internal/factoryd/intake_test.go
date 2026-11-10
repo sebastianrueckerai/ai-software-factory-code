@@ -2776,3 +2776,21 @@ func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
 		})
 	}
 }
+
+func TestWorkflowOnly(t *testing.T) {
+	for _, tc := range []struct {
+		paths []string
+		want  bool
+	}{
+		{[]string{".forgejo/workflows/pr.yml"}, true},
+		{[]string{"./.github", ".Gitea/y.yml"}, true},
+		{[]string{".forgejo/x", "internal/x.go"}, false},
+		{[]string{"/.forgejo/x"}, false},
+		{[]string{".forgejo-helper/x"}, false},
+		{nil, false},
+	} {
+		if got := workflowOnly(tc.paths); got != tc.want {
+			t.Errorf("workflowOnly(%q) = %v, want %v", tc.paths, got, tc.want)
+		}
+	}
+}
