@@ -1517,3 +1517,29 @@ func TestInboundBriefSanitisesThePriorBodyAndHandoverForEveryAuthor(t *testing.T
 		}
 	}
 }
+
+func TestOpencodeApplyPatchEmitsOneFileChangePerFile(t *testing.T) {
+	part, _ := json.Marshal(map[string]any{"tool": "apply_patch", "state": map[string]any{"status": "completed",
+		"input":    map[string]any{"patchText": "*** Begin Patch\n*** Add File: a.go\n+x\n*** Add File: b.go\n+y\n*** End Patch"},
+		"metadata": map[string]any{"files": []map[string]any{{"filePath": "/ws/a.go", "relativePath": "a.go"}, {"relativePath": "b.go"}}}}})
+	events := parseLines(&opencodeParser{workDir: t.TempDir()}, `{"type":"tool_use","part":`+string(part)+`}`)
+	var paths []string
+	for _, ev := range events {
+		if ev.Kind != harness.EventFileChange {
+			t.Fatalf("event = %+v, want only file changes", ev)
+		}
+		paths = append(paths, ev.Detail["path"].(string))
+	}
+	if !reflect.DeepEqual(paths, []string{"/ws/a.go", "b.go"}) {
+		t.Fatalf("paths = %v, want the two files the patch wrote", paths)
+	}
+}
+
+func TestOpencodeMultiEditIsAFileChange(t *testing.T) {
+	part, _ := json.Marshal(map[string]any{"tool": "multiedit", "state": map[string]any{"status": "completed",
+		"input": map[string]any{"filePath": "a.go", "edits": []any{}}}})
+	events := parseLines(&opencodeParser{workDir: t.TempDir()}, `{"type":"tool_use","part":`+string(part)+`}`)
+	if len(events) != 1 || events[0].Kind != harness.EventFileChange || events[0].Detail["path"] != "a.go" {
+		t.Fatalf("events = %+v, want one file change of a.go", events)
+	}
+}

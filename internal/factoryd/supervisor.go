@@ -164,13 +164,7 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 			b.g.Commands = b.g.Commands[len(b.g.Commands)-digestCommands:]
 		}
 	case harness.EventFileChange:
-		path := detailString(ev, "path")
-		b.g.Files[path]++
-		b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
-		if len(b.files) > digestFiles {
-			delete(b.g.Files, b.files[0])
-			b.files = b.files[1:]
-		}
+		b.noteFile(detailString(ev, "path"), 1)
 	case harness.EventToolCall:
 		b.g.ToolCalls++
 		if detailBool(ev, "subagent") {
@@ -185,6 +179,33 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 		ins, _ := toInt(diff["insertions"])
 		del, _ := toInt(diff["deletions"])
 		b.g.Diff = DigestDiff{Files: files, Insertions: ins, Deletions: del, Patch: detailString(ev, "patch")}
+		// a file written through a shell shows only in the session's diff
+		for path := range diffFiles(b.g.Diff.Patch) {
+			if !b.counted(path) {
+				b.noteFile(path, 0)
+			}
+		}
+	}
+}
+
+// counted: the diff's repository-relative path is one of the files the
+// events named, whose paths may be absolute.
+func (b *digestBuilder) counted(rel string) bool {
+	for p := range b.g.Files {
+		if p == rel || strings.HasSuffix(p, "/"+rel) {
+			return true
+		}
+	}
+	return false
+}
+
+// noteFile counts n edits of path, the file edited last last.
+func (b *digestBuilder) noteFile(path string, n int) {
+	b.g.Files[path] += n
+	b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
+	if len(b.files) > digestFiles {
+		delete(b.g.Files, b.files[0])
+		b.files = b.files[1:]
 	}
 }
 

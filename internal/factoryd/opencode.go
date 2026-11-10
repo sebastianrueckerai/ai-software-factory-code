@@ -1169,7 +1169,11 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 			Output   string         `json:"output"`
 			Error    string         `json:"error"`
 			Metadata struct {
-				Exit *int `json:"exit"`
+				Exit  *int `json:"exit"`
+				Files []struct {
+					FilePath     string `json:"filePath"`
+					RelativePath string `json:"relativePath"`
+				} `json:"files"`
 			} `json:"metadata"`
 			Time struct {
 				Start int64 `json:"start"`
@@ -1210,19 +1214,15 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 			detail["exit"] = *part.State.Metadata.Exit
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventCommand, Detail: detail})
-	case "write", "edit", "patch":
-		detail := map[string]any{"path": part.State.Input["filePath"], "tool": part.Tool, "duration_ms": duration}
-		if path, ok := part.State.Input["filePath"].(string); ok && path != "" {
-			if !filepath.IsAbs(path) {
-				path = filepath.Join(p.workDir, path)
-			}
-			sum, size := fileSHA256(path)
-			detail["sha256"] = sum
-			if sum != "" {
-				detail["bytes"] = int(size)
-			}
+	case "write", "edit", "patch", "multiedit":
+		path, _ := part.State.Input["filePath"].(string)
+		emit(p.fileChange(path, part.Tool, duration, at))
+	case "apply_patch":
+		// one patch writes many files: its input is the patch text, and
+		// the files it touched are the result's
+		for _, f := range part.State.Metadata.Files {
+			emit(p.fileChange(cmp.Or(f.FilePath, f.RelativePath), part.Tool, duration, at))
 		}
-		emit(harness.Event{Time: at, Kind: harness.EventFileChange, Detail: detail})
 	default:
 		detail := map[string]any{
 			"tool":        part.Tool,
@@ -1236,6 +1236,23 @@ func (p *opencodeParser) toolUse(partJSON []byte, at time.Time, subagent bool, e
 		}
 		emit(harness.Event{Time: at, Kind: harness.EventToolCall, Detail: detail})
 	}
+}
+
+// fileChange is the event of a file a tool wrote, with the content's hash
+// when the file is there to read.
+func (p *opencodeParser) fileChange(path, tool string, duration int64, at time.Time) harness.Event {
+	detail := map[string]any{"path": path, "tool": tool, "duration_ms": duration}
+	if path != "" {
+		if !filepath.IsAbs(path) {
+			path = filepath.Join(p.workDir, path)
+		}
+		sum, size := fileSHA256(path)
+		detail["sha256"] = sum
+		if sum != "" {
+			detail["bytes"] = int(size)
+		}
+	}
+	return harness.Event{Time: at, Kind: harness.EventFileChange, Detail: detail}
 }
 
 const (

@@ -275,3 +275,16 @@ func testSupervisorModel(url string) *SupervisorModel {
 		Budget:     TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000},
 	}
 }
+
+func TestDigestCountsFilesOnlyAShellWroteFromTheCheckpointDiff(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	d := newDigestBuilder(t0)
+	d.add(cmdEvent("cat > a.go <<EOF", 0, ""), t0.Add(time.Second))
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff":  map[string]any{"files": float64(2), "insertions": float64(3), "deletions": float64(0)},
+		"patch": "diff --git a/a.go b/a.go\n--- /dev/null\n+++ b/a.go\n@@ -0,0 +1 @@\n+x\ndiff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1,2 @@\n+y\n+z\n"}}, t0.Add(2*time.Second))
+	want := "1 commands (0 failed), 2 files changed 0 times, 0 other tool calls, diff 2 files +3/-0"
+	if got := d.digest().Summary(); got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+}
