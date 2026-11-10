@@ -16,7 +16,6 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/writingguide"
 )
@@ -804,14 +803,10 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 				var cut bool
 				var terr error
 				if resp.ToolErr != "" {
-					scrub := r.Scrub
-					if scrub == nil {
-						scrub = redact.New()
-					}
-					excerpt := textutil.Truncate(scrub.String(resp.ToolRaw), 200)
+					excerpt := textutil.Truncate(r.Scrub.String(resp.ToolRaw), 200)
 					args = []byte(excerpt)
 					terr = fmt.Errorf("the arguments are not one JSON object (%s): %s; call %s again with one JSON object of its parameters: %s",
-						scrub.String(resp.ToolErr), excerpt, resp.ToolName, toolShape(checkinToolsFor(ask.Moment), resp.ToolName))
+						r.Scrub.String(resp.ToolErr), excerpt, resp.ToolName, toolShape(checkinToolsFor(ask.Moment), resp.ToolName))
 				} else {
 					out, cut, terr = tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
 				}
