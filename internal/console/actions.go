@@ -1894,13 +1894,18 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	return c.choiceDone(ctx, a, t, k.ID, closing, said, posted)
 }
 
-// closePlan closes done plan t as a: factoryd waives every open criterion
-// with the note as the reason, records plan_closed and ends the plan's
-// criteria asks in one write, an approver's act as the waive press is; then
-// the issue hears the closing words and closes as a, so the card ends
-// closed. An issue close that fails after the write is finished by the
-// sweep.
+// closePlan closes plan t at rest as a: the issue's own dependencies come
+// off first (freeForClose), as Forgejo refuses to close over them; then
+// factoryd waives every open criterion with the note as the reason, ends the
+// plan's criteria asks and, once every card is final, records plan_closed,
+// in one write, an approver's act as the waive press is; then the issue
+// hears the closing words and closes as a, so the card ends closed. An
+// issue close that fails after the write is finished by the sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
+	freed, err := c.freeForClose(ctx, a, t, "")
+	if err != nil {
+		return "", err
+	}
 	n, words, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, c.isApprover(ctx, a.s.user, t.Repository))
 	switch {
 	case errors.Is(err, factoryd.ErrNotApprover):
@@ -1910,9 +1915,9 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 	case errors.Is(err, factoryd.ErrNoteTooLong):
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The note of a plan's Close is at most %d bytes, as it becomes each waiver's reason: shorten it.", factoryd.MaxWaiverNote))
 	case errors.Is(err, factoryd.ErrPlanClosed):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is closed already, and its merged cards stay on main.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is closed already, and its merged cards stay on main: reload the board.", t.IssueNumber))
 	case errors.Is(err, factoryd.ErrNotDonePlan):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is not done any more, so Close no longer fits: reload the board.", t.IssueNumber))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is no longer at rest, so Close no longer fits: reload the board.", t.IssueNumber))
 	case err != nil:
 		log.Printf("console: %s closes plan %s: %v", a.s.user, t.ID, err)
 		text, _, _ := strings.Cut(errText(err), " (type: ")
@@ -1926,9 +1931,14 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 		if err := c.commentOnce(ctx, a, t, words); err != nil {
 			return "", &forgejoRefusal{what: "post the closing words", err: err}
 		}
-		if _, err := c.closeIssueNoted(ctx, a, t, words); err != nil {
-			return "", err
+		if freed != "" {
+			if err := c.comment(ctx, a, t, freed, nil); err != nil {
+				return "", &forgejoRefusal{what: "post the removed dependencies", err: err}
+			}
 		}
+	}
+	if _, err := c.closeIssueNoted(ctx, a, t, words); err != nil {
+		return "", err
 	}
 	card := "plan " + t.ID
 	if t.IssueNumber != 0 {

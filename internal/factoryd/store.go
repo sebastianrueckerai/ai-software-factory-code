@@ -664,10 +664,11 @@ type Store interface {
 	// PlansBetweenRounds are the done or closed plan cards without a
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
-	// PlanClosesToFinish are the done plan cards whose person's Close
-	// recorded plan_closed, by plan id with the closing words: their
-	// issue close is still to finish; a row of the last minute is the
-	// console's own close in progress.
+	// PlanClosesToFinish are the done or failed plan cards whose person's
+	// Close recorded plan_closed, by plan id with the closing words: their
+	// issue close is still to finish. A row of the last minute is the
+	// console's own close in progress: its four Forgejo calls time out at
+	// 15 s each, so it has ended well before the sweep takes the row.
 	PlanClosesToFinish(ctx context.Context) (map[string]string, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.

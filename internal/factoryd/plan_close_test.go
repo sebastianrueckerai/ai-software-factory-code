@@ -8,8 +8,10 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"slices"
+	"strconv"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
@@ -263,5 +265,69 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 	r.finishPlanClose(ctx, "t-plan", "closed by sebastian; its merged cards stay on main")
 	if len(stub.writes) == 0 || !strings.HasPrefix(stub.writes[0], "POST ") {
 		t.Fatalf("the next pass: writes %q; want the comment first", stub.writes)
+	}
+}
+
+// A plan none of whose cards holds an unreverted merge holds nothing in
+// production: nothing is open, a writer's Close takes it, and a done one's
+// issue close ends it without a hold; a reverted merge counts as none.
+func TestPlanWithoutAMergeHoldsNothing(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := plannedCards(t, nil, "done")
+	card := s.tasks["card-1"]
+	card.MergeCommit = ""
+	s.tasks["card-1"] = card
+	setStatus(s, "t-plan", "failed")
+	if n, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 {
+		t.Fatalf("a writer's Close of an unmerged failed plan = %d, %v; want 0 and no error", n, err)
+	}
+	_, s, _ = plannedCards(t, nil, "done")
+	reverted := time.Now()
+	card = s.tasks["card-1"]
+	card.RevertedAt = &reverted
+	s.tasks["card-1"] = card
+	if open, _, err := planOpen(ctx, s, "t-plan", criteriaPlan()); err != nil || len(open) != 0 {
+		t.Errorf("planOpen with only a reverted merge = %v, %v; want none", open, err)
+	}
+	if open, _, err := planOpen(ctx, s, "t-plan", Plan{Criteria: criteriaPlan().Criteria}); err != nil || len(open) != 0 {
+		t.Errorf("planOpen again = %v, %v; want none", open, err)
+	}
+}
+
+// A plan whose every criterion stands met closes only once its other cards
+// are settled too: a card still running keeps the plan open, so a card that
+// merges later still opens its group.
+func TestMetCriteriaWaitForARunningCard(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done", "running")
+	var rows []CriterionVerdict
+	for i := 1; i <= 10; i++ {
+		rows = append(rows, CriterionVerdict{Criterion: "k" + strconv.Itoa(i), Verdict: "met", Kind: CriterionInvariant})
+	}
+	if err := s.PutCriteriaVerdicts(ctx, "card-1", "review", FactoryDecider, rows); err != nil {
+		t.Fatal(err)
+	}
+	r.planCloseCheck(ctx, "t-plan")
+	if closeRows(s) != 0 {
+		t.Fatalf("plan_closed recorded with card-2 running")
+	}
+	setStatus(s, "card-2", "done")
+	r.planCloseCheck(ctx, "t-plan")
+	if closeRows(s) != 1 {
+		t.Errorf("plan_closed rows %d once card-2 ended, want 1", closeRows(s))
+	}
+}
+
+// The finish takes a failed plan whose close recorded its row too.
+func TestCriteriaPassFinishesAFailedPlanClose(t *testing.T) {
+	ctx := context.Background()
+	r, s, fj := tenCriteriaPlan(t, "done")
+	setStatus(s, "t-plan", "failed")
+	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+		t.Fatal(err)
+	}
+	r.CriteriaPass(ctx)
+	if got, status := commentBodies(fj), s.tasks["t-plan"].Status; len(got) != 1 || status != "closed" || fj.issues[1].state != "closed" {
+		t.Errorf("comments %q, status %q, issue %q; want the words once, closed, closed", got, status, fj.issues[1].state)
 	}
 }

@@ -235,10 +235,11 @@ type Config struct {
 	// one, with their words (factoryd.DecideCriterion).
 	GrantCriteria   func(ctx context.Context, id, by string, approval int64) (int, error)
 	DecideCriterion func(ctx context.Context, id, cid, verdict, by, reason string) error
-	// CloseHeldPlan waives every open criterion of done plan id with the
-	// note and records its plan_closed in one write, and answers how many
-	// it waived and the words its issue hears (Runner.CloseHeldPlan);
-	// approver says by is one.
+	// CloseHeldPlan waives every open criterion of plan id at rest (done,
+	// failed or closed) with the note, ends its criteria asks and, once
+	// every card is final, records its plan_closed, in one write. It answers
+	// how many it waived and the words its issue hears
+	// (Runner.CloseHeldPlan); approver says by is one.
 	CloseHeldPlan func(ctx context.Context, id, by, note string, approver bool) (waived int, words string, err error)
 	// ConfirmDeliveredCriteria meets every open criterion of plan id on
 	// the human's line (factoryd.ConfirmDeliveredCriteria); a card of the

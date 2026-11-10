@@ -1440,8 +1440,8 @@ func TestPlanCloseCheckWaitsForTheLastRound(t *testing.T) {
 }
 
 // A person closed the plan card: once no card of the plan is open, the
-// plan closes and its group with it, whatever its criteria, its outline
-// or its pending round.
+// plan closes and its group with it, whatever its outline or its pending
+// round, unless a criterion is open on a plan with a merged card.
 func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 	ctx := context.Background()
 	want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
@@ -1470,6 +1470,7 @@ func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 	}
 
 	s = seedVerdictPlan(t, "t-plan", "t-int", "done")
+	mergeCard(s, "t-int")
 	if err := s.PutCriteriaVerdicts(ctx, "t-int", "review", FactoryDecider, []CriterionVerdict{
 		{Criterion: "c1", Verdict: "unmet", Evidence: "x", Kind: CriterionTest},
 	}); err != nil {
@@ -1491,6 +1492,7 @@ func TestClosedPlanCardClosesItsGroup(t *testing.T) {
 func TestClosedPlanCardKeepsItsCriteriaApprovalUntilAnApproverCloses(t *testing.T) {
 	ctx := context.Background()
 	s := seedVerdictPlan(t, "t-plan", "t-int", "done")
+	mergeCard(s, "t-int")
 	task := s.tasks["t-plan"]
 	task.Track = policy.TrackPlan
 	s.tasks["t-plan"] = task
@@ -1883,6 +1885,7 @@ func TestCloseHeldPlanRecordsPlanClosedWithTheWaivers(t *testing.T) {
 func TestCloseHeldPlanBetweenRoundsWithoutAnIntegrationCard(t *testing.T) {
 	ctx := context.Background()
 	r, s, _ := firstOfRounds(t, "done")
+	mergeCard(s, "card-foundation")
 	task := s.tasks["t-plan"]
 	task.Track = policy.TrackPlan
 	s.tasks["t-plan"] = task

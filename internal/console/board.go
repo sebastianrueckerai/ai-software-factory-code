@@ -580,11 +580,13 @@ type card struct {
 	// (factoryd.RoundLine), shown in place of its rollup; "" for a plan
 	// of one round or filed before rounds.
 	Round string
-	// DonePlan is a done plan card (factoryd.DonePlan) that still holds
-	// production, no plan_closed row yet: a writer's Close ends it.
+	// DonePlan is a plan card at rest (factoryd.ClosablePlan) that still
+	// holds production, no plan_closed row yet, and a closed one only with
+	// open criteria: its Close ends it.
 	DonePlan bool
-	// OpenCriteria counts the done plan's criteria that stand neither met
-	// nor waived: its Close waives each with the note it asks for.
+	// OpenCriteria counts the plan's criteria that stand neither met nor
+	// waived while a card holds a merge: its Close waives each with the
+	// note it asks for.
 	OpenCriteria int
 	// Blocked is how many cards this one depends on that are not done;
 	// BlockedOn names their issues in its title attribute ("#3, #5").
@@ -611,8 +613,8 @@ type card struct {
 }
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
-// a human, or failed, which has no other way out, or a done plan that
-// holds production still (no plan_closed row). A card whose question offers a close, or a
+// a human, or failed, which has no other way out, or a plan at rest that
+// holds production still. A card whose question offers a close, or a
 // choice card, offers its choices alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
@@ -2015,9 +2017,12 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 		}
 		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
 	}
-	if t.Track == policy.TrackPlan && t.Status == "failed" {
-		if _, p, ok, err := c.planTable(ctx, t.ID, 0); err == nil && ok {
-			c.planHold(ctx, v, t, p, &k)
+	if t.Track == policy.TrackPlan && (t.Status == "failed" || t.Status == "closed") {
+		// a plan whose plan_closed row stands holds nothing: no further reads
+		if _, closed, err := c.cfg.Tasks.PlanClosed(ctx, t.ID); err == nil && !closed {
+			if _, p, ok, err := c.planTable(ctx, t.ID, 0); err == nil && ok {
+				c.planHold(ctx, v, t, p, &k)
+			}
 		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
@@ -3827,7 +3832,8 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 }
 
 // planHold fills k with plan t's production hold: Close is offered while no
-// plan_closed row stands, and with the note's form while criteria are open.
+// plan_closed row stands (a closed plan: while criteria are open), and with
+// the note's form while criteria are open.
 func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
 	open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
 	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
@@ -3837,5 +3843,5 @@ func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p
 		return
 	}
 	k.OpenCriteria = len(open)
-	k.DonePlan = !closed
+	k.DonePlan = !closed && (t.Status != "closed" || len(open) > 0)
 }

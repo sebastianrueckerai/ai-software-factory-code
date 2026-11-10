@@ -596,7 +596,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 func (s *fakeStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
 	for _, e := range s.events {
-		if words, _ := e.Detail["words"].(string); e.Kind == EventPlanClosed && words != "" && DonePlan(s.tasks[e.TaskID]) && (e.At.IsZero() || time.Since(e.At) > time.Minute) {
+		if words, _ := e.Detail["words"].(string); e.Kind == EventPlanClosed && words != "" && (s.tasks[e.TaskID].Status == "done" || s.tasks[e.TaskID].Status == "failed") && (e.At.IsZero() || time.Since(e.At) > time.Minute) {
 			out[e.TaskID] = words
 		}
 	}

@@ -341,6 +341,8 @@ func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p
 
 // planOpen are the criteria of plan id's p that stand neither met nor
 // waived, and the card that holds the rows: the integration card. A plan
+// none of whose cards holds an unreverted merge holds nothing in
+// production, and nothing is open. A plan
 // between rounds (its outline holds later rounds) has filed none yet and
 // has no rows to waive: nothing is open. A plan in its last round that has
 // none keeps its rows on the plan card, and every criterion without one is
@@ -354,6 +356,9 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 		return nil, "", err
 	}
 	home = id
+	if !slices.ContainsFunc(cards, func(c Task) bool { return c.MergeCommit != "" && c.RevertedAt == nil }) {
+		return nil, id, nil
+	}
 	if integration, ok := integrationCardOf(cards, p); ok {
 		home = integration.ID
 	} else if len(p.Outline) > 0 {
@@ -1132,7 +1137,9 @@ func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
 // bounded card or waive, and pokes them. A gap it asked about before, in
 // the same shape, asks again never: only a changed gap re-opens the
 // question. A plan whose card a person closed closes once none of its
-// cards is open, in any round and whatever its criteria.
+// cards is open, in any round, unless a criterion is open while a card of
+// the plan holds a merge: that plan keeps its hold until an approver's
+// Close, and the check says so once on its issue.
 func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
@@ -1209,6 +1216,15 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	if len(openCriteria(p, rows)) == 0 {
 		reached := integration.Status == "merged" || integration.Status == "done"
 		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
+			return
+		}
+		cards, err := r.store.PlanCards(ctx, parent)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		// a card that merged is settled for the hold, as the integration card is
+		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
 			return
 		}
 		for _, kind := range criteriaKinds {
@@ -1498,7 +1514,7 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 	return slices.Sorted(maps.Keys(parents))
 }
 
-// finishPlanClose finishes a person's Close of done plan id whose issue
+// finishPlanClose finishes a person's Close of done or failed plan id whose issue
 // close failed after plan_closed was recorded: the issue hears the closing
 // words once and closes, and the card ends closed. A words post that fails
 // leaves the issue open and the close to the next pass.
@@ -1517,7 +1533,7 @@ func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 			return
 		}
 	}
-	if err := r.store.TransitionTask(ctx, id, []string{"done"}, "closed"); err != nil {
+	if err := r.store.TransitionTask(ctx, id, []string{"done", "failed"}, "closed"); err != nil {
 		log.Printf("plan %s: finish its close: %v", id, err)
 	}
 }

@@ -2055,6 +2055,8 @@ func TestClosingADonePlanEndsItClosed(t *testing.T) {
 		if _, err := store.AddPlanRevision(context.Background(), "t-plan", json.RawMessage(planJSON(t, tc.plan)), "sha-1"); err != nil {
 			t.Fatal(err)
 		}
+		// a merged card makes the plan hold production
+		store.tasks["t-card"] = Task{ID: "t-card", Repository: "sf/ai-software-factory-code", Parent: "t-plan", Source: SourcePlan, PlanKey: "foundation", Status: "done", MergeCommit: "abc"}
 		if tc.recorded {
 			store.InsertIntakeEvent(context.Background(), IntakeEvent{TaskID: "t-plan", Kind: IntakeFactoryClosed, Author: "factoryd", CommentID: 4})
 		}
