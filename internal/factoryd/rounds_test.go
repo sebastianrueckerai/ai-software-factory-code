@@ -899,6 +899,8 @@ func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
 	}
 }
 
+// deltaCardAnswer's key, "delta-911f3ad0", is the first 8 hex digits of
+// printf 't-plan\n1\nredirect_302 grant 9' | sha256sum.
 const deltaCardAnswer = `{"card": {"title": "Fix the stats", "brief": "Count each redirect once.", "depends_on": ["stats"], ` +
 	`"acceptance": [{"criterion": "redirect_302", "text": "TestStats in internal/stats: two redirects: clicks 2"}], "size": "small"}}`
 
@@ -916,17 +918,20 @@ func TestDeltaPassRunsADueRound(t *testing.T) {
 	}
 	r.DeltaPass(pass)
 	card, filed := deltaCard(t, store)
-	due := []PlanCatch{{Detail: "redirect_302 grant 9"}}
-	if !filed || card.PlanKey != deltaKey("t-plan", 1, due) || catchesOfKind(t, store, CatchDeltaFiled) != 1 || len(model.chats) != 1 {
+	if !filed || card.PlanKey != "delta-911f3ad0" || catchesOfKind(t, store, CatchDeltaFiled) != 1 || len(model.chats) != 1 {
 		t.Fatalf("delta card filed %v with key %q; %d filed marks; %d calls", filed, card.PlanKey, catchesOfKind(t, store, CatchDeltaFiled), len(model.chats))
 	}
 }
 
 // A round that runs twice for the same due, as after a restart between the
-// filing and its mark, files one card, whatever key the second answer names.
+// filing and its mark, files one card although the two answers name
+// different keys.
 func TestDeltaRoundFilesOneCardForADueRunTwice(t *testing.T) {
 	ctx := context.Background()
-	model := &fakeLiteLLM{content: deltaCardAnswer}
+	named := func(key string) string {
+		return strings.Replace(deltaCardAnswer, `{"card": {`, `{"card": {"key": "`+key+`", `, 1)
+	}
+	model := &fakeLiteLLM{contents: []string{named("fix-stats"), named("fix-stats-again")}}
 	r, store, _, _ := deltaRig(t, model, 0)
 	t1, repo, err := r.task(ctx, "t-plan")
 	if err != nil {

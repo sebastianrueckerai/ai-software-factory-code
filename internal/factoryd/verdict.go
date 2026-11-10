@@ -1181,10 +1181,11 @@ func (r *Runner) DeltaPass(ctx context.Context) {
 	}
 	ran := 0
 	for _, parent := range append(parents[start:], parents[:start]...) {
-		if ran > 0 {
-			if dl, ok := ctx.Deadline(); ctx.Err() != nil || ok && time.Until(dl) < r.deltaRoundBound() {
-				return
-			}
+		if ctx.Err() != nil {
+			return
+		}
+		if dl, ok := ctx.Deadline(); ran > 0 && ok && time.Until(dl) < r.deltaRoundBound() {
+			return
 		}
 		if r.draftDue(ctx, parent) {
 			ran++
