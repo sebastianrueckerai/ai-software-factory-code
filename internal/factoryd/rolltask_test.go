@@ -67,11 +67,51 @@ func (s *fakeStore) OpenRollTask(ctx context.Context, repository string) (Task, 
 }
 
 func (s *fakeStore) InsertRollRequest(ctx context.Context, r RollRequest) error {
-	if seen, _ := s.RollRequestSeen(ctx, r.SHA); seen {
-		return fmt.Errorf("roll request %s exists", r.SHA)
+	if i := slices.IndexFunc(s.rolls, func(o RollRequest) bool { return o.SHA == r.SHA }); i >= 0 {
+		if s.rolls[i].State != RollFailed {
+			return fmt.Errorf("roll request %s exists", r.SHA)
+		}
+		r.Retries = s.rolls[i].Retries + 1
+		s.rolls[i] = r
+		delete(s.rollSettled, r.SHA)
+		return nil
 	}
 	s.rolls = append(s.rolls, r)
 	return nil
+}
+
+// RetryableRoll mirrors the store's read.
+func (s *fakeStore) RetryableRoll(ctx context.Context, repository string, settledBefore time.Time, bound int) (string, bool, error) {
+	var newest RollRequest
+	merged := int64(0)
+	for _, r := range s.rolls {
+		if r.Repository != repository {
+			continue
+		}
+		if r.State == RollOpened {
+			return "", false, nil
+		}
+		if r.State == RollMerged {
+			merged = max(merged, r.RunID)
+		}
+		if r.RunID > newest.RunID {
+			newest = r
+		}
+	}
+	at, settled := s.rollSettled[newest.SHA]
+	if newest.State != RollFailed || !settled || at.After(settledBefore) {
+		return "", false, nil
+	}
+	failures := 0
+	for _, r := range s.rolls {
+		if r.Repository == repository && r.State == RollFailed && r.RunID > merged {
+			failures += 1 + r.Retries
+		}
+	}
+	if failures >= bound {
+		return "", false, nil
+	}
+	return newest.SHA, true, nil
 }
 
 func (s *fakeStore) DeleteRollRequest(ctx context.Context, sha string) error {
@@ -105,6 +145,10 @@ func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, erro
 			r.State = RollFailed
 		}
 		s.UpdateRollRequest(ctx, r)
+		if s.rollSettled == nil {
+			s.rollSettled = map[string]time.Time{}
+		}
+		s.rollSettled[r.SHA] = s.rollNow()
 		settled = append(settled, r)
 	}
 	for _, sha := range gone {
@@ -116,6 +160,13 @@ func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, erro
 		}
 	}
 	return settled, nil
+}
+
+func (s *fakeStore) rollNow() time.Time {
+	if s.rollClock != nil {
+		return s.rollClock()
+	}
+	return time.Now()
 }
 
 func (s *fakeStore) UpdateRollRequest(ctx context.Context, r RollRequest) {

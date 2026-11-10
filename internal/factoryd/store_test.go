@@ -71,6 +71,8 @@ type fakeStore struct {
 	alertsMu       sync.Mutex
 	alerts         []Alert
 	rolls          []RollRequest
+	rollSettled    map[string]time.Time // when each roll request settled failed
+	rollClock      func() time.Time
 	chain          []fakeChainRun
 	chainNow       func() time.Time // stamps the fake's chain writes; zero where nil
 	unsettledReads int              // the UnsettledChainCommits calls served
