@@ -577,6 +577,9 @@ func (s *accBatchStore) TasksByPR(ctx context.Context, repository string, pr int
 func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling string) ([]factoryd.Task, error) {
 	return s.tasks.TasksByRuling(ctx, repository, ruling)
 }
+func (s *accBatchStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	panic("unused")
+}
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
 }
@@ -725,6 +728,9 @@ func (s *accBatchStore) EndCaseStep(ctx context.Context, id int64, outcome, foun
 func (s *accBatchStore) SetCaseStatus(ctx context.Context, id int64, status string) error {
 	panic("unused")
 }
+func (s *accBatchStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
+	panic("unused")
+}
 func (s *accBatchStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {
 	panic("unused")
 }
@@ -861,6 +867,14 @@ func (s *accBatchStore) PlanClosed(context.Context, string) (time.Time, bool, er
 	panic("unused")
 }
 
+func (s *accBatchStore) PlanClosesToFinish(context.Context) (map[string]string, error) {
+	panic("unused")
+}
+
+func (s *accBatchStore) PlanMerged(context.Context, string) (bool, error) {
+	panic("unused")
+}
+
 func (s *accBatchStore) PlansBetweenRounds(context.Context) ([]string, error) {
 	panic("unused")
 }
@@ -913,6 +927,10 @@ func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, str
 	panic("unused")
 }
 
+func (s *accBatchStore) ClosePlanWithWaivers(context.Context, string, string, func(context.Context) (factoryd.PlanClose, error)) error {
+	panic("unused")
+}
+
 func (s *accBatchStore) DeleteVerdictsButApprover(context.Context, string, string) error {
 	panic("unused")
 }
@@ -960,6 +978,15 @@ func (s *accBatchStore) DrawCard(ctx context.Context, taskID string, d factoryd.
 	panic("unused")
 }
 func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan json.RawMessage, sha string) (int, error) {
+	panic("unused")
+}
+func (s *accBatchStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
+	panic("unused")
+}
+func (s *accBatchStore) DeletePlanDraft(ctx context.Context, id string) error {
+	panic("unused")
+}
+func (s *accBatchStore) PlanDraft(ctx context.Context, id string) (factoryd.PlanDraft, bool, error) {
 	panic("unused")
 }
 func (s *accBatchStore) PutPlanQuestions(ctx context.Context, id string, revision int, qs []factoryd.PlanQuestion) (bool, error) {
@@ -1810,3 +1837,9 @@ func (s *accBatchStore) MarkReverted(context.Context, string, time.Time) (bool, 
 func (s *accBatchStore) ClearRevertPause(context.Context, string, string) error {
 	return nil
 }
+
+func (s *accBatchTasks) PlanClosed(context.Context, string) (time.Time, bool, error) {
+	return time.Time{}, false, nil
+}
+
+func (s *accBatchTasks) PlanMerged(context.Context, string) (bool, error) { return false, nil }

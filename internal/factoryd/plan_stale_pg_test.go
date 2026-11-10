@@ -104,3 +104,54 @@ func TestPGStorePlanStaleness(t *testing.T) {
 		t.Fatalf("the brief = %q, image %q, rung %q, size %q", got.Objective, got.Image, got.Rung, got.Size)
 	}
 }
+
+// Requires a disposable Postgres. A plan's human card, filed as
+// fileChildren files a workflow card, holds its dependents until its Done,
+// wakes them then, counts in the plan's cards and ends the plan's delivery
+// check only when done.
+func TestPGStorePlanHumanChild(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd_plan_human_child"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	base := Task{Kind: "agent", Repository: "sf/r", BudgetEUR: 1}
+	plan := base
+	plan.ID, plan.Status, plan.Track, plan.IssueNumber = "t-plan", "running", "plan", 1
+	if err := s.CreateTask(ctx, plan); err != nil {
+		t.Fatal(err)
+	}
+	human := Task{ID: "t-ci", Kind: "human", Status: "waiting-human", Repository: "sf/r", BudgetEUR: 1, Source: SourcePlan, Parent: "t-plan", PlanKey: "ci", IssueNumber: 2}
+	app := base
+	app.ID, app.Status, app.Track, app.Source, app.Parent, app.PlanKey, app.IssueNumber = "t-app", "waiting-deps", "direct", SourcePlan, "t-plan", "app", 3
+	for _, c := range []Task{human, app} {
+		if _, err := s.CreatePlanCard(ctx, c); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := s.AddTaskDeps(ctx, "t-app", []string{"t-ci"}); err != nil {
+		t.Fatal(err)
+	}
+	if cards, err := s.PlanCards(ctx, "t-plan"); err != nil || len(cards) != 2 {
+		t.Fatalf("PlanCards = %d, %v; want both cards", len(cards), err)
+	}
+	if open, _ := s.OpenDependencies(ctx, "t-app"); len(open) != 1 || open[0].Status != "waiting-human" {
+		t.Fatalf("t-app waits on %+v, want the human's card waiting", open)
+	}
+	if err := s.TransitionTask(ctx, "t-app", []string{"waiting-deps"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if ok, open, err := PlanDelivered(ctx, s, "t-plan"); err != nil || ok || open.ID != "t-ci" {
+		t.Fatalf("PlanDelivered before Done = %v, %q, %v; want false on t-ci", ok, open.ID, err)
+	}
+	if err := s.TransitionTask(ctx, "t-ci", []string{"waiting-human"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if open, _ := s.OpenDependencies(ctx, "t-app"); len(open) != 0 {
+		t.Fatalf("t-app waits on %+v after Done", open)
+	}
+	if ok, _, err := PlanDelivered(ctx, s, "t-plan"); err != nil || !ok {
+		t.Fatalf("PlanDelivered after Done = %v, %v; want true", ok, err)
+	}
+}

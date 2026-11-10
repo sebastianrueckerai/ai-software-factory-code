@@ -228,6 +228,10 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if in.Reason == healedReason && in.Kind == "" {
 		return r.healedTrip(ctx, t, in, at.ID)
 	}
+	note, err := r.planDraftNote(ctx, t.ID, in.Reason)
+	if err != nil {
+		return TripOutcome{}, err
+	}
 	f, err := r.tripFacts(ctx, t, in.Head)
 	if err != nil {
 		return TripOutcome{}, err
@@ -238,6 +242,9 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 		return TripOutcome{}, err
 	}
 	f.atCase(c)
+	if note != "" {
+		c.Facts["plan_draft"] = note
+	}
 	if at.N > 1 {
 		if out, ok, err := r.retriedTrip(ctx, t, cases, at.ID); ok || err != nil {
 			return out, err
@@ -249,6 +256,16 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	c, opened, err := r.store.OpenCase(ctx, c)
 	if err != nil {
 		return TripOutcome{}, err
+	}
+	if !opened {
+		if have, _ := c.Facts["plan_draft"].(string); have != note {
+			if err := r.store.SetCaseFact(ctx, c.ID, "plan_draft", note); err != nil {
+				return TripOutcome{}, err
+			}
+			if err := r.refreshDraftInfo(ctx, t.ID, have, note); err != nil {
+				return TripOutcome{}, err
+			}
+		}
 	}
 	if !opened && c.Status == CaseAtHuman {
 		return r.waitsAtHuman(ctx, t, c, "the same stop again: "+c.Problem)
@@ -357,6 +374,31 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 		return TripOutcome{}, err
 	}
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
+}
+
+// refreshDraftInfo swaps the draft note have in the info of the question
+// the card's newest escalation asked for note, so the face shows the draft
+// as it is now.
+func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string) error {
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Kind != IntakeEscalation || e.Question == nil || e.CommentID == 0 {
+			continue
+		}
+		info := e.Question.Info
+		if have != "" {
+			info = strings.Replace(info, "\n\n"+have, "", 1)
+		}
+		if note != "" {
+			info += "\n\n" + note
+		}
+		return r.store.SetQuestionInfo(ctx, taskID, e.CommentID, info)
+	}
+	return nil
 }
 
 // restartedStop is the reason of the stop card t asked last, which a
@@ -580,15 +622,22 @@ func noRoom(c Case, refund bool) string {
 	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
 }
 
+// monitorFace is the face of a monitor flag on t: the reason's flag text
+// is agent-derived, so it is fenced and scrubbed as every text a human
+// reads.
+func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
+	return monitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
+}
+
 // tripNext is the last line of a trip's face for case c: at a cap, where
 // a reply is a continue that asks again, the Extend form or the chat's
 // extend start the next attempt, at a budget floor the Fund form or the
-// chat's fund, for a monitor flag, whose card goes on, the case by its
-// number in the chat, and elsewhere a reply (replyNext).
+// chat's fund, for a monitor flag, whose card goes on, the flag in the
+// chat, and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
-		return fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", c.ID)
+		return "The card goes on meanwhile. Answer the flag in the project chat."
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseCheckinFailed:
@@ -653,6 +702,17 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
 	}
 	body += "\n\n" + next
+	stop := reason
+	if reason == healedReason {
+		stop, _ = c.Facts["reason"].(string)
+	}
+	note, err := r.planDraftNote(ctx, t.ID, stop)
+	if err != nil {
+		return 0, err
+	}
+	if note != "" {
+		body += "\n\n" + note
+	}
 	if strings.HasPrefix(reason, screeningAsks) {
 		// the reasons go to the card only: they would teach the author
 		body = screenedLine
@@ -677,7 +737,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
 		if beside {
-			shaped = monitorQuestion(reason, c.ID)
+			shaped = r.monitorFace(t, reason)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}
@@ -686,6 +746,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
 		// hold-outs, so its ask is factoryd's words alone.
+		if note != "" {
+			shaped.Info += "\n\n" + note
+		}
 		if t.Source != SourceProver {
 			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
 				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)
