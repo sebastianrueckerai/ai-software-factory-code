@@ -34,7 +34,26 @@ concurrency:
   cancel-in-progress: false
 
 jobs:
+  current:
+    # Forgejo keeps every waiting run of the group, not only the newest, so
+    # a burst of merges queues one full run per head. A run whose commit is
+    # no longer main's head when it starts skips the rest: the roller judges
+    # only main's head.
+    runs-on: ubuntu-latest
+    outputs:
+      head: ${{ steps.head.outputs.head }}
+    steps:
+      - uses: actions/checkout@v4
+      - id: head
+        run: |
+          set -euo pipefail
+          main=$(git ls-remote origin refs/heads/main | cut -f1)
+          echo "head=$([ "$main" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "main is at $main, this run tests $GITHUB_SHA"
+
   upstream:
+    needs: current
+    if: needs.current.outputs.head == 'true'
     # Every outside image of upstream-images.txt, and every other build
     # input (upstream-files.txt, the Go module cache of go.sum, the npm
     # cache of the opencode plugin), into the store before anything builds
