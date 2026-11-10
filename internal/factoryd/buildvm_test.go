@@ -95,7 +95,7 @@ func TestBuildVMUserData(t *testing.T) {
 		"echo \"" + buildkitSHA256 + "  buildkit.tar.gz\" | sha256sum -c -",
 		// the store's copy of the buildkit release, not its upstream
 		// (roadmap 203, step 2)
-		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.33.0/buildkit-v0.33.0.linux-amd64.tar.gz",
+		"https://git.aisoftwarefactory.world/api/packages/upstream/generic/buildkit/v0.34.2/buildkit-v0.34.2.linux-amd64.tar.gz",
 		"--addr tcp://0.0.0.0:1234 --tlscacert /etc/buildkit/ca.pem --tlscert /etc/buildkit/server-cert.pem --tlskey /etc/buildkit/server-key.pem --oci-worker-snapshotter=overlayfs",
 		"bin/buildkit-runc",
 		// the VM's own rules deny every upstream the store fronts
