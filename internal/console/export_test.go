@@ -511,12 +511,13 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 
 	// a configuration the console cannot read names its error and the
 	// next action, not the factoryd log, and files nothing
+	before := len(infra.contents)
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
 		return nil, errors.New("infra: 503")
 	}
 	file(http.StatusBadGateway, "The configuration at infra's head could not be read: infra: 503. Try the switch again, or edit the project file on Forgejo.")
-	if len(infra.contents) != 0 {
-		t.Fatalf("a failed check committed: %+v", infra.contents)
+	if len(infra.contents) != before {
+		t.Fatalf("a failed check committed: %+v", infra.contents[before:])
 	}
 }
 
