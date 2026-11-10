@@ -2568,33 +2568,40 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 	if err != nil {
 		return err
 	}
-	var spec MergeSpec
-	if err := json.Unmarshal(q.Spec, &spec); len(q.Spec) > 0 && err != nil {
-		return fmt.Errorf("the merge request of task %s holds no readable spec: %w", taskID, err)
-	}
-	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
+	note, err := CheckMergeApproval(ctx, store, taskID, approver)
 	if err != nil {
 		return err
-	}
-	slices.Reverse(events)
-	note := consoleApproved
-	if stages := unreadGates(events, spec.HeadSHA); len(stages) > 0 {
-		if approver == ChatUser {
-			return &UnreviewedMergeError{Stages: stages}
-		}
-		note += "; the " + strings.Join(stages, " and the ") + " did not run on this head"
 	}
 	return decideAndSignal(ctx, store, wf, q, "approved", approver, note, SignalApproved, TaskSignal{Author: approver, PR: pr})
 }
 
+// CheckMergeApproval reads task taskID's review and audit rows before
+// approver's approval does anything: the project agent is refused when the
+// review or the audit did not run (UnreviewedMergeError); a human's
+// approval passes with a decision note that names what did not run.
+func CheckMergeApproval(ctx context.Context, store Store, taskID, approver string) (string, error) {
+	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
+	if err != nil {
+		return "", err
+	}
+	slices.Reverse(events)
+	stages := unreadGates(events)
+	switch {
+	case len(stages) == 0:
+		return consoleApproved, nil
+	case approver == ChatUser:
+		return "", &UnreviewedMergeError{Stages: stages}
+	}
+	return consoleApproved + "; the " + strings.Join(stages, " and the ") + " did not run", nil
+}
+
 // UnreviewedMergeError refuses the project agent's approval of a merge
-// whose review or audit did not run on its head: no model and no person
-// has read the change.
+// whose review or audit did not run since the card's newest push.
 type UnreviewedMergeError struct{ Stages []string }
 
 func (e *UnreviewedMergeError) Error() string {
-	return "The " + strings.Join(e.Stages, " and the ") + " did not run on this head, so no model has read the change and the project agent cannot approve it. " +
-		"Run the gates again once the gateway answers (reverify), or leave the approval to a human, who can approve it with the missing gate named."
+	return "The " + strings.Join(e.Stages, " and the ") + " did not run, so the project agent cannot approve this merge. " +
+		"Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."
 }
 
 // RerunFactoryChecks is the console's re-run of a factory pull request

@@ -593,6 +593,10 @@ func main() {
 		Dependencies:     store,
 		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
+		CheckMerge: func(ctx context.Context, taskID, approver string) error {
+			_, err := factoryd.CheckMergeApproval(ctx, store, taskID, approver)
+			return err
+		},
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
 			return factoryd.ApproveMerge(ctx, store, workflows, taskID, pr, approver)
 		},

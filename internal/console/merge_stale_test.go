@@ -76,3 +76,22 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 		t.Fatalf("merges = %q, want the one before", merged)
 	}
 }
+
+// A human's approve whose gate rows cannot be read fails before the
+// approving review is posted, so it half-happens nowhere.
+func TestApproveReadsTheGateRowsBeforeTheReview(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
+		Repository: "sf/code", IssueNumber: 9, PRNumber: 9}}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-card",
+		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
+	r.c.cfg.CheckMerge = func(context.Context, string, string) error { return fmt.Errorf("the store is down") }
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "Cannot read the card's review and audit rows. Approve again.") {
+		t.Fatalf("approve = %d %q", rec.Code, rec.Body.String())
+	}
+	if len(r.fg.reviews) != 0 {
+		t.Fatalf("reviews posted: %v", r.fg.reviews)
+	}
+}

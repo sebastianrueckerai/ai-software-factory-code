@@ -263,27 +263,9 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 			add("queued_over_bound", d.Head.QueueReason+" for "+durationText(d.at.Sub(w.Since).Truncate(time.Minute)))
 		}
 	}
-	if t.Status == "in-review" {
-		for _, n := range gatesNotRun(events) {
-			add("review_refused_not_run", n.stage+": "+digestText(strings.TrimPrefix(n.reason, reviewNotStarted)))
-		}
-	}
-	slices.SortFunc(flags, func(a, b DigestFlag) int {
-		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.Detail, b.Detail))
-	})
-	return slices.Compact(flags)
-}
-
-// gateNotRun is a review or an audit whose newest row on the head did not
-// run, with the reason its row carries.
-type gateNotRun struct{ stage, reason string }
-
-// gatesNotRun lists the review and the audit that did not run on the head,
-// from events oldest first: the newest model_review and gate_audit rows
-// since the newest session push count, so a later row that ran clears its
-// stage and a push clears both (the queue's merge of main moves the
-// commit and runs neither again). The review comes first.
-func gatesNotRun(events []Event) []gateNotRun {
+	// the newest review and audit rows on the head, the head a session's
+	// newest push: the queue's merge of main moves the commit and runs
+	// neither again
 	var reviewRow, auditRow *Event
 	for i, e := range events {
 		switch e.Kind {
@@ -295,27 +277,31 @@ func gatesNotRun(events []Event) []gateNotRun {
 			auditRow = &events[i]
 		}
 	}
-	var out []gateNotRun
 	for _, row := range []struct {
 		stage, key string
 		e          *Event
 	}{{"review", "reviewed", reviewRow}, {"audit", "ran", auditRow}} {
-		if row.e == nil {
+		if row.e == nil || t.Status != "in-review" {
 			continue
 		}
 		if ran, _ := row.e.Detail[row.key].(bool); !ran {
 			reason, _ := row.e.Detail["reason"].(string)
-			out = append(out, gateNotRun{row.stage, reason})
+			add("review_refused_not_run", row.stage+": "+digestText(strings.TrimPrefix(reason, reviewNotStarted)))
 		}
 	}
-	return out
+	slices.SortFunc(flags, func(a, b DigestFlag) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.Detail, b.Detail))
+	})
+	return slices.Compact(flags)
 }
 
-// unreadGates lists the stages, review then audit, whose gate has no row
-// that ran on head among events oldest first. Only rows since the newest
-// session push count, and a stage the task skipped since then (disabled,
-// not switched on for the project) is not required.
-func unreadGates(events []Event, head string) []string {
+// unreadGates lists the stages, review then audit, that have no row that
+// ran among events oldest first: the approval's rule. Only rows since the
+// newest session push count (a queue's merge of main moves the head and
+// runs neither gate again), a stage the task skipped since then (disabled,
+// not switched on for the project) is not required, and a gate row of a
+// stage after its skip makes it required again.
+func unreadGates(events []Event) []string {
 	ran := map[string]bool{}
 	skipped := map[string]bool{}
 	for _, e := range events {
@@ -324,11 +310,11 @@ func unreadGates(events []Event, head string) []string {
 			clear(ran)
 			clear(skipped)
 		case EventModelReview:
-			ok, _ := e.Detail["reviewed"].(bool)
-			ran["review"] = ok && head != "" && e.Detail["commit"] == head
+			ran["review"], _ = e.Detail["reviewed"].(bool)
+			delete(skipped, "review")
 		case EventGateAudit:
-			ok, _ := e.Detail["ran"].(bool)
-			ran["audit"] = ok && head != "" && e.Detail["commit"] == head
+			ran["audit"], _ = e.Detail["ran"].(bool)
+			delete(skipped, "audit")
 		case EventStageSkipped:
 			if stage, _ := e.Detail["stage"].(string); stage != "" {
 				skipped[stage] = true

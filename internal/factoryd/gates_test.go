@@ -3845,11 +3845,12 @@ func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 	}
 }
 
-// The project agent's approval of a merge is refused unless the review and
-// the audit both ran on the head the approval names (a row that ran, on that
-// head), whichever path calls ApproveMerge; a stage the task skipped is not
-// required, a push resets the rows, and a human's approval passes and
-// records the missing gate.
+// The project agent's approval of a merge is refused unless a review row and
+// an audit row that ran sit since the card's newest push, whichever path
+// calls ApproveMerge: the head may have moved on since (a queue's merge of
+// main runs neither gate again). A stage the task skipped is not required, a
+// gate row after its skip makes it required again, a push resets the rows,
+// and a human's approval passes and records what did not run.
 func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 	ctx := context.Background()
 	row := func(kind string, detail map[string]any) Event {
@@ -3870,19 +3871,20 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 		refused  string
 		note     string
 	}{
-		{"no rows, agent", []Event{pushed}, ChatUser, "review and the audit", ""},
-		{"no audit row, agent", []Event{pushed, review("c1", true)}, ChatUser, "audit", ""},
-		{"no review row, agent", []Event{pushed, audit("c1", true)}, ChatUser, "review", ""},
-		{"rows only on an older head, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "review and the audit", ""},
-		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "review", ""},
-		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "review and the audit", ""},
-		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "review and the audit", ""},
-		{"both ran on the head, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
+		{"no rows, agent", []Event{pushed}, ChatUser, "The review and the audit did not run,", ""},
+		{"no audit row, agent", []Event{pushed, review("c1", true)}, ChatUser, "The audit did not run,", ""},
+		{"no review row, agent", []Event{pushed, audit("c1", true)}, ChatUser, "The review did not run,", ""},
+		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "The review did not run,", ""},
+		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "The review and the audit did not run,", ""},
+		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "The review and the audit did not run,", ""},
+		{"both ran, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
+		{"the queue moved the head after the gates ran on c0, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "", consoleApproved},
 		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", consoleApproved},
 		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", consoleApproved},
-		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "audit", ""},
-		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run on this head"},
-		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run on this head"},
+		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "The audit did not run,", ""},
+		{"a failed audit after its skip is required, agent", []Event{pushed, skipAudit, review("c1", true), audit("c1", false)}, ChatUser, "The audit did not run,", ""},
+		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run"},
+		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
@@ -3893,9 +3895,9 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 			err := ApproveMerge(ctx, store, wf, "t1", 9, c.approver)
 			if c.refused != "" {
 				var u *UnreviewedMergeError
-				if !errors.As(err, &u) || !strings.Contains(err.Error(), "The "+c.refused+" did not run on this head") ||
-					!strings.Contains(err.Error(), "(reverify)") || !strings.Contains(err.Error(), "a human") {
-					t.Fatalf("err = %v, want the refusal naming the %s", err, c.refused)
+				if !errors.As(err, &u) || !strings.Contains(err.Error(), c.refused) ||
+					!strings.Contains(err.Error(), "deny_merge with request_changes") || !strings.Contains(err.Error(), "a human") || strings.Contains(err.Error(), "reverify") {
+					t.Fatalf("err = %v, want the refusal starting %q", err, c.refused)
 				}
 				if a := store.approvals[0]; a.Status != "pending" || len(wf.sent) != 0 {
 					t.Fatalf("approval %+v, signals %v: want pending, none", a, wf.sent)

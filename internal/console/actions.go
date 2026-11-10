@@ -2435,6 +2435,14 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		case len(open) > 1:
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criteria %s have no verdict yet: settle each row on the card first.", textutil.AndList(open)))
 		}
+		if err := c.cfg.CheckMerge(ctx, q.TaskID, a.approver()); err != nil {
+			var unreviewed *factoryd.UnreviewedMergeError
+			if errors.As(err, &unreviewed) {
+				return "", refuse(http.StatusConflict, unreviewed.Error())
+			}
+			log.Printf("console: the review and audit rows of %s: %v", q.TaskID, err)
+			return "", refuse(http.StatusInternalServerError, "Cannot read the card's review and audit rows. Approve again.")
+		}
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
@@ -2443,10 +2451,6 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			unsignalled = "your approving review is on the pull request, but " + unsignalled
 		}
 		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
-			var unreviewed *factoryd.UnreviewedMergeError
-			if errors.As(err, &unreviewed) {
-				return "", refuse(http.StatusConflict, unreviewed.Error())
-			}
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, unsignalled)
 		}
