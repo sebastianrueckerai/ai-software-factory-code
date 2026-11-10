@@ -5,6 +5,7 @@ import (
 	"maps"
 	"net/url"
 	"os"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -89,12 +90,23 @@ func egressAdmits(t *testing.T, base string) {
 	if err != nil || u.Scheme != "https" || u.Port() != "" {
 		t.Fatalf("%v, %v: want https on its default port", u, err)
 	}
+	if resolves, admits := egressFor(t, u.Hostname()); !resolves || !admits {
+		t.Fatalf("factoryd-egress: resolves %s %v, admits it on 443/TCP alone %v", u.Hostname(), resolves, admits)
+	}
+}
+
+// egressFor is whether factoryd-egress's DNS rule resolves host and an
+// FQDN rule admits it on 443/TCP alone, by matchName or matchPattern
+// (Cilium's `*` is the characters of one DNS label).
+func egressFor(t *testing.T, host string) (resolves, admits bool) {
+	t.Helper()
 	b, err := os.ReadFile("../../k8s/factoryd.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	type name struct {
-		MatchName string `yaml:"matchName"`
+		MatchName    string `yaml:"matchName"`
+		MatchPattern string `yaml:"matchPattern"`
 	}
 	type names []name
 	type ports []struct {
@@ -103,8 +115,14 @@ func egressAdmits(t *testing.T, base string) {
 			DNS names `yaml:"dns"`
 		} `yaml:"rules"`
 	}
-	has := func(ns names) bool { return slices.Contains(ns, name{u.Hostname()}) }
-	var resolves, admits bool
+	has := func(ns names) bool {
+		return slices.ContainsFunc(ns, func(n name) bool {
+			if n.MatchPattern == "" {
+				return n.MatchName == host
+			}
+			return regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(n.MatchPattern), `\*`, "[-a-zA-Z0-9_]*") + "$").MatchString(host)
+		})
+	}
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	for {
 		var doc struct {
@@ -133,9 +151,7 @@ func egressAdmits(t *testing.T, base string) {
 			}
 		}
 	}
-	if !resolves || !admits {
-		t.Fatalf("factoryd-egress: resolves %s %v, admits it on 443/TCP alone %v", u.Hostname(), resolves, admits)
-	}
+	return resolves, admits
 }
 
 // factoryd's pod shares its process namespace, so the pause container is
@@ -429,5 +445,43 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 	}
 	if !first || !kustomization {
 		t.Errorf("variables.factorySuspend in the first validation %v, in the Kustomization rule %v; want both", first, kustomization)
+	}
+}
+
+// The upstream copy pulls from every registry upstream-images.txt names
+// and the hosts their token endpoints and blobs sit on: the egress admits
+// each one on 443 by name.
+func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
+	list, err := os.ReadFile("../../upstream-images.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := map[string]bool{"registry-1.docker.io": true, "auth.docker.io": true, "production.cloudfront.docker.com": true, "production.cloudflare.docker.com": true,
+		"docker-images-prod.6aa30f8b08e16409b46e0173d6de2f56.r2.cloudflarestorage.com": true,
+		"pkg-containers.githubusercontent.com":                                         true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true}
+	for _, l := range strings.Split(string(list), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && !strings.HasPrefix(f[0], "#") && !strings.HasPrefix(f[0], "https://") {
+			host, _, _ := strings.Cut(f[0], "/")
+			hosts[host] = true
+		}
+	}
+	for h := range hosts {
+		if h == "docker.io" {
+			continue
+		}
+		t.Run(h, func(t *testing.T) { egressAdmits(t, "https://"+h) })
+	}
+}
+
+// The patterns of the egress admit names under them, in the DNS rule and
+// the 443 rule alike, and no name outside them.
+func TestFactorydEgressPatternsAdmitTheirCDNsAlone(t *testing.T) {
+	for name, want := range map[string]bool{
+		"cdn01.quay.io": true, "cdn02.quay.io": true, "europe-west3-docker.pkg.dev": true, "us-west1-docker.pkg.dev": true,
+		"evil.quay.io": false, "cdn01.quay.io.evil.example": false, "docker.pkg.dev": false, "x.europe-west3-docker.pkg.dev": false, "evil.dev": false,
+	} {
+		if resolves, admits := egressFor(t, name); resolves != want || admits != want {
+			t.Errorf("%s: resolves %v, admits %v, want both %v", name, resolves, admits, want)
+		}
 	}
 }

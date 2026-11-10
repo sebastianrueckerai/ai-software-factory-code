@@ -19,6 +19,8 @@ type CaseFacts struct {
 	// Kind is the kind of the case the facts are weighed for, "" for an
 	// answer on no case.
 	Kind CaseKind `json:"kind,omitempty"`
+	// Gate is the activity a gate stop's case names, "" for any other case.
+	Gate string `json:"gate,omitempty"`
 	// Final is the card's status once it ended, "" while it lives.
 	Final          string `json:"final,omitempty"`
 	Head           string `json:"head,omitempty"`
@@ -27,6 +29,7 @@ type CaseFacts struct {
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
 	RerunOnHead    bool   `json:"rerun_on_head,omitempty"`   // Head's checks ran again, or a rerun made Head
+	WaitedOnHead   bool   `json:"waited_on_head,omitempty"`  // a case on Head ran its stopped checks wait again
 	Stage          string `json:"stage,omitempty"`           // the gate the card is in
 	Attempts       int    `json:"attempts"`
 	SessionCap     int    `json:"session_cap"`
@@ -80,6 +83,14 @@ type DrawFacts struct {
 	Findings []string  `json:"findings"`
 	Pushed   bool      `json:"pushed,omitempty"`
 	Revised  bool      `json:"revised,omitempty"`
+}
+
+// atCase weighs f for case c: its kind, and the gate a gate stop names.
+func (f *CaseFacts) atCase(c Case) {
+	f.Kind, f.Gate = c.Kind, ""
+	if c.Kind == CaseGateStop {
+		f.Gate, _ = c.Facts["gate"].(string)
+	}
 }
 
 // DepFact is one dependency of the card that is not done.
@@ -170,6 +181,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 			f.RerunOnHead = f.Head != "" && (slices.Contains(reran, f.Head) || (err == nil && slices.ContainsFunc(cases, func(c Case) bool {
 				return c.Resolution != nil && c.Resolution.Action == ActRerunChecks && c.Facts["head"] == f.Head
 			})))
+			f.WaitedOnHead = f.Head != "" && err == nil && slices.ContainsFunc(cases, func(c Case) bool {
+				return c.Resolution != nil && c.Resolution.Action == ActWaitChecks && c.Facts["head"] == f.Head
+			})
 			return err
 		}},
 		{"pool", func() error {

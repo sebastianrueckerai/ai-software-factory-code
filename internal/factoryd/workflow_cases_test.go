@@ -1092,3 +1092,37 @@ func TestWorkflowCloseWaitsForTheIssuesClose(t *testing.T) {
 		}
 	})
 }
+
+// A checks wait's stop answered with wait_checks runs the wait again on
+// the same commit, and green checks go on to the next gate: no session, no
+// agent time, no new head.
+func TestWorkflowWaitChecksResolutionRunsTheChecksWaitAgain(t *testing.T) {
+	g := newGateHarness(t)
+	g.onSessions(pushed("s1", "c1"))
+	g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
+	var waits []string
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).After(30 * time.Minute).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waits = append(waits, sha)
+			return ChecksResult{State: ChecksSuccess}, nil
+		}).Once()
+	g.env.OnActivity(ActivityWaitChecks, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
+			waits = append(waits, sha)
+			return ChecksResult{State: ChecksSuccess}, nil
+		})
+	g.onGateSupervisor(GateDecision{Action: ActionEscalate, Diagnosis: "the checks outlasted their bound", Recommendation: "keep waiting"})
+	g.tripAfter(11*time.Minute, ActivityWaitChecks, 1)
+	g.signalAfter(time.Hour, SignalCaseResolved, caseResolved(701, Resolution{Action: ActWaitChecks, Note: "Keep waiting"}, 605))
+	g.signalAfter(2*time.Hour, SignalApproved, TaskSignal{Author: "sebastian", PR: 9})
+
+	if final := g.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, g.finals)
+	}
+	if !slices.Equal(waits, []string{"c1", "c1"}) || len(g.sessions) != 1 || !slices.Contains(g.steps, "approval c1") {
+		t.Fatalf("checks waited on %q, sessions %d, steps %q; want the wait run again on c1, one session and c1 at its approval", waits, len(g.sessions), g.steps)
+	}
+	if last := g.usage[len(g.usage)-1]; last.ExtraAttempts != 0 {
+		t.Fatalf("usage = %+v, want no granted attempt", last)
+	}
+}

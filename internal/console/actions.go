@@ -1155,9 +1155,11 @@ func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factory
 // its action, text its note: grant buys what k's stop asks for
 // (grantOf), else goes on, fund and fund:N fund eur, go resumes, close
 // and successor are their own, extend takes the Extend form's amounts,
-// park and keep waiting are a note that ends nothing, overrule re-verifies
-// with the reason as its note, and words alone continue. agentTime is the
-// card draw's agent time, the grant at an agent time cap.
+// keep checking (and keep waiting on a checks-wait stop) runs the stopped
+// checks wait again, park and keep waiting are a note that ends nothing,
+// overrule re-verifies with the reason as its note, and words alone
+// continue. agentTime is the card draw's agent time, the grant at an agent
+// time cap.
 func answerAction(value, text string, eur float64, k factoryd.Case, agentTime time.Duration) factoryd.Resolution {
 	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
 	switch {
@@ -1171,6 +1173,8 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 		res.Action = factoryd.ActResume
 	case value == factoryd.AnswerClose, value == factoryd.AnswerSuccessor, value == factoryd.AnswerExtend:
 		res.Action = value
+	case value == factoryd.AnswerKeepChecking, value == factoryd.AnswerKeepWaiting && k.Kind == factoryd.CaseGateStop && k.Facts["gate"] == factoryd.ActivityWaitChecks:
+		res.Action = factoryd.ActWaitChecks
 	case value == factoryd.AnswerPark, value == factoryd.AnswerKeepWaiting:
 		res.Action = factoryd.ActNote
 	case value == factoryd.AnswerOverrule:
@@ -2440,6 +2444,13 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		case len(open) > 1:
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criteria %s have no verdict yet: settle each row on the card first.", textutil.AndList(open)))
 		}
+		if err := c.cfg.CheckMerge(ctx, q.TaskID, spec.PolicyVersion, a.approver()); err != nil {
+			if refusal, ok := unreviewedRefusal(err, t, spec); ok {
+				return "", refusal
+			}
+			log.Printf("console: the review and audit rows of %s: %v", q.TaskID, err)
+			return "", refuse(http.StatusInternalServerError, "Cannot read the card's review and audit rows. Approve again.")
+		}
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
@@ -2448,6 +2459,9 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			unsignalled = "your approving review is on the pull request, but " + unsignalled
 		}
 		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
+			if refusal, ok := unreviewedRefusal(err, t, spec); ok {
+				return "", refusal
+			}
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, unsignalled)
 		}
@@ -2456,6 +2470,22 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		return fmt.Sprintf("Approved pull request #%d; factoryd merges it.", q.PRNumber), nil
 	}
 	return "", refuse(http.StatusConflict, fmt.Sprintf("approval request %d is a %s request, which the board decides", q.ID, q.Kind))
+}
+
+// unreviewedRefusal turns factoryd's refusal of the agent's approval into
+// the 409 that names the fitting action: a request for changes goes back to
+// an agent, which no factory pull request and no roll has (a change request
+// closes the one and fails the other).
+func unreviewedRefusal(err error, t factoryd.Task, spec factoryd.MergeSpec) (error, bool) {
+	var unreviewed *factoryd.UnreviewedMergeError
+	if !errors.As(err, &unreviewed) {
+		return nil, false
+	}
+	remedy := " Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."
+	if spec.Factory || t.Source == factoryd.SourceRoll {
+		remedy = " Leave the call to a human: no agent works on this pull request."
+	}
+	return refuse(http.StatusConflict, unreviewed.Error()+remedy), true
 }
 
 // factoryMergeRefusal answers the agent's approval of a GitHub sync's

@@ -646,3 +646,34 @@ func TestOpenTripRestartFacesALiveAskByItsOwnReason(t *testing.T) {
 		t.Fatalf("faces = %q, want one ending %q", g.forge.comments, reply)
 	}
 }
+
+const tripChecksWait = gateStopped + "WaitChecks (attempt 1) past its bound of 50m: no check reported in the bound."
+
+// A checks-wait stop whose checks are all green, #1652's shape, with the
+// head's review approving it too: rung 0 resolves it with wait_checks (not
+// route_approval) through Act, no comment, and the run hears of it. The
+// same stop on the same head, once the wait ran, goes to the human.
+func TestOpenTripWaitsOnGreenChecksOnceThenAsks(t *testing.T) {
+	g := newTripRig(t, "success")
+	g.atHead(t, true)
+	first := g.trip(t, tripChecksWait)
+	if first.Resolution == nil || first.Resolution.Action != ActWaitChecks || first.Comment != 0 || first.Rung != 0 || first.CaseID == 0 {
+		t.Fatalf("first outcome = %+v, want wait_checks on rung 0 with no comment", first)
+	}
+	c := caseByID(t, g.s, first.CaseID)
+	if c.Kind != CaseGateStop || c.Facts["gate"] != ActivityWaitChecks || c.Status != CaseResolved ||
+		!reflect.DeepEqual(c.Resolution, &CaseResolution{By: FactoryDecider, Rung: 0, Action: ActWaitChecks}) {
+		t.Fatalf("case = %+v, resolution %+v; want the checks-wait stop resolved by factoryd on rung 0 with wait_checks", c, c.Resolution)
+	}
+	if got := g.signals.got; len(got) != 1 || got[0].signal != SignalCaseResolved || got[0].sig.Case == nil || got[0].sig.Case.CaseID != c.ID {
+		t.Fatalf("signals = %+v, want case_resolved of case %d", got, c.ID)
+	}
+	card, _, _ := g.s.Task(context.Background(), "t1")
+	if f, err := g.r.tripFacts(context.Background(), card, ""); err != nil || !f.WaitedOnHead {
+		t.Fatalf("facts after = %+v, %v; want h2 waited on", f, err)
+	}
+	second := g.trip(t, tripChecksWait)
+	if second.Resolution != nil || second.CaseID == first.CaseID || second.Rung != 3 || second.Comment == 0 {
+		t.Fatalf("second outcome = %+v, want a new case at the human", second)
+	}
+}

@@ -294,3 +294,39 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 	})
 	return slices.Compact(flags)
 }
+
+// unreadGates lists the stages, review then audit, that have no row that
+// ran among events oldest first: the approval's rule. Only rows since the
+// newest session push count (a queue's merge of main moves the head and
+// runs neither gate again), a stage the task skipped since then (disabled,
+// not switched on for the project) is not required, as is a stage the card's
+// process does not list (unlisted), and a gate row of a
+// stage after its skip makes it required again.
+func unreadGates(events []Event, unlisted map[string]bool) []string {
+	ran := map[string]bool{}
+	skipped := map[string]bool{}
+	for _, e := range events {
+		switch e.Kind {
+		case EventSessionPushed:
+			clear(ran)
+			clear(skipped)
+		case EventModelReview:
+			ran["review"], _ = e.Detail["reviewed"].(bool)
+			delete(skipped, "review")
+		case EventGateAudit:
+			ran["audit"], _ = e.Detail["ran"].(bool)
+			delete(skipped, "audit")
+		case EventStageSkipped:
+			if stage, _ := e.Detail["stage"].(string); stage != "" {
+				skipped[stage] = true
+			}
+		}
+	}
+	var out []string
+	for _, stage := range []string{"review", "audit"} {
+		if !ran[stage] && !skipped[stage] && !unlisted[stage] {
+			out = append(out, stage)
+		}
+	}
+	return out
+}

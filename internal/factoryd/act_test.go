@@ -436,3 +436,36 @@ func TestFakeResolveCaseTakesOverTheWebhooksCopy(t *testing.T) {
 		t.Fatalf("case = %+v, %+v; want resolved again with extend", c, c.Resolution)
 	}
 }
+
+// A checks wait's stop answered with wait_checks is accepted on a card at
+// its agent time cap, where resume is refused for want of agent time: the
+// wait spends none. The same action on any other stop is refused.
+func TestActWaitChecksIsAcceptedAtTheAgentTimeCap(t *testing.T) {
+	g := newFactsRig(t)
+	g.card()
+	g.timeline(t)
+	card := g.store.tasks["t1"]
+	card.Usage.AgentTime = 24 * time.Hour
+	g.store.tasks["t1"] = card
+	g.store.cases = append(g.store.cases,
+		Case{ID: 7, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman, Facts: map[string]any{"gate": ActivityWaitChecks}},
+		Case{ID: 8, TaskID: "t1", Kind: CaseGateStop, Status: CaseAtHuman, Facts: map[string]any{"gate": ActivityMerge}})
+	ctx := context.Background()
+	var refused ErrActRefused
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: ActResume}}); !errors.As(err, &refused) ||
+		!strings.Contains(err.Error(), "agent time cap") {
+		t.Fatalf("resume at the cap = %v, want the agent time cap's refusal", err)
+	}
+	if _, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 8, By: "sebastian", Rung: 3, Res: Resolution{Action: ActWaitChecks}}); !errors.As(err, &refused) ||
+		!strings.Contains(err.Error(), "no checks wait's stop") {
+		t.Fatalf("wait_checks on a merge's stop = %v, want the refusal naming it", err)
+	}
+	out, err := g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: ActWaitChecks},
+		Post: func(context.Context) (int64, error) { return 5, nil }})
+	if err != nil {
+		t.Fatalf("wait_checks at the cap = %v, want it accepted", err)
+	}
+	if out.Case.Resolution == nil || out.Case.Resolution.Action != ActWaitChecks {
+		t.Fatalf("case = %+v, want it resolved by wait_checks", out.Case)
+	}
+}

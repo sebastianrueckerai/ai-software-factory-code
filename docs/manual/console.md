@@ -145,8 +145,9 @@ decimals: a task's model calls cost fractions of a cent.
   makes it a task. An escalation's answer resolves the card's newest open
   case through factoryd's `Act`, as the human. Words alone go on. A typed
   action can resume the card, hand it to the same, a stronger or a
-  cheaper model, check it again, route it for approval, rerun its checks,
-  give it more sessions, agent time or lines, fund it, raise its ceiling,
+  cheaper model, check it again, route it for approval, rerun its
+  checks, run a stopped checks wait again (no agent time), give it more
+  sessions, agent time or lines, fund it, raise its ceiling,
   file a successor, retry or replan a failed dependency, close it, or note
   a step and keep waiting. An extend answers a cap, or the owner exits
   of a gate stop and of findings that repeat, never a question, and a
@@ -402,7 +403,7 @@ decimals: a task's model calls cost fractions of a cent.
 A project is a repository the factory works on, the namespaces it deploys
 into, and its settings. The settings are its file
 `projects/<name>.yaml` in the configuration tree: `repository`,
-`merge_rule` auto|human, `objects` factory|seed, `agents` coder|none,
+`merge_rule` auto|human (the policy loader refuses `auto` unless the project file also says `autonomy: autonomous`, full auto; the dial and the filing form write both keys), `objects` factory|seed, `agents` coder|none,
 `notify` (empty: the policy's approvers), `namespaces` (each one project's),
 `environments` (namespace, path, hostname), `quota`, `secrets`, `envelope`,
 `standing`, and for `objects: seed` the `tokens` it is read with. Absent
@@ -413,6 +414,9 @@ built in: 2 CPU / 4Gi / 10Gi, a closed standing block) and
 file its row, and a row whose file is gone keeps its tokens while nothing
 acts on it. The console shows the projects read-only with links to their
 files; a change is a commit.
+The autonomy dial writes `autonomy` and `merge_rule` together through a pull
+request on the file: manual, assisted and autonomous write `merge_rule: human`,
+and only full auto writes `merge_rule: auto` (with `autonomy: autonomous`).
 
 The factory's own repositories are projects like any other: no
 Go source names them (a test greps). Two settings replace the old special
@@ -628,7 +632,7 @@ settings, the envelope with its use and the standing monthly line, and a
 link to the file. The console's New project (`/projects/new`, filed by
 approvers only) is the
 same path without a shell (stage11-design.md section 5). Its form (name,
-process, template, merge rule) writes the file with one staging namespace
+process, template, autonomy) writes the file with the autonomy dial's keys for the chosen position (the dial's own mapping) and one staging namespace
 deployed from `deploy/staging` and no hostname. factoryd judges the file with
 `CheckProjectFile`, which runs the loader's `CheckTree` over infra's head
 with the file added. The filing starts only on a token of the human that

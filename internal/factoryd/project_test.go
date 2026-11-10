@@ -25,7 +25,8 @@ func demoProject() Project {
 }
 
 // demoFile is demoProject's projects/demo-app.yaml.
-const demoFile = `repository: demo-app/demo-app
+const demoFile = `autonomy: autonomous
+repository: demo-app/demo-app
 merge_rule: auto
 objects: factory
 agents: coder

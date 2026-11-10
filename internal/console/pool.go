@@ -346,7 +346,7 @@ func (t *turn) poolLanded(p factoryd.ChatProposal, fix *poolCorrection, pr poolP
 	}
 	t.freshRead = time.Now()
 	if _, ok := t.save(factoryd.ChatMessage{Role: "assistant", ToolCalls: []factoryd.ChatToolCall{
-		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: args, Result: pr.words, At: start,
+		{ID: "do-" + p.Token[:12], Name: p.Tool, Arguments: args, Result: pr.words + noUndoSentence, At: start,
 			Ms: time.Since(start).Milliseconds(), ReadAt: t.freshRead}}}); !ok {
 		return
 	}

@@ -1798,6 +1798,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if t.Source == SourceRoll {
 		rv := Review{Note: "no model review: a roll task only bumps image digests main CI built, and makes no model call"}
 		r.record(ctx, t.ID, "model_review", reviewEnd(map[string]any{"pr": pr.Number, "commit": commit, "note": rv.Note}))
+		r.record(ctx, t.ID, StepStageSkipped, map[string]any{"stage": policy.StageReview, "reason": "a roll task makes no model call"})
 		return rv, nil
 	}
 	pinned, err := r.pinned(ctx, gates.Pin)
@@ -2563,12 +2564,100 @@ const consoleApproved = "approved in the console"
 // approver's and signals the task's workflow, which merges as
 // factory-merge. Only a pending merge request of the task, for that pull
 // request, is approved.
-func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string, pr int64, approver string) error {
+func ApproveMerge(ctx context.Context, store Store, policyAt PolicyAt, wf Workflows, taskID string, pr int64, approver string) error {
 	q, err := pendingMerge(ctx, store, taskID, pr)
 	if err != nil {
 		return err
 	}
-	return decideAndSignal(ctx, store, wf, q, "approved", approver, consoleApproved, SignalApproved, TaskSignal{Author: approver, PR: pr})
+	var spec MergeSpec
+	if len(q.Spec) > 0 {
+		if err := json.Unmarshal(q.Spec, &spec); err != nil {
+			return fmt.Errorf("the merge request of task %s holds no readable spec: %w", taskID, err)
+		}
+	}
+	note, err := CheckMergeApproval(ctx, store, policyAt, spec.PolicyVersion, taskID, approver)
+	if err != nil {
+		return err
+	}
+	return decideAndSignal(ctx, store, wf, q, "approved", approver, note, SignalApproved, TaskSignal{Author: approver, PR: pr})
+}
+
+// CheckMergeApproval reads task taskID's review and audit rows before
+// approver's approval does anything: the project agent is refused when the
+// review or the audit did not run (UnreviewedMergeError); a human's
+// approval passes with a decision note that names what did not run.
+func CheckMergeApproval(ctx context.Context, store Store, policyAt PolicyAt, pin int64, taskID, approver string) (string, error) {
+	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
+	if err != nil {
+		return "", err
+	}
+	slices.Reverse(events)
+	t, _, err := store.Task(ctx, taskID)
+	if err != nil {
+		return "", err
+	}
+	v, ok := policyAt(ctx, pin)
+	stages := unreadGates(events, unlistedStages(t, v, ok))
+	switch {
+	case len(stages) == 0:
+		return consoleApproved, nil
+	case approver == ChatUser:
+		return "", &UnreviewedMergeError{Stages: stages}
+	}
+	return consoleApproved + "; the " + strings.Join(stages, " and the ") + " did not run", nil
+}
+
+// PolicyAt reads the policy version a merge request opened under (pin 0:
+// the current one); false when it cannot be read.
+type PolicyAt func(ctx context.Context, pin int64) (policy.Version, bool)
+
+// PolicyAtPin is PolicyAt over the current version and the store's reader
+// of a pinned one.
+func PolicyAtPin(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) PolicyAt {
+	return func(ctx context.Context, pin int64) (policy.Version, bool) {
+		if pin == 0 {
+			return current(), true
+		}
+		v, ok, err := read(ctx, pin)
+		if err != nil || !ok {
+			log.Printf("policy version %d unreadable (%v, found %v): the review and the audit stay required", pin, err, ok)
+			return policy.Version{}, false
+		}
+		return v, true
+	}
+}
+
+// unlistedStages are the review and audit stages that the process of task t
+// does not list in version v (found: v was read); none when the version or
+// the process cannot be found, which leaves both required.
+func unlistedStages(t Task, v policy.Version, found bool) map[string]bool {
+	if !found {
+		return nil
+	}
+	name := t.Process
+	if name == "" {
+		_, project, _ := v.ProjectOf(t.Repository)
+		name = project.Process
+	}
+	p, ok := v.Processes[name]
+	if !ok {
+		return nil
+	}
+	out := map[string]bool{}
+	for _, stage := range []string{policy.StageReview, policy.StageAudit} {
+		if _, listed := p.Stage(stage); !listed {
+			out[stage] = true
+		}
+	}
+	return out
+}
+
+// UnreviewedMergeError refuses the project agent's approval of a merge
+// whose review or audit did not run since the card's newest push.
+type UnreviewedMergeError struct{ Stages []string }
+
+func (e *UnreviewedMergeError) Error() string {
+	return "The " + strings.Join(e.Stages, " and the ") + " did not run, so the project agent cannot approve this merge."
 }
 
 // RerunFactoryChecks is the console's re-run of a factory pull request

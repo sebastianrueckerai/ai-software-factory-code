@@ -173,7 +173,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 			{TaskID: "d3", Issue: 22, Status: "running"},
 			{TaskID: "d5", Issue: 24, Status: "closed", Why: ReasonIssueClosed},
 		},
-		Autonomy:     policy.AutonomyManual,
+		Autonomy:     policy.AutonomyFullAuto,
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
 	}
@@ -185,6 +185,14 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	g.store.cases = append(g.store.cases, Case{ID: 3, TaskID: "t1", Kind: CaseSessionCap, Facts: map[string]any{"head": "h2"},
 		Resolution: &CaseResolution{Action: ActRerunChecks}})
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || waited.WaitedOnHead {
+		t.Errorf("before a case waited on h2: waited on head %v (%v), want false", waited.WaitedOnHead, err)
+	}
+	g.store.cases = append(g.store.cases, Case{ID: 4, TaskID: "t1", Kind: CaseGateStop, Facts: map[string]any{"head": "h2", "gate": ActivityWaitChecks},
+		Resolution: &CaseResolution{Action: ActWaitChecks}})
+	if waited, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !waited.WaitedOnHead {
+		t.Errorf("after a case on h2 waited on its checks again: waited on head %v (%v), want true", waited.WaitedOnHead, err)
+	}
 	if again, err := g.r.tripFacts(context.Background(), g.store.tasks["t1"], ""); err != nil || !again.RerunOnHead {
 		t.Errorf("after a case on h2 ran its checks again: rerun on head %v (%v), want true", again.RerunOnHead, err)
 	}

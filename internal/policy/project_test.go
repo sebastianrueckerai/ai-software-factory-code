@@ -217,7 +217,7 @@ func TestEnvelopeAndQuotaOf(t *testing.T) {
 // them), and what a seed project may not say.
 func TestProjectConfigValidate(t *testing.T) {
 	demo := func() ProjectConfig {
-		return ProjectConfig{Repository: "demo-app/demo-app", MergeRule: MergeAuto, Objects: ObjectsFactory, Agents: AgentsCoder,
+		return ProjectConfig{Repository: "demo-app/demo-app", MergeRule: MergeAuto, Autonomy: AutonomyAutonomous, Objects: ObjectsFactory, Agents: AgentsCoder,
 			Namespaces: []string{"demo-staging", "demo-prod"},
 			Environments: []Environment{{Namespace: "demo-staging", Path: "deploy/staging", Hostname: "demo-staging.example.org"},
 				{Namespace: "demo-prod", Path: "deploy/prod", Hostname: "demo.example.org"}},
@@ -225,6 +225,18 @@ func TestProjectConfigValidate(t *testing.T) {
 	}
 	if err := demo().Validate("demo-app"); err != nil {
 		t.Fatalf("demo-app: %v", err)
+	}
+	for autonomy, want := range map[string]bool{"": false, AutonomyManual: false, AutonomyAssisted: false, AutonomyAutonomous: true} {
+		p := demo()
+		p.Autonomy = autonomy
+		err := p.Validate("demo-app")
+		if (err == nil) != want || (err != nil && !strings.Contains(err.Error(), "set autonomy: autonomous for full auto, or merge_rule: human")) {
+			t.Errorf("merge_rule auto at autonomy %q: %v, want ok %v", autonomy, err, want)
+		}
+		p.MergeRule = MergeHuman
+		if err := p.Validate("demo-app"); err != nil {
+			t.Errorf("merge_rule human at autonomy %q: %v", autonomy, err)
+		}
 	}
 	withEgress := demo()
 	withEgress.Egress = []string{"api.example.com", "hooks.example.org"}

@@ -702,3 +702,77 @@ func TestBoughtNothingTextNamesTheDrawAndWhatItWasMeasuredOn(t *testing.T) {
 		}
 	}
 }
+
+// wait_checks applies to a checks wait's stop with a pull request open,
+// whatever the checks and the agent time left, and to no other case.
+func TestWaitChecksAppliesToAChecksWaitStop(t *testing.T) {
+	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", SessionCap: 3, AgentTimeCapS: 600, AgentTimeS: 600}
+	merge, noPR, quiet := stop, stop, stop
+	merge.Gate, noPR.PROpen, quiet.Kind = ActivityMerge, false, CaseSessionCap
+	for _, c := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"checks wait at the agent time cap", stop, ""},
+		{"merge stop", merge, "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"},
+		{"other case", quiet, "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"},
+		{"no pull request", noPR, "no pull request is open"},
+	} {
+		if got := applies(t, ActWaitChecks, c.f, Resolution{}); got != c.want {
+			t.Errorf("%s: wait_checks applies = %q, want %q", c.name, got, c.want)
+		}
+	}
+	if !slices.Contains(offeredNames(stop, 2), ActWaitChecks) || slices.Contains(offeredNames(stop, 2), ActResume) {
+		t.Errorf("rung 2 is offered %v at the cap, want wait_checks and no resume", offeredNames(stop, 2))
+	}
+}
+
+// Rungs 0 to 2 take wait_checks once per head, as rerun_checks; a human
+// may press it again.
+func TestWaitChecksIsOncePerHeadBelowTheHuman(t *testing.T) {
+	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Head: "h1", Checks: "green"}
+	waited := stop
+	waited.WaitedOnHead = true
+	a, _ := ActionByName(ActWaitChecks)
+	for _, c := range []struct {
+		rung   int
+		f      CaseFacts
+		refuse bool
+	}{{0, stop, false}, {1, stop, false}, {2, stop, false}, {0, waited, true}, {1, waited, true}, {2, waited, true}, {3, waited, false}} {
+		got := a.refusal(c.f, c.rung, Resolution{Action: ActWaitChecks})
+		if (got != "") != c.refuse {
+			t.Errorf("rung %d, waited %v: refusal %q, want refused %v", c.rung, c.f.WaitedOnHead, got, c.refuse)
+		}
+	}
+	if got := a.refusal(waited, 2, Resolution{Action: ActWaitChecks}); got != "the checks wait on this head was run again once already" {
+		t.Errorf("refusal = %q", got)
+	}
+}
+
+// route_approval refuses a checks-wait stop and names wait_checks, whose
+// once-per-head limit it would bypass.
+func TestRouteApprovalRefusesAChecksWaitStop(t *testing.T) {
+	green := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", ReviewApproved: true}
+	merge := green
+	merge.Gate = ActivityMerge
+	if got, want := applies(t, ActRouteApproval, green, Resolution{}), "a checks wait's stop goes on with wait_checks, not route_approval"; got != want {
+		t.Errorf("checks wait: route_approval applies = %q, want %q", got, want)
+	}
+	if got := applies(t, ActRouteApproval, merge, Resolution{}); got != "" {
+		t.Errorf("merge stop: route_approval applies = %q, want it to apply", got)
+	}
+}
+
+// A wait_checks on a stop that is no checks wait's gets that refusal, also
+// where the head was waited on.
+func TestWaitChecksRefusalNamesTheStopBeforeTheLimit(t *testing.T) {
+	merge := CaseFacts{Kind: CaseGateStop, Gate: ActivityMerge, PROpen: true, WaitedOnHead: true}
+	capped := CaseFacts{Kind: CaseAgentTimeCap, PROpen: true, WaitedOnHead: true}
+	a, _ := ActionByName(ActWaitChecks)
+	for name, f := range map[string]CaseFacts{"merge": merge, "cap": capped} {
+		if got, want := a.refusal(f, 2, Resolution{Action: ActWaitChecks}), "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"; got != want {
+			t.Errorf("%s: refusal = %q, want %q", name, got, want)
+		}
+	}
+}

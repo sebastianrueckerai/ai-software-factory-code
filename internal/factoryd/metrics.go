@@ -299,6 +299,14 @@ func (f ReviewAttemptFact) identity() map[string]any {
 // card's pull request).
 const EventModelReview = "model_review"
 
+// StepStageSkipped is the timeline step of a stage that does not run for
+// the task, and EventStageSkipped the events row beside it. Detail
+// {"stage", "reason"}.
+const (
+	StepStageSkipped  = "stage_skipped"
+	EventStageSkipped = "stage_skipped"
+)
+
 // EventGateAudit is one audit attempt on a head, the row beside the
 // audit's timeline line. Detail {"pr", "commit", "model", "ran",
 // "verdict"}: ran false when the audit gave no verdict, with "reason",
