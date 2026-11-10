@@ -915,3 +915,34 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	refused("t-e", 9, "Case 9 is #13's merge approval: decide it with approve_merge or deny_merge.")
 	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
 }
+
+// A card with a live case closes through Act, and its own dependencies are
+// removed first: #13 depends on #7, so Act sees the removal done and the
+// note "Done." with "It no longer waits on #7." after a blank line. A
+// failed removal refuses the close before Act is called.
+func TestCloseThroughActRemovesTheCardsDependencies(t *testing.T) {
+	const path = "/api/v1/repos/sf/code/issues/13/dependencies"
+	r := newRig(t)
+	caseCard(r)
+	r.fg.deps = map[string][]map[string]any{path: dependsOn(7)}
+	var removedAtAct []string
+	r.actDid = func(factoryd.ActInput) []factoryd.CaseAction {
+		removedAtAct = slices.Clone(r.fg.deleted)
+		return nil
+	}
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}, "note": {"Done."}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
+	}
+	equal(t, "removed when Act ran", removedAtAct, []string{path + " 7"})
+	got, _ := actedOnce(t, r)
+	equal(t, "the close", got.Res, factoryd.Resolution{Action: factoryd.ActClose, Note: "Done.\n\nIt no longer waits on #7."})
+
+	r = newRig(t)
+	caseCard(r)
+	r.fg.deps = map[string][]map[string]any{path: dependsOn(7)}
+	r.fg.failDeps = "edge refused"
+	ck, s = r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}}), ck)
+	equal(t, "the refusal", []any{rec.Code, len(r.acted)}, []any{http.StatusBadGateway, 0})
+}

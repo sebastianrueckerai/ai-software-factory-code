@@ -1875,6 +1875,9 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	}
 	closing := factoryd.Resolution{Action: factoryd.ActClose, Note: note}
 	if k.ID != 0 && t.Kind != "human" {
+		if closing.Note, err = c.freeForClose(ctx, a, t, note); err != nil {
+			return "", err
+		}
 		out, err := c.actOn(ctx, a, t, k.ID, closing, c.posting(a, t, closing))
 		if err != nil {
 			return "", err
@@ -1895,14 +1898,9 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // already, and closing a closed issue sends no webhook.
 func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note string) (string, int64, error) {
 	var posted int64
-	if t.IssueNumber != 0 && t.Status != "merged" {
-		freed, err := c.dropDependencies(ctx, a, t)
-		if err != nil {
-			return "", 0, err
-		}
-		if len(freed) > 0 {
-			note = strings.TrimSpace(note + "\n\n" + noLongerWaits(freed))
-		}
+	note, err := c.freeForClose(ctx, a, t, note)
+	if err != nil {
+		return "", 0, err
 	}
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, &posted); err != nil {
@@ -1927,6 +1925,22 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
 	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), posted, nil
+}
+
+// freeForClose removes the dependencies card t's issue holds before a close
+// of it (dropDependencies) and answers note with the sentence naming them
+// added; a merged card or one without an issue is left as it is. Every
+// close of a card calls it: closeIssue, and doClose before it hands a close
+// to Act.
+func (c *Console) freeForClose(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
+	if t.IssueNumber == 0 || t.Status == "merged" {
+		return note, nil
+	}
+	freed, err := c.dropDependencies(ctx, a, t)
+	if err != nil || len(freed) == 0 {
+		return note, err
+	}
+	return strings.TrimSpace(note + "\n\n" + noLongerWaits(freed)), nil
 }
 
 // noLongerWaits is the close note's sentence naming the dependencies a close
