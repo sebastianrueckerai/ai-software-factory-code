@@ -274,8 +274,8 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 // found: a row Act refused or failed hands the case up with why, so rung
 // 0 never keeps the human from being asked.
 func (r *Runner) rungZero(ctx context.Context, t Task, c Case, f CaseFacts, cases []Case) (*Resolution, string, error) {
-	if len(f.Partial) > 0 {
-		return nil, "facts read partly: " + textutil.AndList(f.Partial) + ", so rung 0 took nothing", nil
+	if partial := slices.DeleteFunc(slices.Clone(f.Partial), func(n string) bool { return n == "siblings" }); len(partial) > 0 {
+		return nil, "facts read partly: " + textutil.AndList(partial) + ", so rung 0 took nothing", nil
 	}
 	if i := slices.IndexFunc(cases, func(e Case) bool {
 		return e.ID != c.ID && e.Kind == c.Kind && e.StateKey == c.StateKey && e.Status == CaseResolved && e.Resolution != nil && e.Resolution.Rung == 0

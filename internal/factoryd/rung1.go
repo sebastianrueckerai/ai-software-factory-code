@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"fmt"
+	"slices"
 	"strings"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
@@ -37,6 +38,9 @@ func humanOnly(c Case, f CaseFacts) (bool, string) {
 		why, ok := humanOnlyReasons[kind]
 		return ok, why
 	case CaseBudgetFloor:
+		if c.Money != nil && slices.Contains(f.Partial, "pool") {
+			return true, "the pool could not be read, so the card's need of money cannot be weighed against it"
+		}
 		if c.Money != nil && Cents(c.Money.NeedEUR) > Cents(f.PoolLeft.EUR) {
 			return true, fmt.Sprintf("the card needs %.2f EUR and the pool holds %.2f EUR", c.Money.NeedEUR, f.PoolLeft.EUR)
 		}
@@ -50,19 +54,23 @@ const stepCut = 300
 // problem, the money, the digest, the plan, the earlier steps and the
 // actions of rung with the refusals of those it may not take.
 func (r *Runner) rungStatement(c Case, f CaseFacts, digest string, steps []CaseStep, rung int) string {
+	f.atCase(c)
 	cut := func(s string) string { return textutil.Truncate(r.Scrub.String(s), stepCut) }
 	var b strings.Builder
 	line := func(format string, a ...any) { fmt.Fprintf(&b, format+"\n", a...) }
 	line("%s", r.Scrub.String(c.Problem))
 	line("Money: budget %.2f, spent %.2f, left %.2f EUR, ceiling %.2f EUR; card draw left %s; pool left %s.",
 		f.BudgetEUR, f.SpentEUR, f.LeftEUR, f.CeilingEUR, drawText(f.CardDrawLeft), drawText(f.PoolLeft))
-	line("%s", digest)
-	if f.PlanIssue == 0 {
+	line("%s", r.Scrub.String(digest))
+	switch {
+	case f.Plan == "":
 		line("This card is in no plan.")
-	} else {
-		line("Plan #%d %s, %s", f.PlanIssue, f.PlanName, f.PlanStatus)
+	case slices.Contains(f.Partial, "siblings"):
+		line("The card's plan and its other cards could not be read.")
+	default:
+		line("%s", r.Scrub.String(fmt.Sprintf("Plan #%d %s, %s", f.PlanIssue, f.PlanName, f.PlanStatus)))
 		for _, s := range f.Siblings {
-			line("#%d %s: %s", s.Issue, s.Key, s.Status)
+			line("%s", r.Scrub.String(fmt.Sprintf("#%d %s: %s", s.Issue, s.Key, s.Status)))
 		}
 	}
 	for _, s := range steps {

@@ -21,8 +21,8 @@ func (failingPlanStore) PlanCards(context.Context, string) ([]Task, error) {
 func siblingRig() digestRig {
 	g := newDigestRig(func(c *Task) { c.Source, c.Parent, c.PlanKey = SourcePlan, "t1344", "metrics-a" })
 	g.store.tasks["t1344"] = Task{ID: "t1344", Kind: "agent", Repository: "sf/app", IssueNumber: 1344, Track: policy.TrackPlan, PlanName: "session-metrics", Status: "running"}
-	g.store.tasks["t1411"] = Task{ID: "t1411", Kind: "agent", Repository: "sf/app", IssueNumber: 1411, Source: SourcePlan, Parent: "t1344", PlanKey: "metrics-b", Status: "done"}
-	g.store.tasks["t1412"] = Task{ID: "t1412", Kind: "agent", Repository: "sf/app", IssueNumber: 1412, Source: SourcePlan, Parent: "t1344", PlanKey: "metrics-c", Status: "failed"}
+	g.store.tasks["tb"] = Task{ID: "tb", Kind: "agent", Repository: "sf/app", IssueNumber: 1411, Source: SourcePlan, Parent: "t1344", PlanKey: "metrics-b", Status: "done"}
+	g.store.tasks["ta"] = Task{ID: "ta", Kind: "agent", Repository: "sf/app", IssueNumber: 1412, Source: SourcePlan, Parent: "t1344", PlanKey: "metrics-c", Status: "failed"}
 	g.store.tasks["t1500"] = Task{ID: "t1500", Kind: "agent", Repository: "sf/app", IssueNumber: 1500, Source: "webhook", Status: "running"}
 	if _, err := g.store.AddPlanRevision(context.Background(), "t1344", mustJSON(Plan{}), "r1"); err != nil {
 		panic(err)
@@ -98,8 +98,10 @@ func TestRung1StatementOrderMoneyAndRefusals(t *testing.T) {
 		at("This card is in no plan.") < at("handed_up") && at("handed_up") < at("- route_approval")) {
 		t.Errorf("statement parts out of order:\n%s", got)
 	}
-	if strings.Contains(got, "not offered: rung 1 may not") && !strings.Contains(got, "may not pick") {
-		t.Errorf("unexpected refusal text:\n%s", got)
+	for _, rung2 := range []string{"- close", "- raise_ceiling"} {
+		if strings.Contains(got, rung2) {
+			t.Errorf("rung 1 statement lists %q:\n%s", rung2, got)
+		}
 	}
 }
 
@@ -143,10 +145,59 @@ func TestHumanOnly(t *testing.T) {
 		{"gate_stop", Case{Kind: CaseGateStop}, 0, false},
 		{"floor beyond pool", need(5), 4, true},
 		{"floor within pool", need(5), 60, false},
+		{"floor equal to pool", need(5), 5, false},
 	} {
 		got, why := humanOnly(c.c, CaseFacts{PoolLeft: policy.Draw{EUR: c.pool}})
 		if got != c.want || got == (why == "") {
 			t.Errorf("%s: humanOnly = %v %q, want %v with a reason iff true", c.name, got, why, c.want)
 		}
+	}
+}
+
+func TestRung1StatementPlanReadFailed(t *testing.T) {
+	g := siblingRig()
+	g.r.store = failingPlanStore{g.store}
+	f, _ := g.r.tripFacts(context.Background(), g.store.tasks["t1410"], "")
+	got := g.r.rungStatement(Case{Kind: CaseGateStop}, f, "D", nil, 1)
+	if strings.Contains(got, "no plan") || !strings.Contains(got, "plan and its other cards could not be read") {
+		t.Errorf("statement of an unread plan:\n%s", got)
+	}
+}
+
+func TestRung1StatementWeighsTheCaseKind(t *testing.T) {
+	got := (&Runner{}).rungStatement(Case{Kind: CaseMonitorFlag}, CaseFacts{}, "D", nil, 1)
+	if !strings.Contains(got, "\n- settle\n") || strings.Contains(got, "\n- reverify\n") {
+		t.Errorf("monitor flag statement:\n%s", got)
+	}
+}
+
+func TestRung1StatementScrubsDigestAndProblem(t *testing.T) {
+	secret := "https://user:pass@host and Authorization: Bearer abc123"
+	got := (&Runner{}).rungStatement(Case{Problem: "P " + secret}, CaseFacts{}, "D "+secret, nil, 1)
+	if strings.Contains(got, "user:pass") || strings.Contains(got, "abc123") {
+		t.Errorf("statement leaks:\n%s", got)
+	}
+}
+
+func TestRung1StatementScrubsBeforeItCuts(t *testing.T) {
+	found := strings.Repeat("x", 280) + " https://user:pass@host/x"
+	got := (&Runner{}).rungStatement(Case{}, CaseFacts{}, "D", []CaseStep{{Rung: 1, Found: found}}, 1)
+	if strings.Contains(got, "user") || strings.Contains(got, "pass") {
+		t.Errorf("cut straddles a secret:\n%s", got)
+	}
+}
+
+func TestHumanOnlyPoolUnread(t *testing.T) {
+	got, why := humanOnly(Case{Kind: CaseBudgetFloor, Money: &CaseMoney{NeedEUR: 1}}, CaseFacts{Partial: []string{"pool"}})
+	if !got || !strings.Contains(why, "pool could not be read") {
+		t.Errorf("humanOnly = %v %q", got, why)
+	}
+}
+
+func TestRungZeroIgnoresAnUnreadSiblings(t *testing.T) {
+	r := &Runner{}
+	_, found, _ := r.rungZero(context.Background(), Task{}, Case{}, CaseFacts{Partial: []string{"siblings", "timeline"}}, nil)
+	if found != "facts read partly: timeline, so rung 0 took nothing" {
+		t.Errorf("found = %q", found)
 	}
 }
