@@ -70,17 +70,32 @@ func TestSweepBranches(t *testing.T) {
 }
 
 // The branch of a running card holds interim tips and no pull request: the
-// sweep keeps it, however old its head.
+// sweep keeps it, where the same branch of a card that ended 31 days before
+// the sweep goes.
 func TestSweepBranchesKeepsTheBranchOfARunningCard(t *testing.T) {
-	fj := &prForgejo{head: "w2", branches: []string{"factory/t1"}}
-	r, _, _ := newActivityRunner(t, withStatus(prTask, "running"), fj)
-	v := r.cfg.Policy()
-	v.Tree.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo"}}
-	r.cfg.Policy = func() policy.Version { return v }
-	if err := r.SweepBranches(context.Background(), time.Date(2027, 1, 1, 0, 0, 0, 0, time.UTC)); err != nil {
-		t.Fatal(err)
-	}
-	if len(fj.deleted) != 0 {
-		t.Fatalf("deleted = %q, want none", fj.deleted)
+	ended := time.Date(2026, 11, 1, 0, 0, 0, 0, time.UTC)
+	for name, tc := range map[string]struct {
+		status string
+		ended  *time.Time
+		want   []string
+	}{
+		"running":              {"running", nil, nil},
+		"ended 31 days before": {"failed", &ended, []string{"factory-agent/repo factory/t1"}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := withStatus(prTask, tc.status)
+			task.FinishedAt = tc.ended
+			fj := &prForgejo{head: "w2", branches: []string{"factory/t1"}}
+			r, _, _ := newActivityRunner(t, task, fj)
+			v := r.cfg.Policy()
+			v.Tree.Projects = map[string]policy.ProjectConfig{"repo": {Repository: "sf/repo"}}
+			r.cfg.Policy = func() policy.Version { return v }
+			if err := r.SweepBranches(context.Background(), time.Date(2026, 12, 2, 0, 0, 0, 0, time.UTC)); err != nil {
+				t.Fatal(err)
+			}
+			if !slices.Equal(fj.deleted, tc.want) {
+				t.Fatalf("deleted = %q, want %q", fj.deleted, tc.want)
+			}
+		})
 	}
 }

@@ -351,11 +351,8 @@ type SessionInput struct {
 	Answers []string
 	// PosterInfo is what the issue's author answered the agent's
 	// information requests, oldest first (versionNeedsInfo).
-	PosterInfo []string
-	StartRef   string
-	// StartInterim: StartRef is an interim push's head, which grants no
-	// push credit to the session that starts from it (versionWipStart).
-	StartInterim    bool `json:",omitempty"`
+	PosterInfo      []string
+	StartRef        string
 	ParentSessionID string
 	// ParentStop, ParentOutcome and ParentTrip are how the parent session
 	// ended: its SessionResult's Summary cut at carryStopBytes, its Outcome
@@ -394,11 +391,8 @@ type SessionResult struct {
 	Outcome   SessionOutcome
 	SessionID string
 	Commit    string // pushed; for a supervisor stop, the work in progress
-	// Interim: Commit is the session's last interim push, none of its own
-	// end push (versionWipStart).
-	Interim  bool `json:",omitempty"`
-	Summary  string
-	Findings []string
+	Summary   string
+	Findings  []string
 	// LastMessage is the agent's last message, cut at maxHandoverMessage, ""
 	// when it said none; the next session is told it beside the stop reason.
 	LastMessage string
@@ -445,7 +439,6 @@ type RunState struct {
 	Status      string
 	PR          PullRequest // the task's open pull request, adopted by the run
 	Head        string      // its head commit; with no pull request, the task branch's head past the base (versionWipStart)
-	Interim     bool        // Head is a commit of the interim push (versionWipStart)
 	Merged      bool        // the task's pull request merged
 	PRClosed    bool        // the task's pull request closed without merge
 	IssueClosed bool
@@ -1398,7 +1391,7 @@ const (
 	versionUpstreamCopy workflow.Version = 1
 	// versionWipStart (change id "wip-start"): a session that pushed and
 	// ended without a verdict (no_push, redirect, retry_stronger,
-	// provider_refused, day_cap, wall_clock) hands its head to the next
+	// provider_refused, day_cap) hands its head to the next
 	// session as its start, and a healed card with no pull request starts
 	// its first session from the branch's head. A run from before starts
 	// each from the base.
@@ -1698,7 +1691,6 @@ func (t *taskRun) lifecycle() (string, error) {
 	// parent is the last session that left a record; parentStop,
 	// parentOutcome and parentTrip say how it ended, for its working state
 	startRef, parent := "", ""
-	startInterim := false
 	var parentStop, parentTrip string
 	var parentOutcome SessionOutcome
 	var parentDeadEnd bool
@@ -1880,6 +1872,9 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if t.v5 >= versionPersistUsage {
 			u = st.Usage
+		}
+		if t.wipStart < versionWipStart && st.PR.Number == 0 {
+			st.Head = ""
 		}
 		t.sizeAgentTime(st.Size)
 		if t.v7 >= versionAnswers {
@@ -2126,7 +2121,6 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		if t.wipStart >= versionWipStart && st.PR.Number == 0 {
 			startRef = cmp.Or(startRef, st.Head)
-			startInterim = st.Interim && startRef == st.Head
 		}
 		if t.screening {
 			// a healed fresh card answered a wait before its screening
@@ -2301,7 +2295,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		var res SessionResult
 		in := SessionInput{
 			TaskID: t.taskID, Attempt: attempt, Sessions: t.cfg.MaxSessions + u.SessionsAdded(), Model: model,
-			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, StartInterim: startInterim, ParentSessionID: parent,
+			Findings: slices.Concat(findings, own), Answers: t.answers, PosterInfo: t.posterInfo, StartRef: startRef, ParentSessionID: parent,
 			ParentStop: parentStop, ParentOutcome: parentOutcome, ParentTrip: parentTrip, ParentDeadEnd: parentDeadEnd,
 			PolicyVersion: t.cfg.PolicyVersion, AgentTime: t.cfg.Task.AgentTime, CheckIn: t.cfg.Task.CheckIn,
 		}
@@ -2347,8 +2341,11 @@ func (t *taskRun) lifecycle() (string, error) {
 		t.pendingPods = 0
 		if t.wipStart >= versionWipStart && err == nil && !decided && res.Commit != "" {
 			switch res.Outcome {
-			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap, OutcomeWallClock:
-				startRef, startInterim = res.Commit, res.Interim
+			case OutcomeNoPush, OutcomeRedirect, OutcomeRetryStronger, OutcomeProviderRefused, OutcomeDayCap:
+				startRef = res.Commit
+				if res.Outcome == OutcomeProviderRefused {
+					parent, parentStop, parentOutcome, parentTrip, parentDeadEnd = res.SessionID, textutil.Truncate(res.Summary, carryStopBytes), res.Outcome, res.Trip, res.DeadEnd
+				}
 			}
 		}
 		if t.providerWait >= versionProviderWait && err == nil && !decided && res.Outcome == OutcomeProviderRefused {

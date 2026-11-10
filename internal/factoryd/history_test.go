@@ -129,7 +129,7 @@ func (f *histForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			fmt.Fprintf(w, `{"state":"success","sha":%q,"total_count":1,"statuses":[{"context":"ci / test","status":"success"}]}`, histCommit)
 		case r.Method == "GET" && strings.HasPrefix(p, "/git/commits/"):
-			io.WriteString(w, `{"commit":{"message":"factory task t: add it\n","committer":{"email":"worker@sandbox.local"}},"parents":[]}`)
+			io.WriteString(w, `{"commit":{"message":"factory task t: add it\n","committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
 		case r.Method == "GET" && p == "/actions/tasks":
 			io.WriteString(w, `{"workflow_runs":[],"total_count":0}`)
 		case r.Method == "GET" && strings.HasSuffix(p, "/labels"):

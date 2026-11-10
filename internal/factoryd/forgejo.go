@@ -2133,25 +2133,23 @@ func (f *Forgejo) CommitParents(ctx context.Context, owner, repo, sha string) ([
 	return out, nil
 }
 
-// CommitIdentity is a commit's committer email and message: one commit
-// object, no files.
-func (f *Forgejo) CommitIdentity(ctx context.Context, owner, repo, sha string) (email, message string, err error) {
+// CommitterEmail is a commit's committer email: one commit object, no files.
+func (f *Forgejo) CommitterEmail(ctx context.Context, owner, repo, sha string) (string, error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s?stat=false&verification=false&files=false", owner, repo, url.PathEscape(sha)), nil, http.StatusOK)
 	if err != nil {
-		return "", "", err
+		return "", err
 	}
 	var res struct {
 		Commit struct {
-			Message   string `json:"message"`
 			Committer struct {
 				Email string `json:"email"`
 			} `json:"committer"`
 		} `json:"commit"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return "", "", fmt.Errorf("forgejo commit %s/%s %s: %w", owner, repo, sha, err)
+		return "", fmt.Errorf("forgejo commit %s/%s %s: %w", owner, repo, sha, err)
 	}
-	return res.Commit.Committer.Email, res.Commit.Message, nil
+	return res.Commit.Committer.Email, nil
 }
 
 // MergedPullRequest is a merged pull request as the roll's body and the

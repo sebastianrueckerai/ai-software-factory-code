@@ -568,8 +568,9 @@ type forgejoHub struct {
 	revoked     []int64
 	nextID      int64
 	calls       []string
-	branchHead  string // the task branch's head; empty = no branch yet
-	mainHead    string // the task repository's main head
+	branchHead  string            // the task branch's head; empty = no branch yet
+	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
+	mainHead    string            // the task repository's main head
 	comments    []string
 	failWrites  int    // write-token mints to answer 502 before succeeding
 	prFiles     string // a pull request's files, as Forgejo lists them
@@ -650,6 +651,9 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			h.comments = append(h.comments, body.Body)
 			w.WriteHeader(http.StatusCreated)
 			fmt.Fprintf(w, `{"id":%d}`, 500+len(h.comments))
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/git/commits/")
+			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}}}`, cmp.Or(h.committers[sha], "factory-agent@factory.local"))
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
 			if strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.HasSuffix(r.URL.Path, "/branches/main") {
 				fmt.Fprintf(w, `{"commit":{"id":%q}}`, h.mainHead)
@@ -3990,12 +3994,14 @@ func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error)
 }
 
 // startsFrom runs a session that starts on the branch head w2, spends 2.5
-// of the 4 EUR the card had left and pushes nothing; interim says whether w2
-// is an interim push's head. It reports whether spend_no_push tripped.
-func startsFrom(t *testing.T, interim bool) bool {
+// of the 4 EUR the card had left and pushes nothing. committer is who wrote
+// w2 and given the start the workflow's input names. It reports whether
+// spend_no_push tripped.
+func startsFrom(t *testing.T, committer, given string) bool {
 	t.Helper()
 	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	hub.branchHead = "w2"
+	hub.committers = map[string]string{"w2": committer}
 	tk := store.tasks["t2"]
 	tk.BudgetEUR, tk.SpentEUR = 5, 1
 	store.tasks["t2"] = tk
@@ -4011,20 +4017,30 @@ func startsFrom(t *testing.T, interim bool) bool {
 		}
 		cancel()
 	}()
-	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", StartRef: "w2", StartInterim: interim}, nil, hangLogs)
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big", StartRef: given}, nil, hangLogs)
 	return chat.calls == 1 && spendTripSeen(hub)
 }
 
-// An interim push grants no push credit: a session that starts from an
-// interim head and spends past the line with nothing pushed trips
-// spend_no_push, as one that starts from the base does. A session that
-// starts from the head of a push keeps the credit that push earned.
-func TestRunSessionFromAnInterimHeadKeepsSpendNoPush(t *testing.T) {
-	if !startsFrom(t, true) {
-		t.Fatal("a session from an interim head spent past the line with nothing pushed and tripped nothing")
-	}
-	if startsFrom(t, false) {
-		t.Fatal("a session from a pushed head tripped spend_no_push, which its parent's push disarms")
+// An interim push grants no push credit, whatever the input names as the
+// start: a session that starts on an interim head, named or not (a retry of
+// a dead attempt, a run from before the gate), and spends past the line with
+// nothing pushed trips spend_no_push. One that starts on a session's push
+// does not.
+func TestRunSessionOnAnInterimHeadKeepsSpendNoPush(t *testing.T) {
+	for _, tc := range []struct {
+		name, committer, given string
+		trips                  bool
+	}{
+		{"an interim head the input names", wipEmail, "w2", true},
+		{"an interim head the input leaves out", wipEmail, "", true},
+		{"a session's push the input names", "factory-agent@factory.local", "w2", false},
+		{"a session's push the input leaves out", "factory-agent@factory.local", "", false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := startsFrom(t, tc.committer, tc.given); got != tc.trips {
+				t.Fatalf("spend_no_push tripped = %v, want %v", got, tc.trips)
+			}
+		})
 	}
 }
 
@@ -5594,24 +5610,5 @@ func TestWorkerPodSpecCarriesTheCardLineBound(t *testing.T) {
 	}
 	if got := pod(Task{ID: "t1"})["LINE_BOUND"]; got != "400" {
 		t.Fatalf("LINE_BOUND = %q for a card with no size under large_lines 400, want 400", got)
-	}
-}
-
-// A session that ended without a result carries its last interim head as
-// the commit and says it is interim; its own push is no interim head.
-func TestSessionResultMarksAnInterimCommit(t *testing.T) {
-	for _, tc := range []struct {
-		name string
-		out  sessionOutcome
-		want bool
-	}{
-		{"interim head only", sessionOutcome{noResult: "the pod was killed", wip: "w2"}, true},
-		{"own push over an interim head", sessionOutcome{noResult: "stopped", commit: "c1", wip: "w2"}, false},
-		{"no push", sessionOutcome{noResult: "the pod was killed"}, false},
-	} {
-		res := sessionResult(sessionSpec{id: "s1", base: "main"}, tc.out)
-		if res.Interim != tc.want || (tc.want && res.Commit != "w2") {
-			t.Errorf("%s: Interim = %v, Commit = %q, want interim %v", tc.name, res.Interim, res.Commit, tc.want)
-		}
 	}
 }

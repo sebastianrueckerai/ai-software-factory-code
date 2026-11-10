@@ -35,6 +35,7 @@ type gitForgejo struct {
 	prs      []int64         // the pull requests opened
 	wip      map[string]bool // the commits the interim push wrote
 	statuses []string        // the commits whose checks were asked
+	merged   string          // the head the merge took, "" before it
 	issues   int64
 }
 
@@ -57,6 +58,12 @@ func (g *gitForgejo) end(commit string) {
 	g.branch = append(g.branch, commit)
 }
 
+func (g *gitForgejo) mergedHead() string {
+	g.mu.Lock()
+	defer g.mu.Unlock()
+	return g.merged
+}
+
 func (g *gitForgejo) snapshot() (branch []string, prs int) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
@@ -72,7 +79,11 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		p := r.URL.Path
 		var n int64
 		pull := func(num int64) map[string]any {
-			return map[string]any{"number": num, "state": "open", "html_url": fmt.Sprintf("https://git.example/demo-app/demo-app/pulls/%d", num),
+			state, mergedBy := "open", map[string]any{}
+			if g.merged != "" {
+				state, mergedBy = "closed", map[string]any{"login": factoryd.MergeUser}
+			}
+			return map[string]any{"number": num, "state": state, "merged": g.merged != "", "merged_by": mergedBy, "base": map[string]any{"ref": "main"}, "html_url": fmt.Sprintf("https://git.example/demo-app/demo-app/pulls/%d", num),
 				"head": map[string]any{"ref": "factory/t-wip", "sha": g.branch[len(g.branch)-1], "repo": map[string]any{"full_name": "factory-agent/demo-app"}}}
 		}
 		switch {
@@ -87,11 +98,11 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 			}
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, g.branch[len(g.branch)-1])
 		case r.Method == http.MethodGet && strings.HasPrefix(p, fork+"/git/commits/"):
-			email, subject := "worker@sandbox.local", "factory task t-wip: keep the work"
+			email := "factory-agent@factory.local"
 			if g.wip[strings.TrimPrefix(p, fork+"/git/commits/")] {
-				email, subject = "factory-agent@factory.local", "factory task t-wip: work in progress"
+				email = "factory-wip@factory.local"
 			}
-			fmt.Fprintf(w, `{"commit":{"message":%q,"committer":{"email":%q}},"parents":[]}`, subject+"\n", email)
+			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[]}`, email)
 		case r.Method == http.MethodPost && p == repo+"/issues":
 			g.issues++
 			w.WriteHeader(http.StatusCreated)
@@ -108,14 +119,25 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodPatch && strings.Contains(p, "/issues/"):
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{}`)
+		case r.Method == http.MethodGet && p == repo+"/actions/tasks":
+			io.WriteString(w, `{"workflow_runs":[],"total_count":0}`)
+		case r.Method == http.MethodDelete && strings.HasPrefix(p, fork+"/branches/"):
+			w.WriteHeader(http.StatusNoContent)
 		case r.Method == http.MethodGet && strings.Contains(p, "/git/trees/"):
 			io.WriteString(w, `{"total_count":0,"tree":[]}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, "/api/v1/users/factory-agent/tokens"):
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && strings.Contains(p, "/dependencies"):
 			io.WriteString(w, `[]`)
+		case r.Method == http.MethodPost && p == repo+"/pulls/12/merge":
+			var body struct {
+				Head string `json:"head_commit_id"`
+			}
+			json.NewDecoder(r.Body).Decode(&body)
+			g.merged = body.Head
+			io.WriteString(w, `{}`)
 		case r.Method == http.MethodGet && strings.HasPrefix(p, repo+"/pulls/main/"):
-			if len(g.prs) == 0 {
+			if len(g.prs) == 0 || g.merged != "" {
 				http.NotFound(w, r)
 				return
 			}
@@ -140,12 +162,12 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 	return srv
 }
 
-// wipPolicy is the maintenance process with the checks and the approval as its stages.
+// wipPolicy is the maintenance process with the checks, the approval and the merge as its stages.
 func wipPolicy() policy.Version {
 	v := acceptancePolicyVersion()
 	v.Tree.Processes["maintenance"] = policy.Process{
 		Tracks: policy.Tracks{Direct: policy.Track{Class: policy.ClassCoder}},
-		Stages: []policy.Stage{{Name: "checks", OnFindings: "agent", Enabled: true}, {Name: "approval", OnFindings: "human", Enabled: true}},
+		Stages: []policy.Stage{{Name: "checks", OnFindings: "agent", Enabled: true}, {Name: "approval", OnFindings: "human", Enabled: true}, {Name: "merge", OnFindings: "human", Enabled: true}},
 	}
 	return v
 }
@@ -184,7 +206,8 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 	}))
 	t.Cleanup(litellm.Close)
 	objects := &stubObjects{data: map[string][]byte{}}
-	forgejo := &factoryd.Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+	forgejo := &factoryd.Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw",
+		Seeded: map[string]string{policy.SecretMerge: "9a8b7c6d5e4f30211203f4e5d6c7b8a998877665"}}
 	cfg := factoryd.RunnerConfig{
 		AgentNamespacePrefix: "factory-agents-", WorkerImage: "reg/worker@sha256:abc", SandboxBaseImage: "reg/sandbox-base@sha256:bcd", RegistryHost: "store.test",
 		PullSecret: "forgejo-registry", FactoryNamespace: "factory",
@@ -203,7 +226,7 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 		Workflows:   &acceptanceWorkflows{},
 	}
 	completion := &factoryd.Completion{Store: store, Forgejo: forgejo, LiteLLM: &factoryd.LiteLLMAdmin{BaseURL: litellm.URL, MasterKey: "mk"}}
-	runner, err := factoryd.NewRunner(cfg, store, &acceptanceKube{}, forgejo, completion, objects,
+	runner, err := factoryd.NewRunner(cfg, mergeProject{store}, &acceptanceKube{}, forgejo, completion, objects,
 		&factoryd.SupervisorModel{GatewayURL: quiet.URL, Token: "gw-token", Budget: factoryd.TokenBudget{AnswerTokens: 1000, HeadroomTokens: 8000}})
 	if err != nil {
 		t.Fatal(err)
@@ -215,18 +238,19 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 
 	var inputs []factoryd.SessionInput
 	var healed factoryd.RunState
-	var branchAtSecondStart []string
-	var prsAtSecondStart int
+	var headAtSecondStart string
 	session := func(ctx context.Context, in factoryd.SessionInput) (factoryd.SessionResult, error) {
 		inputs = append(inputs, in)
 		if len(inputs) == 1 {
 			git.interim("w1")
 			git.interim("w2")
-			return factoryd.SessionResult{Outcome: factoryd.OutcomeNoPush, SessionID: "s-1", Commit: "w2", Interim: true,
+			return factoryd.SessionResult{Outcome: factoryd.OutcomeNoPush, SessionID: "s-1", Commit: "w2",
 				Summary: "the pod was killed", Findings: []string{"previous session ended unfinished: the pod was killed"}}, nil
 		}
-		branchAtSecondStart, prsAtSecondStart = git.snapshot()
 		var err error
+		if headAtSecondStart, err = runner.BranchHead(ctx, "t-wip"); err != nil {
+			t.Errorf("BranchHead: %v", err)
+		}
 		if healed, err = runner.Reconcile(ctx, "t-wip"); err != nil {
 			t.Errorf("Reconcile: %v", err)
 		}
@@ -240,7 +264,7 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 	runner.RegisterActivities(skipping{env: env, skip: factoryd.ActivityRunSession})
 	env.RegisterActivityWithOptions(session, activity.RegisterOptions{Name: factoryd.ActivityRunSession})
 	env.RegisterWorkflowWithOptions(factoryd.TaskWorkflow{Config: runner.WorkflowConfig}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
-	env.RegisterDelayedCallback(func() { env.SignalWorkflow(factoryd.SignalPRMerged, factoryd.TaskSignal{Author: "sebastian", PR: 12}) }, 3*time.Hour)
+	env.RegisterDelayedCallback(func() { env.SignalWorkflow(factoryd.SignalApproved, factoryd.TaskSignal{Author: "sebastian", PR: 12}) }, 3*time.Hour)
 
 	env.ExecuteWorkflow("TaskWorkflow", "t-wip")
 	if !env.IsWorkflowCompleted() {
@@ -257,21 +281,33 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 		t.Fatalf("the card ended %q, want done", final)
 	}
 
-	if len(inputs) != 2 || inputs[1].StartRef != "w2" || !inputs[1].StartInterim || inputs[1].ParentSessionID != "s-1" {
+	if len(inputs) != 2 || inputs[1].StartRef != "w2" || inputs[1].ParentSessionID != "s-1" {
 		t.Fatalf("session inputs = %+v, want the second to start from the interim head w2 with parent s-1", inputs)
 	}
-	if !slices.Equal(branchAtSecondStart, []string{"w2"}) || prsAtSecondStart != 0 {
-		t.Fatalf("at the second start the branch holds %v with %d pull requests, want exactly the replaced tip [w2] and none", branchAtSecondStart, prsAtSecondStart)
+	if headAtSecondStart != "w2" {
+		t.Fatalf("at the second start the forge's branch head = %q, want the interim head w2", headAtSecondStart)
 	}
-	if healed.Head != "w2" || !healed.Interim || healed.PR.Number != 0 {
-		t.Fatalf("Reconcile = head %q interim %v pr %d, want the interim branch head w2 and no pull request", healed.Head, healed.Interim, healed.PR.Number)
+	if healed.Head != "w2" || healed.PR.Number != 0 {
+		t.Fatalf("Reconcile = head %q pr %d, want the branch head w2 and no pull request", healed.Head, healed.PR.Number)
 	}
 	if branch, prs := git.snapshot(); !slices.Equal(branch, []string{"w2", "c3"}) || prs != 1 {
 		t.Fatalf("after the end push the branch holds %v with %d pull requests, want [w2 c3] and 1", branch, prs)
 	}
+	if git.mergedHead() != "c3" {
+		t.Fatalf("the merge took head %q, want the end head c3", git.mergedHead())
+	}
 	if !slices.Contains(git.statuses, "c3") || slices.Contains(git.statuses, "w2") {
 		t.Fatalf("checks asked of %v, want the end head c3 and never the interim w2", git.statuses)
 	}
+}
+
+// mergeProject answers the card's project with a merge token the rig seeds;
+// every other read is the real store's.
+type mergeProject struct{ *factoryd.PGStore }
+
+func (mergeProject) ProjectByRepository(_ context.Context, repository string) (factoryd.Project, bool, error) {
+	return factoryd.Project{Name: "demo-app", Repository: repository, File: true, Objects: policy.ObjectsSeed,
+		Tokens: policy.SeedTokens{Merge: policy.SecretMerge}}, true, nil
 }
 
 // skipping registers a runner's activities on env but one.

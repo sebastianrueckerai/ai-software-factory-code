@@ -14,33 +14,36 @@ import (
 	"go.temporal.io/sdk/workflow"
 )
 
-// interimStop is a session that died after its check-ins pushed work in
-// progress: the second interim head w2 is its Commit.
-func interimStop(outcome SessionOutcome) SessionResult {
-	return SessionResult{Outcome: outcome, SessionID: "s1", Commit: "w2", Interim: true, Summary: "the pod was killed",
+// deadAfterPushing is a session that pushed work in progress to commit w2
+// and ended on outcome.
+func deadAfterPushing(outcome SessionOutcome) SessionResult {
+	return SessionResult{Outcome: outcome, SessionID: "s1", Commit: "w2", Summary: "the pod was killed",
 		Findings: []string{"previous session ended unfinished: the pod was killed"}}
 }
 
-// A session that pushed and then ended without a result hands the pushed
-// head to the next session as its start, with the dead session as parent.
-// A run from before wip-start keeps the base (the empty start).
+// A session that pushed and then ended without a verdict hands the pushed
+// head to the next session as its start, with itself as the parent. A run
+// from before wip-start keeps the base (the empty start) and, as before, the
+// refused session's parent.
 func TestWorkflowNextSessionStartsFromThePushedHead(t *testing.T) {
 	for _, tc := range []struct {
 		outcome SessionOutcome
-		version workflow.Version
-		start   string
+		gate    bool
 	}{
-		{OutcomeNoPush, versionWipStart, "w2"},
-		{OutcomeRedirect, versionWipStart, "w2"},
-		{OutcomeRetryStronger, versionWipStart, "w2"},
-		{OutcomeProviderRefused, versionWipStart, "w2"},
-		{OutcomeNoPush, workflow.DefaultVersion, ""},
-		{OutcomeRedirect, workflow.DefaultVersion, ""},
+		{OutcomeNoPush, true}, {OutcomeRedirect, true}, {OutcomeRetryStronger, true},
+		{OutcomeProviderRefused, true}, {OutcomeDayCap, true},
+		{OutcomeNoPush, false}, {OutcomeRedirect, false}, {OutcomeDayCap, false},
 	} {
-		t.Run(string(tc.outcome)+"/v"+string(rune('0'+tc.version+1)), func(t *testing.T) {
+		name := string(tc.outcome) + " from before the gate keeps the base"
+		if tc.gate {
+			name = string(tc.outcome) + " hands its pushed head on"
+		}
+		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
-			h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(tc.version)
-			dead := interimStop(tc.outcome)
+			if !tc.gate {
+				h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
+			}
+			dead := deadAfterPushing(tc.outcome)
 			if tc.outcome == OutcomeProviderRefused {
 				dead.Status = 429
 			}
@@ -55,64 +58,46 @@ func TestWorkflowNextSessionStartsFromThePushedHead(t *testing.T) {
 				t.Fatalf("sessions = %d, want 2", len(h.sessions))
 			}
 			second := h.sessions[1]
-			if second.StartRef != tc.start || second.StartInterim != (tc.start != "") {
-				t.Fatalf("second = start %q interim %v, want start %q", second.StartRef, second.StartInterim, tc.start)
+			want := ""
+			if tc.gate {
+				want = "w2"
 			}
-			if tc.outcome != OutcomeProviderRefused && second.ParentSessionID != "s1" {
-				t.Fatalf("parent = %q, want s1", second.ParentSessionID)
+			if second.StartRef != want {
+				t.Fatalf("second start = %q, want %q", second.StartRef, want)
+			}
+			if tc.gate && second.ParentSessionID != "s1" {
+				t.Fatalf("second parent = %q, want s1, the session whose head it starts from", second.ParentSessionID)
 			}
 		})
 	}
 }
 
-// A later session's own push is no interim head: its start carries no mark.
-func TestWorkflowPushedStartIsNoInterimStart(t *testing.T) {
-	h := newWorkflowHarness(t)
-	real := SessionResult{Outcome: OutcomeRedirect, SessionID: "s1", Commit: "c1", Summary: "supervision trip: loop"}
-	h.onSessions(real, pushed("s2", "c3"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, want done", final)
-	}
-	if s := h.sessions[1]; s.StartRef != "c1" || s.StartInterim {
-		t.Fatalf("second = start %q interim %v, want c1 pushed", s.StartRef, s.StartInterim)
-	}
-}
-
-// A healed run whose card has no pull request starts its first session
-// from the branch head Reconcile read.
+// A healed run whose card has no pull request starts its first session from
+// the branch head Reconcile read; a run from before wip-start starts from the
+// base however the head reads.
 func TestWorkflowHealedRunStartsFromTheBranchHead(t *testing.T) {
-	for _, interim := range []bool{false, true} {
-		h := newWorkflowHarness(t)
-		h.state = RunState{Status: "running", Head: "w2", Interim: interim, Usage: TaskUsage{Attempts: 1}}
-		h.onSessions(pushed("s2", "c3"))
-		h.onChecks(ChecksResult{State: ChecksSuccess})
-		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	for _, tc := range []struct {
+		name  string
+		gate  bool
+		start string
+	}{{"the gate adopts the head", true, "w2"}, {"before the gate keeps the base", false, ""}} {
+		t.Run(tc.name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			if !tc.gate {
+				h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
+			}
+			h.state = RunState{Status: "running", Head: "w2", Usage: TaskUsage{Attempts: 1}}
+			h.onSessions(pushed("s2", "c3"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 
-		if final := h.run(t); final != "done" {
-			t.Fatalf("final = %q, want done", final)
-		}
-		if s := h.sessions[0]; s.StartRef != "w2" || s.StartInterim != interim {
-			t.Fatalf("first = start %q interim %v, want w2 with interim %v", s.StartRef, s.StartInterim, interim)
-		}
-	}
-}
-
-func TestWorkflowHealBeforeWipStartStartsFromTheBase(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
-	h.state = RunState{Status: "running", Head: "w2", Usage: TaskUsage{Attempts: 1}}
-	h.onSessions(pushed("s2", "c3"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
-
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, want done", final)
-	}
-	if s := h.sessions[0]; s.StartRef != "" {
-		t.Fatalf("first start = %q, want the base", s.StartRef)
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, want done", final)
+			}
+			if got := h.sessions[0].StartRef; got != tc.start {
+				t.Fatalf("first start = %q, want %q", got, tc.start)
+			}
+		})
 	}
 }
 
@@ -194,7 +179,7 @@ func TestWorkflowReplaysAPushedDeadSessionFromBeforeWipStart(t *testing.T) {
 
 	var starts []SessionInput
 	replaySplice(t, ev, &startsSeen{got: &starts})
-	if len(starts) < 2 || starts[1].Attempt != 2 || starts[1].StartRef != "" || starts[1].StartInterim {
+	if len(starts) < 2 || starts[1].Attempt != 2 || starts[1].StartRef != "" {
 		t.Fatalf("starts = %+v, want the bought successor to start from the base", starts)
 	}
 }
