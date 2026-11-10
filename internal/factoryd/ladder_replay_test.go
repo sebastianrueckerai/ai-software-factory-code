@@ -531,8 +531,8 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		l.worker.mu.Lock()
 		defer l.worker.mu.Unlock()
 		climb := "POST /message factoryd: this session continues on the stronger model, big: " + note + ". Carry on from where you are."
-		if len(l.worker.texts) != 3 || l.worker.texts[0] != "POST /brief " ||
-			l.worker.texts[1] != "POST /message "+correction || l.worker.texts[2] != climb {
+		if texts := withoutWipAsks(l.worker.texts); len(texts) != 3 || texts[0] != "POST /brief " ||
+			texts[1] != "POST /message "+correction || texts[2] != climb {
 			t.Fatalf("worker got %q, want the brief, the correction, the climb with the judge's note", l.worker.texts)
 		}
 		tl := string(objGet(l.objects, "sessions/t1/timeline.jsonl"))
