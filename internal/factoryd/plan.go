@@ -2276,9 +2276,9 @@ func (t *taskRun) planAsksAgain(u TaskUsage) bool {
 	return u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.plannerRetry >= versionPlannerRetry && short && !retry
 }
 
-// plannerOutOfTime opens the question of a plan card whose planner is out
+// PlannerOutOfTime is the head of the question of a plan card whose planner is out
 // of time with no automatic session to come.
-const plannerOutOfTime = "the planner used its agent time"
+const PlannerOutOfTime = "the planner used its agent time"
 
 // plannerTimeCard is that question: the automatic session used, or the cap
 // too short for one, and what buys the next session: an extend of the
@@ -2289,10 +2289,10 @@ func (t *taskRun) plannerTimeCard(u TaskUsage) string {
 		what = fmt.Sprintf(" without filing a plan, and its %g-minute cap is too short for an automatic second session", t.cfg.WallClockCap.Minutes())
 	}
 	if t.cases >= versionCases {
-		return plannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
+		return PlannerOutOfTime + what + ": an extend of its agent time starts one more planner session, with the answer among its findings"
 	}
 	return fmt.Sprintf("%s%s: an answer starts one more planner session with %g minutes of agent time and the answer among its findings",
-		plannerOutOfTime, what, t.answerTime().Minutes())
+		PlannerOutOfTime, what, t.answerTime().Minutes())
 }
 
 // confirmedByAnswers tells whether every question of a revision is
@@ -2823,7 +2823,11 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.recordCriteria(ctx, taskID, n, *st.newest, p)
 		r.restartChildren(ctx, t, repo, n, p)
 	}
-	r.record(ctx, taskID, "plan_revision", map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+	if st.newest == nil || n > st.revision {
+		detail := map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha}
+		r.record(ctx, taskID, "plan_revision", detail)
+		r.timeline.RecordRow(ctx, taskID, EventPlanRevision, FactoryDecider, ViaFactoryd, detail)
+	}
 	gate, _, err := r.confirms(ctx, t, p)
 	if err != nil {
 		return PlanResult{}, err

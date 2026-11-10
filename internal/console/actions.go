@@ -128,7 +128,7 @@ func capFactsFrom(t factoryd.Task, sessions int, escalation string, pending []fa
 		}
 	}
 	waits := t.Status == "waiting-human" && !f.merge && !f.plan
-	f.timeCap = waits && factoryd.AtTimeCap(escalation)
+	f.timeCap = waits && factoryd.AtTimeStop(escalation)
 	f.capped = waits && (factoryd.AtSessionCap(escalation) || f.timeCap || f.sessions > 0 && f.attempts >= f.sessions+f.extra)
 	return f
 }
@@ -1268,18 +1268,22 @@ func (c *Console) denialNote(ctx context.Context, t factoryd.Task) string {
 }
 
 // doExtend raises card id's caps on any live agent card through Act: its
-// sessions and its line bound as an extend, its budget as the money drawn
-// beside it, or a fund alone when it raises no session or line. On a card
-// waiting at its case the note, or when none a line naming the raise, is
-// the answer Act has posted as the human's comment; a card waiting on no
-// case reads the raise at its next cap check.
-func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines int, eur float64, note string) (string, error) {
+// sessions, its agent time (minutes of it) and its line bound as an
+// extend, its budget as the money drawn beside it, or a fund alone when
+// it raises no session, minute or line. On a card waiting at its case
+// the note, or when none a line naming the raise, is the answer Act has
+// posted as the human's comment; a card waiting on no case reads the
+// raise at its next cap check.
+func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, lines, minutes int, eur float64, note string) (string, error) {
 	switch {
-	case sessions < 0 || lines < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
-		(sessions == 0 && lines == 0 && !(eur > 0)):
-		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions and lines, and an amount in EUR")
+	case sessions < 0 || lines < 0 || minutes < 0 || eur < 0 || math.IsNaN(eur) || math.IsInf(eur, 0) ||
+		(sessions == 0 && lines == 0 && minutes == 0 && !(eur > 0)):
+		return "", refuse(http.StatusBadRequest, "an extend raises at least one of the card's numbers: whole numbers of sessions, minutes, lines and an amount in EUR")
 	}
-	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, eur)))
+	if minutes > factoryd.MaxExtendMinutes {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("an extend raises at most %d minutes of agent time at once", factoryd.MaxExtendMinutes))
+	}
+	note = cmp.Or(strings.TrimSpace(note), fmt.Sprintf("Extended the card: %s.", raiseLine(sessions, lines, minutes, eur)))
 	if err := answerFits(note); err != nil {
 		return "", err
 	}
@@ -1291,8 +1295,8 @@ func (c *Console) doExtend(ctx context.Context, a actor, id string, sessions, li
 		return "", wrongState(t, c.capFactsOf(ctx, t), "a live card to extend")
 	}
 	res := factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": eur}, Note: note}
-	if sessions > 0 || lines > 0 {
-		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines}
+	if sessions > 0 || lines > 0 || minutes > 0 {
+		res.Action, res.Args = factoryd.ActExtend, map[string]any{"sessions": sessions, "lines": lines, "agent_time_s": minutes * 60}
 		if eur > 0 {
 			res.Fund = &policy.Draw{EUR: eur}
 		}
@@ -1305,9 +1309,10 @@ func extendable(t factoryd.Task) bool {
 	return t.Kind == "agent" && t.IssueNumber != 0 && slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
 }
 
-// raiseLine names an extend's raise: the sessions, lines and EUR it adds.
-func raiseLine(sessions, lines int, eur float64) string {
-	return fmt.Sprintf("+%d %s, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), lines, plural(lines, "line"), eur)
+// raiseLine names an extend's raise: the sessions, minutes of agent time,
+// lines and EUR it adds.
+func raiseLine(sessions, lines, minutes int, eur float64) string {
+	return fmt.Sprintf("+%d %s, +%d %s of agent time, +%d %s, +%.2f EUR", sessions, plural(sessions, "session"), minutes, plural(minutes, "minute"), lines, plural(lines, "line"), eur)
 }
 
 // choiceCard tells a human card factoryd asks on whose choices act: the

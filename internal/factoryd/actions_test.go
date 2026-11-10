@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"fmt"
+	"maps"
 	"slices"
 	"testing"
 	"time"
@@ -419,8 +420,8 @@ func TestExtendOfLinesAloneApplies(t *testing.T) {
 	}
 }
 
-// An extend answers a cap: a session cap, an agent time cap, a check-in
-// share, and the owner exits of a gate stop and of findings that repeat,
+// An extend answers a cap: a session cap, a check-in share (an agent time
+// cap takes agent time, see TestExtendAtATimeCapTakesAgentTime), and the owner exits of a gate stop and of findings that repeat,
 // whose questions offer "Extend the card"; with no case it raises a live
 // card's caps. A stop on money names the fund, any other case asked a
 // question, which an extend does not answer, and the human is not offered
@@ -429,7 +430,7 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	const asked = "this card asked a question, not for a session: answer it, or extend at its cap"
 	one := Resolution{Args: map[string]any{"sessions": 1}}
 	for kind, want := range map[CaseKind]string{
-		CaseSessionCap: "", CaseAgentTimeCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
+		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
 		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
 		CaseBudgetFloor: "this card waits on money, not a session: fund it",
 		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
@@ -440,6 +441,37 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	}
 	if got := offeredNames(CaseFacts{Kind: CaseAgentEscalate, SessionCap: 3, AgentTimeCapS: 7200}, 3); slices.Contains(got, ActExtend) {
 		t.Errorf("the human on an ask is offered %v, want no extend", got)
+	}
+}
+
+// An agent time cap is answered by agent time: an extend that raises none
+// of the time its stop names, sessions or lines alone, is refused with the
+// stop's own words before it draws, so it leaves the card's last draw as
+// it stands and the next extend is not already refused for having bought
+// nothing. The extend stays offered there, probed on the agent time it
+// takes.
+func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
+	timeCap := CaseFacts{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200}
+	for _, tc := range []struct {
+		name string
+		r    Resolution
+		want string
+	}{
+		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}},
+			"this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
+		{"lines alone", Resolution{Args: map[string]any{"lines": 200}},
+			"this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
+		{"check-in share alone", Resolution{Args: map[string]any{"checkin_shares": 1}}, "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"},
+		{"agent time", Resolution{Args: map[string]any{"agent_time_s": 600}}, ""},
+		{"agent time past the bound", Resolution{Args: map[string]any{"agent_time_s": 36001}}, "an extend raises at most 600 minutes of agent time at once"},
+		{"agent time and sessions", Resolution{Args: map[string]any{"agent_time_s": 600, "sessions": 1}}, ""},
+	} {
+		if got := applies(t, ActExtend, timeCap, tc.r); got != tc.want {
+			t.Errorf("%s at the agent time cap = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := offeredNames(timeCap, 3); !slices.Contains(got, ActExtend) {
+		t.Errorf("the human at the agent time cap is offered %v, want the extend", got)
 	}
 }
 
@@ -569,6 +601,105 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 	if got, want := applies(t, ActSettle, CaseFacts{Kind: CaseSessionCap}, Resolution{}),
 		"settle ends a monitor flag's case alone, and this case is no monitor flag's"; got != want {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
+	}
+}
+
+// A planner never pushes: its draw bought something once it filed a
+// revision since. At an agent time stop the draw weighed is the newest that
+// raised agent time: a draw of money or sessions beside or after it raised
+// nothing the stop names.
+func TestBoughtNothingWeighsAPlannerOnItsRevision(t *testing.T) {
+	at := time.Date(2026, 11, 10, 11, 29, 0, 0, time.UTC)
+	f := CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}}
+	if !boughtNothing(f) {
+		t.Error("a draw of agent time, no push and no revision since: want bought nothing")
+	}
+	f.TimeDraw.Revised = true
+	if boughtNothing(f) {
+		t.Error("a revision filed since the draw: the draw bought something")
+	}
+	f.TimeDraw = nil
+	f.LastDrawAt, f.DrawHead = &at, ""
+	if boughtNothing(f) {
+		t.Error("only a draw that raised no agent time at a time stop: no draw to weigh")
+	}
+	f.Kind = CaseSessionCap
+	if !boughtNothing(f) {
+		t.Error("the same draw at a session cap is weighed as before")
+	}
+}
+
+// An extend of agent time with money beside it is two rows, the extend
+// then the fund, both of the pool; newest first the fund leads. At a time
+// stop the draw weighed is the extend's, so with no push or revision since
+// it bought nothing, and a revision filed after both is what it bought.
+func TestEventFactsWeighTheTimeDrawBesideAFund(t *testing.T) {
+	detail := func(m map[string]any) map[string]any {
+		d := map[string]any{"pool": true, "head": "", "checks": "", "sessions": 0.0, "agent_time_s": 0.0, "amount_eur": 0.0}
+		maps.Copy(d, m)
+		return d
+	}
+	extend := Event{At: factsAt(11, 29), Kind: EventCardExtended, Detail: detail(map[string]any{"agent_time_s": 300.0})}
+	fund := Event{At: factsAt(11, 29), Kind: EventCardFunded, Detail: detail(map[string]any{"amount_eur": 1.0})}
+	revision := Event{At: factsAt(11, 40), Kind: EventPlanRevision}
+	var f CaseFacts
+	f.eventFacts([]Event{fund, extend})
+	f.Kind = CaseAgentTimeCap
+	if f.LastDrawAt == nil || f.TimeDraw == nil || f.TimeDraw.Revised || !boughtNothing(f) {
+		t.Fatalf("facts %+v; want the extend's time draw weighed and bought nothing", f)
+	}
+	f.Kind = CaseSessionCap
+	if !boughtNothing(f) {
+		t.Error("the newest draw, the fund, bought nothing at a session cap")
+	}
+	var after CaseFacts
+	after.eventFacts([]Event{revision, fund, extend})
+	after.Kind = CaseAgentTimeCap
+	if !after.TimeDraw.Revised || boughtNothing(after) {
+		t.Errorf("a revision filed after both rows: facts %+v, want the draw bought", after)
+	}
+	var before CaseFacts
+	before.eventFacts([]Event{fund, extend, revision})
+	if before.TimeDraw.Revised {
+		t.Error("a revision filed before the draw is not one since")
+	}
+}
+
+// At a planner's time stop rungs 1 and 2 are offered the extend only when
+// the pool holds agent time: sessions without time start no session.
+func TestExtendAtATimeCapNeedsPoolTime(t *testing.T) {
+	f := CaseFacts{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200,
+		PoolLeft: policy.Draw{Sessions: 5, EUR: 20}, CardDrawLeft: policy.Draw{Sessions: 5, AgentTime: time.Hour, EUR: 20}}
+	if got := offeredNames(f, 2); slices.Contains(got, ActExtend) {
+		t.Errorf("rung 2 on a pool with sessions and no agent time is offered %v, want no extend", got)
+	}
+	f.PoolLeft.AgentTime = time.Hour
+	if got := offeredNames(f, 2); !slices.Contains(got, ActExtend) {
+		t.Errorf("rung 2 on a pool with agent time is offered %v, want the extend", got)
+	}
+}
+
+// At a time stop the refusal names the agent-time draw it weighs, not the
+// card's last draw of any kind, and a planner's is measured on its revision
+// where an agent's is on its push.
+func TestBoughtNothingTextNamesTheDrawAndWhatItWasMeasuredOn(t *testing.T) {
+	at := time.Date(2026, 11, 10, 11, 29, 0, 0, time.UTC)
+	tail := " UTC bought nothing, with no %s since and the head, the checks and the findings unchanged: hand over, start a successor, replan or close"
+	for _, tc := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"planner at a time stop", CaseFacts{Kind: CaseAgentTimeCap, Planner: true, TimeDraw: &DrawFacts{At: at}},
+			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "plan revision")},
+		{"agent at a time stop", CaseFacts{Kind: CaseAgentTimeCap, TimeDraw: &DrawFacts{At: at}},
+			"the last agent-time draw at 11:29" + fmt.Sprintf(tail, "push")},
+		{"agent at a session cap", CaseFacts{Kind: CaseSessionCap, LastDrawAt: &at},
+			"the last draw at 11:29" + fmt.Sprintf(tail, "push")},
+	} {
+		if got := boughtNothingText(tc.f); got != tc.want {
+			t.Errorf("%s: %q, want %q", tc.name, got, tc.want)
+		}
 	}
 }
 

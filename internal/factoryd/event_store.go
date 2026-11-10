@@ -130,6 +130,9 @@ const EventIssueClosed = "issue_closed"
 // of the round's cards in filing order.
 const EventPlanReplanned = "plan_replanned"
 
+// EventPlanRevision is the row of a planner session's filed revision.
+const EventPlanRevision = "plan_revision"
+
 // EventChatBudgetSpent is factoryd's record, on a project's chat task of
 // the month, of the gateway refusing a chat call for that task's own
 // budget (refused_budget): detail {"budget_eur", "spent_eur",

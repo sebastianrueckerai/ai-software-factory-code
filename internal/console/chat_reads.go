@@ -69,7 +69,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, factoryd.SessionCap(k, v.Document.Limits.Sessions)+k.Usage.SessionsAdded())
 	if f := capFactsFrom(k, v.Document.Limits.Sessions, bt.Escalation, all); f.capped {
 		capName := "session cap"
-		if factoryd.AtTimeCap(bt.Escalation) {
+		if f.timeCap {
 			capName = "agent-time cap"
 		}
 		fmt.Fprintf(&b, "\nat its %s: %d of %d sessions used, %d granted", capName, f.attempts, f.sessions, f.extra)

@@ -79,6 +79,15 @@ func AtSessionCap(escalation string) bool {
 // AtTimeCap: escalation is the card of a task at its agent-time cap.
 func AtTimeCap(escalation string) bool { return strings.HasPrefix(escalation, timeCapReached) }
 
+// AtTimeStop: escalation is an agent time stop, an agent's cap or a
+// planner out of time, which an extend of agent time answers.
+func AtTimeStop(escalation string) bool {
+	return AtTimeCap(escalation) || strings.HasPrefix(escalation, PlannerOutOfTime)
+}
+
+// MaxExtendMinutes bounds the agent time one extend raises.
+const MaxExtendMinutes = 600
+
 // checkinShareStop heads the card of a check-in stopped on its spent
 // share of the budget, not its call cap: the share a human's answer
 // grants one more width of (versionCheckinGrant), beside a verification
