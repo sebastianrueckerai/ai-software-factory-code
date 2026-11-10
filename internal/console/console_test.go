@@ -605,6 +605,49 @@ func (s *fakeTasks) PlanCards(_ context.Context, plan string) ([]factoryd.Task, 
 	return out, nil
 }
 
+// PlanDelivered mirrors factoryd.PlanDelivered: a plan card counts
+// delivered when it is done or merged, or its successor — the row
+// factoryd.SuccessorID names, whatever source it filed under — is.
+func (s *fakeTasks) PlanDelivered(_ context.Context, plan string) (bool, factoryd.Task, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	var open factoryd.Task
+	for _, t := range s.tasks {
+		if t.Parent != plan || t.Source != factoryd.SourcePlan {
+			continue
+		}
+		c := t.Task
+		for seen := map[string]bool{}; c.Status != "done" && c.Status != "merged"; {
+			if seen[c.ID] {
+				break
+			}
+			seen[c.ID] = true
+			next, ok := s.taskByIDSansHook(factoryd.SuccessorID(c.ID))
+			if !ok {
+				break
+			}
+			c = next
+		}
+		if c.Status != "done" && c.Status != "merged" {
+			if open.ID == "" {
+				open = t.Task
+			}
+		}
+	}
+	return open.ID == "", open, nil
+}
+
+// taskByIDSansHook finds a task without the read hook, for fakes that
+// read others' tasks themselves.
+func (s *fakeTasks) taskByIDSansHook(id string) (factoryd.Task, bool) {
+	for _, t := range s.tasks {
+		if t.ID == id {
+			return t.Task, true
+		}
+	}
+	return factoryd.Task{}, false
+}
+
 func (s *fakeTasks) Task(_ context.Context, id string) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

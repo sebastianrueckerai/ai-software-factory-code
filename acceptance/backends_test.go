@@ -328,6 +328,10 @@ func (s *acceptanceStore) SettleSpendFinal(_ context.Context, id string, reporte
 	return s.SettleSpend(context.Background(), id, reported)
 }
 
+func (s *acceptanceStore) TaskCallTotals(_ context.Context, _ string) (factoryd.TaskCallTotals, error) {
+	return factoryd.TaskCallTotals{}, nil
+}
+
 func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, number int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -960,6 +964,10 @@ func (s *acceptanceStore) ReportOf(_ context.Context, parent, source string) (fa
 
 func (s *acceptanceStore) PlanCards(context.Context, string) ([]factoryd.Task, error) {
 	return nil, nil
+}
+
+func (s *acceptanceStore) PlanDelivered(context.Context, string) (bool, factoryd.Task, error) {
+	return true, factoryd.Task{}, nil
 }
 
 func (s *acceptanceStore) OpenGroups(context.Context) (map[string][]factoryd.Group, error) {

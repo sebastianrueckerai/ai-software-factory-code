@@ -330,6 +330,10 @@ func (s *acceptTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task, e
 	return nil, nil
 }
 
+func (s *acceptTasks) PlanDelivered(_ context.Context, _ string) (bool, factoryd.Task, error) {
+	return true, factoryd.Task{}, nil
+}
+
 func (s *acceptTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }

@@ -289,6 +289,10 @@ func (s *accBatchTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task,
 	return nil, nil
 }
 
+func (s *accBatchTasks) PlanDelivered(_ context.Context, _ string) (bool, factoryd.Task, error) {
+	return true, factoryd.Task{}, nil
+}
+
 func (s *accBatchTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }
@@ -542,6 +546,10 @@ func (s *accBatchStore) SettleSpendFinal(ctx context.Context, id string, reporte
 func (s *accBatchStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {
 	panic("unused")
 }
+func (s *accBatchStore) TaskCallTotals(_ context.Context, _ string) (factoryd.TaskCallTotals, error) {
+	return factoryd.TaskCallTotals{}, nil
+}
+
 func (s *accBatchStore) TaskByPR(ctx context.Context, repository string, pr int64) (factoryd.Task, bool, error) {
 	return s.tasks.TaskByPR(ctx, repository, pr)
 }

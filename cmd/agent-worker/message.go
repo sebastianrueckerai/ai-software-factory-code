@@ -178,7 +178,7 @@ func serveMessages(tokenSHA256 [32]byte, gate *pushGate, send func(ctx context.C
 // servePort serves h on harness.MessagePort until the returned stop, which
 // lets the requests in flight finish.
 func servePort(h http.Handler, log func(string, ...any)) (stop func(), err error) {
-	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort))
+	ln, err := net.Listen("tcp", ":"+strconv.Itoa(harness.MessagePort)) // #nosec G102 -- the harness reaches this endpoint across the pod network; its handler rejects every request without the session token
 	if err != nil {
 		return nil, err
 	}
