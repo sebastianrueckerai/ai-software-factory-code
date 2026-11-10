@@ -7,6 +7,8 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
+
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
@@ -203,8 +205,31 @@ func TestRungZeroIgnoresAnUnreadSiblings(t *testing.T) {
 }
 
 func TestDigestTextScrubsBeforeItCuts(t *testing.T) {
-	got := digestText(strings.Repeat("x", 100) + " https://user:pass@host/x")
-	if strings.Contains(got, "user") || strings.Contains(got, "pass") {
-		t.Errorf("digest text leaks across the cut: %q", got)
+	const secret = "hunter2-configured-secret"
+	scrub := redact.New(secret)
+	for _, in := range []string{
+		strings.Repeat("x", 100) + " https://user:pass@host/x",
+		strings.Repeat("x", 100) + " " + secret,
+	} {
+		got := digestText(scrub, in)
+		for _, bad := range []string{"user", "pass", "hunter2", "configured"} {
+			if strings.Contains(got, bad) {
+				t.Errorf("digest text of %q leaks %q across the cut: %q", in, bad, got)
+			}
+		}
+	}
+}
+
+func TestDepFactsScrubTheEndReason(t *testing.T) {
+	g := siblingRig()
+	g.r.Scrub = redact.New("hunter2-configured-secret")
+	dep := Task{ID: "d9", Kind: "agent", Repository: "sf/app", IssueNumber: 9, Status: "failed"}
+	g.store.tasks[dep.ID] = dep
+	g.store.deps = map[string][]string{"t1410": {"d9"}}
+	g.store.events = append(g.store.events, Event{ID: 1, At: digestAt(1), Repository: "sf/app", TaskID: "d9", Kind: EventTaskEnded,
+		Detail: map[string]any{"state": "failed", "reason": "boom hunter2-configured-secret"}})
+	deps, err := g.r.depFacts(context.Background(), "t1410")
+	if err != nil || len(deps) != 1 || strings.Contains(deps[0].Why, "hunter2") {
+		t.Errorf("deps = %+v, %v", deps, err)
 	}
 }

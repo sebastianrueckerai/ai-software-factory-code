@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
 
@@ -62,7 +63,7 @@ type digestSession struct {
 // it cannot parse, is skipped; the asks and approvals there are the
 // events' too, and come from them.
 func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([]DigestStep, error) {
-	out, sessions := lineSteps(tl)
+	out, sessions := lineSteps(r.Scrub, tl)
 	for i, s := range sessions {
 		var next *digestSession
 		if i+1 < len(sessions) {
@@ -80,7 +81,7 @@ func (r *Runner) timelineSteps(ctx context.Context, taskID string, tl []byte) ([
 // lineSteps are the steps of timeline tl's lines other than its
 // sessions, in line order, and its sessions in the order its lines first
 // name them.
-func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
+func lineSteps(scrub *redact.Scrubber, tl []byte) ([]DigestStep, []*digestSession) {
 	var out []DigestStep
 	var sessions []*digestSession
 	byID := map[string]*digestSession{}
@@ -116,11 +117,11 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 			}
 			continue
 		case "checkin":
-			step = checkinStep(step, l)
+			step = checkinStep(scrub, step, l)
 		case "plan_revision":
 			step.Kind, step.Outcome = "revision", fmt.Sprintf("revision %d, %s", l.Revision, textutil.Plural(l.Cards, "card", "cards"))
 		case "handover":
-			step.Kind, step.Outcome = "handover", digestText(l.Handover)
+			step.Kind, step.Outcome = "handover", digestText(scrub, l.Handover)
 		case "checks":
 			step.Kind, step.Findings = "checks", findingIDs(l.Findings)
 			step.Outcome = withFindings(fmt.Sprintf("%s at %s", l.State, l.Commit[:min(7, len(l.Commit))]), step.Findings)
@@ -128,13 +129,13 @@ func lineSteps(tl []byte) ([]DigestStep, []*digestSession) {
 			if len(l.Proofs) == 0 && l.StartFailed == "" {
 				continue
 			}
-			step = proofsStep(step, l)
+			step = proofsStep(scrub, step, l)
 		case "judgement":
 			step.Kind, step.Actor = "judgement", aliasOf(l.Model)
-			step.Outcome, step.CostEUR = cmp.Or(l.Verdict, "no verdict")+": "+digestText(l.Reason), l.Cost
+			step.Outcome, step.CostEUR = cmp.Or(l.Verdict, "no verdict")+": "+digestText(scrub, l.Reason), l.Cost
 		case "proofs_at_main":
 			step.Kind, step.Actor, step.commit = "proofs", "runner", l.Head
-			step.Outcome = mainStepOutcome(l)
+			step.Outcome = mainStepOutcome(scrub, l)
 		case "model_review":
 			step.Kind, step.Findings, step.state = "review", findingIDs(l.Findings), l.Verdict
 			step.Outcome = withFindings(cmp.Or(l.Verdict, "no verdict"), step.Findings)
@@ -212,7 +213,7 @@ func (r *Runner) sessionStep(ctx context.Context, taskID string, s, next *digest
 // and its decision, the record's when it has one. A record with no
 // decision is a cut conversation: its state stays empty for the flags,
 // and its outcome names the cut with the decision the line carries.
-func checkinStep(step DigestStep, l timelineLine) DigestStep {
+func checkinStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) DigestStep {
 	decision, moment := l.Decision, l.Moment
 	if l.Record != nil {
 		decision, moment, step.CostEUR = l.Record.Decision, cmp.Or(l.Record.Moment, moment), l.Record.CostEUR
@@ -243,11 +244,11 @@ func checkinStep(step DigestStep, l timelineLine) DigestStep {
 // test criteria met and unmet, each invariant's state, the findings' ids.
 // It stands at the gate's start, as the gate writes its verdict rows
 // before its line.
-func proofsStep(step DigestStep, l timelineLine) DigestStep {
+func proofsStep(scrub *redact.Scrubber, step DigestStep, l timelineLine) DigestStep {
 	started, _ := time.Parse(time.RFC3339Nano, l.Started)
 	step.At = cmp.Or(started, l.Time)
 	step.Kind, step.Actor, step.Findings = "proofs", "gate", findingIDs(l.Findings)
-	outcome := "the sandbox did not start: " + digestText(l.StartFailed)
+	outcome := "the sandbox did not start: " + digestText(scrub, l.StartFailed)
 	if l.StartFailed == "" {
 		var proofs []gateProof
 		_ = json.Unmarshal(l.Proofs, &proofs)
@@ -342,10 +343,10 @@ func invariantParts(proofs []gateProof) []string {
 
 // mainStepOutcome is a proofs_at_main line's outcome: how many of its
 // criteria passed, or why its sandbox never started.
-func mainStepOutcome(l timelineLine) string {
+func mainStepOutcome(scrub *redact.Scrubber, l timelineLine) string {
 	at := l.Head[:min(7, len(l.Head))]
 	if l.StartFailed != "" {
-		return fmt.Sprintf("at main %s: the sandbox did not start: %s", at, digestText(l.StartFailed))
+		return fmt.Sprintf("at main %s: the sandbox did not start: %s", at, digestText(scrub, l.StartFailed))
 	}
 	var entries []mainOutcome
 	_ = json.Unmarshal(l.Criteria, &entries)

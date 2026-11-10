@@ -156,7 +156,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		{"timeline", func() error {
 			tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 			if err == nil {
-				lines, _ := lineSteps(tl)
+				lines, _ := lineSteps(r.Scrub, tl)
 				f.Findings, reran = headFindings(lines, f.Head), rerunHeads(tl)
 			}
 			return err
@@ -395,7 +395,8 @@ func (r *Runner) depFacts(ctx context.Context, id string) ([]DepFact, error) {
 				return nil, err
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventTaskEnded }); i >= 0 {
-				fact.Why, _ = events[i].Detail["reason"].(string)
+				why, _ := events[i].Detail["reason"].(string)
+				fact.Why = r.Scrub.String(why)
 			}
 			if i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventCardCreated }); i >= 0 {
 				fact.RetryOf, _ = events[i].Detail["replaces"].(string)
