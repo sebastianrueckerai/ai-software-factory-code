@@ -497,13 +497,14 @@ type ChainPoller struct {
 	Now  func() time.Time
 	Poll time.Duration
 
-	ranges   map[[3]string][]string       // repository, base, head -> the commits of that compare
-	watched  map[string]bool              // repository -> true once its pushes run a workflow
-	noted    map[string]bool              // the chain-block complaints logged, once each
-	failed   map[string]string            // repository -> the failure it last logged
-	episodes map[headKey]chainEpisode     // the head rows watched between polls
-	ends     map[string]map[string]string // repository -> covered card -> the end failure it last logged
-	woken    map[string]bool              // the held cards already woken on a landed companion pin
+	superseded map[string]bool              // repository, run id, commit -> whether the run's tests were skipped
+	ranges     map[[3]string][]string       // repository, base, head -> the commits of that compare
+	watched    map[string]bool              // repository -> true once its pushes run a workflow
+	noted      map[string]bool              // the chain-block complaints logged, once each
+	failed     map[string]string            // repository -> the failure it last logged
+	episodes   map[headKey]chainEpisode     // the head rows watched between polls
+	ends       map[string]map[string]string // repository -> covered card -> the end failure it last logged
+	woken      map[string]bool              // the held cards already woken on a landed companion pin
 
 	pollMu sync.Mutex
 	polled map[string]time.Time // repository -> its last successful tick, read by the poll age gauge
@@ -588,6 +589,7 @@ func (p *ChainPoller) once() {
 	if p.watched == nil {
 		p.watched, p.noted, p.failed, p.episodes = map[string]bool{}, map[string]bool{}, map[string]string{}, map[headKey]chainEpisode{}
 		p.ranges = map[[3]string][]string{}
+		p.superseded = map[string]bool{}
 		p.pollMu.Lock()
 		p.polled = map[string]time.Time{}
 		p.pollMu.Unlock()
@@ -1235,33 +1237,38 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 	return nil
 }
 
-// supersededOf answers, once per commit, whether a run is superseded: it
-// finished success, main has moved past its commit (a later run of
-// another commit exists), and a required context of its commit is
-// skipped or was never reported — the workflow skipped the run's tests
-// for the newer head. Such a run's range joins the next run's, so its
-// cards take the verdict of the first later run that tested them.
+// supersededOf answers whether a run is superseded: it finished success,
+// main has moved past its commit (a later run of another commit exists),
+// and the chain's test context is skipped or absent on its commit, so the
+// workflow skipped its tests for the newer head. Such a run's range joins
+// the next run's, so its cards take the verdict of the first later run
+// that tested them. A finished run's test context no longer changes, so
+// the answer is kept across ticks. A failed read counts as not
+// superseded, logged once per run.
 func (p *ChainPoller) supersededOf(ctx context.Context, repo Repo, cfg policy.ChainConfig, seen []ActionRun) func(ActionRun) (bool, error) {
-	answers := map[string]bool{}
 	return func(run ActionRun) (bool, error) {
-		if len(cfg.Requires) == 0 || run.Status != "success" || seen[len(seen)-1].CommitSHA == run.CommitSHA {
+		if cfg.TestContext == "" || run.Status != "success" || seen[len(seen)-1].CommitSHA == run.CommitSHA {
 			return false, nil
 		}
-		if v, ok := answers[run.CommitSHA]; ok {
+		key := fmt.Sprintf("%s %d %s", repo, run.ID, run.CommitSHA)
+		if v, ok := p.superseded[key]; ok {
 			return v, nil
 		}
 		reported, err := p.reportedContexts(ctx, repo, run.CommitSHA)
 		if err != nil {
-			return false, err
-		}
-		skipped := false
-		for _, want := range cfg.Requires {
-			if state := reported[want]; state == "" || state == "skipped" {
-				skipped = true
+			if !p.noted[key] {
+				p.noted[key] = true
+				log.Printf("chain poller: %s run %d: test context read: %v", repo, run.ID, err)
 			}
+			return false, nil
 		}
-		answers[run.CommitSHA] = skipped
-		return skipped, nil
+		state := reported[cfg.TestContext]
+		v := state == "" || state == "skipped"
+		if len(p.superseded) >= chainRangesKept {
+			clear(p.superseded)
+		}
+		p.superseded[key] = v
+		return v, nil
 	}
 }
 
@@ -1299,10 +1306,10 @@ func (p *ChainPoller) reportedContexts(ctx context.Context, repo Repo, sha strin
 // next push's superseding run (the common transient: it advances the
 // head), a required context missing from the commit or still pending —
 // holds it pending; only all green is success, where a skipped context
-// counts green as Forgejo ranks it. A run whose tests a newer head
-// skipped never reaches here as a verdict of its cards (supersededOf):
-// the skipped-counts-green rule serves the commit that is still main's
-// head. The cancelled and skipped runs are
+// counts green as Forgejo ranks it. The record pass never asks it for
+// a run whose tests a newer head skipped (supersededOf): that run's cards
+// take a later run's verdict, so the skipped-counts-green rule serves
+// the commit that is main's head. The cancelled and skipped runs are
 // the stall ladder's, not repair's. findings name each red run
 // and context of a red head, each pending one of a pending head, a
 // pending run with its link; stuck are the runs on the commit still

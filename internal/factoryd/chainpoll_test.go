@@ -430,30 +430,31 @@ func chainOf(s *fakeStore, repository string) []fakeChainRun {
 // repository's push runs, the compares that map a run's carry, its
 // merged pull requests, its commit statuses and its workflow files.
 type chainForgejo struct {
-	mu        sync.Mutex
-	runs      map[string][]map[string]any               // repository -> its push runs, newest first
-	carries   map[string]map[string][]map[string]any    // repository -> compare base...head -> its commits
-	merged    map[string][]map[string]any               // repository -> its merged pull requests, seeded as cards
-	comps     map[string][]map[string]any               // repository -> its default-branch commits, newest first, a companion's
-	statuses  map[string]map[string][]map[string]string // repository -> sha -> the statuses reported on it
-	workflows map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
-	invisible map[string]bool                           // repositories the projects token cannot see: every call answers 404
-	issues    []string                                  // "title\n\nbody" of every issue filed
-	fileIssue int                                       // the status an issue's filing answers; 0 is 201
-	closeFail int                                       // the status an issue's close answers; 0 closes it
-	open      map[string][]map[string]any               // repository -> its open issues
-	status    []string                                  // the sha of every combined status read
-	reads     []string                                  // "repository dir" of every workflow-list read
-	failing   map[string]bool                           // "base...head" compares that answer 500
-	compares  int                                       // the compare calls served
-	rerun     int                                       // the status a run's or a job's re-run answers; 0 is 204
-	reruns    []string                                  // "repository run" of every re-run asked
-	jobs      map[int64][]map[string]any                // run id -> its jobs (actionJob); a run it does not name answers 404
-	jobReruns []string                                  // "repository job" of every job re-run asked
-	comments  []string                                  // "repository#issue body" of every comment posted
-	closed    []string                                  // "repository#issue" of every issue closed
-	labelled  []string                                  // "repository#issue label..." of every label set
-	runReads  []string                                  // the repository of every run list read
+	mu         sync.Mutex
+	runs       map[string][]map[string]any               // repository -> its push runs, newest first
+	carries    map[string]map[string][]map[string]any    // repository -> compare base...head -> its commits
+	merged     map[string][]map[string]any               // repository -> its merged pull requests, seeded as cards
+	comps      map[string][]map[string]any               // repository -> its default-branch commits, newest first, a companion's
+	statuses   map[string]map[string][]map[string]string // repository -> sha -> the statuses reported on it
+	workflows  map[string][]string                       // repository -> its workflow files; one the map does not name has ci.yml
+	invisible  map[string]bool                           // repositories the projects token cannot see: every call answers 404
+	issues     []string                                  // "title\n\nbody" of every issue filed
+	fileIssue  int                                       // the status an issue's filing answers; 0 is 201
+	closeFail  int                                       // the status an issue's close answers; 0 closes it
+	open       map[string][]map[string]any               // repository -> its open issues
+	status     []string                                  // the sha of every combined status read
+	reads      []string                                  // "repository dir" of every workflow-list read
+	failing    map[string]bool                           // "base...head" compares that answer 500
+	statusFail map[string]bool                           // shas whose combined status answers 500
+	compares   int                                       // the compare calls served
+	rerun      int                                       // the status a run's or a job's re-run answers; 0 is 204
+	reruns     []string                                  // "repository run" of every re-run asked
+	jobs       map[int64][]map[string]any                // run id -> its jobs (actionJob); a run it does not name answers 404
+	jobReruns  []string                                  // "repository job" of every job re-run asked
+	comments   []string                                  // "repository#issue body" of every comment posted
+	closed     []string                                  // "repository#issue" of every issue closed
+	labelled   []string                                  // "repository#issue label..." of every label set
+	runReads   []string                                  // the repository of every run list read
 }
 
 func (f *chainForgejo) srv(t *testing.T) *Forgejo {
@@ -519,6 +520,10 @@ func (f *chainForgejo) srv(t *testing.T) *Forgejo {
 		case strings.HasPrefix(p, "/commits/") && strings.HasSuffix(p, "/status"):
 			sha := strings.TrimSuffix(strings.TrimPrefix(p, "/commits/"), "/status")
 			f.status = append(f.status, sha)
+			if f.statusFail[sha] {
+				http.Error(w, "boom", http.StatusInternalServerError)
+				return
+			}
 			state := "success"
 			for _, s := range f.statuses[repo][sha] {
 				if s["status"] == "failure" {
@@ -2980,72 +2985,118 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	}
 }
 
-// Two merges, A (#12) then B (#14). A's run is a stale run the workflow
-// skipped: the run reads success, its test context reads skipped, and B
-// is main's head. A's card never ran its tests on A's commit, so it
-// takes the verdict of B's run, the first later run that tested a commit
-// containing it; B's card takes it too. A head run that is green gives
-// success, a red one failure.
-func TestASupersededRunsCardsTakeTheNextRunsVerdict(t *testing.T) {
-	const test = "ci / test (push)"
-	for name, tc := range map[string]struct{ b, want string }{
-		"green": {"success", "success"},
-		"red":   {"failure", "failure"},
-	} {
-		t.Run(name, func(t *testing.T) {
-			f := &chainForgejo{
-				runs: map[string][]map[string]any{codeRepo: {pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")}},
-				carries: map[string]map[string][]map[string]any{codeRepo: {
-					"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}},
-					"parent-of-" + commitC1 + "..." + commitC2: {{"sha": mergePR12}, {"sha": mergePR14}},
-					commitC1 + "..." + commitC2:                {{"sha": mergePR14}},
-				}},
-				statuses: map[string]map[string][]map[string]string{codeRepo: {
-					commitC1: {{"status": "skipped", "context": test}},
-					commitC2: {{"status": tc.b, "context": test}},
-				}},
-			}
-			p, store := newTestPoller(t, f, seedProject(codeRepo))
-			p.Policy = func() policy.Version {
-				return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
-					"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{test}}},
-				}}}
-			}
-			store.tasks["t-12"] = Task{ID: "t-12", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
-			store.tasks["t-14"] = Task{ID: "t-14", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14, Track: "direct"}
-			p.End = func(context.Context, string, int64) error { return nil }
-			p.Workflows = &fakeWorkflows{}
-			p.Forgejo.PublicURL = "https://git.example"
-			for range 2 {
-				if err := p.Tick(context.Background()); err != nil {
-					t.Fatal(err)
-				}
-			}
-			want := []fakeChainRun{
-				{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: tc.want},
-				{repo: codeRepo, pr: 12, sha: commitC2, run: 62, status: tc.want},
-				{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: tc.want},
-			}
-			if got := chainOf(store, codeRepo); !slices.Equal(got, want) {
-				t.Fatalf("chain %+v, want the head and both cards at run 62 with %s", got, tc.want)
-			}
-		})
-	}
+const supersedeTest = "ci / test (push)"
+
+func st(context, state string) map[string]string {
+	return map[string]string{"status": state, "context": context}
 }
 
-// A run whose test context is skipped while its commit is still main's
-// head is not superseded: its cards record it, success as before.
-func TestASkippedTestOnTheHeadKeepsItsRun(t *testing.T) {
-	const test = "ci / test (push)"
+// supersedeRig is two merges, A (#12, commit c1, run 61) then B (#14,
+// commit c2, run 62), both runs success, in the production chain shape:
+// Requires factory/roll, the test context named by testContext.
+func supersedeRig(t *testing.T, testContext string, c1, c2 []map[string]string) (*ChainPoller, *fakeStore, *chainForgejo) {
+	t.Helper()
 	f := &chainForgejo{
-		runs:     map[string][]map[string]any{codeRepo: {pushRun(61, commitC1, "success")}},
-		carries:  map[string]map[string][]map[string]any{codeRepo: {"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}}}},
-		statuses: map[string]map[string][]map[string]string{codeRepo: {commitC1: {{"status": "skipped", "context": test}}}},
+		runs: map[string][]map[string]any{codeRepo: {pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")}},
+		carries: map[string]map[string][]map[string]any{codeRepo: {
+			"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}},
+			"parent-of-" + commitC1 + "..." + commitC2: {{"sha": mergePR12}, {"sha": mergePR14}},
+			commitC1 + "..." + commitC2:                {{"sha": mergePR14}},
+		}},
+		statuses: map[string]map[string][]map[string]string{codeRepo: {commitC1: c1, commitC2: c2}},
 	}
 	p, store := newTestPoller(t, f, seedProject(codeRepo))
 	p.Policy = func() policy.Version {
 		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
-			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{test}}},
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, TestContext: testContext}},
+		}}}
+	}
+	store.tasks["t-12"] = Task{ID: "t-12", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
+	store.tasks["t-14"] = Task{ID: "t-14", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14, Track: "direct"}
+	p.End = func(context.Context, string, int64) error { return nil }
+	p.Workflows = &fakeWorkflows{}
+	p.Forgejo.PublicURL = "https://git.example"
+	return p, store, f
+}
+
+func tickTwice(t *testing.T, p *ChainPoller) {
+	t.Helper()
+	for range 2 {
+		if err := p.Tick(context.Background()); err != nil {
+			t.Fatal(err)
+		}
+	}
+}
+
+func chainRows(t *testing.T, store *fakeStore, want []fakeChainRun) {
+	t.Helper()
+	if got := chainOf(store, codeRepo); !slices.Equal(got, want) {
+		t.Fatalf("chain %+v, want %+v", got, want)
+	}
+}
+
+// A's run is a stale run the workflow skipped: the run reads success, its
+// test context skipped, factory/roll reported on it. A's card takes the
+// verdict of B's run, the first later run that tested a commit holding
+// it, and so does B's: success with B's roll green, failure with it red.
+func TestASupersededRunsCardsTakeTheNextRunsVerdict(t *testing.T) {
+	for _, state := range []string{"success", "failure"} {
+		t.Run(state, func(t *testing.T) {
+			p, store, _ := supersedeRig(t, supersedeTest,
+				[]map[string]string{st(supersedeTest, "skipped"), st("factory/roll", "success")},
+				[]map[string]string{st(supersedeTest, "success"), st("factory/roll", state)})
+			p.Workflows = &fakeWorkflows{}
+			tickTwice(t, p)
+			chainRows(t, store, []fakeChainRun{
+				{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: state},
+				{repo: codeRepo, pr: 12, sha: commitC2, run: 62, status: state},
+				{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: state},
+			})
+		})
+	}
+}
+
+// An older run that tested its commit is not superseded though
+// factory/roll was never reported on the commit: its card keeps its own
+// run, pending as a required context unreported holds it.
+func TestATestedOlderRunIsNotSuperseded(t *testing.T) {
+	p, store, _ := supersedeRig(t, supersedeTest,
+		[]map[string]string{st(supersedeTest, "success")},
+		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
+	tickTwice(t, p)
+	chainRows(t, store, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC1, run: 61, status: "pending"},
+		{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: "success"},
+	})
+}
+
+// With no test context named nothing is superseded: A's card records A's
+// run and its roll verdict, success.
+func TestWithoutATestContextNothingIsSuperseded(t *testing.T) {
+	p, store, _ := supersedeRig(t, "",
+		[]map[string]string{st(supersedeTest, "skipped"), st("factory/roll", "success")},
+		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
+	tickTwice(t, p)
+	chainRows(t, store, []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC1, run: 61, status: "success"},
+		{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: "success"},
+	})
+}
+
+// A run whose test context is skipped while its commit is still main's
+// head is not superseded: no newer run exists, its cards record it.
+func TestASkippedTestOnTheHeadKeepsItsRun(t *testing.T) {
+	f := &chainForgejo{
+		runs:     map[string][]map[string]any{codeRepo: {pushRun(61, commitC1, "success")}},
+		carries:  map[string]map[string][]map[string]any{codeRepo: {"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}}}},
+		statuses: map[string]map[string][]map[string]string{codeRepo: {commitC1: {st(supersedeTest, "skipped"), st("factory/roll", "success")}}},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{"factory/roll"}, TestContext: supersedeTest}},
 		}}}
 	}
 	store.tasks["t-12"] = Task{ID: "t-12", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
@@ -3053,12 +3104,62 @@ func TestASkippedTestOnTheHeadKeepsItsRun(t *testing.T) {
 	if err := p.Tick(context.Background()); err != nil {
 		t.Fatal(err)
 	}
-	want := []fakeChainRun{
+	chainRows(t, store, []fakeChainRun{
 		{repo: codeRepo, pr: 0, sha: commitC1, run: 61, status: "success"},
 		{repo: codeRepo, pr: 12, sha: commitC1, run: 61, status: "success"},
+	})
+}
+
+// A status read that fails leaves the pass running: the head row is
+// written, and the failed test-context read logs once per run.
+func TestAFailedTestContextReadStopsNothing(t *testing.T) {
+	p, store, f := supersedeRig(t, supersedeTest,
+		[]map[string]string{st(supersedeTest, "skipped")},
+		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
+	f.statusFail = map[string]bool{commitC1: true}
+	logs := captureLog(t)
+	tickTwice(t, p)
+	var head fakeChainRun
+	for _, c := range chainOf(store, codeRepo) {
+		if c.pr == 0 {
+			head = c
+		}
 	}
-	if got := chainOf(store, codeRepo); !slices.Equal(got, want) {
-		t.Fatalf("chain %+v, want %+v", got, want)
+	if head.run != 62 || head.status != "success" {
+		t.Fatalf("head row %+v, want run 62 success", head)
+	}
+	if n := strings.Count(logs.String(), "test context read"); n != 1 {
+		t.Fatalf("the failed read logged %d times over two ticks, want once: %s", n, logs.String())
+	}
+}
+
+// A finished run's answer is kept: a second tick reads its commit's
+// statuses no more.
+func TestASupersededAnswerIsKeptAcrossTicks(t *testing.T) {
+	p, _, f := supersedeRig(t, supersedeTest,
+		[]map[string]string{st(supersedeTest, "skipped"), st("factory/roll", "success")},
+		[]map[string]string{st(supersedeTest, "success"), st("factory/roll", "success")})
+	count := func() int {
+		n := 0
+		for _, sha := range f.status {
+			if sha == commitC1 {
+				n++
+			}
+		}
+		return n
+	}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	first := count()
+	if first != 1 {
+		t.Fatalf("first tick read c1's statuses %d times, want 1", first)
+	}
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	if got := count(); got != first {
+		t.Fatalf("second tick read c1's statuses %d more times, want none", got-first)
 	}
 }
 
