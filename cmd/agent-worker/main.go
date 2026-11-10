@@ -95,6 +95,9 @@ type session struct {
 	ck             *checkpointer // nil for a report session
 	tel            *sessionTelemetry
 	outcome        string // for the session's duration metric
+	// commit and pushErr are the end push's, for the outcome
+	commit  string
+	pushErr error
 	// closeTelemetry ends the session span and sends the last metrics,
 	// once; stopMessages closes the message endpoint
 	closeTelemetry, stopMessages func()
@@ -143,23 +146,28 @@ func runSession(ctx context.Context, log func(string, ...any), ws string, stdout
 	} else {
 		endRun(errors.New("the agent did not finish"))
 	}
-	var commit string
-	var pushErr error
-	res = deliver(res, stopped, s.env, func(e workerEnv) (string, error) {
-		endPush := s.tel.phase("push")
-		commit, pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, killOthers, func(commit string) (string, error) {
-			return s.gate.ask(commit, pushWait, stdout)
-		})
-		endPush(pushErr)
-		return commit, pushErr
-	}, emit)
-	s.outcome = sessionOutcome(res, stopped, commit, pushErr)
+	res = deliver(res, stopped, s.env, s.endPush(stdout, killOthers), emit)
+	s.outcome = sessionOutcome(res, stopped, s.commit, s.pushErr)
 	s.writeResult(stdout, res)
 	if !res.Success {
 		log("result: %s", res.Summary)
 		return 1
 	}
 	return 0
+}
+
+// endPush is deliver's push: the session's end push of the env deliver
+// hands it, its token asked for on stdout once kill stopped every agent
+// process.
+func (s *session) endPush(stdout io.Writer, kill func() error) func(workerEnv) (string, error) {
+	return func(e workerEnv) (string, error) {
+		end := s.tel.phase("push")
+		s.commit, s.pushErr = commitAndPush(s.repoDir, e, s.base, s.mainHead, kill, func(commit string) (string, error) {
+			return s.gate.ask(commit, pushWait, stdout)
+		})
+		end(s.pushErr)
+		return s.commit, s.pushErr
+	}
 }
 
 // startError is the step of the session's start that failed, and why.

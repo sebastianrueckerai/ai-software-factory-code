@@ -1829,7 +1829,8 @@ func TestDeliverPushesEverySessionsWork(t *testing.T) {
 // lands nothing: the branch keeps the interim head, which the next session
 // starts on as one that earns no push credit. A finished one whose interim
 // head is over the card's line bound pushes nothing either: the bound
-// refuses no work of the session's own.
+// refuses no work of the session's own, and refuses the session's own work
+// over it by name. The push is the session's own end push, through its gate.
 func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 	t.Setenv("HOME", t.TempDir())
 	t.Setenv("GIT_CONFIG_NOSYSTEM", "1")
@@ -1859,14 +1860,19 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 		res     harness.Result
 		stopped bool
 		bound   int
+		change  bool // the session adds a 3-line file
 		landed  bool
 		summary string // "" for a landed commit's
+		refused bool   // the push failed
 	}{
 		{name: "stopped", res: harness.Result{Success: false}, stopped: true, summary: "stopped; no work in progress to push"},
 		{name: "failed", res: harness.Result{Success: false, Summary: "model refused"}, summary: "model refused"},
 		{name: "finished and stopped", res: harness.Result{Success: true, Summary: "done"}, stopped: true, summary: "no changes to push"},
 		{name: "finished", res: harness.Result{Success: true, Summary: "done"}, landed: true},
 		{name: "finished over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, summary: "no changes to push"},
+		{name: "own work over the line bound", res: harness.Result{Success: true, Summary: "done"}, bound: 10, change: true, refused: true,
+			summary: "push failed: " + errPushOverBound.Error() + ": the branch's diff against its merge base is 13 lines over the card's 10-line bound; " +
+				"merge main, run the checks, and push again — if the merge cannot fit, the card closes into a successor"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			branch := "factory/" + strings.ReplaceAll(tc.name, " ", "-")
@@ -1881,12 +1887,20 @@ func TestDeliverOnAnInterimHeadLandsOnlyAFinishedSession(t *testing.T) {
 			if err != nil || base != wip {
 				t.Fatalf("base = %s (%v), want %s", base, err, wip)
 			}
-			res := deliver(tc.res, tc.stopped, e, func(e workerEnv) (string, error) {
-				return commitAndPush(dir, e, base, mainHead, func() error { return nil }, fixedToken("t"))
-			}, func(harness.Event) {})
+			if tc.change {
+				os.WriteFile(filepath.Join(dir, "own.txt"), []byte("a\nb\nc\n"), 0o644)
+			}
+			tel, err := newSessionTelemetry(sdktrace.NewTracerProvider(), sdkmetric.NewMeterProvider(), "t1", "s-2", "factory/small")
+			if err != nil {
+				t.Fatal(err)
+			}
+			gate := newPushGate()
+			s := &session{env: e, repoDir: dir, base: base, mainHead: mainHead, gate: gate, tel: tel}
+			answer := writerFunc(func(p []byte) (int, error) { gate.take("t"); return len(p), nil })
+			res := deliver(tc.res, tc.stopped, e, s.endPush(answer, func() error { return nil }), func(harness.Event) {})
 			head := run("-C", fork, "rev-parse", "refs/heads/"+branch)
 			if !tc.landed {
-				if head != wip || res.Summary != tc.summary || res.Success != tc.res.Success {
+				if head != wip || res.Summary != tc.summary || res.Success != (tc.res.Success && !tc.refused) {
 					t.Fatalf("branch at %s, result %+v; want the branch kept at the interim head %s and %q", head, res, wip, tc.summary)
 				}
 				if committer := run("-C", fork, "log", "-1", "--format=%ce", head); committer != "factory-wip@factory.local" {
