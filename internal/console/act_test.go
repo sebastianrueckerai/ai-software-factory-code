@@ -323,7 +323,7 @@ func TestAHumanChoiceAndItsWebhookCopyInEitherOrder(t *testing.T) {
 // Act's failure reaches the human as what it means: a retry factoryd
 // refuses is a 409 with its sentence, and any other failure a 500 that
 // names the error and the next step, not the factoryd log.
-func TestActFailuresAnswerWithoutTheStore(t *testing.T) {
+func TestActFailuresNameTheErrorAndTheNextStep(t *testing.T) {
 	for _, tc := range []struct {
 		err    error
 		status int

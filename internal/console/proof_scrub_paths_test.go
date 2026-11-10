@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
@@ -44,9 +45,10 @@ func TestErrTextScrubsUserinfoAndBearer(t *testing.T) {
 	maskedLeak(t, "errText", errText(leakyError()))
 }
 
+const leakMessage = "push to " + leakUser + " refused; " + leakBearer
+
 func leakyAPIError() *apiError {
-	return &apiError{method: "POST", path: "/api/v1/x", status: 409,
-		body: []byte(`{"message":"push to ` + leakUser + ` refused; ` + leakBearer + `"}`)}
+	return &apiError{method: "POST", path: "/api/v1/x", status: 409, body: []byte(`{"message":"` + leakMessage + `"}`)}
 }
 
 func TestForgejoCauseScrubsTheAPIReason(t *testing.T) {
@@ -233,4 +235,110 @@ func TestFailedFilingRefusalIsScrubbed(t *testing.T) {
 	if strings.Contains(rec.Body.String(), "status 422") || strings.Contains(rec.Body.String(), "/api/v1/") {
 		t.Errorf("the filing's refusal holds the raw apiError text: %s", rec.Body)
 	}
+}
+
+// halfReadPolicy answers a version with ok false: a read that failed after
+// it filled the value.
+type halfReadPolicy struct{ Policies }
+
+func (h halfReadPolicy) CurrentPolicy(context.Context) (policy.Version, bool, error) {
+	return policy.Version{Tree: policy.Tree{Document: policy.Document{TimeZone: "Europe/Berlin"}}}, false, errors.New("the policy table did not answer")
+}
+
+// A failed policy read leaves the routine drawer an empty version, so its
+// schedule names UTC, not a zone the failed read half filled.
+func TestRoutineDrawerDropsAHalfReadPolicy(t *testing.T) {
+	r := newRig(t)
+	r.routines.views = []factoryd.RoutineView{weeklyBump()}
+	ck, _ := r.loggedIn(t)
+	r.c.cfg.Policies = halfReadPolicy{r.c.cfg.Policies}
+	rec := r.do(httptest.NewRequest(http.MethodGet, "/routines/ai-software-factory-code/weekly-bump/drawer", nil), ck)
+	body := rec.Body.String()
+	if !strings.Contains(body, "The configuration in force could not be read: the policy table did not answer. Reload the board.") {
+		t.Errorf("the drawer lacks its problem sentence:\n%s", body)
+	}
+	if strings.Contains(body, "Europe/Berlin") || !strings.Contains(body, "UTC") {
+		t.Errorf("the drawer's schedule zone is not UTC:\n%s", body)
+	}
+}
+
+// A plan card whose revision is not recorded says so in words.
+func TestApprovalPlanCardNamesAnUnrecordedRevision(t *testing.T) {
+	r, _ := batchAnswerRig(t)
+	ck, _ := r.loggedIn(t)
+	r.c.cfg.Tasks = failingPlans{r.c.cfg.Tasks, nil}
+	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
+	want := "The plan could not be read: revision 1 of t-p is not recorded. Open the plan&#39;s approval again, or read the plan on its issue."
+	if !strings.Contains(body, want) {
+		t.Errorf("the approval card lacks %q:\n%s", want, body)
+	}
+}
+
+// The GitHub sync's failure reaches its event masked.
+func TestGithubSyncEventIsScrubbed(t *testing.T) {
+	r := newRig(t)
+	ck, s := r.loggedIn(t)
+	r.mirrors.rows["demo-app export"] = factoryd.Mirror{Project: "demo-app", Direction: factoryd.MirrorExport, Remote: "acme/app",
+		Username: "u", Token: ghToken, State: "created", Mode: factoryd.ModePullRequests}
+	r.syncErr = leakyError()
+	before := r.events.count()
+	if rec := r.do(post("/projects/demo-app/export/sync", url.Values{"csrf": {s.csrf}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("Sync latest = %d %q", rec.Code, rec.Body)
+	}
+	for deadline := time.Now().Add(5 * time.Second); r.events.count() == before && time.Now().Before(deadline); {
+		time.Sleep(10 * time.Millisecond)
+	}
+	rows := r.events.all()[before:]
+	if len(rows) != 1 {
+		t.Fatalf("%d events, want one", len(rows))
+	}
+	result, _ := rows[0].Detail["result"].(string)
+	maskedLeak(t, "the sync event", result)
+}
+
+// The status panel's reconcile failure is masked.
+func TestStatusPanelScrubsTheReconcileError(t *testing.T) {
+	s := newStatusRig(t)
+	s.force.load("linkshort")
+	s.reconcileErr = leakyError().Error()
+	maskedLeak(t, "the status panel", html.UnescapeString(s.status(t)))
+}
+
+// The status panel's pull-request read names the whole sentence with
+// Forgejo's message, masked.
+func TestStatusPanelPullReadNamesForgejosMessage(t *testing.T) {
+	s := newStatusRig(t)
+	s.c.cfg.HTTP = &http.Client{Transport: failStatus{http.DefaultTransport, "/pulls/12", http.StatusBadGateway,
+		leakMessage}}
+	got := html.UnescapeString(s.status(t))
+	maskedLeak(t, "the status panel", got)
+	want := "The pull request could not be read: push to https://[redacted]@git.example/x refused; Authorization: Bearer [redacted]. " +
+		"Load the page again, or read the pull request on Forgejo."
+	if !strings.Contains(got, want) {
+		t.Errorf("the panel lacks %q:\n%s", want, got)
+	}
+}
+
+// The merge handler's pull-request read answers Forgejo's message, masked.
+func TestMergePullReadRefusalIsScrubbed(t *testing.T) {
+	s := newStatusRig(t)
+	s.infra.set(openPull)
+	s.c.cfg.HTTP = &http.Client{Transport: failStatus{http.DefaultTransport, "/pulls/12", http.StatusBadGateway,
+		leakMessage}}
+	rec := s.do(post("/projects/linkshort/merge", url.Values{"csrf": {s.csrf}}), s.ck)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("the merge = %d: %s", rec.Code, rec.Body)
+	}
+	maskedLeak(t, "the merge's pull-request read", rec.Body.String())
+}
+
+// The board's head-checks problem is Forgejo's message, masked.
+func TestBoardHeadUnreadWhyIsScrubbed(t *testing.T) {
+	r := newRig(t)
+	ck, _ := r.loggedIn(t)
+	r.approvals.rows[1].Spec = specRedChecks()
+	r.c.cfg.HTTP = &http.Client{Transport: failStatus{http.DefaultTransport, "commits/abc123/status", http.StatusBadGateway,
+		leakMessage}}
+	body := html.UnescapeString(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
+	maskedLeak(t, "the board's head-checks problem", body)
 }

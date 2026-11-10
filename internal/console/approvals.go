@@ -291,8 +291,11 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 		return fmt.Errorf("spec: %w", err)
 	}
 	rev, ok, err := c.cfg.Tasks.PlanRevision(ctx, k.TaskID, k.CriteriaSpec.Revision)
-	if err != nil || !ok {
-		return fmt.Errorf("revision %d of %s: found %v, %v", k.CriteriaSpec.Revision, k.TaskID, ok, err)
+	if err != nil {
+		return fmt.Errorf("revision %d of %s: %w", k.CriteriaSpec.Revision, k.TaskID, err)
+	}
+	if !ok {
+		return fmt.Errorf("revision %d of %s is not recorded", k.CriteriaSpec.Revision, k.TaskID)
 	}
 	var p factoryd.Plan
 	if err := json.Unmarshal(rev.Plan, &p); err != nil {
@@ -393,7 +396,7 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		return err
 	}
 	if !ok {
-		return fmt.Errorf("revision %d of %s: found %v, %v", k.PlanSpec.Revision, k.TaskID, ok, err)
+		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
 	}
 	k.PlanSummary, k.PlanRows, k.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)

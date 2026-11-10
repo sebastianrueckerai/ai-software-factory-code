@@ -515,7 +515,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
 		return nil, errors.New("infra: 503")
 	}
-	file(http.StatusBadGateway, "The configuration at infra's head could not be read: infra: 503. Try the switch again, or edit the project file on Forgejo.")
+	file(http.StatusBadGateway, "The configuration at infra's head could not be read: infra: 503. File the project again in a moment.")
 	if len(infra.contents) != before {
 		t.Fatalf("a failed check committed: %+v", infra.contents[before:])
 	}

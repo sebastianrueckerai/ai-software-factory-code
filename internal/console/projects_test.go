@@ -748,7 +748,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
 		}, []string{"failed", "waiting", "waiting", "waiting"}, []string{"#12 was closed without merging."}, []string{`action="/projects/linkshort/merge"`}},
 		{"pull request unreadable", func(s *statusRig) { s.infra.set(map[string]any{"number": 12, "state": 12}) }, []string{"failed", "waiting", "waiting", "waiting"},
-			[]string{"The pull request could not be read: ", ". Load the page again, or read the pull request on Forgejo."}, nil},
+			[]string{"The pull request could not be read: forgejo GET /api/v1/repos/sf/infra/pulls/12: json: cannot unmarshal number into Go struct field infraPull.state of type string. Load the page again, or read the pull request on Forgejo."}, nil},
 		{"merge refused", func(s *statusRig) {
 			s.infra.set(openPull)
 			s.c.runs["linkshort"] = &projectRun{merge: "Does not have enough approvals"}

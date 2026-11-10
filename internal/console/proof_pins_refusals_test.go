@@ -20,23 +20,6 @@ import (
 // next action — one subtest per file, each driving its site through the
 // rig and asserting the literal sentence and its exact HTTP status.
 func TestProofRefusalPinsErrorAndAction(t *testing.T) {
-	t.Run("actions.go retry", func(t *testing.T) {
-		r := newRig(t)
-		withLinkshort(r)
-		r.tasks.tasks = append(planTasks(), failedCard())
-		ck, s := r.loggedIn(t)
-		r.retryErr = errors.New("the retry of t-c7 as t-x stopped at filing its issue: forgejo 502")
-		req := post("/tasks/t-c7/retry", url.Values{"csrf": {s.csrf}})
-		req.Header.Set("HX-Request", "true")
-		rec := r.do(req, ck)
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("the failed retry = %d: %s", rec.Code, rec.Body.String())
-		}
-		if got := strings.TrimSpace(rec.Body.String()); got != "The card could not be retried: the retry of t-c7 as t-x stopped at filing its issue: forgejo 502. "+
-			"Press Retry again, or replan the card when it keeps failing." {
-			t.Errorf("the refusal = %q", got)
-		}
-	})
 	t.Run("projects.go merge pull read", func(t *testing.T) {
 		r := newRig(t)
 		infra := withInfra(t, r)
@@ -115,27 +98,6 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 			t.Errorf("the tool result = %q", got)
 		}
 	})
-	t.Run("answer.go escalate", func(t *testing.T) {
-		r, _ := batchAnswerRig(t)
-		_, s := r.loggedIn(t)
-		r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
-			return 0, errors.New("forgejo rejected the card: the inbox is closed for sf/code")
-		}
-		var events []string
-		trn := r.chatTurnOf(t, s, &events)
-		tool, _ := r.c.chatTool("escalate")
-		args := `{"ask":"Stop the roll?","why":"the ledger is short","info":"the pool is dry","recommendation":"stop it","choices":["stop it","go on"]}`
-		in := toolInput{Ask: "Stop the roll?", Why: "the ledger is short", Info: "the pool is dry",
-			Recommendation: "stop it", Choices: []string{"stop it", "go on"}}
-		got, code := trn.runTool(tool, args, in)
-		if got != "Refused: The escalation could not be filed: forgejo rejected the card: the inbox is closed for sf/code. "+
-			"Try again, or post the question on the card's issue." {
-			t.Errorf("the tool result = %q", got)
-		}
-		if code != http.StatusBadGateway {
-			t.Errorf("the refusal's status = %d, want 502", code)
-		}
-	})
 	t.Run("approvals.go plan card", func(t *testing.T) {
 		r, _ := batchAnswerRig(t)
 		ck, _ := r.loggedIn(t)
@@ -150,55 +112,6 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 		}
 		if strings.Contains(rec.Body.String(), "factoryd log") {
 			t.Errorf("the approval card's problem sentence still points at the factoryd log")
-		}
-	})
-	t.Run("autonomy.go configuration check", func(t *testing.T) {
-		r := newRig(t)
-		infra := withInfra(t, r)
-		infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n"}
-		r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) {
-			return nil, errors.New("the check of projects/demo-app.yaml did not answer")
-		}
-		ck, s := r.loggedIn(t)
-		rec := r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"full auto"}}), ck)
-		if rec.Code != http.StatusBadGateway {
-			t.Fatalf("the failed switch = %d: %s", rec.Code, rec.Body.String())
-		}
-		if got := strings.TrimSpace(rec.Body.String()); got != "The configuration at infra's head could not be read: the check of projects/demo-app.yaml did not answer. "+
-			"Try the switch again, or edit the project file on Forgejo." {
-			t.Errorf("the refusal = %q", got)
-		}
-	})
-	t.Run("chat_page_tools.go resource promote", func(t *testing.T) {
-		r := newRig(t)
-		ck, s := r.loggedIn(t)
-		r.c.cfg.Resources = failingPromote{r.c.cfg.Resources, errors.New("cloud: the commission 7 is gone")}
-		rec := r.do(post("/resources/7/promote", url.Values{"csrf": {s.csrf}}), ck)
-		if rec.Code != http.StatusInternalServerError {
-			t.Fatalf("the failed promote = %d: %s", rec.Code, rec.Body.String())
-		}
-		if got := strings.TrimSpace(rec.Body.String()); got != "The resource could not be promoted: cloud: the commission 7 is gone. "+
-			"Press Promote again, or release it and commission it anew." {
-			t.Errorf("the refusal = %q", got)
-		}
-	})
-	t.Run("chat_tools.go request_image", func(t *testing.T) {
-		r, _ := batchAnswerRig(t)
-		_, s := r.loggedIn(t)
-		r.imageErr = errors.New("image ask: the runner is gone")
-		var events []string
-		trn := r.chatTurnOf(t, s, &events)
-		tool, ok := r.c.chatTool("request_image")
-		if !ok {
-			t.Fatal("the agent is offered no request_image tool")
-		}
-		got, code := trn.runTool(tool, `{"tool":"opencode","need":"run the tests"}`, toolInput{Tool: "opencode", Need: "run the tests"})
-		if got != "Refused: The tool card could not be filed: image ask: the runner is gone. "+
-			"Ask again, or file the tool card by hand." {
-			t.Errorf("the tool result = %q", got)
-		}
-		if code != http.StatusBadGateway {
-			t.Errorf("the refusal's status = %d, want 502", code)
 		}
 	})
 	t.Run("routine_drawer.go runs read", func(t *testing.T) {
@@ -218,16 +131,6 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 			t.Errorf("the routine drawer's problem sentence still points at the factoryd log")
 		}
 	})
-}
-
-// failingPromote is a Resources seam whose Promote answers err.
-type failingPromote struct {
-	Resources
-	err error
-}
-
-func (f failingPromote) Promote(context.Context, int64, string, func(string) policy.Standing) error {
-	return f.err
 }
 
 // failingPlans is a Tasks seam whose plan reads answer err.

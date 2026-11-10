@@ -167,6 +167,7 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 			problem = "The configuration in force could not be read: " + errText(perr) + ". Reload the board."
 		}
 		d.Problems = append(d.Problems, problem)
+		v = policy.Version{}
 	}
 	loc, err := v.Document.Location()
 	if err != nil {

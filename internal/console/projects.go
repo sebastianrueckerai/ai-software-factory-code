@@ -290,7 +290,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	if err != nil {
 		log.Printf("console: check projects/%s.yaml against infra's head: %v", p.Name, err)
 		http.Error(w, "The configuration at infra's head could not be read: "+errText(err)+
-			". Try the switch again, or edit the project file on Forgejo.", http.StatusBadGateway)
+			". File the project again in a moment.", http.StatusBadGateway)
 		return
 	}
 	if len(refused) > 0 {
@@ -626,7 +626,7 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 		if row.ReadyAt.IsZero() {
 			reconcileErr = c.cfg.ReconcileError(name)
 		}
-		failed := "The reconcile failed: " + reconcileErr + ". It tries again at least hourly."
+		failed := "The reconcile failed: " + scrubText(reconcileErr) + ". It tries again at least hourly."
 		switch {
 		case mainErr != nil:
 			log.Printf("console: main of %s: %v", row.Repository, mainErr)
@@ -908,7 +908,7 @@ func (c *Console) doGithubSync(ctx context.Context, a actor, p factoryd.Project)
 		result, err := c.cfg.GitHubSync(ctx, p.Name, a.s.user)
 		if err != nil {
 			log.Printf("console: the sync of %s from GitHub: %v", p.Name, err)
-			result = "failed: " + err.Error()
+			result = "failed: " + errText(err)
 		}
 		c.record(ctx, a, p.Repository, "", 0, factoryd.EventGithubSynced, map[string]any{"result": result})
 	}()
