@@ -871,6 +871,16 @@ func TestChatCompletions(t *testing.T) {
 			wantUpstreamHit: 1,
 		},
 		{
+			name:            "a tool_choice naming a function passes",
+			task:            &runningTask,
+			reqBody:         `{"max_tokens":100,"messages":[{"content":"hi","role":"user"}],"model":"small","tool_choice":{"type":"function","function":{"name":"answer"}},"tools":[{"function":{"name":"answer"},"type":"function"}]}`,
+			resp:            stubResp{status: http.StatusOK, body: `{}`, headers: map[string]string{"x-litellm-response-cost": "0.0005"}},
+			wantStatus:      http.StatusOK,
+			wantDecision:    "allowed",
+			wantSpent:       ptr(2.0005),
+			wantUpstreamHit: 1,
+		},
+		{
 			name:         "n above 1 is refused",
 			wantNoMint:   true,
 			task:         &runningTask,
