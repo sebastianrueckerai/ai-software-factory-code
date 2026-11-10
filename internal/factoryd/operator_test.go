@@ -1,6 +1,7 @@
 package factoryd
 
 import (
+	"context"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,6 +10,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"testing"
 
@@ -346,5 +348,26 @@ func TestOperatorResearch(t *testing.T) {
 		`"tools":[{"function":{"description":"Search the files.","name":"grep","parameters":{"type":"object"}},"type":"function"}]}`
 	if string(b) != want {
 		t.Fatalf("request = %s\nwant      %s", b, want)
+	}
+}
+
+// A stream whose context ended hands no further text on, whatever the
+// connection still holds: the words that follow a stop never show.
+func TestOperatorStreamHandsNoTextOnAfterItsContextEnds(t *testing.T) {
+	g := &operatorGateway{chunks: []string{
+		`{"choices":[{"delta":{"content":"Partial "}}]}`,
+		`{"choices":[{"delta":{"content":"tail"}}]}`,
+		`[DONE]`,
+	}}
+	m := g.start(t)
+	ctx, cancel := context.WithCancel(t.Context())
+	defer cancel()
+	var got []string
+	answer, err := m.Stream(ctx, "t-chat-x-2026-10", "premium", "", nil, nil, func(s string) {
+		got = append(got, s)
+		cancel()
+	}, nil)
+	if !errors.Is(err, context.Canceled) || !slices.Equal(got, []string{"Partial "}) || answer.Content != "Partial " {
+		t.Fatalf("text %q, answer %q, err %v; want only the first piece and the cancel", got, answer.Content, err)
 	}
 }
