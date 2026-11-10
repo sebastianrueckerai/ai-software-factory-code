@@ -11,11 +11,11 @@ func TestCaseWordsNameTheCardAndTheProblemNotTheNumber(t *testing.T) {
 	c := Case{ID: 8731, Kind: CaseSessionCap, Problem: "#1410 is one green check from merge but " + strings.Repeat("x", 100)}
 	res := Resolution{Action: ActContinue}
 	want := `the session cap on #1410 ("#1410 is one green check from merge but ` + strings.Repeat("x", 80-len("#1410 is one green check from merge but ")) + `…")`
-	if got := CaseWords("#1410", c); got != want {
-		t.Fatalf("CaseWords = %q, want %q", got, want)
+	if got := caseWords("#1410", c); got != want {
+		t.Fatalf("caseWords = %q, want %q", got, want)
 	}
-	if got, want := CaseWords("#1410", Case{Kind: CaseMonitorFlag}), "the monitor flag on #1410"; got != want {
-		t.Fatalf("CaseWords with no problem = %q, want %q", got, want)
+	if got, want := caseWords("#1410", Case{Kind: CaseMonitorFlag}), "the monitor flag on #1410"; got != want {
+		t.Fatalf("caseWords with no problem = %q, want %q", got, want)
 	}
 
 	console := actText(ActInput{Via: ViaConsole}, task, c, res, nil)
@@ -55,5 +55,19 @@ func TestErrCaseEndedNamesTheCardNotTheNumber(t *testing.T) {
 	got := ErrCaseEnded{Case: base}.Error()
 	if got != "the monitor flag is resolved" {
 		t.Errorf("with no card Error = %q", got)
+	}
+}
+
+func TestMonitorFaceMasksASecretAndNeutralisesAMention(t *testing.T) {
+	r, _, _, _, _ := newRetryRig(t)
+	reason := "Monitor flag: Authorization: Bearer abcdefghijklmnop1234567890 @everyone https://user:pass@host.example/x"
+	q := r.monitorFace(Task{Repository: "linkshort/linkshort"}, reason)
+	for _, leak := range []string{"abcdefghijklmnop1234567890", "@everyone", "user:pass"} {
+		if strings.Contains(q.Ask, leak) {
+			t.Errorf("Ask = %q holds %q", q.Ask, leak)
+		}
+	}
+	if !strings.Contains(q.Ask, "The monitor flagged this card (") {
+		t.Errorf("Ask = %q", q.Ask)
 	}
 }

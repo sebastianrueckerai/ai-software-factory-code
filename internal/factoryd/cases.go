@@ -81,9 +81,9 @@ var caseKindWords = map[CaseKind]string{
 	CaseMonitorFlag:      "monitor flag",
 }
 
-// CaseWords says case c of card as a human reads it, with no case id: the
+// caseWords says case c of card as a human reads it, with no case id: the
 // kind in words, the card, and the problem cut short.
-func CaseWords(card string, c Case) string {
+func caseWords(card string, c Case) string {
 	kind, ok := caseKindWords[c.Kind]
 	if !ok {
 		kind = cmp.Or(strings.ReplaceAll(string(c.Kind), "_", " "), "case")
@@ -93,7 +93,7 @@ func CaseWords(card string, c Case) string {
 		words += " on " + card
 	}
 	if problem := strings.Join(strings.Fields(c.Problem), " "); problem != "" {
-		words += fmt.Sprintf(" (%q)", textutil.Truncate(problem, 80))
+		words += " (\"" + textutil.Truncate(problem, 80) + "\")"
 	}
 	return words
 }
@@ -414,7 +414,7 @@ type ErrCaseEnded struct {
 
 func (e ErrCaseEnded) Error() string {
 	c := e.Case
-	words := CaseWords(cmp.Or(e.Card, c.TaskID), Case{Kind: c.Kind})
+	words := caseWords(cmp.Or(e.Card, c.TaskID), Case{Kind: c.Kind})
 	if c.Resolution == nil || c.ResolvedAt == nil {
 		return fmt.Sprintf("%s is %s", words, c.Status)
 	}

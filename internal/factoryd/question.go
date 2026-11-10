@@ -192,11 +192,19 @@ func templateQuestion(reason string, f QuestionFacts, choices []string) *HumanQu
 // ask: it names the decision, not the stop.
 const plainAsk = "This card stopped and needs your decision: how should it go on?"
 
-// monitorQuestion is the face of a monitor case: the card goes on in its
+// monitorFlagPrefix starts the reason and the problem of a monitor flag's case.
+const monitorFlagPrefix = "Monitor flag: "
+
+// monitorFlagText is the flag a monitor reason or problem names, cut short.
+func monitorFlagText(s string) string {
+	return textutil.Truncate(strings.TrimPrefix(s, monitorFlagPrefix), 80)
+}
+
+// monitorQuestion is the face of a monitor case, reason already sanitised: the card goes on in its
 // run, and the case is answered in the project chat, which finds it by the
 // card, with what a monitor case takes (monitorActions). No button answers it.
 func monitorQuestion(reason string) *HumanQuestion {
-	flag := textutil.Truncate(strings.TrimPrefix(reason, "Monitor flag: "), 80)
+	flag := monitorFlagText(reason)
 	return &HumanQuestion{Ask: fmt.Sprintf("The monitor flagged this card (%s): what should happen? Answer it in the project chat.", flag),
 		Why:  escalationQuestion(reason),
 		Info: "The card goes on in its run meanwhile. In the project chat, the flag takes a note, a settle of the flag, a fund, a raise of its ceiling, a retry of a failed dependency or a replan. Close ends the card; settle ends the case alone."}

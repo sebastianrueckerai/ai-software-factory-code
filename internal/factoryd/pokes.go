@@ -278,6 +278,9 @@ func pokeOf(e Event, t Task) (ChatMessage, bool) {
 		who := ref
 		if id, _ := toInt(e.Detail["case_id"]); id != 0 {
 			who = "The flag on " + TitledRef(ref, t)
+			if problem := str("problem"); problem != "" {
+				who += " (" + problem + ")"
+			}
 		}
 		m.Content = who + " needs you no more: its question is withdrawn because " + str("reason") + "."
 	case EventPullRequestMerged:

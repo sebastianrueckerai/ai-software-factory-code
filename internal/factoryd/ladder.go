@@ -14,6 +14,7 @@ import (
 
 	"go.temporal.io/sdk/activity"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/sanitize"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -544,6 +545,13 @@ func replyNext(reason string) string {
 	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 }
 
+// monitorFace is the face of a monitor flag on t: the reason's flag text
+// is agent-derived, so it is fenced and scrubbed as every text a human
+// reads.
+func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
+	return monitorQuestion(redact.New().String(r.untrusted(t, reason)))
+}
+
 // tripNext is the last line of a trip's face for case c: at a cap, where
 // a reply is a continue that asks again, the Extend form or the chat's
 // extend start the next attempt, at a budget floor the Fund form or the
@@ -608,7 +616,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
 		if beside {
-			shaped = monitorQuestion(reason)
+			shaped = r.monitorFace(t, reason)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}

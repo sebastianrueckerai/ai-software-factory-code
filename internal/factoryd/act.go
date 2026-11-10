@@ -694,7 +694,7 @@ func (r *Runner) answerComment(t Task, by string, res Resolution) string {
 // caseRef is case c of card as the reader of via takes it: the chat's
 // tools answer by the id, so it keeps the id beside the words.
 func caseRef(via, card string, c Case) string {
-	words := CaseWords(card, c)
+	words := caseWords(card, c)
 	if via == ViaChat {
 		words += fmt.Sprintf(" (case %d)", c.ID)
 	}
