@@ -90,6 +90,11 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		f.Plan, f.Dependencies = plan, []DepFact{{TaskID: "t-a", Issue: 5, Status: "failed", RetryOf: retryOf}}
 		return f
 	}
+	checksWait := func(checks string, waited bool) CaseFacts {
+		f := head(checks, false)
+		f.Kind, f.Gate, f.WaitedOnHead = CaseGateStop, ActivityWaitChecks, waited
+		return f
+	}
 	replaced := failed("", "")
 	replaced.Dependencies[0].Replaced = RetryID("t-a")
 	for _, tc := range []struct {
@@ -102,6 +107,10 @@ func TestRungZeroRowsFireOnTheirFacts(t *testing.T) {
 		{"green, not approved", CaseGateStop, head("green", false), nil},
 		{"red", CaseBudgetFloor, head("red", false), &Resolution{Action: ActRerunChecks}},
 		{"red, run again", CaseCheckinShare, func() CaseFacts { f := head("red", false); f.RerunOnHead = true; return f }(), nil},
+		{"a checks wait's stop with every check green", CaseGateStop, checksWait("green", false), &Resolution{Action: ActWaitChecks}},
+		{"a checks wait's stop, waited on this head already", CaseGateStop, checksWait("green", true), nil},
+		{"a checks wait's stop with red checks", CaseGateStop, checksWait("red", false), &Resolution{Action: ActRerunChecks}},
+		{"a checks wait's stop with checks pending", CaseGateStop, checksWait("pending", false), nil},
 		{"green at a stop of no head", CaseAgentEscalate, head("green", true), nil},
 		{"the day cap", CaseDayCap, head("green", true), nil},
 		{"a failed dependency", CaseDependencyFailed, failed("", ""), &Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}}},

@@ -145,8 +145,9 @@ decimals: a task's model calls cost fractions of a cent.
   makes it a task. An escalation's answer resolves the card's newest open
   case through factoryd's `Act`, as the human. Words alone go on. A typed
   action can resume the card, hand it to the same, a stronger or a
-  cheaper model, check it again, route it for approval, rerun its checks,
-  give it more sessions, agent time or lines, fund it, raise its ceiling,
+  cheaper model, check it again, route it for approval, rerun its
+  checks, run a stopped checks wait again (no agent time), give it more
+  sessions, agent time or lines, fund it, raise its ceiling,
   file a successor, retry or replan a failed dependency, close it, or note
   a step and keep waiting. An extend answers a cap, or the owner exits
   of a gate stop and of findings that repeat, never a question, and a

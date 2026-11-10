@@ -1155,9 +1155,11 @@ func (c *Console) fundShortfall(ctx context.Context, t factoryd.Task, bt factory
 // its action, text its note: grant buys what k's stop asks for
 // (grantOf), else goes on, fund and fund:N fund eur, go resumes, close
 // and successor are their own, extend takes the Extend form's amounts,
-// park and keep waiting are a note that ends nothing, overrule re-verifies
-// with the reason as its note, and words alone continue. agentTime is the
-// card draw's agent time, the grant at an agent time cap.
+// keep checking (and keep waiting on a checks-wait stop) runs the stopped
+// checks wait again, park and keep waiting are a note that ends nothing,
+// overrule re-verifies with the reason as its note, and words alone
+// continue. agentTime is the card draw's agent time, the grant at an agent
+// time cap.
 func answerAction(value, text string, eur float64, k factoryd.Case, agentTime time.Duration) factoryd.Resolution {
 	res := factoryd.Resolution{Action: factoryd.ActContinue, Note: text}
 	switch {
@@ -1171,6 +1173,8 @@ func answerAction(value, text string, eur float64, k factoryd.Case, agentTime ti
 		res.Action = factoryd.ActResume
 	case value == factoryd.AnswerClose, value == factoryd.AnswerSuccessor, value == factoryd.AnswerExtend:
 		res.Action = value
+	case value == factoryd.AnswerKeepChecking, value == factoryd.AnswerKeepWaiting && k.Kind == factoryd.CaseGateStop && k.Facts["gate"] == factoryd.ActivityWaitChecks:
+		res.Action = factoryd.ActWaitChecks
 	case value == factoryd.AnswerPark, value == factoryd.AnswerKeepWaiting:
 		res.Action = factoryd.ActNote
 	case value == factoryd.AnswerOverrule:

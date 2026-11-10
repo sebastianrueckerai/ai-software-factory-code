@@ -724,3 +724,32 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 		}
 	})
 }
+
+// The checks-wait stop's Keep waiting runs the wait again; the quiet
+// stop's keeps its note.
+func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {
+	for value, want := range map[string]string{
+		factoryd.AnswerKeepChecking: factoryd.ActWaitChecks,
+		factoryd.AnswerKeepWaiting:  factoryd.ActNote,
+		factoryd.AnswerPark:         factoryd.ActNote,
+	} {
+		if got := answerAction(value, "Keep waiting", 0, factoryd.Case{}, time.Hour).Action; got != want {
+			t.Errorf("%s answers with %q, want %q", value, got, want)
+		}
+	}
+}
+
+// A checks-wait stop opened before keep_checking existed still carries
+// keep_waiting on its button: on that stop it runs the wait again too.
+func TestAnswerActionKeepWaitingOnAChecksWaitStopRunsTheWait(t *testing.T) {
+	stop := factoryd.Case{Kind: factoryd.CaseGateStop, Facts: map[string]any{"gate": factoryd.ActivityWaitChecks}}
+	merge := factoryd.Case{Kind: factoryd.CaseGateStop, Facts: map[string]any{"gate": factoryd.ActivityMerge}}
+	for name, c := range map[string]struct {
+		k    factoryd.Case
+		want string
+	}{"checks wait": {stop, factoryd.ActWaitChecks}, "merge": {merge, factoryd.ActNote}, "no case": {factoryd.Case{}, factoryd.ActNote}} {
+		if got := answerAction(factoryd.AnswerKeepWaiting, "Keep waiting", 0, c.k, time.Hour).Action; got != c.want {
+			t.Errorf("%s: keep_waiting answers with %q, want %q", name, got, c.want)
+		}
+	}
+}
