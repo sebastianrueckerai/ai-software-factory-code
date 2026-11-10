@@ -77,7 +77,7 @@ func (w *writeSeams) wire(cfg *console.Config) {
 		w.log("criterion %s %s %s by %s: %s", id, cid, verdict, by, reason)
 		return nil
 	}
-	cfg.CloseDonePlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
+	cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
 		w.log("close plan %s by %s: %s", id, by, note)
 		return 0, factoryd.PlanCloseWords(by, note), nil
 	}

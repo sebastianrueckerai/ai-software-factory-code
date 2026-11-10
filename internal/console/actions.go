@@ -196,6 +196,9 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "failed":
 		return "close ends it (close)"
 	case "done", "closed":
+		if t.Track == policy.TrackPlan && t.Status == "done" {
+			return "Close with a note ends a plan that still holds production; a new card continues the work"
+		}
 		return "a new card continues the work"
 	}
 	return "wait a moment"
@@ -1850,8 +1853,9 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 }
 
 // doClose closes card id as the human, its note commented first when
-// given (closeIssue); a failed card closes too. A done plan closes through
-// closePlan: the note becomes the reason of each open criterion's waiver. A
+// given (closeIssue); a failed card closes too. A plan at rest (done,
+// failed or closed) closes through closePlan: the note becomes the reason
+// of each open criterion's waiver. A
 // card waiting on a live case closes through Act: an agent card's Act
 // closes its issue as factoryd's recorded close and has the note posted
 // after it as the human's, and a human card's close resolves its case once
@@ -1865,7 +1869,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if err != nil {
 		return "", err
 	}
-	if factoryd.DonePlan(t) {
+	if factoryd.ClosablePlan(t) {
 		return c.closePlan(ctx, a, t, note)
 	}
 	if factoryd.Final(t.Status) && t.Status != "failed" {
@@ -1897,7 +1901,7 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 // closed. An issue close that fails after the write is finished by the
 // sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
-	n, words, err := c.cfg.CloseDonePlan(ctx, t.ID, a.s.user, note, c.isApprover(ctx, a.s.user, t.Repository))
+	n, words, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, c.isApprover(ctx, a.s.user, t.Repository))
 	switch {
 	case errors.Is(err, factoryd.ErrNotApprover):
 		return "", refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d while it has open criteria, because Close waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
@@ -1912,7 +1916,7 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 	case err != nil:
 		log.Printf("console: %s closes plan %s: %v", a.s.user, t.ID, err)
 		text, _, _ := strings.Cut(errText(err), " (type: ")
-		return "", refuse(http.StatusInternalServerError, "The plan could not be closed: "+text+".")
+		return "", refuse(http.StatusInternalServerError, "The plan could not be closed: "+text+". Reload the board and press Close again, or ask an approver.")
 	}
 	if n > 0 {
 		log.Printf("console: %s waived %d criteria of %s via %s", a.s.user, n, t.ID, a.via)

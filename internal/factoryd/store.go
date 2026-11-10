@@ -664,7 +664,8 @@ type Store interface {
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
 	// PlanClosesToFinish are the done plan cards whose person's Close
 	// recorded plan_closed, by plan id with the closing words: their
-	// issue close is still to finish.
+	// issue close is still to finish; a row of the last minute is the
+	// console's own close in progress.
 	PlanClosesToFinish(ctx context.Context) (map[string]string, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.
@@ -799,11 +800,11 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
-	// ClosePlanWithWaivers writes an approver's waiver rows on card home,
-	// records closed (the plan's plan_closed event) and ends plan's pending
-	// criteria asks, in one transaction that re-checks the plan is done
-	// (ErrNotDonePlan) and not closed (ErrPlanClosed).
-	ClosePlanWithWaivers(ctx context.Context, plan, home, by string, rows []CriterionVerdict, closed Event) error
+	// ClosePlanWithWaivers writes what prepare decides (a PlanClose) and
+	// ends plan's pending criteria asks in one transaction that locks the
+	// plan's task row, re-checks it is at rest (ErrNotDonePlan) and not
+	// closed (ErrPlanClosed), and runs prepare under the lock.
+	ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error
 	// DeleteVerdictsButApprover deletes task's rows of criterion from
 	// every source but the approver's; none is no error.
 	DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error

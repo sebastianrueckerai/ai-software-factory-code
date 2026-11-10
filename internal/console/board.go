@@ -581,8 +581,7 @@ type card struct {
 	// of one round or filed before rounds.
 	Round string
 	// DonePlan is a done plan card (factoryd.DonePlan) that still holds
-	// production, open criteria or no plan_closed row: a writer's Close
-	// ends it.
+	// production, no plan_closed row yet: a writer's Close ends it.
 	DonePlan bool
 	// OpenCriteria counts the done plan's criteria that stand neither met
 	// nor waived: its Close waives each with the note it asks for.
@@ -613,7 +612,7 @@ type card struct {
 
 // Closes: the face offers its viewer, a writer, Close: a card waiting on
 // a human, or failed, which has no other way out, or a done plan that
-// still holds production. A card whose question offers a close, or a
+// holds production still (no plan_closed row). A card whose question offers a close, or a
 // choice card, offers its choices alone.
 func (k card) Closes() bool {
 	ownClose := k.Kind == "human" && k.Question != nil && k.Question.Offers(factoryd.AnswerClose)
@@ -2009,18 +2008,14 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 			k.Round = factoryd.RoundLine(p, cards)
 		}
 		if err == nil && factoryd.DonePlan(t) {
-			// Close is offered while the plan holds production: criteria
-			// open, or no plan_closed row yet
-			open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
-			_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
-			if err = cmp.Or(openErr, closedErr); err != nil {
-				log.Printf("console: the criteria of %s: %v", t.ID, err)
-				v.problems = append(v.problems, "the criteria of "+t.ID+" could not be read")
-			}
-			k.OpenCriteria = len(open)
-			k.DonePlan = err == nil && (len(open) > 0 || !closed)
+			c.planHold(ctx, v, t, p, &k)
 		}
 		k.Children = cmp.Or(k.Round, planRollup(k.Plan))
+	}
+	if t.Track == policy.TrackPlan && t.Status == "failed" {
+		if _, p, ok, err := c.planTable(ctx, t.ID, 0); err == nil && ok {
+			c.planHold(ctx, v, t, p, &k)
+		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next
 	replacement, retried := v.byID[factoryd.RetryID(t.ID)]
@@ -3799,4 +3794,18 @@ func (c *Console) prFiles(r *http.Request, repository string, pr int64) ([]prFil
 	}
 	return factoryd.GetPagesUpTo[prFile](r.Context(), c.userCall(current(r)),
 		fmt.Sprintf("/api/v1/repos/%s/%s/pulls/%d/files?", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), pr), filesPages)
+}
+
+// planHold fills k with plan t's production hold: Close is offered while no
+// plan_closed row stands, and with the note's form while criteria are open.
+func (c *Console) planHold(ctx context.Context, v *boardView, t factoryd.Task, p factoryd.Plan, k *card) {
+	open, openErr := factoryd.PlanOpenCriteria(ctx, c.cfg.Tasks, t.ID, p)
+	_, closed, closedErr := c.cfg.Tasks.PlanClosed(ctx, t.ID)
+	if err := cmp.Or(openErr, closedErr); err != nil {
+		log.Printf("console: the criteria of %s: %v", t.ID, err)
+		v.problems = append(v.problems, "the criteria of "+t.ID+" could not be read")
+		return
+	}
+	k.OpenCriteria = len(open)
+	k.DonePlan = !closed
 }

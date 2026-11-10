@@ -3,15 +3,16 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"io"
 	"net/http"
+	"net/http/httptest"
 	"slices"
+	"strings"
 	"testing"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
-
-const holdComment = "factoryd: this plan still holds production with 3 open criteria. " +
-	"Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan."
 
 // lastRoundCriteriaPlan is a done plan in its last round with the criteria
 // of criteriaPlan and its integration card merged, on store s as task id.
@@ -63,7 +64,7 @@ func TestDonePlanForgejoCloseKeepsTheHold(t *testing.T) {
 			t.Fatalf("%s: status %d", tc.name, rr.Code)
 		}
 		reopened := slices.Contains(*requests, "close /api/v1/repos/sf/ai-software-factory-code/issues/4")
-		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+holdComment)
+		commented := slices.Contains(*requests, "comment /api/v1/repos/sf/ai-software-factory-code/issues/4/comments: "+holdComment(3))
 		if got := store.tasks["t-plan"].Status; got != tc.after || reopened != tc.reopen || commented != tc.reopen {
 			t.Errorf("webhook, %s: status %q, reopened %t, commented %t; want %q, %t, %t", tc.name, got, reopened, commented, tc.after, tc.reopen, tc.reopen)
 		}
@@ -108,5 +109,159 @@ func TestRoundCheckHoldsAPlanWhoseOpenCriteriaAWriterClosed(t *testing.T) {
 		if got := store.tasks["p"].Status; got != tc.after || len(fj.reopened) != tc.reopened || !slices.Equal(fj.comments, tc.comments) {
 			t.Errorf("%s: status %q, reopened %v, comments %q; want %q, %d, %q", tc.name, got, fj.reopened, fj.comments, tc.after, tc.reopened, tc.comments)
 		}
+	}
+}
+
+// plannedCards files a done plan t-plan of the three criteria of
+// criteriaPlan with the given cards (no integration card among them: the
+// plan is between rounds with an outline, or in its last round without
+// one) on a runner.
+func plannedCards(t *testing.T, outline []string, statuses ...string) (*Runner, *fakeStore, *planForgejo) {
+	t.Helper()
+	r, s, _, fj := planWithoutCriteria(t, statuses...)
+	p := criteriaPlan()
+	p.Cards, p.Outline = []PlanCard{{Key: "card-1", Role: RoleFeature, Title: "A card", Directories: []string{"a"}}}, outline
+	newRevision(t, s, "t-plan", p)
+	plan := s.tasks["t-plan"]
+	plan.Track = policy.TrackPlan
+	s.tasks["t-plan"] = plan
+	mergeCard(s, "card-1")
+	return r, s, fj
+}
+
+// A Close while a card of the plan runs records the waivers and the closing
+// words' asks but no plan_closed, whichever shape the plan has: the close
+// check records it when the last card ends, so a card that merges later
+// still opens its group in the meantime.
+func TestCloseHeldPlanWaitsForRunningCards(t *testing.T) {
+	ctx := context.Background()
+	t.Run("between rounds, no integration card", func(t *testing.T) {
+		r, s, fj := plannedCards(t, []string{"later"}, "done", "running")
+		n, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false)
+		if err != nil || n != 0 || closeRows(s) != 0 {
+			t.Fatalf("CloseHeldPlan = %d, %v, plan_closed rows %d; want 0, no error, 0", n, err, closeRows(s))
+		}
+		setStatus(s, "t-plan", "closed")
+		r.planCloseCheck(ctx, "t-plan")
+		if closeRows(s) != 0 {
+			t.Fatalf("plan_closed recorded with a card running")
+		}
+		setStatus(s, "card-2", "done")
+		r.planCloseCheck(ctx, "t-plan")
+		want := []string{"#1 factoryd: the plan card was closed; the plan is closed, and its merged cards stay on main."}
+		if got := commentBodies(fj); closeRows(s) != 1 || !slices.Equal(got, want) {
+			t.Errorf("comments %q, plan_closed rows %d; want %q and 1", got, closeRows(s), want)
+		}
+	})
+	t.Run("ten open criteria, the integration card running", func(t *testing.T) {
+		r, s, _ := tenCriteriaPlan(t, "running")
+		setStatus(s, "card-1", "running")
+		n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved to the rebuild", true)
+		if err != nil || n != 10 || closeRows(s) != 0 {
+			t.Fatalf("CloseHeldPlan = %d, %v, plan_closed rows %d; want 10, no error, 0", n, err, closeRows(s))
+		}
+		setStatus(s, "card-1", "done")
+		r.planCloseCheck(ctx, "t-plan")
+		if closeRows(s) != 1 {
+			t.Errorf("plan_closed rows %d after the card ended, want 1", closeRows(s))
+		}
+	})
+}
+
+// In its last round a plan with criteria and no integration card keeps its
+// rows on the plan card, and every criterion without one is open: a
+// non-approver's Close is refused, an approver's waives them there.
+func TestCloseHeldPlanInTheLastRoundWithoutAnIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := plannedCards(t, nil, "done")
+	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+		t.Fatalf("a writer's close: %v, want ErrNotApprover", err)
+	}
+	if closeRows(s) != 0 {
+		t.Fatalf("a refused close recorded plan_closed")
+	}
+	n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved to the rebuild", true)
+	rows, _ := s.CriteriaVerdicts(ctx, "t-plan")
+	if err != nil || n != 3 || len(rows) != 3 || closeRows(s) != 1 {
+		t.Fatalf("CloseHeldPlan = %d, %v, rows %d, plan_closed rows %d; want 3 waived on the plan card and 1 row", n, err, len(rows), closeRows(s))
+	}
+}
+
+// A plan card closed by an older path (a writer's close of a failed plan,
+// or of a plan under a replan) with criteria open and merged cards keeps its
+// hold: the close check records no plan_closed and says so once, until an
+// approver's Close with a note waives them, which also takes a plan at
+// rest in any status.
+func TestClosedPlanWithOpenCriteriaKeepsItsHold(t *testing.T) {
+	ctx := context.Background()
+	for _, status := range []string{"closed", "failed"} {
+		r, s, fj := tenCriteriaPlan(t, "done")
+		setStatus(s, "t-plan", status)
+		for range 2 {
+			r.planCloseCheck(ctx, "t-plan")
+		}
+		hold := "#1 " + holdComment(10)
+		if got := commentBodies(fj); status == "closed" && (closeRows(s) != 0 || !slices.Equal(got, []string{hold})) {
+			t.Fatalf("closed plan: comments %q, plan_closed rows %d; want the hold said once and no row", got, closeRows(s))
+		}
+		if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+			t.Fatalf("%s plan, a writer's Close: %v, want ErrNotApprover", status, err)
+		}
+		if n, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil || n != 10 || closeRows(s) != 1 {
+			t.Fatalf("%s plan, an approver's Close = %d, %v, plan_closed rows %d; want 10, no error, 1", status, n, err, closeRows(s))
+		}
+	}
+}
+
+// issueStub is a Forgejo that records its writes and answers the comment
+// reads with commentsStatus.
+type issueStub struct {
+	writes         []string
+	commentsStatus int
+}
+
+func (s *issueStub) forgejo(t *testing.T) *Forgejo {
+	t.Helper()
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch {
+		case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+			w.WriteHeader(s.commentsStatus)
+			io.WriteString(w, `[]`)
+		case r.Method == http.MethodGet:
+			io.WriteString(w, `{"state":"open"}`)
+		default:
+			s.writes = append(s.writes, r.Method+" "+r.URL.Path)
+			w.WriteHeader(http.StatusCreated)
+			io.WriteString(w, `{"id":1}`)
+		}
+	}))
+	t.Cleanup(srv.Close)
+	return &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+}
+
+// A closing comment that cannot be read or posted leaves the issue as it
+// is: the hold reopens it only after saying so, and the finish of a close
+// closes it only after the words stand; the next pass tries again.
+func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
+	ctx := context.Background()
+	stub := &issueStub{commentsStatus: http.StatusInternalServerError}
+	f := stub.forgejo(t)
+	plan := Task{ID: "t-plan", Repository: "sf/code", IssueNumber: 4, Status: "done", Track: policy.TrackPlan}
+	if err := holdDonePlan(ctx, f, plan, 3); err == nil || len(stub.writes) != 0 {
+		t.Fatalf("holdDonePlan with a failing comment: %v, writes %q; want an error and no write", err, stub.writes)
+	}
+	r, s, _ := tenCriteriaPlan(t, "done")
+	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "sebastian", "moved on", true); err != nil {
+		t.Fatal(err)
+	}
+	r.forgejo = f
+	r.finishPlanClose(ctx, "t-plan", "closed by sebastian; its merged cards stay on main")
+	if len(stub.writes) != 0 || s.tasks["t-plan"].Status != "done" {
+		t.Fatalf("finishPlanClose with a failing comment: writes %q, status %q; want none and done", stub.writes, s.tasks["t-plan"].Status)
+	}
+	stub.commentsStatus = http.StatusOK
+	r.finishPlanClose(ctx, "t-plan", "closed by sebastian; its merged cards stay on main")
+	if len(stub.writes) == 0 || !strings.HasPrefix(stub.writes[0], "POST ") {
+		t.Fatalf("the next pass: writes %q; want the comment first", stub.writes)
 	}
 }

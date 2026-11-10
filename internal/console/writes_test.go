@@ -1176,6 +1176,12 @@ func TestCloseADonePlan(t *testing.T) {
 			Objective: "Build the one."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cl", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 54,
 			Objective: "Build the closed one."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fp", Kind: "agent", Status: "failed", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 56,
+			Objective: "Build the failed one."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fp-int", Kind: "agent", Status: "merged", Source: factoryd.SourcePlan, Parent: "t-fp", PlanKey: "int", Repository: "sf/code", IssueNumber: 57,
+			Objective: "Integrate."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cl-int", Kind: "agent", Status: "merged", Source: factoryd.SourcePlan, Parent: "t-cl", PlanKey: "int", Repository: "sf/code", IssueNumber: 58,
+			Objective: "Integrate."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr-int", Kind: "agent", Status: "merged", Source: factoryd.SourcePlan, Parent: "t-lr", PlanKey: "int", Repository: "sf/code", IssueNumber: 52,
 			Objective: "Integrate."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-one-int", Kind: "agent", Status: "merged", Source: factoryd.SourcePlan, Parent: "t-one", PlanKey: "int", Repository: "sf/code", IssueNumber: 55,
@@ -1189,16 +1195,19 @@ func TestCloseADonePlan(t *testing.T) {
 	r.tasks.plans["t-br"] = []factoryd.PlanRevision{{TaskID: "t-br", Revision: 1, Plan: json.RawMessage(`{"round": 1, "outline": ["the console"]}`)}}
 	r.tasks.plans["t-lr"] = []factoryd.PlanRevision{{TaskID: "t-lr", Revision: 1, Plan: critJSON}}
 	r.tasks.plans["t-one"] = []factoryd.PlanRevision{{TaskID: "t-one", Revision: 1, Plan: oneJSON}}
-	r.tasks.plans["t-cl"] = []factoryd.PlanRevision{{TaskID: "t-cl", Revision: 1, Plan: json.RawMessage(`{"round": 2}`)}}
+	r.tasks.plans["t-fp"] = []factoryd.PlanRevision{{TaskID: "t-fp", Revision: 1, Plan: oneJSON}}
+	r.tasks.plans["t-cl"] = []factoryd.PlanRevision{{TaskID: "t-cl", Revision: 1, Plan: oneJSON}}
 	r.tasks.criteria = map[string][]factoryd.CriterionVerdict{
 		"t-lr-int":  {{Criterion: "k1", Verdict: "met", Source: "review", Kind: factoryd.CriterionInvariant}},
 		"t-one-int": {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
+		"t-fp-int":  {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
+		"t-cl-int":  {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
 	}
 	r.tasks.planClosed = map[string]time.Time{"t-cl": time.Now()}
 	r.tasks.mu.Unlock()
 	var closes []string
 	closeErr := error(nil)
-	r.c.cfg.CloseDonePlan = func(_ context.Context, id, by, note string, approver bool) (int, string, error) {
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, error) {
 		open := map[string]int{"t-lr": 2, "t-one": 1}[id]
 		switch {
 		case closeErr != nil:
@@ -1219,9 +1228,12 @@ func TestCloseADonePlan(t *testing.T) {
 		t.Errorf("the plan without open criteria: face =\n%s\nwant it to hold\n%s", face, plain)
 	}
 	if face := faceOf(t, body, "t-cl"); strings.Contains(face, `action="/tasks/t-cl/close"`) {
-		t.Errorf("the plan whose plan_closed row stands: face =\n%s\nwant no Close", face)
+		t.Errorf("the plan whose plan_closed row stands, a criterion open again: face =\n%s\nwant no Close", face)
 	}
+	equal(t, "the action that fits a done plan", fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{}),
+		"Close with a note ends a plan that still holds production; a new card continues the work")
 	for id, label := range map[string]string{
+		"t-fp":  `aria-label="note: becomes the waiver reason of the open criterion"`,
 		"t-lr":  `aria-label="note: becomes the waiver reason of each of the 2 open criteria"`,
 		"t-one": `aria-label="note: becomes the waiver reason of the open criterion"`,
 	} {
@@ -1277,7 +1289,7 @@ func TestCloseADonePlan(t *testing.T) {
 		{"a plan closed already", factoryd.ErrPlanClosed, http.StatusConflict, "Plan #51 is closed already, and its merged cards stay on main."},
 		{"a plan not done any more", factoryd.ErrNotDonePlan, http.StatusConflict, "Plan #51 is not done any more, so Close no longer fits: reload the board."},
 		{"a terminal error", errors.New("plan t-lr has no integration card (type: terminal, retryable: false)"), http.StatusInternalServerError,
-			"The plan could not be closed: plan t-lr has no integration card."},
+			"The plan could not be closed: plan t-lr has no integration card. Reload the board and press Close again, or ask an approver."},
 	} {
 		closeErr = tc.err
 		code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "again"})
@@ -1288,7 +1300,7 @@ func TestCloseADonePlan(t *testing.T) {
 	closeErr = nil
 	const issue53 = "/api/v1/repos/sf/code/issues/53/comments"
 	words := "closed by sebastian: swept first; its merged cards stay on main"
-	r.c.cfg.CloseDonePlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
 		r.fg.mu.Lock()
 		r.fg.posted[issue53] = append(r.fg.posted[issue53], words)
 		r.fg.mu.Unlock()
@@ -1297,7 +1309,7 @@ func TestCloseADonePlan(t *testing.T) {
 	rec = r.do(post("/tasks/t-one/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"swept first"}}), ck)
 	equal(t, "the press after the sweep", rec.Code, http.StatusSeeOther)
 	equal(t, "the words once", r.fg.commentBodies(issue53), []string{words})
-	r.c.cfg.CloseDonePlan = func(context.Context, string, string, string, bool) (int, string, error) { return 0, "", closeErr }
+	r.c.cfg.CloseHeldPlan = func(context.Context, string, string, string, bool) (int, string, error) { return 0, "", closeErr }
 	closeErr = leakyError()
 	code, msg = refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "again"})
 	equal(t, "a failed waiver", code, http.StatusInternalServerError)
@@ -1315,7 +1327,7 @@ func TestCloseADonePlanNeedsAnApprover(t *testing.T) {
 		Repository: "sf/code", IssueNumber: 51, Objective: "Build the links."}})
 	r.tasks.mu.Unlock()
 	var approvers []bool
-	r.c.cfg.CloseDonePlan = func(_ context.Context, _, _, _ string, approver bool) (int, string, error) {
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, _, _ string, approver bool) (int, string, error) {
 		approvers = append(approvers, approver)
 		return 0, "", factoryd.ErrNotApprover
 	}

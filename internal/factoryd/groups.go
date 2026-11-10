@@ -138,7 +138,8 @@ func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 
 func (s *PGStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
 	rows, err := s.db.QueryContext(ctx, `SELECT t.id, e.detail->>'words' FROM tasks t JOIN events e ON e.task_id = t.id AND e.kind = 'plan_closed'
-		WHERE t.status = 'done' AND t.track = $1 AND COALESCE(e.detail->>'words', '') <> ''`, policy.TrackPlan)
+		WHERE t.status = 'done' AND t.track = $1 AND COALESCE(e.detail->>'words', '') <> ''
+			AND e.at < now() - interval '1 minute'`, policy.TrackPlan)
 	if err != nil {
 		return nil, err
 	}

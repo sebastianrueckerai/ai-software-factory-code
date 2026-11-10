@@ -1281,8 +1281,9 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done, a failed
-// card ends closed, and so does a done plan (DonePlan). A merged card is left as it is: its own
-// merge closes its issue (Closes #N), a close no webhook tells from a
+// card ends closed, and so does a done plan (DonePlan) once its
+// production hold is gone (endDonePlan). A merged card is left as it is:
+// its own merge closes its issue (Closes #N), a close no webhook tells from a
 // human's, and its workflow ended at the merge; the chain ends it, or
 // the console's Close (CloseCard). Only a close that counts acts
 // (closeCounts).

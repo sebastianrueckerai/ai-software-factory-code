@@ -87,12 +87,22 @@ func putCriteriaVerdicts(ctx context.Context, db interface {
 	return err
 }
 
-// ClosePlanWithWaivers writes an approver's waiver rows on card home,
-// records closed (plan_closed) and ends plan's pending criteria asks in
-// one transaction, under a lock on the plan's task row: the close check
-// never sees the waivers without the close, and a plan not done any more,
-// or closed already, is refused (ErrNotDonePlan, ErrPlanClosed).
-func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, home, by string, rows []CriterionVerdict, closed Event) error {
+// PlanClose is what a plan's Close writes: waiver rows on card Home, the
+// plan's plan_closed event (nil while a card of the plan is not final) and
+// the Words that end its pending criteria asks.
+type PlanClose struct {
+	Home   string
+	Waive  []CriterionVerdict
+	Closed *Event
+	Words  string
+}
+
+// ClosePlanWithWaivers writes what prepare decides and ends plan's pending
+// criteria asks in one transaction under a lock on the plan's task row: a
+// plan not at rest, or closed already, is refused (ErrNotDonePlan,
+// ErrPlanClosed), and prepare reads the open criteria after the lock. The
+// close check never sees the waivers without the close.
+func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return err
@@ -104,7 +114,7 @@ func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, home, by strin
 		return ErrNotFound
 	case err != nil:
 		return err
-	case status != "done" || track != policy.TrackPlan:
+	case !ClosablePlan(Task{Track: track, Status: status}):
 		return ErrNotDonePlan
 	}
 	var stands bool
@@ -114,16 +124,22 @@ func (s *PGStore) ClosePlanWithWaivers(ctx context.Context, plan, home, by strin
 	if stands {
 		return ErrPlanClosed
 	}
-	if err := putCriteriaVerdicts(ctx, tx, home, CriteriaSourceApprover, by, rows); err != nil {
-		return err
-	}
-	e, inserted, err := s.insertEvent(ctx, tx, closed)
+	pc, err := prepare(ctx)
 	if err != nil {
 		return err
 	}
-	words, _ := closed.Detail["words"].(string)
+	if err := putCriteriaVerdicts(ctx, tx, pc.Home, CriteriaSourceApprover, by, pc.Waive); err != nil {
+		return err
+	}
+	var e Event
+	var inserted bool
+	if pc.Closed != nil {
+		if e, inserted, err = s.insertEvent(ctx, tx, *pc.Closed); err != nil {
+			return err
+		}
+	}
 	if _, err := tx.ExecContext(ctx, `UPDATE approval_requests SET status = 'approved', decided_by = $2, decided_at = now(), decision_note = $3
-		WHERE task_id = $1 AND kind IN ($4, $5) AND status = 'pending'`, plan, by, words, ApprovalCriteria, ApprovalCriteriaRerun); err != nil {
+		WHERE task_id = $1 AND kind IN ($4, $5) AND status = 'pending'`, plan, by, pc.Words, ApprovalCriteria, ApprovalCriteriaRerun); err != nil {
 		return err
 	}
 	if err := tx.Commit(); err != nil {
@@ -324,9 +340,11 @@ func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p
 }
 
 // planOpen are the criteria of plan id's p that stand neither met nor
-// waived on its integration card's rows, and the card that holds the
-// rows. A plan that has filed no integration card yet has no rows to
-// waive: nothing is open, and home is the plan.
+// waived, and the card that holds the rows: the integration card. A plan
+// between rounds (its outline holds later rounds) has filed none yet and
+// has no rows to waive: nothing is open. A plan in its last round that has
+// none keeps its rows on the plan card, and every criterion without one is
+// open.
 func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (open []PlanCriterion, home string, err error) {
 	if len(p.Criteria) == 0 {
 		return nil, id, nil
@@ -335,24 +353,28 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 	if err != nil {
 		return nil, "", err
 	}
-	integration, ok := integrationCardOf(cards, p)
-	if !ok {
+	home = id
+	if integration, ok := integrationCardOf(cards, p); ok {
+		home = integration.ID
+	} else if len(p.Outline) > 0 {
 		return nil, id, nil
 	}
-	rows, err := store.CriteriaVerdicts(ctx, integration.ID)
+	rows, err := store.CriteriaVerdicts(ctx, home)
 	if err != nil {
-		return nil, "", fmt.Errorf("verdicts of %s: %w", integration.ID, err)
+		return nil, "", fmt.Errorf("verdicts of %s: %w", home, err)
 	}
-	return openCriteria(p, rows), integration.ID, nil
+	return openCriteria(p, rows), home, nil
 }
 
-// CloseDonePlan is a person's close of done plan id: it waives every open
-// criterion with note as the reason (an approver's act, and a note is
-// required), records plan_closed and ends the plan's criteria asks in one
-// transaction, so the close check never finds waivers without the close.
-// It reports how many criteria it waived and the words the close says on
-// the plan's issue. The caller closes the issue afterwards.
-func (r *Runner) CloseDonePlan(ctx context.Context, id, by, note string, approver bool) (int, string, error) {
+// CloseHeldPlan is a person's close of plan id at rest: it waives every
+// open criterion with note as the reason (an approver's act, and a note is
+// required), ends the plan's criteria asks and, once every card of the plan
+// is final (a plan that filed none records none), records plan_closed, in one transaction, so the close check
+// never finds waivers without the close. While a card still runs the sweep
+// records plan_closed when the last one ends. It reports how many criteria
+// it waived and the words the close says on the plan's issue. The caller
+// closes the issue afterwards.
+func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (int, string, error) {
 	t, ok, err := r.store.Task(ctx, id)
 	if err != nil {
 		return 0, "", fmt.Errorf("plan %s: %w", id, err)
@@ -360,44 +382,65 @@ func (r *Runner) CloseDonePlan(ctx context.Context, id, by, note string, approve
 	if !ok {
 		return 0, "", fmt.Errorf("plan %s: %w", id, ErrNotFound)
 	}
-	if !DonePlan(t) {
+	if !ClosablePlan(t) {
 		return 0, "", ErrNotDonePlan
 	}
-	p, _, err := planOfStore(ctx, r.store, id, t.ID)
-	if err != nil {
-		return 0, "", err
-	}
-	open, home, err := planOpen(ctx, r.store, id, p)
-	if err != nil {
-		return 0, "", err
-	}
 	note = strings.TrimSpace(note)
-	switch {
-	case len(note) > MaxWaiverNote:
+	if len(note) > MaxWaiverNote {
 		return 0, "", ErrNoteTooLong
-	case len(open) > 0 && !approver:
-		return 0, "", ErrNotApprover
-	case len(open) > 0 && note == "":
-		return 0, "", ErrNoReason
-	}
-	waivers := make([]CriterionVerdict, len(open))
-	for i, c := range open {
-		waivers[i] = CriterionVerdict{Criterion: c.ID, Verdict: "waived", Evidence: note, Kind: c.Kind}
 	}
 	words := PlanCloseWords(by, note)
-	closed := Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventPlanClosed, Actor: by, Via: ViaConsole,
-		Detail: map[string]any{"criteria": len(p.Criteria), "waived": len(waivers), "words": words}}
-	if err := r.store.ClosePlanWithWaivers(ctx, id, home, by, waivers, closed); err != nil {
+	criteria, waived := 0, 0
+	recorded := false
+	err = r.store.ClosePlanWithWaivers(ctx, id, by, func(ctx context.Context) (PlanClose, error) {
+		var p Plan
+		switch rev, ok, err := r.store.PlanRevision(ctx, id, 0); {
+		case err != nil:
+			return PlanClose{}, err
+		case ok:
+			if err := json.Unmarshal(rev.Plan, &p); err != nil {
+				return PlanClose{}, terminalError("plan %s revision %d: %v", id, rev.Revision, err)
+			}
+		}
+		open, home, err := planOpen(ctx, r.store, id, p)
+		if err != nil {
+			return PlanClose{}, err
+		}
+		switch {
+		case len(open) > 0 && !approver:
+			return PlanClose{}, ErrNotApprover
+		case len(open) > 0 && note == "":
+			return PlanClose{}, ErrNoReason
+		}
+		cards, err := r.store.PlanCards(ctx, id)
+		if err != nil {
+			return PlanClose{}, err
+		}
+		pc := PlanClose{Home: home, Words: words}
+		for _, c := range open {
+			pc.Waive = append(pc.Waive, CriterionVerdict{Criterion: c.ID, Verdict: "waived", Evidence: note, Kind: c.Kind})
+		}
+		criteria, waived = len(p.Criteria), len(pc.Waive)
+		if len(cards) > 0 && !slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
+			pc.Closed = &Event{Repository: t.Repository, TaskID: id, IssueNumber: t.IssueNumber, Kind: EventPlanClosed, Actor: by, Via: ViaConsole,
+				Detail: map[string]any{"criteria": criteria, "waived": waived, "words": words}}
+			recorded = true
+		}
+		return pc, nil
+	})
+	if err != nil {
 		return 0, "", err
 	}
-	if r.timeline != nil {
-		if err := r.timeline.Append(ctx, id, StepEvent, map[string]any{"event": EventPlanClosed, "criteria": len(p.Criteria)}); err != nil {
-			log.Printf("plan %s: timeline plan_closed: %v", id, err)
+	if recorded {
+		if r.timeline != nil {
+			if err := r.timeline.Append(ctx, id, StepEvent, map[string]any{"event": EventPlanClosed, "criteria": criteria}); err != nil {
+				log.Printf("plan %s: timeline plan_closed: %v", id, err)
+			}
 		}
+		r.record(ctx, id, "plan_closed", map[string]any{"criteria": criteria})
+		r.wakeHeld(ctx, t.Repository)
 	}
-	r.record(ctx, id, "plan_closed", map[string]any{"criteria": len(p.Criteria)})
-	r.wakeHeld(ctx, t.Repository)
-	return len(waivers), words, nil
+	return waived, words, nil
 }
 
 // GrantCriteria writes the catch rows of an approver's grant of one more
@@ -1113,6 +1156,18 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) }) {
 			return
 		}
+		open, _, err := planOpen(ctx, r.store, parent, p)
+		if err != nil {
+			log.Printf("plan %s: the close check: %v", parent, err)
+			return
+		}
+		if len(open) > 0 {
+			// open criteria hold production until an approver's Close waives them
+			if t.IssueNumber != 0 {
+				r.commentOnce(ctx, t, repo, t.IssueNumber, holdComment(len(open)))
+			}
+			return
+		}
 		for _, kind := range criteriaKinds {
 			if err := r.store.ResolveApprovals(ctx, parent, kind, "denied", FactoryDecider, "the plan card was closed"); err != nil {
 				log.Printf("plan %s: deny the %s approval: %v", parent, kind, err)
@@ -1351,6 +1406,13 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // it opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	r.proverPass(ctx)
+	finish, err := r.store.PlanClosesToFinish(ctx)
+	if err != nil {
+		log.Printf("criteria pass: the plan closes to finish: %v", err)
+	}
+	for _, id := range slices.Sorted(maps.Keys(finish)) {
+		r.finishPlanClose(ctx, id, finish[id])
+	}
 	sorted := r.criteriaParents(ctx)
 	for _, parent := range sorted {
 		r.planCloseCheck(ctx, parent)
@@ -1426,13 +1488,6 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 			parents[g.Plan] = true
 		}
 	}
-	finish, err := r.store.PlanClosesToFinish(ctx)
-	if err != nil {
-		log.Printf("criteria pass: the plan closes to finish: %v", err)
-	}
-	for _, id := range slices.Sorted(maps.Keys(finish)) {
-		r.finishPlanClose(ctx, id, finish[id])
-	}
 	between, err := r.store.PlansBetweenRounds(ctx)
 	if err != nil {
 		log.Printf("criteria pass: the plans between rounds: %v", err)
@@ -1445,7 +1500,8 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 
 // finishPlanClose finishes a person's Close of done plan id whose issue
 // close failed after plan_closed was recorded: the issue hears the closing
-// words once and closes, and the card ends closed.
+// words once and closes, and the card ends closed. A words post that fails
+// leaves the issue open and the close to the next pass.
 func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 	t, repo, err := r.task(ctx, id)
 	if err != nil {
@@ -1453,7 +1509,10 @@ func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 		return
 	}
 	if t.IssueNumber != 0 {
-		r.commentOnce(ctx, t, repo, t.IssueNumber, words)
+		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, words); err != nil {
+			log.Printf("plan %s: the closing words on #%d: %v", id, t.IssueNumber, err)
+			return
+		}
 		if !r.closePlanIssue(ctx, t, repo, "") {
 			return
 		}

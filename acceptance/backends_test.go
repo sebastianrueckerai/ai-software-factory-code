@@ -1042,7 +1042,7 @@ func (s *acceptanceStore) PutCriteriaVerdicts(context.Context, string, string, s
 	return nil
 }
 
-func (s *acceptanceStore) ClosePlanWithWaivers(context.Context, string, string, string, []factoryd.CriterionVerdict, factoryd.Event) error {
+func (s *acceptanceStore) ClosePlanWithWaivers(context.Context, string, string, func(context.Context) (factoryd.PlanClose, error)) error {
 	return nil
 }
 

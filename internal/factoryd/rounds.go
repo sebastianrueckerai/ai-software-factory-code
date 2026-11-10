@@ -237,8 +237,10 @@ func RoundItems(p Plan, cards []Task) []RoundItem {
 // starts. Any other close does not count, as on the webhook: the issue
 // opens again and the round starts. A done plan without later rounds
 // whose issue a person's close that counts closed is taken the same way
-// (endDonePlan), unless it is under a replan; it reads the issue only. A closed plan, one under
-// another replan and one whose own group revert runs are left as they are.
+// (endDonePlan), unless it is under a replan; it reads the issue, and
+// once that is closed its timeline and the closer's write access. A
+// closed plan, one under another replan and one whose own group revert
+// runs are left as they are.
 func (r *Runner) roundCheck(ctx context.Context, parent string) {
 	if err := r.nextRound(ctx, parent); err != nil {
 		log.Printf("plan %s: the round check: %v", parent, err)
@@ -246,7 +248,8 @@ func (r *Runner) roundCheck(ctx context.Context, parent string) {
 }
 
 // nextRound is roundCheck's work, its error the check's log line. It
-// reads no timeline for a plan without an outline or whose round runs.
+// reads no timeline for a plan whose round runs or whose issue stands
+// open.
 func (r *Runner) nextRound(ctx context.Context, parent string) error {
 	t, repo, err := r.task(ctx, parent)
 	if err != nil || t.Status != "done" {
@@ -342,6 +345,13 @@ func DonePlan(t Task) bool {
 	return t.Track == policy.TrackPlan && t.Status == "done"
 }
 
+// ClosablePlan tells whether card t is a plan the console's Close takes:
+// one at rest, done, failed or closed. A plan with open criteria holds
+// production whatever its status, until an approver's Close.
+func ClosablePlan(t Task) bool {
+	return t.Track == policy.TrackPlan && (t.Status == "done" || t.Status == "failed" || t.Status == "closed")
+}
+
 // endDonePlan takes a close that counts of done plan t's issue: the card
 // ends closed once its plan_closed row stands (a console Close wrote it
 // with the waivers) or no criterion is open. A plan that still holds
@@ -369,19 +379,25 @@ func endDonePlan(ctx context.Context, store Store, f *Forgejo, t Task) error {
 	return store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
 }
 
-// holdDonePlan opens plan t's issue again and says once that its n open
-// criteria keep it holding production.
+// holdDonePlan says once that plan t's n open criteria keep it holding
+// production, then opens its issue again: a comment that failed is tried
+// again with the reopen.
 func holdDonePlan(ctx context.Context, f *Forgejo, t Task, n int) error {
 	repo, err := SplitRepo(t.Repository)
 	if err != nil {
 		return err
 	}
-	if err := f.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber); err != nil {
+	if err := f.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, holdComment(n)); err != nil {
 		return err
 	}
-	return f.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, fmt.Sprintf(
-		"factoryd: this plan still holds production with %s. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan.",
-		OpenCriteriaPhrase(n)))
+	return f.ReopenIssue(ctx, repo.Owner, repo.Name, t.IssueNumber)
+}
+
+// holdComment is what a plan's issue hears when the plan still holds
+// production with n open criteria.
+func holdComment(n int) string {
+	return fmt.Sprintf("factoryd: this plan still holds production with %s. Closing its issue waives nothing: an approver's Close with a note on the console waives them and ends the plan.",
+		OpenCriteriaPhrase(n))
 }
 
 // OpenCriteriaPhrase counts n open criteria in words: "1 open criterion",

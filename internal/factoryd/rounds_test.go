@@ -1582,7 +1582,7 @@ func TestOneCardPlanTakesADeltaCard(t *testing.T) {
 func TestRoundCheckEndsAClosedPlanInItsLastRound(t *testing.T) {
 	ctx := context.Background()
 	last := roundOne()
-	last.Outline = nil
+	last.Outline, last.Criteria = nil, nil
 	for _, tc := range []struct{ name, closer, want string }{
 		{"a writer's close", "sebastian", "closed"},
 		{"the bot's unrecorded close", "factory-agent", "done"},

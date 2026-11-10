@@ -905,7 +905,7 @@ func (s *accBatchStore) PutCriteriaVerdicts(context.Context, string, string, str
 	panic("unused")
 }
 
-func (s *accBatchStore) ClosePlanWithWaivers(context.Context, string, string, string, []factoryd.CriterionVerdict, factoryd.Event) error {
+func (s *accBatchStore) ClosePlanWithWaivers(context.Context, string, string, func(context.Context) (factoryd.PlanClose, error)) error {
 	panic("unused")
 }
 

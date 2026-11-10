@@ -2026,12 +2026,17 @@ func TestClosingAFailedCardEndsItClosed(t *testing.T) {
 
 // A trusted close of a done plan's issue, in any round, ends the plan card
 // closed in the store and signals nothing, under the trust rule of a
-// failed card's close: the plan's workflow ended when it filed its cards
+// failed card's close, once no criterion holds production (endDonePlan;
+// the fixture's three criteria, with no integration card in the last round,
+// are all open there, so that plan stays done and its issue opens again):
+// the plan's workflow ended when it filed its cards
 // (TestPlanLoopAnswersSendThePlannerBack), so no signal has anything to
 // end. Factoryd's own close of a plan with no later round leaves it done.
 func TestClosingADonePlanEndsItClosed(t *testing.T) {
 	last := roundOne()
 	last.Outline = nil
+	free := last
+	free.Criteria = nil
 	for _, tc := range []struct {
 		name, closer, after string
 		plan                Plan
@@ -2041,8 +2046,9 @@ func TestClosingADonePlanEndsItClosed(t *testing.T) {
 		{name: "between rounds, factoryd's recorded close", plan: roundOne(), closer: "factory-agent", recorded: true, after: "closed"},
 		{name: "between rounds, the bot's unrecorded close", plan: roundOne(), closer: "factory-agent", after: "done"},
 		{name: "between rounds, a stranger's close", plan: roundOne(), closer: "mallory", after: "done"},
-		{name: "the last round", plan: last, closer: "sebastian", after: "closed"},
-		{name: "the last round, factoryd's recorded close", plan: last, closer: "factory-agent", recorded: true, after: "done"},
+		{name: "the last round, no criteria", plan: free, closer: "sebastian", after: "closed"},
+		{name: "the last round, three criteria and no integration card", plan: last, closer: "sebastian", after: "done"},
+		{name: "the last round, factoryd's recorded close", plan: free, closer: "factory-agent", recorded: true, after: "done"},
 	} {
 		in, store, _ := newTestIntake(t)
 		store.tasks["t-plan"] = Task{ID: "t-plan", Repository: "sf/ai-software-factory-code", Status: "done", Kind: "agent", Track: policy.TrackPlan, IssueNumber: 4}
