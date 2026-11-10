@@ -1122,14 +1122,24 @@ func scrubTokens(text string) (out string, github, chat bool) {
 	return out, gh != text, out != gh
 }
 
-// errText is err's words with every token-shaped secret scrubbed by
-// scrubTokens, the <err> a refusal sentence embeds; "" for no error.
+// scrubber masks what redact masks in every text a refusal builds from an
+// error.
+var scrubber = redact.New()
+
+// scrubText is text with every token-shaped secret masked by scrubTokens
+// and every other credential by redact.Scrubber.
+func scrubText(text string) string {
+	out, _, _ := scrubTokens(text)
+	return scrubber.String(out)
+}
+
+// errText is err's scrubbed words, the <err> a refusal sentence embeds;
+// "" for no error.
 func errText(err error) string {
 	if err == nil {
 		return ""
 	}
-	out, _, _ := scrubTokens(err.Error())
-	return out
+	return scrubText(err.Error())
 }
 
 // removedTokens names the tokens scrubTokens removed.
