@@ -584,6 +584,11 @@ func (s *acceptanceStore) TaskEvents(context.Context, string, int) ([]factoryd.E
 	return nil, nil
 }
 
+// TaskEventsOfKind: the acceptance store keeps no event rows.
+func (s *acceptanceStore) TaskEventsOfKind(context.Context, string, string, int) ([]factoryd.Event, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) Free(_ context.Context, r policy.HoldRequest) (policy.TaskFree, policy.Free, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
