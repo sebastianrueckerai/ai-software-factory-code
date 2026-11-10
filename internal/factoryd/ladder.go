@@ -225,7 +225,8 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if in.Reason == healedReason && in.Kind == "" {
 		return r.healedTrip(ctx, t, in, at.ID)
 	}
-	if in.Reason, err = r.withPlanDraft(ctx, t.ID, in.Reason); err != nil {
+	note, err := r.planDraftNote(ctx, t.ID, in.Reason)
+	if err != nil {
 		return TripOutcome{}, err
 	}
 	f, err := r.tripFacts(ctx, t, in.Head)
@@ -237,6 +238,9 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 		return TripOutcome{}, err
 	}
 	f.atCase(c)
+	if note != "" {
+		c.Facts["plan_draft"] = note
+	}
 	if at.N > 1 {
 		if out, ok, err := r.retriedTrip(ctx, t, c.Kind, cases, at.ID); ok || err != nil {
 			return out, err
@@ -259,7 +263,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c, in.Reason), in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, joinNote(tripNext(c, in.Reason), note), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -555,6 +559,14 @@ func replyNext(reason string) string {
 // extend start the next attempt, at a budget floor the Fund form or the
 // chat's fund, for a monitor flag, whose card goes on, the case by its
 // number in the chat, and elsewhere a reply (replyNext).
+// joinNote is next with the note after it, when there is one.
+func joinNote(next, note string) string {
+	if note == "" {
+		return next
+	}
+	return next + "\n\n" + note
+}
+
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:

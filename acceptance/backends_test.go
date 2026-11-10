@@ -1224,6 +1224,10 @@ func (s *acceptanceStore) SetPlanDraft(context.Context, string, json.RawMessage,
 	return nil
 }
 
+func (s *acceptanceStore) DeletePlanDraft(context.Context, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) PlanDraft(context.Context, string) (factoryd.PlanDraft, bool, error) {
 	return factoryd.PlanDraft{}, false, nil
 }

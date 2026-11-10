@@ -1508,7 +1508,8 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	if reason, err = r.withPlanDraft(ctx, t.ID, reason); err != nil {
+	note, err := r.planDraftNote(ctx, t.ID, reason)
+	if err != nil {
 		return 0, err
 	}
 	var c Case
@@ -1525,7 +1526,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices)
+	id, err := r.askHuman(ctx, t, c, reason, joinNote(replyNext(reason), note), choices)
 	if err != nil || c.ID == 0 {
 		return id, err
 	}

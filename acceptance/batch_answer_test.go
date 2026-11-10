@@ -965,6 +965,9 @@ func (s *accBatchStore) AddPlanRevision(ctx context.Context, id string, plan jso
 func (s *accBatchStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error {
 	panic("unused")
 }
+func (s *accBatchStore) DeletePlanDraft(ctx context.Context, id string) error {
+	panic("unused")
+}
 func (s *accBatchStore) PlanDraft(ctx context.Context, id string) (factoryd.PlanDraft, bool, error) {
 	panic("unused")
 }

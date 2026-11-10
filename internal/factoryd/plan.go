@@ -1556,6 +1556,11 @@ func (s *PGStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMess
 	return err
 }
 
+func (s *PGStore) DeletePlanDraft(ctx context.Context, id string) error {
+	_, err := s.db.ExecContext(ctx, `DELETE FROM plan_drafts WHERE task_id = $1`, id)
+	return err
+}
+
 func (s *PGStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
 	d := PlanDraft{TaskID: id}
 	var plan, findings []byte
@@ -2677,7 +2682,7 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	if d, ok, err := r.store.PlanDraft(ctx, taskID); err != nil {
 		return PlanResult{}, err
 	} else if ok {
-		findings = append(slices.Clone(findings), r.draftBrief(d))
+		findings = append(slices.Clone(findings), r.draftBrief(d, findings))
 	}
 	extra, findings, err := r.planRecord(ctx, t, tl, findings)
 	if err != nil {
@@ -2725,29 +2730,49 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 	return res, nil
 }
 
+// maxDraftBrief bounds the draft plan a session's brief carries.
+const maxDraftBrief = 32 << 10
+
 // draftBrief is the starting point a planner session gets when its last
-// filing was refused: the plan and the findings it was refused for.
-func (r *Runner) draftBrief(d PlanDraft) string {
+// filing was refused: the plan, cut at maxDraftBrief, and the findings it
+// was refused for that carried does not hold already.
+func (r *Runner) draftBrief(d PlanDraft, carried []string) string {
 	var b strings.Builder
-	b.WriteString("your last filing was refused and kept as a draft: fix the findings it was refused for and file it again, rather than plan again from the top.\nThe findings:\n")
+	b.WriteString("your last filing was refused and kept as a draft: fix the findings it was refused for and file it again, rather than plan again from the top.\n")
+	first := true
 	for _, f := range d.Findings {
+		if slices.Contains(carried, f) {
+			continue
+		}
+		if first {
+			b.WriteString("The findings:\n")
+			first = false
+		}
 		b.WriteString("- " + r.Scrub.String(f) + "\n")
 	}
-	b.WriteString("The draft:\n```json\n" + r.Scrub.String(string(d.Plan)) + "\n```")
+	plan := r.Scrub.String(string(d.Plan))
+	cut := ""
+	if n := len(plan); n > maxDraftBrief {
+		plan = strings.ToValidUTF8(plan[:maxDraftBrief], "")
+		cut = fmt.Sprintf("\nthe draft is cut here at %d of its %d bytes", maxDraftBrief, n)
+	}
+	b.WriteString("The draft:\n```json\n" + plan + "\n```" + cut)
 	return b.String()
 }
 
-// withPlanDraft is a planner's time-cap ask reason with a sentence that
-// names the draft its refused filing left; any other reason as it is.
-func (r *Runner) withPlanDraft(ctx context.Context, taskID, reason string) (string, error) {
+// planDraftNote is the sentence that names the draft a planner's refused
+// filing left, for a time-cap ask: empty for any other reason or with no
+// draft. It is a fact of the ask's case and a line of its face, never part
+// of the reason that keys the case.
+func (r *Runner) planDraftNote(ctx context.Context, taskID, reason string) (string, error) {
 	if !strings.HasPrefix(reason, PlannerOutOfTime) {
-		return reason, nil
+		return "", nil
 	}
 	d, ok, err := r.store.PlanDraft(ctx, taskID)
 	if err != nil || !ok {
-		return reason, err
+		return "", err
 	}
-	return fmt.Sprintf("%s. The planner's last refused filing is kept as a draft, refused for %s.", strings.TrimSuffix(reason, "."), plural(len(d.Findings), "finding")), nil
+	return fmt.Sprintf("The planner's last refused filing is kept as a draft, refused for %s.", plural(len(d.Findings), "finding")), nil
 }
 
 // planRecord is what plan t's planner session gets of the work before
@@ -2873,6 +2898,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		gate, _, err := r.confirms(ctx, t, p)
 		if err != nil {
+			return PlanResult{}, err
+		}
+		if err := r.store.DeletePlanDraft(ctx, taskID); err != nil {
 			return PlanResult{}, err
 		}
 		r.noteFiled(taskID, PlanResult{Revision: st.revision, SHA256: rev.SHA256, Gate: gate})

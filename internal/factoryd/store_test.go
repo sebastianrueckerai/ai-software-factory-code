@@ -506,6 +506,11 @@ func (s *fakeStore) SetPlanDraft(ctx context.Context, id string, plan json.RawMe
 	return nil
 }
 
+func (s *fakeStore) DeletePlanDraft(ctx context.Context, id string) error {
+	delete(s.drafts, id)
+	return nil
+}
+
 func (s *fakeStore) PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error) {
 	d, ok := s.drafts[id]
 	return d, ok, nil

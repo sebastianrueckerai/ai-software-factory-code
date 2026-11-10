@@ -771,6 +771,8 @@ type Store interface {
 	// SetPlanDraft keeps plan, the planner's refused filing, and the
 	// findings it was refused for as task id's one draft, replacing the last.
 	SetPlanDraft(ctx context.Context, id string, plan json.RawMessage, findings []string) error
+	// DeletePlanDraft drops task id's draft: a filing was accepted.
+	DeletePlanDraft(ctx context.Context, id string) error
 	// PlanDraft is task id's draft; AddPlanRevision deletes it.
 	PlanDraft(ctx context.Context, id string) (PlanDraft, bool, error)
 	// PlanRevision is revision n of task id's plan, the newest for 0.
