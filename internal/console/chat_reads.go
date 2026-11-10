@@ -151,6 +151,9 @@ func (t *turn) cardText(in toolInput) (string, error) {
 				default:
 					b.WriteString("; checks red")
 				}
+				for i, f := range spec.FailedTests {
+					b.WriteString(map[bool]string{true: "; failing tests: ", false: ", "}[i == 0] + f.String())
+				}
 			}
 			if len(spec.WhyHuman) > 0 {
 				b.WriteString("; a human decides because " + strings.Join(spec.WhyHuman, ", "))

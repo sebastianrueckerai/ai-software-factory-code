@@ -17,6 +17,17 @@ type FailedTest struct {
 	Package string `json:"package,omitempty"`
 }
 
+// String is the test as a human reads it: "Test (package)".
+func (f FailedTest) String() string {
+	switch {
+	case f.Test == "":
+		return f.Package + " (no test ran)"
+	case f.Package == "":
+		return f.Test
+	}
+	return f.Test + " (" + f.Package + ")"
+}
+
 // maxFailedTests bounds what a request carries of one red head.
 const maxFailedTests = 50
 
