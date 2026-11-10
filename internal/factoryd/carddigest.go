@@ -7,6 +7,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"math"
 	"slices"
 	"strconv"
@@ -633,8 +634,13 @@ func criteriaActor(v CriterionVerdict) string {
 	return v.DecidedBy
 }
 
-// digestText is the first line of s, cut to fit a digest line.
-func digestText(s string) string { return textutil.Truncate(FirstLine(s), 120) }
+// digestScrub is the scrubber of every digest text: the generic rules,
+// the ones NewRunner's scrubber holds, since no secret is configured.
+var digestScrub *redact.Scrubber
+
+// digestText is the first line of s, scrubbed and then cut to fit a digest
+// line, so a cut never leaves part of a credential.
+func digestText(s string) string { return textutil.Truncate(FirstLine(digestScrub.String(s)), 120) }
 
 // findingID names a finding by its words alone: the first 12 hex of the
 // sha256 of its text lowercased, runs of white space one space, trimmed.

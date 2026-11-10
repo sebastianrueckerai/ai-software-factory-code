@@ -201,3 +201,10 @@ func TestRungZeroIgnoresAnUnreadSiblings(t *testing.T) {
 		t.Errorf("found = %q", found)
 	}
 }
+
+func TestDigestTextScrubsBeforeItCuts(t *testing.T) {
+	got := digestText(strings.Repeat("x", 100) + " https://user:pass@host/x")
+	if strings.Contains(got, "user") || strings.Contains(got, "pass") {
+		t.Errorf("digest text leaks across the cut: %q", got)
+	}
+}
