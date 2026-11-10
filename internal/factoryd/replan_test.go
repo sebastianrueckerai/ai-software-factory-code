@@ -2510,7 +2510,7 @@ func TestRecordReplanTakesOffMain(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api), #23 (cli) off main.\nAsked by ana: the api is wrong."
+	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api); #23 (cli) off main.\nAsked by ana: the api is wrong."
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the plan's comments %q, want %q", got, want)
 	}

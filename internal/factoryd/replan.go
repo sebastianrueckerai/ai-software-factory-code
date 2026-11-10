@@ -1265,7 +1265,7 @@ func (r *Runner) recordReplan(ctx context.Context, p Task, repo Repo, revision i
 		}
 	}
 	if len(off) > 0 {
-		note += fmt.Sprintf(" It takes %s off main.", strings.Join(off, ", "))
+		note += fmt.Sprintf(" It takes %s off main.", strings.Join(off, "; "))
 	}
 	i := slices.IndexFunc(cards, func(k Task) bool { return k.ID == step.Card })
 	switch {
