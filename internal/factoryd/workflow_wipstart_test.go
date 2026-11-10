@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -73,31 +74,65 @@ func TestWorkflowNextSessionStartsFromThePushedHead(t *testing.T) {
 }
 
 // A healed run whose card has no pull request starts its first session from
-// the branch head Reconcile read; a run from before wip-start starts from the
-// base however the head reads.
+// the branch head Reconcile read, whether the card was running or waiting on
+// a human; a run from before wip-start starts from the base however the head
+// reads.
 func TestWorkflowHealedRunStartsFromTheBranchHead(t *testing.T) {
 	for _, tc := range []struct {
-		name  string
-		gate  bool
-		start string
-	}{{"the gate adopts the head", true, "w2"}, {"before the gate keeps the base", false, ""}} {
-		t.Run(tc.name, func(t *testing.T) {
-			h := newWorkflowHarness(t)
-			if !tc.gate {
-				h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
+		name   string
+		state  RunState
+		answer bool
+	}{
+		{"a running card", RunState{Status: "running", Head: "w2", Usage: TaskUsage{Attempts: 1}}, false},
+		{"a card waiting on a human", RunState{Status: "waiting-human", Question: "which alias?", Head: "w2", Usage: TaskUsage{Attempts: 1}}, true},
+	} {
+		for _, gate := range []bool{true, false} {
+			name, start := tc.name+" adopts the head at the gate", "w2"
+			if !gate {
+				name, start = tc.name+" keeps the base before the gate", ""
 			}
-			h.state = RunState{Status: "running", Head: "w2", Usage: TaskUsage{Attempts: 1}}
-			h.onSessions(pushed("s2", "c3"))
-			h.onChecks(ChecksResult{State: ChecksSuccess})
-			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+			t.Run(name, func(t *testing.T) {
+				h := newWorkflowHarness(t)
+				if !gate {
+					h.env.OnGetVersion("wip-start", workflow.DefaultVersion, versionWipStart).Return(workflow.DefaultVersion)
+				}
+				h.state = tc.state
+				h.onSessions(pushed("s2", "c3"))
+				h.onChecks(ChecksResult{State: ChecksSuccess})
+				if tc.answer {
+					h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+				}
+				h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 
-			if final := h.run(t); final != "done" {
-				t.Fatalf("final = %q, want done", final)
-			}
-			if got := h.sessions[0].StartRef; got != tc.start {
-				t.Fatalf("first start = %q, want %q", got, tc.start)
-			}
-		})
+				if final := h.run(t); final != "done" {
+					t.Fatalf("final = %q, want done", final)
+				}
+				if got := h.sessions[0].StartRef; got != start {
+					t.Fatalf("first start = %q, want %q", got, start)
+				}
+			})
+		}
+	}
+}
+
+// A healed run whose open pull request holds an interim push as its head
+// does not take that head through the gates as finished work: a session
+// continues from it.
+func TestWorkflowHealedRunDoesNotVerifyAnInterimHead(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.state = RunState{Status: "running", PR: PullRequest{Number: 9}, Head: "w2", Unfinished: true, Usage: TaskUsage{Attempts: 1}}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, want done", final)
+	}
+	if want := []string{"session 2 after 0 cards", "pr c3 after 0 cards", "approval c3"}; !slices.Equal(steps, want) {
+		t.Fatalf("steps = %v, want %v: no gate on w2", steps, want)
+	}
+	if h.sessions[0].StartRef != "w2" {
+		t.Fatalf("first start = %q, want the interim head w2", h.sessions[0].StartRef)
 	}
 }
 
@@ -170,7 +205,7 @@ func TestWorkflowReplaysAPushedDeadSessionFromBeforeWipStart(t *testing.T) {
 	if res["Outcome"] != string(OutcomeNoPush) || res["Commit"] != "" {
 		t.Fatalf("recorded first session = %v, want no_push with no commit", res)
 	}
-	res["Commit"], res["Interim"] = "w1", true
+	res["Commit"] = "w1"
 	rb, err := json.Marshal(res)
 	if err != nil {
 		t.Fatal(err)

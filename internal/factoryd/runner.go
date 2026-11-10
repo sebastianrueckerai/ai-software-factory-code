@@ -505,7 +505,9 @@ type sessionSpec struct {
 	// interimStart: startRef is an interim push's head, no push of the
 	// work the supervisor's detectors credit
 	interimStart bool
-	repo         Repo
+	// startWip: startRef itself is an interim commit, no finished work
+	startWip bool
+	repo     Repo
 	// docs is the project's document repository (chat.doc_repo), which the
 	// session reads at /workspace/docs; the zero Repo when it has none
 	docs Repo

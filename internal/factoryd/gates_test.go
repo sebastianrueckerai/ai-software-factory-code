@@ -35,7 +35,8 @@ import (
 // comment endpoints of sf/repo#9.
 type gateForgejo struct {
 	mu          sync.Mutex
-	files       []string // ChangedFile JSON objects
+	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
+	files       []string          // ChangedFile JSON objects
 	diff        string
 	mergeStatus []int // answers in order, the last repeating
 	merges      []map[string]any
@@ -158,6 +159,9 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
+		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
+			_, sha, _ := strings.Cut(r.URL.Path, "/git/commits/")
+			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}},"parents":[]}`, cmp.Or(f.committers[sha], "factory-agent@factory.local"))
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)

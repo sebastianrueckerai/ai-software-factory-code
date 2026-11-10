@@ -439,6 +439,7 @@ type RunState struct {
 	Status      string
 	PR          PullRequest // the task's open pull request, adopted by the run
 	Head        string      // its head commit; with no pull request, the task branch's head past the base (versionWipStart)
+	Unfinished  bool        // Head is an interim push's work in progress, which no gate judges (versionWipStart)
 	Merged      bool        // the task's pull request merged
 	PRClosed    bool        // the task's pull request closed without merge
 	IssueClosed bool
@@ -2097,6 +2098,11 @@ func (t *taskRun) lifecycle() (string, error) {
 			// Only a run from before versionFactoryPRSource comes here.
 			t.pr = st.PR
 			return t.factoryPR(st.Head)
+		case t.wipStart >= versionWipStart && st.PR.Number != 0 && st.Unfinished:
+			// the pull request's head is a session's interim push: the work
+			// goes on from it in a session, not to the gates
+			t.pr, startRef = st.PR, st.Head
+			setFindings(append(slices.Clone(st.Findings), "the pull request's head is a session's work in progress, which ended unfinished: continue from the branch as it is"), "changes")
 		case t.v4 >= versionReconcileFindings && st.PR.Number != 0 && len(st.Findings) > 0:
 			// the reviewer asked for changes on the pushed head and no
 			// session took them up: start one

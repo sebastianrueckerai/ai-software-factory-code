@@ -284,8 +284,8 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 	if len(inputs) != 2 || inputs[1].StartRef != "w2" || inputs[1].ParentSessionID != "s-1" {
 		t.Fatalf("session inputs = %+v, want the second to start from the interim head w2 with parent s-1", inputs)
 	}
-	if headAtSecondStart != "w2" {
-		t.Fatalf("at the second start the forge's branch head = %q, want the interim head w2", headAtSecondStart)
+	if headAtSecondStart != "" {
+		t.Fatalf("at the second start BranchHead = %q, want none: an interim head is no finished work", headAtSecondStart)
 	}
 	if healed.Head != "w2" || healed.PR.Number != 0 {
 		t.Fatalf("Reconcile = head %q pr %d, want the branch head w2 and no pull request", healed.Head, healed.PR.Number)

@@ -1911,9 +1911,10 @@ func TestBranchHead(t *testing.T) {
 		fj   *prForgejo
 		want string
 	}{
-		"past the base": {&prForgejo{head: "c1"}, "c1"},
-		"at the base":   {&prForgejo{head: "base"}, ""},
-		"no branch":     {&prForgejo{branchGone: true}, ""},
+		"past the base":                         {&prForgejo{head: "c1"}, "c1"},
+		"at the base":                           {&prForgejo{head: "base"}, ""},
+		"no branch":                             {&prForgejo{branchGone: true}, ""},
+		"an interim commit is no finished work": {&prForgejo{head: "w2", committers: map[string]string{"w2": wipEmail}}, ""},
 	} {
 		r, _, _ := newActivityRunner(t, prTask, tc.fj)
 		val, err := execActivity(t, r, ActivityBranchHead, "t1")
@@ -1941,6 +1942,9 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 		"no PR, branch past the base": {prTask, &prForgejo{head: "w2"}, RunState{Status: "running", Source: "api", Head: "w2"}},
 		"no PR, branch at the base":   {prTask, &prForgejo{head: "base"}, RunState{Status: "running", Source: "api"}},
 		"roll, branch past the base":  {withSource(prTask, SourceRoll), &prForgejo{head: "w2"}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
+		"open PR whose head is an interim commit": {prTask, &prForgejo{committers: map[string]string{"w2": wipEmail},
+			open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "w2")}}},
+			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "w2", Unfinished: true}},
 		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}},
 			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",

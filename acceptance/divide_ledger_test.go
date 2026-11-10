@@ -672,6 +672,8 @@ func (f *accForgejo) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/issues/9/comments"):
 		w.WriteHeader(http.StatusCreated)
 		_, _ = io.WriteString(w, `{"id":1}`)
+	case r.Method == http.MethodGet && strings.Contains(r.URL.Path, "/git/commits/"):
+		_, _ = io.WriteString(w, `{"commit":{"committer":{"email":"factory-agent@factory.local"}},"parents":[]}`)
 	default:
 		http.NotFound(w, r)
 	}

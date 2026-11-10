@@ -1798,6 +1798,9 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 	if err != nil {
 		return Review{}, err
 	}
+	if err := r.refuseWip(ctx, repo, commit); err != nil {
+		return Review{}, err
+	}
 	reviewEnd := func(detail map[string]any) map[string]any {
 		return besideEnd(ctx, t, GateReview, gates.Beside, detail)
 	}
@@ -2049,6 +2052,9 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 	if err != nil {
 		return err
 	}
+	if err := r.refuseWip(ctx, repo, in.Commit); err != nil {
+		return err
+	}
 	// a card the newest revision drops never asks for its merge (piece
 	// 10): it fails with the reason, its branch stays for the plan's re-run
 	if newest, _, stale, err := r.staleRevision(ctx, t); err != nil {
@@ -2133,6 +2139,9 @@ func (r *Runner) Merge(ctx context.Context, taskID string, pr int64, commit, app
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return MergeResult{}, err
+	}
+	if err := r.refuseWip(ctx, repo, commit); err != nil {
+		return r.refuseMerge(ctx, t, repo, pr, commit, approver, errMessage(err)), nil
 	}
 	return r.mergeAttempt(ctx, t, repo, pr, commit, approver, checkedHead, met, lastAttempt(ctx))
 }

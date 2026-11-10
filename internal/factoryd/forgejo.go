@@ -2133,11 +2133,12 @@ func (f *Forgejo) CommitParents(ctx context.Context, owner, repo, sha string) ([
 	return out, nil
 }
 
-// CommitterEmail is a commit's committer email: one commit object, no files.
-func (f *Forgejo) CommitterEmail(ctx context.Context, owner, repo, sha string) (string, error) {
+// CommitCommitter is a commit's committer email and first parent ("" for a
+// root commit): one commit object, no files.
+func (f *Forgejo) CommitCommitter(ctx context.Context, owner, repo, sha string) (email, parent string, err error) {
 	body, err := f.call(ctx, http.MethodGet, fmt.Sprintf("/api/v1/repos/%s/%s/git/commits/%s?stat=false&verification=false&files=false", owner, repo, url.PathEscape(sha)), nil, http.StatusOK)
 	if err != nil {
-		return "", err
+		return "", "", err
 	}
 	var res struct {
 		Commit struct {
@@ -2145,11 +2146,17 @@ func (f *Forgejo) CommitterEmail(ctx context.Context, owner, repo, sha string) (
 				Email string `json:"email"`
 			} `json:"committer"`
 		} `json:"commit"`
+		Parents []struct {
+			SHA string `json:"sha"`
+		} `json:"parents"`
 	}
 	if err := json.Unmarshal(body, &res); err != nil {
-		return "", fmt.Errorf("forgejo commit %s/%s %s: %w", owner, repo, sha, err)
+		return "", "", fmt.Errorf("forgejo commit %s/%s %s: %w", owner, repo, sha, err)
 	}
-	return res.Commit.Committer.Email, nil
+	if len(res.Parents) > 0 {
+		parent = res.Parents[0].SHA
+	}
+	return res.Commit.Committer.Email, parent, nil
 }
 
 // MergedPullRequest is a merged pull request as the roll's body and the

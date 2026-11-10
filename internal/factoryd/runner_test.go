@@ -570,6 +570,7 @@ type forgejoHub struct {
 	calls       []string
 	branchHead  string            // the task branch's head; empty = no branch yet
 	committers  map[string]string // commit → its committer email; unlisted commits are a worker's
+	parents     map[string]string // commit → its first parent; unlisted commits are root commits
 	mainHead    string            // the task repository's main head
 	comments    []string
 	failWrites  int    // write-token mints to answer 502 before succeeding
@@ -653,7 +654,11 @@ func (h *forgejoHub) srv(t *testing.T) *httptest.Server {
 			fmt.Fprintf(w, `{"id":%d}`, 500+len(h.comments))
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/git/commits/"):
 			_, sha, _ := strings.Cut(r.URL.Path, "/git/commits/")
-			fmt.Fprintf(w, `{"commit":{"committer":{"email":%q}}}`, cmp.Or(h.committers[sha], "factory-agent@factory.local"))
+			parents := []map[string]string{}
+			if p := h.parents[sha]; p != "" {
+				parents = append(parents, map[string]string{"sha": p})
+			}
+			json.NewEncoder(w).Encode(map[string]any{"commit": map[string]any{"committer": map[string]string{"email": cmp.Or(h.committers[sha], "factory-agent@factory.local")}}, "parents": parents})
 		case r.Method == "GET" && strings.Contains(r.URL.Path, "/branches/"):
 			if strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/") && strings.HasSuffix(r.URL.Path, "/branches/main") {
 				fmt.Fprintf(w, `{"commit":{"id":%q}}`, h.mainHead)
@@ -3088,6 +3093,11 @@ func TestSessionResultTakesTheBranchAsPushedWhenASessionAddsNothing(t *testing.T
 	if res.Outcome != OutcomePushed || res.Commit != "wip" || res.Summary != "no changes to push; the branch already held wip" {
 		t.Fatalf("resumed session without new changes: %+v", res)
 	}
+	// resumed from an interim commit and changed nothing: the interim push is no finished work
+	res = sessionResult(sessionSpec{id: "s1", startRef: "wip", base: "main", startWip: true}, sessionOutcome{result: done})
+	if res.Outcome != OutcomeNoPush || res.Commit != "" {
+		t.Fatalf("session resumed from an interim commit without new changes: %+v", res)
+	}
 	// started at the base and changed nothing: no push
 	res = sessionResult(sessionSpec{id: "s1", startRef: "main", base: "main"}, sessionOutcome{result: done})
 	if res.Outcome != OutcomeNoPush || res.Commit != "" {
@@ -3995,13 +4005,16 @@ func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error)
 
 // startsFrom runs a session that starts on the branch head w2, spends 2.5
 // of the 4 EUR the card had left and pushes nothing. committer is who wrote
-// w2 and given the start the workflow's input names. It reports whether
-// spend_no_push tripped.
-func startsFrom(t *testing.T, committer, given string) bool {
+// w2 and given the start the workflow's input names; set says who wrote the
+// commits below w2. It reports whether spend_no_push tripped.
+func startsFrom(t *testing.T, committer, given string, set func(*forgejoHub)) bool {
 	t.Helper()
 	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	hub.branchHead = "w2"
 	hub.committers = map[string]string{"w2": committer}
+	if set != nil {
+		set(hub)
+	}
 	tk := store.tasks["t2"]
 	tk.BudgetEUR, tk.SpentEUR = 5, 1
 	store.tasks["t2"] = tk
@@ -4029,15 +4042,22 @@ func startsFrom(t *testing.T, committer, given string) bool {
 func TestRunSessionOnAnInterimHeadKeepsSpendNoPush(t *testing.T) {
 	for _, tc := range []struct {
 		name, committer, given string
+		set                    func(*forgejoHub)
 		trips                  bool
 	}{
-		{"an interim head the input names", wipEmail, "w2", true},
-		{"an interim head the input leaves out", wipEmail, "", true},
-		{"a session's push the input names", "factory-agent@factory.local", "w2", false},
-		{"a session's push the input leaves out", "factory-agent@factory.local", "", false},
+		{"an interim head the input names", wipEmail, "w2", nil, true},
+		{"an interim head the input leaves out", wipEmail, "", nil, true},
+		{"a session's push the input names", "factory-agent@factory.local", "w2", nil, false},
+		{"a session's push the input leaves out", "factory-agent@factory.local", "", nil, false},
+		// an interim commit sits on its session's start: here c2, a session's
+		// push, which a session of the card pushed before
+		{"an interim head on a session's push", wipEmail, "w2", func(h *forgejoHub) { h.parents = map[string]string{"w2": "c2"} }, false},
+		{"stacked interim heads on the base", wipEmail, "w2", func(h *forgejoHub) {
+			h.parents, h.committers["w1"] = map[string]string{"w2": "w1"}, wipEmail
+		}, true},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
-			if got := startsFrom(t, tc.committer, tc.given); got != tc.trips {
+			if got := startsFrom(t, tc.committer, tc.given, tc.set); got != tc.trips {
 				t.Fatalf("spend_no_push tripped = %v, want %v", got, tc.trips)
 			}
 		})
