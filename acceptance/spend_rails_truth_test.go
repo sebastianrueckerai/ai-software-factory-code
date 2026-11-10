@@ -76,7 +76,7 @@ var wantTrip = map[string][]string{
 		`"; the project cap budget.month_eur in projects/<project>.yaml is spent, and only a human raises it, by a commit"`,
 		`"the project's month cap is reached"`, `"The project's month cap is reached"`},
 	"budget.session_floor_cheap_eur": {`"the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card."`,
-		`"%.3f EUR of the %.3f EUR budget remains"`},
+		`"The card spent %.2f EUR of its %.2f EUR budget; %.2f EUR is held for the review and the audit, which need %.2f EUR"`, `"so a fund of %.2f EUR opens it"`},
 	"budget.premium_month_eur": {`"free headroom %.6f EUR (%s) fits %d of the call's %d output tokens after a request of %d bytes (%s %.0f prompt tokens); the premium cap budget.premium_month_eur in policy.yaml cannot pay for it"`},
 	"chat.monthly_eur": {`"the chat of %s stands at its budget of €%.2f: the chat's budget is used up"`,
 		`"the chat's monthly budget is spent: the chat stands until it is raised or the month turns"`},

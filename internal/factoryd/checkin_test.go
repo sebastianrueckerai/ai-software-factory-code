@@ -1179,3 +1179,12 @@ func TestSizeTripAsksForReplanWhenItWillNotFit(t *testing.T) {
 		t.Fatalf("size statement of a card that cannot be cut offers replan:\n%s", got)
 	}
 }
+
+// The pace's left is the room of a session, the gate reserve held out:
+// 5.00 - 3.10 - 0.40 = 1.50.
+func TestPaceLineHoldsTheReserveOut(t *testing.T) {
+	got := Pace{Lines: 10, BoundLines: 300, SpentEUR: 3.1, BudgetEUR: 5, ReserveEUR: 0.4, SpentMinutes: 1, LeftMinutes: 2, Attempt: 1, Sessions: 1}.Line()
+	if want := "Pace of the card: 10 changed lines so far against its bound of 300; 3.10 EUR spent, 1.50 left; 1 minutes of agent time spent, 2 left; session 1 of 1."; got != want {
+		t.Fatalf("Line = %q, want %q", got, want)
+	}
+}

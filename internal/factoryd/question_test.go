@@ -798,3 +798,19 @@ func TestQuestionFactsOfTheMonthCapStops(t *testing.T) {
 		t.Errorf("ask without a policy = %q", q.Ask)
 	}
 }
+
+// A session's money stop names its fund: 1.90 of 2.00 spent leaves 0.10 for
+// the gates of their 0.40, and a session of 0.300000 on a ceiling of
+// 0.10 - 0.40 = -0.30 needs 0.60. The raise and the ask read the sentence.
+func TestFundRaiseReadsASessionsStop(t *testing.T) {
+	reason := budgetRefused + ": Raise the budget (Fund on the board) and answer, or close the card.\n" +
+		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR, " +
+		"and a session on factory/small needs 0.300000 EUR (the floor of its rung, budget.session_floor_cheap_eur in policy.yaml), " +
+		"so a fund of 0.60 EUR opens it; a session started now would run out of money before its work is done."
+	if got := FundRaise(reason); got != 0.6 {
+		t.Errorf("FundRaise = %v, want 0.60", got)
+	}
+	if got := budgetQuestion(reason, QuestionFacts{}).Ask; got != "The card spent €1.90 of its €2.00 budget, €0.10 is held for the review and the audit, and one more session on factory/small needs €0.300000. Fund it, or park it?" {
+		t.Errorf("ask = %q", got)
+	}
+}

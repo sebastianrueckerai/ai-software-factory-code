@@ -65,7 +65,7 @@ type CaseFacts struct {
 
 // SessionLeft is the budget a session may spend, the headroom SessionFunded
 // reads: what the card has left less the gate reserve held for its gates.
-func (f CaseFacts) SessionLeft() float64 { return f.LeftEUR - f.ReserveEUR }
+func (f CaseFacts) SessionLeft() float64 { return policy.SessionHeadroom(f.LeftEUR, f.ReserveEUR) }
 
 // DepFact is one dependency of the card that is not done.
 type DepFact struct {

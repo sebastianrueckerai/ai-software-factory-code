@@ -239,7 +239,7 @@ func (r *Runner) gateBundle(ctx context.Context, t Task, workflowID string, in G
 	b := gateBundle{Activity: in.Trip.Activity, Attempt: in.Trip.Attempt, Bound: in.Trip.Bound.String(),
 		Elapsed: time.Since(in.Trip.Started).Round(time.Second).String(), Objective: objective,
 		Input: textutil.Truncate(string(input), bundleInput), Allowed: in.allowed()}
-	b.Cost = r.costState(ctx, t)
+	b.Cost = r.costState(ctx, t, 0)
 	tl, err := r.objects.Get(ctx, "sessions/"+t.ID+"/timeline.jsonl")
 	if err != nil {
 		b.Timeline, _ = json.Marshal("unreadable: " + err.Error())

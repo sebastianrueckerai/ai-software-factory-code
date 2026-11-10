@@ -29,7 +29,14 @@ func TestSessionFactsUnsizedCardSaysSo(t *testing.T) {
 
 func TestSessionFactsWithoutAnAttemptNamesNoSession(t *testing.T) {
 	f := SessionFacts{BudgetEUR: 2, SpentEUR: 2.5, ReserveEUR: 0.4, TimeLeft: 90 * time.Second}
-	want := "factoryd's facts for this session: 0.00 of the 2.00 EUR budget left for its calls (the model review and the audit hold 0.40 EUR of it); 1 minutes of agent time left."
+	// 2.00 - 2.50 is overspent: nothing is left, and none of it is held for the gates
+	want := "factoryd's facts for this session: 0.00 of the 2.00 EUR budget left for its calls (the model review and the audit hold 0.00 EUR of it); 1 minutes of agent time left."
+	if got := f.Line(); got != want {
+		t.Fatalf("Line = %q, want %q", got, want)
+	}
+	// 2.00 - 1.80 = 0.20 is left, less than the 0.40 reserve: all 0.20 is held, 0.00 for the calls
+	f.SpentEUR = 1.8
+	want = "factoryd's facts for this session: 0.00 of the 2.00 EUR budget left for its calls (the model review and the audit hold 0.20 EUR of it); 1 minutes of agent time left."
 	if got := f.Line(); got != want {
 		t.Fatalf("Line = %q, want %q", got, want)
 	}

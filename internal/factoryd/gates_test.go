@@ -3803,8 +3803,9 @@ func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
 
 	why, err := r.SessionFunded(context.Background(), "t1", "factory/big")
 	if err != nil || !strings.HasPrefix(why, budgetRefused) ||
-		!strings.Contains(why, "the card spent 4.60 EUR, and 0.40 EUR is held for the model review and the audit") {
-		t.Fatalf("session floor = (%q, %v), want the money stop naming 4.60 spent and 0.40 held", why, err)
+		!strings.Contains(why, "The card spent 4.60 EUR of its 5.00 EUR budget; 0.40 EUR is held for the review and the audit, which need 0.40 EUR") ||
+		!strings.Contains(why, "so a fund of 0.01 EUR opens it") {
+		t.Fatalf("session floor = (%q, %v), want the money stop naming 4.60 spent and 0.40 held, and a fund of 0.01 for a call of 0.00512", why, err)
 	}
 
 	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})

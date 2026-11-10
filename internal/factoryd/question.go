@@ -455,10 +455,16 @@ func sessionCapQuestion(reason string, f QuestionFacts) *HumanQuestion {
 // budgetTail parses the refusal's need wherever the state between its
 // head and the need puts its own numbers (holds among them): ", and a
 // session on <model> needs <EUR> EUR". budgetFree parses the free
-// headroom its head states.
+// headroom its head states; a session's stop, which holds the gate
+// reserve out, states instead what the card spent (budgetSpent), what is
+// held for the review and the audit (budgetHeld) and the fund that opens
+// a session (budgetFund).
 var (
-	budgetTail = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
-	budgetFree = regexp.MustCompile(`(-?[\d.]+) EUR of the ([\d.]+) EUR budget remains`)
+	budgetSpent = regexp.MustCompile(`The card spent ([\d.]+) EUR of its ([\d.]+) EUR budget`)
+	budgetHeld  = regexp.MustCompile(`([\d.]+) EUR is held for the review and the audit`)
+	budgetFund  = regexp.MustCompile(`a fund of ([\d.]+) EUR opens it`)
+	budgetTail  = regexp.MustCompile(`, and \S.*? on (\S+) needs ([\d.]+) EUR`)
+	budgetFree  = regexp.MustCompile(`([\d.]+) EUR of the ([\d.]+) EUR budget remains`)
 )
 
 // BudgetNeed is the EUR a session needs, as the budget refusal's reason
@@ -475,41 +481,47 @@ func BudgetNeed(reason string) float64 {
 	return need
 }
 
-// BudgetRemains is the EUR the refusal says the card's session ceiling
-// still has: negative once the gates spent into the reserve; 0 when the
-// reason states none.
+// BudgetRemains is the EUR the refusal says the card still has free; 0
+// when the reason states no free headroom.
 func BudgetRemains(reason string) float64 {
 	m := budgetFree.FindStringSubmatch(reason)
 	if m == nil {
 		return 0
 	}
 	remains, err := strconv.ParseFloat(m[1], 64)
-	if err != nil {
+	if err != nil || !(remains > 0) {
 		return 0
 	}
 	return remains
 }
 
 // FundRaise is the EUR raise that funds one more session off a budget
-// refusal's numbers: the shortfall to the session's need, rounded up to
-// a cent, a ceiling the gates spent below zero counted; the need itself,
-// rounded up to a cent, when the reason states no free headroom; 0 when
-// the reason carries no amount at all.
+// refusal: the fund a session's stop names; else the shortfall to the
+// session's need off the free headroom the refusal states, rounded up to
+// a cent, or the need itself when it states none; 0 when the reason
+// carries no amount at all.
 func FundRaise(reason string) float64 {
+	if m := budgetFund.FindStringSubmatch(reason); m != nil {
+		eur, _ := strconv.ParseFloat(m[1], 64)
+		return eur
+	}
 	need := BudgetNeed(reason)
 	if need <= 0 {
 		return 0
 	}
-	if remains := BudgetRemains(reason); remains != 0 && remains < need {
-		cents := Cents(need) - Cents(remains)
-		if float64(cents) < (need-remains)*100 {
-			cents++ // a cent cut short would still refuse the session
-		}
-		return float64(cents) / 100
+	return fundFor(need, BudgetRemains(reason))
+}
+
+// fundFor is the raise in EUR, rounded up to a cent, that lifts a session
+// ceiling of left, which is negative once the gates spent into the
+// reserve, to need; a ceiling that already covers it reads as none.
+func fundFor(need, left float64) float64 {
+	if left >= need {
+		left = 0
 	}
-	cents := Cents(need)
-	if float64(cents)/100 < need {
-		cents++ // a need between two cents rounds up, or the raise would not cover it
+	cents := Cents(need) - Cents(left)
+	if float64(cents)/100 < need-left {
+		cents++ // a cent cut short would still refuse the session
 	}
 	return float64(cents) / 100
 }
@@ -534,12 +546,11 @@ func budgetQuestion(reason string, f QuestionFacts) *HumanQuestion {
 	floor := f.FloorEUR
 	if tail := budgetTail.FindStringSubmatch(reason); tail != nil {
 		if free := budgetFree.FindStringSubmatch(reason); free != nil {
-			left := free[1]
-			if strings.HasPrefix(left, "-") {
-				left = "0.000"
-			}
 			q.Ask = fmt.Sprintf("The card has €%s of its €%s budget left, and one more session on %s needs €%s. Fund it, or park it?",
-				left, free[2], tail[1], tail[2])
+				free[1], free[2], tail[1], tail[2])
+		} else if spent, held := budgetSpent.FindStringSubmatch(reason), budgetHeld.FindStringSubmatch(reason); spent != nil && held != nil {
+			q.Ask = fmt.Sprintf("The card spent €%s of its €%s budget, €%s is held for the review and the audit, and one more session on %s needs €%s. Fund it, or park it?",
+				spent[1], spent[2], held[1], tail[1], tail[2])
 		}
 		if floor == 0 && strings.Contains(reason, "the floor of its rung") {
 			floor, _ = strconv.ParseFloat(tail[2], 64)

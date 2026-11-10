@@ -136,7 +136,7 @@ var spendRailRows = []spendRow{
 	{"budget.session_floor_cheap_eur",
 		"the least free budget a session on the cheap rung needs to start",
 		"0 and absent read the same: no floor beyond the session's opening calls. These are the caps a missing key reads as zero",
-		"the card reads \"the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\" with the state \"%.3f EUR of the %.3f EUR budget remains\""},
+		"the card reads \"the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\" with the state \"The card spent %.2f EUR of its %.2f EUR budget; %.2f EUR is held for the review and the audit, which need %.2f EUR\" and the fund that opens a session, \"so a fund of %.2f EUR opens it\""},
 	{"budget.session_floor_frontier_eur",
 		"the least free budget a session on the frontier rung (above the ladder's start) needs to start",
 		"0 and absent read the same: no floor beyond the session's opening calls. This is one of the caps a missing key reads as zero",

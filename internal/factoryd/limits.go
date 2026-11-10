@@ -46,7 +46,7 @@ func (w *limitWatch) due(spent, budget float64, now time.Time) []warning {
 	var out []warning
 	if !w.done[warnBudget] && budget > 0 && spent >= w.share*budget {
 		out = append(out, warning{warnBudget, fmt.Sprintf("factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). %s",
-			100*spent/budget, max(budget-spent-w.reserve, 0), budget, w.reserve, w.wrapUp)})
+			100*spent/budget, max(policy.SessionHeadroom(budget-spent, w.reserve), 0), budget, policy.GateHeld(budget-spent, w.reserve), w.wrapUp)})
 	}
 	// the share applies to the span left when the pod is ready, not to the card's whole cap
 	if elapsed := now.Sub(w.started); !w.done[warnTime] && w.span > 0 && float64(elapsed) >= w.share*float64(w.span) {

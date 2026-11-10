@@ -497,7 +497,7 @@ type Free struct {
 
 // Kept is the EUR the gates still have of the reserve: the reserve, or
 // what the card has left when that is less.
-func (f Free) Kept() float64 { return min(f.Reserve, max(f.Task+f.Reserve, 0)) }
+func (f Free) Kept() float64 { return GateHeld(f.Task+f.Reserve, f.Reserve) }
 
 // bound is HeadroomBound over f, and the premium headroom below it.
 func (f Free) bound() (float64, string) {
@@ -618,7 +618,7 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 	).Scan(&day, &month, &allHeld); err != nil {
 		return TaskFree{}, Free{}, err
 	}
-	f.Task, f.Day, f.Month, f.Project = t.Free()-r.ReserveEUR, day-allHeld, month-allHeld, math.Inf(1)
+	f.Task, f.Day, f.Month, f.Project = SessionHeadroom(t.Free(), r.ReserveEUR), day-allHeld, month-allHeld, math.Inf(1)
 	f.Reserve, f.Spent = r.ReserveEUR, t.Spent
 	if r.PremiumEUR > 0 {
 		var premium float64

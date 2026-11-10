@@ -17,6 +17,17 @@ package policy
 // both with margin.
 const DefaultGateReserveEUR = 0.40
 
+// SessionHeadroom is what a session may spend of left, the EUR a card has
+// free: left less the gate reserve. It is negative once the gates spent
+// into the reserve. Every reader of a session's room (the gateway's hold,
+// the fund's floor, the rungs' facts, the check-in's cost block) reads it
+// here.
+func SessionHeadroom(left, reserve float64) float64 { return left - reserve }
+
+// GateHeld is what the gates still have of reserve out of left: the whole
+// reserve, or what the card has left when that is less.
+func GateHeld(left, reserve float64) float64 { return min(reserve, max(left, 0)) }
+
 // GateReserve is GateReserveEUR, or DefaultGateReserveEUR when the
 // policy sets none (0), as a version pinned before the key reads it.
 func (l Limits) GateReserve() float64 {

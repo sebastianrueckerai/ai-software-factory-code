@@ -2205,9 +2205,9 @@ func TestRunSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 	runner.cfg.Prices = stubPrices{price: policy.Price{In: 4e-6, CacheRead: 4e-7, Out: 4e-6, MaxOutput: 32768}}
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t4k", Attempt: 1, Model: "factory/small"}, nil, pushedLine("c2")+"\n"+resultLine(true, "pushed"))
 	why := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"-0.300 EUR of the 2.000 EUR budget remains; the card spent 1.90 EUR, and 0.10 EUR is held for the model review and the audit" +
+		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
 		", and a session on factory/small needs 0.300000 EUR " +
-		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml); a session started now would run out of money before its work is done."
+		"(the floor of its rung, budget.session_floor_cheap_eur in policy.yaml), so a fund of 0.60 EUR opens it; a session started now would run out of money before its work is done."
 	if err != nil || res.Outcome != OutcomeEscalate || !res.StartFailed || res.Summary != why || res.Reason != why || res.Model != "factory/small" {
 		t.Fatalf("result = (%+v, %v), want the money ask:\n%s", res, err, why)
 	}
@@ -3738,7 +3738,7 @@ func TestPaceAndSpendWatchNetHolds(t *testing.T) {
 	worker.mu.Lock()
 	texts := slices.Clone(worker.texts)
 	worker.mu.Unlock()
-	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.00 of 5.00 EUR are left for its calls (the model review and the audit hold 0.40 EUR of it). ") {
+	if len(texts) != 1 || !strings.HasPrefix(texts[0], "POST /message factoryd: 98 percent of this card's budget is spent, 0.00 of 5.00 EUR are left for its calls (the model review and the audit hold 0.10 EUR of it). ") {
 		t.Fatalf("worker got %q, want the budget warning at 4.90 of 5.00: 0.10 left, under the 0.40 reserve", texts)
 	}
 	if trip == nil || trip.Kind != TripSpendNoPush || trip.Detail != "4.90 of the card's 5.00 EUR are spent (98 percent, the line is 60) and no work is pushed" {
@@ -5343,7 +5343,8 @@ func TestRunSessionCarriesThePriorStateWithoutACheckinModel(t *testing.T) {
 }
 
 // The statement of every check-in states the card's pace: 350 changed lines
-// against the small card's 300, 1.80 of 5 EUR spent, session 1 of 4.
+// against the small card's 300, 1.80 of 5 EUR spent, 5 - 1.80 - 0.40 = 2.80 left for a session
+// with the gate reserve held out (-0.15 for a 0.30 card with 0.05 spent), session 1 of 4.
 func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 	t.Run("mid-session", func(t *testing.T) {
 		runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"the rest is tests"}`})
@@ -5363,8 +5364,8 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 			t.Fatalf("chat = %d calls, want one", chat.calls)
 		}
 		in := chat.gots[0].Input
-		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 3.20 left;", "left; session 1 of 4.",
-			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":3.2,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
+		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 2.80 left;", "left; session 1 of 4.",
+			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":2.8,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
 			if !strings.Contains(in, want) {
 				t.Fatalf("statement lacks %q:\n%s", want, in)
 			}
@@ -5391,7 +5392,7 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "Pace of the card: changed lines are not measured at this moment;") {
 			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
 		}
-		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":0.25,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
+		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":-0.15,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
 			t.Fatalf("statement lacks the cost and state block:\n%s", chat.gots[0].Input)
 		}
 	})

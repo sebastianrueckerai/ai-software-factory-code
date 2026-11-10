@@ -3,6 +3,8 @@ package factoryd
 import (
 	"fmt"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
 // SessionFacts are the numbers a session starts with: factoryd states them
@@ -20,7 +22,7 @@ type SessionFacts struct {
 
 func (f SessionFacts) Line() string {
 	line := fmt.Sprintf("factoryd's facts for this session: %.2f of the %.2f EUR budget left for its calls (the model review and the audit hold %.2f EUR of it); %d minutes of agent time left",
-		max(f.BudgetEUR-f.SpentEUR-f.ReserveEUR, 0), f.BudgetEUR, f.ReserveEUR, int(f.TimeLeft/time.Minute))
+		max(policy.SessionHeadroom(f.BudgetEUR-f.SpentEUR, f.ReserveEUR), 0), f.BudgetEUR, policy.GateHeld(f.BudgetEUR-f.SpentEUR, f.ReserveEUR), int(f.TimeLeft/time.Minute))
 	if f.Attempt == 0 {
 		return line + "."
 	}

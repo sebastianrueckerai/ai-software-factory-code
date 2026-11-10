@@ -706,10 +706,15 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	// the free figure rounds down to the tenth of a cent it prints, so a
 	// raise read off it (FundRaise) covers the need; 1e-6 takes up float
 	// noise. A session's figure is its ceiling, the reserve held out: it
-	// is negative once the gates spent into the reserve, and a raise
-	// (FundRaise) covers that part too
-	left := math.Floor((own.Free()-req.ReserveEUR)*1000+1e-6) / 1000
-	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
+	// is negative once the gates spent into the reserve, and the raise
+	// the stop names (fundFor) covers that part too
+	ceiling := policy.SessionHeadroom(own.Free(), req.ReserveEUR)
+	left := math.Floor(ceiling*1000+1e-6) / 1000
+	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", max(left, 0), t.BudgetEUR)
+	if free.Reserve > 0 {
+		state = fmt.Sprintf("The card spent %.2f EUR of its %.2f EUR budget", own.Spent, t.BudgetEUR)
+	}
+	var fund string
 	act := "Raise the budget (Fund on the board) and answer, or close the card."
 	switch refused.Decision {
 	case policy.RefusedDayCap:
@@ -729,9 +734,11 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		}
 		if free.Reserve > 0 {
 			// the money stop: a session that reached its ceiling says
-			// what the card spent and what the model review and the
-			// audit still keep of the reserve the ceiling held out
-			state += fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit", own.Spent, free.Kept())
+			// what the card spent, what the review and the audit still
+			// keep of the reserve the ceiling held out and what they
+			// need, and what a fund that opens a session costs
+			state += fmt.Sprintf("; %.2f EUR is held for the review and the audit, which need %.2f EUR", free.Kept(), free.Reserve)
+			fund = fmt.Sprintf(", so a fund of %.2f EUR opens it", fundFor(need, left))
 		}
 	}
 	if o, ok := capRefusals[refused.Decision]; ok {
@@ -739,7 +746,7 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	}
 	// the first line is the card's question row (escalationQuestion), cut
 	// at 300 characters: it carries the actions, the state follows
-	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s); %s.", opens, act, state, n.call, need, n.measure, n.then), nil
+	return fmt.Sprintf("%s: %s\n%s, and %s needs %.6f EUR (%s)%s; %s.", opens, act, state, n.call, need, n.measure, fund, n.then), nil
 }
 
 // attemptNeed is what an attempt of card t on model needs free to start,

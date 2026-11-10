@@ -3332,9 +3332,9 @@ func TestReportSessionRefusesAnOpeningTheBudgetCannotPay(t *testing.T) {
 		t.Fatal("RunPlan opened a session the budget cannot pay")
 	}
 	want := "the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\n" +
-		"-0.300 EUR of the 2.000 EUR budget remains; the card spent 1.90 EUR, and 0.10 EUR is held for the model review and the audit" +
+		"The card spent 1.90 EUR of its 2.00 EUR budget; 0.10 EUR is held for the review and the audit, which need 0.40 EUR" +
 		", and a session on factory/big needs 0.600000 EUR " +
-		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml); a session started now would run out of money before its work is done."
+		"(the floor of its rung, budget.session_floor_frontier_eur in policy.yaml), so a fund of 0.90 EUR opens it; a session started now would run out of money before its work is done."
 	if res.Escalate != want || !strings.Contains(res.Escalate, "(Fund on the board) and answer") || !res.StartFailed || len(res.Findings) != 0 || res.Revision != 0 {
 		t.Fatalf("result %+v, want the money ask %q", res, want)
 	}
