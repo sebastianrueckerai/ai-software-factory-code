@@ -31,15 +31,20 @@ const wipBase = "sha-demo-main"
 type gitForgejo struct {
 	mu       sync.Mutex
 	base     string
-	branch   []string // the task branch's commits past the base, oldest first
-	prs      []int64  // the pull requests opened
-	statuses []string // the commits whose checks were asked
+	branch   []string        // the task branch's commits past the base, oldest first
+	prs      []int64         // the pull requests opened
+	wip      map[string]bool // the commits the interim push wrote
+	statuses []string        // the commits whose checks were asked
 	issues   int64
 }
 
 func (g *gitForgejo) interim(commit string) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
+	if g.wip == nil {
+		g.wip = map[string]bool{}
+	}
+	g.wip[commit] = true
 	if len(g.branch) > 0 {
 		g.branch = g.branch[:len(g.branch)-1]
 	}
@@ -81,6 +86,12 @@ func (g *gitForgejo) server(t *testing.T) *httptest.Server {
 				return
 			}
 			fmt.Fprintf(w, `{"commit":{"id":%q}}`, g.branch[len(g.branch)-1])
+		case r.Method == http.MethodGet && strings.HasPrefix(p, fork+"/git/commits/"):
+			email, subject := "worker@sandbox.local", "factory task t-wip: keep the work"
+			if g.wip[strings.TrimPrefix(p, fork+"/git/commits/")] {
+				email, subject = "factory-agent@factory.local", "factory task t-wip: work in progress"
+			}
+			fmt.Fprintf(w, `{"commit":{"message":%q,"committer":{"email":%q}},"parents":[]}`, subject+"\n", email)
 		case r.Method == http.MethodPost && p == repo+"/issues":
 			g.issues++
 			w.WriteHeader(http.StatusCreated)
@@ -252,8 +263,8 @@ func TestWorkSurvivesTheDeadSession(t *testing.T) {
 	if !slices.Equal(branchAtSecondStart, []string{"w2"}) || prsAtSecondStart != 0 {
 		t.Fatalf("at the second start the branch holds %v with %d pull requests, want exactly the replaced tip [w2] and none", branchAtSecondStart, prsAtSecondStart)
 	}
-	if healed.Head != "w2" || healed.PR.Number != 0 {
-		t.Fatalf("Reconcile = head %q pr %d, want the branch head w2 and no pull request", healed.Head, healed.PR.Number)
+	if healed.Head != "w2" || !healed.Interim || healed.PR.Number != 0 {
+		t.Fatalf("Reconcile = head %q interim %v pr %d, want the interim branch head w2 and no pull request", healed.Head, healed.Interim, healed.PR.Number)
 	}
 	if branch, prs := git.snapshot(); !slices.Equal(branch, []string{"w2", "c3"}) || prs != 1 {
 		t.Fatalf("after the end push the branch holds %v with %d pull requests, want [w2 c3] and 1", branch, prs)

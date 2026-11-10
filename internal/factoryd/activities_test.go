@@ -47,30 +47,31 @@ import (
 // workflow activities use.
 type prForgejo struct {
 	mu            sync.Mutex
-	forgejo       map[string]string   // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
-	github        map[string]string   // commit → its top-level .github tree id; unlisted commits have none
-	upper         map[string]string   // commit → its top-level .FORGEJO tree id; unlisted commits have none
-	parents       map[string][]string // commit → its parents, first first; unlisted commits answer base
-	closed        []int64             // PATCH /pulls/{n} closes
-	closeFail     int                 // PATCH /pulls/{n} answers 500 this many times first
-	branches      []string            // GET /branches lists these names
-	branchGone    bool                // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
-	refuse        bool                // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
-	deleted       []string            // "owner/repo branch" of every DELETE /branches/{b}
-	pulls         map[int64]string    // GET /pulls/{n} bodies
-	issueOff      bool                // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it, or opens it with state open
-	openReads     int                 // GET /issues/{n} reports open this many times first, whatever issueOff
-	issueStates   map[int64]string    // set, each issue's own state in place of issueOff, open when unlisted
-	issuesClosed  []int64             // PATCH /issues/{n} closes
-	reopened      []int64             // PATCH /issues/{n} with state open
-	deps          map[int64][]int64   // issue → the issues it depends on (/issues/{n}/dependencies)
-	depsDown      bool                // /issues/{n}/dependencies answers 500
-	closer        string              // the close on GET /issues/{n}/timeline; "" = sebastian
-	noCloser      bool                // GET /issues/{n}/timeline lists no close
-	open          []map[string]any    // open pull requests
-	byHead        map[string]string   // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
-	statuses      []string            // combined-status bodies, served in order, the last repeating
-	statusesBySHA map[string][]string // sha -> combined-status bodies, served in order, the last repeating; wins over statuses
+	forgejo       map[string]string    // commit → its top-level .forgejo tree id ("" = none); unlisted commits share "f0"
+	github        map[string]string    // commit → its top-level .github tree id; unlisted commits have none
+	upper         map[string]string    // commit → its top-level .FORGEJO tree id; unlisted commits have none
+	parents       map[string][]string  // commit → its parents, first first; unlisted commits answer base
+	committers    map[string][2]string // commit → its committer email and message; unlisted commits are a session's own push
+	closed        []int64              // PATCH /pulls/{n} closes
+	closeFail     int                  // PATCH /pulls/{n} answers 500 this many times first
+	branches      []string             // GET /branches lists these names
+	branchGone    bool                 // GET /branches/{b} answers 404 (Forgejo 15: DELETE then 500s)
+	refuse        bool                 // PATCH /pulls/{n} and DELETE /branches/{b} answer 403
+	deleted       []string             // "owner/repo branch" of every DELETE /branches/{b}
+	pulls         map[int64]string     // GET /pulls/{n} bodies
+	issueOff      bool                 // GET /issues/{n} reports closed; a PATCH /issues/{n} closes it, or opens it with state open
+	openReads     int                  // GET /issues/{n} reports open this many times first, whatever issueOff
+	issueStates   map[int64]string     // set, each issue's own state in place of issueOff, open when unlisted
+	issuesClosed  []int64              // PATCH /issues/{n} closes
+	reopened      []int64              // PATCH /issues/{n} with state open
+	deps          map[int64][]int64    // issue → the issues it depends on (/issues/{n}/dependencies)
+	depsDown      bool                 // /issues/{n}/dependencies answers 500
+	closer        string               // the close on GET /issues/{n}/timeline; "" = sebastian
+	noCloser      bool                 // GET /issues/{n}/timeline lists no close
+	open          []map[string]any     // open pull requests
+	byHead        map[string]string    // GET /pulls/main/{owner}/{repo}:{branch} bodies beyond f.open
+	statuses      []string             // combined-status bodies, served in order, the last repeating
+	statusesBySHA map[string][]string  // sha -> combined-status bodies, served in order, the last repeating; wins over statuses
 	polls         int
 	pollsBySHA    map[string]int     // per-sha poll cursor of statusesBySHA
 	tasks         string             // actions/tasks page 1 body (testdata file); later pages empty
@@ -149,7 +150,11 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			for _, parent := range parents {
 				list = append(list, map[string]string{"sha": parent})
 			}
-			json.NewEncoder(w).Encode(map[string]any{"parents": list})
+			who, ok := f.committers[sha]
+			if !ok {
+				who = [2]string{wipEmail, "factory task t1: add the target\n"}
+			}
+			json.NewEncoder(w).Encode(map[string]any{"parents": list, "commit": map[string]any{"message": who[1], "committer": map[string]string{"email": who[0]}}})
 		case r.Method == "GET" && strings.HasPrefix(p, "/pulls/main/"):
 			head := strings.TrimPrefix(p, "/pulls/main/")
 			if body, ok := f.byHead[head]; ok {
@@ -1938,8 +1943,10 @@ func TestReconcileReadsWhereTheTaskStands(t *testing.T) {
 	}{
 		"fresh":                       {prTask, &prForgejo{}, RunState{Status: "running", Source: "api"}},
 		"no PR, branch past the base": {prTask, &prForgejo{head: "w2"}, RunState{Status: "running", Source: "api", Head: "w2"}},
-		"no PR, branch at the base":   {prTask, &prForgejo{head: "base"}, RunState{Status: "running", Source: "api"}},
-		"roll, branch past the base":  {withSource(prTask, SourceRoll), &prForgejo{head: "w2"}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
+		"no PR, branch head is an interim commit": {prTask, &prForgejo{head: "w2", committers: map[string][2]string{"w2": {wipEmail, wipMessage(prTask, sessionSpec{id: "s-1"})}}},
+			RunState{Status: "running", Source: "api", Head: "w2", Interim: true}},
+		"no PR, branch at the base":  {prTask, &prForgejo{head: "base"}, RunState{Status: "running", Source: "api"}},
+		"roll, branch past the base": {withSource(prTask, SourceRoll), &prForgejo{head: "w2"}, RunState{Status: "running", Source: SourceRoll, Roll: true}},
 		"open PR by branch": {prTask, &prForgejo{open: []map[string]any{{"number": 12, "html_url": "u12", "state": "open", "head": forkHead("factory/t1", "c7")}}},
 			RunState{Status: "running", Source: "api", PR: PullRequest{Number: 12, URL: "u12"}, Head: "c7"}},
 		"open PR by branch from a stranger's repository": {prTask, &prForgejo{open: []map[string]any{{"number": 13, "html_url": "u13", "state": "open",

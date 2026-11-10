@@ -84,17 +84,19 @@ func TestWorkflowPushedStartIsNoInterimStart(t *testing.T) {
 // A healed run whose card has no pull request starts its first session
 // from the branch head Reconcile read.
 func TestWorkflowHealedRunStartsFromTheBranchHead(t *testing.T) {
-	h := newWorkflowHarness(t)
-	h.state = RunState{Status: "running", Head: "w2", Usage: TaskUsage{Attempts: 1}}
-	h.onSessions(pushed("s2", "c3"))
-	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	for _, interim := range []bool{false, true} {
+		h := newWorkflowHarness(t)
+		h.state = RunState{Status: "running", Head: "w2", Interim: interim, Usage: TaskUsage{Attempts: 1}}
+		h.onSessions(pushed("s2", "c3"))
+		h.onChecks(ChecksResult{State: ChecksSuccess})
+		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 
-	if final := h.run(t); final != "done" {
-		t.Fatalf("final = %q, want done", final)
-	}
-	if s := h.sessions[0]; s.StartRef != "w2" || s.StartInterim {
-		t.Fatalf("first = start %q interim %v, want w2 not marked interim", s.StartRef, s.StartInterim)
+		if final := h.run(t); final != "done" {
+			t.Fatalf("final = %q, want done", final)
+		}
+		if s := h.sessions[0]; s.StartRef != "w2" || s.StartInterim != interim {
+			t.Fatalf("first = start %q interim %v, want w2 with interim %v", s.StartRef, s.StartInterim, interim)
+		}
 	}
 }
 

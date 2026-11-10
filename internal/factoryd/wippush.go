@@ -413,12 +413,21 @@ func (g rulesGit) RunGit(dir string, env []string, args ...string) (string, erro
 // attribution (forgejo.go) of a work-in-progress commit, as the worker's
 // end push writes its own.
 var wipIdentity = []string{
-	"GIT_AUTHOR_NAME=factory-agent", "GIT_AUTHOR_EMAIL=factory-agent@factory.local",
-	"GIT_COMMITTER_NAME=factory-agent", "GIT_COMMITTER_EMAIL=factory-agent@factory.local",
+	"GIT_AUTHOR_NAME=factory-agent", "GIT_AUTHOR_EMAIL=" + wipEmail,
+	"GIT_COMMITTER_NAME=factory-agent", "GIT_COMMITTER_EMAIL=" + wipEmail,
 }
+
+const wipEmail = "factory-agent@factory.local"
 
 // wipMessage is the interim push's commit message.
 func wipMessage(t Task, s sessionSpec) string {
-	return Attribution{Role: "agent", Task: t.ID, Session: s.id, Human: t.Author}.
-		Message("factory task " + t.ID + ": work in progress")
+	return Attribution{Role: "agent", Task: t.ID, Session: s.id, Human: t.Author}.Message(wipSubject(t.ID))
+}
+
+func wipSubject(taskID string) string { return "factory task " + taskID + ": work in progress" }
+
+// isWipCommit tells a commit the interim push wrote from its committer
+// email and subject.
+func isWipCommit(taskID, committerEmail, message string) bool {
+	return committerEmail == wipEmail && FirstLine(message) == wipSubject(taskID)
 }

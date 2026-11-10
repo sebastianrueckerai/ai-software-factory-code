@@ -1927,6 +1927,14 @@ func (r *Runner) Reconcile(ctx context.Context, taskID string) (RunState, error)
 			if st.Head, err = r.BranchHead(ctx, taskID); err != nil {
 				return RunState{}, err
 			}
+			if st.Head != "" {
+				fork := r.forgejo.Fork(repo)
+				email, message, err := r.forgejo.CommitIdentity(ctx, fork.Owner, fork.Name, st.Head)
+				if err != nil {
+					return RunState{}, fmt.Errorf("branch head's commit: %w", err)
+				}
+				st.Interim = isWipCommit(t.ID, email, message)
+			}
 		}
 	case pr.Merged:
 		st.Merged = true

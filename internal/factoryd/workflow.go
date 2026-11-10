@@ -444,7 +444,8 @@ type RunState struct {
 	Skip        bool // already done or failed, or a human-lane task: nothing to run
 	Status      string
 	PR          PullRequest // the task's open pull request, adopted by the run
-	Head        string      // its head commit
+	Head        string      // its head commit; with no pull request, the task branch's head past the base (versionWipStart)
+	Interim     bool        // Head is a commit of the interim push (versionWipStart)
 	Merged      bool        // the task's pull request merged
 	PRClosed    bool        // the task's pull request closed without merge
 	IssueClosed bool
@@ -2123,8 +2124,9 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 			addFindings(more, "changes")
 		}
-		if t.wipStart >= versionWipStart && startRef == "" && st.PR.Number == 0 {
-			startRef = st.Head
+		if t.wipStart >= versionWipStart && st.PR.Number == 0 {
+			startRef = cmp.Or(startRef, st.Head)
+			startInterim = st.Interim && startRef == st.Head
 		}
 		if t.screening {
 			// a healed fresh card answered a wait before its screening
