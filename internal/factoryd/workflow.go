@@ -1678,6 +1678,10 @@ type verdict struct {
 	// change a file of the pull request; head is the head the sync made
 	// (versionQueueWaits)
 	synced bool
+	// wip: the head is an interim push's, which no gate judged; findings
+	// is the fact the next session works from, which no check-in judges
+	// (versionWipStart)
+	wip bool
 }
 
 func (t *taskRun) lifecycle() (string, error) {
@@ -1729,6 +1733,14 @@ func (t *taskRun) lifecycle() (string, error) {
 	// (versionKeepWork): it buys the session, answered, and at
 	// versionCases what it bought is the writer's draw against the pool
 	apply := func(v verdict) (answered bool) {
+		if v.wip {
+			// what the next session was told stays beside the fact
+			if !slices.Contains(findings, v.findings[0]) {
+				addFindings(v.findings, "review")
+			}
+			reason = v.reason
+			return false
+		}
 		if v.stronger {
 			model = t.cfg.Models.Stronger
 		}
@@ -1904,7 +1916,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		if t.factoryPRCard >= versionFactoryPRCard {
 			t.orphanPR = st.FactoryPR && st.PR.Number != 0
 		}
-		if st.PR.Number != 0 {
+		if st.PR.Number != 0 && (t.wipStart < versionWipStart || !st.Unfinished) {
 			t.judged = append(t.judged, st.Head)
 		}
 		if t.v16 >= versionStages {
@@ -3247,8 +3259,10 @@ func (t *taskRun) verify(commit string) (v verdict) {
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
 		if t.wipStart >= versionWipStart && isWipHead(err) {
-			// an interim head is no finished work: a session goes on from it
-			return verdict{findings: []string{"the branch's head " + commit + " is a session's work in progress, which no gate judges: continue from it and finish the work"}, reason: "work in progress"}
+			// an interim head is no finished work and no gate judged it: a
+			// session goes on from it
+			t.judged = t.judged[:len(t.judged)-1]
+			return verdict{wip: true, findings: []string{"the branch's head " + commit + " is a session's work in progress, which no gate judges: continue from it and finish the work"}, reason: "work in progress"}
 		}
 		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
 	}

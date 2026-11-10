@@ -2,7 +2,9 @@ package factoryd
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"slices"
@@ -10,6 +12,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
 	client "go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/interceptor"
 	"go.temporal.io/sdk/workflow"
@@ -25,15 +28,17 @@ func deadAfterPushing(outcome SessionOutcome) SessionResult {
 // A session that pushed and then ended without a verdict hands the pushed
 // head to the next session as its start, with itself as the parent. A run
 // from before wip-start keeps the base (the empty start) and, as before, the
-// refused session's parent.
+// refused session's parent. No pull request opens on the interim head: at
+// the wall-clock cap the branch reads as holding no finished work, and the
+// cap card's answer buys the session that goes on from it.
 func TestWorkflowNextSessionStartsFromThePushedHead(t *testing.T) {
 	for _, tc := range []struct {
 		outcome SessionOutcome
 		gate    bool
 	}{
 		{OutcomeNoPush, true}, {OutcomeRedirect, true}, {OutcomeRetryStronger, true},
-		{OutcomeProviderRefused, true}, {OutcomeDayCap, true},
-		{OutcomeNoPush, false}, {OutcomeRedirect, false}, {OutcomeDayCap, false},
+		{OutcomeProviderRefused, true}, {OutcomeDayCap, true}, {OutcomeWallClock, true},
+		{OutcomeNoPush, false}, {OutcomeRedirect, false}, {OutcomeDayCap, false}, {OutcomeWallClock, false},
 	} {
 		name := string(tc.outcome) + " from before the gate keeps the base"
 		if tc.gate {
@@ -48,12 +53,24 @@ func TestWorkflowNextSessionStartsFromThePushedHead(t *testing.T) {
 			if tc.outcome == OutcomeProviderRefused {
 				dead.Status = 429
 			}
-			h.onSessions(dead, pushed("s2", "c3"))
-			h.onChecks(ChecksResult{State: ChecksSuccess})
+			var steps []string
+			h.onVerify(&steps, []SessionResult{dead, pushed("s2", "c3")})
+			if tc.outcome == OutcomeWallClock {
+				h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			}
 			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 
 			if final := h.run(t); final != "done" {
-				t.Fatalf("final = %q, want done", final)
+				t.Fatalf("final = %q (%v), want done", final, h.finals)
+			}
+			var prs []string
+			for _, s := range steps {
+				if head, ok := strings.CutPrefix(s, "pr "); ok {
+					prs = append(prs, strings.Fields(head)[0])
+				}
+			}
+			if !slices.Equal(prs, []string{"c3"}) {
+				t.Fatalf("pull requests opened on %v, want only the finished head c3 (steps %v)", prs, steps)
 			}
 			if len(h.sessions) < 2 {
 				t.Fatalf("sessions = %d, want 2", len(h.sessions))
@@ -220,32 +237,40 @@ func TestWorkflowReplaysAPushedDeadSessionFromBeforeWipStart(t *testing.T) {
 }
 
 // An interim head is no finished work: where a path would take it through
-// the gates, the gate's refusal sends the card on in a session that starts
-// from that head, and the card never fails on it. A run from before the
-// gate fails on the refusal, as before.
+// the gates, the gate's refusal sends the card on in a working session that
+// starts from that head, told so beside what the stopped session was told,
+// and the card never fails on it. No check-in judges the refusal: one that
+// would drop it, as a check-in finds nothing to finish in complete work,
+// would send the same head to the same refusal. A run from before the gate
+// fails on the refusal, as before.
 func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T) {
 	spendStop := SessionResult{SessionID: "s2", Outcome: OutcomeCheckinHuman, Commit: "w2", Trip: string(TripNoProgress), Reason: CheckinShareSpent,
 		CheckIn: &CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: CheckinShareSpent, Record: &CheckInRecord{Moment: CheckInSession, Session: "s2"}}}
+	const refused = "the branch's head w2 is a session's work in progress, which no gate judges: continue from it and finish the work"
 	for _, tc := range []struct {
 		name     string
 		sessions []SessionResult
 		state    RunState
 		answer   bool
+		changes  string         // a human's change request answering the wait
 		checks   []ChecksResult // none: green
 		// the heads that open a pull request, in order, and the session that ran last
 		prs     []string
 		started string
+		// the last session's findings
+		findings []string
 	}{
 		{"a dropped check-in on an interim head",
 			[]SessionResult{deadAfterPushing(OutcomeNoPush), checkinStopped("s2", OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), pushed("s3", "c3")},
-			RunState{}, false, nil, []string{"w2", "c3"}, "w2"},
+			RunState{}, false, "", nil, []string{"w2", "c3"}, "w2", []string{refused}},
 		{"the answer to a spend stop whose end push did not land",
 			[]SessionResult{pushed("s1", "c1"), spendStop, pushed("s3", "c3")},
-			RunState{}, true, []ChecksResult{gosecRed, {State: ChecksSuccess}}, []string{"c1", "w2", "c3"}, "w2"},
+			RunState{}, true, "", []ChecksResult{gosecRed, {State: ChecksSuccess}}, []string{"c1", "w2", "c3"}, "w2", []string{"gosec G706", refused}},
 		{"a healed card waiting on a spend stop with an interim head",
 			[]SessionResult{pushed("s2", "c3")},
 			RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
-				PR: PullRequest{Number: 9}, Head: "w2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}, true, nil, []string{"w2", "c3"}, "w2"},
+				PR: PullRequest{Number: 9}, Head: "w2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}, false, "rename it", nil, []string{"w2", "c3"}, "w2",
+			[]string{"reviewer sebastian requested changes: rename it", refused}},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
@@ -254,9 +279,22 @@ func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T)
 			h.state = tc.state
 			h.wipHeads = []string{"w2"}
 			var steps []string
-			h.onVerify(&steps, tc.sessions, tc.checks...)
+			h.onVerify(&steps, nil, tc.checks...)
+			n := 0
+			h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, in SessionInput) (SessionResult, error) {
+					h.sessions = append(h.sessions, in)
+					if in.CheckInAsk != nil && slices.ContainsFunc(in.CheckInAsk.Findings, func(f CheckFinding) bool { return f.Text == refused }) {
+						return checkinStopped(fmt.Sprintf("s%d", in.Attempt), OutcomeCheckinDropped, &CheckInOutcome{Decision: CheckDroppedAll}), nil
+					}
+					n++
+					return tc.sessions[min(n, len(tc.sessions))-1], nil
+				})
 			if tc.answer {
 				h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			}
+			if tc.changes != "" {
+				h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: tc.changes, PR: 9})
 			}
 			h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
 
@@ -276,10 +314,37 @@ func TestWorkflowContinuesInASessionWhereAGateRefusesAnInterimHead(t *testing.T)
 			for _, in := range h.sessions {
 				starts = append(starts, in.StartRef)
 			}
-			if got := h.sessions[len(h.sessions)-1].StartRef; got != tc.started {
+			last := h.sessions[len(h.sessions)-1]
+			if last.StartRef != tc.started {
 				t.Fatalf("session starts = %v, want the last from %s, the interim head", starts, tc.started)
 			}
+			if last.CheckInAsk != nil || !slices.Equal(last.Findings, tc.findings) {
+				t.Fatalf("last session: check-in ask %+v, findings %q; want a working session told %q", last.CheckInAsk, last.Findings, tc.findings)
+			}
 		})
+	}
+}
+
+// An interim head is no head the gates judged, whether their refusal or the
+// heal met it as the pull request's head: a session that dies on it hands
+// on that the gates have not judged it.
+func TestWorkflowARefusedInterimHeadIsNotJudged(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.beforeCases()
+	h.taskConfig = askTaskConfig()
+	h.state = RunState{Status: "waiting-human", Question: "check-in: spend_above_policy: the check-in's share of the budget is spent",
+		PR: PullRequest{Number: 9}, Head: "w2", Unfinished: true, Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+	h.wipHeads = []string{"w2"}
+	var steps []string
+	h.onVerify(&steps, []SessionResult{deadAfterPushing(OutcomeNoPush), pushed("s3", "c3")})
+	h.signalAfter(time.Hour, SignalChangesRequested, TaskSignal{Author: "sebastian", Body: "rename it", PR: 9})
+	h.signalAfter(48*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q (%v), want done", final, h.finals)
+	}
+	if len(h.sessions) != 2 || !slices.Contains(h.sessions[1].Findings, "the branch holds w2; the gates have not judged it") {
+		t.Fatalf("sessions %d, the second told %q; want the handover saying no gate judged w2", len(h.sessions), h.sessions[len(h.sessions)-1].Findings)
 	}
 }
 
