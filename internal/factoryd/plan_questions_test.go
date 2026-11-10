@@ -278,7 +278,8 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	p := questionPlan()
 	p.Questions[1].Choices[1] = "30 days, see https://evil.example"
 	p.Questions[1].Recommended = "30 days, see https://evil.example"
-	p.Questions[1].Grounds = "see https://user:pass@host/x"
+	p.Questions[1].Grounds = "see https://user:pass@host/x, Authorization: Bearer abcdef0123456789abcdef"
+	p.Questions[0].Text = "How often, per https://user:pass@host/y?"
 	r, store, _, fj := newPlanRunner(t, p)
 	rec := &fakeEventRecorder{}
 	r.timeline.Events = rec
@@ -288,7 +289,7 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 		}
 	}
 	want := "| 3 | all_green | invariant | ./... | foundation, integration |\n\nQuestions:\n" +
-		"1. How often does the checker probe a site? (choices: 30 seconds / 60 seconds / 5 minutes)\n" +
+		"1. How often, per hxxps://[redacted]@host/y? (choices: 30 seconds / 60 seconds / 5 minutes)\n" +
 		"2. How long are the results kept? (choices: 7 days / 30 days, see hxxps://evil[.]example)\n\n<details>"
 	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0].body, want) {
 		t.Fatalf("comments %d, the first:\n%s\nwant it to contain:\n%s", len(fj.comments), fj.comments[0].body, want)
@@ -299,8 +300,8 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 			rows = append(rows, fmt.Sprintf("%v %v %v %v | %v | %v", e.Detail["revision"], e.Detail["index"], e.Detail["question"], e.Detail["choices"], e.Detail["recommended"], e.Detail["grounds"]))
 		}
 	}
-	if !slices.Equal(rows, []string{"1 1 How often does the checker probe a site? [30 seconds 60 seconds 5 minutes] | 60 seconds | a minute catches an outage soon enough",
-		"1 2 How long are the results kept? [7 days 30 days, see hxxps://evil[.]example] | 30 days, see hxxps://evil[.]example | see hxxps://user:pass@host/x"}) {
+	if !slices.Equal(rows, []string{"1 1 How often, per hxxps://[redacted]@host/y? [30 seconds 60 seconds 5 minutes] | 60 seconds | a minute catches an outage soon enough",
+		"1 2 How long are the results kept? [7 days 30 days, see hxxps://evil[.]example] | 30 days, see hxxps://evil[.]example | see hxxps://[redacted]@host/x, Authorization: Bearer [redacted]"}) {
 		t.Fatalf("question_asked rows %q", rows)
 	}
 	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 3 || qs[1].Choices[1] != "30 days, see hxxps://evil[.]example" ||
@@ -308,7 +309,7 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 		t.Fatalf("stored questions %+v", qs)
 	}
 	if got := store.catches["t-plan 1 "+CatchQuestion+" "+FinderPlanner]; !slices.Equal(got,
-		[]string{"How often does the checker probe a site?", "How long are the results kept?"}) {
+		[]string{"How often, per hxxps://[redacted]@host/y?", "How long are the results kept?"}) {
 		t.Fatalf("the recording rule's catches %q", got)
 	}
 	if len(store.approvals) != 1 || store.approvals[0].Kind != ApprovalPlan || store.approvals[0].Status != "pending" {

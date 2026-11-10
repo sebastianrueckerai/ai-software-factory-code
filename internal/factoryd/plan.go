@@ -3228,12 +3228,13 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 	if len(qs) == 0 {
 		return nil
 	}
+	clean := func(text string) string { return r.Scrub.String(r.untrusted(t, text)) }
 	asked := make([]PlanQuestion, len(qs))
 	for i, q := range qs {
-		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin,
-			Recommended: r.untrusted(t, q.Recommended), Grounds: r.untrusted(t, q.Grounds)}
+		asked[i] = PlanQuestion{Text: clean(q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin,
+			Recommended: clean(q.Recommended), Grounds: clean(q.Grounds)}
 		for j, c := range q.Choices {
-			asked[i].Choices[j] = r.untrusted(t, c)
+			asked[i].Choices[j] = clean(c)
 		}
 	}
 	if inserted, err := r.store.PutPlanQuestions(ctx, t.ID, revision, asked); err != nil || !inserted {
@@ -3448,7 +3449,7 @@ func confirmationQuestion(revision int, p Plan) string {
 // posts it.
 func (r *Runner) postPlan(ctx context.Context, t Task, repo Repo, revision int, p Plan, issues map[string]int64) (int64, error) {
 	marker := planMarker(t.ID, revision)
-	body := r.untrusted(t, planComment(t, revision, p, issues)) + "\n" + marker
+	body := r.Scrub.String(r.untrusted(t, planComment(t, revision, p, issues))) + "\n" + marker
 	have, err := r.forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, t.IssueNumber)
 	if err != nil {
 		return 0, err
