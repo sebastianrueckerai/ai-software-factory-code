@@ -158,6 +158,9 @@ func (f *gateForgejo) srv(t *testing.T) *httptest.Server {
 			}
 			w.WriteHeader(http.StatusNotFound)
 			io.WriteString(w, `{"message":"Not Found"}`)
+		case r.Method == "POST" && r.URL.Path == "/api/v1/users/factory-agent/tokens":
+			w.WriteHeader(http.StatusInternalServerError)
+			io.WriteString(w, `{"message":"no tokens here"}`)
 		default:
 			t.Errorf("unexpected forgejo call %s %s", r.Method, r.URL.Path)
 			w.WriteHeader(http.StatusNotImplemented)

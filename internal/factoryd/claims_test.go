@@ -5,7 +5,9 @@ import (
 	"encoding/json"
 	"errors"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
@@ -40,8 +42,8 @@ func TestCombineReviewsOffsetsClaims(t *testing.T) {
 
 func TestLastReviewCarriesNoClaimsOrDrops(t *testing.T) {
 	last, _ := lastReview([]Review{{Verdict: "concerns", Summary: "s", Findings: []string{"a.go: x"}, Claims: []Claim{{Finding: 0, Kind: ClaimUndefined, Symbol: "X"}},
-		Dropped: []Dropped{{Finding: "y"}}, GateCriteria: &GateLeft{IDs: []string{"c1"}, Integration: true}}}, [][]fileDiff{nil})
-	if last.Claims != nil || last.Dropped != nil || last.GateCriteria != nil {
+		Dropped: []Dropped{{Finding: "y"}}, Unsettled: []string{"z"}, GateCriteria: &GateLeft{IDs: []string{"c1"}, Integration: true}}}, [][]fileDiff{nil})
+	if last.Claims != nil || last.Dropped != nil || last.Unsettled != nil || last.GateCriteria != nil {
 		t.Fatalf("last review = %+v", last)
 	}
 }
@@ -291,6 +293,7 @@ func TestValidTestOutcomeClaim(t *testing.T) {
 		"flag package":      testClaim(0, "TestY", "-exec=id", RefBase, OutcomePass),
 		"shell in package":  testClaim(0, "TestY", "x;id", RefBase, OutcomePass),
 		"wildcard package":  testClaim(0, "TestY", "./...", RefBase, OutcomePass),
+		"wildcard suffix":   testClaim(0, "TestY", "internal/x...", RefBase, OutcomePass),
 		"empty package":     testClaim(0, "TestY", "", RefBase, OutcomePass),
 		"ref main":          testClaim(0, "TestY", "internal/x", "main", OutcomePass),
 		"ref empty":         testClaim(0, "TestY", "internal/x", "", OutcomePass),
@@ -309,11 +312,11 @@ func TestTestArgvIsFixed(t *testing.T) {
 		c    Claim
 		want []string
 	}{
-		{testClaim(0, "TestY", "internal/x", RefBase, OutcomePass), []string{"go", "test", "-count=1", "-run", "^TestY$", "./internal/x"}},
-		{testClaim(0, "TestY/a.b-c", "./internal/x", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-run", `^TestY/a\.b-c$`, "./internal/x"}},
-		{testClaim(0, "TestY", ".", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-run", "^TestY$", "./"}},
+		{testClaim(0, "TestY", "internal/x", RefBase, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "7m30s", "-run", "^TestY$", "./internal/x"}},
+		{testClaim(0, "TestY/a.b-c", "./internal/x", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "7m30s", "-run", `^TestY$/^a\.b-c$`, "./internal/x"}},
+		{testClaim(0, "TestY", ".", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "7m30s", "-run", "^TestY$", "./"}},
 	} {
-		if got := testArgv(tc.c); !slices.Equal(got, tc.want) {
+		if got := testArgv(tc.c, 450*time.Second); !slices.Equal(got, tc.want) {
 			t.Errorf("argv of %+v = %q, want %q", tc.c, got, tc.want)
 		}
 	}
@@ -377,6 +380,7 @@ func TestApplyClaimsLeavesUnsettledRunsStanding(t *testing.T) {
 		"timed out":      {run: claimRun{Exit: -1, Output: "(timed out after 10m0s)"}, want: "Y passes: TestY in internal/x at base is unsettled: the run did not finish (exit -1)"},
 		"build failed":   {run: claimRun{Exit: 1, Output: "FAIL\tx [build failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
 		"setup failed":   {run: claimRun{Exit: 1, Output: "FAIL\tx [setup failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
+		"go timed out":   {run: claimRun{Exit: 1, Output: "panic: test timed out after 7m30s\nFAIL\tx\t450s"}, want: "Y passes: TestY in internal/x at base is unsettled: go test timed out"},
 		"test not there": {run: claimRun{Exit: 0, Output: "ok  \tx\t0.01s [no tests to run]"}, want: "Y passes: TestY in internal/x at base is unsettled: no such test at that ref"},
 	} {
 		got := applyClaims(Review{Findings: []string{"Y passes"}, Claims: []Claim{base}}, nil, nil, func(Claim) (claimRun, error) { return tc.run, tc.err })
@@ -413,7 +417,7 @@ func TestDropContradictedRunsTheClaimAsAnArgvInTheSandbox(t *testing.T) {
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		got = r.dropContradicted(context.Background(), gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, rv, nil)
+		got = r.dropContradicted(context.Background(), gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, 0, rv, nil)
 	}()
 	scriptReproPods(kube, reproLine(1, secret), reproLine(0, "ok"))
 	<-done
@@ -429,7 +433,7 @@ func TestDropContradictedRunsTheClaimAsAnArgvInTheSandbox(t *testing.T) {
 		t.Fatalf("evidence = %q, want the run with both secrets masked", ev)
 	}
 	spec, _ := json.Marshal(kube.podAt(0).spec)
-	for _, want := range []string{`{"name":"REPRO_ARGV","value":"[\"go\",\"test\",\"-count=1\",\"-run\",\"^TestY/sub$\",\"./internal/x\"]"}`,
+	for _, want := range []string{`{"name":"REPRO_ARGV","value":"[\"go\",\"test\",\"-count=1\",\"-timeout\",\"7m30s\",\"-run\",\"^TestY$/^sub$\",\"./internal/x\"]"}`,
 		`{"name":"CHECKOUT_SHA","value":"base"}`, `{"name":"MODE","value":"repro"}`} {
 		if !strings.Contains(string(spec), want) {
 			t.Fatalf("base pod spec lacks %s: %s", want, spec)
@@ -437,6 +441,12 @@ func TestDropContradictedRunsTheClaimAsAnArgvInTheSandbox(t *testing.T) {
 	}
 	if strings.Contains(string(spec), "REPRO_COMMAND") {
 		t.Fatalf("pod spec carries a shell command: %s", spec)
+	}
+	if !strings.Contains(string(spec), `{"name":"OVERLAY_PKG","value":"internal/x"}`) || !strings.Contains(string(spec), `"-timeout\",\"7m30s\"`) {
+		t.Fatalf("base pod spec lacks the overlay of the claimed package or go's timeout: %s", spec)
+	}
+	if head, _ := json.Marshal(kube.podAt(1).spec); strings.Contains(string(head), "OVERLAY_PKG") {
+		t.Fatalf("head pod spec overlays tests: %s", head)
 	}
 	if head, _ := json.Marshal(kube.podAt(1).spec); strings.Contains(string(head), "CHECKOUT_SHA") || !strings.Contains(string(head), `{"name":"REPO_SHA","value":"c1"}`) {
 		t.Fatalf("head pod spec = %s, want the head commit and no base checkout", head)
@@ -447,16 +457,102 @@ func TestDropContradictedKeepsTheFindingWhenTheSandboxCannotStart(t *testing.T) 
 	kube := newFakeKube()
 	r, _, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
 	rv := Review{Verdict: "concerns", Findings: []string{"Y passes at base"}, Claims: []Claim{testClaim(0, "TestY", "internal/x", RefBase, OutcomePass)}}
-	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: "start failed: egress probe: gateway answered 503", Step: "egress probe"}})
+	b, _ := json.Marshal(harness.WorkerEnvelope{Type: "result", Result: &harness.Result{Summary: "start failed: egress probe: https://user:pass@host.example/x answered 503; Authorization: Bearer abcdef0123456789", Step: "egress probe"}})
 	var got Review
 	done := make(chan struct{})
 	go func() {
 		defer close(done)
-		got = r.dropContradicted(context.Background(), gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, rv, nil)
+		got = r.dropContradicted(context.Background(), gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, 0, rv, nil)
 	}()
 	scriptReproPods(kube, string(b))
 	<-done
-	if len(got.Findings) != 1 || got.Dropped != nil || len(got.Unsettled) != 1 || !strings.Contains(got.Unsettled[0], "could not be run") {
+	if len(got.Findings) != 1 || got.Dropped != nil || len(got.Unsettled) != 1 || !strings.Contains(got.Unsettled[0], "could not be run") ||
+		strings.Contains(got.Unsettled[0], "user:pass") || strings.Contains(got.Unsettled[0], "abcdef0123456789") {
 		t.Fatalf("review = %+v, want the finding kept and unsettled", got)
+	}
+}
+
+// go test splits -run at "/" and matches each element unanchored: a
+// subtest claim must not run another top-level test that shares the prefix.
+func TestTestArgvRunsOnlyTheNamedSubtest(t *testing.T) {
+	dir := t.TempDir()
+	files := map[string]string{
+		"go.mod":      "module m\n\ngo 1.21\n",
+		"a/a_test.go": "package a\n\nimport \"testing\"\n\nfunc TestY(t *testing.T) { t.Run(\"sub\", func(t *testing.T) {}); t.Run(\"subx\", func(t *testing.T) { t.Fatal(\"subx\") }) }\n\nfunc TestYZ(t *testing.T) { t.Fatal(\"TestYZ ran\") }\n",
+	}
+	for name, content := range files {
+		path := filepath.Join(dir, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	argv := testArgv(testClaim(0, "TestY/sub", "a", RefHead, OutcomePass), time.Minute)
+	cmd := exec.Command(argv[0], argv[1:]...)
+	cmd.Dir = dir
+	if out, err := cmd.CombinedOutput(); err != nil {
+		t.Fatalf("%q: %v\n%s", argv, err, out)
+	}
+}
+
+func TestReviewCommentFencesTheRunsOutputAndListsUnsettled(t *testing.T) {
+	rv := Review{Verdict: "concerns", Summary: "s", Dropped: []Dropped{{Finding: "Y passes", Evidence: "go test -run TestY a at base (abc): exit 1, the test did not pass:\n--- FAIL: TestY\nFAIL"}},
+		Unsettled: []string{"Z passes: TestZ in a at head could not be run: no sandbox"}}
+	got := reviewComment("m", "c1", rv, "Read.")
+	for _, want := range []string{"\n- Dropped by code, the repository contradicts it (go test -run TestY a at base (abc): exit 1, the test did not pass:): Y passes\n\n```\n--- FAIL: TestY\nFAIL\n```\n",
+		"\n- Not settled by a run: Z passes: TestZ in a at head could not be run: no sandbox"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("comment lacks %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestModelReviewRecordsUnsettledTestClaims(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n"}
+	r, _, objects := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"s","findings":["TestY passes at base"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"base","outcome":"pass"}]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Policy: PolicyGate{Class: "normal"}})
+	rv := getInto[Review](t, val, err)
+	if len(rv.Findings) != 1 || len(rv.Unsettled) != 1 || !strings.HasPrefix(rv.Unsettled[0], "TestY passes at base: TestY in internal/x at base could not be run: ") {
+		t.Fatalf("review = %+v, want the finding kept and unsettled", rv)
+	}
+	step := timelineStep(t, objects, "t1", "model_review")
+	if u, _ := step["unsettled"].([]any); len(u) != 1 || u[0] != rv.Unsettled[0] {
+		t.Fatalf("model_review step = %v, want the unsettled line", step)
+	}
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Not settled by a run: "+rv.Unsettled[0]) {
+		t.Fatalf("comments = %q", fj.comments)
+	}
+}
+
+func TestReviewSchemaNamesTestClaims(t *testing.T) {
+	if !strings.Contains(reviewFormat, "or that a named Go test passes or fails at the base or at the head") {
+		t.Fatal("the schema's opening sentence on claims does not name test claims")
+	}
+}
+
+// The settle tells the gate watch the waves of its calls so far and the
+// waves its runs add: 2 runs of (10 min start + 10 min command) and one
+// 10 min setup are 50 one-minute waves.
+func TestDropContradictedRaisesTheGateWatchBound(t *testing.T) {
+	for told, want := range map[int]int{0: policy.ReviewParts + 50, policy.ReviewParts + 7: policy.ReviewParts + 57} {
+		kube := newFakeKube()
+		r, _, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
+		var waves int
+		ctx := context.WithValue(context.Background(), wavesKey{}, func(n int) { waves = n })
+		rv := Review{Findings: []string{"Y"}, Claims: []Claim{testClaim(0, "TestY", "x", RefHead, OutcomePass)}}
+		done := make(chan struct{})
+		go func() {
+			defer close(done)
+			r.dropContradicted(ctx, gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, told, rv, nil)
+		}()
+		scriptReproPods(kube, reproLine(0, "ok"))
+		<-done
+		if waves != want {
+			t.Errorf("told %d: bound waves = %d, want %d", told, waves, want)
+		}
 	}
 }

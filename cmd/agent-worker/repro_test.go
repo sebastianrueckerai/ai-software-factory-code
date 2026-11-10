@@ -303,6 +303,82 @@ func TestReproRunsAtTheBase(t *testing.T) {
 	}
 }
 
+// With OVERLAY_PKG the base's tree gets the head's test files of that
+// package alone: a test the head extends runs its new body on the base's
+// code, a test the head adds whole runs, another package's tests stay the
+// base's, and a package without tests at the head changes nothing.
+func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	run("init", "-q", "-b", "main", seed)
+	write := func(name, content string) {
+		path := filepath.Join(seed, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func() string {
+		run("-C", seed, "add", "-A")
+		run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	write("go.mod", "module m\n\ngo 1.21\n")
+	write("a/a.go", "package a\n\nfunc One() int { return 1 }\n")
+	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 1 {\n\t\tt.Fatal(\"one\")\n\t}\n}\n")
+	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n")
+	base := commit()
+	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 2 {\n\t\tt.Fatal(\"head asserts two\")\n\t}\n}\n")
+	write("a/new_test.go", "package a\n\nimport \"testing\"\n\nfunc TestNew(t *testing.T) {}\n")
+	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { t.Fatal(\"head b\") }\n")
+	head := commit()
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "update-ref", "refs/pull/9/head", head)
+	reproEnvs(t, remote, head, "true")
+	t.Setenv("CHECKOUT_SHA", base)
+	t.Setenv("OVERLAY_PKG", "a")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if err := fetched(ws); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(ws, "repo")
+	goTest := func(name, pkg string) harness.Repro {
+		return reproduce(reproEnv{argv: []string{"go", "test", "-count=1", "-run", "^" + name + "$", pkg}, timeout: time.Minute}, repo)
+	}
+	if got := goTest("TestOne", "./a"); got.Exit != 1 || !strings.Contains(got.Output, "head asserts two") {
+		t.Fatalf("TestOne at base with the head's tests = %+v, want its new body failing", got)
+	}
+	if got := goTest("TestNew", "./a"); got.Exit != 0 || strings.Contains(got.Output, "no tests to run") {
+		t.Fatalf("TestNew at base = %+v, want the head's added test run", got)
+	}
+	if got := goTest("TestB", "./b"); got.Exit != 0 {
+		t.Fatalf("TestB = %+v, want the base's test, the package not being overlaid", got)
+	}
+	t.Setenv("OVERLAY_PKG", "nosuchdir")
+	ws = t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 || fetched(ws) != nil {
+		t.Fatalf("a package the head lacks: exit %d, %v", code, fetched(ws))
+	}
+	t.Setenv("OVERLAY_PKG", "../x")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil || !strings.Contains(err.Error(), "not inside the repository") {
+		t.Fatalf("an overlay outside the repository: %v", err)
+	}
+}
+
 // The command sees the commit's files and no git metadata (re-review R1):
 // a git command cannot tell the base from the head, so it exits the same
 // at both and proves no fix; the files still differ.

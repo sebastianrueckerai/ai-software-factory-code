@@ -18,6 +18,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -35,6 +36,9 @@ import (
 // push token.
 type fetchEnv struct {
 	repoURL, repoToken, ref, sha, at string
+	// overlay is a package directory whose test files of sha are written
+	// over the tree of at
+	overlay string
 }
 
 type reproEnv struct {
@@ -65,7 +69,7 @@ func loadFetchEnv() (fetchEnv, error) {
 	if err != nil {
 		return fetchEnv{}, err
 	}
-	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"], at: os.Getenv("CHECKOUT_SHA")}, nil
+	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"], at: os.Getenv("CHECKOUT_SHA"), overlay: os.Getenv("OVERLAY_PKG")}, nil
 }
 
 func reproTimeout() (time.Duration, error) {
@@ -362,7 +366,41 @@ func fetchHead(e fetchEnv, dir string) error {
 	if _, err := w.git(scratch, "--work-tree="+dir, "checkout", "-q", "-f", commit, "--", "."); err != nil {
 		return fmt.Errorf("check out %s: %w", commit, err)
 	}
+	if e.overlay != "" {
+		if err := overlayTests(w, scratch, e.sha, e.overlay, dir); err != nil {
+			return err
+		}
+	}
 	return os.RemoveAll(scratch)
+}
+
+// overlayTests writes the *_test.go files directly in pkg at sha over dir:
+// the head's tests against the base's code.
+func overlayTests(w workerEnv, scratch, sha, pkg, dir string) error {
+	if !filepath.IsLocal(pkg) {
+		return fmt.Errorf("overlay package %q is not inside the repository", pkg)
+	}
+	tree := sha
+	if pkg != "." {
+		tree += ":" + filepath.ToSlash(pkg)
+	}
+	listing, err := w.git(scratch, "ls-tree", "-z", "--name-only", tree)
+	if err != nil {
+		return nil // the head has no such directory: no tests to overlay
+	}
+	var paths []string
+	for _, name := range strings.Split(listing, "\x00") {
+		if strings.HasSuffix(name, "_test.go") {
+			paths = append(paths, filepath.ToSlash(filepath.Join(pkg, name)))
+		}
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	if _, err := w.git(scratch, append([]string{"--work-tree=" + dir, "checkout", "-q", "-f", sha, "--"}, paths...)...); err != nil {
+		return fmt.Errorf("overlay the head's tests of %s: %w", pkg, err)
+	}
+	return nil
 }
 
 // maxReproOutput is the output tail kept in memory and reported, of a

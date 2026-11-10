@@ -56,22 +56,23 @@ var (
 func validClaim(c Claim) bool {
 	if c.Kind == ClaimTestOutcome {
 		return testName.MatchString(c.Symbol) && packagePath.MatchString(c.Package) &&
-			(c.Ref == RefBase || c.Ref == RefHead) && (c.Outcome == OutcomePass || c.Outcome == OutcomeFail)
+			(c.Ref == RefBase || c.Ref == RefHead) && (c.Outcome == OutcomePass || c.Outcome == OutcomeFail) && !strings.Contains(c.Package, "...")
 	}
 	return (c.Kind == ClaimUndefined || c.Kind == ClaimUncalled) && symbolName.MatchString(c.Symbol) &&
 		c.Package == "" && c.Ref == "" && c.Outcome == ""
 }
 
 // testArgv is the fixed command that settles a valid test-outcome claim:
-// no shell reads it.
-func testArgv(c Claim) []string {
+// no shell reads it. Each subtest element is anchored, for go test matches
+// the elements of -run apart; timeout is go's own, below the run's bound.
+func testArgv(c Claim, timeout time.Duration) []string {
 	pkg := "./" + strings.TrimPrefix(strings.TrimPrefix(c.Package, "."), "/")
 	parts := strings.Split(c.Symbol, "/")
 	for i, p := range parts {
 		parts[i] = regexp.QuoteMeta(p)
 	}
-	pattern := "^" + strings.Join(parts, "/") + "$"
-	return []string{"go", "test", "-count=1", "-run", pattern, pkg}
+	pattern := "^" + strings.Join(parts, "$/^") + "$"
+	return []string{"go", "test", "-count=1", "-timeout", timeout.String(), "-run", pattern, pkg}
 }
 
 // claimRun is one settling run: the commit it ran at, its exit and output.
@@ -90,6 +91,8 @@ func (t claimRun) outcome() (outcome, why string) {
 		return "", fmt.Sprintf("the run did not finish (exit %d)", t.Exit)
 	case strings.Contains(t.Output, "[build failed]") || strings.Contains(t.Output, "[setup failed]"):
 		return "", "the package did not build"
+	case strings.Contains(t.Output, "panic: test timed out"):
+		return "", "go test timed out"
 	case t.Exit == 0 && strings.Contains(t.Output, "no tests to run"):
 		return "", "no such test at that ref"
 	case t.Exit == 0:
@@ -300,7 +303,7 @@ var checkoutRefs = func(ctx context.Context, f *Forgejo, repo Repo, pr int64, co
 // a name's claims against the repository at the head and at main (no such
 // claim, no checkout: a checkout that fails drops nothing), a test's against
 // a run in the task's sandbox at its ref.
-func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int64, commit string, call time.Duration, rv Review, files []fileDiff) Review {
+func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int64, commit string, call time.Duration, told int, rv Review, files []fileDiff) Review {
 	if len(rv.Claims) == 0 {
 		return rv
 	}
@@ -321,11 +324,13 @@ func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int
 	}
 	var settle func(Claim) (claimRun, error)
 	if slices.ContainsFunc(rv.Claims, func(c Claim) bool { return c.Kind == ClaimTestOutcome }) {
-		// two runs a claim at most: a pod start and the command each. The
-		// gate watch's bound counts a review's waves of model calls, so it
-		// is told the waves the runs add.
-		budget := maxTestRuns * 2 * (podStartWait + r.cfg.ReproTimeout)
-		boundByParts(ctx, policy.ReviewParts+int((budget+max(call, time.Minute)-1)/max(call, time.Minute)))
+		// one pod a run, each a start and the command, after one sandbox
+		// setup. The gate watch's bound counts a review's waves of model
+		// calls: it is told the waves told so far (at least its first
+		// bound's) and the waves the runs add.
+		budget := maxTestRuns*(podStartWait+r.cfg.ReproTimeout) + podStartWait
+		call = max(call, time.Minute)
+		boundByParts(ctx, max(policy.ReviewParts, told)+int((budget+call-1)/call))
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, budget)
 		defer cancel()
@@ -337,7 +342,9 @@ func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int
 }
 
 // testSettler runs a test-outcome claim's fixed argv in the task's
-// reproduction sandbox, built on the first run and torn down by done; a
+// reproduction sandbox. At the base it runs the head's test files of the
+// claimed package over the base's tree: the question is whether the head's
+// test fails on the base's code. The sandbox is built on the first run and torn down by done; a
 // sandbox that cannot start fails every run. Its output is scrubbed.
 func (r *Runner) testSettler(ctx context.Context, t Task, repo Repo, pr int64, commit string) (settle func(Claim) (claimRun, error), done func()) {
 	var (
@@ -358,14 +365,15 @@ func (r *Runner) testSettler(ctx context.Context, t Task, repo Repo, pr int64, c
 		if sandboxErr != nil {
 			return claimRun{}, errors.New(r.Scrub.String(sandboxErr.Error()))
 		}
-		at, ran := "", commit
+		at, ran, overlay := "", commit, ""
 		if c.Ref == RefBase {
+			overlay = c.Package
 			if at = cmp.Or(t.ReproBase, t.SHA); at == "" {
 				return claimRun{}, errors.New("the task has no base commit")
 			}
 			ran = at
 		}
-		rep, err := r.runArgv(ctx, t, repo, pullRef(pr), commit, at, testArgv(c))
+		rep, err := r.runArgv(ctx, t, repo, pullRef(pr), commit, at, testArgv(c, r.cfg.ReproTimeout*3/4), overlay)
 		if err != nil {
 			return claimRun{}, errors.New(r.Scrub.String(err.Error()))
 		}
