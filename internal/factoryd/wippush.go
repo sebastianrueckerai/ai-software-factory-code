@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"strconv"
 	"strings"
+	"time"
 )
 
 // The interim push of a session's work in progress, factoryd's half of
@@ -29,8 +30,13 @@ type wipOutcome struct {
 	refusal string
 }
 
-// interimSlot is the one slot of interimPush.
-var interimSlot = make(chan struct{}, 1)
+// interimSlot is the one slot of the interim push's body handling, and
+// wipSlotWait the longest a check-in waits for it. A var, so a test
+// shortens it.
+var (
+	interimSlot = make(chan struct{}, 1)
+	wipSlotWait = 2 * time.Minute
+)
 
 // interimPush is the check-in's interim push of the session's work in
 // progress: it asks the running pod's /wip for the work the agent holds,
@@ -47,17 +53,6 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 	if s.report != "" || !wipCommitID.MatchString(s.startRef) {
 		return wipOutcome{}
 	}
-	// one interim push at a time: each holds a capped git and the shipped
-	// bundle, and the container has room for one
-	select {
-	case interimSlot <- struct{}{}:
-		defer func() { <-interimSlot }()
-	case <-ctx.Done():
-		if !errors.Is(ctx.Err(), context.Canceled) {
-			r.wipFailure(ctx, t, s, "queue", "another interim push held the slot until the check-in's deadline")
-		}
-		return wipOutcome{}
-	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
 	switch {
 	case err != nil:
@@ -69,6 +64,21 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 	case commit == "":
 		// the tree equals the start's: there is nothing to ship
 	default:
+		// one interim push at a time past the ask: each holds a capped git
+		// and the shipped bundle, and the container has room for one. The
+		// wait has its own bound, so a slow push ahead delays a check-in
+		// by minutes, not by its session's deadline
+		wait := time.NewTimer(wipSlotWait)
+		defer wait.Stop()
+		select {
+		case interimSlot <- struct{}{}:
+			defer func() { <-interimSlot }()
+		case <-wait.C:
+			r.wipFailureFresh(ctx, t, s, "queue", "another interim push held the slot for "+wipSlotWait.String())
+			return wipOutcome{}
+		case <-ctx.Done():
+			return wipOutcome{}
+		}
 		head, err := r.pushWip(ctx, t, s, commit, bundle)
 		if err != nil {
 			text := r.Scrub.String(err.Error())
@@ -91,6 +101,14 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 func (r *Runner) wipFailure(ctx context.Context, t Task, s sessionSpec, at, text string) {
 	log.Printf("task %s: session %s: interim push, at the %s: %s", t.ID, s.id, at, text)
 	r.record(ctx, t.ID, "wip_push_failed", map[string]any{"session": s.id, "at": at, "error": text})
+}
+
+// wipFailureFresh records a failure on a context that outlives an expired
+// one: the timeline's write needs a live context.
+func (r *Runner) wipFailureFresh(ctx context.Context, t Task, s sessionSpec, at, text string) {
+	fresh, cancel := context.WithTimeout(context.WithoutCancel(ctx), 10*time.Second)
+	defer cancel()
+	r.wipFailure(fresh, t, s, at, text)
 }
 
 // pushWip guards and pushes the work in progress the pod shipped. The
@@ -121,27 +139,29 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 	defer os.RemoveAll(own) // #nosec G104 -- a temporary scratch repository
 	login := basicLogin(r.cfg.ProjectsUser, r.forgejo.ProjectsToken)
 	fork, branch := r.repoURL(r.forgejo.Fork(s.repo)), taskBranch(t)
-	tip := ""
-	if _, err := git(ctx, own, login, "fetch", "-q", fork, "+"+branch+":"+branch); err == nil {
-		if tip, err = git(ctx, own, "", "rev-parse", "--verify", branch); err != nil {
-			return "", err
-		}
-	} else {
-		if _, err := git(ctx, own, login, "fetch", "-q", r.repoURL(s.repo), "+"+prBase+":"+prBase); err != nil {
-			return "", fmt.Errorf("the repositories hold neither the task branch nor main: %w", err)
-		}
-	}
-	file := filepath.Join(own, "wip.bundle")
-	if err := os.WriteFile(file, bundle, 0o600); err != nil {
-		return "", err
-	}
-	// every git call from here reads what the sandbox shipped: each runs
-	// under the address-space cap, with its output capped
+	// every git call here reads what the sandbox or an earlier push put on
+	// a branch: each runs under the address-space cap, with its output capped
 	lim := func(maxOut int, stdin io.Reader) gitLimits {
 		return gitLimits{stdin: stdin, maxOut: maxOut, addressSpace: wipGitMemory}
 	}
 	run := func(env []string, args ...string) (string, error) {
 		return gitRun(ctx, own, "", env, lim(wipGitOutput, nil), args...)
+	}
+	fetch := func(remote, ref string) error {
+		_, err := gitRun(ctx, own, login, nil, lim(wipGitOutput, nil), "fetch", "-q", remote, "+"+ref+":"+ref)
+		return err
+	}
+	tip := ""
+	if err := fetch(fork, branch); err == nil {
+		if tip, err = run(nil, "rev-parse", "--verify", branch); err != nil {
+			return "", err
+		}
+	} else if err := fetch(r.repoURL(s.repo), prBase); err != nil {
+		return "", fmt.Errorf("the repositories hold neither the task branch nor main: %w", err)
+	}
+	file := filepath.Join(own, "wip.bundle")
+	if err := os.WriteFile(file, bundle, 0o600); err != nil {
+		return "", err
 	}
 	// the body is verified as a bundle before anything is taken from it:
 	// a body that is no bundle, whatever its header says it ships, costs
@@ -222,16 +242,25 @@ const (
 	wipMaxObject = 8 << 20
 	// wipMaxTree bounds one shipped directory: about 50,000 entries.
 	wipMaxTree = 2 << 20
-	// wipMaxTotal bounds the shipped objects together, four times the
-	// bundle cap a pack of text compresses by.
+	// wipTreeOutput bounds the listing of the whole tree: 50,000 entries
+	// at about 100 bytes.
+	wipTreeOutput = 8 << 20
+	// wipMaxEntries bounds the files of the shipped tree.
+	wipMaxEntries = 50000
+	// wipMaxTotal bounds the shipped objects together, and the blobs of the
+	// shipped tree together: four times the bundle cap.
 	wipMaxTotal = 64 << 20
 	// wipGitMemory is the address space any git call on shipped bytes may
-	// map. One push runs at a time (interimSlot), and factoryd's container
-	// holds 512 MiB: its own peak (121 MiB observed) and the 16 MiB body
-	// leave 375, so the cap keeps 119 MiB of margin. A real pack needs the
-	// pack in flight, the 32 MiB delta base cache (gitConfig), one inflated
-	// object (at most wipMaxObject) and git's libraries: well under it.
-	wipGitMemory = 256 << 20
+	// map. The container holds 512 MiB: factoryd's own peak (121 MiB
+	// observed), the 16 MiB body, one capped child at a time (interimSlot),
+	// and the GitHub exports' git, which runs beside it outside the slot
+	// (a fetch of a 186 MiB repository peaked at 100 MiB, not capped here:
+	// an export reads the factory's own repositories). 121 + 16 + 192 +
+	// 100 = 429 MiB. The largest legitimate child measured was 45 MiB: a
+	// real pack needs the pack in flight, the 32 MiB delta base cache and
+	// one inflated object. pack.threads=1 (gitConfig) is needed under the
+	// cap: each extra thread maps a stack and an arena.
+	wipGitMemory = 192 << 20
 )
 
 // checkShippedSize refuses work no card makes before any diff or listing
@@ -241,21 +270,16 @@ const (
 // size output past its cap is itself too large.
 func checkShippedSize(ctx context.Context, own, commit, start string, lim func(int, io.Reader) gitLimits) error {
 	tooLarge := func(why string) error {
-		return fmt.Errorf("%w: the shipped work is too large (%s): no card's work comes near; keep to the card's changes", ErrPushRefused, why)
+		return fmt.Errorf("the shipped work is too large (%s)", why)
 	}
-	list, err := gitRun(ctx, own, "", nil, lim(wipListOutput, nil), "rev-list", "--objects", commit, "^"+start)
+	list, err := gitRun(ctx, own, "", nil, lim(wipListOutput, nil), "rev-list", "--objects", "--no-object-names", commit, "^"+start)
 	if errors.Is(err, errGitOutput) {
 		return tooLarge("more than 100,000 new objects")
 	}
 	if err != nil {
 		return err
 	}
-	var ids strings.Builder
-	for line := range strings.SplitSeq(list, "\n") {
-		id, _, _ := strings.Cut(line, " ")
-		ids.WriteString(id + "\n")
-	}
-	sizes, err := gitRun(ctx, own, "", nil, lim(wipListOutput, strings.NewReader(ids.String())), "cat-file", "--batch-check=%(objecttype) %(objectsize)")
+	sizes, err := gitRun(ctx, own, "", nil, lim(wipListOutput, strings.NewReader(list+"\n")), "cat-file", "--batch-check=%(objecttype) %(objectsize)")
 	if errors.Is(err, errGitOutput) {
 		return tooLarge("more than 100,000 new objects")
 	}
@@ -276,6 +300,32 @@ func checkShippedSize(ctx context.Context, own, commit, start string, lim func(i
 	}
 	if total > wipMaxTotal {
 		return tooLarge(fmt.Sprintf("%d bytes of new objects", total))
+	}
+	// the tree as checked out: one object can stand for many paths
+	files, err := gitRun(ctx, own, "", nil, lim(wipTreeOutput, nil), "ls-tree", "-r", "-l", "-z", commit)
+	if errors.Is(err, errGitOutput) {
+		return tooLarge("a tree listing past its bound")
+	}
+	if err != nil {
+		return err
+	}
+	entries, blobs := 0, 0
+	for entry := range strings.SplitSeq(files, "\x00") {
+		if entry == "" {
+			continue
+		}
+		meta, _, _ := strings.Cut(entry, "\t")
+		fields := strings.Fields(meta)
+		if len(fields) != 4 {
+			return fmt.Errorf("the shipped tree's listing: %q", entry)
+		}
+		entries++
+		if n, err := strconv.Atoi(fields[3]); err == nil {
+			blobs += n
+		}
+	}
+	if entries > wipMaxEntries || blobs > wipMaxTotal {
+		return tooLarge(fmt.Sprintf("a tree of %d files and %d bytes", entries, blobs))
 	}
 	return nil
 }

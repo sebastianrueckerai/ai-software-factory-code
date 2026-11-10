@@ -886,12 +886,21 @@ func gitSpy(t *testing.T) string {
 // Work too large for any card is refused before any diff or listing reads
 // it: a 16 MiB file of newlines (a 16 KB bundle that FitBound's diff
 // inflates to 700 MiB), and a directory of 100,000 entries (a tree object
-// over the tree bound). The failing step is the size check, and git never
-// ran diff, ls-tree or commit-tree on it.
+// over the tree bound), and 60,000 files in small directories (over the
+// file bound of the whole tree). The failing step is the size check, and
+// git never ran diff or read-tree on it.
 func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 	for name, edit := range map[string]func(dir string){
 		"file-of-newlines": func(dir string) {
 			os.WriteFile(filepath.Join(dir, "nl.txt"), bytes.Repeat([]byte("\n"), 16<<20), 0o644)
+		},
+		"many-files": func(dir string) {
+			for d := range 60 {
+				os.MkdirAll(filepath.Join(dir, fmt.Sprintf("d%02d", d)), 0o755)
+				for i := range 1000 {
+					os.WriteFile(filepath.Join(dir, fmt.Sprintf("d%02d", d), fmt.Sprintf("f%04d", i)), nil, 0o644)
+				}
+			}
 		},
 		"wide-tree": func(dir string) {
 			os.MkdirAll(filepath.Join(dir, "wide"), 0o755)
@@ -919,15 +928,15 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 				t.Fatalf("the wip_push_failed step = %v, want the size refusal", step)
 			}
 			log, _ := os.ReadFile(calls)
-			for _, sub := range []string{"diff", "ls-tree", "read-tree"} {
+			for _, sub := range []string{"diff", "read-tree"} {
 				if slices.Contains(strings.Fields(string(log)), sub) {
 					t.Fatalf("git ran %s on the oversized work: %s", sub, log)
 				}
 			}
 			serve.mu.Lock()
 			defer serve.mu.Unlock()
-			if len(serve.msgs) != 1 || !strings.Contains(serve.msgs[0], "too large") {
-				t.Fatalf("the pod was messaged %q, want the size refusal: the agent can shrink its work", serve.msgs)
+			if len(serve.msgs) != 0 {
+				t.Fatalf("the pod was messaged %q, want no message: the end push has no size bound, so the agent is not at fault", serve.msgs)
 			}
 			if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
 				t.Fatalf("task branch = %s, want the start alone", tip)
@@ -961,9 +970,9 @@ func TestInterimPushLandsALargePack(t *testing.T) {
 	}
 }
 
-// One interim push runs at a time: while another holds the slot, a second
-// check-in's push waits and gives up with its context, asking nothing of
-// its pod.
+// One interim push handles its body at a time: the pod is asked first, and
+// while another push holds the slot a second waits for its own bound, records
+// a queue step and gives up without pushing; with the slot free it lands.
 func TestInterimPushesDoNotOverlap(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil, func(dir string) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
@@ -971,19 +980,76 @@ func TestInterimPushesDoNotOverlap(t *testing.T) {
 	spec := sessionSpec{id: "s-1", startRef: serve.base, repo: Repo{Owner: "sf", Name: "repo"}, messageToken: "tok"}
 	kube := runner.kube.(*fakeKube)
 	kube.pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+	old := wipSlotWait
+	wipSlotWait = 150 * time.Millisecond
+	t.Cleanup(func() { wipSlotWait = old })
 	interimSlot <- struct{}{}
-	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
-	defer cancel()
-	out := runner.interimPush(ctx, supervisedTask("t2"), spec, "ns", "pod", nil)
+	out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil)
 	<-interimSlot
-	serve.mu.Lock()
-	asked := len(serve.wipAuth)
-	serve.mu.Unlock()
-	if out != (wipOutcome{}) || asked != 0 {
-		t.Fatalf("outcome %+v after %d asks while the slot was held, want a push that waited and gave up", out, asked)
+	if out != (wipOutcome{}) {
+		t.Fatalf("outcome %+v while the slot was held, want a push that waited and gave up", out)
 	}
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step["at"] != "queue" {
+		t.Fatalf("the wip_push_failed step = %v, want the queue's", step)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+		t.Fatalf("task branch = %s, want the start alone: the waiting push gave up", tip)
+	}
+	serve.edits = append(serve.edits, func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("two\n"), 0o644) })
 	if out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil); out.head == "" {
 		t.Fatalf("outcome %+v with the slot free, want the push landed; timeline %s", out, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+}
+
+// A pack that carries deltas indexes under the cap: with git's default
+// threads, index-pack cannot map its resolver threads' stacks.
+func TestInterimPushLandsAPackWithDeltas(t *testing.T) {
+	var lines []string
+	for i := range 3000 {
+		lines = append(lines, fmt.Sprintf("line %d of a file the card edits in a few places", i))
+	}
+	text := strings.Join(lines, "\n") + "\n"
+	runner, objects, serve := wipRig(t, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "data.txt"), []byte(text), 0o644)
+	}, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "data.txt"), []byte(strings.Replace(text, "line 7 ", "edited 7 ", 1)), 0o644)
+	})
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
+		t.Fatalf("wip_pushed steps = %d, want the delta pack landed; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+}
+
+// A task branch an earlier push left with a file past the cap does not
+// drive factoryd's base fetch past it: the fetch dies in git, and the
+// interim push fails.
+func TestInterimPushBaseFetchRunsUnderTheCap(t *testing.T) {
+	runner, objects, serve := wipRig(t, func(dir string) {
+		f, err := os.Create(filepath.Join(dir, "huge.bin"))
+		if err != nil {
+			t.Fatal(err)
+		}
+		f.Truncate(300 << 20)
+		f.Close()
+	}, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	step := timelineStep(t, objects, "t2", "wip_push_failed")
+	if text := fmt.Sprint(step["error"]); !strings.Contains(text, "neither the task branch nor main") || !strings.Contains(text, "memory") {
+		t.Fatalf("the wip_push_failed step = %v, want git's allocation failure in the base fetch", step)
 	}
 }
 
