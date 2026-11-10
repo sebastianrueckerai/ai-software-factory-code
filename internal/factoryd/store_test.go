@@ -42,6 +42,7 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
+	refusals        map[string][]IntakeRefusal
 	tasks           map[string]Task
 	sessions        map[string]Session
 	started         map[string]bool
@@ -437,6 +438,20 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.Kind == "agent" && t.Track == "" {
 		return fmt.Errorf("task %s: an agent card needs a track (tasks_agent_track)", t.ID)
 	}
+	if t.RoadmapItem != 0 {
+		refile := AskedRefile(t.Objective)
+		for id, h := range s.tasks {
+			if h.Repository != t.Repository || h.RoadmapItem != t.RoadmapItem || id == t.ID {
+				continue
+			}
+			if refile != 0 && h.IssueNumber == refile && (h.Status == "closed" || h.Status == "failed") {
+				h.RoadmapItem = 0
+				s.tasks[id] = h
+				continue
+			}
+			return &Refusal{Kind: RefusalRoadmap, Holder: id, Item: t.RoadmapItem, Repository: t.Repository}
+		}
+	}
 	if t.Kind == "agent" && t.Gate == "" {
 		t.Gate, t.GateSince = GateIntake, &t.CreatedAt
 	}
@@ -762,6 +777,22 @@ func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) 
 
 // TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
 // newest one among the rest.
+func (s *fakeStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason string) error {
+	k := fmt.Sprintf("%s %d", repository, issue)
+	if slices.ContainsFunc(s.refusals[k], func(r IntakeRefusal) bool { return r.Key == key }) {
+		return nil
+	}
+	if s.refusals == nil {
+		s.refusals = map[string][]IntakeRefusal{}
+	}
+	s.refusals[k] = append(s.refusals[k], IntakeRefusal{Key: key, Reason: reason})
+	return nil
+}
+
+func (s *fakeStore) IntakeRefusals(ctx context.Context, repository string, issue int64) ([]IntakeRefusal, error) {
+	return s.refusals[fmt.Sprintf("%s %d", repository, issue)], nil
+}
+
 func (s *fakeStore) TaskByIssue(ctx context.Context, repository string, issueNumber int64) (Task, bool, error) {
 	var held []Task
 	for _, t := range s.tasks {
@@ -5032,10 +5063,10 @@ func TestPGStoreOneCardPerRoadmapItem(t *testing.T) {
 		t.Fatalf("a done card still holds its item: %v", err)
 	}
 	// RoadmapHolder names the same holder the insert refuses.
-	if holder, ok, err := s.RoadmapHolder(ctx, repo, 276); err != nil || !ok || holder != "t-holder" {
+	if holder, ok, err := s.RoadmapHolder(ctx, repo, 276, 0); err != nil || !ok || holder != "t-holder" {
 		t.Fatalf("RoadmapHolder = %q, %v, %v; want t-holder", holder, ok, err)
 	}
-	if _, ok, err := s.RoadmapHolder(ctx, repo, 999); err != nil || ok {
+	if _, ok, err := s.RoadmapHolder(ctx, repo, 999, 0); err != nil || ok {
 		t.Fatalf("an item no card cites = %v, %v; want none", ok, err)
 	}
 }

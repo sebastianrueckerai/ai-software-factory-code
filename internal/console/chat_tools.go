@@ -344,6 +344,9 @@ func (t *turn) byTaskID(in *toolInput) error {
 			log.Printf("console: card #%d of %s: %v", n, t.p.Name, err)
 			return refuse(http.StatusInternalServerError, "cannot read the task")
 		case !ok:
+			if why, err := t.c.cfg.Tasks.IntakeRefusals(t.r.Context(), t.p.Repository, n); err == nil && len(why) > 0 {
+				return refuse(http.StatusConflict, fmt.Sprintf("Issue #%d has no card. %s", n, why[len(why)-1].Reason))
+			}
 			return refuse(http.StatusNotFound, fmt.Sprintf("Project %s has no card #%d: the board read lists its cards.", t.p.Name, n))
 		}
 		*id = k.ID

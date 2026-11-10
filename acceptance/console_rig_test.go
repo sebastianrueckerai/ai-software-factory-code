@@ -1721,7 +1721,11 @@ func (a *AcceptanceRig) CountQueue(_ context.Context, repository string) (int, e
 }
 
 // RoadmapHolder answers none: the acceptance rig holds no roadmap pull.
-func (a *AcceptanceRig) RoadmapHolder(context.Context, string, int) (string, bool, error) {
+func (a *AcceptanceRig) IntakeRefusals(context.Context, string, int64) ([]factoryd.IntakeRefusal, error) {
+	return nil, nil
+}
+
+func (a *AcceptanceRig) RoadmapHolder(context.Context, string, int, int64) (string, bool, error) {
 	return "", false, nil
 }
 

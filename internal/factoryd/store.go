@@ -402,6 +402,10 @@ type Store interface {
 	// sum, marks the task settled and reports whether it booked a row; a
 	// settled task is never listed again.
 	SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error)
+	// RecordRefusal keeps why the intake made no card for issue, once per
+	// key; IntakeRefusals lists them, oldest first.
+	RecordRefusal(ctx context.Context, repository string, issue int64, key, reason string) error
+	IntakeRefusals(ctx context.Context, repository string, issue int64) ([]IntakeRefusal, error)
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency, preferring the live card when a
 	// re-filed issue holds a final one beside it; false means no task is
@@ -1020,7 +1024,15 @@ func fromJSON(b []byte) ([]string, error) {
 // issue webhook, the API's FileTask) and the month cap's fileHumanTask
 // are its callers; insertTask's one-card-per-issue guard runs first.
 func (s *PGStore) CreateTask(ctx context.Context, t Task) error {
-	return s.insertTask(ctx, t, "")
+	tx, err := s.db.BeginTx(ctx, nil)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback() // #nosec G104 -- a no-op after the commit
+	if err := insertTask(ctx, tx, t, ""); err != nil {
+		return err
+	}
+	return tx.Commit()
 }
 
 // insertTask, the package helper, inserts t through db, onConflict the
@@ -1043,24 +1055,25 @@ func insertTask(ctx context.Context, db interface {
 			Scan(&holderID, &holderStatus)
 		switch {
 		case err == nil:
-			return fmt.Errorf("card %s already holds issue %d of %s and is still %s", holderID, t.IssueNumber, t.Repository, holderStatus)
+			return &Refusal{Kind: RefusalIssue, Holder: holderID, Status: holderStatus, IssueNo: t.IssueNumber, Repository: t.Repository}
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
 	}
-	// One card per roadmap item (the roadmap pull of 2026-11-01): any
-	// card of the repository citing the item holds it — open or done, a
-	// finished card frees only when its Priority leaves the roadmap — and
-	// a second filing is refused, naming the holder.
+	// One card per roadmap item: any card of the repository citing the
+	// item holds it, open or done, and a second filing is refused, naming
+	// the holder. A closed or failed card the filing names as its refile
+	// ("Refile of #N") frees the item, and the filing takes it over.
+	refile := AskedRefile(t.Objective)
 	if t.RoadmapItem != 0 {
 		var holderID string
 		err := db.QueryRowContext(ctx, `SELECT id FROM tasks
-			WHERE repository = $1 AND roadmap_item = $2 AND id <> $3
-			ORDER BY created_at LIMIT 1`, t.Repository, t.RoadmapItem, t.ID).
+			WHERE repository = $1 AND roadmap_item = $2 AND id <> $3 AND NOT `+refiledCard("$4")+`
+			ORDER BY created_at LIMIT 1`, t.Repository, t.RoadmapItem, t.ID, refile).
 			Scan(&holderID)
 		switch {
 		case err == nil:
-			return fmt.Errorf("card %s already builds roadmap item %d of %s", holderID, t.RoadmapItem, t.Repository)
+			return &Refusal{Kind: RefusalRoadmap, Holder: holderID, Item: t.RoadmapItem, Repository: t.Repository}
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
@@ -1095,7 +1108,19 @@ func insertTask(ctx context.Context, db interface {
 		t.ID, t.Priority, caps, t.RiskClass, t.BudgetEUR, t.SpentEUR, t.Status,
 		t.Objective, t.Repository, t.SHA, t.ReproBase, defaultKind(t.Kind), t.IssueNumber, t.Source, t.ReproCommand, created, GateIntake,
 		t.Author, t.AuthorWriter, t.Parent, t.Track, t.Process, t.PlanKey, t.AlertFingerprint, t.Rung, t.Size, t.PRNumber, t.ShipsRuling, ships, t.Image, t.CarryPR, t.RoadmapItem)
+	if err != nil || t.RoadmapItem == 0 || refile == 0 {
+		return err
+	}
+	_, err = db.ExecContext(ctx, `UPDATE tasks SET roadmap_item = NULL
+		WHERE repository = $1 AND roadmap_item = $2 AND id <> $3 AND `+refiledCard("$4"), t.Repository, t.RoadmapItem, t.ID, refile)
 	return err
+}
+
+// refiledCard is the condition on a tasks row, with the refiled issue's
+// number as placeholder n, that the row is a closed or failed card of
+// that issue.
+func refiledCard(n string) string {
+	return `(status IN ('closed', 'failed') AND ` + n + ` > 0 AND COALESCE(issue_number, 0) = ` + n + `)`
 }
 
 // insertTask, the PGStore method, runs the package's insertTask on the
@@ -1108,10 +1133,11 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 // RoadmapHolder names the card of repository that builds roadmap item —
 // the check insertTask enforces — so the filing refuses before an issue
 // is posted; false when no card cites it.
-func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int) (string, bool, error) {
+func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int, refile int64) (string, bool, error) {
 	var holder string
 	err := s.db.QueryRowContext(ctx, `SELECT id FROM tasks
-		WHERE repository = $1 AND roadmap_item = $2 ORDER BY created_at LIMIT 1`, repository, item).Scan(&holder)
+		WHERE repository = $1 AND roadmap_item = $2 AND NOT `+refiledCard("$3")+`
+		ORDER BY created_at LIMIT 1`, repository, item, refile).Scan(&holder)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}

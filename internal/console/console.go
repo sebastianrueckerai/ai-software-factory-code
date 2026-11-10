@@ -139,7 +139,11 @@ type Tasks interface {
 	// RoadmapHolder is the card that builds repository's docs/roadmap.md
 	// item, whatever its state (the roadmap pull, 2026-11-01); false
 	// when no card cites it.
-	RoadmapHolder(ctx context.Context, repository string, item int) (string, bool, error)
+	// A closed or failed card of the issue refile (a "Refile of #N"
+	// line) does not hold it.
+	RoadmapHolder(ctx context.Context, repository string, item int, refile int64) (string, bool, error)
+	// IntakeRefusals are the reasons the intake made no card for issue.
+	IntakeRefusals(ctx context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error)
 	// ProjectImageParks are the parks of project's cards that wait for an
 	// image, the oldest first, each with its tool card's issue.
 	ProjectImageParks(ctx context.Context, project string) ([]factoryd.ImagePark, error)

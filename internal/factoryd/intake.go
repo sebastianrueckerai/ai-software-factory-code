@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -49,6 +50,9 @@ type Intake struct {
 	Projects interface {
 		Projects(ctx context.Context) ([]Project, error)
 	}
+	// Scrub masks credentials in the text a refusal posts on an issue; nil
+	// applies the generic rules.
+	Scrub *redact.Scrubber
 	// MainPushed is told of every push to a repository's main.
 	MainPushed func(ctx context.Context, repository string) error
 	// Nudge is told of every workflow-run event with the run's
@@ -315,6 +319,7 @@ var BootLabels = map[string]string{
 	"routine":              "#006b75",
 	LabelNoise:             "#bfbfbf",
 	LabelReal:              "#d93f0b",
+	StateRefused:           "#e99695",
 	"state/queued":         "#ededed",
 	"state/waiting-deps":   "#bfd4f2",
 	"state/running":        "#1f6feb",
@@ -854,6 +859,9 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 			continue
 		}
 		for _, issue := range issues {
+			if slices.Contains(labelNames(issue.Labels), StateRefused) {
+				continue
+			}
 			if err := in.intakeIssue(ctx, "heal pass", repo.String(), "", issue, ""); err != nil {
 				errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
 			}
@@ -1063,6 +1071,10 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		task.Track, task.Process, task.Status, task.RequiredCapabilities, task.SHA = track, p.Process, "queued", []string{class}, sha
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
+		var refusal *Refusal
+		if errors.As(err, &refusal) {
+			return in.refused(ctx, via, parts, issue, refusal)
+		}
 		return fmt.Errorf("create task: %w", err)
 	}
 	if task.Kind == "human" {
@@ -2013,4 +2025,54 @@ func (in *Intake) resyncComments(ctx context.Context, t Task, onPR bool, number 
 		}
 	}
 	return nil
+}
+
+// refused tells issue why the intake made no card for it, once per
+// reason, durably: a comment naming the holder, the recorded reason and
+// the state/refused label that keeps the heal pass off it until the issue
+// is edited or reopened. A comment already on the issue (a crash before
+// the record) is not posted again.
+func (in *Intake) refused(ctx context.Context, via string, repo Repo, issue webhookIssue, r *Refusal) error {
+	full := repo.String()
+	have, err := in.Store.IntakeRefusals(ctx, full, issue.Index)
+	if err != nil {
+		return err
+	}
+	if !slices.ContainsFunc(have, func(h IntakeRefusal) bool { return h.Key == r.Key() }) {
+		marker := fmt.Sprintf("<!-- factoryd refusal %s -->", r.Key())
+		text := in.refusalText(r)
+		comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, issue.Index)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(comments, func(c IssueComment) bool { return strings.HasSuffix(c.Body, marker) }) {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue.Index, text+"\n\n"+marker); err != nil {
+				return err
+			}
+			log.Printf("%s: issue #%d on %s: no card: %s", via, issue.Index, full, text)
+		}
+		if err := in.Store.RecordRefusal(ctx, full, issue.Index, r.Key(), text); err != nil {
+			return err
+		}
+	}
+	if !slices.Contains(labelNames(issue.Labels), StateRefused) {
+		return in.Forgejo.SetStateLabel(ctx, repo.Owner, repo.Name, issue.Index, "refused")
+	}
+	return nil
+}
+
+// refusalText is what the issue's comment says: the refusal, then the way
+// to a card.
+func (in *Intake) refusalText(r *Refusal) string {
+	scrub := in.Scrub
+	if scrub == nil {
+		scrub = redact.New()
+	}
+	text := "The factory made no card for this issue: " + scrub.String(r.Error()) + "."
+	if r.Kind == RefusalRoadmap {
+		text += " Close that card, or write the line \"Refile of #<its issue number>\" in this issue if it is closed or failed, then edit or reopen this issue."
+	} else {
+		text += " Edit or reopen this issue once that card has ended."
+	}
+	return text
 }

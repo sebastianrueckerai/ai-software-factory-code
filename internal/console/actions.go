@@ -392,7 +392,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
 	}
 	if roadmapItem > 0 {
-		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem)
+		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem, factoryd.AskedRefile(body))
 		if err != nil {
 			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
 			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
