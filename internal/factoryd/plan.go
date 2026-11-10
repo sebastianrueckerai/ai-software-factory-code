@@ -2774,7 +2774,9 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		r.restartChildren(ctx, t, repo, n, p)
 	}
 	if st.newest == nil || n > st.revision {
-		r.record(ctx, taskID, EventPlanRevision, map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha})
+		detail := map[string]any{"revision": n, "cards": len(p.Cards), "sha256": sha}
+		r.record(ctx, taskID, "plan_revision", detail)
+		r.timeline.RecordRow(ctx, taskID, EventPlanRevision, FactoryDecider, ViaFactoryd, detail)
 	}
 	gate, _, err := r.confirms(ctx, t, p)
 	if err != nil {

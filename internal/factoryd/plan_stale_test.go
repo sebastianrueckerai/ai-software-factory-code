@@ -1096,3 +1096,34 @@ func TestDivideConquerPlanningRetries(t *testing.T) {
 		t.Fatalf("the replay stored revision %d, want 2", rev.Revision)
 	}
 }
+
+// A filed revision leaves one plan_revision row, the one the bought-nothing
+// guard reads as what a planner's draw bought; the same plan filed again
+// is no new revision and leaves none.
+func TestFilePlanRecordsTheRevisionOnce(t *testing.T) {
+	ctx := context.Background()
+	first := testPlan()
+	first.Criteria = append(first.Criteria, PlanCriterion{ID: "pages_ok", Kind: CriterionHuman, Claim: "the pages read well", Evidence: "the list page"})
+	first.Cards[2].Acceptance = append(first.Cards[2].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the list page reads well"})
+	first.Cards[3].Acceptance = append(first.Cards[3].Acceptance, PlanItem{Criterion: "pages_ok", Text: "the pages read well"})
+	r, store, _, _ := newPlanRunner(t, first)
+	pinned := fixtureVersion(t)
+	r.cfg.Policy = func() policy.Version { return pinned }
+	rec := &fakeEventRecorder{}
+	r.timeline.Events = rec
+	runPlanTask(store)
+	for range 2 {
+		if res, err := r.FilePlan(ctx, "t-plan", planJSON(t, testPlan())); err != nil || res.Revision != 2 {
+			t.Fatalf("filing revision 2: %+v, %v", res, err)
+		}
+	}
+	rows := 0
+	for _, e := range rec.rows {
+		if e.Kind == EventPlanRevision && e.TaskID == "t-plan" {
+			rows++
+		}
+	}
+	if rows != 1 {
+		t.Fatalf("plan_revision rows = %d after filing revision 2 twice, want 1", rows)
+	}
+}
