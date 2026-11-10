@@ -579,17 +579,17 @@ type sessionOutcome struct {
 	// wip is the last interim push's commit (wippush.go): the work the
 	// session left on the branch without its own end push, which its
 	// result keeps when the session died with no other
-	wip       string
-	trip      *Trip
-	decision  *Decision
-	digest    string
-	noResult  string
-	start     *startFailure   // the session could not start
-	pending   *podPending     // its pod never left Pending: no session ran
-	model     string          // the model the session ended on
-	overHold  *OverHoldCall   // the session's newest call booked beyond its hold
-	reads     []string        // the paths a report session read
-	checkIn   *CheckInOutcome // the check-in that ran at the session's start
+	wip      string
+	trip     *Trip
+	decision *Decision
+	digest   string
+	noResult string
+	start    *startFailure   // the session could not start
+	pending  *podPending     // its pod never left Pending: no session ran
+	model    string          // the model the session ended on
+	overHold *OverHoldCall   // the session's newest call booked beyond its hold
+	reads    []string        // the paths a report session read
+	checkIn  *CheckInOutcome // the check-in that ran at the session's start
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -907,21 +907,36 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if trip.decided != nil {
 			d = *trip.decided
 		} else {
-			// the session's work in progress ships while the check-in
-			// runs: one interim push under factoryd's own credential
-			// (interimPush, wippush.go), joined before anything below
-			// acts on the answer, so it cannot race the stop's end push
-			wipDone := make(chan struct{})
-			var wip string
-			go func() {
-				defer close(wipDone)
-				wip = r.interimPush(callCtx, t, s, ns, podName, workerStop)
-			}()
+			// the session's work in progress ships before the check-in's
+			// conversation opens: one interim push under factoryd's own
+			// credential (interimPush, wippush.go), done — landed,
+			// refused or given up — before the ask is built, so the ask
+			// carries its outcome and the stop's end push cannot race it
+			wip := r.interimPush(callCtx, t, s, ns, podName, workerStop)
+			out.wip = cmp.Or(wip.head, out.wip)
+			if wip.head != "" {
+				// the supervisor sees the interim push as what it is, a
+				// push of work in progress (detail wip): it grants no push
+				// credit (supervise.go). The trip in hand is sticky, so
+				// the event moves no detector here
+				sup.Event(harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"wip": true, "commit": wip.head}}, time.Now())
+			}
+			if wip.refusal != "" {
+				// a push rule's refusal is a message the agent can act on:
+				// it reaches the running session — a write answers it, so
+				// an agent that ignores it meets the stuck rule — and the
+				// ask's messages, so the check-in judges it too
+				if err := r.message(ctx, t, s, ns, podName, wip.refusal); err != nil && !errors.Is(err, harness.ErrNotRunning) {
+					log.Printf("task %s: deliver the interim push's refusal to the session: %v", t.ID, err)
+				}
+				sup.messagedInTrip(time.Now())
+				messages = append(messages, wip.refusal)
+			}
 			answered := make(chan struct{})
 			lines, started := sup.CardLines(), sup.started
 			go func() {
 				defer close(answered)
-				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started)
+				d, ck, ride = r.checkinLive(callCtx, t, s, ns, podName, recorder, trip, slices.Clone(messages), workerStop, deadline, lines, supCfg.SizeLines, started, wip.head)
 			}()
 			for answering := true; answering; {
 				select {
@@ -943,7 +958,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					stopAt = time.Now()
 					cancel()
 					<-answered
-					<-wipDone
 					log.Printf("task %s: factoryd stopping cut the check-in for %s", t.ID, trip.Kind)
 					return true, shutdown()
 				}
@@ -951,12 +965,6 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 					held, esc = esc, nil
 				}
 			}
-			// the interim push is done — landed, refused or given up —
-			// before any decision acts on the check-in: a stop's end
-			// push builds on the tip it left, and the last head it
-			// landed is the session's work on the branch
-			<-wipDone
-			out.wip = cmp.Or(wip, out.wip)
 		}
 		if esc != nil {
 			log.Printf("task %s: the agent escalated during the check-in for %s", t.ID, trip.Kind)
@@ -1154,7 +1162,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 			}
 		}
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
-			facts: checkinFacts(t, s), ask: &ask}
+			facts: checkinFacts(t, s, ""), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
 			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
 		out.Share = share
@@ -1229,10 +1237,12 @@ func cuttable(t Task, s sessionSpec) bool {
 // checkinLive is the mid-session check-in: a detector tripped, and the
 // check-in decides over the running session from the transcript it reads
 // factoryd-side. Nothing is pushed to the pod — the coding agent needs no
-// record of its own audit. d is the action for the trip switch; ck the
+// record of its own audit. wipHead is the interim push's head when one
+// landed before the conversation (wippush.go), "" when none did; the
+// ask's facts name it. d is the action for the trip switch; ck the
 // conversation's outcome with its record (nil only under no alias); ride
 // says the outcome stops the session and rides SessionResult.CheckIn.
-func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time) (d Decision, ck *CheckInOutcome, ride bool) {
+func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod string, rec *SessionRecorder, trip *Trip, messages []string, workerStop <-chan struct{}, deadline time.Time, lines, bound int, started time.Time, wipHead string) (d Decision, ck *CheckInOutcome, ride bool) {
 	limits := s.policy.Limits
 	// a handover's next session runs on the stronger rung, or on the
 	// session_model of a plan or report class, which this session runs on
@@ -1254,7 +1264,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return d, nil, false
 	}
 	tr := rec.Transcript()
-	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s), ask: &ask, parent: tr, live: true}
+	tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, facts: checkinFacts(t, s, wipHead), ask: &ask, parent: tr, live: true}
 	out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(tr, limits.CheckinTailBytes()), r.checkin, tools,
 		limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), limits.CheckinTimeCap())
 	out.Record.Session = s.id
@@ -1427,9 +1437,15 @@ func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, []
 
 // checkinFacts is the small JSON of the card's facts the runner already
 // holds; the check-in's card_facts answers it after the card's digest.
-func checkinFacts(t Task, s sessionSpec) string {
-	b, _ := json.Marshal(map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
-		"attempt": s.attempt, "sessions": s.sessions})
+// wipHead, when an interim push landed before the conversation, names the
+// head the session's work sits on.
+func checkinFacts(t Task, s sessionSpec, wipHead string) string {
+	facts := map[string]any{"budget_eur": t.BudgetEUR, "spent_eur": t.EnforcedSpent(),
+		"attempt": s.attempt, "sessions": s.sessions}
+	if wipHead != "" {
+		facts["wip_head"] = wipHead
+	}
+	b, _ := json.Marshal(facts)
 	return string(b)
 }
 

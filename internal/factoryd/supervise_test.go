@@ -1859,6 +1859,42 @@ func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
 	}
 }
 
+// An interim push grants no push credit: an EventPushed with detail wip
+// — the check-in's interim push of the work in progress — leaves the
+// cheap cap and the spend-without-push line armed, so both still trip
+// past their bounds; the session's own end push, an EventPushed without
+// the detail, disarms both, as it did.
+func TestWipPushGrantsNoPushCredit(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 1000,
+		NoWriteAfter: 10 * time.Hour, CheapCap: 8 * time.Minute, NoPushSpend: 0.6}
+	wip := harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"wip": true, "commit": "w1"}}
+
+	s, _ := NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	if trip := s.Event(wip, minute(3)); trip != nil {
+		t.Fatalf("the interim push tripped: %+v", trip)
+	}
+	if trip := s.Tick(minute(9)); trip == nil || trip.Kind != TripCheapCap {
+		t.Fatalf("trip = %+v, want the cheap cap past its bound after an interim push alone", trip)
+	}
+
+	s, _ = NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	s.Event(wip, minute(3))
+	if trip := s.Spent(3.1, 5); trip == nil || trip.Kind != TripSpendNoPush {
+		t.Fatalf("trip = %+v, want spend_no_push past its share after an interim push alone", trip)
+	}
+
+	s, _ = NewSupervisor(cfg, time.Unix(0, 0), time.Unix(0, 0))
+	if trip := s.Event(harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"commit": "c1"}}, minute(3)); trip != nil {
+		t.Fatalf("the end push tripped: %+v", trip)
+	}
+	if trip := s.Tick(minute(9)); trip != nil {
+		t.Fatalf("tripped past the cheap cap after the session's own push: %+v", trip)
+	}
+	if trip := s.Spent(4.9, 5); trip != nil {
+		t.Fatalf("tripped past the spend line after the session's own push: %+v", trip)
+	}
+}
+
 func spendSupervisor(t *testing.T, mutate func(*SupervisorConfig)) *Supervisor {
 	t.Helper()
 	cfg := SupervisorConfig{NoProgressAfter: 5 * time.Minute, WallClockCap: time.Hour, RepetitionEvents: 100,

@@ -1313,8 +1313,8 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 			res.Reason = contentFilterRefusal + res.Summary + ". Close this card and file it again with the wording changed, or answer to try once more."
 			return res
 		}
-	if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
-		res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), cmp.Or(out.commit, out.wip)
+		if !out.result.Success && strings.Contains(res.Summary, providerRepetition) && strings.Contains(res.Summary, providerRefusalStatus) {
+			res.Outcome, res.Trip, res.Commit = OutcomeRedirect, string(TripLoop), cmp.Or(out.commit, out.wip)
 			res.Findings = []string{loopFinding("the model provider refused its repeated tool calls: " + res.Summary)}
 			return res
 		}

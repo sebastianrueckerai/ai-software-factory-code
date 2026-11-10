@@ -12,7 +12,18 @@ import (
 // The interim push of a session's work in progress, factoryd's half of
 // the check-in's shipping: the worker's half (its /wip, which stages one
 // WIP commit of its own on the session's start and ships it as a bundle)
-// is re-landed by a later card; this half asks, guards and pushes.
+// answers, and this half asks, guards and pushes.
+
+// wipOutcome is one interim push's result: the head it landed on the task
+// branch, and the sentence of a push rule's refusal when one refused the
+// work — a refusal the agent can act on, so it reaches the session and
+// the check-in's ask (runner.go). A failure that is no refusal — a pod
+// that hangs, a body that is no bundle, a WIP from another history — is
+// factoryd's or the sandbox's own, and lands nowhere the agent sees.
+type wipOutcome struct {
+	head    string
+	refusal string
+}
 
 // interimPush is the check-in's interim push of the session's work in
 // progress: it asks the running pod's /wip for the work the agent holds,
@@ -23,13 +34,11 @@ import (
 // anything: every failure is logged and recorded, and the check-in runs
 // on — the work stays in the sandbox and the next check-in retries. A
 // report session ships no card's code and pushes nothing, and a session
-// whose start never resolved pushes nothing either. The refusal's
-// delivery into the session and the timeline's wip_pushed step are the
-// next card's. It answers the commit the push landed, "" when none did,
-// which the session's result keeps as its work on the branch.
-func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) string {
+// whose start never resolved pushes nothing either. A push that lands
+// records the wip_pushed timeline step with the commit it landed.
+func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod string, workerStop <-chan struct{}) wipOutcome {
 	if s.report != "" || s.startRef == "" {
-		return ""
+		return wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
 	switch {
@@ -45,15 +54,21 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 		head, err := r.pushWip(ctx, t, s, commit, bundle)
 		if err != nil {
 			r.wipFailure(ctx, t, s, "push", err)
+			if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
+				// the rules judged the work itself, and the work can
+				// change: the refusal is the agent's to act on
+				return wipOutcome{refusal: err.Error()}
+			}
+			return wipOutcome{}
 		}
-		return head
+		r.record(ctx, t.ID, "wip_pushed", map[string]any{"session": s.id, "commit": head})
+		return wipOutcome{head: head}
 	}
-	return ""
+	return wipOutcome{}
 }
 
 // wipFailure records one interim push that did not land: logged for the
-// operator, and a wip_push_failed timeline step for the session's story
-// — the step of a push that landed, wip_pushed, is the next card's.
+// operator, and a wip_push_failed timeline step for the session's story.
 func (r *Runner) wipFailure(ctx context.Context, t Task, s sessionSpec, at string, err error) {
 	log.Printf("task %s: session %s: interim push, at the %s: %v", t.ID, s.id, at, err)
 	r.record(ctx, t.ID, "wip_push_failed", map[string]any{"session": s.id, "at": at, "error": err.Error()})

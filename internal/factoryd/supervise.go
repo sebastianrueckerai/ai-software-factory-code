@@ -534,6 +534,23 @@ func (s *Supervisor) Resume(now time.Time) {
 // memory).
 func (s *Supervisor) Messaged(now time.Time) {
 	s.Resume(now)
+	s.messagedDetectors(now)
+	s.messaged, s.messagedOnce, s.messagedAt = true, true, now
+}
+
+// messagedInTrip arms the stuck rule for a message factoryd itself
+// delivered into the running session mid-trip — the interim push's
+// refusal (wippush.go) — while the trip in hand stays for the check-in
+// that is still to judge it: everything Messaged arms applies, minus
+// the resume.
+func (s *Supervisor) messagedInTrip(now time.Time) {
+	s.messagedDetectors(now)
+	s.messaged, s.messagedOnce, s.messagedAt = true, true, now
+}
+
+// messagedDetectors starts the command detectors afresh at a delivered
+// message; the alternation memory (contents, churn) does not restart.
+func (s *Supervisor) messagedDetectors(now time.Time) {
 	s.sinceChange = 0
 	s.noWriteFrom = now
 	d := s.traces
@@ -541,7 +558,6 @@ func (s *Supervisor) Messaged(now time.Time) {
 	clear(d.failed)
 	clear(d.calls)
 	d.streakKey, d.streak = "", 0
-	s.messaged, s.messagedOnce, s.messagedAt = true, true, now
 }
 
 // stuck is the stuck rule: after a delivered message, a detector trip with

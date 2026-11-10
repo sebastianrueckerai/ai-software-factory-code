@@ -14,8 +14,11 @@ package factoryd
 
 import (
 	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"log"
 	"net"
 	"net/http"
@@ -23,6 +26,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -252,15 +256,17 @@ func TestPushRuleRecordsTheSyncAsItsOwnMerge(t *testing.T) {
 // answers POST /wip as the worker does — one WIP commit of the worker's
 // own shape on the session's start, built in the seed repo by the next
 // queued edit, shipped as a real bundle with the commit named in the
-// Wip-Commit header — and every other route with status, as the message
-// fake does. wipStatus answers /wip with that status instead, and hang
-// holds each /wip ask. It records each ask's bearer, each answer's
-// commit, the task branch's tip as each ask arrived, and the first
-// error a shipped answer met. ship, when set, replaces the WIP commit
-// and bundle the fake would build: it answers the commit to name in the
-// Wip-Commit header and the body to answer with, so a test can ship a
-// commit that does not descend from the start, a forged author and
-// message, or a body that is no bundle.
+// Wip-Commit header — POST /message as the message endpoint does, and
+// every other route with status. wipStatus answers /wip with that status
+// instead, and hang holds each /wip ask. It records each ask's bearer,
+// each answer's commit, the task branch's tip as each ask arrived, the
+// text of each /message, and the first error a shipped answer met; order
+// notes each /wip ask, /message and check-in conversation call as they
+// arrive, so a test can pin their interleaving. ship, when set, replaces
+// the WIP commit and bundle the fake would build: it answers the commit
+// to name in the Wip-Commit header and the body to answer with, so a
+// test can ship a commit that does not descend from the start, a forged
+// author and message, or a body that is no bundle.
 type wipServe struct {
 	mu        sync.Mutex
 	status    int
@@ -272,7 +278,9 @@ type wipServe struct {
 	base, seed, fork, dir  string
 	edits                  []func(dir string)
 	wipAuth, commits, tips []string
+	msgs                   []string
 	err                    error
+	order                  *wipOrder
 	ship                   func(i int, tree string) (string, []byte, error)
 }
 
@@ -281,9 +289,25 @@ func (s *wipServe) start(t *testing.T, r *Runner) {
 	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, req *http.Request) {
 		s.mu.Lock()
 		defer s.mu.Unlock()
+		if req.URL.Path == "/message" {
+			var in struct {
+				Text string `json:"text"`
+			}
+			b, _ := io.ReadAll(req.Body)
+			json.Unmarshal(b, &in)
+			s.msgs = append(s.msgs, in.Text)
+			if s.order != nil {
+				s.order.add("message")
+			}
+			w.WriteHeader(s.status)
+			return
+		}
 		if req.URL.Path != "/wip" {
 			w.WriteHeader(s.status)
 			return
+		}
+		if s.order != nil {
+			s.order.add("wip")
 		}
 		s.wipAuth = append(s.wipAuth, req.Header.Get("Authorization"))
 		if s.hang > 0 {
@@ -381,9 +405,72 @@ func wipRig(t *testing.T, base func(dir string), edits ...func(dir string)) (*Ru
 	objects := &fakeObjectStore{}
 	runner, _, _ := newTestRunner(t, task, newFakeKube(), objects)
 	runner.cfg.GitBaseURL = gitDir
-	serve := &wipServe{status: http.StatusNoContent, base: baseSHA, seed: seed, fork: fork, dir: t.TempDir(), edits: edits}
+	serve := &wipServe{status: http.StatusNoContent, base: baseSHA, seed: seed, fork: fork, dir: t.TempDir(), edits: edits, order: &wipOrder{}}
 	serve.start(t, runner)
 	return runner, objects, serve
+}
+
+// wipOrder notes one run's interleaving: each /wip ask, each /message
+// and each check-in conversation call, in the order they arrived.
+type wipOrder struct {
+	mu sync.Mutex
+	ev []string
+}
+
+func (o *wipOrder) add(ev string) {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	o.ev = append(o.ev, ev)
+}
+
+func (o *wipOrder) all() []string {
+	o.mu.Lock()
+	defer o.mu.Unlock()
+	return slices.Clone(o.ev)
+}
+
+// wipChat is the check-in's model for the interim push's tests: it
+// answers in order, records each call's input — the ask as the check-in
+// read it — and notes each conversation call in the shared order.
+type wipChat struct {
+	answers []CheckinResponse
+	order   *wipOrder
+	mu      sync.Mutex
+	calls   int
+	inputs  []string
+}
+
+func (c *wipChat) Call(_ context.Context, _, _ string, in CheckinRequest) (CheckinResponse, error) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.calls >= len(c.answers) {
+		return CheckinResponse{}, errors.New("no scripted answer left")
+	}
+	ans := c.answers[c.calls]
+	c.calls++
+	c.inputs = append(c.inputs, in.Input)
+	if c.order != nil {
+		c.order.add("checkin")
+	}
+	return ans, nil
+}
+
+// wipContinue is the check-in answer that lets the session run on
+// without posting a message of its own.
+var wipContinue = CheckinResponse{Text: `{"decision":"continue","reason":"the work goes on"}`}
+
+// wipSteps counts the steps named step on the task's timeline.
+func wipSteps(t *testing.T, objects *fakeObjectStore, taskID, step string) int {
+	t.Helper()
+	b, _ := objects.Get(context.Background(), "sessions/"+taskID+"/timeline.jsonl")
+	n := 0
+	for _, line := range strings.Split(strings.TrimSpace(string(b)), "\n") {
+		var m map[string]any
+		if json.Unmarshal([]byte(line), &m) == nil && m["step"] == step {
+			n++
+		}
+	}
+	return n
 }
 
 // wipGoOn is the check-in answer that keeps the session running, one per
@@ -392,12 +479,13 @@ var wipGoOn = CheckinResponse{Text: `{"decision":"message","guidance":"go on"}`}
 
 // Every check-in ships the session's work in progress: factoryd asks
 // the pod's /wip with the session's bearer, and pushes the shipped WIP
-// — one commit of the worker's own on the session's start, its objects
-// as a bundle — to the task branch, each push replacing the tip with
-// the newest tree, so the branch holds exactly one commit past the
-// start after two check-ins, and the ask that follows sees the push
-// before it landed. The session's own end push then lands its commit
-// the same way, not refused for the replaced tip.
+// — the worker's own commit on the session's start, its objects as a
+// bundle — as factoryd's own commit built from the shipped tree, to the
+// task branch, each push replacing the tip with the newest tree, so the
+// branch holds exactly one commit past the start after two check-ins,
+// and the ask that follows sees the push before it landed. The session's
+// own end push then lands its own commit the same way, not refused for
+// the replaced tip.
 func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil,
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
@@ -426,12 +514,37 @@ func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 			t.Fatalf("WIP %s parents = %q, want the worker's own shape on the start", c, got)
 		}
 	}
-	if serve.tips[0] != serve.base || serve.tips[1] != serve.commits[0] {
-		t.Fatalf("task branch tips as the asks arrived = %q, want the base, then the first WIP landed", serve.tips)
+	if serve.tips[0] != serve.base {
+		t.Fatalf("task branch tip as the first ask arrived = %q, want the base", serve.tips[0])
 	}
+	// the landed heads are factoryd's own commits — the shipped tree, the
+	// start as the only parent, the factory's identity and message — never
+	// the commits the sandbox made
+	first := serve.tips[1]
 	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
-	if tip != serve.commits[1] {
-		t.Fatalf("task branch = %s, want the second check-in's WIP %s", tip, serve.commits[1])
+	if first == serve.commits[0] || tip == serve.commits[1] {
+		t.Fatalf("landed heads = %s, %s; want factoryd's own commits, not the shipped WIPs %s, %s", first, tip, serve.commits[0], serve.commits[1])
+	}
+	for i, c := range []string{first, tip} {
+		if got, _ := wipGitRun(serve.fork, nil, "rev-list", "--parents", "-n", "1", c); got != c+" "+serve.base {
+			t.Fatalf("the landed head's parents = %q, want the start alone as its parent", got)
+		}
+		shipped, _ := wipGitRun(serve.seed, nil, "rev-parse", serve.commits[i]+"^{tree}")
+		if got, _ := wipGitRun(serve.fork, nil, "rev-parse", c+"^{tree}"); got != shipped {
+			t.Fatalf("the landed head's tree = %s, want the shipped WIP's tree %s", got, shipped)
+		}
+		if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%an <%ae>", c); got != "factory-agent <factory-agent@factory.local>" {
+			t.Fatalf("the landed head's author = %q, want the factory's own identity", got)
+		}
+		if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%s", c); got != "factory task t2: work in progress" {
+			t.Fatalf("the landed head's subject = %q, want the interim push's own message", got)
+		}
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 2 {
+		t.Fatalf("wip_pushed steps = %d, want one per landed push", n)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
 	}
 	if got := wipRun(t, "-C", serve.fork, "rev-list", "--count", serve.base+".."+tip); got != "1" {
 		t.Fatalf("commits past the start = %s, want the one WIP: each push replaces the tip", got)
@@ -547,5 +660,284 @@ func TestInterimPushToleratesAPodThatFailsOrHangs(t *testing.T) {
 				t.Fatalf("task branch = %s, want the start alone: nothing was pushed", tip)
 			}
 		})
+	}
+}
+
+// The shipped body is verified as a bundle before anything is taken from
+// it: a body that is no bundle — whatever its header says it ships — is
+// refused, nothing is fetched from it, nothing is pushed, and the
+// refusal is no message to the agent: the sandbox's answer is not the
+// agent's to fix.
+func TestInterimPushRefusesABodyThatIsNoBundle(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		return "0123456789012345678901234567890123456789", []byte("# v2 git bundle\ngitdir: /etc/passwd\n-to /nowhere\n"), nil
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in ran on", res, err, chat.calls)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	if len(serve.commits) != 1 || len(serve.wipAuth) != 1 {
+		t.Fatalf("the pod shipped %d WIPs under %d asks, want the one refused under one ask", len(serve.commits), len(serve.wipAuth))
+	}
+	if len(serve.msgs) != 0 {
+		t.Fatalf("the pod was messaged %q, want no message: a broken body is no refusal the agent can act on", serve.msgs)
+	}
+	step := timelineStep(t, objects, "t2", "wip_push_failed")
+	if !strings.Contains(fmt.Sprint(step["error"]), "the shipped body is no bundle") {
+		t.Fatalf("the wip_push_failed step = %v, want the no-bundle refusal", step)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+		t.Fatalf("wip_pushed steps = %d, want none: nothing was pushed", n)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+		t.Fatalf("task branch = %s, want the start alone: the body was refused", tip)
+	}
+}
+
+// A WIP that does not descend from the session's start — a commit from
+// another history, the shape no worker /wip builds — is refused: it is
+// not the session's work, whatever tree it carries. Nothing is pushed,
+// and the refusal is no message to the agent.
+func TestInterimPushRefusesAWipFromAnotherHistory(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		rogue, err := wipGitRun(serve.seed, ruleIdentity, "commit-tree", tree) // a root commit: no parent at all
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", rogue); err != nil {
+			return "", nil, err
+		}
+		bundle := filepath.Join(serve.dir, "rogue.bundle")
+		if _, err := wipGitRun(serve.seed, nil, "bundle", "create", bundle, "refs/heads/wip"); err != nil {
+			return "", nil, err
+		}
+		b, err := os.ReadFile(bundle)
+		return rogue, b, err
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in ran on", res, err, chat.calls)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	if len(serve.msgs) != 0 {
+		t.Fatalf("the pod was messaged %q, want no message: another history is no refusal the agent can act on", serve.msgs)
+	}
+	step := timelineStep(t, objects, "t2", "wip_push_failed")
+	if !strings.Contains(fmt.Sprint(step["error"]), "does not descend from the session's start") {
+		t.Fatalf("the wip_push_failed step = %v, want the ancestry refusal", step)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+		t.Fatalf("wip_pushed steps = %d, want none: nothing was pushed", n)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+		t.Fatalf("task branch = %s, want the start alone: the WIP was refused", tip)
+	}
+}
+
+// The pushed commit is factoryd's own, never the sandbox's: a WIP whose
+// commit carries a forged author and a message with closing keywords of
+// its own choosing lands as the commit factoryd builds from the shipped
+// tree — the factory's identity, the interim push's message, the start
+// as the only parent — and the forged commit itself never reaches the
+// branch.
+func TestInterimPushBuildsItsOwnCommitFromTheShippedTree(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	forge := []string{"GIT_AUTHOR_NAME=Evil Agent", "GIT_AUTHOR_EMAIL=evil@sandbox.local",
+		"GIT_COMMITTER_NAME=Evil Agent", "GIT_COMMITTER_EMAIL=evil@sandbox.local"}
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		forged, err := wipGitRun(serve.seed, forge, "commit-tree", tree, "-p", serve.base,
+			"-m", "Closes #2\n\nthe closing keyword the sandbox chose")
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", forged); err != nil {
+			return "", nil, err
+		}
+		bundle := filepath.Join(serve.dir, "forged.bundle")
+		if _, err := wipGitRun(serve.seed, nil, "bundle", "create", bundle, serve.base+"..refs/heads/wip"); err != nil {
+			return "", nil, err
+		}
+		b, err := os.ReadFile(bundle)
+		return forged, b, err
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in ran on", res, err, chat.calls)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if tip == serve.commits[0] {
+		t.Fatalf("task branch = the sandbox's forged commit %s, want factoryd's own", tip)
+	}
+	if got, _ := wipGitRun(serve.fork, nil, "rev-list", "--parents", "-n", "1", tip); got != tip+" "+serve.base {
+		t.Fatalf("the landed head's parents = %q, want the start alone as its parent", got)
+	}
+	shipped, _ := wipGitRun(serve.seed, nil, "rev-parse", serve.commits[0]+"^{tree}")
+	if got, _ := wipGitRun(serve.fork, nil, "rev-parse", tip+"^{tree}"); got != shipped {
+		t.Fatalf("the landed head's tree = %s, want the shipped tree %s: the work itself lands", got, shipped)
+	}
+	if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%an <%ae>", tip); got != "factory-agent <factory-agent@factory.local>" {
+		t.Fatalf("the landed head's author = %q, want the factory's own identity", got)
+	}
+	if got, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%cn <%ce>", tip); got != "factory-agent <factory-agent@factory.local>" {
+		t.Fatalf("the landed head's committer = %q, want the factory's own identity", got)
+	}
+	if body, _ := wipGitRun(serve.fork, nil, "log", "-1", "--format=%B", tip); strings.Contains(body, "Closes #2") || !strings.Contains(body, "factory task t2: work in progress") {
+		t.Fatalf("the landed head's message = %q, want the interim push's own, not the forged", body)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
+		t.Fatalf("wip_pushed steps = %d, want the one push", n)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
+	}
+}
+
+// The interim push fires before the check-in conversation opens: exactly
+// one /wip ask precedes the conversation's first call, the head it lands
+// records one wip_pushed timeline step carrying the commit, and the
+// ask's facts name the head, so the check-in judges the session with its
+// shipped work in hand.
+func TestInterimPushFiresBeforeTheCheckinAndNamesItsHead(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{{ToolName: "card_facts"}, wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls != 2 {
+		t.Fatalf("result = (%+v, %v) after %d calls, want the session's own end after the check-in read the facts", res, err, chat.calls)
+	}
+	serve.mu.Lock()
+	if len(serve.wipAuth) != 1 {
+		serve.mu.Unlock()
+		t.Fatalf("the pod saw %d /wip asks, want exactly one before the check-in", len(serve.wipAuth))
+	}
+	if len(serve.msgs) != 0 {
+		serve.mu.Unlock()
+		t.Fatalf("the pod was messaged %q, want no message: the push landed", serve.msgs)
+	}
+	serve.mu.Unlock()
+	if order := serve.order.all(); !slices.Equal(order, []string{"wip", "checkin", "checkin"}) {
+		t.Fatalf("the run's order = %q, want the one /wip ask before the conversation's calls", order)
+	}
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
+		t.Fatalf("wip_pushed steps = %d, want the one push", n)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
+	}
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	if len(chat.inputs) != 2 || !strings.Contains(chat.inputs[1], `"wip_head":"`+tip+`"`) {
+		t.Fatalf("the ask's facts after card_facts = %q, want the head %s named", chat.inputs, tip)
+	}
+}
+
+// A push rule's refusal reaches the running session and its check-in:
+// the workflow-directory rule's sentence is posted into the session as
+// one /message — with the work still in the sandbox — and named in the
+// ask's messages, so the check-in judges the session knowing its work
+// was refused, not as the session's last line.
+func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: false\n"), 0o644)
+	})
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in judged the refusal", res, err, chat.calls)
+	}
+	serve.mu.Lock()
+	if len(serve.wipAuth) != 1 {
+		serve.mu.Unlock()
+		t.Fatalf("the pod saw %d /wip asks, want exactly one before the check-in", len(serve.wipAuth))
+	}
+	if len(serve.msgs) != 1 || !strings.Contains(serve.msgs[0], ".forgejo/") ||
+		!strings.Contains(serve.msgs[0], "revert the workflow directory change") ||
+		!strings.Contains(serve.msgs[0], "the rule lets no agent change it") {
+		serve.mu.Unlock()
+		t.Fatalf("the pod was messaged %q, want exactly the refusal's sentence", serve.msgs)
+	}
+	refused := serve.msgs[0]
+	serve.mu.Unlock()
+	if order := serve.order.all(); !slices.Equal(order, []string{"wip", "message", "checkin"}) {
+		t.Fatalf("the run's order = %q, want the ask, then the refusal's message, then the conversation", order)
+	}
+	chat.mu.Lock()
+	if len(chat.inputs) != 1 || !strings.Contains(chat.inputs[0], "Guidance delivered to the agent this session:") || !strings.Contains(chat.inputs[0], refused) {
+		chat.mu.Unlock()
+		t.Fatalf("the ask's statement = %q, want the refusal named in the ask's messages", chat.inputs)
+	}
+	chat.mu.Unlock()
+	step := timelineStep(t, objects, "t2", "wip_push_failed")
+	if !strings.Contains(fmt.Sprint(step["error"]), refused) {
+		t.Fatalf("the wip_push_failed step = %v, want the refusal", step)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+		t.Fatalf("wip_pushed steps = %d, want none: the push was refused", n)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+		t.Fatalf("task branch = %s, want the start alone: the WIP was refused", tip)
+	}
+}
+
+// A session that dies without a result line — OOMKilled, no worker push
+// — still hands its next session the interim head: the result carries
+// the last head the check-in's interim push landed, so the card resumes
+// from the pushed branch, not from the base.
+func TestASessionThatDiesCarriesItsInterimHeadInItsResult(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil, commands(0, 24))
+	if err != nil {
+		t.Fatal(err)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2")
+	if tip == serve.base {
+		t.Fatalf("task branch = the start, want the interim push's head landed before the session died")
+	}
+	if res.Commit != tip {
+		t.Fatalf("the dead session's result commit = %q, want the interim head %s", res.Commit, tip)
+	}
+	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
+		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
 	}
 }
