@@ -444,3 +444,25 @@ func TestActivityPin(t *testing.T) {
 		}
 	}
 }
+
+// [no_trip_while_ci_runs] The checks wait's bound is the waits row waits.checks
+// of the pinned version: 12 min under waits.checks: 12m, so a wait at 10 min is
+// inside it and one at 12 min is past it; the row unset, DefaultWaits.Checks
+// (50 min), never the old code default of 10 min.
+func TestPinnedBoundOfTheChecksWaitIsTheWaitsRow(t *testing.T) {
+	pinned, current := testPolicyVersion(), testPolicyVersion()
+	pinned.Document.Waits.Checks = 12 * time.Minute
+	current.ID = 8
+	bound := PinnedBound(func() policy.Version { return current },
+		func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil })
+	ctx := context.Background()
+	if got := bound(ctx, ActivityWaitChecks, 7, policy.ReviewParts); got != 12*time.Minute {
+		t.Fatalf("pinned waits.checks 12m: bound = %s, want 12m0s", got)
+	}
+	if got := bound(ctx, ActivityWaitChecks, 0, policy.ReviewParts); got != 50*time.Minute {
+		t.Fatalf("waits.checks unset: bound = %s, want 50m0s", got)
+	}
+	if got := 10 * time.Minute; got >= bound(ctx, ActivityWaitChecks, 7, 1) {
+		t.Fatalf("a checks wait at %s is past its bound", got)
+	}
+}
