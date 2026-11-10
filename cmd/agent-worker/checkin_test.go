@@ -29,7 +29,7 @@ import (
 
 func checkinHandler(t *testing.T, ck *checkinServe) http.Handler {
 	t.Helper()
-	return messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil }, ck, nil)
+	return messageHandler(mustHash(t, testMessageHash), newPushGate(), func(context.Context, string, string) error { return nil }, ck)
 }
 
 func postTool(t *testing.T, h http.Handler, auth, body string) (int, string) {
