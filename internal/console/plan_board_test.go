@@ -455,7 +455,7 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 		return r.do(req, ck)
 	}
 	if rec := hand("t-nogo", s.csrf); rec.Code != http.StatusBadRequest ||
-		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done." || len(r.handed) != 0 {
+		strings.TrimSpace(rec.Body.String()) != "Card #17 takes one of its choices: Done. A remark goes on the issue." || len(r.handed) != 0 {
 		t.Fatalf("the card that offers no go: %d %q, handed %v", rec.Code, rec.Body, r.handed)
 	}
 	rec := hand("t-wait", s.csrf)
@@ -556,7 +556,7 @@ func TestWordsThatNameTheGoChoiceHandTheCardOver(t *testing.T) {
 		}
 	}
 
-	const refusal = "Card #15 takes one of its choices: Have the factory do it, Done."
+	const refusal = "Card #15 takes one of its choices: Have the factory do it, Done. A remark goes on the issue."
 	r := newCard()
 	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-wait", Text: "Please do it"})
 	if err == nil || err.Error() != refusal {
@@ -581,6 +581,13 @@ func TestGoTailSurvivesTheClientLeaving(t *testing.T) {
 	r.tasks.tasks = []factoryd.BoardTask{waiting}
 	ctx, leave := context.WithCancel(t.Context())
 	defer leave()
+	act := r.c.cfg.Act
+	r.c.cfg.Act = func(c context.Context, in factoryd.ActInput) (factoryd.ActResult, error) {
+		if err := c.Err(); err != nil {
+			return factoryd.ActResult{}, err
+		}
+		return act(c, in)
+	}
 	filed := r.c.cfg.GoCard
 	r.c.cfg.GoCard = func(c context.Context, id, by string) (int64, error) {
 		n, err := filed(c, id, by)

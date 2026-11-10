@@ -311,7 +311,7 @@ func TestRollFailedCardAnswers(t *testing.T) {
 			detail: map[string]any{"action": factoryd.AnswerClose, "case_id": int64(1), "answer": "Close", "value": factoryd.AnswerClose, "comment": int64(1)}})
 
 	r, ev, before, code, body = click(t, "", "retry it next week")
-	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close.\n" || ev.count() != before || len(r.fg.patched) != 0 {
+	if code != http.StatusBadRequest || body != "Card #42 takes one of its choices: Retry the roll, Park, Close. A remark goes on the issue.\n" || ev.count() != before || len(r.fg.patched) != 0 {
 		t.Fatalf("words = %d %q, %d rows, patched %v; want 400 naming the choices, nothing done", code, body, ev.count()-before, r.fg.patched)
 	}
 }
@@ -388,6 +388,11 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	}
 	got, _ = actedOnce(t, r)
 	equal(t, "the words", got, act(factoryd.ActNote, "Use Postgres."))
+
+	r, _, _, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
+	if code != http.StatusBadRequest || r.fg.comments[comments] != "" || len(r.fg.patched) != 0 || len(r.acted) != 0 {
+		t.Errorf("words on a choice card = %d, comment %q, patched %v, acted %d; want a refusal and nothing posted", code, r.fg.comments[comments], r.fg.patched, len(r.acted))
+	}
 
 	_, _, _, code, body := click(t, url.Values{"value": {"nonsense"}})
 	if code != http.StatusBadRequest || !strings.Contains(body, "Have the factory do it, Wait for it, Done") {
