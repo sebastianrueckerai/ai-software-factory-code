@@ -196,7 +196,10 @@ func fitting(t factoryd.Task, f capFacts) string {
 	case "failed":
 		return "close ends it (close)"
 	case "done", "closed":
-		return "the card is final: a new card continues the work"
+		if t.Track == policy.TrackPlan && t.Status == "done" {
+			return "Close with a note ends a plan that still holds production; a new card continues the work"
+		}
+		return "a new card continues the work"
 	}
 	return "wait a moment"
 }
@@ -305,11 +308,16 @@ func (c *Console) approves(ctx context.Context, a actor, repository, what string
 		return nil
 	}
 	log.Printf("console: %s is no approver of %s: %s refused", a.s.user, repository, what)
-	name := repository
+	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", c.projectName(ctx, repository), what))
+}
+
+// projectName is the name of the project of repository, the repository's
+// own when none is read.
+func (c *Console) projectName(ctx context.Context, repository string) string {
 	if p, ok, err := c.projectAt(ctx, repository); err == nil && ok {
-		name = p.Name
+		return p.Name
 	}
-	return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may %s.", name, what))
+	return repository
 }
 
 // processOfCard is the name of the process card t follows: its project's
@@ -1850,11 +1858,13 @@ func (c *Console) doChatFund(ctx context.Context, a actor, name string, eur floa
 }
 
 // doClose closes card id as the human, its note commented first when
-// given (closeIssue); a failed card or a done plan between rounds closes
-// too. A card waiting on a live case closes through Act: an agent card's
-// Act closes its issue as factoryd's recorded close and has the note
-// posted after it as the human's, and a human card's close resolves its
-// case once its own close went through (choiceDone).
+// given (closeIssue); a failed card closes too. A plan at rest (done,
+// failed or closed) closes through closePlan: the note becomes the reason
+// of each open criterion's waiver. A
+// card waiting on a live case closes through Act: an agent card's Act
+// closes its issue as factoryd's recorded close and has the note posted
+// after it as the human's, and a human card's close resolves its case once
+// its own close went through (choiceDone).
 func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string, error) {
 	note = strings.TrimSpace(note)
 	if len(note) > 64<<10 {
@@ -1864,15 +1874,11 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	if err != nil {
 		return "", err
 	}
+	if factoryd.ClosablePlan(t) {
+		return c.closePlan(ctx, a, t, note)
+	}
 	if factoryd.Final(t.Status) && t.Status != "failed" {
-		between, err := factoryd.BetweenRounds(ctx, c.cfg.Tasks, t)
-		if err != nil {
-			log.Printf("console: %s closes %s: the plan: %v", a.s.user, t.ID, err)
-			return "", refuse(http.StatusInternalServerError, "The plan could not be read: "+errText(err)+". Try again in a moment.")
-		}
-		if !between {
-			return "", wrongState(t, c.capFactsOf(ctx, t), "a card that is not final")
-		}
+		return "", refuse(http.StatusConflict, fmt.Sprintf("Card #%d %s, so there is nothing to close: %s.", t.IssueNumber, factoryd.StatusMeaning(t.Status), fitting(t, capFacts{})))
 	}
 	k, err := c.newestCase(ctx, t)
 	if err != nil {
@@ -1893,6 +1899,83 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	return c.choiceDone(ctx, a, t, k.ID, closing, said, posted)
 }
 
+// closePlan closes plan t at rest as a. Factoryd checks first what could
+// refuse the Close (the role, the note, the plan's state), so a refused Close
+// changes nothing; then the issue's own dependencies come off
+// (freeForClose), as Forgejo refuses to close over them; then factoryd
+// waives every open criterion with the note as the reason, ends the plan's
+// criteria asks and, once every card is final, records plan_closed, in one
+// write, an approver's act as the waive press is; then the issue hears the
+// closing words and closes as a, so the card ends closed. An issue close
+// that fails after the write is finished by the sweep.
+func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
+	approver := c.isApprover(ctx, a.s.user, t.Repository)
+	if err := c.cfg.CheckClosePlan(ctx, t.ID, note, approver); err != nil {
+		return "", c.planCloseRefusal(ctx, a, t, err)
+	}
+	freed := ""
+	if t.Status != "closed" {
+		var err error
+		if freed, err = c.freeForClose(ctx, a, t, ""); err != nil {
+			return "", err
+		}
+	}
+	n, words, merged, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, approver)
+	if err != nil {
+		return "", c.planCloseRefusal(ctx, a, t, err)
+	}
+	if n > 0 {
+		log.Printf("console: %s waived %d criteria of %s via %s", a.s.user, n, t.ID, a.via)
+		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCriterionDecided, map[string]any{"criteria": n, "verb": "waived", "reason": note})
+	}
+	if t.IssueNumber != 0 {
+		if err := c.commentOnce(ctx, a, t, words); err != nil {
+			return "", &forgejoRefusal{what: "post the closing words", err: err}
+		}
+		if freed != "" {
+			if err := c.comment(ctx, a, t, freed, nil); err != nil {
+				return "", &forgejoRefusal{what: "post the removed dependencies", err: err}
+			}
+		}
+	}
+	if _, err := c.closeIssueNoted(ctx, a, t, words); err != nil {
+		return "", err
+	}
+	card := "plan " + t.ID
+	if t.IssueNumber != 0 {
+		card = fmt.Sprintf("plan #%d", t.IssueNumber)
+	}
+	switch {
+	case n > 0 && merged:
+		return fmt.Sprintf("Closed %s: its open criteria are waived, and its merged cards stay on main.", card), nil
+	case n > 0:
+		return fmt.Sprintf("Closed %s: its open criteria are waived.", card), nil
+	case merged:
+		return fmt.Sprintf("Closed %s: its merged cards stay on main.", card), nil
+	}
+	return fmt.Sprintf("Closed %s.", card), nil
+}
+
+// planCloseRefusal is the refusal of a plan's Close that factoryd refused:
+// it names the state and the action that fits.
+func (c *Console) planCloseRefusal(ctx context.Context, a actor, t factoryd.Task, err error) error {
+	switch {
+	case errors.Is(err, factoryd.ErrNotApprover):
+		return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d while it has open criteria, because Close waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNoReason):
+		return refuse(http.StatusBadRequest, fmt.Sprintf("Plan #%d has open criteria, and Close waives each with your note as the reason: write the note and close again.", t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNoteTooLong):
+		return refuse(http.StatusBadRequest, fmt.Sprintf("The note of a plan's Close is at most %d bytes, as it becomes each waiver's reason: shorten it.", factoryd.MaxWaiverNote))
+	case errors.Is(err, factoryd.ErrPlanClosed):
+		return refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is closed already: reload the board.", t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNotDonePlan):
+		return refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is no longer at rest, so Close no longer fits: reload the board.", t.IssueNumber))
+	}
+	log.Printf("console: %s closes plan %s: %v", a.s.user, t.ID, err)
+	text, _, _ := strings.Cut(errText(err), " (type: ")
+	return refuse(http.StatusInternalServerError, "The plan could not be closed: "+text+". Reload the board and press Close again, or ask an approver.")
+}
+
 // closeIssue closes card t's issue as a, its note commented first when
 // given, and answers the note's comment (0 for none): intake ends the card
 // as on any writer's close. A card with no issue factoryd closes alone, its
@@ -1909,24 +1992,55 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 			return "", 0, &forgejoRefusal{what: "post the note", err: err}
 		}
 	}
+	said, err := c.closeIssueNoted(ctx, a, t, note)
+	return said, posted, err
+}
+
+// commentOnce posts text on card t's issue as a unless a comment with that
+// body stands already: whichever of the console and the sweep posts a
+// plan's closing words first, the issue carries them once.
+func (c *Console) commentOnce(ctx context.Context, a actor, t factoryd.Task, text string) error {
+	path, err := issuePath(t, "/comments")
+	if err != nil {
+		return err
+	}
+	var have []struct {
+		Body string `json:"body"`
+	}
+	if err := c.as(ctx, a.s, http.MethodGet, path, nil, http.StatusOK, &have); err != nil {
+		return err
+	}
+	if slices.ContainsFunc(have, func(h struct {
+		Body string `json:"body"`
+	}) bool {
+		return h.Body == text
+	}) {
+		return nil
+	}
+	return c.comment(ctx, a, t, text, nil)
+}
+
+// closeIssueNoted is closeIssue after its note was posted: it closes the
+// issue, or the card alone, and records note on the close.
+func (c *Console) closeIssueNoted(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
 	if t.IssueNumber == 0 || t.Status == "merged" {
 		if err := c.cfg.CloseCard(ctx, t.ID, a.s.user); err != nil {
 			log.Printf("console: %s closes %s: %v", a.s.user, t.ID, err)
-			return "", 0, refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
+			return "", refuse(http.StatusConflict, "The card could not be closed: "+errText(err)+". Reload the board and press the button again.")
 		}
 		log.Printf("console: %s closed %s (%s, %s) via %s", a.s.user, t.ID, t.Repository, t.Status, a.via)
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
 		if t.IssueNumber != 0 {
-			return fmt.Sprintf("Closed #%d.", t.IssueNumber), posted, nil
+			return fmt.Sprintf("Closed #%d.", t.IssueNumber), nil
 		}
-		return "Closed card " + t.ID + ".", posted, nil
+		return "Closed card " + t.ID + ".", nil
 	}
 	if err := c.editIssue(ctx, a, t, map[string]string{"state": "closed"}, nil); err != nil {
-		return "", 0, &forgejoRefusal{what: "close the issue", err: err}
+		return "", &forgejoRefusal{what: "close the issue", err: err}
 	}
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
-	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), posted, nil
+	return fmt.Sprintf("Closed #%d; factoryd ends the card.", t.IssueNumber), nil
 }
 
 // freeForClose removes the open dependencies card t's issue holds before

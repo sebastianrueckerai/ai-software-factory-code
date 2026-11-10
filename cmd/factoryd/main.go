@@ -639,6 +639,12 @@ func main() {
 		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
 			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
 		},
+		CheckClosePlan: func(ctx context.Context, id, note string, approver bool) error {
+			return runner.CheckClosePlan(ctx, id, note, approver)
+		},
+		CloseHeldPlan: func(ctx context.Context, id, by, note string, approver bool) (int, string, bool, error) {
+			return runner.CloseHeldPlan(ctx, id, by, note, approver)
+		},
 		ConfirmDeliveredCriteria: func(ctx context.Context, id, by, line string) (int, error) {
 			return factoryd.ConfirmDeliveredCriteria(ctx, store, id, by, line)
 		},
