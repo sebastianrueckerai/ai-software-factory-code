@@ -124,6 +124,13 @@ var gitConfig = []string{"http.lowSpeedLimit=1000", "http.lowSpeedTime=60", "pac
 // environment. At its deadline, at most 2 minutes, its whole process group
 // is killed: git's remote helper holds the output pipe.
 func git(ctx context.Context, dir, login string, args ...string) (string, error) {
+	return gitEnv(ctx, dir, login, nil, args...)
+}
+
+// gitEnv is git under extra environment entries — the push rules' index
+// file, a commit identity — which reach the process as its environment,
+// never an argument or an error.
+func gitEnv(ctx context.Context, dir, login string, env []string, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
@@ -138,6 +145,7 @@ func git(ctx context.Context, dir, login string, args ...string) (string, error)
 		key, value, _ := strings.Cut(c, "=")
 		cmd.Env = append(cmd.Env, fmt.Sprintf("GIT_CONFIG_KEY_%d=%s", i, key), fmt.Sprintf("GIT_CONFIG_VALUE_%d=%s", i, value))
 	}
+	cmd.Env = append(cmd.Env, env...)
 	ownProcessGroup(cmd)
 	cmd.Cancel = func() error { return killProcessGroup(cmd) }
 	cmd.WaitDelay = 5 * time.Second

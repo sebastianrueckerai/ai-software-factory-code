@@ -1617,8 +1617,8 @@ func TestRunSessionCheckinHandoverStopsGracefully(t *testing.T) {
 	}
 	worker.mu.Lock()
 	defer worker.mu.Unlock()
-	if !slices.Equal(worker.texts, []string{"POST /brief "}) {
-		t.Fatalf("worker got %q, want only the start brief: a handover pushes nothing to the pod", worker.texts)
+	if texts := withoutWipAsks(worker.texts); !slices.Equal(texts, []string{"POST /brief "}) {
+		t.Fatalf("worker got %q, want only the start brief: a handover pushes nothing to the pod", texts)
 	}
 	// the workflow writes the check-in's step for a riding outcome; the
 	// runner writes none
