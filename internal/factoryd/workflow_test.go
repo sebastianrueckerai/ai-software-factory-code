@@ -156,12 +156,13 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 	h := &workflowHarness{env: suite.NewTestWorkflowEnvironment(), logs: logs}
 	h.env.RegisterWorkflowWithOptions(w.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
 	for name, fn := range map[string]any{
-		ActivityEnsureIssue:     func(ctx context.Context, taskID string) error { return nil },
-		ActivitySetState:        func(ctx context.Context, taskID, state string) error { return nil },
-		ActivitySetGate:         func(ctx context.Context, taskID, gate string, since time.Time) error { return nil },
-		ActivityRunSession:      func(ctx context.Context, in SessionInput) (SessionResult, error) { return SessionResult{}, nil },
-		ActivityOpenPullRequest: func(ctx context.Context, taskID, sha string) (PullRequest, error) { return PullRequest{}, nil },
-		ActivityWaitChecks:      func(ctx context.Context, taskID, sha string) (ChecksResult, error) { return ChecksResult{}, nil },
+		ActivityEnsureIssue:        func(ctx context.Context, taskID string) error { return nil },
+		ActivitySetState:           func(ctx context.Context, taskID, state string) error { return nil },
+		ActivitySetGate:            func(ctx context.Context, taskID, gate string, since time.Time) error { return nil },
+		ActivityRunSession:         func(ctx context.Context, in SessionInput) (SessionResult, error) { return SessionResult{}, nil },
+		ActivityOpenPullRequest:    func(ctx context.Context, taskID, sha string) (PullRequest, error) { return PullRequest{}, nil },
+		ActivityCopyUpstreamImages: func(ctx context.Context, taskID, sha string) ([]string, error) { return nil, nil },
+		ActivityWaitChecks:         func(ctx context.Context, taskID, sha string) (ChecksResult, error) { return ChecksResult{}, nil },
 		ActivityHeadChecks: func(ctx context.Context, taskID, sha string) (ChecksResult, error) {
 			return ChecksResult{State: ChecksSuccess}, nil
 		},

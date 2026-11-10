@@ -119,6 +119,7 @@ const (
 	ActivitySetGate                     = "SetGate"
 	ActivityRunSession                  = "RunSession"
 	ActivityOpenPullRequest             = "OpenPullRequest"
+	ActivityCopyUpstreamImages          = "CopyUpstreamImages"
 	ActivityWaitChecks                  = "WaitChecks"
 	ActivityHeadChecks                  = "HeadChecks"
 	ActivityPullRequestMerged           = "PullRequestMerged"
@@ -643,6 +644,7 @@ func (w TaskWorkflow) Run(ctx workflow.Context, taskID string) (string, error) {
 	run.caseQueue = workflow.GetVersion(ctx, "case-queue", workflow.DefaultVersion, versionCaseQueue)
 	run.queueWaits = workflow.GetVersion(ctx, "queue-waits", workflow.DefaultVersion, versionQueueWaits)
 	run.checksWait = workflow.GetVersion(ctx, "checks-wait", workflow.DefaultVersion, versionChecksWait)
+	run.upstreamCopy = workflow.GetVersion(ctx, "upstream-copy", workflow.DefaultVersion, versionUpstreamCopy)
 	// its value is unused; both bounds at the drained version, so only a
 	// history that carries the marker runs on
 	workflow.GetVersion(ctx, "blind-proofs", 1, 1)
@@ -1378,6 +1380,14 @@ const (
 	// A run from before drops it, and the comment's words alone answer
 	// the question.
 	versionCaseQueue workflow.Version = 1
+	// versionUpstreamCopy (change id "upstream-copy"): before the pull
+	// request of a verified head opens, or its stages wait when a factory
+	// pull request is open already, the image lines the head adds to
+	// upstream-images.txt are copied into the store, so the pull request's
+	// image build finds them there; a line the upstream cannot serve goes
+	// to the card as a finding and the run goes on. A run from before
+	// copies nothing.
+	versionUpstreamCopy workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1509,6 +1519,7 @@ type taskRun struct {
 	lastCheckinStop   checkinStopMark
 	checkinStop       string           // the check-in spend stop the next trip is (CheckinStop*), "" for any other
 	headHolds         workflow.Version // a moved head is held, not refused (versionHeadHolds)
+	upstreamCopy      workflow.Version // a verified head's new upstream image lines are copied first (versionUpstreamCopy)
 	holds             int              // heads adopted this run (versionHeadHolds)
 	head              string           // the head the running verification's last stage ran on, which verify returns; at versionCases the head the loop knows between verifications, which a trip carries
 	resumeHold        workflow.Version // a resumed run's answer-verify holds a moved head (versionResumeHold)
@@ -3166,10 +3177,16 @@ func (t *taskRun) verify(commit string) (v verdict) {
 	t.head = commit
 	defer func() { v.head = t.head }()
 	if t.factoryPRCard >= versionFactoryPRCard && t.orphanPR {
+		if err := t.copyUpstream(commit); err != nil {
+			return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
+		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "in-review").Get(t.ctx, nil); err != nil {
 			return verdict{final: "failed", reason: "set in-review: " + errMessage(err)}
 		}
 		return t.stages(commit)
+	}
+	if err := t.copyUpstream(commit); err != nil {
+		return verdict{final: "failed", reason: "copy upstream images: " + errMessage(err)}
 	}
 	if err := workflow.ExecuteActivity(t.short, ActivityOpenPullRequest, t.taskID, commit).Get(t.ctx, &t.pr); err != nil {
 		return verdict{final: "failed", reason: "open pull request: " + errMessage(err)}
@@ -4326,6 +4343,32 @@ func (t *taskRun) sessionOptions(remaining time.Duration) workflow.ActivityOptio
 			NonRetryableErrorTypes: []string{errTerminal},
 		},
 	}
+}
+
+// copyUpstream copies the image lines commit adds to upstream-images.txt
+// into the store (versionUpstreamCopy); what the upstream cannot serve is
+// the card's finding, and the run goes on.
+func (t *taskRun) copyUpstream(commit string) error {
+	if t.upstreamCopy < versionUpstreamCopy {
+		return nil
+	}
+	ctx := workflow.WithActivityOptions(t.ctx, workflow.ActivityOptions{
+		StartToCloseTimeout: 30 * time.Minute,
+		RetryPolicy: &temporal.RetryPolicy{
+			InitialInterval:        10 * time.Second,
+			MaximumAttempts:        3,
+			NonRetryableErrorTypes: []string{errTerminal},
+		},
+	})
+	var findings []string
+	if err := workflow.ExecuteActivity(ctx, ActivityCopyUpstreamImages, t.taskID, commit).Get(ctx, &findings); err != nil {
+		return err
+	}
+	if len(findings) > 0 {
+		t.recordFindings("upstream-copy", "card", 0, findings)
+		t.remember("upstream-copy", 0, findings)
+	}
+	return nil
 }
 
 // checksPollMargin is how long the checks wait's poll ends before its
