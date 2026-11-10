@@ -14,6 +14,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path"
 	"slices"
 	"strconv"
 	"strings"
@@ -450,6 +451,34 @@ func reproQuestion(title, poster, reason string) HumanQuestion {
 		Ask:     askOf(title, ""),
 		Why:     "filed by " + poster + ": the reproduction command " + reason,
 		Info:    "No agent builds a card whose reproduction command breaks the sandbox rule. File the issue again with a command that keeps it, then close this card.",
+		Choices: doneChoices(false),
+	}
+}
+
+// workflowPath tells whether p, a path in the repository, sits under a
+// workflow directory; an absolute path is none.
+func workflowPath(p string) bool {
+	clean := path.Clean(p)
+	top, _, _ := strings.Cut(clean, "/")
+	_, ok := WorkflowDir(top)
+	return ok
+}
+
+// workflowOnly tells whether every path in paths sits under a workflow
+// directory; no paths is false. The worker refuses a push that changes
+// one, so no session lands such a card.
+func workflowOnly(paths []string) bool {
+	return len(paths) > 0 && !slices.ContainsFunc(paths, func(p string) bool { return !workflowPath(p) })
+}
+
+// workflowQuestion is the person's card of a card whose files all sit
+// under a workflow directory: the factory's push rule refuses them, so a
+// human opens the pull request from the brief.
+func workflowQuestion(title, brief string) HumanQuestion {
+	return HumanQuestion{
+		Ask:     askOf(title, ""),
+		Why:     "every file of this card sits under a workflow directory (" + strings.Join(WorkflowDirs, ", ") + "), and the factory's push rule refuses changes to workflow files",
+		Info:    "No agent session is bought for it. A human opens the pull request; the brief below says what to change, then close this card.\n\n" + brief,
 		Choices: doneChoices(false),
 	}
 }
@@ -1059,6 +1088,9 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		// the sandbox rule is known at filing: no session discovers it
 		// under GateReproduction, the poster fixes the issue
 		ask, track = reproQuestion(issue.Title, poster, reason), LabelHuman
+	}
+	if track != LabelHuman && workflowOnly(askedDirectories(issue.Body)) {
+		ask, track = workflowQuestion(issue.Title, issue.Body), LabelHuman
 	}
 	if track == LabelHuman {
 		// no runner ever claims a person's card: it waits on a human from

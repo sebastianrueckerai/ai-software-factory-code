@@ -14,6 +14,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -194,6 +195,9 @@ type MonthAlarm struct {
 	Timeline *Timeline
 	// Metrics counts the outcome of the cards the alarm closes; nil counts none.
 	Metrics *telemetry.Metrics
+	// Scrub masks credentials in the refusal the card and the alert show; nil
+	// masks the generic shapes only.
+	Scrub *redact.Scrubber
 }
 
 // Loop checks every interval until ctx ends.
@@ -224,6 +228,7 @@ func (a *MonthAlarm) Check(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
+	m.Refusal = a.Scrub.String(m.Refusal)
 	closeErr := a.closeLifted(ctx, v, m, limit)
 	if limit <= 0 {
 		return closeErr
@@ -321,6 +326,9 @@ func (a *MonthAlarm) file(ctx context.Context, v policy.Version, m MonthSpend, i
 	}
 	limit := v.Document.Budget.MonthEUR
 	link := fmt.Sprintf("%s/%s/src/commit/%s/%s/%s#L%d", a.Forgejo.PublicURL, a.Repo, v.Commit, a.Dir, policy.FilePolicy, line)
+	if outerGuardRefused(m.Refusal, m.EUR, limit) {
+		link = fmt.Sprintf("%s/%s/src/commit/%s/k8s/platform/litellm/helmrelease.yaml", a.Forgejo.PublicURL, a.Repo, v.Commit)
+	}
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", SHA: v.Commit, Source: SourceMonthCap, Author: a.Forgejo.BotUser}
 	t, number, err := fileHumanTask(ctx, a.Store, a.Forgejo, a.Timeline, a.Repo, monthCapCardQuestion(limit, m.Month, m.EUR, link, m.Refusal), nil, t, "")
 	if err != nil {

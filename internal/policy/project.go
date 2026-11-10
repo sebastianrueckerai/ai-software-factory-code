@@ -454,6 +454,11 @@ type ChainConfig struct {
 	// Requires are the commit-status contexts every head must carry green
 	// beside its push runs; absent: none.
 	Requires []string `yaml:"requires,omitempty" json:"requires,omitempty"`
+	// TestContext is the status context that proves a main run tested its
+	// commit. A finished run older than main's newest whose commit shows it
+	// skipped or absent was superseded: its cards take the verdict of the
+	// first later run that tested them. Absent: no run is superseded.
+	TestContext string `yaml:"test_context,omitempty" json:"test_context,omitempty"`
 	// Stall is how long a run or a required context may stay pending
 	// before the chain is stalled; absent: 30m.
 	Stall time.Duration `yaml:"stall,omitempty" json:"stall,omitempty"`
