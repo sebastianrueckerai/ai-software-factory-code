@@ -114,6 +114,10 @@ type ServerOptions struct {
 
 // factoryd names the task and the purpose of its model calls in these
 // headers; the gateway answers a refusal's decision in HeaderDecision.
+// ProxyBudgetRefusal opens the reason of a call LiteLLM's proxy-wide budget,
+// the outer guard behind budget.month_eur, refused.
+const ProxyBudgetRefusal = "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): "
+
 const (
 	HeaderFactoryTask    = "X-Factory-Task"
 	HeaderFactoryPurpose = "X-Factory-Purpose"
@@ -1085,7 +1089,7 @@ func (s *Server) proxy(w http.ResponseWriter, r *http.Request, c *modelCall, bod
 				}
 				json.Unmarshal(respBody, &liteErr) // #nosec G104 -- best-effort message extraction; an empty liteErr.Error.Message on failure still refuses the spend
 				// no key has a budget: LiteLLM's one is the proxy-wide stop
-				decision, reason := policy.RefusedMonthCap, "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): "+liteErr.Error.Message
+				decision, reason := policy.RefusedMonthCap, ProxyBudgetRefusal+liteErr.Error.Message
 				s.auditCall(c, decision, reason, &c.task.SpentEUR)
 				w.Header().Set(HeaderDecision, decision)
 				writeError(w, http.StatusPaymentRequired, "budget_exceeded", reason)
