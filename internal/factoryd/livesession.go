@@ -16,14 +16,18 @@ type LiveSession struct {
 	TaskID, SessionID, Namespace, Pod, MessageToken string
 	StartedAt, Deadline                             time.Time
 	Lines                                           int
+	// SpentAtStart is the card's enforced spend when the session started;
+	// nil where it could not be read.
+	SpentAtStart *float64
 }
 
 func (s *PGStore) PutLiveSession(ctx context.Context, l LiveSession) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
 		ON CONFLICT (task_id) DO UPDATE SET session_id = EXCLUDED.session_id, namespace = EXCLUDED.namespace, pod = EXCLUDED.pod,
-		message_token = EXCLUDED.message_token, started_at = EXCLUDED.started_at, deadline = EXCLUDED.deadline, lines = EXCLUDED.lines`,
-		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines)
+		message_token = EXCLUDED.message_token, started_at = EXCLUDED.started_at, deadline = EXCLUDED.deadline, lines = EXCLUDED.lines,
+		spent_at_start = EXCLUDED.spent_at_start`,
+		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart)
 	return err
 }
 
@@ -34,8 +38,8 @@ func (s *PGStore) SetLiveSessionLines(ctx context.Context, taskID string, lines 
 
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
-	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines
-		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines)
+	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start
+		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LiveSession{}, false, nil
 	}

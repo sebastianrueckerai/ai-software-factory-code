@@ -684,3 +684,22 @@ func TestPGStoreProposalStates(t *testing.T) {
 		t.Fatalf("a state without a capture's JSON = %s, %v", b, err)
 	}
 }
+
+func TestPGStoreLiveSessionKeepsItsSpendBaseline(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	task, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base := 3.54
+	for name, want := range map[string]*float64{"known": &base, "unread": nil} {
+		l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now(), SpentAtStart: want}
+		if err := s.PutLiveSession(ctx, l); err != nil {
+			t.Fatal(err)
+		}
+		got, ok, err := s.LiveSession(ctx, task.ID)
+		if err != nil || !ok || (want == nil) != (got.SpentAtStart == nil) || (want != nil && *got.SpentAtStart != *want) {
+			t.Fatalf("%s: read back %+v, %v, %v; want baseline %v", name, got, ok, err, want)
+		}
+	}
+}
