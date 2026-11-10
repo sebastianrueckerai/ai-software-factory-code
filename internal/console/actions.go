@@ -2443,6 +2443,10 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			unsignalled = "your approving review is on the pull request, but " + unsignalled
 		}
 		if err := c.cfg.ApproveMerge(ctx, q.TaskID, q.PRNumber, a.approver()); err != nil {
+			var unreviewed *factoryd.UnreviewedMergeError
+			if errors.As(err, &unreviewed) {
+				return "", refuse(http.StatusConflict, unreviewed.Error())
+			}
 			log.Printf("console: %s approved PR #%d of %s, the signal failed: %v", a.s.user, q.PRNumber, q.TaskID, err)
 			return "", refuse(http.StatusBadGateway, unsignalled)
 		}

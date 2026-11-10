@@ -3841,3 +3841,60 @@ func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 		t.Fatalf("a card with no size is refused under the large bound: %q", g.OverBound)
 	}
 }
+
+// The project agent's approval of a merge whose review or audit did not run
+// on the head is refused by name, whichever path calls ApproveMerge; the
+// same approval with a review that ran passes, a push resets the rows, and
+// a human's approval passes and records the missing gate.
+func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
+	ctx := context.Background()
+	row := func(kind string, detail map[string]any) Event {
+		return Event{TaskID: "t1", Kind: kind, Detail: detail}
+	}
+	notReviewed := row(EventModelReview, map[string]any{"commit": "c1", "reviewed": false, "reason": "model review not run: gateway deadline"})
+	reviewed := row(EventModelReview, map[string]any{"commit": "c1", "reviewed": true, "verdict": "approve"})
+	notAudited := row(EventGateAudit, map[string]any{"commit": "c1", "ran": false, "reason": "gateway deadline"})
+	pushed := row(EventSessionPushed, map[string]any{"session": "s-2"})
+	cases := []struct {
+		name     string
+		events   []Event
+		approver string
+		refused  string
+		note     string
+	}{
+		{"review failed, agent", []Event{pushed, notReviewed}, ChatUser, "review", ""},
+		{"review and audit failed, agent", []Event{pushed, notReviewed, notAudited}, ChatUser, "review and the audit", ""},
+		{"audit failed after a reviewed row, agent", []Event{pushed, reviewed, notAudited}, ChatUser, "audit", ""},
+		{"review verdict, agent", []Event{pushed, reviewed}, ChatUser, "", consoleApproved},
+		{"a later review ran, agent", []Event{pushed, notReviewed, reviewed}, ChatUser, "", consoleApproved},
+		{"a push reset the rows, agent", []Event{notReviewed, pushed}, ChatUser, "", consoleApproved},
+		{"review failed, human", []Event{pushed, notReviewed}, "sebastian", "", consoleApproved + "; the review did not run on this head"},
+		{"both failed, human", []Event{pushed, notReviewed, notAudited}, "sebastian", "", consoleApproved + "; the review and the audit did not run on this head"},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			wf := &recordedSignals{}
+			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+			store.events = append(store.events, c.events...)
+			err := ApproveMerge(ctx, store, wf, "t1", 9, c.approver)
+			if c.refused != "" {
+				var u *UnreviewedMergeError
+				if !errors.As(err, &u) || !strings.Contains(err.Error(), "The "+c.refused+" did not run on this head") ||
+					!strings.Contains(err.Error(), "(reverify)") || !strings.Contains(err.Error(), "a human") {
+					t.Fatalf("err = %v, want the refusal naming the %s", err, c.refused)
+				}
+				if a := store.approvals[0]; a.Status != "pending" || len(wf.sent) != 0 {
+					t.Fatalf("approval %+v, signals %v: want pending, none", a, wf.sent)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatal(err)
+			}
+			if a := store.approvals[0]; a.Status != "approved" || a.DecisionNote != c.note || len(wf.sent) != 1 {
+				t.Fatalf("approval %+v, signals %v, want note %q", a, wf.sent, c.note)
+			}
+		})
+	}
+}

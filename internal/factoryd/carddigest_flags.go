@@ -263,9 +263,27 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 			add("queued_over_bound", d.Head.QueueReason+" for "+durationText(d.at.Sub(w.Since).Truncate(time.Minute)))
 		}
 	}
-	// the newest review and audit rows on the head, the head a session's
-	// newest push: the queue's merge of main moves the commit and runs
-	// neither again
+	if t.Status == "in-review" {
+		for _, n := range gatesNotRun(events) {
+			add("review_refused_not_run", n.stage+": "+digestText(strings.TrimPrefix(n.reason, reviewNotStarted)))
+		}
+	}
+	slices.SortFunc(flags, func(a, b DigestFlag) int {
+		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.Detail, b.Detail))
+	})
+	return slices.Compact(flags)
+}
+
+// gateNotRun is a review or an audit whose newest row on the head did not
+// run, with the reason its row carries.
+type gateNotRun struct{ stage, reason string }
+
+// gatesNotRun lists the review and the audit that did not run on the head,
+// from events oldest first: the newest model_review and gate_audit rows
+// since the newest session push count, so a later row that ran clears its
+// stage and a push clears both (the queue's merge of main moves the
+// commit and runs neither again). The review comes first.
+func gatesNotRun(events []Event) []gateNotRun {
 	var reviewRow, auditRow *Event
 	for i, e := range events {
 		switch e.Kind {
@@ -277,20 +295,18 @@ func digestFlags(d CardDigest, rows cardRows, budget float64, unproven []string)
 			auditRow = &events[i]
 		}
 	}
+	var out []gateNotRun
 	for _, row := range []struct {
 		stage, key string
 		e          *Event
 	}{{"review", "reviewed", reviewRow}, {"audit", "ran", auditRow}} {
-		if row.e == nil || t.Status != "in-review" {
+		if row.e == nil {
 			continue
 		}
 		if ran, _ := row.e.Detail[row.key].(bool); !ran {
 			reason, _ := row.e.Detail["reason"].(string)
-			add("review_refused_not_run", row.stage+": "+digestText(strings.TrimPrefix(reason, reviewNotStarted)))
+			out = append(out, gateNotRun{row.stage, reason})
 		}
 	}
-	slices.SortFunc(flags, func(a, b DigestFlag) int {
-		return cmp.Or(strings.Compare(a.Name, b.Name), strings.Compare(a.Detail, b.Detail))
-	})
-	return slices.Compact(flags)
+	return out
 }

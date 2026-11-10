@@ -653,3 +653,20 @@ func TestTheAgentsChangeRequestIsTheChatBots(t *testing.T) {
 		})
 	}
 }
+
+// The project agent's approve_merge of a merge whose review did not run
+// refuses with the state and the fitting action; the request stays
+// pending and nothing signals the workflow.
+func TestWakeApproveMergeRefusedWhenReviewDidNotRun(t *testing.T) {
+	const refused = "Refused: The review and the audit did not run on this head, so no model has read the change and the project agent cannot approve it. " +
+		"Run the gates again once the gateway answers (reverify), or leave the approval to a human, who can approve it with the missing gate named."
+	r, _, calls := mergeWake(t, policy.MergeAuto, true, func(r *rig) {
+		r.c.cfg.ApproveMerge = func(context.Context, string, int64, string) error {
+			return &factoryd.UnreviewedMergeError{Stages: []string{"review", "audit"}}
+		}
+	}, []string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("Left to a human.")})
+	equal(t, "the wake's call", calls, []wakeCall{{name: "approve_merge", result: refused, status: http.StatusConflict}})
+	if q := r.approvals.get(4); q.Status != "pending" {
+		t.Fatalf("request 4 is %s, want pending", q.Status)
+	}
+}

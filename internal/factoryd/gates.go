@@ -2568,7 +2568,33 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 	if err != nil {
 		return err
 	}
-	return decideAndSignal(ctx, store, wf, q, "approved", approver, consoleApproved, SignalApproved, TaskSignal{Author: approver, PR: pr})
+	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
+	if err != nil {
+		return err
+	}
+	slices.Reverse(events)
+	note := consoleApproved
+	if missing := gatesNotRun(events); len(missing) > 0 {
+		stages := make([]string, len(missing))
+		for i, m := range missing {
+			stages[i] = m.stage
+		}
+		if approver == ChatUser {
+			return &UnreviewedMergeError{Stages: stages}
+		}
+		note += "; the " + strings.Join(stages, " and the ") + " did not run on this head"
+	}
+	return decideAndSignal(ctx, store, wf, q, "approved", approver, note, SignalApproved, TaskSignal{Author: approver, PR: pr})
+}
+
+// UnreviewedMergeError refuses the project agent's approval of a merge
+// whose review or audit did not run on its head: no model and no person
+// has read the change.
+type UnreviewedMergeError struct{ Stages []string }
+
+func (e *UnreviewedMergeError) Error() string {
+	return "The " + strings.Join(e.Stages, " and the ") + " did not run on this head, so no model has read the change and the project agent cannot approve it. " +
+		"Run the gates again once the gateway answers (reverify), or leave the approval to a human, who can approve it with the missing gate named."
 }
 
 // RerunFactoryChecks is the console's re-run of a factory pull request
