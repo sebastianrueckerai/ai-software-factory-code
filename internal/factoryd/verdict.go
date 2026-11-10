@@ -386,19 +386,36 @@ func IntegrationCard(ctx context.Context, store interface {
 }
 
 // judgedByPerson: every criterion of p stands on an approver's row, a
-// waiver or a confirmation, or is an invariant its gate met, so a plan
-// whose integration card ended off main closes on the person's word: no
-// review of that card judged it. An invariant is a deterministic run and
-// needs no person's word.
-func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
+// waiver or a confirmation, or is an invariant its gate met after the
+// card's last push (pushed), so a plan whose integration card ended off
+// main closes on the person's word: no review of that card judged it. An
+// invariant is a deterministic run and needs no person's word.
+func judgedByPerson(p Plan, rows []CriterionVerdict, pushed time.Time) bool {
 	return !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool {
 		v, ok := StandingRow(rows, c)
 		if !ok {
 			return true
 		}
 		return v.Source != CriteriaSourceApprover &&
-			!(c.Kind == CriterionInvariant && v.Source == CriteriaSourceGate && v.Verdict == "met")
+			!(c.Kind == CriterionInvariant && v.Source == CriteriaSourceGate && v.Verdict == "met" && !v.CreatedAt.Before(pushed))
 	})
+}
+
+// lastPush is when a session of task id pushed last: the zero time for
+// none, and the far future for an unread history, so no gate row counts
+// as newer than a push it could not see.
+func (r *Runner) lastPush(ctx context.Context, id string) time.Time {
+	events, err := r.store.TaskEvents(ctx, id, cardDigestEvents)
+	if err != nil {
+		log.Printf("task %s: the last push: %v", id, err)
+		return time.Now().Add(time.Hour)
+	}
+	for _, e := range events {
+		if e.Kind == EventSessionPushed {
+			return e.At
+		}
+	}
+	return time.Time{}
 }
 
 // sourceRank orders the sources of verdict rows: the first stands over
@@ -654,13 +671,15 @@ type deltaCriterion struct {
 	Evidence string `json:"evidence"`
 }
 
-// draftDelta runs one delta round on plan t (the planner's one model call,
-// the hold-out round's shape) and files the card it answers: a feature
-// card, which joins the round of the plan's newest revision, is merged
-// into the plan and judged by the plan rules again (judgePlan), then filed
-// like any child. Dues are the catch rows the round answers;
-// they are marked filed or refused when it ends, so the round runs once
-// per due. A failed call stays due: the next pass tries again.
+// draftDelta runs one delta round on plan t (up to deltaAttempts planner
+// calls) and files the card it answers: a feature card, which joins the
+// round of the plan's newest revision, is merged into the plan and judged
+// as a card (judgeDelta), then filed like any child. Dues are the catch
+// rows the round answers; they are marked filed or refused when it ends,
+// so the round runs once per due. A call that runs past its bound counts
+// as a refused attempt; any other failed call stays due and the next pass
+// tries again. ctx is the round's own context (draftDue), which covers its
+// calls and its writes.
 func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanCatch) {
 	p, revision, err := planOfStore(ctx, r.store, t.ID, "")
 	if err != nil {
@@ -726,13 +745,11 @@ func (r *Runner) draftDelta(ctx context.Context, t Task, repo Repo, dues []PlanC
 	why := ""
 	bound := r.cfg.Policy().Document.Limits.SupervisorTimeout
 	for range deltaAttempts {
-		// the call has its own bound, not the pass's remainder
-		content, _, err := r.supervisor.Chat(context.WithoutCancel(ctx), t.ID, alias, policy.PurposeReview,
+		content, _, err := r.supervisor.Chat(ctx, t.ID, alias, policy.PurposeReview,
 			bound, deltaPrompt(projectPins(r.cfg.Policy(), t.Repository)), input)
 		if errors.Is(err, context.DeadlineExceeded) {
 			why = fmt.Sprintf("the model call ran past its bound of %s", durationText(bound))
 			log.Printf("plan %s: the delta round: %s", t.ID, why)
-			input.Refused = append(input.Refused, deltaRefusal{Why: why})
 			continue
 		}
 		if err != nil {
@@ -810,7 +827,7 @@ func (r *Runner) refuseDelta(ctx context.Context, t Task, repo Repo, dues []Plan
 		return
 	}
 	r.markCatches(ctx, t.ID, revision, CatchDeltaRefused, dues)
-	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: the delta round for criteria %s did not pass the plan rules: %s. Grant it again or waive a criterion.", strings.Join(duesDetail(dues), ", "), why))
+	r.commentOnce(ctx, t, repo, t.IssueNumber, fmt.Sprintf("factoryd: the delta round for criteria %s ended without a card: %s. Grant it again or waive a criterion.", strings.Join(duesDetail(dues), ", "), why))
 	r.record(ctx, t.ID, "delta_refused", map[string]any{"criteria": duesDetail(dues), "why": why})
 }
 
@@ -946,7 +963,7 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 	}
 	if len(openCriteria(p, rows)) == 0 {
 		reached := integration.Status == "merged" || integration.Status == "done"
-		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows)) || !r.planAtRest(ctx, t) {
+		if r.planClosed(ctx, parent) || !reached && !(Final(integration.Status) && judgedByPerson(p, rows, r.lastPush(ctx, integration.ID))) || !r.planAtRest(ctx, t) {
 			return
 		}
 		for _, kind := range criteriaKinds {
@@ -1141,14 +1158,51 @@ func (r *Runner) openPlanAsk(ctx context.Context, t Task, repo Repo, kind, reaso
 // are all done, opens the gap question of a plan whose cards ran out with
 // a criterion still open, starts the next round of a plan whose round is
 // over, and drafts the delta cards the reviews and the grants asked for.
-// Every plan's checks run before any delta draft, and a delta call runs
-// under its own bound, so one plan's round cannot starve the others'. First it opens the provers due (proverPass).
+// It makes no model call: the delta rounds run in DeltaPass. First it
+// opens the provers due (proverPass).
 func (r *Runner) CriteriaPass(ctx context.Context) {
 	r.proverPass(ctx)
+	sorted := r.criteriaParents(ctx)
+	for _, parent := range sorted {
+		r.planCloseCheck(ctx, parent)
+		r.roundCheck(ctx, parent)
+	}
+}
+
+// DeltaPass drafts the delta cards the reviews and the grants asked for,
+// one round per plan with a due, each under its own bounded context
+// (draftDue). A round starts only while a whole round still fits the pass.
+func (r *Runner) DeltaPass(ctx context.Context) {
+	bound := r.deltaRoundBound()
+	for _, parent := range r.criteriaParents(ctx) {
+		if dl, ok := ctx.Deadline(); ctx.Err() != nil || ok && time.Until(dl) < bound {
+			return
+		}
+		r.draftDue(ctx, parent)
+	}
+}
+
+// deltaWrites is the window of a delta round's reads and writes beside its
+// model calls.
+const deltaWrites = time.Minute
+
+// deltaRoundBound is a delta round's bound: deltaAttempts calls at the
+// pinned supervisor timeout, plus its writes.
+func (r *Runner) deltaRoundBound() time.Duration {
+	return deltaAttempts*r.cfg.Policy().Document.Limits.SupervisorTimeout + deltaWrites
+}
+
+// DeltaPassBound is the delta pass's bound: one round and a minute.
+func (r *Runner) DeltaPassBound() time.Duration { return r.deltaRoundBound() + time.Minute }
+
+// criteriaParents are the plans the criteria and delta passes visit, in id
+// order: the plans with verdict rows, those of the open groups and those
+// between rounds.
+func (r *Runner) criteriaParents(ctx context.Context) []string {
 	ids, err := r.store.CriteriaVerdictTasks(ctx)
 	if err != nil {
 		log.Printf("criteria pass: the verdict tasks: %v", err)
-		return
+		return nil
 	}
 	parents := map[string]bool{}
 	for _, id := range ids {
@@ -1177,14 +1231,7 @@ func (r *Runner) CriteriaPass(ctx context.Context) {
 	for _, id := range between {
 		parents[id] = true
 	}
-	sorted := slices.Sorted(maps.Keys(parents))
-	for _, parent := range sorted {
-		r.planCloseCheck(ctx, parent)
-		r.roundCheck(ctx, parent)
-	}
-	for _, parent := range sorted {
-		r.draftDue(ctx, parent)
-	}
+	return slices.Sorted(maps.Keys(parents))
 }
 
 // undraftedDues are the plan's delta dues, in detail order: the delta
@@ -1224,6 +1271,8 @@ func (r *Runner) draftDue(ctx context.Context, parent string) {
 	if len(due) == 0 {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), r.deltaRoundBound())
+	defer cancel()
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the delta round: %v", parent, err)

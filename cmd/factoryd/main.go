@@ -409,6 +409,10 @@ func main() {
 		runner.CriteriaPass(ctx)
 		return nil
 	})
+	passes.Run(ctx, "delta", time.Minute, runner.DeltaPassBound(), func(ctx context.Context) error {
+		runner.DeltaPass(ctx)
+		return nil
+	})
 	passes.Run(ctx, "revert_pause", time.Minute, 2*time.Minute, func(ctx context.Context) error {
 		runner.RevertPausePass(ctx)
 		return nil

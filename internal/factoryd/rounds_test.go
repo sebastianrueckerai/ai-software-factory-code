@@ -774,49 +774,55 @@ func TestDeltaRoundRefusesAfterThreeBrokenAnswers(t *testing.T) {
 	}
 }
 
-// A delta call that runs past the policy's supervisor timeout is a refused
-// attempt: three of them end the round refused, so its dues never stay due.
-func TestDeltaRoundRefusesAfterThreeTimeouts(t *testing.T) {
-	model := &fakeLiteLLM{content: `{}`, delay: 400 * time.Millisecond}
-	store, tl := deltaRoundBound(t, model, 50*time.Millisecond)
-	if _, filed := cardsByKey(t, store)["fix-stats"]; filed || !strings.Contains(tl, `"step":"delta_refused"`) || strings.Contains(tl, `"step":"delta_card"`) {
-		t.Fatalf("fix-stats filed %v; the plan's timeline:\n%s", filed, tl)
+// ctxStore is a store that honours a done context as database/sql does.
+type ctxStore struct{ *fakeStore }
+
+func (s ctxStore) PlanRevision(ctx context.Context, id string, n int) (PlanRevision, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return PlanRevision{}, false, err
 	}
-	catches, err := store.PlanCatches(context.Background(), "t-plan")
-	if err != nil {
-		t.Fatal(err)
-	}
-	refused := 0
-	for _, c := range catches {
-		if c.Kind == CatchDeltaRefused {
-			refused++
-		}
-	}
-	if refused != 1 {
-		t.Fatalf("%d delta_refused marks, want 1 for the one due: %+v", refused, catches)
-	}
+	return s.fakeStore.PlanRevision(ctx, id, n)
 }
 
-// One plan's blocked delta round does not starve the pass: every plan's
-// close check runs before the first delta draft, and the draft's call runs
-// under its own bound although the pass's context ends first.
-func TestCriteriaPassClosesAPlanBesideABlockedDeltaRound(t *testing.T) {
-	ctx := context.Background()
-	closedBeforeCall, called := false, false
-	var objs *fakeObjectStore
-	zClosed := func() bool {
-		tl, _ := objs.Get(ctx, "sessions/t-z/timeline.jsonl")
-		return strings.Contains(string(tl), `"event":"`+EventPlanClosed+`"`)
+func (s ctxStore) PlanCatches(ctx context.Context, id string) ([]PlanCatch, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
 	}
-	model := &fakeLiteLLM{delay: 200 * time.Millisecond, answer: func(string) string {
-		called, closedBeforeCall = true, zClosed()
-		return `{}`
-	}}
-	r, store, o, fj := deltaRig(t, model, time.Second)
-	objs = o
+	return s.fakeStore.PlanCatches(ctx, id)
+}
+
+func (s ctxStore) PutPlanCatches(ctx context.Context, id string, revision int, kind, finder string, details []string) (bool, error) {
+	if err := ctx.Err(); err != nil {
+		return false, err
+	}
+	return s.fakeStore.PutPlanCatches(ctx, id, revision, kind, finder, details)
+}
+
+func (s ctxStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.fakeStore.PlanCards(ctx, plan)
+}
+
+func (s ctxStore) Task(ctx context.Context, id string) (Task, bool, error) {
+	if err := ctx.Err(); err != nil {
+		return Task{}, false, err
+	}
+	return s.fakeStore.Task(ctx, id)
+}
+
+// deltaPassRig is deltaRig with plan t-plan done, a delta due on it, and a
+// plan t-z that sorts after it and has every criterion met; the store
+// honours a done context.
+func deltaPassRig(t *testing.T, model *fakeLiteLLM, bound time.Duration) (*Runner, *fakeStore, *fakeObjectStore) {
+	t.Helper()
+	ctx := context.Background()
+	r, store, objs, fj := deltaRig(t, model, bound)
 	plan := store.tasks["t-plan"]
 	plan.Status = "done"
 	store.tasks["t-plan"] = plan
+	r.store = ctxStore{store}
 	r.timeline = &Timeline{Objects: objs, Events: store, Store: store}
 	fj.issues[99] = &planIssue{title: "Other", poster: "factory-agent", state: "open"}
 	store.tasks["t-z"] = Task{ID: "t-z", Repository: "linkshort/linkshort", IssueNumber: 99, Source: SourceChat, Status: "done"}
@@ -833,11 +839,69 @@ func TestCriteriaPassClosesAPlanBesideABlockedDeltaRound(t *testing.T) {
 	if _, err := store.PutPlanCatches(ctx, "t-plan", 1, CatchDelta, FinderApprover, []string{"redirect_302 grant 9"}); err != nil {
 		t.Fatal(err)
 	}
-	pass, cancel := context.WithTimeout(ctx, 50*time.Millisecond)
+	return r, store, objs
+}
+
+func catchesOfKind(t *testing.T, store *fakeStore, kind string) int {
+	t.Helper()
+	catches, err := store.PlanCatches(context.Background(), "t-plan")
+	if err != nil {
+		t.Fatal(err)
+	}
+	n := 0
+	for _, c := range catches {
+		if c.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+// A delta round whose three calls time out ends refused once, although the
+// pass's own context ends before the round does: the round's reads and
+// writes run on its own context. The timeout is recorded as a timeout, and
+// the prompt's list of refused answers holds none.
+func TestDeltaPassRefusesATimedOutRoundOnceBeyondThePass(t *testing.T) {
+	model := &fakeLiteLLM{content: `{}`, delay: 400 * time.Millisecond}
+	r, store, objs := deltaPassRig(t, model, 100*time.Millisecond)
+	pass, cancel := context.WithTimeout(context.Background(), 150*time.Millisecond)
 	defer cancel()
-	r.CriteriaPass(pass)
-	if !called || !closedBeforeCall || !zClosed() {
-		t.Fatalf("the delta call ran %v; plan t-z closed before it %v, after the pass %v; want all three", called, closedBeforeCall, zClosed())
+	r.DeltaPass(pass) // too little of the pass is left for a whole round: none starts
+	if n := len(model.chats); n != 0 {
+		t.Fatalf("%d calls from a pass with less than a round left", n)
+	}
+	r.draftDue(pass, "t-plan")
+	if pass.Err() == nil {
+		t.Fatal("the round ended inside the pass's bound: the test shows nothing")
+	}
+	if n := catchesOfKind(t, store, CatchDeltaRefused); n != 1 {
+		t.Fatalf("%d delta_refused marks, want exactly 1", n)
+	}
+	if n := len(model.chats); n != 3 {
+		t.Fatalf("model calls = %d, want 3", n)
+	}
+	for i, c := range model.chats {
+		if strings.Contains(userMessage(c), `"refused"`) {
+			t.Fatalf("call %d lists refused answers:\n%s", i+1, userMessage(c))
+		}
+	}
+	tl, _ := objs.Get(context.Background(), "sessions/t-plan/timeline.jsonl")
+	if !strings.Contains(string(tl), `"step":"delta_refused"`) || !strings.Contains(string(tl), "the model call ran past its bound of") {
+		t.Fatalf("the plan's timeline:\n%s", tl)
+	}
+}
+
+// The criteria pass makes no model call: with a delta round due beside it,
+// it ends at once and closes the other plan.
+func TestCriteriaPassMakesNoModelCall(t *testing.T) {
+	called := false
+	model := &fakeLiteLLM{delay: time.Minute, answer: func(string) string { called = true; return `{}` }}
+	r, _, objs := deltaPassRig(t, model, time.Minute)
+	start := time.Now()
+	r.CriteriaPass(context.Background())
+	tl, _ := objs.Get(context.Background(), "sessions/t-z/timeline.jsonl")
+	if called || model.running() != 0 || time.Since(start) > 5*time.Second || !strings.Contains(string(tl), `"event":"`+EventPlanClosed+`"`) {
+		t.Fatalf("model called %v (in flight %d), took %s; t-z's timeline:\n%s", called, model.running(), time.Since(start), tl)
 	}
 }
 
