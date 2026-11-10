@@ -274,7 +274,7 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 	if payload != nil {
 		reader = bytes.NewReader(payload)
 	}
-	req, err := http.NewRequestWithContext(ctx, method, f.BaseURL+path, reader)
+	req, err := http.NewRequestWithContext(ctx, method, f.BaseURL+path, reader) // #nosec G704 -- false positive: gosec maps the ctx of DropOpenDependencies' interface calls onto the receiver; the host is the configured BaseURL and every path is an /api/v1 literal
 	if err != nil {
 		return nil, err
 	}
@@ -287,7 +287,7 @@ func (f *Forgejo) doLimit(ctx context.Context, method, path string, payload []by
 	if client == nil {
 		client = &http.Client{Timeout: timeout}
 	}
-	res, err := client.Do(req)
+	res, err := client.Do(req) // #nosec G704 -- the request built above; see the note there
 	if err != nil {
 		return nil, fmt.Errorf("forgejo %s %s: %w", method, path, err)
 	}

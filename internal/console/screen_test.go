@@ -1668,6 +1668,55 @@ func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 	}
 }
 
+// An alias the gateway serves from its twin shows on the status line, with
+// the date when the switch is not from today; none open, no cell; a switch to
+// a twin the policy no longer names is not shown.
+func TestStatusLineAliasSwitch(t *testing.T) {
+	r, ck := screenRig(t)
+	body := func() string { return r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String() }
+	if strings.Contains(body(), "serves from") {
+		t.Fatal("no open switch, the status line names one")
+	}
+	now := time.Now().UTC()
+	today := time.Date(now.Year(), now.Month(), now.Day(), 10, 12, 0, 0, time.UTC)
+	sw := policy.AliasSwitch{Alias: "big", Twin: "big-alibaba", Kind: policy.SwitchOn, At: today, Rate: 38.6, Deployment: "zai/glm-5.3"}
+	cell := func(since string) string {
+		return `<span class="cell warn" title="the gateway serves this alias from its twin while it runs slower than the bound of the policy's routing block">big serves from big-alibaba since ` + since + ` (glm-5.3 at 39 s per 1000 tokens)</span>`
+	}
+	r.switches.rows = []policy.AliasSwitch{sw}
+	if want := cell("10:12"); !strings.Contains(body(), want) {
+		t.Fatalf("the status line lacks %s", want)
+	}
+	sw.At = today.AddDate(0, 0, -2)
+	r.switches.rows = []policy.AliasSwitch{sw}
+	if want := cell(sw.At.Format("2 Jan") + " 10:12"); !strings.Contains(body(), want) {
+		t.Fatalf("the status line lacks %s", want)
+	}
+	r.switches.rows = []policy.AliasSwitch{{Alias: "big", Twin: "big-old", Kind: policy.SwitchOn, At: today, Rate: 38.6}}
+	if strings.Contains(body(), "serves from") {
+		t.Fatal("a switch to a twin the policy does not name is shown")
+	}
+	r.switches.err = errors.New("the store is gone")
+	if got := body(); strings.Contains(got, "serves from") || !strings.Contains(got, "the alias switches could not be read") {
+		t.Fatal("a read error shows a switch or hides the problem")
+	}
+}
+
+// The chat's status line says the switch too.
+func TestChatStatusLineAliasSwitch(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	now := time.Now().UTC()
+	r.switches.rows = []policy.AliasSwitch{{Alias: "big", Twin: "big-alibaba", Kind: policy.SwitchOn,
+		At: time.Date(now.Year(), now.Month(), now.Day(), 10, 12, 0, 0, time.UTC), Rate: 38.6, Deployment: "zai/glm-5.3"}}
+	g.replies = [][]string{{say("ok")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"how is it?"}})
+	system := messages(t, g.calls()[0])[0]["content"].(string)
+	if !strings.Contains(system, "; big serves from big-alibaba since 10:12 (glm-5.3 at 39 s per 1000 tokens)") {
+		t.Fatalf("the chat's status line lacks the switch:\n%s", system)
+	}
+}
+
 // A console without factoryd's steer refuses a steer from the drawer and
 // records nothing, instead of calling a nil function.
 func TestDrawerSteerWithoutSteer(t *testing.T) {
