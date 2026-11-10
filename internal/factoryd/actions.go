@@ -426,8 +426,8 @@ func sessionRoom(f CaseFacts) string {
 		return fmt.Sprintf("the agent time cap of %s leaves %s and a session needs %s: extend", minutesWord(limit), minutesWord(left), minutesWord(need))
 	case slices.Contains(f.Partial, "floor"):
 		return "what an opening needs could not be read: try again in a minute, or close the card"
-	case Cents(f.LeftEUR) < Cents(f.FloorEUR):
-		return fmt.Sprintf("%.2f EUR is left and an opening needs %.2f EUR: fund", f.LeftEUR, f.FloorEUR)
+	case Cents(f.SessionLeft()) < Cents(f.FloorEUR):
+		return fmt.Sprintf("%.2f EUR is left for a session and an opening needs %.2f EUR: fund", f.SessionLeft(), f.FloorEUR)
 	}
 	return ""
 }

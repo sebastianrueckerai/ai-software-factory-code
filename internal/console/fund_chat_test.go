@@ -64,11 +64,12 @@ func TestFundAtAWakeAnswersAsTheChatBot(t *testing.T) {
 const needRefusal = "the remaining budget cannot fund a call: 0.170 EUR of the 2.000 EUR budget remains, and a session on factory/small needs 0.900000 EUR. Raise the budget (Fund on the board) and answer, or close the card."
 
 // needRig is the fund rig over card t-e held by needRefusal, which names
-// a shortfall of 0.73 EUR.
+// a need of 0.90 EUR against the card's 2.00 - 1.83 = 0.17 EUR left: a raise
+// of 0.73 EUR.
 func needRig(t *testing.T) *rig {
 	r := fundRig(t)
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
+		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, SpentEUR: 1.83, ModelAlias: "factory/small"})
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return needRefusal, nil }
 	return r
 }
@@ -98,9 +99,9 @@ func TestAnswerFundValueDrawsTheShortfall(t *testing.T) {
 func TestMemberChatInboxFundClickFunds(t *testing.T) {
 	r, chat, _ := newChatRig(t)
 	r.tasks.set(needRefusal, factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human",
-		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, ModelAlias: "factory/small"})
+		Repository: "sf/code", IssueNumber: 13, Objective: "Use a replica?", BudgetEUR: 2, SpentEUR: 1.83, ModelAlias: "factory/small"})
 	r.c.cfg.SessionFunded = func(context.Context, string, string) (string, error) { return needRefusal, nil }
-	buttons := factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{}, nil)
+	buttons := factoryd.ShapedQuestion(needRefusal, factoryd.QuestionFacts{BudgetEUR: 2, SpentEUR: 1.83, LeftEUR: 0.17}, nil)
 	r.tasks.tasks[0].Question = buttons
 	ck, s := r.loggedIn(t)
 	inbox, _ := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
@@ -160,5 +161,22 @@ func TestFundProposalNamesTheAmount(t *testing.T) {
 	want := `"description":"Fund a card, #14 t-cap \"Trim the logs.\", 0.50 EUR, text go"`
 	if len(proposed) == 0 || !strings.Contains(proposed[0], want) {
 		t.Fatalf("proposal %v, want it to hold %s", proposed, want)
+	}
+}
+
+// The fund choice's raise lifts the session ceiling, not the budget: the
+// card has 2.00 - 1.83 = 0.17 EUR left, the 0.40 EUR gate reserve takes it
+// whole and more, so the ceiling is -0.23 and a need of 0.90 EUR raises
+// 0.90 + 0.23 = 1.13 EUR.
+func TestAnswerFundValueCountsTheGateReserve(t *testing.T) {
+	r := needRig(t)
+	r.c.cfg.GateReserve = func() float64 { return 0.4 }
+	_, s := r.loggedIn(t)
+	if _, err := r.c.doAnswerValue(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaButton}, "t-e", "the fix is in", factoryd.AnswerFund, ""); err != nil {
+		t.Fatal(err)
+	}
+	got, _ := actedOnce(t, r)
+	if want := fundOf(1.13, "the fix is in", 3, factoryd.ViaButton); !reflect.DeepEqual(got, want) {
+		t.Errorf("Act took %+v, want %+v", got, want)
 	}
 }

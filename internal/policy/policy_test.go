@@ -1160,6 +1160,40 @@ func TestStepCap(t *testing.T) {
 	}
 }
 
+// A policy without limits.gate_reserve_eur, and a version pinned before
+// the key existed, hold DefaultGateReserveEUR out of a card's sessions.
+func TestGateReserve(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.GateReserve(); got != DefaultGateReserveEUR {
+		t.Errorf("default gate reserve = %g, want %g", got, DefaultGateReserveEUR)
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, gate_reserve_eur: 0.4}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.GateReserve(); got != 0.4 {
+		t.Errorf("gate reserve = %g, want 0.4", got)
+	}
+	var pinned Limits
+	if err := json.Unmarshal([]byte(`{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1}`), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinned.GateReserve(); got != DefaultGateReserveEUR {
+		t.Errorf("pinned version without gate_reserve_eur: gate reserve = %g, want %g", got, DefaultGateReserveEUR)
+	}
+	negative := strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, gate_reserve_eur: -0.1}", 1)
+	if err := resolvedSchema(t, "policy.schema.json").Validate(yamlInstance(t, []byte(negative))); err == nil {
+		t.Error("negative gate_reserve_eur: the schema accepts it, want a minimum of 0")
+	}
+	d, err = Parse([]byte(negative))
+	if err == nil || !strings.Contains(err.Error(), "limits.gate_reserve_eur must not be negative") {
+		t.Errorf("negative gate_reserve_eur: error = %v, want refusal naming limits.gate_reserve_eur", err)
+	}
+}
+
 // A policy without the nudge keys, and a version pinned before they
 // existed, nudge once after three identical calls in a row.
 func TestNudge(t *testing.T) {
@@ -1503,5 +1537,48 @@ func TestOffersToolFollowsWhereTheProjectRuns(t *testing.T) {
 		if got := OffersTool(c.tool, c.namespaces); got != c.want {
 			t.Errorf("OffersTool(%s, %v) = %v, want %v", c.tool, c.namespaces, got, c.want)
 		}
+	}
+}
+
+// Money compares at the micro-euro: the inputs are run-time floats, whose
+// subtractions leave noise a constant expression would not: 1.1 - 0.4 is
+// 0.7000000000000001, and 0.7 - 0.4 is 0.29999999999999993. Less the 0.40
+// reserve both read 0.30 here, as the 0.30 EUR floor does.
+func TestSessionHeadroomRoundsToTheMicroEuro(t *testing.T) {
+	a, b, c, reserve := 1.1, 0.4, 0.7, 0.4
+	if a-b == c {
+		t.Fatal("1.1 - 0.4 carries no float noise: the check proves nothing")
+	}
+	noisy := c - reserve
+	if noisy == 0.3 {
+		t.Fatal("the input carries no float noise: the check proves nothing")
+	}
+	for _, left := range []float64{a - b, c} {
+		if got := SessionHeadroom(left, reserve); got != 0.3 {
+			t.Errorf("SessionHeadroom(%v, %v) = %v, want 0.3", left, reserve, got)
+		}
+	}
+	if got := GateHeld(noisy, reserve); got != 0.3 {
+		t.Errorf("GateHeld(%v, %v) = %v, want 0.3", noisy, reserve, got)
+	}
+	if got := GateHeld(-noisy, reserve); got != 0 {
+		t.Errorf("GateHeld of an overspent card = %v, want 0", got)
+	}
+	if got := CeilMicro(0.6070005); got != 0.607001 {
+		t.Errorf("CeilMicro(0.6070005) = %v, want 0.607001", got)
+	}
+	if got := CeilMicro(0.3); got != 0.3 {
+		t.Errorf("CeilMicro(0.3) = %v, want 0.3", got)
+	}
+}
+
+// Left subtracts the spend and the holds together, then rounds once:
+// 1.00 - (0.3000004 + 0.1000004) = 0.5999992 reads 0.599999. Rounding
+// budget - spent first (0.6999996, 0.70) and taking the holds off after
+// would read 0.5999996.
+func TestLeftSubtractsTheSpendAndTheHoldsTogether(t *testing.T) {
+	budget, spent, held := 1.0, 0.3000004, 0.1000004
+	if got := Left(budget, spent, held); got != 0.599999 {
+		t.Errorf("Left = %v, want 0.599999", got)
 	}
 }
