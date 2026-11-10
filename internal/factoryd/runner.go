@@ -138,9 +138,11 @@ type Runner struct {
 	// (the gateway under the task's account); a test scripts it
 	checkin checkinChat
 	// gateQueue holds the plans whose criteria gate is due, which the
-	// close check fills under gateMu and CriteriaGatePass takes
+	// close check fills under gateMu and CriteriaGatePass takes; gateRun
+	// is the plan whose gate runs now, which the close check leaves alone
 	gateMu    sync.Mutex
 	gateQueue []string
+	gateRun   string
 	// criteriaGate replaces GateCriteria in the criteria gate pass; a
 	// test scripts it
 	criteriaGate func(ctx context.Context, taskID string, pr int64, commit string) (CriteriaResult, error)

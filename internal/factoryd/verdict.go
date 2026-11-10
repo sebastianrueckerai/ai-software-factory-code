@@ -1203,8 +1203,12 @@ func (r *Runner) planAtRest(ctx context.Context, t Task) bool {
 // question. A plan whose card a person closed closes once none of its
 // cards is open, in any round, unless a criterion is open while a card of
 // the plan holds a merge: that plan keeps its hold until an approver's
-// Close, and the check says so once on its issue.
+// Close, and the check says so once on its issue. A plan whose criteria
+// gate runs is left alone until the run ends: its rows are being written.
 func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
+	if r.gateRunning(parent) {
+		return
+	}
 	t, repo, err := r.task(ctx, parent)
 	if err != nil {
 		log.Printf("plan %s: the close check: %v", parent, err)
@@ -1326,12 +1330,16 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 		return
 	}
 	wanted, err := r.gateWanted(ctx, t, integration, never)
-	if err != nil {
-		log.Printf("plan %s: the criteria gate's record: %s", parent, r.Scrub.String(err.Error()))
+	switch {
+	case err != nil:
+		log.Printf("plan %s: the criteria gate: %s", parent, r.Scrub.String(err.Error()))
 		return
-	}
-	if wanted {
+	case wanted:
 		r.queueGate(parent)
+		return
+	case r.gateRunning(parent):
+		// its run started since the check above: the record read holds
+		// its start, and its outcome decides
 		return
 	}
 	if len(never) > 0 {
@@ -1359,7 +1367,8 @@ const (
 	gateCut    = "cut"
 	gateNoRoom = "no_room"
 	// gateStarted is the row written before a run; with no outcome after
-	// it, the attempt was cut.
+	// it and no run of the plan in this process, a restart or a lost
+	// write cut the attempt.
 	gateStarted = "started"
 )
 
@@ -1417,10 +1426,23 @@ func (r *Runner) gateDue(ctx context.Context, id string, integration Task) (bool
 func (r *Runner) gateWanted(ctx context.Context, plan, integration Task, never []PlanCriterion) (bool, error) {
 	gate, _ := judgeIDs(never)
 	reached := integration.Status == "merged" || integration.Status == "done"
-	if len(gate) == 0 || !reached || plan.Status == "closed" || r.planClosed(ctx, plan.ID) || !r.planAtRest(ctx, plan) {
+	if len(gate) == 0 || !reached || plan.Status == "closed" || !Final(plan.Status) {
 		return false, nil
 	}
+	if _, closed, err := r.store.PlanClosed(ctx, plan.ID); err != nil || closed {
+		return false, err
+	}
+	if _, pending, err := r.pendingReplan(ctx, plan); err != nil || pending {
+		return false, err
+	}
 	return r.gateDue(ctx, plan.ID, integration)
+}
+
+// gateRunning tells whether plan id's criteria gate runs in this process.
+func (r *Runner) gateRunning(id string) bool {
+	r.gateMu.Lock()
+	defer r.gateMu.Unlock()
+	return r.gateRun == id
 }
 
 // queueGate hands plan id to the criteria gate pass.
@@ -1530,6 +1552,14 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	if _, _, _, ok = wanted(); !ok {
 		return
 	}
+	r.gateMu.Lock()
+	r.gateRun = id
+	r.gateMu.Unlock()
+	defer func() {
+		r.gateMu.Lock()
+		r.gateRun = ""
+		r.gateMu.Unlock()
+	}()
 	// the start is on record before the run, so an outcome that is lost
 	// leaves a cut attempt, never a fresh one
 	if _, err := r.store.Record(rctx, Event{Repository: plan.Repository, TaskID: id, IssueNumber: plan.IssueNumber, Kind: EventCriteriaGateRun,
