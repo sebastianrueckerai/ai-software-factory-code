@@ -864,6 +864,8 @@ type Store interface {
 	Record(ctx context.Context, e Event) (int64, error)
 	// TaskEvents lists task id's events newest first, at most limit.
 	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
+	// TaskEventsOfKind lists task id's events of kind newest first, at most limit.
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
 	// AlertByFingerprint is the newest alert row of kind and fingerprint:
 	// an alert card's pre-check reads whether its alert still fires.
 	AlertByFingerprint(ctx context.Context, kind, fingerprint string) (Alert, bool, error)

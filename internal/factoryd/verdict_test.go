@@ -14,6 +14,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -2155,7 +2156,30 @@ func TestCriteriaGatePassCutsOnlyAForgejoRefusal(t *testing.T) {
 // error that carries a secret.
 type leakyStore struct {
 	*fakeStore
-	rows, fund error
+	rows, fund, closed, events error
+	// onTask runs before every task read; afterFund after a raise
+	onTask, afterFund func()
+}
+
+func (s *leakyStore) PlanClosed(ctx context.Context, plan string) (time.Time, bool, error) {
+	if s.closed != nil {
+		return time.Time{}, false, s.closed
+	}
+	return s.fakeStore.PlanClosed(ctx, plan)
+}
+
+func (s *leakyStore) TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error) {
+	if s.events != nil {
+		return nil, s.events
+	}
+	return s.fakeStore.TaskEventsOfKind(ctx, id, kind, limit)
+}
+
+func (s *leakyStore) Task(ctx context.Context, id string) (Task, bool, error) {
+	if s.onTask != nil {
+		s.onTask()
+	}
+	return s.fakeStore.Task(ctx, id)
 }
 
 func (s *leakyStore) CriteriaVerdicts(ctx context.Context, id string) ([]CriterionVerdict, error) {
@@ -2169,7 +2193,11 @@ func (s *leakyStore) FundCard(ctx context.Context, id string, eur, ceiling float
 	if s.fund != nil {
 		return 0, 0, s.fund
 	}
-	return s.fakeStore.FundCard(ctx, id, eur, ceiling, e)
+	from, to, err := s.fakeStore.FundCard(ctx, id, eur, ceiling, e)
+	if s.afterFund != nil {
+		s.afterFund()
+	}
+	return from, to, err
 }
 
 // Every log line the criteria gate builds from an error masks the URL's
@@ -2216,4 +2244,123 @@ func TestBeatUntilDoneOutsideAnActivity(t *testing.T) {
 	stop := beatUntilDone(context.Background(), "criteria")
 	time.Sleep(20 * time.Millisecond)
 	stop()
+}
+
+// closePlan is what a person's close does to plan t-plan.
+func closePlan(s *fakeStore) {
+	p := s.tasks["t-plan"]
+	p.Status = "closed"
+	s.tasks["t-plan"] = p
+}
+
+// The gate waits, and no ask opens, while a read the decision rests on
+// fails; a plan with a plan_closed row gets neither a gate nor an ask.
+func TestCriteriaGateWaitsOnAFailedRead(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name string
+		set  func(*Runner, *leakyStore)
+	}{
+		{"the close row read fails", func(_ *Runner, s *leakyStore) { s.closed = errors.New("db down") }},
+		{"the replan read fails", func(r *Runner, _ *leakyStore) { r.timeline.Objects = &failingObjects{} }},
+		{"the gate record read fails", func(_ *Runner, s *leakyStore) { s.events = errors.New("db down") }},
+		{"a plan_closed row stands", func(_ *Runner, s *leakyStore) { s.fakeStore.closed = map[string]time.Time{"t-plan": time.Now()} }},
+	} {
+		calls := 0
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+				calls++
+				return CriteriaResult{}, nil
+			}
+		})
+		ls := &leakyStore{fakeStore: s}
+		r.store, r.Scrub = ls, redact.New()
+		c.set(r, ls)
+		sweep(ctx, r)
+		sweep(ctx, r)
+		if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 0 || len(pending) != 0 {
+			t.Errorf("%s: gate calls %d, pending %+v, want neither a run nor an ask", c.name, calls, pending)
+		}
+	}
+}
+
+// failingObjects is an object store whose reads fail, as in an outage.
+type failingObjects struct{ fakeObjectStore }
+
+func (*failingObjects) Get(context.Context, string) ([]byte, error) {
+	return nil, errors.New("s3 down")
+}
+
+// putFailing is an object store whose writes fail and whose reads find
+// nothing: the timeline mirror is lost, the events row stands.
+type putFailing struct{ fakeObjectStore }
+
+func (*putFailing) Put(context.Context, string, []byte) error { return errors.New("s3 down") }
+
+// The once-guard reads the events row, not the timeline's S3 mirror: with
+// the mirror lost, a gate that ran is not run again; and with the
+// record unreadable, the gate waits.
+func TestCriteriaGateOnceGuardReadsTheEventsRow(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+			calls++
+			return CriteriaResult{}, nil
+		}
+	})
+	r.timeline.Objects = &putFailing{}
+	for range 3 {
+		sweep(ctx, r)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if calls != 1 || len(pending) != 1 {
+		t.Fatalf("with the mirror lost: gate calls %d, pending %+v, want one run and the ask", calls, pending)
+	}
+	r.timeline.Objects = &failingObjects{}
+	if due, err := r.gateDue(ctx, "t-plan", s.tasks["t-int"]); due || err != nil {
+		t.Errorf("S3 unreadable, the row present: due %t, %v, want not due", due, err)
+	}
+}
+
+// The re-checks of the run: a plan closed during the pull request read gets
+// no raise and no run; one closed during the raise gets no run.
+func TestRunCriteriaGateChecksAgainBeforeTheRaiseAndTheRun(t *testing.T) {
+	ctx := context.Background()
+	for _, c := range []struct {
+		name       string
+		wantBudget float64
+		set        func(*leakyStore, *atomic.Bool)
+	}{
+		{"during the pull request read", 5, func(s *leakyStore, read *atomic.Bool) {
+			s.onTask = func() {
+				if read.Load() {
+					closePlan(s.fakeStore)
+				}
+			}
+		}},
+		{"during the raise", 5.4, func(s *leakyStore, _ *atomic.Bool) { s.afterFund = func() { closePlan(s.fakeStore) } }},
+	} {
+		calls := 0
+		r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+			return func(context.Context, string, int64, string) (CriteriaResult, error) {
+				calls++
+				return CriteriaResult{}, nil
+			}
+		})
+		var read atomic.Bool
+		srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+			read.Store(true)
+			fmt.Fprint(w, `{"number":9,"state":"closed","merged":true,"head":{"sha":"h9"},"base":{"ref_name":"main"}}`)
+		}))
+		t.Cleanup(srv.Close)
+		r.forgejo = &Forgejo{BaseURL: srv.URL, BotUser: "factory-agent", BotPassword: "bot-pw"}
+		ls := &leakyStore{fakeStore: s}
+		r.store = ls
+		c.set(ls, &read)
+		r.runCriteriaGate(ctx, "t-plan")
+		if got := s.tasks["t-int"].BudgetEUR; calls != 0 || got != c.wantBudget {
+			t.Errorf("%s: gate calls %d, budget %.2f, want no run and %.2f", c.name, calls, got, c.wantBudget)
+		}
+	}
 }
