@@ -25,6 +25,8 @@ func TestWorkflowDirGuardMessagesAtFirstWorkflowDirChange(t *testing.T) {
 		{"absolute path in the clone", "/workspace/repo/.gitea/workflows/x.yml",
 			"you changed .gitea/workflows/x.yml under .gitea/: the push will refuse it — refusing to push: .gitea/ differs from the base. Revert that file and do the work without touching it."},
 		{"workflow directory itself", ".github", "you changed .github under .github/: the push will refuse it — refusing to push: .github/ differs from the base. Revert that file and do the work without touching it."},
+		{"upper case directory", ".FORGEJO/x",
+			"you changed .FORGEJO/x under .forgejo/: the push will refuse it — refusing to push: .forgejo/ differs from the base. Revert that file and do the work without touching it."},
 		{"a file outside the clone", "/tmp/notes.md", ""},
 		{"a path outside the workflow directories", "cmd/agent-worker/main.go", ""},
 		{"a name that only looks like it", "src/.forgejo-helper/ci.yml", ""},
