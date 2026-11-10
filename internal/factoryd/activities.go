@@ -478,6 +478,17 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 			lines = append(lines, "Size: "+old.Size)
 		}
 		lines = append(lines, fmt.Sprintf("Budget: %.2f EUR", old.BudgetEUR))
+		// work an end push the line bound refused sits on the old card's
+		// branch as an interim commit: the successor continues that branch,
+		// as a plan card that goes on from another does, so its first session
+		// starts at that head and its clone holds the work
+		head, err := "", error(nil)
+		if strings.Contains(in.Findings, overBoundNote) {
+			head, err = r.ContinueBranch(ctx, old, Task{ID: SuccessorID(old.ID)})
+			if err != nil && !errors.Is(err, ErrNoBranch) {
+				return "", err
+			}
+		}
 		if t, err = fileEntry(p, Task{ID: SuccessorID(old.ID), Priority: old.Priority, RiskClass: old.RiskClass,
 			BudgetEUR: old.BudgetEUR, Size: old.Size, Objective: old.Objective + "\n\n" + r.untrusted(old, strings.Join(lines, "\n")),
 			Repository: old.Repository, Source: SourceSuccessor, Parent: old.Parent, PlanKey: old.PlanKey, Rung: old.Rung,
@@ -487,6 +498,9 @@ func (r *Runner) Successor(ctx context.Context, in SuccessorInput) (string, erro
 		// fileEntry gives a fresh intake card the project's process; the
 		// successor continues the card it came from, like a retry does
 		t.Process = old.Process
+		if head != "" {
+			t.SHA = old.SHA
+		}
 		if err := r.store.CreateTask(ctx, t); err != nil {
 			return "", err
 		}
@@ -1349,7 +1363,10 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	}
 	switch {
 	case out.trip != nil && out.trip.Kind == TripWallClock:
-		res.Outcome, res.Summary = OutcomeWallClock, strings.TrimSuffix("supervision trip: "+string(TripWallClock)+"; "+out.overBound, "; ")
+		res.Outcome, res.Summary = OutcomeWallClock, "supervision trip: "+string(TripWallClock)
+		if out.overBound != "" {
+			res.Findings = []string{out.overBound}
+		}
 		return res
 	case out.trip != nil && out.decision != nil:
 		d := out.decision
@@ -1377,7 +1394,7 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		}
 		return res
 	case out.result != nil:
-		res.Summary = strings.TrimSuffix(out.result.Summary+"; "+out.overBound, "; ")
+		res.Summary = out.result.Summary
 		if !out.result.Success && (strings.Contains(res.Summary, "DataInspectionFailed") || strings.Contains(res.Summary, "data_inspection_failed")) {
 			// the same brief is refused the same way: only a human helps
 			res.Outcome = OutcomeEscalate
@@ -1406,6 +1423,9 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 		ended = "previous session ended unfinished: "
 	}
 	res.Findings = []string{ended + res.Summary}
+	if out.overBound != "" {
+		res.Findings = slices.Insert(res.Findings, 0, out.overBound)
+	}
 	if out.pending != nil {
 		res.Outcome = OutcomeNotStarted
 	}

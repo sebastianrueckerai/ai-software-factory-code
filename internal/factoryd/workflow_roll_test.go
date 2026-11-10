@@ -615,3 +615,29 @@ func TestSuccessorFindsItsIssueClosed(t *testing.T) {
 		t.Fatalf("the successor row's issue = %d, want 9", store.tasks[id].IssueNumber)
 	}
 }
+
+// An over-bound result closes into a successor that continues the old
+// card's branch: the branch is copied to the successor's own, so its first
+// session starts at the interim head (startRef reads the branch first) and
+// its clone, which fetches the start's branch when the start is missing,
+// holds the work. A close without the note starts from main, as before.
+func TestSuccessorOfOverBoundWorkStartsAtTheInterimHead(t *testing.T) {
+	ctx := context.Background()
+	r, store, _, fj, _ := newRetryRig(t)
+	id, err := r.Successor(ctx, SuccessorInput{TaskID: "t-a",
+		Findings: "\n- " + overBoundNote + " factory/t-a at c7"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fj.branches["factory/"+id] != "c7" {
+		t.Fatalf("the successor's branch = %q, want the old card's interim head c7", fj.branches["factory/"+id])
+	}
+	s := store.tasks[id]
+	_, repo, err := r.task(ctx, id)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if ref, err := r.startRef(ctx, &s, repo, ""); err != nil || ref != "c7" || s.SHA != store.tasks["t-a"].SHA {
+		t.Fatalf("startRef = %q, %v with base %q; want the interim head with the old card's base", ref, err, s.SHA)
+	}
+}

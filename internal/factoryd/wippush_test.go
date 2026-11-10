@@ -2077,8 +2077,8 @@ func TestEndPushRefusedOverTheBoundTakesTheWorkThroughTheInterimPush(t *testing.
 	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
 		t.Fatalf("wip_pushed steps = %d, want the one interim push", n)
 	}
-	if want := "the finished work, over the card's line bound, is on factory/t2 at " + tip; !strings.Contains(res.Summary, want) || len(res.Findings) == 0 || !strings.Contains(res.Findings[0], want) {
-		t.Fatalf("summary %q, findings %q; want both to name where the work sits for the successor", res.Summary, res.Findings)
+	if want := overBoundNote + " factory/t2 at " + tip; len(res.Findings) < 2 || res.Findings[0] != want || strings.Contains(res.Summary, "interim commit") {
+		t.Fatalf("summary %q, findings %q; want the note as the first finding, not in the summary", res.Summary, res.Findings)
 	}
 }
 
@@ -2107,8 +2107,8 @@ func TestEndPushRefusedOverTheBoundAfterAStopTakesTheWork(t *testing.T) {
 	if tip == serve.base || res.Commit != tip {
 		t.Fatalf("branch %s, result commit %q; want the work shipped at the stop and its head in the result", tip, res.Commit)
 	}
-	if want := "the finished work, over the card's line bound, is on factory/t2 at " + tip; !strings.Contains(res.Summary, want) {
-		t.Fatalf("summary = %q, want it to name %q for the successor", res.Summary, want)
+	if want := overBoundNote + " factory/t2 at " + tip; len(res.Findings) == 0 || res.Findings[0] != want {
+		t.Fatalf("findings = %q, want %q first, for the successor", res.Findings, want)
 	}
 }
 

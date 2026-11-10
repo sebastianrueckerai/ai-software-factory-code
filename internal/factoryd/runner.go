@@ -622,6 +622,11 @@ func (out sessionOutcome) stopReport() []string {
 	return nil
 }
 
+// overBoundNote leads the finding that says where a session's work, which an
+// end push the line bound refused, was shipped as an interim commit. It is no
+// finished work: no gate judges it, no pull request opens on it.
+const overBoundNote = "the session's work, over the card's line bound, is an interim commit on"
+
 // errSuperseded ends a session another RunSession attempt took over: the
 // pod is theirs, and this attempt, which Temporal timed out, stops
 // supervising it.
@@ -793,7 +798,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		defer refused.mu.Unlock()
 		if refused.head != "" {
 			out.wip = refused.head
-			out.overBound = fmt.Sprintf("the finished work, over the card's line bound, is on %s at %s", taskBranch(t), refused.head)
+			out.overBound = fmt.Sprintf("%s %s at %s", overBoundNote, taskBranch(t), refused.head)
 		}
 	}()
 	watch := newLimitWatch(s.policy.Limits, s.planner, time.Now(), time.Until(deadline))
