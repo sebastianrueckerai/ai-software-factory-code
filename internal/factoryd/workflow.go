@@ -3721,6 +3721,14 @@ const maxMergeRetries = 6
 // not refusing) waits before the kept approval is tried again.
 const mergeRetryAfter = 10 * time.Minute
 
+// mergeWaitAfter is how long a merge refused with 405 "Please try again
+// later" (Forgejo's conflict check on the head still running) waits
+// before the pull request is read again and the merge tried once more.
+const mergeWaitAfter = 2 * time.Second
+
+// maxMergeWaits bounds those waits within one merge.
+const maxMergeWaits = 5
+
 // conflictVerdict sends a pull request that no longer merges into main
 // back to the agent. The worker bases its commit on the main commit the
 // merge brings in, so main's changes, .forgejo/ among them, stay main's.
