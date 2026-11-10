@@ -24,9 +24,14 @@ func TestSessionKilledForMemoryNamesTheKillAndTheCommandItDiedIn(t *testing.T) {
 		return envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(),
 			Detail: map[string]any{"call_id": id, "tool": "bash", "status": "running", "args": map[string]any{"command": cmd}}}) + "\n"
 	}
+	errored := func(id, cmd string) string {
+		return envLine(harness.Event{Kind: harness.EventToolCall, Time: time.Now(),
+			Detail: map[string]any{"call_id": id, "tool": "bash", "status": "error", "args": map[string]any{"command": cmd}}}) + "\n"
+	}
 	for name, tc := range map[string]struct{ logs, want string }{
 		"killed in a running call":         {completed("c1", "gofmt -l .") + running("c2", "go test -race ./..."), "go test -race ./..."},
 		"the running call completed first": {running("c1", "gofmt -l .") + completed("c1", "gofmt -l ."), "gofmt -l ."},
+		"a call that ended in error":       {running("c1", "sleep 9999") + errored("c1", "sleep 9999") + running("c2", "go vet ./...") + completed("c2", "go vet ./...") + "", "go vet ./..."},
 		"no command at all":                {"", ""},
 	} {
 		t.Run(name, func(t *testing.T) {

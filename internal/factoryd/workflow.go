@@ -2996,7 +2996,10 @@ func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
 	if len(sha) > 7 {
 		sha = sha[:7]
 	}
-	label := "check-in: " + cmp.Or(mark.Kind, CheckSpend) + ": "
+	label := checkinSpendAsk
+	if checkinFailedKind(mark.Kind) {
+		label = "check-in: " + mark.Kind + ": "
+	}
 	switch {
 	case prev.Granted:
 		return label + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)

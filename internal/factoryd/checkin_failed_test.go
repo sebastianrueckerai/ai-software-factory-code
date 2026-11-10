@@ -324,3 +324,15 @@ func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
 		t.Fatalf("case %s with money %+v, want the failed check-in's with the budget 5 and spend 1.5", c.Kind, c.Money)
 	}
 }
+
+// The kinds only a human can act on keep the spend label at a repeat, as
+// before: only the three failure kinds keep their own.
+func TestRepeatAskKeepsTheSpendLabelForTheOtherKinds(t *testing.T) {
+	for _, kind := range []string{CheckGoalConflict, CheckPolicyClass, CheckAccess, CheckSpend, ""} {
+		prev := checkinStopMark{Kind: kind, Head: "c1", Tip: "c1", Granted: true}
+		got := repeatAsk(prev, checkinStopMark{Kind: kind, Head: "c1", Tip: "c1"}, false)
+		if !strings.HasPrefix(got, checkinSpendAsk) {
+			t.Errorf("kind %q: repeat ask %q, want it under %q", kind, got, checkinSpendAsk)
+		}
+	}
+}

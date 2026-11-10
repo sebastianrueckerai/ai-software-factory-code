@@ -191,8 +191,10 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 			b.files = b.files[1:]
 		}
 	case harness.EventToolCall:
-		if args, ok := ev.Detail["args"].(map[string]any); ok && detailString(ev, "tool") == "bash" && detailString(ev, "status") == "running" {
-			id := detailString(ev, "call_id")
+		id := detailString(ev, "call_id")
+		if status := detailString(ev, "status"); status != "running" {
+			b.running = slices.DeleteFunc(b.running, func(c runningCall) bool { return c.id == id })
+		} else if args, ok := ev.Detail["args"].(map[string]any); ok && detailString(ev, "tool") == "bash" {
 			if cmd, _ := args["command"].(string); cmd != "" && !slices.ContainsFunc(b.running, func(c runningCall) bool { return c.id == id }) {
 				b.running = append(b.running, runningCall{id, CommandLine(cmd)})
 			}
