@@ -2077,6 +2077,9 @@ func TestEndPushRefusedOverTheBoundTakesTheWorkThroughTheInterimPush(t *testing.
 	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
 		t.Fatalf("wip_pushed steps = %d, want the one interim push", n)
 	}
+	if want := "the finished work, over the card's line bound, is on factory/t2 at " + tip; !strings.Contains(res.Summary, want) || len(res.Findings) == 0 || !strings.Contains(res.Findings[0], want) {
+		t.Fatalf("summary %q, findings %q; want both to name where the work sits for the successor", res.Summary, res.Findings)
+	}
 }
 
 func pushRefusedOverTheBound() string {
