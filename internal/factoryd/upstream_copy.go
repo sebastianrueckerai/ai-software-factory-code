@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"net/http"
 	"net/url"
 	"os"
@@ -16,6 +17,7 @@ import (
 	"slices"
 	"strings"
 	"sync"
+	"time"
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -96,8 +98,9 @@ type UpstreamCopier struct {
 	HTTP  *http.Client
 	Scrub *redact.Scrubber
 
-	// one copy at a time: each holds a blob in the shared /tmp
-	mu sync.Mutex
+	// slot is the one copy at a time: each holds a blob in the shared /tmp
+	slotOnce sync.Once
+	slot     chan struct{}
 }
 
 // findingError is a line the copy cannot make, which the card hears as a
@@ -117,8 +120,16 @@ const maxBlobBytes = 512 << 20
 // findings for the lines it cannot copy; an error is one Temporal retries.
 func (c *UpstreamCopier) Copy(ctx context.Context, base, head string) ([]string, error) {
 	lines, findings := addedImageLines(base, head)
-	c.mu.Lock()
-	defer c.mu.Unlock()
+	if len(lines) == 0 {
+		return findings, nil
+	}
+	c.slotOnce.Do(func() { c.slot = make(chan struct{}, 1) })
+	select {
+	case c.slot <- struct{}{}:
+		defer func() { <-c.slot }()
+	case <-ctx.Done():
+		return findings, c.scrubbed(fmt.Errorf("waiting for another copy: %w", ctx.Err()))
+	}
 	var admin AdminAuth
 	for _, l := range lines {
 		if admin.User == "" {
@@ -150,8 +161,18 @@ func (c *UpstreamCopier) client() *http.Client {
 	if c.HTTP != nil {
 		return c.HTTP
 	}
-	return http.DefaultClient
+	return upstreamClient
 }
+
+// upstreamClient bounds the connect and the wait for headers, so a stalled
+// upstream does not hold the copy's slot; a body's read is bounded by the
+// activity's context.
+var upstreamClient = &http.Client{Transport: &http.Transport{
+	Proxy:                 http.ProxyFromEnvironment,
+	DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+	TLSHandshakeTimeout:   30 * time.Second,
+	ResponseHeaderTimeout: 30 * time.Second,
+}}
 
 func (c *UpstreamCopier) image(ctx context.Context, admin AdminAuth, ref string) error {
 	m := imageLine.FindStringSubmatch(ref)
@@ -252,10 +273,10 @@ func (j *copyJob) manifest(ctx context.Context, ref, putAs string) error {
 func (j *copyJob) blob(ctx context.Context, d descriptor) error {
 	digest := d.Digest
 	if d.Size < 0 {
-		return fmt.Errorf("upstream blob %s: size %d", digest, d.Size)
+		return findingError(fmt.Sprintf("a blob of %s has the size %d in its descriptor", cutText(digest, 80), d.Size))
 	}
 	if !signatureRef.MatchString(digest) {
-		return fmt.Errorf("upstream blob %q is not a sha256 digest", digest)
+		return findingError(fmt.Sprintf("the upstream's manifest names a blob %q, which is not a sha256 digest", cutText(digest, 80)))
 	}
 	head, err := j.store(ctx, http.MethodHead, "/v2/"+j.repo+"/blobs/"+digest, "", nil, 0)
 	if err != nil {
@@ -285,7 +306,7 @@ func (j *copyJob) blob(ctx context.Context, d descriptor) error {
 		return findingError(fmt.Sprintf("a blob of %s is longer than its descriptor's %d bytes", digest, d.Size))
 	}
 	if n < d.Size {
-		return fmt.Errorf("upstream blob %s: %d bytes, its descriptor says %d", digest, n, d.Size)
+		return findingError(fmt.Sprintf("a blob of %s is %d bytes, its descriptor says %d", digest, n, d.Size))
 	}
 	if got := "sha256:" + hex.EncodeToString(h.Sum(nil)); got != digest {
 		return findingError(fmt.Sprintf("a blob of %s hashes to %s", digest, got))

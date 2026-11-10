@@ -90,12 +90,23 @@ func egressAdmits(t *testing.T, base string) {
 	if err != nil || u.Scheme != "https" || u.Port() != "" {
 		t.Fatalf("%v, %v: want https on its default port", u, err)
 	}
+	if resolves, admits := egressFor(t, u.Hostname()); !resolves || !admits {
+		t.Fatalf("factoryd-egress: resolves %s %v, admits it on 443/TCP alone %v", u.Hostname(), resolves, admits)
+	}
+}
+
+// egressFor is whether factoryd-egress's DNS rule resolves host and an
+// FQDN rule admits it on 443/TCP alone, by matchName or matchPattern
+// (Cilium's `*` is the characters of one DNS label).
+func egressFor(t *testing.T, host string) (resolves, admits bool) {
+	t.Helper()
 	b, err := os.ReadFile("../../k8s/factoryd.yaml")
 	if err != nil {
 		t.Fatal(err)
 	}
 	type name struct {
-		MatchName string `yaml:"matchName"`
+		MatchName    string `yaml:"matchName"`
+		MatchPattern string `yaml:"matchPattern"`
 	}
 	type names []name
 	type ports []struct {
@@ -104,8 +115,14 @@ func egressAdmits(t *testing.T, base string) {
 			DNS names `yaml:"dns"`
 		} `yaml:"rules"`
 	}
-	has := func(ns names) bool { return slices.Contains(ns, name{u.Hostname()}) }
-	var resolves, admits bool
+	has := func(ns names) bool {
+		return slices.ContainsFunc(ns, func(n name) bool {
+			if n.MatchPattern == "" {
+				return n.MatchName == host
+			}
+			return regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(n.MatchPattern), `\*`, "[-a-zA-Z0-9_]*") + "$").MatchString(host)
+		})
+	}
 	dec := yaml.NewDecoder(strings.NewReader(string(b)))
 	for {
 		var doc struct {
@@ -134,9 +151,7 @@ func egressAdmits(t *testing.T, base string) {
 			}
 		}
 	}
-	if !resolves || !admits {
-		t.Fatalf("factoryd-egress: resolves %s %v, admits it on 443/TCP alone %v", u.Hostname(), resolves, admits)
-	}
+	return resolves, admits
 }
 
 // factoryd's pod shares its process namespace, so the pause container is
@@ -458,55 +473,15 @@ func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
 	}
 }
 
-// A matchPattern of the egress admits the names of its CDN and nothing
-// outside it; Cilium's `*` matches the characters of one DNS label.
+// The patterns of the egress admit names under them, in the DNS rule and
+// the 443 rule alike, and no name outside them.
 func TestFactorydEgressPatternsAdmitTheirCDNsAlone(t *testing.T) {
-	b, err := os.ReadFile("../../k8s/factoryd.yaml")
-	if err != nil {
-		t.Fatal(err)
-	}
-	var patterns []string
-	dec := yaml.NewDecoder(strings.NewReader(string(b)))
-	for {
-		var doc struct {
-			Metadata struct{ Name string } `yaml:"metadata"`
-			Spec     struct {
-				Egress []struct {
-					ToFQDNs []struct {
-						MatchPattern string `yaml:"matchPattern"`
-					} `yaml:"toFQDNs"`
-				} `yaml:"egress"`
-			} `yaml:"spec"`
-		}
-		if dec.Decode(&doc) != nil {
-			break
-		}
-		if doc.Metadata.Name != "factoryd-egress" {
-			continue
-		}
-		for _, r := range doc.Spec.Egress {
-			for _, f := range r.ToFQDNs {
-				if f.MatchPattern != "" {
-					patterns = append(patterns, f.MatchPattern)
-				}
-			}
-		}
-	}
-	admits := func(name string) bool {
-		for _, p := range patterns {
-			re := regexp.MustCompile("^" + strings.ReplaceAll(regexp.QuoteMeta(p), `\*`, "[-a-zA-Z0-9_]*") + "$")
-			if re.MatchString(name) {
-				return true
-			}
-		}
-		return false
-	}
 	for name, want := range map[string]bool{
 		"cdn01.quay.io": true, "cdn02.quay.io": true, "europe-west3-docker.pkg.dev": true, "us-west1-docker.pkg.dev": true,
-		"quay.io": false, "evil.quay.io": false, "cdn01.quay.io.evil.example": false, "docker.pkg.dev": false, "x.europe-west3-docker.pkg.dev": false, "evil.dev": false,
+		"evil.quay.io": false, "cdn01.quay.io.evil.example": false, "docker.pkg.dev": false, "x.europe-west3-docker.pkg.dev": false, "evil.dev": false,
 	} {
-		if admits(name) != want {
-			t.Errorf("patterns %v admit %s = %v, want %v", patterns, name, !want, want)
+		if resolves, admits := egressFor(t, name); resolves != want || admits != want {
+			t.Errorf("%s: resolves %v, admits %v, want both %v", name, resolves, admits, want)
 		}
 	}
 }

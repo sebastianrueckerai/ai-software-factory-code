@@ -2,9 +2,11 @@ package factoryd
 
 import (
 	"cmp"
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -559,23 +561,24 @@ func TestUpstreamCopyBlobThatFailsItsHashIsAFinding(t *testing.T) {
 	}
 }
 
-func TestUpstreamCopyShortBlobErrorStatesTheRealCount(t *testing.T) {
+func TestUpstreamCopyShortBlobIsAFindingStatingTheRealCount(t *testing.T) {
 	lay := []byte("layer")
 	m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[{"digest":%q,"size":50}]}`, sha([]byte("c")), sha(lay))
 	im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c"), sha(lay): lay}}
 	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
-	_, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
-	if err == nil || !strings.Contains(err.Error(), "5 bytes, its descriptor says 50") {
-		t.Fatalf("err = %v", err)
+	findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+	want := goLine(im.digest) + ": a blob of " + sha(lay) + " is 5 bytes, its descriptor says 50"
+	if err != nil || len(findings) != 1 || findings[0] != want {
+		t.Fatalf("Copy = %q, %v; want the finding %q", findings, err, want)
 	}
 }
 
 func TestUpstreamCopyQuotesAChildDigestCut(t *testing.T) {
-	long := strings.Repeat("é", 100)
+	long := "a" + strings.Repeat("é", 100)
 	idx := rawIndex(fmt.Sprintf(`[{"digest":%q,"size":1}]`, long), nil)
 	up, store := newFakeUpstream(t, idx), newFakeImgStore(t)
 	findings, err := store.copier(up).Copy(t.Context(), "", goLine(idx.digest)+"\n")
-	if err != nil || len(findings) != 1 || strings.Contains(findings[0], long) || !strings.Contains(findings[0], `"`+strings.Repeat("é", 40)+`..."`) {
+	if err != nil || len(findings) != 1 || strings.Contains(findings[0], long) || !strings.Contains(findings[0], `"a`+strings.Repeat("é", 39)+`..."`) {
 		t.Fatalf("Copy = %q, %v", findings, err)
 	}
 }
@@ -639,5 +642,64 @@ func TestCopyUpstreamImagesActivityReadsAnOpenPullRequestsHeadRepository(t *test
 	}
 	if _, ok := store.manifests["upstream/docker.io/library/golang/"+im.digest]; !ok {
 		t.Error("the line of the pull request's head repository was not copied")
+	}
+}
+
+func TestUpstreamCopyBadLayerDescriptorsAreFindings(t *testing.T) {
+	long := "x" + strings.Repeat("é", 100)
+	for name, tc := range map[string]struct{ layer, want string }{
+		"not a digest":  {fmt.Sprintf(`{"digest":%q,"size":1}`, long), `: the upstream's manifest names a blob "x` + strings.Repeat("é", 39) + `...", which is not a sha256 digest`},
+		"negative size": {fmt.Sprintf(`{"digest":%q,"size":-5}`, sha([]byte("l"))), ": a blob of " + sha([]byte("l")) + " has the size -5 in its descriptor"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			m := fmt.Appendf(nil, `{"schemaVersion":2,"config":{"digest":%q,"size":1},"layers":[%s]}`, sha([]byte("c")), tc.layer)
+			im := fakeImg{manifest: m, digest: sha(m), blobs: map[string][]byte{sha([]byte("c")): []byte("c")}}
+			up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+			findings, err := store.copier(up).Copy(t.Context(), "", goLine(im.digest)+"\n")
+			if err != nil || len(findings) != 1 || findings[0] != goLine(im.digest)+tc.want {
+				t.Fatalf("Copy = %q, %v; want %q", findings, err, tc.want)
+			}
+		})
+	}
+}
+
+// holdSlot takes c's one copy slot until the test ends.
+func holdSlot(t *testing.T, c *UpstreamCopier) {
+	t.Helper()
+	c.slotOnce.Do(func() { c.slot = make(chan struct{}, 1) })
+	c.slot <- struct{}{}
+	t.Cleanup(func() { <-c.slot })
+}
+
+func TestUpstreamCopyUnchangedListReturnsWhileAnotherCopyHoldsTheSlot(t *testing.T) {
+	up, store := newFakeUpstream(t), newFakeImgStore(t)
+	c := store.copier(up)
+	holdSlot(t, c)
+	list := goLine("sha256:"+strings.Repeat("a", 64)) + "\n"
+	done := make(chan error, 1)
+	go func() { _, err := c.Copy(t.Context(), list, list); done <- err }()
+	select {
+	case err := <-done:
+		if err != nil {
+			t.Fatal(err)
+		}
+	case <-time.After(5 * time.Second):
+		t.Fatal("an unchanged list waited for the slot")
+	}
+}
+
+func TestUpstreamCopyWaitingCopyReturnsAtItsDeadline(t *testing.T) {
+	im := newFakeImage("x")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	c := store.copier(up)
+	holdSlot(t, c)
+	ctx, cancel := context.WithTimeout(t.Context(), 50*time.Millisecond)
+	defer cancel()
+	_, err := c.Copy(ctx, "", goLine(im.digest)+"\n")
+	if err == nil || !errors.Is(ctx.Err(), context.DeadlineExceeded) || !strings.Contains(err.Error(), "waiting for another copy") {
+		t.Fatalf("err = %v, want the wait to end at the deadline", err)
+	}
+	if up.manifestReads != 0 {
+		t.Errorf("%d upstream reads while waiting", up.manifestReads)
 	}
 }
