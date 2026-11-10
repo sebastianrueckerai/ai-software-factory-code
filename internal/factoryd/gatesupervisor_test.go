@@ -644,7 +644,9 @@ func TestSuperviseGateLateAnswerIsRecordedAndDropped(t *testing.T) {
 // A roll task makes no model call: its gate trip goes to a
 // human without asking the supervisor.
 func TestSuperviseGateOfARollAsksNoModel(t *testing.T) {
-	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, nil)
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[]}`,
+	})
 	task := c.store.tasks["t1"]
 	task.Source = SourceRoll
 	c.store.tasks["t1"] = task
@@ -655,5 +657,48 @@ func TestSuperviseGateOfARollAsksNoModel(t *testing.T) {
 	}
 	if a := c.alertRow(t); a.Verdict != VerdictReal || a.Detail["action"] != "escalate" {
 		t.Fatalf("alert %+v", a)
+	}
+}
+
+// [roll_trip_state_in_face] A roll's checks trip escalates with no model
+// call, and its diagnosis names the combined status, the green jobs and the
+// job still running; the stop's question carries it as its Why.
+func TestSuperviseGateOfARollNamesTheChecksState(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{"action":"wait","diagnosis":"never asked"}`, map[string]string{
+		"GET /api/v1/repos/sf/r/commits/c1/status": `{"state":"pending","statuses":[` +
+			`{"status":"success","context":"ci/build"},{"status":"success","context":"ci/lint"},{"status":"pending","context":"ci/test"}]}`,
+	})
+	task := c.store.tasks["t1"]
+	task.Source = SourceRoll
+	c.store.tasks["t1"] = task
+	liveRun(c.runner.cfg.Gates, "7", time.Now().Add(-45*time.Second), 30*time.Second)
+	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
+	const state = "checks: combined status pending, green: ci/build, ci/lint, running: ci/test"
+	if d.Action != ActionEscalate || len(c.model.chats) != 0 || !strings.HasSuffix(d.Diagnosis, state) {
+		t.Fatalf("decision %+v after %d model calls", d, len(c.model.chats))
+	}
+	reason := gateStopped + "WaitChecks (attempt 1) past its bound of 12m0s: " + d.Diagnosis
+	q := ShapedQuestion(reason, QuestionFacts{}, nil)
+	if !strings.Contains(q.Why, state) {
+		t.Fatalf("Why = %q, want it to carry %q", q.Why, state)
+	}
+}
+
+// A roll's checks read that fails reaches the diagnosis scrubbed.
+func TestSuperviseGateOfARollScrubsTheChecksError(t *testing.T) {
+	c := newGateCase(t, ActivityWaitChecks, `{}`, nil)
+	forge := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.WriteHeader(http.StatusBadGateway)
+		fmt.Fprint(w, "upstream https://user:pass@host/x Authorization: Bearer abcdefghijklmnop1234567890")
+	}))
+	t.Cleanup(forge.Close)
+	c.runner.forgejo = &Forgejo{BaseURL: forge.URL, BotUser: "factory-agent", BotPassword: "pw"}
+	task := c.store.tasks["t1"]
+	task.Source = SourceRoll
+	c.store.tasks["t1"] = task
+	liveRun(c.runner.cfg.Gates, "7", time.Now().Add(-45*time.Second), 30*time.Second)
+	d, _ := c.supervise(t, ActivityWaitChecks, []any{"t1", "c1"}, true, true)
+	if !strings.Contains(d.Diagnosis, "unreadable") || strings.Contains(d.Diagnosis, "user:pass") || strings.Contains(d.Diagnosis, "abcdefghijklmnop") {
+		t.Fatalf("diagnosis %q must say the read failed and mask the credentials", d.Diagnosis)
 	}
 }
