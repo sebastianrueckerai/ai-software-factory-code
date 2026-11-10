@@ -75,15 +75,23 @@ type QuestionChoice struct {
 	Label string `json:"label"`
 }
 
-// ChoiceValue returns the value of the choice labelled label, "" when the
+// ChoiceValue returns the value of the choice whose label words equal
+// words up to case, surrounding space and end punctuation, "" when the
 // question has no such choice.
-func (q *HumanQuestion) ChoiceValue(label string) string {
+func (q *HumanQuestion) ChoiceValue(words string) string {
+	words = ChoiceKey(words)
 	for _, c := range q.Choices {
-		if c.Label == label {
+		if ChoiceKey(c.Label) == words {
 			return c.Value
 		}
 	}
 	return ""
+}
+
+// ChoiceKey is the words of a choice label as ChoiceValue compares them:
+// lower case, without surrounding space and end punctuation.
+func ChoiceKey(s string) string {
+	return strings.ToLower(strings.TrimRight(strings.TrimSpace(s), ".!?,;: \t"))
 }
 
 // ChoiceLabel returns the label of the choice valued value, "" when the
@@ -244,11 +252,11 @@ func plainQuestion(reason string, f QuestionFacts, choices []string) *HumanQuest
 		// the factory's choice of a label wins: its value acts, park keeps
 		// the card and close ends it, where the agent's "say:" one would
 		// post the label as an answer
-		seen := map[string]bool{"Leave it waiting": true, "End the card": true}
+		seen := map[string]bool{ChoiceKey("Leave it waiting"): true, ChoiceKey("End the card"): true}
 		for _, c := range choices {
 			c = strings.TrimSpace(c)
-			if c != "" && !seen[c] {
-				seen[c] = true
+			if k := ChoiceKey(c); k != "" && !seen[k] {
+				seen[k] = true
 				q.Choices = append(q.Choices, QuestionChoice{"say:" + c, c})
 			}
 		}

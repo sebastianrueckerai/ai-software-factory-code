@@ -618,6 +618,12 @@ func (k card) Closes() bool {
 // answer and no close of its own (choiceCard).
 func (k card) ChoiceCard() bool { return choiceCard(k.Task) }
 
+// PressOnly: a human card whose question has choices takes a press of one
+// of them, never free words (doHumanAnswer refuses those).
+func (k card) PressOnly() bool {
+	return k.Kind == "human" && k.Question != nil && len(k.Question.Choices) > 0
+}
+
 // Routine: a routine's run filed the card, which wears the chip (C16).
 func (k card) Routine() bool { return k.Source == factoryd.SourceRoutine }
 
