@@ -419,6 +419,13 @@ func decodePlan(text string) (Plan, []string) {
 // rounds files every card at once and holds no outline. take_off_main is
 // replanFindings' to judge.
 func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin) (Plan, []string) {
+	return judgePlanWith(p, shape, limits, pins, "")
+}
+
+// judgePlanWith is judgePlan with delta the key of a delta card that joins
+// the round: the card may depend on the integration card the round already
+// holds.
+func judgePlanWith(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[string]policy.ImagePin, delta string) (Plan, []string) {
 	round := roundCards(p)
 	var out []string
 	add := func(format string, args ...any) { out = append(out, fmt.Sprintf("plan: "+format, args...)) }
@@ -472,7 +479,7 @@ func judgePlan(p Plan, shape policy.PlanShape, limits policy.Limits, pins map[st
 				add("card %s: depends on itself", c.Key)
 			case keys[d] == 0:
 				add("card %s: depends on %q, which is no card of the plan", c.Key, d)
-			case slices.Contains(integration, d):
+			case c.Key != delta && slices.Contains(integration, d):
 				add("card %s: depends on the integration card, which comes last", c.Key)
 			}
 		}
