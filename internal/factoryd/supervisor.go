@@ -54,6 +54,29 @@ type Decision struct {
 // issue comments.
 const maxDecisionText = 2000
 
+// CostState is the deterministic cost and state block factoryd injects into
+// its supervisor inputs: the task row's settled figures (budget, spent,
+// remaining), its model calls and their tokens from the audit table, and
+// the task's status. factoryd assembles it from its store, never from the
+// agent.
+type CostState struct {
+	BudgetEUR    float64 `json:"budget_eur"`
+	SpentEUR     float64 `json:"spent_eur"`
+	RemainingEUR float64 `json:"remaining_eur"`
+	Calls        int     `json:"calls"`
+	PromptTokens int     `json:"prompt_tokens"`
+	CachedTokens int     `json:"cached_tokens"`
+	OutputTokens int     `json:"output_tokens"`
+	State        string  `json:"state"`
+}
+
+// Line renders the cost and state block as the one JSON object every
+// supervisor input carries it as.
+func (c CostState) Line() string {
+	b, _ := json.Marshal(c) // #nosec G104 -- plain numbers and a status word
+	return string(b)
+}
+
 // decodeAnswer decodes a model's answer into v: exactly one JSON object
 // with no unknown field, a markdown fence around it tolerated.
 func decodeAnswer(content string, v any) error {

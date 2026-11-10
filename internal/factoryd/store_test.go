@@ -87,6 +87,8 @@ type fakeStore struct {
 	// spends are the gateway's audit rows SpendAndCallsBetween
 	// read
 	spends []fakeSpend
+	// callTotals are TaskCallTotals' answers by task
+	callTotals map[string]TaskCallTotals
 	// cases are CasesOf's rows, oldest first; caseSteps CaseSteps' by case
 	cases     []Case
 	caseSteps map[int64][]CaseStep
@@ -411,7 +413,8 @@ func (s *fakeStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},
-		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]time.Time{}}
+		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]time.Time{},
+		callTotals: map[string]TaskCallTotals{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
@@ -1888,6 +1891,13 @@ func (s *fakeStore) NewestCallAt(ctx context.Context, taskID string) (time.Time,
 		}
 	}
 	return at, nil
+}
+
+func (s *fakeStore) TaskCallTotals(ctx context.Context, taskID string) (TaskCallTotals, error) {
+	if t, ok := s.callTotals[taskID]; ok {
+		return t, nil
+	}
+	return TaskCallTotals{}, nil
 }
 
 func (s *fakeStore) ProviderRefusal(ctx context.Context, taskID string, since time.Time) (string, bool, error) {

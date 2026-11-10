@@ -5347,6 +5347,7 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		tk := store.tasks["t2"]
 		tk.Size, tk.BudgetEUR, tk.SpentEUR = "small", 5, 1.8
 		store.tasks["t2"] = tk
+		store.callTotals["t2"] = TaskCallTotals{Calls: 6, PromptTokens: 2500, CachedTokens: 500, OutputTokens: 1000}
 		version := testPolicyVersion()
 		version.Document.Risk.LargeLines = 1000
 		runner.cfg.Policy = func() policy.Version { return version }
@@ -5359,7 +5360,8 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 			t.Fatalf("chat = %d calls, want one", chat.calls)
 		}
 		in := chat.gots[0].Input
-		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 3.20 left;", "left; session 1 of 4."} {
+		for _, want := range []string{"350 changed lines so far against its bound of 300; 1.80 EUR spent, 3.20 left;", "left; session 1 of 4.",
+			`Cost and state: {"budget_eur":5,"spent_eur":1.8,"remaining_eur":3.2,"calls":6,"prompt_tokens":2500,"cached_tokens":500,"output_tokens":1000,"state":"running"}`} {
 			if !strings.Contains(in, want) {
 				t.Fatalf("statement lacks %q:\n%s", want, in)
 			}
@@ -5376,7 +5378,8 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		}
 	})
 	t.Run("start", func(t *testing.T) {
-		runner, _, _, _, chat, _, _ := checkinRig(t, `{"decision":"handover","handover":"start from the tests"}`)
+		runner, _, _, _, chat, store, _ := checkinRig(t, `{"decision":"handover","handover":"start from the tests"}`)
+		store.callTotals["t2"] = TaskCallTotals{Calls: 5, PromptTokens: 2000, CachedTokens: 400, OutputTokens: 800}
 		if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Sessions: 4, Model: "m",
 			CheckInAsk: &CheckInAsk{Moment: CheckInDead, Stop: "wall clock"}}, nil,
 			pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
@@ -5384,6 +5387,9 @@ func TestRunSessionCheckinStatementsCarryThePace(t *testing.T) {
 		}
 		if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "Pace of the card: changed lines are not measured at this moment;") {
 			t.Fatalf("chat = %d calls %+v, want the unmeasured pace", chat.calls, chat.gots)
+		}
+		if !strings.Contains(chat.gots[0].Input, `Cost and state: {"budget_eur":0.3,"spent_eur":0.05,"remaining_eur":0.25,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`) {
+			t.Fatalf("statement lacks the cost and state block:\n%s", chat.gots[0].Input)
 		}
 	})
 }

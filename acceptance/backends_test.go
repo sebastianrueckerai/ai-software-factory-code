@@ -328,6 +328,10 @@ func (s *acceptanceStore) SettleSpendFinal(_ context.Context, id string, reporte
 	return s.SettleSpend(context.Background(), id, reported)
 }
 
+func (s *acceptanceStore) TaskCallTotals(_ context.Context, _ string) (factoryd.TaskCallTotals, error) {
+	return factoryd.TaskCallTotals{}, nil
+}
+
 func (s *acceptanceStore) TaskByPR(_ context.Context, repository string, number int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

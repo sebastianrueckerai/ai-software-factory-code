@@ -18,6 +18,18 @@ import (
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
+// The cost and state block renders once, as the one JSON object both
+// supervisor inputs carry it as: the task's settled figures, its model
+// calls and tokens, and its status.
+func TestCostStateRendersOnce(t *testing.T) {
+	got := CostState{BudgetEUR: 4, SpentEUR: 1.2, RemainingEUR: 2.8, Calls: 5,
+		PromptTokens: 2000, CachedTokens: 400, OutputTokens: 800, State: "running"}.Line()
+	want := `{"budget_eur":4,"spent_eur":1.2,"remaining_eur":2.8,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`
+	if got != want {
+		t.Fatalf("Line() =\n%s\nwant\n%s", got, want)
+	}
+}
+
 func TestDigestCollectsCommandsFilesErrorsAndDiff(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	d := newDigestBuilder(t0)
