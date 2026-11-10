@@ -2,12 +2,16 @@ package factoryd
 
 import (
 	"bytes"
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
+	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/activity"
 	"go.temporal.io/sdk/client"
 	"go.temporal.io/sdk/workflow"
 )
@@ -19,12 +23,18 @@ func checkinClockRun(t *testing.T, pinned bool) *workflowHarness {
 	if pinned {
 		h.env.OnGetVersion("checkin-clock", workflow.DefaultVersion, versionCheckinClock).Return(workflow.DefaultVersion)
 	}
-	deadSessions(h,
-		SessionResult{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped"},
-		SessionResult{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped again",
+	results := []SessionResult{
+		{Outcome: OutcomeNoPush, SessionID: "s1", Summary: "stopped"},
+		{Outcome: OutcomeNoPush, SessionID: "s2", Summary: "stopped again",
 			CheckIn: &CheckInOutcome{Decision: CheckHandover, Handover: "go on",
 				Record: &CheckInRecord{Moment: CheckInDead, Session: "s2", ParentSession: "s1", Duration: 40 * time.Second}}},
-		pushed("s3", "c3"))
+		pushed("s3", "c3")}
+	h.env.OnActivity(ActivityRunSession, mock.Anything, mock.Anything).After(time.Minute).Return(
+		func(ctx context.Context, in SessionInput) (SessionResult, error) {
+			h.sessions = append(h.sessions, in)
+			h.windows = append(h.windows, activity.GetInfo(ctx).StartToCloseTimeout)
+			return results[min(len(h.sessions), len(results))-1], nil
+		})
 	h.onChecks(ChecksResult{State: ChecksSuccess})
 	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "done" || len(h.sessions) != 3 {
@@ -76,8 +86,10 @@ func TestWorkflowSessionWithACheckinGetsTheCheckinsTimeOnTop(t *testing.T) {
 }
 
 // A history recorded before the change ids carries no checkin-clock and no
-// session-kill marker: it replays on the old branch, with the session's
-// activity scheduled for its own time alone.
+// session-kill marker: it replays on the old branch and the new version
+// calls add no command. No recorded history holds a session with a start
+// check-in, so the old window of such a session is asserted by
+// TestWorkflowSessionWindowCarriesTheCheckinExtra's pinned run.
 func TestWorkflowReplaysAHistoryFromBeforeCheckinClock(t *testing.T) {
 	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
 	if err != nil {
@@ -134,5 +146,88 @@ func TestPastCheckinHoldsTheWindowsEnd(t *testing.T) {
 	}
 	if got, want := (sessionSpec{}).pastCheckin(now.Add(50*time.Minute)), now.Add(50*time.Minute); !got.Equal(want) {
 		t.Errorf("no window: %v, want %v", got, want)
+	}
+}
+
+type liveSpy struct {
+	Store
+	mu   sync.Mutex
+	puts []LiveSession
+}
+
+func (s *liveSpy) PutLiveSession(ctx context.Context, l LiveSession) error {
+	s.mu.Lock()
+	s.puts = append(s.puts, l)
+	s.mu.Unlock()
+	return s.Store.PutLiveSession(ctx, l)
+}
+
+// A session whose card has one second of agent time left opens with a check-in
+// that takes 1.5s. With the extra time the workflow gives such a session
+// the check-in is cut at its policy cap, not at the card's second: it answers,
+// and the live row's deadline moves out by the check-in's time. A session
+// with no extra (a run from before the change) cuts the check-in at the
+// second its deadline leaves, and it stops at its time cap.
+func TestRunSessionCheckinTakesNoTimeOfTheSession(t *testing.T) {
+	for name, tc := range map[string]struct {
+		extra     time.Duration
+		answered  bool
+		moved     bool
+		wantKind  string
+		remaining time.Duration
+	}{
+		"with the extra":    {extra: 30 * time.Minute, answered: true, moved: true, remaining: time.Second},
+		"without the extra": {extra: 0, answered: false, wantKind: CheckTimeCap},
+	} {
+		t.Run(name, func(t *testing.T) {
+			runner, _, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"handover","handover":"go on"}`})
+			chat.delay = 1500 * time.Millisecond
+			runner.stopWait, runner.endpointWait = 100*time.Millisecond, 100*time.Millisecond
+			spy := &liveSpy{Store: store}
+			runner.store = spy
+			res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m", AgentTime: time.Second,
+				CheckInAsk: &CheckInAsk{Moment: CheckInDead}, CheckinExtra: tc.extra, Remaining: tc.remaining}, nil, resultLine(true, "done"))
+			if err != nil {
+				t.Fatal(err)
+			}
+			if res.CheckIn == nil {
+				t.Fatalf("result %+v holds no check-in", res)
+			}
+			if got := res.CheckIn.Decision == CheckHandover; got != tc.answered || res.CheckIn.ReasonKind != tc.wantKind {
+				t.Fatalf("check-in = %q kind %q (%q), want answered %v kind %q", res.CheckIn.Decision, res.CheckIn.ReasonKind, res.CheckIn.Reason, tc.answered, tc.wantKind)
+			}
+			spy.mu.Lock()
+			defer spy.mu.Unlock()
+			if len(spy.puts) == 0 {
+				t.Fatal("no live row was written")
+			}
+			if moved := len(spy.puts) > 1 && spy.puts[len(spy.puts)-1].Deadline.Sub(spy.puts[0].Deadline) >= time.Second; moved != tc.moved {
+				t.Fatalf("the live row's deadline moved = %v over %d writes, want %v", moved, len(spy.puts), tc.moved)
+			}
+		})
+	}
+}
+
+// The window of a session's activity is the card's remaining time and the
+// grace, and for the session that opens with a check-in the 30m extra on top
+// of them. With the 20m cap, s1 gets 20m + 2m = 22m. After s1's minute the
+// card has 19m left: s2 gets 19m + 30m + 2m = 51m, and a run from before
+// the change 19m + 2m = 21m. s2 used 1m less its check-in's 40s, so the card
+// has used 1m20s and s3 gets 18m40s + 2m = 20m40s; before the change it has
+// used 2m and s3 gets 18m + 2m = 20m.
+func TestWorkflowSessionWindowCarriesTheCheckinExtra(t *testing.T) {
+	for name, tc := range map[string]struct {
+		pinned bool
+		want   []time.Duration
+	}{
+		"gated":  {false, []time.Duration{22 * time.Minute, 51 * time.Minute, 20*time.Minute + 40*time.Second}},
+		"pinned": {true, []time.Duration{22 * time.Minute, 21 * time.Minute, 20 * time.Minute}},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := checkinClockRun(t, tc.pinned)
+			if len(h.windows) != 3 || h.windows[0] != tc.want[0] || h.windows[1] != tc.want[1] || h.windows[2] != tc.want[2] {
+				t.Fatalf("session windows = %v, want %v", h.windows, tc.want)
+			}
+		})
 	}
 }

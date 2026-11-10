@@ -1085,7 +1085,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		}
 		deadline, startedAt = sessionDeadline(activity.GetInfo(ctx).Deadline, s.agentTime), time.Now()
 		if s.checkinExtra > 0 {
-			deadline = earliest(deadline, startedAt.Add(s.remaining))
+			deadline = earliest(deadline, activity.GetInfo(ctx).StartedTime.Add(s.remaining))
 			s.ceiling = activity.GetInfo(ctx).Deadline.Add(-sessionGrace)
 		}
 		r.record(ctx, t.ID, "session_start", map[string]any{

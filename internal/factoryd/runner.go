@@ -770,7 +770,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 				deadline = s.pastCheckin(deadline.Add(took))
 				row.Deadline = deadline
 				if err := r.store.PutLiveSession(ctx, row); err != nil {
-					log.Printf("task %s: session %s: record the deadline past the check-in: %v", t.ID, s.id, err)
+					log.Printf("task %s: session %s: record the deadline past the check-in: %s", t.ID, s.id, r.scrub(err.Error()))
 				}
 			}
 		} else {
@@ -829,10 +829,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// own error
 	ended := func(plain string) string {
 		if d, err := r.kube.PodDiagnosis(ctx, ns, podName); err == nil {
-			var last string
-			if cs := digest.g.Commands; len(cs) > 0 {
-				last = r.scrub(cs[len(cs)-1].Command)
-			}
+			last := r.scrub(digest.lastCommand())
 			if out.killed = killOf(d, last); out.killed != nil {
 				log.Printf("task %s: session %s: the sandbox killed %s for its memory in %q", t.ID, s.id, out.killed.Container, last)
 			}

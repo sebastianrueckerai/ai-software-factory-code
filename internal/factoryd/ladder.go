@@ -239,7 +239,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	}
 	f.atCase(c)
 	if at.N > 1 {
-		if out, ok, err := r.retriedTrip(ctx, t, c.Kind, cases, at.ID); ok || err != nil {
+		if out, ok, err := r.retriedTrip(ctx, t, cases, at.ID); ok || err != nil {
 			return out, err
 		}
 	}
@@ -376,14 +376,15 @@ func (r *Runner) restartedStop(ctx context.Context, t Task) (string, error) {
 	return stop, nil
 }
 
-// retriedTrip is what the attempts before trip's left on a case of kind,
-// ok false for nothing to take: the case they opened, when rung 0
+// retriedTrip is what the attempts before trip's left on a case, ok false
+// for nothing to take: the case they opened, when rung 0
 // resolved it, with its resolution, or when it waits at the human, on
 // which the card waits with no new step and no new face. It goes by the
-// trip and the kind, not the key: rung 0's retry of a dependency moves
-// the key the trip reads.
-func (r *Runner) retriedTrip(ctx context.Context, t Task, kind CaseKind, cases []Case, trip string) (TripOutcome, bool, error) {
-	i := slices.IndexFunc(cases, func(c Case) bool { return c.Kind == kind && c.Facts["trip"] == trip })
+// trip alone, not the key or the kind: rung 0's retry of a dependency moves
+// the key the trip reads, and a retry that runs on a newer binary may read
+// the stop as another kind than the attempt before it.
+func (r *Runner) retriedTrip(ctx context.Context, t Task, cases []Case, trip string) (TripOutcome, bool, error) {
+	i := slices.IndexFunc(cases, func(c Case) bool { return c.Facts["trip"] == trip })
 	if i < 0 {
 		return TripOutcome{}, false, nil
 	}
@@ -560,7 +561,7 @@ func tripNext(c Case, reason string) string {
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseCheckinFailed:
-		return "The factory's own check-in failed, not the card's work, and the project agent answers it first. Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
+		return "The factory's own check-in failed, not the card's work. Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	case CaseBudgetFloor:
 		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}

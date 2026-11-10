@@ -25,3 +25,24 @@ func TestOpenTripCarriesTheSessionKill(t *testing.T) {
 		t.Fatal("a stop with no kill carries a killed fact")
 	}
 }
+
+// A retried trip finds the case an attempt before it opened for the same
+// trip even when the retry reads the stop as another kind, as a retry on a
+// newer binary across a roll does: one case per stop.
+func TestOpenTripRetryAcrossAKindChangeKeepsOneCase(t *testing.T) {
+	ctx := context.Background()
+	g := newTripRig(t, "success")
+	reason := "check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s"
+	first, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: reason, Kind: CaseCheckinShare, StateKey: "old"}, tripAttempt{ID: "run/a", N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	again, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t1", Reason: reason}, tripAttempt{ID: "run/a", N: 2})
+	if err != nil || again != first {
+		t.Fatalf("retry = %+v, %v; want the first attempt's %+v", again, err, first)
+	}
+	cases, err := g.s.CasesOf(ctx, "t1")
+	if err != nil || len(cases) != 1 {
+		t.Fatalf("cases = %d, %v; want one", len(cases), err)
+	}
+}

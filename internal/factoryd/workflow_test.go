@@ -79,8 +79,9 @@ type workflowHarness struct {
 	choices     [][]string       // Escalate choices, in order
 	successions []SuccessorInput // Successor filings, in order
 	usage       []TaskUsage
-	rowUsage    TaskUsage     // what ReadUsage reads back: the last recorded usage
-	logs        *lockedBuffer // the workflow's log
+	windows     []time.Duration // the start-to-close of each session's activity, where a test records it
+	rowUsage    TaskUsage       // what ReadUsage reads back: the last recorded usage
+	logs        *lockedBuffer   // the workflow's log
 	recorded    []recordedStep
 	infoAsked   []string    // RequestInfo reasons, in order
 	closedAt    []time.Time // CloseNotReproduced calls

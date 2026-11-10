@@ -297,7 +297,7 @@ type scriptedTools struct{ out map[string]string }
 // cap: the evidence call is cut where the answer's reserve begins, the
 // tool-less answer call at the cap, and the human ask carries the time
 // stop with the time the conversation had.
-func TestCheckinTimeCapAsksAHuman(t *testing.T) {
+func TestCheckinTimeCapIsTheFailedCheckinsStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
 	chat := &scriptedChat{delay: time.Second, answers: []CheckinResponse{{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, 20*time.Millisecond)

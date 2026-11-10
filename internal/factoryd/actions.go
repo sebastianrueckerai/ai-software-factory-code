@@ -57,7 +57,7 @@ type Action struct {
 
 // extendKinds are the cases an extend answers: the caps, and the stops
 // whose questions offer extending the card as an owner exit.
-var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseCheckinFailed, CaseGateStop, CaseFindingsRepeated}
+var extendKinds = []CaseKind{CaseSessionCap, CaseAgentTimeCap, CaseCheckinShare, CaseGateStop, CaseFindingsRepeated}
 
 // handoverModels are the rungs a handover names, against the session's.
 var handoverModels = []string{"same", "stronger", "cheaper"}

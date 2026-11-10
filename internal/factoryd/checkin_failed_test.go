@@ -7,6 +7,10 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+
+	"github.com/stretchr/testify/mock"
 )
 
 const (
@@ -115,7 +119,7 @@ func (e errTools) Tool(context.Context, string, map[string]any) (string, bool, e
 }
 
 // The ask a failed check-in leaves opens with its label, and the case it
-// opens is the failed check-in's, which the project agent answers, for each
+// opens is the failed check-in's, for each
 // stop the check-in's template serves. Only the budget's share is spend. A
 // card from before the caps had kinds of their own carries a cap under
 // spend, and it is a failed check-in's case too.
@@ -154,7 +158,7 @@ func TestCheckinFailureQuestions(t *testing.T) {
 		if q.Ask != tc.ask {
 			t.Errorf("%s: ask %q, want %q", name, q.Ask, tc.ask)
 		}
-		if strings.Contains(q.Why, "person") || !strings.Contains(q.Why, "the project agent answers it first") {
+		if strings.Contains(q.Why, "person") || !strings.Contains(q.Why, "The failure is the factory's own, not the card's work.") {
 			t.Errorf("%s: why %q", name, q.Why)
 		}
 	}
@@ -164,7 +168,7 @@ func TestCheckinFailureQuestions(t *testing.T) {
 // and who answers first, not the bare reply line.
 func TestCheckinFailedFace(t *testing.T) {
 	got := tripNext(Case{Kind: CaseCheckinFailed}, "check-in: "+CheckTimeCap+": check-in time cap reached after 10m0s")
-	if !strings.Contains(got, "check-in failed") || !strings.Contains(got, "project agent answers it first") {
+	if !strings.Contains(got, "check-in failed") || !strings.Contains(got, "not the card's work") || strings.Contains(got, "answers it first") {
 		t.Fatalf("face = %q", got)
 	}
 }
@@ -173,13 +177,15 @@ func TestCheckinFailedFace(t *testing.T) {
 // with the answer: the stop's kinds are one spend stop to the run, live and
 // healed from a card asked before the labels changed.
 func TestWorkflowCheckinCapStopsAnswerBuysTheSession(t *testing.T) {
-	for name, reason := range map[string]string{
-		"time cap": CheckTimeCap, "call cap": CheckCallCap, "recorded under spend": CheckSpend,
+	for name, tc := range map[string]struct{ kind, stop, checkinStop string }{
+		"time cap":             {CheckTimeCap, "check-in time cap reached after 10m0s", CheckinStopTimeCap},
+		"call cap":             {CheckCallCap, "check-in call cap reached after 20 calls", CheckinStopCallCap},
+		"recorded under spend": {CheckSpend, "check-in time cap reached after 10m0s", CheckinStopTimeCap},
 	} {
+		reason, stop := tc.kind, tc.stop
 		t.Run(name, func(t *testing.T) {
 			h := newWorkflowHarness(t)
 			h.taskConfig = askTaskConfig()
-			stop := "check-in time cap reached after 10m0s"
 			h.onSessions(checkinStopped("s1", OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: reason, Reason: stop,
 				Record: &CheckInRecord{Moment: CheckInGate, Session: "s1"}}), pushed("s2", "c2"))
 			h.onChecks(ChecksResult{State: ChecksSuccess})
@@ -191,29 +197,130 @@ func TestWorkflowCheckinCapStopsAnswerBuysTheSession(t *testing.T) {
 			if want := "check-in: " + reason + ": " + stop; len(h.escalated) == 0 || !strings.HasPrefix(h.escalated[0], want) {
 				t.Fatalf("asked %q, want it to open %q", h.escalated, want)
 			}
-			if h.trips[0].CheckinStop != CheckinStopTimeCap {
-				t.Fatalf("first trip's checkin_stop = %q, want %q", h.trips[0].CheckinStop, CheckinStopTimeCap)
+			if h.trips[0].CheckinStop != tc.checkinStop {
+				t.Fatalf("first trip's checkin_stop = %q, want %q", h.trips[0].CheckinStop, tc.checkinStop)
 			}
 		})
 	}
 }
 
-// A run restarted on a card waiting at a cap stop with a label of its own
-// buys the session, as one with the recorded spend label does.
-func TestWorkflowHealedCheckinCapStopBuysTheSession(t *testing.T) {
-	for _, label := range []string{CheckTimeCap, CheckCallCap} {
-		h := newWorkflowHarness(t)
-		h.state = RunState{Status: "waiting-human", Question: "check-in: " + label + ": check-in call cap reached",
-			PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
-		var steps []string
-		h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
-		h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "one more check-in round", Comment: 602})
-		h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
-		if final := h.run(t); final != "done" {
-			t.Fatalf("%s: final = %q, finals = %v", label, final, h.finals)
+// A run restarted on a card waiting at the repeat ask of a failed check-in
+// (the restart that produced no new commit) with its pull request open
+// verifies the open head, as it does at the same ask under the recorded
+// spend label: no session is bought. Without the widened prefix the run
+// reads the ask as unknown and buys a session.
+func TestWorkflowHealedCheckinRepeatAskVerifiesTheOpenHead(t *testing.T) {
+	for _, label := range []string{CheckSpend, CheckTimeCap, CheckCallCap} {
+		t.Run(label, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.state = RunState{Status: "waiting-human", Question: "check-in: " + label + ": The restart produced no new commit - the head is still c2. What should the agent do?",
+				PR: PullRequest{Number: 9}, Head: "c2", Usage: TaskUsage{AgentTime: 5 * time.Minute, Attempts: 1}}
+			var steps []string
+			h.onVerify(&steps, []SessionResult{pushed("s2", "c3")})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals = %v", final, h.finals)
+			}
+			if len(h.sessions) != 0 {
+				t.Fatalf("sessions = %d (steps %v), want none: the answer verifies the open head c2", len(h.sessions), steps)
+			}
+		})
+	}
+}
+
+// A second failed check-in at the same head keeps its own label and opens
+// the failed check-in's case again: never spend_above_policy, and never the
+// deadlock form, which says no reply can change a repeated failure of the
+// factory's own check-in. A restart that pushed nothing after a cap stop
+// is named as such under the cap's label.
+func TestWorkflowRepeatedFailedCheckinKeepsItsLabel(t *testing.T) {
+	for name, tc := range map[string]struct {
+		kind, stop string
+		restart    bool
+	}{
+		"time cap":   {CheckTimeCap, "check-in time cap reached after 10m0s", true},
+		"call cap":   {CheckCallCap, "check-in call cap reached after 20 calls", true},
+		"unreadable": {CheckUnreadable, "check-in answer unreadable: no JSON", false},
+	} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			h.taskConfig = askTaskConfig()
+			stop := func(id, parent string) SessionResult {
+				return checkinStopped(id, OutcomeCheckinHuman, &CheckInOutcome{Decision: CheckHuman, ReasonKind: tc.kind, Reason: tc.stop,
+					Record: &CheckInRecord{Moment: CheckInGate, Session: id, ParentSession: parent}})
+			}
+			var steps []string
+			h.onVerify(&steps, []SessionResult{pushed("s1", "c1"), stop("s2", "s1"), stop("s3", "s2")})
+			h.env.OnActivity(ActivityModelReview, mock.Anything, "t1", mock.Anything, mock.Anything, mock.Anything, mock.Anything, mock.Anything).Return(
+				func(ctx context.Context, taskID string, pr PullRequest, commit string, g GateResults, earlier []Review, round int) (Review, error) {
+					return Review{Verdict: "concerns", Summary: "one fault", Findings: []string{"rename the flag"}}, nil
+				})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 602})
+			h.signalAfter(24*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			if final := h.run(t); final != "closed" || len(h.escalated) != 2 {
+				t.Fatalf("final = %q, escalations = %q, want closed after the stop and its repeat", final, h.escalated)
+			}
+			second := h.escalated[1]
+			if !strings.HasPrefix(second, "check-in: "+tc.kind+": ") || strings.Contains(second, CheckSpend) || strings.Contains(second, "No reply can change this") {
+				t.Fatalf("the repeat ask = %q, want it under %s with no spend label and no deadlock form", second, tc.kind)
+			}
+			if tc.restart && !strings.Contains(second, "no new commit") {
+				t.Fatalf("the repeat ask = %q, want the restart that pushed nothing named", second)
+			}
+			if kind, facts := caseKindOf(escalationSource(second), second); kind != CaseCheckinFailed || facts["reason_kind"] != tc.kind {
+				t.Fatalf("the repeat's case = %s %v, want checkin_failed under %s", kind, facts, tc.kind)
+			}
+		})
+	}
+}
+
+// A guard that spans the roll: a cap stop recorded under spend and the next
+// one under its own kind are one stop to the repeat guard.
+func TestStopFamilySpansTheLabelsOfTheRoll(t *testing.T) {
+	for _, k := range []string{CheckSpend, CheckTimeCap, CheckCallCap} {
+		if stopFamily(k) != stopFamily(CheckSpend) {
+			t.Errorf("stopFamily(%s) = %q, want %q", k, stopFamily(k), stopFamily(CheckSpend))
 		}
-		if want := []string{"session 2 after 1 cards", "pr c3 after 1 cards", "approval c3"}; !slices.Equal(steps, want) {
-			t.Fatalf("%s: steps = %v, want %v: the answer buys the session, not a verify of c2", label, steps, want)
+	}
+	if stopFamily(CheckUnreadable) != "" || stopFamily(CheckPolicyClass) != CheckPolicyClass {
+		t.Errorf("unreadable %q, policy_class %q", stopFamily(CheckUnreadable), stopFamily(CheckPolicyClass))
+	}
+}
+
+// An unreadable stop recorded before the labels opens the failed
+// check-in's case too, with the same fact.
+func TestCaseKindOfReadsAnUnreadableStopRecordedBeforeTheRoll(t *testing.T) {
+	reason := "check-in: gate: check-in answer unreadable: not one JSON object"
+	kind, facts := caseKindOf(escalationSource(reason), reason)
+	if kind != CaseCheckinFailed || facts["reason_kind"] != CheckUnreadable {
+		t.Fatalf("case = %s %v, want checkin_failed unreadable", kind, facts)
+	}
+}
+
+// A failed check-in's case is no agent-time stop: an extend of it is
+// refused, the session resumes or the card hands over, and the card keeps
+// the budget and spend facts its cap case carried.
+func TestCheckinFailedCaseBuysNoAgentTime(t *testing.T) {
+	f := CaseFacts{Kind: CaseCheckinFailed, PoolLeft: policy.Draw{Sessions: 5, AgentTime: 5 * time.Hour, EUR: 20},
+		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: time.Hour, EUR: 4}, BudgetEUR: 5, LeftEUR: 3.5, CeilingEUR: 10, Attempts: 1, SessionCap: 3, AgentTimeCapS: 7200, AgentTimeS: 600}
+	for name, args := range map[string]map[string]any{"agent time": {"agent_time_s": 600}, "a session": {"sessions": 1}} {
+		if got := applies(t, ActExtend, f, Resolution{Args: args}); got != "this card asked a question, not for a session: answer it, or extend at its cap" {
+			t.Errorf("extend of %s applies = %q, want the refusal", name, got)
 		}
+	}
+	for _, name := range []string{ActResume, ActHandover} {
+		if !slices.Contains(offeredNames(f, 2), name) {
+			t.Errorf("rung 2 is not offered %s at a failed check-in", name)
+		}
+	}
+	task := Task{ID: "t1", Repository: "o/r", BudgetEUR: 5, SpentEUR: 1.5}
+	c, err := caseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"source": "supervisor", "question": "gave no answer",
+		"reason": "check-in: " + CheckTimeCap + ": check-in time cap reached after 10m0s"}}, "")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if c.Kind != CaseCheckinFailed || c.Money == nil || c.Money.BudgetEUR != 5 || c.Money.SpentEUR != 1.5 {
+		t.Fatalf("case %s with money %+v, want the failed check-in's with the budget 5 and spend 1.5", c.Kind, c.Money)
 	}
 }

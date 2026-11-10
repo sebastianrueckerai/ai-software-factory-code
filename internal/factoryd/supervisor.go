@@ -140,6 +140,23 @@ type digestBuilder struct {
 	start time.Time
 	g     ProgressDigest
 	files []string // g.Files' paths, the one edited last last
+	// running are the bash calls started and not yet completed, oldest
+	// first: a call the worker died in never completes
+	running []runningCall
+}
+
+type runningCall struct{ id, command string }
+
+// lastCommand is the command the session was in when it ended: the newest
+// bash call still running, else the last one that completed, "" for none.
+func (b *digestBuilder) lastCommand() string {
+	if n := len(b.running); n > 0 {
+		return b.running[n-1].command
+	}
+	if n := len(b.g.Commands); n > 0 {
+		return b.g.Commands[n-1].Command
+	}
+	return ""
 }
 
 func newDigestBuilder(start time.Time) *digestBuilder {
@@ -149,6 +166,8 @@ func newDigestBuilder(start time.Time) *digestBuilder {
 func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 	switch ev.Kind {
 	case harness.EventCommand:
+		id := detailString(ev, "call_id")
+		b.running = slices.DeleteFunc(b.running, func(c runningCall) bool { return c.id == id })
 		cmd := detailString(ev, "command")
 		c := DigestCommand{At: at.Sub(b.start).Round(time.Second).String(), Command: CommandLine(cmd)}
 		if exit, ok := detailInt(ev, "exit"); ok {
@@ -172,6 +191,12 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 			b.files = b.files[1:]
 		}
 	case harness.EventToolCall:
+		if args, ok := ev.Detail["args"].(map[string]any); ok && detailString(ev, "tool") == "bash" && detailString(ev, "status") == "running" {
+			id := detailString(ev, "call_id")
+			if cmd, _ := args["command"].(string); cmd != "" && !slices.ContainsFunc(b.running, func(c runningCall) bool { return c.id == id }) {
+				b.running = append(b.running, runningCall{id, CommandLine(cmd)})
+			}
+		}
 		b.g.ToolCalls++
 		if detailBool(ev, "subagent") {
 			b.g.SubagentToolCalls++

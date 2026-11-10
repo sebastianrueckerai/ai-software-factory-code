@@ -2518,7 +2518,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			if t.checkinRepeat >= versionCheckinRepeat {
 				mark := checkinStopMark{Kind: res.CheckIn.ReasonKind, Head: startRef, Tip: cmp.Or(res.Commit, startRef), Share: u.ExtraCheckinShare,
 					ShareEUR: res.CheckIn.Share, ExtraLines: u.ExtraLines, RaisedSessions: u.RaisedSessions}
-				if prev := t.lastCheckinStop; prev.Kind == mark.Kind {
+				if prev := t.lastCheckinStop; stopFamily(prev.Kind) == stopFamily(mark.Kind) {
 					ask := repeatAsk(prev, mark, false)
 					if fixed := repeatAsk(prev, mark, true); fixed != ask && t.checkinAnswers() {
 						ask = fixed
@@ -2996,11 +2996,12 @@ func repeatAsk(prev, mark checkinStopMark, fixed bool) string {
 	if len(sha) > 7 {
 		sha = sha[:7]
 	}
+	label := "check-in: " + cmp.Or(mark.Kind, CheckSpend) + ": "
 	switch {
 	case prev.Granted:
-		return checkinSpendAsk + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
-	case same:
-		return checkinSpendAsk + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
+		return label + fmt.Sprintf("The restart produced no new commit — the head is still %s. What should the agent do?", sha)
+	case same && !checkinFailedKind(mark.Kind):
+		return label + fmt.Sprintf("%s: the head %s and the card's limits are unchanged since the last stop. Extend the card, overrule the review, end the card, or leave it waiting.", deadlockAskMark, sha)
 	}
 	return ""
 }

@@ -1227,7 +1227,7 @@ func grantOf(k factoryd.Case, agentTime time.Duration) (map[string]any, bool) {
 		return map[string]any{"agent_time_s": int(agentTime / time.Second)}, true
 	case k.Kind == factoryd.CaseCheckinShare && k.Facts["checkin_stop"] == factoryd.CheckinStopShare:
 		return map[string]any{"checkin_shares": 1}, true
-	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseCheckinShare, k.Kind == factoryd.CaseCheckinFailed:
+	case k.Kind == factoryd.CaseSessionCap, k.Kind == factoryd.CaseCheckinShare:
 		return map[string]any{"sessions": 1}, true
 	}
 	return nil, false

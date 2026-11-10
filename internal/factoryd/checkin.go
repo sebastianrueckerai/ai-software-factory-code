@@ -74,6 +74,24 @@ const (
 	CheckUnreadable = "checkin_unreadable"
 )
 
+// checkinFailedKind says kind is a check-in that failed.
+func checkinFailedKind(kind string) bool {
+	return kind == CheckTimeCap || kind == CheckCallCap || kind == CheckUnreadable
+}
+
+// stopFamily is the kind the repeat guard compares: a stop recorded before
+// the failures had kinds of their own carries spend on a cap and no kind on
+// an unreadable answer.
+func stopFamily(kind string) string {
+	switch kind {
+	case CheckTimeCap, CheckCallCap:
+		return CheckSpend
+	case CheckUnreadable:
+		return ""
+	}
+	return kind
+}
+
 // checkinSpendKind says kind is a check-in stop on the card's spend or on a
 // cap of the check-in itself, whose answer buys the session or a share: a
 // run recorded before the caps had kinds of their own carries CheckSpend
@@ -642,13 +660,13 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // arrives, and the guards turn that into the outcome. A provider that
 // refuses every call ends it as a handover with no note and no verdicts —
 // the round runs as if no check-in existed. An answer the runner cannot
-// read gets one repair round and then a human, at once on the last call.
+// read gets one repair round and then fails the check-in (checkin_unreadable), at once on the last call.
 // The last call carries no tools and asks for the answer; a tool asked
 // for on it is the call cap's human ask under spend. The last call comes
 // at the call cap or once an evidence call as long as the longest so far
 // would not end before the answer is due, whichever is first, and an
 // evidence call still running when the answer is due is cut. An answer
-// call the cap cuts is the time cap's human ask under spend. Every call
+// call the cap cuts fails it at its time cap (checkin_time_cap). Every call
 // lands in the record.
 func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int, timeCap time.Duration) CheckInOutcome {
 	start := time.Now()
