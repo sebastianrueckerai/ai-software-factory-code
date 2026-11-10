@@ -455,6 +455,14 @@ func (s *accBatchStore) CountAdmitted(ctx context.Context, repository string) (i
 	return s.tasks.CountAdmitted(ctx, repository)
 }
 
+func (s *accBatchStore) SetResumeWait(context.Context, string, string, time.Time) error {
+	panic("unused")
+}
+
+func (s *accBatchStore) ResumeWaiters(context.Context, string) ([]factoryd.Task, error) {
+	return nil, nil
+}
+
 func (s *accBatchStore) ListQueuedByRepository(ctx context.Context, repository string) ([]factoryd.Task, error) {
 	return s.tasks.ListQueuedByRepository(ctx, repository)
 }

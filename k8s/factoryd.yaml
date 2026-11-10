@@ -6,7 +6,8 @@ metadata:
 ---
 # Cluster scope holds only what cannot be namespaced: namespace create,
 # delete and list, creating the RoleBinding that grants factoryd-task
-# inside each task namespace, and deleting released cache volumes. RBAC
+# inside each task namespace, deleting released cache volumes and listing
+# the nodes. RBAC
 # cannot restrict create by name, so the ValidatingAdmissionPolicy below
 # confines all of it to factory-agents-* (and the volumes to released
 # ones of class factory-cache). It also lists the CronJobs and CNPG's
@@ -31,6 +32,13 @@ rules:
 - apiGroups: [""]
   resources: [persistentvolumes]
   verbs: [list, delete]
+# the CI spawner spawns a runner pod only where its ephemeral storage fits:
+# the nodes' allocatable (nodes are cluster-scoped); the pods' requests are
+# read per namespace, in the task namespaces (factoryd-task) and forgejo
+# (factoryd-health)
+- apiGroups: [""]
+  resources: [nodes]
+  verbs: [list]
 # the platform's rollouts, whose windows hold the alerts that fire in them
 - apiGroups: [kustomize.toolkit.fluxcd.io]
   resources: [kustomizations]
@@ -66,7 +74,8 @@ metadata:
 rules:
 - apiGroups: [""]
   resources: [pods]
-  verbs: [create, delete, get]
+  # list: the CI spawner sums the namespaces' ephemeral-storage requests
+  verbs: [create, delete, get, list]
 - apiGroups: [""]
   resources: [pods/log]
   verbs: [get]

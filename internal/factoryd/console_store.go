@@ -6,7 +6,9 @@ import (
 	"database/sql"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"slices"
+	"strings"
 	"time"
 )
 
@@ -45,13 +47,17 @@ type BoardTask struct {
 	WaitingOn       string
 	Dependencies    string
 	QueueAhead      int
-	Question        *HumanQuestion
-	AnswersPending  int
-	ChainState      string
-	ChainLive       bool
-	ChainRun        int64
-	ChainGreen      int64
-	ChainGreenAt    time.Time
+	// SlotWait is the face's "waits for a slot, N ahead (L live)" of a card
+	// queued for a work slot, "" for any other: the resumed cards come
+	// first, then the never-started ones by filing.
+	SlotWait       string
+	Question       *HumanQuestion
+	AnswersPending int
+	ChainState     string
+	ChainLive      bool
+	ChainRun       int64
+	ChainGreen     int64
+	ChainGreenAt   time.Time
 	// RollID and RollIssue name the roll task that carries a merged card's
 	// pull request in an opened or merged request; "" and 0 for none.
 	RollID    string
@@ -171,7 +177,35 @@ func (s *PGStore) BoardTasks(ctx context.Context, repository string) ([]BoardTas
 		}
 		tasks = append(tasks, b)
 	}
+	setSlotWaits(tasks)
 	return tasks, rows.Err()
+}
+
+// setSlotWaits words the wait of every card in tasks, one project's live
+// cards, that queues for a work slot.
+func setSlotWaits(tasks []BoardTask) {
+	live := 0
+	var resumed, fresh []int
+	for i, b := range tasks {
+		switch {
+		case holdsSlot(b.Task):
+			live++
+		case b.Status == "queued" && b.ResumedAt != nil:
+			resumed = append(resumed, i)
+		case waitsForSlot(b.Task) && strings.HasPrefix(b.QueueReason, WorkBoundReason):
+			fresh = append(fresh, i)
+		}
+	}
+	slices.SortFunc(resumed, func(a, b int) int {
+		return cmp.Or(tasks[a].ResumedAt.Compare(*tasks[b].ResumedAt), strings.Compare(tasks[a].ID, tasks[b].ID))
+	})
+	slices.SortFunc(fresh, func(a, b int) int {
+		x, y := tasks[a], tasks[b]
+		return cmp.Or(x.CreatedAt.Compare(y.CreatedAt), cmp.Compare(x.IssueNumber, y.IssueNumber), strings.Compare(x.ID, y.ID))
+	})
+	for n, i := range slices.Concat(resumed, fresh) {
+		tasks[i].SlotWait = fmt.Sprintf("waits for a slot, %d ahead (%d live)", n, live)
+	}
 }
 
 // RollCarries are the cards the requests of roll task id carry: those

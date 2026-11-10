@@ -308,7 +308,7 @@ func holdsSlot(t Task) bool {
 	case "in-review":
 		return t.Gate != GateApproval
 	}
-	return t.Status == "queued" && t.AdmittedAt != nil
+	return t.Status == "queued" && t.AdmittedAt != nil && t.ResumedAt == nil
 }
 
 // filedStep is the card's filing: by its source, against its plan

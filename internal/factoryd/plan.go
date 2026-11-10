@@ -1868,6 +1868,11 @@ func (t *taskRun) replanToPlan(step ReplanStep, sw PlanSwitch) (final string, sw
 // switch moves the card back to back and the wait goes on. The plan
 // program's error comes back through the caller's finish.
 func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (final, why string, done bool) {
+	if t.surge >= versionSurgeResume {
+		if final, why := t.awaitSlot(); final != "" {
+			return final, why, true
+		}
+	}
 	if back == "in-review" {
 		reason := "superseded: " + cmp.Or(step.By, "a person") + " asked to send the card back to the planner"
 		if err := workflow.ExecuteActivity(t.short, ActivitySupersedeApproval, t.taskID, reason).Get(t.ctx, nil); err != nil {
@@ -2097,6 +2102,11 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
+		}
+		if t.surge >= versionSurgeResume {
+			if final, why := t.awaitSlot(); final != "" {
+				return t.finish(final, why)
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))
