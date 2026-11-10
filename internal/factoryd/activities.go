@@ -704,8 +704,9 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 	}
 
 	// the free figure rounds down to the tenth of a cent it prints, so a
-	// raise read off it (FundRaise) covers the need; 1e-6 takes up float noise
-	left := math.Floor(max(own.Free(), 0)*1000+1e-6) / 1000
+	// raise read off it (FundRaise) covers the need; 1e-6 takes up float
+	// noise. A session's figure is its ceiling, the reserve held out
+	left := math.Floor(max(own.Free()-req.ReserveEUR, 0)*1000+1e-6) / 1000
 	opens, state := budgetRefused, fmt.Sprintf("%.3f EUR of the %.3f EUR budget remains", left, t.BudgetEUR)
 	act := "Raise the budget (Fund on the board) and answer, or close the card."
 	switch refused.Decision {
@@ -720,6 +721,12 @@ func (r *Runner) funded(ctx context.Context, taskID, model string, opening bool)
 		state = fmt.Sprintf("%.6f EUR of the project's %.2f EUR month (budget.month_eur in %s) is free", max(free.Project, 0), req.ProjectEUR, file)
 		act = "Raise budget.month_eur in " + file + " by a commit and answer, or wait for the next UTC month and answer."
 	default:
+		if free.Reserve > 0 {
+			// the money stop: a session that reached its ceiling says
+			// what the card spent and what the model review and the
+			// audit keep, the reserve the ceiling held out
+			state += fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit", own.Spent, free.Reserve)
+		}
 		if own.Holds > 0 {
 			state += fmt.Sprintf(" after outstanding holds of %.3f EUR (%d, the earliest expiring %s)", own.Held, own.Holds, stamp(own.Expires))
 			act = "Wait for the holds to settle and answer (a released hold books its call's cost, an expired one is booked in full), or raise the budget (Fund on the board) and answer."
@@ -758,6 +765,17 @@ func (r *Runner) needOf(ctx context.Context, v policy.Version, t Task, model str
 	project, projectEUR := v.ProjectCap(t.Repository)
 	req := policy.HoldRequest{TaskID: t.ID, Kind: policy.KindModel, Ref: alias, Price: price,
 		DayEUR: v.Document.Budget.DayEUR, MonthEUR: v.Document.Budget.MonthEUR, Project: project, ProjectEUR: projectEUR}
+	if opening {
+		// a session's floor holds the card's gate reserve out of the
+		// headroom as the gateway holds its calls to
+		// (Limits.GateReserve): the session ceiling it reads is
+		// budget - spent - reserve, and a card spent to it meets the
+		// money stop, which names the spent EUR and the EUR held for
+		// the review and the audit; the attempt floor of a run from
+		// before the session ladder (AttemptFunded, replayed) keeps
+		// the full headroom, as factoryd's gate calls do
+		req.ReserveEUR = v.Document.Limits.GateReserve()
+	}
 	// the cheapest call: no prompt and policy.MinCallTokens output tokens
 	inf, cheapest := math.Inf(1), req
 	cheapest.WantOut = policy.MinCallTokens

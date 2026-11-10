@@ -1911,13 +1911,14 @@ func (s *fakeStore) Free(ctx context.Context, r policy.HoldRequest) (policy.Task
 		return policy.TaskFree{}, policy.Free{}, fmt.Errorf("hold: no task row for %s", r.TaskID)
 	}
 	tf := s.held[r.TaskID]
-	tf.Status, tf.Headroom = t.Status, t.BudgetEUR-t.SpentEUR
+	tf.Status, tf.Headroom, tf.Spent = t.Status, t.BudgetEUR-t.SpentEUR, t.SpentEUR
 	inf := math.Inf(1)
 	f := policy.Free{Day: inf, Month: inf, Project: inf}
 	if s.capsFree != nil {
 		f = *s.capsFree
 	}
-	f.Task = tf.Free()
+	f.Task = tf.Free() - r.ReserveEUR
+	f.Reserve, f.Spent = r.ReserveEUR, t.SpentEUR
 	return tf, f, nil
 }
 
