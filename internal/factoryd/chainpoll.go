@@ -1018,7 +1018,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 func (p *ChainPoller) mainRuns(ctx context.Context, proj Project) ([]ActionRun, error) {
 	repo := proj.Repo()
 	runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
-		url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
+		url.Values{"event": {"push"}, "limit": {strconv.Itoa(runsPage)}})
 	if err != nil {
 		return nil, err
 	}
@@ -1077,7 +1077,7 @@ func (p *ChainPoller) backfillRepository(ctx context.Context, proj Project, ids 
 	oldest := slices.Min(ids)
 	for page := 1; len(want) > 0; page++ {
 		runs, err := p.Forgejo.ActionRuns(ctx, p.Forgejo.Access(proj).Actions, repo.Owner, repo.Name,
-			url.Values{"event": {"push"}, "limit": {strconv.Itoa(backfillRunsPage)}, "page": {strconv.Itoa(page)}})
+			url.Values{"event": {"push"}, "limit": {strconv.Itoa(runsPage)}, "page": {strconv.Itoa(page)}})
 		if err != nil {
 			log.Printf("chain poller: %s: backfill page %d: %v", proj.Repository, page, err)
 			break
@@ -1101,11 +1101,6 @@ func (p *ChainPoller) backfillRepository(ctx context.Context, proj Project, ids 
 	}
 	return slices.Collect(maps.Keys(want))
 }
-
-// backfillRunsPage is the runs-per-page the backfill asks the forge for;
-// rollRunsRead is the limit the forge is known to honor, and a larger
-// ask the forge caps would skip runs in the (page-1)*n walk above.
-const backfillRunsPage = runsPage
 
 // chainCarried lists the pull requests of the cards whose own merge
 // commit lies in run's compare range, ascending.
