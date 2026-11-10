@@ -255,7 +255,7 @@
 </form>{{end}}
 {{end}}
 {{define "plan"}}<h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Plan</a>{{else}}Plan{{end}}{{if .IssueURL}} <a class="ref" href="{{.IssueURL}}" target="_blank" rel="noopener">#{{.Issue}}</a>{{with .PlanName}} · {{.}}{{end}}{{else}}{{with .PlanName}} {{.}}{{end}}{{end}}, revision {{.PlanSpec.Revision}}</h4>
- {{template "brief-block" .}}
+{{template "brief-block" .}}
 {{with .Escalation}}<p class="reason">{{.}}</p>{{end}}
 <p>{{.PlanSummary}}</p>
 {{with .Problem}}<p class="problem" role="alert">{{.}}</p>{{end}}
@@ -264,7 +264,8 @@
 {{else if eq $q.Kind "confirmation"}}<fieldset class="question"><legend>{{$q.Index}}. {{$q.Text}}</legend>
 <form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="confirm">
-<button type="submit">{{if $.TakeOffRefs}}Confirm reverts {{andlist $.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>
+<button type="submit">{{if $.TakeOffRefs}}Confirm reverts {{andlist $.TakeOffRefs}} from main{{else}}Confirm{{end}}</button>{{range $.TakeOffWhys}}
+<p class="reason">{{.}}</p>{{end}}
 </form>
 <form method="post" action="/tasks/{{$.TaskID}}/plan/answer" hx-post="/tasks/{{$.TaskID}}/plan/answer">
 <input type="hidden" name="csrf" value="{{$.CSRF}}">{{template "filter" $.Filter}}<input type="hidden" name="revision" value="{{$.PlanSpec.Revision}}"><input type="hidden" name="index" value="{{$q.Index}}"><input type="hidden" name="decision" value="revise">

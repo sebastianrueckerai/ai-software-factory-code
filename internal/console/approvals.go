@@ -76,11 +76,11 @@ type approvalCard struct {
 	PlanSpec    factoryd.PlanSpec
 	PlanSummary string
 	PlanRows    []factoryd.PlanRow
-	TakeOffMain []string
-	// TakeOffRefs are the cards TakeOffMain names in its order, each as
-	// the confirm button's line reads it: #its issue, else its key. The
-	// confirm is the revert, so the button says what it reverts.
+	// TakeOffRefs are the cards the plan takes off main, each as the
+	// confirm button's line reads it: #its issue, else its key. TakeOffWhys
+	// are their reasons, one line each, beside the button.
 	TakeOffRefs []string
+	TakeOffWhys []string
 	Questions   []planQuestion
 	Holdouts    []planHoldout
 	Open        string // "<n> questions open" while any waits for its answer
@@ -402,7 +402,7 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 	if !ok {
 		return fmt.Errorf("revision %d of %s is not recorded", k.PlanSpec.Revision, k.TaskID)
 	}
-	k.PlanSummary, k.PlanRows, k.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
+	k.PlanSummary, k.PlanRows = p.Summary, factoryd.PlanRows(p)
 	if len(p.TakeOffMain) > 0 {
 		cards, err := c.cfg.Tasks.PlanCards(ctx, k.TaskID)
 		if err != nil {
@@ -410,17 +410,15 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 		}
 		issue := map[string]int64{}
 		for _, t := range cards {
-			if t.PlanKey != "" {
-				if _, held := issue[t.PlanKey]; !held {
-					issue[t.PlanKey] = t.IssueNumber
-				}
-			}
+			issue[t.PlanKey] = t.IssueNumber
 		}
 		for _, key := range p.TakeOffMain {
+			ref := key
 			if n := issue[key]; n > 0 {
-				key = fmt.Sprintf("#%d", n)
+				ref = fmt.Sprintf("#%d", n)
 			}
-			k.TakeOffRefs = append(k.TakeOffRefs, key)
+			k.TakeOffRefs = append(k.TakeOffRefs, ref)
+			k.TakeOffWhys = append(k.TakeOffWhys, ref+": "+p.TakeOffReasons[key])
 		}
 	}
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)

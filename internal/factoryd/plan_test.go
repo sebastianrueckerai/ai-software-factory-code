@@ -585,8 +585,9 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 			`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-			"take_off_main: only work that must leave main, the keys of merged cards whose work comes off main; a card of a later revision that lands it again names it in from. A done card leaves the card list by itself, with no field: never name one for that.",
-		`"rung_reason": "one line"}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. `,
+			"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main, each with a reason in take_off_reasons, by key, saying what breaks if that work stays on main; " +
+			"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere.",
+		`"rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. `,
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
 	} {
 		if !strings.Contains(got, want) {
@@ -3723,8 +3724,7 @@ func TestFilingJudgesAgainstTheRevisionBefore(t *testing.T) {
 	store.tasks[k.ID] = k
 
 	val, err := execActivity(t, r, ActivityRequestPlan, "t-plan", 2, int64(7))
-	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out",
-		"card cli is merged on main: keep its key, or name it in take_off_main to take its work off main"}
+	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out"}
 	if ref := getInto[PlanRef](t, val, err); len(ref.Filed) != 0 || !slices.Equal(ref.Refused, want) {
 		t.Fatalf("the filing: %+v, want no card filed and the findings %q", ref, want)
 	}
@@ -3906,8 +3906,7 @@ func TestReplanJudgesAgainstTheNewestFiledRevision(t *testing.T) {
 	store.tasks[k.ID] = k
 	p.Cards[2].Key, p.Cards[2].From = "redirects2", "redirects"
 	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
-	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out",
-		"card cli is merged on main: keep its key, or name it in take_off_main to take its work off main"}
+	want := []string{"card cli2: from cli, which merged: its work is on main, so start from main and leave from out"}
 	if err != nil || res.Revision != 0 || !slices.Equal(res.Findings, want) {
 		t.Fatalf("revision 3: %+v, %v; want refused with %q", res, err, want)
 	}
@@ -5113,6 +5112,12 @@ func dropRigCiting(t *testing.T, cites bool, takeOff ...string) (*Runner, *fakeS
 	p.Cards[2].DependsOn = []string{"links-api-2"}
 	p.Cards[3].Key = "integration-2"
 	p.TakeOffMain = takeOff
+	for _, k := range takeOff {
+		if p.TakeOffReasons == nil {
+			p.TakeOffReasons = map[string]string{}
+		}
+		p.TakeOffReasons[k] = "its work breaks the redirects"
+	}
 	res, err := r.FilePlan(ctx, "t-plan", planJSON(t, p))
 	if err != nil {
 		t.Fatal(err)
@@ -5128,16 +5133,13 @@ func dropRigCiting(t *testing.T, cites bool, takeOff ...string) (*Runner, *fakeS
 }
 
 // A revision that takes links-api off main while its criteria still cite
-// links_crud, which links-api met, and its spec calls the card's feature
-// merged, is refused at the filing with both findings.
+// links_crud, which links-api met, is refused at the filing with that one
+// finding.
 func TestFilingRefusesTakeOffOfWhatTheRevisionRelies(t *testing.T) {
 	_, _, _, _, res := dropRigCiting(t, true, "links-api")
-	if res.Revision != 0 || len(res.Findings) == 0 {
-		t.Fatalf("the filing: %+v, want it refused", res)
-	}
-	want := "take_off_main names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; drop them from the criteria, or leave links-api out of take_off_main"
-	if !slices.Contains(res.Findings, want) {
-		t.Fatalf("findings %q, want %q", res.Findings, want)
+	want := []string{"take_off_main names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep links-api's key and leave it out of take_off_main, or file links_crud again under a new id with replaces"}
+	if res.Revision != 0 || !slices.Equal(res.Findings, want) {
+		t.Fatalf("the filing: %+v, want it refused with %q", res, want)
 	}
 }
 
@@ -5235,17 +5237,16 @@ func TestFilingDropsMergedCardsUnderAPause(t *testing.T) {
 	}
 }
 
-// A merged card on main that the revision leaves out without naming it in
-// take_off_main refuses the revision with R5's finding: an omission takes
-// no work off main. The integration card left out gives none.
-func TestFilePlanRefusesADropsMergedOmission(t *testing.T) {
+// A merged card on main that the revision leaves out of its cards without
+// naming it in take_off_main stays on main: the revision files, and no
+// work comes off main. The integration card left out gives the same.
+func TestFilePlanKeepsAMergedOmissionOnMain(t *testing.T) {
 	_, store, _, calls, res := dropRig(t)
-	want := []string{"card links-api is merged on main: keep its key, or name it in take_off_main to take its work off main"}
-	if res.Revision != 0 || !slices.Equal(res.Findings, want) {
-		t.Fatalf("revision 2: %+v, want refused with %q", res, want)
+	if res.Revision != 2 || len(res.Findings) != 0 {
+		t.Fatalf("revision 2: %+v, want it filed", res)
 	}
-	if rev, _, _ := store.PlanRevision(context.Background(), "t-plan", 0); rev.Revision != 1 || len(*calls) != 0 || len(store.pauses) != 0 {
-		t.Fatalf("newest revision %d, merges %q, pauses %+v; want revision 1 and nothing off main", rev.Revision, *calls, store.pauses)
+	if k := cardsByKey(t, store)["links-api"]; k.RevertedAt != nil || len(*calls) != 0 || len(store.pauses) != 0 {
+		t.Fatalf("links-api %+v, merges %q, pauses %+v; want it on main and nothing off main", k, *calls, store.pauses)
 	}
 }
 

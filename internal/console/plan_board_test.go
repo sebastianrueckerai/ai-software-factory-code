@@ -495,24 +495,30 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
 	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
-	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"k2", "k4"},
-		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"k2", "k4", "k5"},
+		TakeOffReasons: map[string]string{"k2": "its queue cannot run", "k4": "its schema rejects notes", "k5": "its offer repeats"},
+		Cards:          []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
 	r.tasks.plans["t-plan"][1].Plan = plan
 	for _, t := range planTasks() {
-		if t.Parent == "t-plan" && (t.PlanKey == "k2" || t.PlanKey == "k4") {
+		if t.Parent == "t-plan" && (t.PlanKey == "k2" || t.PlanKey == "k4" || t.PlanKey == "k5") {
 			r.tasks.tasks = append(r.tasks.tasks, t)
 		}
 	}
 	ck, _ := r.loggedIn(t)
-	want := "<button type=\"submit\">Confirm reverts #2 and #4 from main</button>"
+	want := "<button type=\"submit\">Confirm reverts #2, #4 and #5 from main</button>"
 	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
 	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)
 	}
+	for _, why := range []string{"#2: its queue cannot run", "#4: its schema rejects notes", "#5: its offer repeats"} {
+		if !strings.Contains(card, why) {
+			t.Errorf("the plan card lacks the reason %q:\n%s", why, card)
+		}
+	}
 	if strings.Contains(card, "Takes off main:") {
 		t.Errorf("the plan card still holds the take-off-main footnote:\n%s", card)
 	}
-	footnote := "<p>Takes off main: k2, k4</p>"
+	footnote := "<p>Takes off main: k2, k4, k5</p>"
 	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, footnote) {
 		t.Errorf("the drawer lacks %q:\n%s", footnote, d)
 	}

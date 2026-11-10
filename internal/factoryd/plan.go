@@ -98,6 +98,9 @@ type Plan struct {
 	// TakeOffMain are the keys of the merged cards whose work the revision
 	// takes off main once it filed
 	TakeOffMain []string `json:"take_off_main,omitempty"`
+	// TakeOffReasons say, by key, what breaks if the card's work stays on
+	// main; every key of TakeOffMain has one
+	TakeOffReasons map[string]string `json:"take_off_reasons,omitempty"`
 	// Round is the planning round this revision files, factoryd's stamp: 1
 	// for a plan's first, 0 on a plan filed before rounds
 	Round int `json:"round,omitempty"`
@@ -1194,7 +1197,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
@@ -1214,7 +1217,8 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-		"take_off_main: only work that must leave main, the keys of merged cards whose work comes off main; a card of a later revision that lands it again names it in from. A done card leaves the card list by itself, with no field: never name one for that. " +
+		"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main, each with a reason in take_off_reasons, by key, saying what breaks if that work stays on main; " +
+		"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	g += imagesLine(pins)
 	if shape.Foundation {
