@@ -68,6 +68,7 @@ func TestStringRemovesKeys(t *testing.T) {
 		"firecrawl key fc-0123456789abcdef0123456789abcdef refused":                              "firecrawl key [redacted] refused",
 		"openbao token hvs.CAESIJ0123456789abcdefghijklmnopqrstuvwxyz expired":                   "openbao token hvs.[redacted] expired",
 		"key -----BEGIN OPENSSH PRIVATE KEY-----\nb3BlbnNzaC1rZXktdjEAAAAABG5vbmUAAAAEbm9uZQAAAAAAAAABAAAAMwAAAAtzc2gtZW\nQyNTUxOQAAACD=\n-----END OPENSSH PRIVATE KEY----- rejected": "key [pem redacted] rejected",
+		"key -----BEGIN RSA PRIVATE KEY-----\nMIIBOgIBAAJBAKj34GkxFhD90vcNLYLInFEX6Ppy1tPf9Cnzj4p4WGeKLs1Pt8Qu\n-----END RSA PRIVATE KEY----- rejected":                               "key [pem redacted] rejected",
 		"the master key hunter2-master is in use": "the master key [redacted] is in use",
 		"a short secret stays short":              "a short secret stays short",
 		`model "small" is not allowed for capability classes ["coder"] under policy version 3`: `model "small" is not allowed for capability classes ["coder"] under policy version 3`,
