@@ -386,12 +386,18 @@ func IntegrationCard(ctx context.Context, store interface {
 }
 
 // judgedByPerson: every criterion of p stands on an approver's row, a
-// waiver or a confirmation, so a plan whose integration card ended off
-// main closes on the person's word: no review of that card judged it.
+// waiver or a confirmation, or is an invariant its gate met, so a plan
+// whose integration card ended off main closes on the person's word: no
+// review of that card judged it. An invariant is a deterministic run and
+// needs no person's word.
 func judgedByPerson(p Plan, rows []CriterionVerdict) bool {
 	return !slices.ContainsFunc(p.Criteria, func(c PlanCriterion) bool {
 		v, ok := StandingRow(rows, c)
-		return !ok || v.Source != CriteriaSourceApprover
+		if !ok {
+			return true
+		}
+		return v.Source != CriteriaSourceApprover &&
+			!(c.Kind == CriterionInvariant && v.Source == CriteriaSourceGate && v.Verdict == "met")
 	})
 }
 
