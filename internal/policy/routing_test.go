@@ -1,8 +1,13 @@
 package policy
 
 import (
+	"context"
+	"io"
+	"net/http"
+	"net/http/httptest"
 	"slices"
 	"testing"
+	"time"
 )
 
 func TestRouting(t *testing.T) {
@@ -41,5 +46,35 @@ func TestLimitedTwinTakesItsAliasLimit(t *testing.T) {
 	d.Prices.MaxOutputTokens["big-alibaba"] = 8000
 	if p, _ := d.Limited("big-alibaba", Price{}); p.MaxOutput != 8000 {
 		t.Fatalf("a twin's own limit = %d, want 8000", p.MaxOutput)
+	}
+}
+
+// Deployments are the litellm_params.model of each model_name, each once, and
+// a failed refresh keeps the last good answer.
+func TestPriceBookDeployments(t *testing.T) {
+	fail := false
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if fail {
+			w.WriteHeader(http.StatusBadGateway)
+			return
+		}
+		io.WriteString(w, `{"data":[
+		 {"model_name":"big","litellm_params":{"model":"zai/glm-5.3"},"model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":4e-6}},
+		 {"model_name":"big","litellm_params":{"model":"zai/glm-5.3"},"model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":4e-6}},
+		 {"model_name":"big-alibaba","litellm_params":{"model":"dashscope/qwen3.8-max"},"model_info":{"input_cost_per_token":1e-6,"output_cost_per_token":4e-6}}]}`)
+	}))
+	defer srv.Close()
+	b := &PriceBook{BaseURL: srv.URL, MasterKey: "mk", TTL: time.Hour}
+	ctx := context.Background()
+	if got, err := b.Deployments(ctx, "big"); err != nil || !slices.Equal(got, []string{"zai/glm-5.3"}) {
+		t.Fatalf("Deployments(big) = %v, %v, want [zai/glm-5.3]", got, err)
+	}
+	if _, err := b.Deployments(ctx, "nope"); err == nil {
+		t.Fatal("Deployments(nope) answered")
+	}
+	fail = true
+	b.at = time.Now().Add(-2 * time.Hour)
+	if got, err := b.Deployments(ctx, "big-alibaba"); err != nil || !slices.Equal(got, []string{"dashscope/qwen3.8-max"}) {
+		t.Fatalf("Deployments(big-alibaba) after a failed refresh = %v, %v, want the last good answer", got, err)
 	}
 }

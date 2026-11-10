@@ -651,12 +651,40 @@ func (r *Runner) startFact(ctx context.Context, in SessionAnswerInput) error {
 }
 
 // price is alias's price with its output limit (policy.Document.Limited).
+// While the gateway serves alias from its twin the call runs at the twin's
+// price, one in ten at alias's own: the floor takes the dearer of the two on
+// each rate.
 func (r *Runner) price(ctx context.Context, alias string) (policy.Price, error) {
+	doc := r.cfg.Policy().Document
 	p, err := r.cfg.Prices.Price(ctx, alias)
 	if err != nil {
 		return policy.Price{}, err
 	}
-	return r.cfg.Policy().Document.Limited(alias, p)
+	p, err = doc.Limited(alias, p)
+	if err != nil {
+		return policy.Price{}, err
+	}
+	twin := doc.Routing.Twin(alias)
+	if twin == "" {
+		return p, nil
+	}
+	open, err := r.store.OpenAliasSwitches(ctx)
+	if err != nil {
+		log.Printf("read the open alias switches: %v", err)
+		return p, nil
+	}
+	if !slices.ContainsFunc(open, func(sw policy.AliasSwitch) bool { return sw.Alias == alias && sw.Twin == twin }) {
+		return p, nil
+	}
+	tp, err := r.cfg.Prices.Price(ctx, twin)
+	if err != nil {
+		return policy.Price{}, err
+	}
+	if tp, err = doc.Limited(twin, tp); err != nil {
+		return policy.Price{}, err
+	}
+	return policy.Price{In: max(p.In, tp.In), CacheRead: max(p.CacheRead, tp.CacheRead), Out: max(p.Out, tp.Out),
+		MaxOutput: max(p.MaxOutput, tp.MaxOutput), Window: p.Window}, nil
 }
 
 // funded is the attempt floors' read. The gateway's hold math itself

@@ -4,21 +4,25 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"maps"
 	"slices"
+	"strings"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
 
-// The slow-alias rule: an alias whose median over the last latencyWindow of
-// the primary deployment's calls is above the policy's bound serves from its
-// twin. Only calls of minLatencyTokens output tokens or more count, and the
-// median that switches needs minLatencyCalls of them; the median that
-// returns needs minReturnCalls, and a switched alias whose primary served no
-// call in the window sends its next call there. A switched alias still sends every
-// primaryEvery-th call to its primary, so the window keeps measuring it. The
-// window is the audit table, so a restart or a second replica reads the
-// same one; the call counter is per replica.
+// The slow-alias rule: an alias whose rate over the last latencyWindow is
+// above the policy's bound serves from its twin. The rate is the window's
+// sum of call durations over its sum of output tokens, per 1000 tokens, of
+// the calls its own deployments (LiteLLM's /model/info) answered, whichever
+// alias name the call carried. Only calls of minLatencyTokens output tokens
+// or more count. The rate that switches needs minLatencyCalls of them; the
+// rate that returns needs minReturnCalls, and a switched alias with fewer
+// sends its next call to the primary, at most once a routeTTL. A switched
+// alias also sends every primaryEvery-th call to its primary. The window is
+// the audit table, so a restart or a second replica reads the same one; the
+// call counter is per replica.
 const (
 	latencyWindow    = time.Hour
 	minLatencyCalls  = 20
@@ -30,33 +34,100 @@ const (
 )
 
 // aliasRoute is what the gateway holds of one alias: whether it serves from
-// its twin, the calls since, and when the window was last read.
+// its twin and which, the calls since, and when the window was last read.
 type aliasRoute struct {
 	checked  time.Time
+	reading  bool
 	switched bool
+	twin     string
 	calls    int
-	quiet    bool // the primary served no call in the window
+	quiet    bool // the primary served too few counted calls to return
 }
 
-// route answers the alias that serves a call for alias, and a note for the
-// audit row when that is its twin.
-func (s *Server) route(ctx context.Context, pv *policy.Version, alias string) (string, string) {
+// routed is the alias that serves a call, a note for the audit row when
+// that is its twin, and undo, which gives back what the call used of the
+// probe schedule when the call is refused before it runs.
+type routed struct {
+	alias, note string
+	undo        func()
+}
+
+// route answers the alias that serves a call for alias.
+func (s *Server) route(ctx context.Context, pv *policy.Version, alias string) routed {
 	routing := pv.Document.Routing
 	twin := routing.Twin(alias)
-	if twin == "" {
-		return alias, ""
+	r, ok := s.routeOf(ctx, alias)
+	if !ok {
+		return routed{alias: alias}
+	}
+	s.routeMu.Lock()
+	stale := r.switched && r.twin != twin
+	reread := twin != "" && !r.reading && s.now().Sub(r.checked) >= routeTTL
+	if stale || reread {
+		r.reading, r.checked = true, s.now()
+	}
+	was := *r
+	s.routeMu.Unlock()
+
+	var closed bool
+	var verdict routeVerdict
+	switch {
+	case stale:
+		closed = s.closeSwitch(ctx, alias, was.twin)
+	case reread:
+		verdict = s.judge(ctx, alias, twin, was.switched, routing.Bound())
+	}
+
+	s.routeMu.Lock()
+	defer s.routeMu.Unlock()
+	if stale || reread {
+		r.reading = false
+	}
+	if closed {
+		r.switched, r.calls, r.quiet = false, 0, false
+	}
+	if verdict.read {
+		r.quiet = r.switched && verdict.counted < minReturnCalls
+		if verdict.move != nil {
+			r.switched, r.twin, r.calls = verdict.move.Kind == policy.SwitchOn, twin, 0
+			r.quiet = r.switched && verdict.counted < minReturnCalls
+		}
+	}
+	if !r.switched || twin == "" || r.twin != twin {
+		return routed{alias: alias}
+	}
+	if r.quiet {
+		r.quiet = false
+		return routed{alias: alias, undo: func() { s.routeMu.Lock(); r.quiet = true; s.routeMu.Unlock() }}
+	}
+	undo := func() { s.routeMu.Lock(); r.calls--; s.routeMu.Unlock() }
+	if r.calls++; r.calls%primaryEvery == 0 {
+		return routed{alias: alias, undo: undo}
+	}
+	return routed{alias: twin, note: fmt.Sprintf("%s is slow: served on its twin %s", alias, twin), undo: undo}
+}
+
+// routeOf is alias's state, the open switches read once on first use.
+func (s *Server) routeOf(ctx context.Context, alias string) (*aliasRoute, bool) {
+	s.routeMu.Lock()
+	loaded := s.routes != nil
+	s.routeMu.Unlock()
+	var open []policy.AliasSwitch
+	if !loaded {
+		ctx, cancel := context.WithTimeout(ctx, routeReadTimeout)
+		defer cancel()
+		var err error
+		if open, err = s.opts.Store.OpenAliasSwitches(ctx); err != nil {
+			log.Printf("read the open alias switches: %v", err)
+			return nil, false
+		}
 	}
 	s.routeMu.Lock()
 	defer s.routeMu.Unlock()
 	if s.routes == nil {
-		open, err := s.opts.Store.OpenAliasSwitches(ctx)
-		if err != nil {
-			log.Printf("read the open alias switches: %v", err)
-			return alias, ""
-		}
 		s.routes = map[string]*aliasRoute{}
 		for _, sw := range open {
-			s.routes[sw.Alias] = &aliasRoute{switched: true}
+			s.routes[sw.Alias] = &aliasRoute{switched: true, twin: sw.Twin}
 		}
 	}
 	r := s.routes[alias]
@@ -64,97 +135,111 @@ func (s *Server) route(ctx context.Context, pv *policy.Version, alias string) (s
 		r = &aliasRoute{}
 		s.routes[alias] = r
 	}
-	if s.now().Sub(r.checked) >= routeTTL {
-		s.reread(ctx, alias, twin, routing.Bound(), r)
-	}
-	if !r.switched {
-		return alias, ""
-	}
-	if r.quiet {
-		r.quiet = false
-		return alias, ""
-	}
-	if r.calls++; r.calls%primaryEvery == 0 {
-		return alias, ""
-	}
-	return twin, fmt.Sprintf("%s is slow: served on its twin %s", alias, twin)
+	return r, true
 }
 
-// reread reads the alias's window and moves it to its twin or back to its
-// primary when the median says so, recording the move.
-func (s *Server) reread(ctx context.Context, alias, twin string, bound float64, r *aliasRoute) {
-	r.checked = s.now()
+// closeSwitch stores the return of an alias whose policy names another twin
+// now, or none.
+func (s *Server) closeSwitch(ctx context.Context, alias, twin string) bool {
 	ctx, cancel := context.WithTimeout(ctx, routeReadTimeout)
 	defer cancel()
+	sw := policy.AliasSwitch{Alias: alias, Twin: twin, Kind: policy.SwitchReturn}
+	if err := s.opts.Store.RecordAliasSwitch(ctx, sw); err != nil {
+		log.Printf("close the switch of %s to %s: %v", alias, twin, err)
+		return false
+	}
+	log.Printf("alias %s: the policy no longer names %s as its twin; back on %s", alias, twin, alias)
+	return true
+}
+
+// routeVerdict is what one read of the window found: whether it was read,
+// how many calls counted, and the move it called for, already stored.
+type routeVerdict struct {
+	read    bool
+	counted int
+	move    *policy.AliasSwitch
+}
+
+// judge reads the alias's window and stores a move to its twin or back to
+// its primary when the rate says so. A twin LiteLLM cannot price is no move.
+func (s *Server) judge(ctx context.Context, alias, twin string, switched bool, bound float64) routeVerdict {
+	ctx, cancel := context.WithTimeout(ctx, routeReadTimeout)
+	defer cancel()
+	deployments, err := s.opts.Prices.Deployments(ctx, alias)
+	if err != nil {
+		log.Printf("read the deployments of %s: %v", alias, err)
+		return routeVerdict{}
+	}
 	samples, err := s.opts.Store.LatencySamples(ctx, []string{alias, twin}, s.now().Add(-latencyWindow))
 	if err != nil {
 		log.Printf("read the latency of %s: %v", alias, err)
-		return
+		return routeVerdict{}
 	}
-	l := latencyOf(alias, twin, samples)
-	r.quiet = r.switched && l.primary == 0
+	l := latencyOf(deployments, samples)
+	v := routeVerdict{read: true, counted: l.counted}
 	kind := ""
 	switch {
-	case !r.switched && l.counted >= minLatencyCalls && l.median > bound:
+	case !switched && l.counted >= minLatencyCalls && l.rate > bound:
 		kind = policy.SwitchOn
-	case r.switched && l.counted >= minReturnCalls && l.median <= bound:
+		if _, err := s.opts.Prices.Price(ctx, twin); err != nil {
+			log.Printf("alias %s is slow (%.1f s per 1000 output tokens, bound %g) but stays: its twin %s cannot be priced: %v", alias, l.rate, bound, twin, err)
+			return v
+		}
+	case switched && l.counted >= minReturnCalls && l.rate <= bound:
 		kind = policy.SwitchReturn
 	default:
-		return
+		return v
 	}
-	median, deployment := l.median, l.deployment
-	sw := policy.AliasSwitch{Alias: alias, Twin: twin, Kind: kind, Median: median, Deployment: deployment}
+	sw := policy.AliasSwitch{Alias: alias, Twin: twin, Kind: kind, Rate: l.rate, Deployment: l.deployment}
 	if err := s.opts.Store.RecordAliasSwitch(ctx, sw); err != nil {
 		log.Printf("record the %s of %s: %v", kind, alias, err)
-		return
+		return v
 	}
-	r.switched, r.calls = kind == policy.SwitchOn, 0
-	log.Printf("alias %s: %s at a median of %.1f s per 1000 output tokens (bound %g)", alias, kind, median, bound)
+	log.Printf("alias %s: %s at %.1f s per 1000 output tokens (bound %g)", alias, kind, l.rate, bound)
+	v.move = &sw
+	return v
 }
 
-// latency is the window of an alias's primary deployment: how many calls it
-// answered, how many of minLatencyTokens or more, their median seconds per
+// latency is the window of an alias's own deployments: how many calls they
+// answered, how many of minLatencyTokens or more, those calls' seconds per
 // 1000 output tokens, and the deployment that answered most.
 type latency struct {
-	primary, counted int
-	median           float64
-	deployment       string
+	counted    int
+	rate       float64
+	deployment string
 }
 
-// latencyOf reads the window's samples. A deployment that answered a call of
-// the twin is no primary: LiteLLM's fallback served that call of alias.
-func latencyOf(alias, twin string, samples []policy.LatencySample) latency {
-	twins := map[string]bool{}
-	for _, s := range samples {
-		if s.Alias == twin {
-			twins[s.Deployment] = true
-		}
+// latencyOf reads the window's samples of the calls that one of deployments
+// answered: LiteLLM's names are provider/model and the header may carry the
+// model alone, so a deployment is compared by its model.
+func latencyOf(deployments []string, samples []policy.LatencySample) latency {
+	own := map[string]bool{}
+	for _, d := range deployments {
+		own[modelOf(d)] = true
 	}
 	var l latency
-	var rates []float64
-	deployments := map[string]int{}
+	var ms, tokens int
+	counts := map[string]int{}
 	for _, s := range samples {
-		if s.Alias != alias || twins[s.Deployment] {
-			continue
-		}
-		l.primary++
-		if s.OutputTokens >= minLatencyTokens {
-			rates = append(rates, float64(s.DurationMS)/float64(s.OutputTokens))
-			deployments[s.Deployment]++
+		if own[modelOf(s.Deployment)] && s.OutputTokens >= minLatencyTokens {
+			l.counted++
+			ms, tokens = ms+s.DurationMS, tokens+s.OutputTokens
+			counts[s.Deployment]++
 		}
 	}
-	if l.counted = len(rates); l.counted == 0 {
+	if l.counted == 0 {
 		return l
 	}
-	slices.Sort(rates)
-	l.median = rates[len(rates)/2]
-	if len(rates)%2 == 0 {
-		l.median = (rates[len(rates)/2-1] + l.median) / 2
-	}
-	for d, n := range deployments {
-		if n > deployments[l.deployment] || n == deployments[l.deployment] && d < l.deployment {
+	l.rate = float64(ms) / float64(tokens)
+	for _, d := range slices.Sorted(maps.Keys(counts)) {
+		if counts[d] > counts[l.deployment] {
 			l.deployment = d
 		}
 	}
 	return l
+}
+
+// modelOf is the model of a deployment: what follows its last slash.
+func modelOf(deployment string) string {
+	return deployment[strings.LastIndex(deployment, "/")+1:]
 }

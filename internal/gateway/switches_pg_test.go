@@ -53,7 +53,7 @@ func TestPGAliasSwitches(t *testing.T) {
 
 	rec := func(kind string, median float64) {
 		t.Helper()
-		if err := s.RecordAliasSwitch(ctx, policy.AliasSwitch{Alias: "big", Twin: "big-alibaba", Kind: kind, Median: median, Deployment: "zai/glm-5.3"}); err != nil {
+		if err := s.RecordAliasSwitch(ctx, policy.AliasSwitch{Alias: "big", Twin: "big-alibaba", Kind: kind, Rate: median, Deployment: "zai/glm-5.3"}); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -61,7 +61,7 @@ func TestPGAliasSwitches(t *testing.T) {
 	rec(policy.SwitchOn, 39)
 	rec(policy.SwitchOn, 41) // a second replica's decision
 	open, err := s.OpenAliasSwitches(ctx)
-	if err != nil || len(open) != 1 || open[0].Median != 39 || open[0].Twin != "big-alibaba" || open[0].At.IsZero() {
+	if err != nil || len(open) != 1 || open[0].Rate != 39 || open[0].Twin != "big-alibaba" || open[0].At.IsZero() {
 		t.Fatalf("open = %+v, %v, want the first switch at 39", open, err)
 	}
 	rec(policy.SwitchReturn, 30)

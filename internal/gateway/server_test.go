@@ -67,6 +67,19 @@ func (f fakePrices) Price(_ context.Context, alias string) (policy.Price, error)
 	return policy.Price{}, fmt.Errorf("LiteLLM has no model %q", alias)
 }
 
+// testDeployments are the deployments LiteLLM serves each test alias from.
+var testDeployments = map[string][]string{
+	"big": {"zai/glm-5.3"}, "big-alibaba": {"dashscope/qwen3.8-max"},
+	"small": {"zai/glm-5.3-flash"}, "premium": {"openai/gpt-6.1-sol"},
+}
+
+func (f fakePrices) Deployments(_ context.Context, alias string) ([]string, error) {
+	if d, ok := testDeployments[alias]; ok {
+		return d, nil
+	}
+	return nil, fmt.Errorf("LiteLLM has no model %q", alias)
+}
+
 var testPrices = fakePrices{"small": testPrice, "big": testPrice, "vision": testPrice}
 
 // memStore is the in-memory Store fake for tests only: tasks, holds and the

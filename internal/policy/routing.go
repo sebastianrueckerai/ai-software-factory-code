@@ -74,6 +74,8 @@ func (r Routing) validate() error {
 	for alias, twin := range r.Twins {
 		if twin == "" || twin == alias {
 			errs = append(errs, fmt.Errorf("routing.twins of %s must name another alias, is %q", alias, twin))
+		} else if slices.Contains(TextClasses, twin) {
+			errs = append(errs, fmt.Errorf("routing.twins of %s is %q, a model class with its own caps; a twin is an alias outside the classes", alias, twin))
 		}
 	}
 	return errors.Join(errs...)

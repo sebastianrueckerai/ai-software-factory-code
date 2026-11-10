@@ -2571,7 +2571,11 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 			d.Problems = append(d.Problems, "the alias switches could not be read")
 		} else {
 			for _, sw := range open {
-				s.Switches = append(s.Switches, switchWords(sw))
+				// a switch to a twin the policy no longer names is the gateway's to close
+				if v.policyOK && v.policy.Document.Routing.Twin(sw.Alias) != sw.Twin {
+					continue
+				}
+				s.Switches = append(s.Switches, switchWords(sw, time.Now()))
 			}
 		}
 	}
@@ -2617,12 +2621,16 @@ func (c *Console) statusLine(ctx context.Context, v *boardView, f boardFilter, p
 }
 
 // switchWords is an open alias switch as the status line says it.
-func switchWords(sw policy.AliasSwitch) string {
+func switchWords(sw policy.AliasSwitch, now time.Time) string {
 	_, model, found := strings.Cut(sw.Deployment, "/")
 	if !found {
 		model = sw.Deployment
 	}
-	return fmt.Sprintf("%s serves from %s since %s (%s at %.0f s per 1000 tokens)", sw.Alias, sw.Twin, sw.At.UTC().Format("15:04"), model, sw.Median)
+	since := sw.At.UTC().Format("15:04")
+	if sw.At.UTC().YearDay() != now.UTC().YearDay() || sw.At.UTC().Year() != now.UTC().Year() {
+		since = sw.At.UTC().Format("2 Jan 15:04")
+	}
+	return fmt.Sprintf("%s serves from %s since %s (%s at %.0f s per 1000 tokens)", sw.Alias, sw.Twin, since, model, sw.Rate)
 }
 
 // placeGhosts stands each of the shown project's routines as a ghost at

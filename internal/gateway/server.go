@@ -42,6 +42,9 @@ type KeyMinter interface {
 // Pricer is an alias's worst-case price. Implemented by policy.PriceBook.
 type Pricer interface {
 	Price(ctx context.Context, alias string) (policy.Price, error)
+	// Deployments are the deployments LiteLLM serves alias from,
+	// provider/model.
+	Deployments(ctx context.Context, alias string) ([]string, error)
 }
 
 var (
@@ -300,7 +303,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	served, routed := s.route(ctx, pv, chatReq.Model)
+	rt := s.route(ctx, pv, chatReq.Model)
+	served, routed := rt.alias, rt.note
+	// a refusal before the hold gives back the call's turn in the probe schedule
+	admitted := false
+	defer func() {
+		if !admitted && rt.undo != nil {
+			rt.undo()
+		}
+	}()
 	chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
 	price, err := s.price(ctx, pv, task, served)
 	if err != nil {
@@ -341,7 +352,11 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		// at the premium cap the call is served on big
 		note = refusal.Reason + "; served on " + policy.Big
 		chatReq.Model = policy.Big
-		served, routed = s.route(ctx, pv, policy.Big)
+		if rt.undo != nil {
+			rt.undo()
+		}
+		rt = s.route(ctx, pv, policy.Big)
+		served, routed = rt.alias, rt.note
 		chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
 		if req.Price, err = s.price(ctx, pv, task, served); err != nil {
 			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
@@ -362,6 +377,7 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
+	admitted = true
 	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose,
 		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
 	if routed != "" {
@@ -412,15 +428,23 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	price, err := s.opts.Prices.Price(r.Context(), r.PathValue("alias"))
+	alias := r.PathValue("alias")
+	price, err := s.opts.Prices.Price(r.Context(), alias)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// calls of a slow alias run on its twin: the smaller window holds on both
+	window := price.Window
+	if pv, err := s.currentPolicy(r.Context()); err == nil {
+		if tp, err := s.opts.Prices.Price(r.Context(), pv.Document.Routing.Twin(alias)); err == nil && tp.Window > 0 {
+			window = cmp.Or(min(window, tp.Window), tp.Window)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Window int `json:"window"`
-	}{price.Window})
+	}{window})
 }
 
 // price is alias's LiteLLM price under the version's output limit; a
