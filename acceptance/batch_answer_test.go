@@ -631,6 +631,9 @@ func (s *accBatchStore) TaskSpendSince(context.Context, string, time.Time) (floa
 func (s *accBatchStore) TaskEvents(context.Context, string, int) ([]factoryd.Event, error) {
 	panic("unused")
 }
+func (s *accBatchStore) TaskEventsOfKind(context.Context, string, string, int) ([]factoryd.Event, error) {
+	panic("unused")
+}
 func (s *accBatchStore) Dependencies(context.Context, string) ([]factoryd.Dependency, error) {
 	panic("unused")
 }
