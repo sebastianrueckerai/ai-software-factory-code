@@ -1795,9 +1795,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// it join the next session's findings (the human's comments are in
 	// t.answers) and its resolution is taken (versionCases)
 	held := func(final, why string, answer []string) (string, string) {
-		if t.waitEnded.IsZero() {
-			t.waitEnded = workflow.Now(t.ctx)
-		}
+		t.waitEnded = workflow.Now(t.ctx)
 		if final == "" {
 			t.readRaise(&u)
 			addFindings(answer, "changes")
@@ -2169,7 +2167,6 @@ func (t *taskRun) lifecycle() (string, error) {
 			// (versionCases)
 			head := cmp.Or(startRef, t.head)
 			t.reverify = false
-			t.waitEnded = time.Time{}
 			if t.rerun {
 				t.rerun = false
 				if err := workflow.ExecuteActivity(t.short, ActivityRerunChecks, t.taskID, head).Get(t.ctx, &head); err != nil {
@@ -2263,8 +2260,13 @@ func (t *taskRun) lifecycle() (string, error) {
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
 		}
+		// the screening is no wait: the card queues by the answer's time
+		answered := t.waitEnded
 		if final, why := held(t.screenAnswers()); final != "" {
 			return t.finish(final, why)
+		}
+		if !answered.IsZero() {
+			t.waitEnded = answered
 		}
 		if t.reverify {
 			continue

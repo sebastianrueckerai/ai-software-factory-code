@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -171,5 +172,47 @@ func TestCISpawnerFitsSmokeRunnersToo(t *testing.T) {
 		if _, ok := kube.namespaces[id]; ok != want {
 			t.Errorf("namespace %s present = %v, want %v", id, ok, want)
 		}
+	}
+}
+
+// A task namespace gone since the listing (404) or going (Terminating) is
+// left out; a failed read of forgejo, whose runner holds 50 GiB, fails the
+// whole read, so the job stays queued instead of counting without it.
+func TestNodeStorageSkipsGoneTaskNamespacesButNotForgejo(t *testing.T) {
+	forgejo := http.StatusForbidden
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/api/v1/nodes":
+			fmt.Fprint(w, `{"items":[{"metadata":{"name":"n1"},"status":{"allocatable":{"ephemeral-storage":"80Gi"},"conditions":[{"type":"Ready","status":"True"}]}}]}`)
+		case "/api/v1/namespaces":
+			fmt.Fprint(w, `{"items":[{"metadata":{"name":"factory-agents-gone"}},{"metadata":{"name":"factory-agents-ending","deletionTimestamp":"2026-11-10T12:00:00Z"}}]}`)
+		case "/api/v1/namespaces/factory-agents-gone/pods":
+			http.NotFound(w, r)
+		case "/api/v1/namespaces/forgejo/pods":
+			if forgejo != http.StatusOK {
+				http.Error(w, "forbidden", forgejo)
+				return
+			}
+			fmt.Fprint(w, `{"metadata":{},"items":[{"metadata":{"name":"runner"},"spec":{"nodeName":"n1","containers":[{"resources":{"requests":{"ephemeral-storage":"50Gi"}}}]}}]}`)
+		default:
+			t.Errorf("unexpected call %s", r.URL)
+			http.NotFound(w, r)
+		}
+	}))
+	defer srv.Close()
+	dir := t.TempDir()
+	if err := os.WriteFile(filepath.Join(dir, "token"), []byte("tok"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	old := SaDirForTest(dir)
+	t.Cleanup(func() { SaDirForTest(old) })
+	k := &InClusterKube{Host: srv.URL, HTTP: srv.Client()}
+	if _, _, err := k.NodeStorage(context.Background()); !errors.Is(err, ErrForbidden) {
+		t.Fatalf("err = %v, want ErrForbidden from the forgejo namespace", err)
+	}
+	forgejo = http.StatusOK
+	nodes, _, err := k.NodeStorage(context.Background())
+	if err != nil || len(nodes) != 1 || nodes[0].Requested != 50*gi {
+		t.Fatalf("nodes %v, err %v; want n1 with the runner's 50 GiB", nodes, err)
 	}
 }

@@ -206,26 +206,64 @@ func TestSetSlotWaitsOrdersResumedBeforeFresh(t *testing.T) {
 	}
 }
 
+// slotProbe answers AdmitResume with a refusal at the numbered asks and a
+// grant at the others, noting the workflow time of each ask; wake sends
+// slot_free at the given offset and notes when.
+type slotProbe struct {
+	h      *workflowHarness
+	refuse map[int]bool
+	at     []time.Time
+	wokeAt time.Time
+}
+
+func newSlotProbe(h *workflowHarness, refuse ...int) *slotProbe {
+	p := &slotProbe{h: h, refuse: map[int]bool{}}
+	for _, n := range refuse {
+		p.refuse[n] = true
+	}
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+		p.at = append(p.at, h.env.Now())
+		return ResumeSlot{Granted: !p.refuse[len(p.at)], Ahead: 1}, nil
+	})
+	return p
+}
+
+func (p *slotProbe) wake(after time.Duration) {
+	p.h.env.RegisterDelayedCallback(func() {
+		p.wokeAt = p.h.env.Now()
+		p.h.env.SignalWorkflow(SignalSlotFree, TaskSignal{})
+	}, after)
+}
+
+// mustWaitFor fails unless ask n (1-based) came after the refusal of ask
+// n-1 and exactly when the wake did: the card waited for slot_free.
+func (p *slotProbe) mustWaitFor(t *testing.T, n int) {
+	t.Helper()
+	if len(p.at) < n || p.wokeAt.IsZero() {
+		t.Fatalf("asks at %v, woken at %v: want ask %d after a wake", p.at, p.wokeAt, n)
+	}
+	if !p.at[n-2].Before(p.wokeAt) || !p.at[n-1].Equal(p.wokeAt) {
+		t.Fatalf("ask %d at %v, ask %d at %v, wake at %v: want the refused ask before the wake and the next ask at it", n-1, p.at[n-2], n, p.at[n-1], p.wokeAt)
+	}
+}
+
 // A card the surge bound holds back waits at its session start, asking
 // again on each slot_free, and starts its session once AdmitResume grants:
 // the session runs after the second ask, none before.
 func TestWorkflowWaitsForASlotBeforeItsSession(t *testing.T) {
 	h := newWorkflowHarness(t)
-	asks := 0
-	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
-		asks++
-		return ResumeSlot{Granted: asks == 2, Ahead: 1}, nil
-	})
+	p := newSlotProbe(h, 1)
 	h.onSessions(pushed("s1", "c1"))
 	h.onChecks(ChecksResult{State: ChecksSuccess})
-	h.signalAfter(time.Hour, SignalSlotFree, TaskSignal{})
+	p.wake(time.Hour)
 	h.signalAfter(3*time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
-	if asks != 2 || len(h.sessions) != 1 {
-		t.Fatalf("asks = %d, sessions = %d, want 2 asks and 1 session", asks, len(h.sessions))
+	if len(p.at) != 2 || len(h.sessions) != 1 {
+		t.Fatalf("asks = %d, sessions = %d, want 2 asks and 1 session", len(p.at), len(h.sessions))
 	}
+	p.mustWaitFor(t, 2)
 }
 
 // An issue closed while the card waits for a slot ends it: no session ran.
@@ -315,15 +353,13 @@ func TestPlanLoopSessionsPassTheSurgeBound(t *testing.T) {
 		t.Run(name, func(t *testing.T) {
 			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"}, PlanResult{Revision: 3, SHA256: "sha-3"})
 			h.open, h.file = []int{1, 0, 0}, map[int]bool{3: true}
-			asks := 0
-			h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
-				asks++
-				return ResumeSlot{Granted: asks != 2, Ahead: 1}, nil
-			})
+			p := newSlotProbe(h.workflowHarness, 2)
 			if before {
 				h.env.OnGetVersion("surge-resume", workflow.DefaultVersion, versionSurgeResume).Return(workflow.DefaultVersion)
 			}
-			h.signalAfter(time.Minute, SignalSlotFree, TaskSignal{})
+			// the second ask is refused at two hours, with bob's answer;
+			// carol answers at three
+			p.wake(150 * time.Minute)
 			h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
 			h.signalAfter(2*time.Hour, SignalPlanAnswered, TaskSignal{Author: "bob", Revision: 1, Index: 2})
 			h.signalAfter(3*time.Hour, SignalPlanAnswered, TaskSignal{Author: "carol", Revision: 1, Index: 2})
@@ -331,8 +367,11 @@ func TestPlanLoopSessionsPassTheSurgeBound(t *testing.T) {
 			if final := h.run(t); final != "done" {
 				t.Fatalf("final = %q, finals %v", final, h.finals)
 			}
-			if want := map[bool]int{false: 4, true: 0}[before]; asks != want {
-				t.Fatalf("asks = %d, want %d: one for each of three sessions and one refusal", asks, want)
+			if want := map[bool]int{false: 4, true: 0}[before]; len(p.at) != want {
+				t.Fatalf("asks = %d, want %d: one for each of three sessions and one refusal", len(p.at), want)
+			}
+			if !before {
+				p.mustWaitFor(t, 3)
 			}
 			if len(h.plans) != 3 {
 				t.Fatalf("planner sessions = %d, want 3", len(h.plans))
@@ -412,8 +451,8 @@ func TestAwaitSlotKeepsTheTimeTheAnswerArrived(t *testing.T) {
 	if len(sinces) != 2 {
 		t.Fatalf("AdmitResume asked %d times, want 2 (the first session, the resumed one)", len(sinces))
 	}
-	if d := sinces[1].Sub(answeredAt); d < 0 || d >= 10*time.Minute {
-		t.Fatalf("since = %v after the answer at %v, want within the answer's quiet window, before the 30-minute screening ends", d, answeredAt)
+	if d := sinces[1].Sub(answeredAt); d != answerQuiet {
+		t.Fatalf("since = %v after the answer at %v, want the answer's quiet window %v, not the 30-minute screening's end", d, answeredAt, answerQuiet)
 	}
 }
 
@@ -423,14 +462,11 @@ func TestAwaitSlotKeepsTheTimeTheAnswerArrived(t *testing.T) {
 func TestSwitchFromWaitWaitsForASlot(t *testing.T) {
 	h, _ := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
 	order := h.activityOrder()
-	asks := 0
-	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
-		asks++
-		return ResumeSlot{Granted: asks != 2, Ahead: 1}, nil
-	})
-	h.signalAfter(time.Minute, SignalSlotFree, TaskSignal{})
+	p := newSlotProbe(h.workflowHarness, 2)
+	// the switch asks when the to_plan signal comes, at the hour
+	p.wake(time.Hour + 10*time.Minute)
 	h.toPlanAfter(time.Hour, toPlanTooBig)
-	h.signalAfter(time.Hour+2*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	h.signalAfter(time.Hour+20*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
 	if final := h.run(t); final != "done" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
 	}
@@ -442,5 +478,49 @@ func TestSwitchFromWaitWaitsForASlot(t *testing.T) {
 	}
 	if want := []string{ActivityAdmitResume, ActivityAdmitResume, ActivityAdmitResume, ActivityBecomePlan, ActivityAdmitResume}; !slices.Equal(asked, want) {
 		t.Fatalf("order = %v, want the first session's ask, the switch's refused and granted asks, BecomePlan, then the planner's ask", asked)
+	}
+	p.mustWaitFor(t, 3)
+}
+
+// An answer at two hours is followed, with no session between, by a refused
+// session funding that waits on a human until four hours: the card queues by
+// the end of the last wait, the funding's answer, not the first.
+func TestAwaitSlotKeepsTheLastWaitsEnd(t *testing.T) {
+	h := newWorkflowHarness(t)
+	h.refusedThenFunded(2)
+	h.onSessions(needsInfo("s1"), pushed("s2", "c2"))
+	h.onChecks(ChecksResult{State: ChecksSuccess})
+	var sinces []time.Time
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(
+		func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+			sinces = append(sinces, since)
+			return ResumeSlot{Granted: true}, nil
+		})
+	start := h.env.Now()
+	h.signalAfter(2*time.Hour, SignalPosterComment, TaskSignal{Author: "visitor", Body: "Firefox 131", Comment: 700})
+	h.signalAfter(4*time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "funded", Comment: 800})
+	h.signalAfter(6*time.Hour, SignalPRMerged, TaskSignal{PR: 9})
+	h.run(t)
+	if len(sinces) < 2 {
+		t.Fatalf("asks = %d, want the first session's and the resumed one's", len(sinces))
+	}
+	if got := sinces[1].Sub(start); got != 4*time.Hour+answerQuiet {
+		t.Fatalf("since = +%v, want the funding's answer at +4h and its quiet window %v", got, answerQuiet)
+	}
+}
+
+// A run from before the change sends a card from its wait to the planner
+// with no ask for a slot, which the marker at DefaultVersion keeps.
+func TestSwitchFromWaitBeforeTheChangeAsksNothing(t *testing.T) {
+	h, _ := toPlanHarness(t, becomeSwitched, timedSession{res: pushed("s1", "c1")})
+	h.env.OnGetVersion("surge-resume", workflow.DefaultVersion, versionSurgeResume).Return(workflow.DefaultVersion)
+	p := newSlotProbe(h.workflowHarness)
+	h.toPlanAfter(time.Hour, toPlanTooBig)
+	h.signalAfter(time.Hour+20*time.Minute, SignalPRClosed, TaskSignal{Author: "sebastian", PR: 9})
+	if final := h.run(t); final != "done" {
+		t.Fatalf("final = %q, finals %v", final, h.finals)
+	}
+	if len(p.at) != 0 {
+		t.Fatalf("asks = %d, want none", len(p.at))
 	}
 }

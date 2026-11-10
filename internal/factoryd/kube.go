@@ -1343,12 +1343,20 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 		at[n.Metadata.Name] = len(nodes)
 		nodes = append(nodes, NodeStorage{Name: n.Metadata.Name, Allocatable: alloc})
 	}
-	task, err := k.NamespacesByLabel(ctx, "factory.ai/task", "")
+	listed, err := k.ListNamespacesByLabel(ctx, "factory.ai/task", "")
 	if err != nil {
 		return nil, nil, err
 	}
+	var namespaces []string
+	for _, ns := range listed {
+		if !ns.Terminating {
+			namespaces = append(namespaces, ns.Name)
+		}
+	}
+	task := len(namespaces)
+	namespaces = append(namespaces, storageNamespaces...)
 	var unplaced []int64
-	for _, ns := range append(task, storageNamespaces...) {
+	for i, ns := range namespaces {
 		err := k.eachPod(ctx, ns, func(nodeName string, req int64, readable bool) {
 			switch i, placed := at[nodeName]; {
 			case placed && !readable:
@@ -1359,8 +1367,8 @@ func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64
 				unplaced = append(unplaced, req)
 			}
 		})
-		if errors.Is(err, ErrForbidden) || errors.Is(err, ErrNotFound) {
-			// a namespace torn down since the listing
+		if errors.Is(err, ErrNotFound) && i < task {
+			// a task namespace torn down since the listing
 			continue
 		}
 		if err != nil {
