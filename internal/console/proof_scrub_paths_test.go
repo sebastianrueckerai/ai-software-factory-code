@@ -122,3 +122,20 @@ func TestGrantRefusalIsScrubbed(t *testing.T) {
 	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"grant the plan one more bounded card"}})
 	maskedLeak(t, "the grant refusal", strings.Join(events, "\n"))
 }
+
+func TestForgejoFailedKeepsTheRawBodyOut(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	req := httptest.NewRequest(http.MethodPost, "/board", nil)
+	req.AddCookie(ck)
+	req = req.WithContext(context.WithValue(req.Context(), ctxKey{}, s))
+	rec := httptest.NewRecorder()
+	r.c.forgejoFailed(rec, req, "read the labels", leakyAPIError())
+	body := rec.Body.String()
+	maskedLeak(t, "forgejoFailed", body)
+	for _, raw := range []string{"POST", "/api/v1/x", "status 409", `{"message"`} {
+		if strings.Contains(body, raw) {
+			t.Errorf("forgejoFailed holds the raw apiError text %q: %q", raw, body)
+		}
+	}
+}

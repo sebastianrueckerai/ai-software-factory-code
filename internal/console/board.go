@@ -3153,7 +3153,7 @@ func (c *Console) forgejoFailed(w http.ResponseWriter, r *http.Request, what str
 		http.Redirect(w, r, "/login", http.StatusSeeOther)
 		return
 	}
-	http.Error(w, "Forgejo refused to "+what+": "+errText(err)+". Try again in a moment.", http.StatusBadGateway)
+	http.Error(w, "Forgejo refused to "+what+": "+forgejoCause(err)+". Try again in a moment.", http.StatusBadGateway)
 }
 
 // writableCard is the card the path names, built as the board shows it
