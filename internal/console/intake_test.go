@@ -174,12 +174,12 @@ func TestMembersAskStillFilesAndStartsOnAClosedIntake(t *testing.T) {
 func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 	r, _, g := newChatRig(t)
 	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
-	r.tasks.roadmap = map[string]string{"sf/code 276": "t-holder"}
+	r.tasks.roadmap = map[string]factoryd.Task{"sf/code 276": {ID: "t-holder", Status: "running", IssueNumber: 12}}
 	ck, s := r.loggedIn(t)
 	g.replies = [][]string{{call(1, "new_card", `{"title":"Build roadmap 276","body":"The plan's item.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":276}`)}, {say("It is taken.")}}
 	code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file roadmap item 276"}})
 	equal(t, "code", code, 200)
-	if !strings.Contains(events[0], `"result":"Refused: Card t-holder already builds roadmap item 276."`) {
+	if !strings.Contains(events[0], `"result":"Refused: Card t-holder (#12, running) already builds roadmap item 276. Wait for it to end, or close it and file again with refile_of 12."`) {
 		t.Errorf("the taken item's new_card = %v", events)
 	}
 	if len(r.fg.issues) != 0 {
@@ -197,5 +197,70 @@ func TestNewCardRefusesATakenRoadmapItem(t *testing.T) {
 	last := rows[len(rows)-1]
 	if last.Kind != factoryd.EventCardFiled || last.IssueNumber != 41 || last.Detail["roadmap_item"] != 312 {
 		t.Errorf("the pull's filing recorded %+v, want a card_filed row of #41 with roadmap_item 312", last)
+	}
+}
+
+// The refusal names the holder's state and the field that takes the item
+// over, whole, by state.
+func TestRoadmapRefusalByHolderState(t *testing.T) {
+	for _, c := range []struct{ status, want string }{
+		{"running", "Card t-h (#1547, running) already builds roadmap item 66. Wait for it to end, or close it and file again with refile_of 1547."},
+		{"closed", "Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547."},
+		{"failed", "Card t-h (#1547, failed) still holds roadmap item 66. File again with refile_of 1547."},
+		{"done", "Card t-h (#1547, done) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
+		{"merged", "Card t-h (#1547, merged) already built roadmap item 66. Cite a new roadmap item, or file without roadmap_item and refile_of."},
+	} {
+		got := roadmapRefusal(factoryd.Task{ID: "t-h", Status: c.status, IssueNumber: 1547}, 66)
+		equal(t, c.status, got, c.want)
+	}
+}
+
+// new_card's refile_of writes the "Refile of #N" line beside the Roadmap
+// line, and needs the item it frees.
+func TestNewCardRefileOf(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
+	ck, s := r.loggedIn(t)
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","refile_of":1547}`)}, {say("Refused.")}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"refile"}})
+	if !strings.Contains(events[0], "refile_of needs roadmap_item") || len(r.fg.issues) != 0 {
+		t.Errorf("refile_of alone = %v, issues %v", events, r.fg.issues)
+	}
+	g.replies = [][]string{{call(1, "new_card", `{"title":"Refile 66","body":"The plan again.\n\nAcceptance:\n- The pull files it","track":"direct","track_reason":"the pull","roadmap_item":66,"refile_of":1547}`)}, {say("Filed.")}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"refile 66"}})
+	equal(t, "the issue's body", r.fg.issues[0]["body"], "The plan again.\n\nAcceptance:\n- The pull files it\n\nRoadmap: #66\nRefile of #1547")
+}
+
+// The check before filing reads the refile number the intake will read:
+// the first "Refile of" line of the issue as it will stand. A closed
+// holder is freed by its own issue's number only, from the field or from
+// the body's own line, and a wrong number leaves the item held.
+func TestNewCardRefileCheckReadsWhatTheIntakeReads(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.ledger.files = map[string]policy.ProjectConfig{"ai-software-factory-code": {Repository: "sf/code", Autonomy: policy.AutonomyAssisted, MergeRule: policy.MergeHuman}}
+	r.tasks.roadmap = map[string]factoryd.Task{"sf/code 66": {ID: "t-h", Status: "closed", IssueNumber: 1547}}
+	ck, s := r.loggedIn(t)
+	file := func(args string) []string {
+		g.replies = [][]string{{call(1, "new_card", args)}, {say("ok")}}
+		_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"file"}})
+		return events
+	}
+	const head = `{"title":"Refile 66","track":"direct","track_reason":"the pull","roadmap_item":66,`
+	wrong := file(head + `"body":"Again.\n\nAcceptance:\n- It files","refile_of":1546}`)
+	if !strings.Contains(wrong[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+		t.Fatalf("a wrong refile_of = %v, issues %v", wrong, r.fg.issues)
+	}
+	// the last line is the one the intake reads: the field's, after a body line of another issue
+	own := file(head + `"body":"Again.\n\nRefile of #1547\n\nAcceptance:\n- It files","refile_of":1546}`)
+	if !strings.Contains(own[0], `Refused: Card t-h (#1547, closed) still holds roadmap item 66. File again with refile_of 1547.`) || len(r.fg.issues) != 0 {
+		t.Fatalf("a body line of the right issue before a wrong field = %v, issues %v", own, r.fg.issues)
+	}
+	file(head + `"body":"Again.\n\nRefile of #1546\n\nAcceptance:\n- It files","refile_of":1547}`)
+	if len(r.fg.issues) != 1 {
+		t.Fatalf("an older refile line before the field filed %d issues, want 1", len(r.fg.issues))
+	}
+	file(head + `"body":"Again.\n\nRefile of #1547\n\nAcceptance:\n- It files"}`)
+	if len(r.fg.issues) != 2 {
+		t.Fatalf("a body's own refile line filed %d issues in all, want 2", len(r.fg.issues))
 	}
 }

@@ -385,6 +385,14 @@ func (s *acceptanceStore) TasksByRuling(_ context.Context, repository, ruling st
 	return cards, nil
 }
 
+func (s *acceptanceStore) RecordRefusal(context.Context, string, int64, string, string, string) error {
+	return nil
+}
+
+func (s *acceptanceStore) IntakeRefusals(context.Context, string, int64) ([]factoryd.IntakeRefusal, error) {
+	return nil, nil
+}
+
 // TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
 // newest one among the rest.
 func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issueNumber int64) (factoryd.Task, bool, error) {

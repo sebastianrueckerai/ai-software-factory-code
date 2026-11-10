@@ -342,6 +342,20 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, policy.TrackPlan: factoryd.LabelPlan,
 	factoryd.LabelHuman: factoryd.LabelHuman}
 
+// roadmapRefusal is the refusal of a filing for roadmap item that holder
+// holds, naming its state and the way forward by it. A holder that is
+// built (done or merged) is no card to refile.
+func roadmapRefusal(holder factoryd.Task, item int) string {
+	head := fmt.Sprintf("Card %s (#%d, %s) already builds roadmap item %d.", holder.ID, holder.IssueNumber, holder.Status, item)
+	switch factoryd.RoadmapHold(holder.Status) {
+	case "open":
+		return head + fmt.Sprintf(" Wait for it to end, or close it and file again with refile_of %d.", holder.IssueNumber)
+	case "ended":
+		return strings.Replace(head, "already builds", "still holds", 1) + fmt.Sprintf(" File again with refile_of %d.", holder.IssueNumber)
+	}
+	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item and refile_of."
+}
+
 // doFileCard files an issue on project's repository as the member, labelled
 // with track's label (agent for direct, plan, human for a person's card)
 // and priority when given, reason the one line why the card takes the
@@ -349,15 +363,18 @@ var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, pol
 // line, with the field lines the intake reads, each when given: "Size: <size>",
 // "Rung: <rung>, <reason>", "Image: <name>", an image the project pins,
 // "Carries: #<n>", the pull request whose head the card's clone
-// supplies as its pull branch, and "Roadmap: #<n>", the docs/roadmap.md
-// item the card builds; the webhook or the heal pass makes it a
-// task. A filing that names a roadmap item is the roadmap pull: one card
-// per item, whatever its state, so an item another card already builds is
-// refused naming it before any issue is posted. It answers the repository
+// supplies as its pull branch, "Roadmap: #<n>", the docs/roadmap.md
+// item the card builds, and "Refile of #<n>", the issue of the closed or
+// failed card that held the item and which this card replaces; the
+// webhook or the heal pass makes it a task. A filing that names a roadmap
+// item is the roadmap pull: one card per item, held by any card that cites
+// it, open or done, unless a closed or failed card's issue is named as
+// refiled, so an item another card holds is refused, naming it, before
+// any issue is posted. It answers the repository
 // and the issue's number. In a wake the chat bot posts the issue, and the
 // card_filed row that names the member is written before the answer: an
 // unrecorded filing closes its issue and refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -372,6 +389,8 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
 	case rung != "" && rung != factoryd.RungCheap && rung != factoryd.RungFrontier:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "rung must be cheap or frontier")
+	case refileOf > 0 && roadmapItem == 0:
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "refile_of needs roadmap_item: it frees that item from the card it names")
 	case rung != "" && strings.TrimSpace(rungReason) == "":
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a rung needs its one-line reason")
 	}
@@ -390,16 +409,6 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	}
 	if _, ok := ps[i].Tracks.Track(track); !ok && track != factoryd.LabelHuman {
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
-	}
-	if roadmapItem > 0 {
-		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem)
-		if err != nil {
-			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
-			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
-		}
-		if held {
-			return factoryd.Repo{}, 0, refuse(http.StatusConflict, fmt.Sprintf("Card %s already builds roadmap item %d.", holder, roadmapItem))
-		}
 	}
 	detail := map[string]any{"track": track, "title": title}
 	if reason = strings.TrimSpace(reason); reason != "" {
@@ -425,9 +434,24 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if roadmapItem > 0 {
 		fields = append(fields, fmt.Sprintf("Roadmap: #%d", roadmapItem))
 		detail["roadmap_item"] = roadmapItem
+		if refileOf > 0 {
+			fields = append(fields, fmt.Sprintf("Refile of #%d", refileOf))
+			detail["refile_of"] = refileOf
+		}
 	}
 	if len(fields) > 0 {
 		body += "\n\n" + strings.Join(fields, "\n")
+	}
+	if roadmapItem > 0 {
+		refile := factoryd.AskedRefile(factoryd.IssueObjective(title, body))
+		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem, refile)
+		if err != nil {
+			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
+			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
+		}
+		if held {
+			return factoryd.Repo{}, 0, refuse(http.StatusConflict, roadmapRefusal(holder, roadmapItem))
+		}
 	}
 	var check func(policy.Tree) string
 	if track != factoryd.LabelHuman {

@@ -404,9 +404,10 @@ type fakeTasks struct {
 	carries  map[string][]string // the cards a roll task carries
 	// roadmap names, by "repository item", the card that builds a roadmap
 	// item (the roadmap pull of 2026-11-01)
-	roadmap map[string]string
-	chain   map[string]factoryd.ChainFacts
-	read    func(s *fakeTasks, id string)
+	roadmap  map[string]factoryd.Task
+	refusals map[string][]factoryd.IntakeRefusal
+	chain    map[string]factoryd.ChainFacts
+	read     func(s *fakeTasks, id string)
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -486,11 +487,20 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 }
 
 // RoadmapHolder names the card that builds repository's roadmap item.
-func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int) (string, bool, error) {
+func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int, refile int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	holder, ok := s.roadmap[fmt.Sprintf("%s %d", repository, item)]
+	if ok && refile > 0 && holder.IssueNumber == refile && (holder.Status == "closed" || holder.Status == "failed") {
+		return factoryd.Task{}, false, nil
+	}
 	return holder, ok, nil
+}
+
+func (s *fakeTasks) IntakeRefusals(_ context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refusals[fmt.Sprintf("%s %d", repository, issue)], nil
 }
 
 func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error) {

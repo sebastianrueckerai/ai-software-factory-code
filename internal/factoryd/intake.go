@@ -21,6 +21,7 @@ import (
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -49,6 +50,9 @@ type Intake struct {
 	Projects interface {
 		Projects(ctx context.Context) ([]Project, error)
 	}
+	// Scrub masks credentials in the text a refusal posts on an issue; nil
+	// applies the generic rules.
+	Scrub *redact.Scrubber
 	// MainPushed is told of every push to a repository's main.
 	MainPushed func(ctx context.Context, repository string) error
 	// Nudge is told of every workflow-run event with the run's
@@ -69,8 +73,9 @@ type Intake struct {
 	// ended at the merge.
 	CloseMerged func(ctx context.Context, taskID, closer string) error
 
-	trustMu sync.Mutex
-	trust   map[string]time.Time // repo + user → trusted until
+	refuseMu sync.Mutex
+	trustMu  sync.Mutex
+	trust    map[string]time.Time // repo + user → trusted until
 }
 
 // trustTTL is how long a positive verdict is reused; a denial is checked
@@ -315,6 +320,7 @@ var BootLabels = map[string]string{
 	"routine":              "#006b75",
 	LabelNoise:             "#bfbfbf",
 	LabelReal:              "#d93f0b",
+	StateRefused:           "#e99695",
 	"state/queued":         "#ededed",
 	"state/waiting-deps":   "#bfd4f2",
 	"state/running":        "#1f6feb",
@@ -854,6 +860,14 @@ func (in *Intake) ResyncIssues(ctx context.Context) error {
 			continue
 		}
 		for _, issue := range issues {
+			if slices.Contains(labelNames(issue.Labels), StateRefused) {
+				if stale, err := in.refusedStale(ctx, repo.String(), issue); err != nil || !stale {
+					if err != nil {
+						errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
+					}
+					continue
+				}
+			}
 			if err := in.intakeIssue(ctx, "heal pass", repo.String(), "", issue, ""); err != nil {
 				errs = append(errs, fmt.Errorf("issue #%d of %s: %w", issue.Index, repo, err))
 			}
@@ -1019,7 +1033,6 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		ShipsRuling:  shipsRuling,
 		ShipsClauses: shipsClauses,
 		CarryPR:      askedCarry(issue.Body),
-		RoadmapItem:  askedRoadmapItem(issue.Body),
 		Objective:    objectiveFromIssue(issue),
 		Repository:   repo,
 		Kind:         "agent",
@@ -1032,6 +1045,7 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 	}
 	if writer {
 		task.Image = askedImage(issue.Body, p.Images)
+		task.RoadmapItem = askedRoadmapItem(issue.Body)
 	}
 	track := IssueTrack(names, p.Tracks)
 	if p.Agents == policy.AgentsNone {
@@ -1063,6 +1077,16 @@ func (in *Intake) intakeIssue(ctx context.Context, via, repo, defaultBranch stri
 		task.Track, task.Process, task.Status, task.RequiredCapabilities, task.SHA = track, p.Process, "queued", []string{class}, sha
 	}
 	if err := in.Store.CreateTask(ctx, task); err != nil {
+		var refusal *Refusal
+		if errors.As(err, &refusal) && refusal.Kind == RefusalRoadmap {
+			return in.refused(ctx, via, parts, issue, refusal)
+		}
+		if errors.As(err, &refusal) {
+			// a delivery that raced this one made the issue's card
+			if t, ok, err := in.Store.TaskByIssue(ctx, repo, issue.Index); err == nil && ok {
+				return in.labelled(ctx, t)
+			}
+		}
 		return fmt.Errorf("create task: %w", err)
 	}
 	if task.Kind == "human" {
@@ -2013,4 +2037,79 @@ func (in *Intake) resyncComments(ctx context.Context, t Task, onPR bool, number 
 		}
 	}
 	return nil
+}
+
+// refused tells issue why the intake made no card for it, once per
+// reason, durably: a comment naming the holder and the way forward, the
+// recorded reason and the state/refused label that keeps the heal pass
+// off it (see refusedStale). A comment already on the issue (a crash
+// before the record) is not posted again.
+func (in *Intake) refused(ctx context.Context, via string, repo Repo, issue webhookIssue, r *Refusal) error {
+	in.refuseMu.Lock()
+	defer in.refuseMu.Unlock()
+	full := repo.String()
+	have, err := in.Store.IntakeRefusals(ctx, full, issue.Index)
+	if err != nil {
+		return err
+	}
+	text := in.refusalText(r)
+	if !slices.ContainsFunc(have, func(h IntakeRefusal) bool { return h.Key == r.Key() }) {
+		marker := fmt.Sprintf("<!-- factoryd refusal %s -->", r.Key())
+		comments, err := in.Forgejo.ListIssueComments(ctx, repo.Owner, repo.Name, issue.Index)
+		if err != nil {
+			return err
+		}
+		if !slices.ContainsFunc(comments, func(c IssueComment) bool {
+			return c.Author == in.BotUser && strings.HasSuffix(c.Body, marker)
+		}) {
+			if _, err := in.Forgejo.CreateIssueComment(ctx, repo.Owner, repo.Name, issue.Index, text+"\n\n"+marker); err != nil {
+				return err
+			}
+			log.Printf("%s: issue #%d on %s: no card: %s", via, issue.Index, full, text)
+		}
+	}
+	if err := in.Store.RecordRefusal(ctx, full, issue.Index, r.Key(), text, IssueSHA(issue.Title, issue.Body)); err != nil {
+		return err
+	}
+	if !slices.Contains(labelNames(issue.Labels), StateRefused) {
+		return in.Forgejo.SetStateLabel(ctx, repo.Owner, repo.Name, issue.Index, "refused")
+	}
+	return nil
+}
+
+// refusedStale tells whether the heal pass takes up issue, which carries
+// state/refused, again: its text changed since its last refusal (a lost
+// edit webhook), or that refusal is a day old.
+func (in *Intake) refusedStale(ctx context.Context, repo string, issue webhookIssue) (bool, error) {
+	have, err := in.Store.IntakeRefusals(ctx, repo, issue.Index)
+	if err != nil || len(have) == 0 {
+		return true, err
+	}
+	last := have[len(have)-1]
+	return last.BodySHA != IssueSHA(issue.Title, issue.Body) || time.Since(last.At) >= 24*time.Hour, nil
+}
+
+// refusalText is what the issue's comment says to the human who filed
+// it: which card holds the item, in which state, and the one step to a
+// card by that state.
+func (in *Intake) refusalText(r *Refusal) string {
+	scrub := in.Scrub
+	if scrub == nil {
+		scrub = redact.New()
+	}
+	holder := fmt.Sprintf("#%d", r.HolderIssue)
+	state := strings.ReplaceAll(r.Status, "-", " ")
+	line := fmt.Sprintf("Add the line \"Refile of #%d\" to this issue's description; a comment does not count.", r.HolderIssue)
+	var text string
+	switch RoadmapHold(r.Status) {
+	case "open":
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already builds roadmap item %d of %s. "+
+			"Wait for it to end, or close it. The factory looks at this issue again within a day. %s", holder, state, r.Item, r.Repository, line)
+	case "ended":
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, still holds roadmap item %d of %s. %s", holder, state, r.Item, r.Repository, line)
+	default:
+		text = fmt.Sprintf("The factory made no card for this issue: card %s, %s, already built roadmap item %d of %s. "+
+			"Change or remove the Roadmap line in this issue's description.", holder, state, r.Item, r.Repository)
+	}
+	return scrub.String(text)
 }
