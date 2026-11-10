@@ -180,27 +180,31 @@ func (b *digestBuilder) add(ev harness.Event, at time.Time) {
 		del, _ := toInt(diff["deletions"])
 		b.g.Diff = DigestDiff{Files: files, Insertions: ins, Deletions: del, Patch: detailString(ev, "patch")}
 		// a file written through a shell shows only in the session's diff
-		for path := range diffFiles(b.g.Diff.Patch) {
-			if !b.counted(path) {
+		names, _ := ev.Detail["files"].([]any)
+		for _, n := range names {
+			if path, _ := n.(string); path != "" {
 				b.noteFile(path, 0)
 			}
 		}
 	}
 }
 
-// counted: the diff's repository-relative path is one of the files the
-// events named, whose paths may be absolute.
-func (b *digestBuilder) counted(rel string) bool {
-	for p := range b.g.Files {
-		if p == rel || strings.HasSuffix(p, "/"+rel) {
-			return true
-		}
-	}
-	return false
+// sameFile: two paths name one file when they are equal or one is the
+// other under a directory, for the diff's repository-relative path and a
+// tool's absolute one.
+func sameFile(a, b string) bool {
+	return a == b || strings.HasSuffix(a, "/"+b) || strings.HasSuffix(b, "/"+a)
 }
 
-// noteFile counts n edits of path, the file edited last last.
+// noteFile counts n edits of path onto the file it names, the file edited
+// last last.
 func (b *digestBuilder) noteFile(path string, n int) {
+	for p := range b.g.Files {
+		if sameFile(p, path) {
+			path = p
+			break
+		}
+	}
 	b.g.Files[path] += n
 	b.files = append(slices.DeleteFunc(b.files, func(p string) bool { return p == path }), path)
 	if len(b.files) > digestFiles {

@@ -276,14 +276,31 @@ func testSupervisorModel(url string) *SupervisorModel {
 	}
 }
 
-func TestDigestCountsFilesOnlyAShellWroteFromTheCheckpointDiff(t *testing.T) {
+func TestDigestCountsFilesOnlyAShellWroteFromTheCheckpointFiles(t *testing.T) {
 	t0 := time.Unix(1000, 0)
 	d := newDigestBuilder(t0)
 	d.add(cmdEvent("cat > a.go <<EOF", 0, ""), t0.Add(time.Second))
+	// the patch is cut short of b.go's header: the names are what count
 	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
 		"diff":  map[string]any{"files": float64(2), "insertions": float64(3), "deletions": float64(0)},
-		"patch": "diff --git a/a.go b/a.go\n--- /dev/null\n+++ b/a.go\n@@ -0,0 +1 @@\n+x\ndiff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1,2 @@\n+y\n+z\n"}}, t0.Add(2*time.Second))
+		"patch": "diff --git a/a.go b/a.go\n… (diff truncated)", "files": []any{"a.go", "b.go"}}}, t0.Add(2*time.Second))
 	want := "1 commands (0 failed), 2 files changed 0 times, 0 other tool calls, diff 2 files +3/-0"
+	if got := d.digest().Summary(); got != want {
+		t.Fatalf("Summary() = %q, want %q", got, want)
+	}
+}
+
+// A file the shell wrote and an edit tool then changed is one file, named
+// by the diff's relative path and by the tool's absolute one.
+func TestDigestCountsAFileOnceWhateverNamesIt(t *testing.T) {
+	t0 := time.Unix(1000, 0)
+	d := newDigestBuilder(t0)
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(1), "insertions": float64(1), "deletions": float64(0)}, "files": []any{"internal/a.go"}}}, t0.Add(time.Second))
+	d.add(fileEvent("/workspace/repo/internal/a.go", "h1"), t0.Add(2*time.Second))
+	d.add(harness.Event{Kind: harness.EventCheckpoint, Detail: map[string]any{
+		"diff": map[string]any{"files": float64(1), "insertions": float64(2), "deletions": float64(0)}, "files": []any{"internal/a.go"}}}, t0.Add(3*time.Second))
+	want := "0 commands (0 failed), 1 files changed 1 times, 0 other tool calls, diff 1 files +2/-0"
 	if got := d.digest().Summary(); got != want {
 		t.Fatalf("Summary() = %q, want %q", got, want)
 	}

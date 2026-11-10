@@ -1332,24 +1332,28 @@ func newCheckpointer(agentRepo string, e workerEnv, base, mainHead string) (*che
 	return &checkpointer{e: e, work: agentRepo, store: store, base: base, fork: fork}, nil
 }
 
-// maxPatch bounds the diff text a checkpoint carries.
-const maxPatch = 8 << 10
+// maxPatch bounds the diff text a checkpoint carries, and maxCheckpointFiles
+// the changed file names beside it.
+const (
+	maxPatch           = 8 << 10
+	maxCheckpointFiles = 100
+)
 
-func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch string, err error) {
+func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch string, files []string, err error) {
 	tmp, err := os.MkdirTemp(filepath.Dir(c.work), ".ckpt-")
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	defer os.RemoveAll(tmp)
 	if _, err := c.e.runGitCtx(ctx, tmp, nil, "init", "-q"); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	gitDir := filepath.Join(tmp, ".git")
 	if err := os.WriteFile(filepath.Join(gitDir, "objects", "info", "alternates"), []byte(filepath.Join(c.store, ".git", "objects")+"\n"), 0o600); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	if err := os.WriteFile(filepath.Join(gitDir, "info", "exclude"), []byte("/brief.json\n"), 0o600); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	env := []string{"GIT_DIR=" + gitDir, "GIT_WORK_TREE=" + c.work}
 	run := c.stage
@@ -1357,7 +1361,7 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 		run = c.e.runGitCtx
 	}
 	if _, err := run(ctx, tmp, env, "read-tree", c.base); err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	// A file the agent removes between read-tree and add makes git add -A
 	// exit 128 (fatal: unable to stat). Ignore it: the index reflects the
@@ -1367,20 +1371,29 @@ func (c *checkpointer) diff(ctx context.Context) (session, card diffStat, patch 
 	diff := []string{"diff", "--cached", "--no-ext-diff", "--no-textconv", "--no-renames", "--no-color"}
 	short, err := run(ctx, tmp, env, append(diff, "--shortstat", c.base)...)
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	cardShort, err := run(ctx, tmp, env, append(diff, "--shortstat", c.fork)...)
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
 	patch, err = run(ctx, tmp, env, append(diff, c.base)...)
 	if err != nil {
-		return diffStat{}, diffStat{}, "", err
+		return diffStat{}, diffStat{}, "", nil, err
 	}
+	names, err := run(ctx, tmp, env, append(diff, "--name-only", "-z", c.base)...)
+	if err != nil {
+		return diffStat{}, diffStat{}, "", nil, err
+	}
+	files = strings.Split(strings.TrimSuffix(names, "\x00"), "\x00")
+	if files[0] == "" {
+		files = nil
+	}
+	files = files[:min(len(files), maxCheckpointFiles)]
 	if len(patch) > maxPatch {
 		patch = patch[:maxPatch] + "\n… (diff truncated)"
 	}
-	return parseShortstat(short), parseShortstat(cardShort), patch, nil
+	return parseShortstat(short), parseShortstat(cardShort), patch, files, nil
 }
 
 var shortstatPart = regexp.MustCompile(`(\d+) (file|insertion|deletion)`)
@@ -1418,7 +1431,7 @@ func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(
 		case <-tick.C:
 		}
 		measure, cancel := context.WithTimeout(ctx, time.Minute)
-		stat, card, patch, err := c.diff(measure)
+		stat, card, patch, files, err := c.diff(measure)
 		cancel()
 		if err != nil {
 			if ctx.Err() == nil {
@@ -1434,6 +1447,7 @@ func (c *checkpointer) loop(ctx context.Context, every time.Duration, emit func(
 			"diff":      map[string]any{"files": stat.Files, "insertions": stat.Insertions, "deletions": stat.Deletions},
 			"card_diff": map[string]any{"files": card.Files, "insertions": card.Insertions, "deletions": card.Deletions},
 			"patch":     patch,
+			"files":     files,
 		}})
 	}
 }

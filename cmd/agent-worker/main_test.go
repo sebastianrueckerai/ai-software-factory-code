@@ -1575,7 +1575,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 		t.Fatal(err)
 	}
 	ctx := context.Background()
-	if stat, _, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
+	if stat, _, _, _, err := ck.diff(ctx); err != nil || stat != (diffStat{}) {
 		t.Fatalf("untouched tree: stat = %+v, err = %v, want an empty diff", stat, err)
 	}
 
@@ -1583,7 +1583,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	os.WriteFile(filepath.Join(dir, "a.txt"), []byte("1\nX\n3\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "new.txt"), []byte("n1\nn2\n"), 0o644)
 	os.WriteFile(filepath.Join(dir, "brief.json"), []byte("{}\n"), 0o600)
-	stat, _, patch, err := ck.diff(ctx)
+	stat, _, patch, _, err := ck.diff(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1620,7 +1620,7 @@ func TestCheckpointMeasuresTheAgentDiffWithoutRunningAgentPrograms(t *testing.T)
 	fmt.Fprintf(cfg, "[core]\n\thooksPath = %s\n\tfsmonitor = %s\n[diff]\n\texternal = %s\n[filter \"spy\"]\n\tclean = %s\n", hooks, spy, spy, spy)
 	cfg.Close()
 
-	stat, _, _, err = ck.diff(ctx)
+	stat, _, _, _, err = ck.diff(ctx)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -1705,7 +1705,7 @@ func TestCheckpointToleratesFileRemovedDuringStaging(t *testing.T) {
 		}
 		return e.runGitCtx(ctx, d, env, args...)
 	}
-	stat, _, patch, err := ck.diff(context.Background())
+	stat, _, patch, _, err := ck.diff(context.Background())
 	if err != nil {
 		t.Fatalf("diff with a vanished file: %v", err)
 	}
@@ -2091,5 +2091,49 @@ func TestSessionLinesMaskTheSessionsOwnTokens(t *testing.T) {
 		if !strings.Contains(got, want) {
 			t.Errorf("lines lack %s:\n%s", want, got)
 		}
+	}
+}
+
+// A checkpoint names every changed file, though its patch is cut at
+// maxPatch: twelve files of 100 lines make a patch of about 30 KiB, and a
+// name with a space and an accent comes raw, not C-quoted.
+func TestCheckpointNamesTheChangedFilesPastThePatchCut(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	run := func(args ...string) {
+		t.Helper()
+		if out, err := exec.Command("git", args...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	seed, dir := t.TempDir(), filepath.Join(t.TempDir(), "repo")
+	run("init", "-q", "-b", "main", seed)
+	os.WriteFile(filepath.Join(seed, "a.txt"), []byte("1\n"), 0o644)
+	run("-C", seed, "add", "a.txt")
+	run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "base")
+	run("clone", "-q", seed, dir)
+	e := workerEnv{taskID: "t1", branch: "factory/t1"}
+	base, mainHead, err := prepareRepo(dir, e)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ck, err := newCheckpointer(dir, e, base, mainHead)
+	if err != nil {
+		t.Fatal(err)
+	}
+	body := []byte(strings.Repeat("a line of the new file\n", 100))
+	want := []string{"f00.go", "f01.go", "f02.go", "f03.go", "f04.go", "f05.go", "f06.go", "f07.go", "f08.go", "f09.go", "f10.go", "über wir.go"}
+	for _, name := range want {
+		os.WriteFile(filepath.Join(dir, name), body, 0o644)
+	}
+	_, _, patch, files, err := ck.diff(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.HasSuffix(patch, "(diff truncated)") {
+		t.Fatalf("patch of %d bytes ends %q, want it cut", len(patch), patch[max(0, len(patch)-20):])
+	}
+	// git lists in byte order: the accent sorts after the ASCII names
+	if !slices.Equal(files, want) {
+		t.Fatalf("files = %q, want all twelve names", files)
 	}
 }
