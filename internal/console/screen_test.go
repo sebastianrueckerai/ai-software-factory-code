@@ -1667,3 +1667,16 @@ func TestFindAndDrawerSpeakThePlanName(t *testing.T) {
 		t.Errorf("the drawer lacks its unnamed Plan row:\n%s", d)
 	}
 }
+
+// A console without factoryd's steer refuses a steer from the drawer and
+// records nothing, instead of calling a nil function.
+func TestDrawerSteerWithoutSteer(t *testing.T) {
+	r, _ := drawerRig(t)
+	r.c.cfg.Steer = nil
+	ck, s := r.loggedIn(t)
+	before := r.events.count()
+	rec := r.do(post("/tasks/t-run/steer", url.Values{"csrf": {s.csrf}, "text": {"hello"}}), ck)
+	if rec.Code != http.StatusNotImplemented || !strings.Contains(rec.Body.String(), "This console cannot message a running session") || r.events.count() != before {
+		t.Fatalf("POST steer without Steer = %d, %d new rows: %s", rec.Code, r.events.count()-before, rec.Body)
+	}
+}
