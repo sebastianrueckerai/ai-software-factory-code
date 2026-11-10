@@ -24,8 +24,7 @@ func newRollRetryRig(t *testing.T, f *rollForgejo) *rollRetryRig {
 	t.Helper()
 	roller, store, wf := newTestRoller(t, f)
 	g := &rollRetryRig{t: t, f: f, roller: roller, store: store, wf: wf, clock: time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)}
-	roller.Now = func() time.Time { return g.clock }
-	store.rollClock = roller.Now
+	store.rollClock = func() time.Time { return g.clock }
 	return g
 }
 
@@ -41,7 +40,9 @@ func (g *rollRetryRig) fail() {
 	g.t.Helper()
 	for _, r := range g.store.rolls {
 		if r.State == RollOpened {
-			g.store.tasks[r.TaskID] = Task{ID: r.TaskID, Source: SourceRoll, Status: "failed", Repository: codeRepo}
+			task := g.store.tasks[r.TaskID]
+			task.Status = "failed"
+			g.store.tasks[r.TaskID] = task
 		}
 	}
 	g.poll()
@@ -69,7 +70,7 @@ func retryForgejo() *rollForgejo {
 func (g *rollRetryRig) states() string {
 	var out []string
 	for _, r := range g.store.rolls {
-		out = append(out, r.SHA[:2]+":"+r.State+":"+string(rune('0'+r.Retries)))
+		out = append(out, r.SHA[:2]+":"+r.State+":"+string(rune('0'+len(r.FailedTasks))))
 	}
 	return strings.Join(out, " ")
 }
@@ -178,5 +179,106 @@ func TestARestartDuringTheBackoffRetriesOnce(t *testing.T) {
 
 func restarted(r *Roller) *Roller {
 	return &Roller{Forgejo: r.Forgejo, Registry: r.Registry, SigningKey: r.SigningKey, Store: r.Store, Workflows: r.Workflows,
-		Repo: r.Repo, Token: r.Token, Budget: r.Budget, Scrub: redact.New(), Flux: &fakeFluxSwitch{}, Now: r.Now}
+		Repo: r.Repo, Token: r.Token, Budget: r.Budget, Scrub: redact.New(), Flux: &fakeFluxSwitch{}}
+}
+
+func (g *rollRetryRig) asks() []Task {
+	var out []Task
+	for _, task := range g.store.tasks {
+		if task.Kind == "human" && strings.Contains(task.Objective, rollAskMarker) {
+			out = append(out, task)
+		}
+	}
+	return out
+}
+
+// A filing error on the third attempt does not forget the failures before
+// it: the request goes back to the failed attempt it overwrote, waits out
+// its backoff, and the third roll card is the last before the human is
+// asked.
+func TestAFilingErrorOnARetryKeepsTheLadder(t *testing.T) {
+	g := newRollRetryRig(t, retryForgejo())
+	g.poll()
+	g.fail()
+	g.advance(rollRetryBackoff)
+	g.poll()
+	g.fail()
+	g.advance(rollRetryBackoff)
+	g.store.createFails = 1
+	if err := g.roller.poll(context.Background()); err == nil {
+		t.Fatal("the filing error was swallowed")
+	}
+	if g.states() != "c1:failed:1" || len(g.wf.started) != 2 {
+		t.Fatalf("requests %s, started %d after the filing error, want the second failure restored", g.states(), len(g.wf.started))
+	}
+	g.poll()
+	if len(g.wf.started) != 2 {
+		t.Fatalf("started %d right after the error, want the backoff again", len(g.wf.started))
+	}
+	g.advance(rollRetryBackoff)
+	g.poll()
+	g.fail()
+	for range 3 {
+		g.advance(24 * time.Hour)
+		g.poll()
+	}
+	if len(g.wf.started) != rollAttemptBound || len(g.asks()) != 1 {
+		t.Fatalf("started %d roll cards, %d questions, want %d and one", len(g.wf.started), len(g.asks()), rollAttemptBound)
+	}
+}
+
+// A first attempt that fails to file leaves nothing behind.
+func TestAFilingErrorOnAFirstAttemptLeavesNoRequest(t *testing.T) {
+	g := newRollRetryRig(t, retryForgejo())
+	g.store.createFails = 1
+	if err := g.roller.poll(context.Background()); err == nil {
+		t.Fatal("the filing error was swallowed")
+	}
+	if len(g.store.rolls) != 0 {
+		t.Fatalf("requests %s, want none", g.states())
+	}
+}
+
+// The question at the bound names every attempt with its own card.
+func TestTheBoundQuestionNamesEachAttempt(t *testing.T) {
+	g := newRollRetryRig(t, retryForgejo())
+	g.poll()
+	for range rollAttemptBound - 1 {
+		g.fail()
+		g.advance(rollRetryBackoff)
+		g.poll()
+	}
+	g.fail()
+	asks := g.asks()
+	if len(asks) != 1 {
+		t.Fatalf("%d questions, want one", len(asks))
+	}
+	var cards []string
+	for _, line := range strings.Split(asks[0].Objective, "\n") {
+		if strings.HasPrefix(line, "- run 57: ") {
+			_, card, _ := strings.Cut(line, "(card #")
+			cards = append(cards, card)
+		}
+	}
+	if len(cards) != 3 || cards[0] == cards[1] || cards[1] == cards[2] || cards[0] == cards[2] || cards[0] == "" {
+		t.Fatalf("attempt lines %q, want three with distinct cards", cards)
+	}
+}
+
+// A newer head that is tested but whose images are not green yet is not
+// preceded by the old head's retry.
+func TestARetryWaitsForANewerHeadWhoseImagesBuild(t *testing.T) {
+	f := retryForgejo()
+	f.statuses[commitC2] = []map[string]string{{"status": "success", "context": testContext, "target_url": "https://git.example"}}
+	g := newRollRetryRig(t, f)
+	g.poll()
+	g.fail()
+	f.mu.Lock()
+	f.runs = []map[string]any{pushRun(58, commitC2, "running"), pushRun(57, commitC1, "success")}
+	f.mu.Unlock()
+	g.advance(time.Hour)
+	g.poll()
+	if len(g.wf.started) != 1 || g.states() != "c1:failed:0" {
+		t.Fatalf("started %d, requests %s, want no retry beside a newer head", len(g.wf.started), g.states())
+	}
 }

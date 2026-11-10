@@ -71,7 +71,7 @@ func (s *fakeStore) InsertRollRequest(ctx context.Context, r RollRequest) error 
 		if s.rolls[i].State != RollFailed {
 			return fmt.Errorf("roll request %s exists", r.SHA)
 		}
-		r.Retries = s.rolls[i].Retries + 1
+		r.FailedTasks = append(slices.Clone(s.rolls[i].FailedTasks), s.rolls[i].TaskID)
 		s.rolls[i] = r
 		delete(s.rollSettled, r.SHA)
 		return nil
@@ -81,15 +81,12 @@ func (s *fakeStore) InsertRollRequest(ctx context.Context, r RollRequest) error 
 }
 
 // RetryableRoll mirrors the store's read.
-func (s *fakeStore) RetryableRoll(ctx context.Context, repository string, settledBefore time.Time, bound int) (string, bool, error) {
+func (s *fakeStore) RetryableRoll(ctx context.Context, repository string, backoff time.Duration, bound int) (string, bool, error) {
 	var newest RollRequest
 	merged := int64(0)
 	for _, r := range s.rolls {
 		if r.Repository != repository {
 			continue
-		}
-		if r.State == RollOpened {
-			return "", false, nil
 		}
 		if r.State == RollMerged {
 			merged = max(merged, r.RunID)
@@ -99,19 +96,38 @@ func (s *fakeStore) RetryableRoll(ctx context.Context, repository string, settle
 		}
 	}
 	at, settled := s.rollSettled[newest.SHA]
-	if newest.State != RollFailed || !settled || at.After(settledBefore) {
+	if newest.State != RollFailed || !settled || s.rollNow().Sub(at) < backoff {
 		return "", false, nil
 	}
 	failures := 0
 	for _, r := range s.rolls {
 		if r.Repository == repository && r.State == RollFailed && r.RunID > merged {
-			failures += 1 + r.Retries
+			failures += 1 + len(r.FailedTasks)
 		}
 	}
 	if failures >= bound {
 		return "", false, nil
 	}
 	return newest.SHA, true, nil
+}
+
+// ForgetRollRequest mirrors the store's: a retry's request goes back to
+// the failed attempt it overwrote.
+func (s *fakeStore) ForgetRollRequest(ctx context.Context, sha string) error {
+	i := slices.IndexFunc(s.rolls, func(r RollRequest) bool { return r.SHA == sha })
+	if i < 0 {
+		return nil
+	}
+	r := &s.rolls[i]
+	if n := len(r.FailedTasks); n > 0 {
+		r.State, r.TaskID, r.FailedTasks, r.Committed, r.Head = RollFailed, r.FailedTasks[n-1], r.FailedTasks[:n-1], false, ""
+		if s.rollSettled == nil {
+			s.rollSettled = map[string]time.Time{}
+		}
+		s.rollSettled[sha] = s.rollNow()
+		return nil
+	}
+	return s.DeleteRollRequest(ctx, sha)
 }
 
 func (s *fakeStore) DeleteRollRequest(ctx context.Context, sha string) error {
@@ -152,7 +168,7 @@ func (s *fakeStore) SettleRollRequests(ctx context.Context) ([]RollRequest, erro
 		settled = append(settled, r)
 	}
 	for _, sha := range gone {
-		s.DeleteRollRequest(ctx, sha)
+		s.ForgetRollRequest(ctx, sha)
 	}
 	for _, r := range settled {
 		if r.State == RollFailed {

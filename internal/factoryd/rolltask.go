@@ -70,9 +70,9 @@ type RollRequest struct {
 	// Head is the branch commit RollCommit wrote when it committed this.
 	Head      string
 	CreatedAt time.Time
-	// Retries are the failed attempts of this commit's roll before the
-	// current request: the roller tries a failed roll again on its own.
-	Retries int
+	// FailedTasks are the roll tasks of this commit's earlier failed
+	// attempts, oldest first: the roller tries a failed roll again on its own.
+	FailedTasks []string
 }
 
 func (s *PGStore) RollRequestSeen(ctx context.Context, sha string) (bool, error) {
@@ -124,15 +124,33 @@ func (s *PGStore) InsertRollRequest(ctx context.Context, r RollRequest) error {
 	res, err := s.db.ExecContext(ctx, `INSERT INTO roll_requests (sha, repository, run_id, state, task_id, prs, changes, summary)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
 		ON CONFLICT (sha) DO UPDATE SET run_id = $3, state = $4, task_id = $5, prs = $6, changes = $7, summary = $8,
-			committed = false, head = NULL, settled_at = NULL, created_at = now(), retries = roll_requests.retries + 1
+			committed = false, head = NULL, settled_at = NULL, created_at = now(),
+			failed_tasks = roll_requests.failed_tasks || roll_requests.task_id
 		WHERE roll_requests.state = 'failed'`, r.SHA, r.Repository, r.RunID, r.State, task, prs, changes, r.Summary)
 	if err != nil {
 		return err
 	}
-	if n, err := res.RowsAffected(); err != nil || n == 0 {
+	n, err := res.RowsAffected()
+	if err != nil {
+		return err
+	}
+	if n == 0 {
 		return fmt.Errorf("roll request %s exists", r.SHA)
 	}
 	return nil
+}
+
+// ForgetRollRequest takes back a request whose roll never started, so its
+// commit is judged again: a first attempt's request goes, a retry's goes
+// back to the failed attempt it overwrote, which keeps its place on the
+// ladder.
+func (s *PGStore) ForgetRollRequest(ctx context.Context, sha string) error {
+	_, err := s.db.ExecContext(ctx, `WITH undone AS (
+		UPDATE roll_requests SET state = 'failed', task_id = failed_tasks[cardinality(failed_tasks)],
+			failed_tasks = failed_tasks[1:cardinality(failed_tasks) - 1], committed = false, head = NULL, settled_at = now()
+		WHERE sha = $1 AND cardinality(failed_tasks) > 0 RETURNING sha)
+		DELETE FROM roll_requests WHERE sha = $1 AND sha NOT IN (SELECT sha FROM undone)`, sha)
+	return err
 }
 
 func (s *PGStore) DeleteRollRequest(ctx context.Context, sha string) error {
@@ -241,14 +259,19 @@ func (s *PGStore) RollTaskPRs(ctx context.Context, repository string) ([]int64, 
 // settled, whose verdicts the caller reports as commit statuses (roadmap
 // 297).
 func (s *PGStore) SettleRollRequests(ctx context.Context) ([]RollRequest, error) {
-	rows, err := s.db.QueryContext(ctx, `WITH gone AS (
-		DELETE FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
-			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status IN ('done', 'merged'))
-		RETURNING r.sha),
+	rows, err := s.db.QueryContext(ctx, `WITH forgotten AS (
+		SELECT r.sha FROM roll_requests r WHERE r.state IN ('opened', 'refused') AND NOT EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id)
+			OR r.state = 'opened' AND NOT r.committed AND EXISTS (SELECT 1 FROM tasks t WHERE t.id = r.task_id AND t.status IN ('done', 'merged'))),
+	gone AS (
+		DELETE FROM roll_requests WHERE sha IN (SELECT sha FROM forgotten) AND cardinality(failed_tasks) = 0 RETURNING sha),
+	undone AS (
+		UPDATE roll_requests SET state = 'failed', task_id = failed_tasks[cardinality(failed_tasks)],
+			failed_tasks = failed_tasks[1:cardinality(failed_tasks) - 1], committed = false, head = NULL, settled_at = now()
+		WHERE sha IN (SELECT sha FROM forgotten) AND cardinality(failed_tasks) > 0 RETURNING sha),
 	settled AS (
 		UPDATE roll_requests r SET settled_at = now(), state = CASE WHEN t.status IN ('done', 'merged') THEN 'merged' ELSE 'failed' END
 		FROM tasks t WHERE r.state = 'opened' AND t.id = r.task_id AND t.status = ANY($1 || ARRAY['merged'])
-		AND r.sha NOT IN (SELECT sha FROM gone)
+		AND r.sha NOT IN (SELECT sha FROM forgotten)
 		RETURNING r.sha, r.state),
 	ended AS (
 		UPDATE releases SET deploy_now = '' WHERE deploy_now IN (SELECT sha FROM settled WHERE state = 'failed')
@@ -285,7 +308,7 @@ func (s *PGStore) LastMergedRoll(ctx context.Context, repository string) (string
 // one merged, oldest first: the roll ladder's attempts. None before a
 // merged roll counts — the ladder climbs from the last success.
 func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollRequest, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT sha, run_id, task_id, summary, retries FROM roll_requests
+	rows, err := s.db.QueryContext(ctx, `SELECT sha, run_id, task_id, summary, failed_tasks FROM roll_requests
 		WHERE repository = $1 AND state = 'failed'
 		AND run_id > COALESCE((SELECT max(run_id) FROM roll_requests WHERE repository = $1 AND state = 'merged'), 0)
 		ORDER BY run_id`, repository)
@@ -296,7 +319,7 @@ func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollReq
 	var out []RollRequest
 	for rows.Next() {
 		var r RollRequest
-		if err := rows.Scan(&r.SHA, &r.RunID, &r.TaskID, &r.Summary, &r.Retries); err != nil {
+		if err := rows.Scan(&r.SHA, &r.RunID, &r.TaskID, &r.Summary, pgtype.NewMap().SQLScanner(&r.FailedTasks)); err != nil {
 			return nil, err
 		}
 		r.Repository = repository
@@ -306,19 +329,18 @@ func (s *PGStore) FailedRolls(ctx context.Context, repository string) ([]RollReq
 }
 
 // RetryableRoll is the commit whose failed roll the roller tries again:
-// repository's newest request is a failed one that settled at or before
-// settledBefore, no roll is open, and fewer than bound attempts failed
+// repository's newest request is a failed one that settled at least
+// backoff ago by the database's clock, and fewer than bound attempts failed
 // since the last merged roll. A newer request of any state, a new head's,
 // takes the place of the retry.
-func (s *PGStore) RetryableRoll(ctx context.Context, repository string, settledBefore time.Time, bound int) (string, bool, error) {
+func (s *PGStore) RetryableRoll(ctx context.Context, repository string, backoff time.Duration, bound int) (string, bool, error) {
 	var sha string
 	err := s.db.QueryRowContext(ctx, `SELECT sha FROM roll_requests
-		WHERE repository = $1 AND state = 'failed' AND settled_at <= $2
+		WHERE repository = $1 AND state = 'failed' AND settled_at <= now() - make_interval(secs => $2)
 		AND run_id = (SELECT max(run_id) FROM roll_requests WHERE repository = $1)
-		AND NOT EXISTS (SELECT 1 FROM roll_requests WHERE repository = $1 AND state = 'opened')
-		AND (SELECT COALESCE(sum(1 + retries), 0) FROM roll_requests WHERE repository = $1 AND state = 'failed'
+		AND (SELECT COALESCE(sum(1 + cardinality(failed_tasks)), 0) FROM roll_requests WHERE repository = $1 AND state = 'failed'
 			AND run_id > COALESCE((SELECT max(run_id) FROM roll_requests WHERE repository = $1 AND state = 'merged'), 0)) < $3
-		LIMIT 1`, repository, settledBefore, bound).Scan(&sha)
+		LIMIT 1`, repository, backoff.Seconds(), bound).Scan(&sha)
 	if errors.Is(err, sql.ErrNoRows) {
 		return "", false, nil
 	}
@@ -395,7 +417,8 @@ type RollerStore interface {
 	SettleRollRequests(ctx context.Context) ([]RollRequest, error)
 	LastMergedRoll(ctx context.Context, repository string) (string, bool, error)
 	FailedRolls(ctx context.Context, repository string) ([]RollRequest, error)
-	RetryableRoll(ctx context.Context, repository string, settledBefore time.Time, bound int) (string, bool, error)
+	RetryableRoll(ctx context.Context, repository string, backoff time.Duration, bound int) (string, bool, error)
+	ForgetRollRequest(ctx context.Context, sha string) error
 	StandingQuestion(ctx context.Context, repository, marker string) (Task, bool, error)
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ProjectByRepository(ctx context.Context, repository string) (Project, bool, error)
@@ -456,7 +479,6 @@ type Roller struct {
 	// subjects and titles may point there or at the Forgejo host
 	LinkHosts func() []string
 	Poll      time.Duration
-	Now       func() time.Time // time.Now when nil
 	// Scrub cleans the job log lines a fix-forward card carries of secrets
 	Scrub *redact.Scrubber
 	// Flux suspends the factory's own Kustomization while held (setFlux)
@@ -582,7 +604,7 @@ func (r *Roller) poll(ctx context.Context) error {
 	if err != nil {
 		return err
 	}
-	retry, _, err := r.Store.RetryableRoll(ctx, r.Repo.String(), r.now().Add(-rollRetryBackoff), rollAttemptBound)
+	retry, _, err := r.Store.RetryableRoll(ctx, r.Repo.String(), rollRetryBackoff, rollAttemptBound)
 	if err != nil {
 		return err
 	}
@@ -889,13 +911,6 @@ const rollAttemptBound = 3
 // rollAttemptBound. A newer commit's request takes the retry's place.
 const rollRetryBackoff = 10 * time.Minute
 
-func (r *Roller) now() time.Time {
-	if r.Now != nil {
-		return r.Now()
-	}
-	return time.Now()
-}
-
 // rollAskMarker names the roll ladder's question in the card it files,
 // so StandingQuestion recognises it while it waits. rollRetryLabel is
 // the retry choice's label: the comment a press posts (the console's
@@ -919,7 +934,7 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	}
 	failures := 0
 	for _, req := range reqs {
-		failures += 1 + req.Retries
+		failures += 1 + len(req.FailedTasks)
 	}
 	if failures < rollAttemptBound {
 		return
@@ -933,11 +948,13 @@ func (r *Roller) escalateRolls(ctx context.Context) {
 	var facts []string
 	for _, req := range reqs {
 		title, _, _ := strings.Cut(req.Summary, "\n\n")
-		fact := fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", req.RunID, title)
-		if t, ok, err := r.Store.Task(ctx, req.TaskID); err == nil && ok && t.IssueNumber > 0 {
-			fact += fmt.Sprintf(" (card #%d)", t.IssueNumber)
+		for _, id := range append(slices.Clone(req.FailedTasks), req.TaskID) {
+			fact := fmt.Sprintf("- run %d: %s — roll task failed: the change does not run live", req.RunID, title)
+			if t, ok, err := r.Store.Task(ctx, id); err == nil && ok && t.IssueNumber > 0 {
+				fact += fmt.Sprintf(" (card #%d)", t.IssueNumber)
+			}
+			facts = append(facts, fact)
 		}
-		facts = append(facts, fact)
 	}
 	q := HumanQuestion{
 		Ask:            fmt.Sprintf("%d %s: main's newest images are not live. Retry the roll, park it or close it?", failures, rollAskMarker),
@@ -1318,7 +1335,7 @@ func (r *Roller) file(ctx context.Context, req RollRequest) error {
 		Objective: req.Summary, SHA: req.SHA, Source: SourceRoll,
 	})
 	if err != nil {
-		return errors.Join(err, r.Store.DeleteRollRequest(ctx, req.SHA))
+		return errors.Join(err, r.Store.ForgetRollRequest(ctx, req.SHA))
 	}
 	if err := r.Store.SetAgentSummary(ctx, t.ID, textutil.Truncate(req.Summary, maxAgentSummary)); err != nil {
 		log.Printf("roller: task %s: summary: %v", t.ID, err)
@@ -1348,7 +1365,7 @@ func (r *Roller) refuse(ctx context.Context, run ActionRun, req RollRequest, uns
 		ID: req.TaskID, SHA: run.CommitSHA, Source: SourceRollRefused,
 	})
 	if err != nil {
-		return errors.Join(err, r.Store.DeleteRollRequest(ctx, req.SHA))
+		return errors.Join(err, r.Store.ForgetRollRequest(ctx, req.SHA))
 	}
 	log.Printf("roller: %s (run %d): refused, human card %s, issue #%d: %s", run.CommitSHA, run.ID, req.TaskID, t.IssueNumber, title)
 	r.rollStatus(ctx, req.SHA, "failure", "roll refused: "+strings.Join(rollNames(unsigned), ", ")+" not signed")
