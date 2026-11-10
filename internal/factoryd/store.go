@@ -1140,6 +1140,12 @@ func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
+// PlanDelivered says whether every card plan filed is delivered — done
+// or merged, or cut into a successor that is (PlanDelivered).
+func (s *PGStore) PlanDelivered(ctx context.Context, plan string) (bool, Task, error) {
+	return PlanDelivered(ctx, s, plan)
+}
+
 // HeldPlanCards are the repository's plan cards waiting on a human's
 // approval, the cards a landed companion pin can wake (versionCompanions).
 func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {

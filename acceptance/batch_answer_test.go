@@ -289,6 +289,10 @@ func (s *accBatchTasks) PlanCards(_ context.Context, _ string) ([]factoryd.Task,
 	return nil, nil
 }
 
+func (s *accBatchTasks) PlanDelivered(_ context.Context, _ string) (bool, factoryd.Task, error) {
+	return true, factoryd.Task{}, nil
+}
+
 func (s *accBatchTasks) CriteriaVerdicts(_ context.Context, _ string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }

@@ -890,6 +890,9 @@ func (a *AcceptanceRig) PlanProofs(context.Context, string) ([]factoryd.PlanProo
 }
 
 func (a *AcceptanceRig) PlanCards(context.Context, string) ([]factoryd.Task, error) { return nil, nil }
+func (a *AcceptanceRig) PlanDelivered(context.Context, string) (bool, factoryd.Task, error) {
+	return true, factoryd.Task{}, nil
+}
 func (a *AcceptanceRig) CriteriaVerdicts(context.Context, string) ([]factoryd.CriterionVerdict, error) {
 	return nil, nil
 }
