@@ -571,3 +571,28 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
+
+// wait_checks applies to a checks wait's stop with a pull request open,
+// whatever the checks and the agent time left, and to no other case.
+func TestWaitChecksAppliesToAChecksWaitStop(t *testing.T) {
+	stop := CaseFacts{Kind: CaseGateStop, Gate: ActivityWaitChecks, PROpen: true, Checks: "green", AgentTimeCapS: 600, AgentTimeS: 600}
+	merge, noPR, quiet := stop, stop, stop
+	merge.Gate, noPR.PROpen, quiet.Kind = ActivityMerge, false, CaseSessionCap
+	for _, c := range []struct {
+		name string
+		f    CaseFacts
+		want string
+	}{
+		{"checks wait at the agent time cap", stop, ""},
+		{"merge stop", merge, "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"},
+		{"other case", quiet, "wait_checks runs a stopped checks wait again, and this case is no checks wait's stop"},
+		{"no pull request", noPR, "no pull request is open"},
+	} {
+		if got := applies(t, ActWaitChecks, c.f, Resolution{}); got != c.want {
+			t.Errorf("%s: wait_checks applies = %q, want %q", c.name, got, c.want)
+		}
+	}
+	if !slices.Contains(offeredNames(stop, 2), ActWaitChecks) || slices.Contains(offeredNames(stop, 2), ActResume) {
+		t.Errorf("rung 2 is offered %v at the cap, want wait_checks and no resume", offeredNames(stop, 2))
+	}
+}

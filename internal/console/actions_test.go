@@ -724,3 +724,17 @@ func TestAgentCannotApproveAFactoryPullRequest(t *testing.T) {
 		}
 	})
 }
+
+// The checks-wait stop's Keep waiting runs the wait again; the quiet
+// stop's keeps its note.
+func TestAnswerActionKeepCheckingRunsTheChecksWaitAgain(t *testing.T) {
+	for value, want := range map[string]string{
+		factoryd.AnswerKeepChecking: factoryd.ActWaitChecks,
+		factoryd.AnswerKeepWaiting:  factoryd.ActNote,
+		factoryd.AnswerPark:         factoryd.ActNote,
+	} {
+		if got := answerAction(value, "Keep waiting", 0, factoryd.Case{}, time.Hour).Action; got != want {
+			t.Errorf("%s answers with %q, want %q", value, got, want)
+		}
+	}
+}

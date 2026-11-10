@@ -104,7 +104,7 @@ func TestShapedQuestionFamilies(t *testing.T) {
 		"WaitChecks past cap": {
 			reason: gateStopped + "WaitChecks (attempt 2) past its bound of 30 min: checks still red after 3 runs.\nRecommendation: Rerun the flaky check once, then close the card.",
 			askHas: []string{"attempt 2, bound 30 min"},
-			values: []string{AnswerKeepWaiting, AnswerClose},
+			values: []string{AnswerKeepChecking, AnswerClose},
 			source: "the gate supervisor's",
 		},
 		"quiet on its dependencies": {

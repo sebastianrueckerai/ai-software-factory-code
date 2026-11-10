@@ -19,6 +19,8 @@ type CaseFacts struct {
 	// Kind is the kind of the case the facts are weighed for, "" for an
 	// answer on no case.
 	Kind CaseKind `json:"kind,omitempty"`
+	// Gate is the activity a gate stop's case names, "" for any other case.
+	Gate string `json:"gate,omitempty"`
 	// Final is the card's status once it ended, "" while it lives.
 	Final          string `json:"final,omitempty"`
 	Head           string `json:"head,omitempty"`
@@ -60,6 +62,14 @@ type CaseFacts struct {
 	PoolLeft        policy.Draw `json:"pool_left"`
 	CardDrawLeft    policy.Draw `json:"card_draw_left"`
 	Partial         []string    `json:"partial,omitempty"` // the readers that failed, by name
+}
+
+// atCase weighs f for case c: its kind, and the gate a gate stop names.
+func (f *CaseFacts) atCase(c Case) {
+	f.Kind, f.Gate = c.Kind, ""
+	if c.Kind == CaseGateStop {
+		f.Gate, _ = c.Facts["gate"].(string)
+	}
 }
 
 // DepFact is one dependency of the card that is not done.
