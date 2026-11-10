@@ -3776,3 +3776,38 @@ func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 		t.Fatalf("a card with no size is refused under the large bound: %q", g.OverBound)
 	}
 }
+
+// A card whose sessions spent to their ceiling still runs its gates. Budget
+// 5.00 EUR spent to 5.00 - 0.25 (the gate reserve) = 4.75 leaves 0.25 EUR
+// free: a session's headroom is 0.25 - 0.25 = 0, so its opening is refused
+// at the budget with the money stop's figures, while the review's four
+// calls (4 x 9,000 output tokens at 5e-6 EUR = 0.18 EUR, and their bytes
+// under 0.001) and the audit's four fit the 0.25 EUR free and run.
+func TestSessionsStopAtTheReserveAndTheGatesRun(t *testing.T) {
+	r, _, ll := fundedReview(t, 5, 1e-9, 5e-6, nil)
+	store := r.store.(*fakeStore)
+	card := store.tasks["t1"]
+	card.SpentEUR = 4.75
+	store.tasks["t1"] = card
+	v := auditVersion(true)
+	r.cfg.Policy = func() policy.Version { return v }
+
+	why, err := r.SessionFunded(context.Background(), "t1", "factory/big")
+	if err != nil || !strings.HasPrefix(why, budgetRefused) ||
+		!strings.Contains(why, "the card spent 4.75 EUR, and 0.25 EUR is held for the model review and the audit") {
+		t.Fatalf("session floor = (%q, %v), want the money stop naming 4.75 spent and 0.25 held", why, err)
+	}
+
+	val, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	rv := getInto[Review](t, val, err)
+	if rv.Verdict != "approve" || rv.Note != "" || len(ll.chats) != 4 {
+		t.Fatalf("review = %+v after %d calls, want it run without a fund", rv, len(ll.chats))
+	}
+
+	ll.content = `{"verdict":"clear"}`
+	val, err = execActivity(t, r, ActivityGateAudit, "t1", PullRequest{Number: 9}, "c1", GateResults{})
+	res := getInto[AuditResult](t, val, err)
+	if len(res.Findings) != 0 || len(ll.chats) != 8 {
+		t.Fatalf("audit = %+v after %d calls, want it run without a fund", res, len(ll.chats))
+	}
+}
