@@ -4,8 +4,10 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"maps"
 	"net/http"
+	"net/http/httptest"
 	"reflect"
 	"slices"
 	"strings"
@@ -295,7 +297,7 @@ type scriptedTools struct{ out map[string]string }
 
 // A conversation whose answer call the time cap cuts stops as at the call
 // cap: the evidence call is cut where the answer's reserve begins, the
-// tool-less answer call at the cap, and the human ask carries the time
+// forced answer call at the cap, and the human ask carries the time
 // stop with the time the conversation had.
 func TestCheckinTimeCapAsksAHuman(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
@@ -305,18 +307,20 @@ func TestCheckinTimeCapAsksAHuman(t *testing.T) {
 	if out.Decision != CheckHuman || out.ReasonKind != CheckSpend || out.Reason != reason {
 		t.Fatalf("decision = %q, kind %q, reason %q; want the time cap's human ask", out.Decision, out.ReasonKind, out.Reason)
 	}
-	if chat.calls != 2 || out.Record.Reason != reason || len(out.Record.Calls) != 2 || chat.gots[1].Tools != nil {
+	if chat.calls != 2 || out.Record.Reason != reason || len(out.Record.Calls) != 2 {
 		t.Fatalf("calls = %d, record %+v; want the evidence call the reserve cut and the answer call the cap cut", chat.calls, out.Record)
+	}
+	if tools, choice := chat.gots[1].Tools, chat.gots[1].ToolChoice; len(tools) != 1 || tools[0].Name != checkinAnswerTool || choice == nil {
+		t.Fatalf("the answer call posts tools %+v with choice %+v, want only the answer tool forced", tools, choice)
 	}
 }
 
-// toolsUntilLast plays a model that asks for a tool on every call that
-// offers tools and answers once a call offers none, each call taking
-// delay unless its context ends first.
+// toolsUntilLast plays a model that asks for an evidence tool on every
+// call that offers them and answers once a call forces the answer tool,
+// each call taking delay unless its context ends first.
 type toolsUntilLast struct {
-	delay  time.Duration
-	answer string
-	reqs   []CheckinRequest
+	delay time.Duration
+	reqs  []CheckinRequest
 }
 
 func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinRequest) (CheckinResponse, error) {
@@ -326,8 +330,8 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 	case <-ctx.Done():
 		return CheckinResponse{}, ctx.Err()
 	}
-	if in.Tools == nil {
-		return CheckinResponse{Text: c.answer}, nil
+	if in.ToolChoice != nil {
+		return CheckinResponse{ToolName: checkinAnswerTool, ToolArgs: map[string]any{"decision": "handover", "handover": "go on"}}, nil
 	}
 	return CheckinResponse{ToolName: "grep", ToolArgs: map[string]any{"pattern": "x"}}, nil
 }
@@ -336,18 +340,19 @@ func (c *toolsUntilLast) Call(ctx context.Context, _, _ string, in CheckinReques
 // the time cap, long before the call cap. The answer is due at 400ms, the
 // cap less half of it, the policy's per-call time being longer; calls
 // take 120ms. Evidence calls start at 0, 120ms and 240ms, when one more
-// still ends before 400ms; at 360ms none would, so the fourth call is the
-// tool-less answer, and no evidence call is started only to be cut.
+// still ends before 400ms; at 360ms none would, so the fourth call is
+// the forced answer call, and no evidence call is started only to be
+// cut.
 func TestCheckinTimeCapLeavesTheAnswerCall(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9"}
-	chat := &toolsUntilLast{delay: 120 * time.Millisecond, answer: `{"findings":[],"decision":"handover","handover":"go on"}`}
+	chat := &toolsUntilLast{delay: 120 * time.Millisecond}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 20, 1.5, 1, 2000, 800*time.Millisecond)
 	if out.Decision != CheckHandover || out.Handover != "go on" {
 		t.Fatalf("outcome = %+v, want the answer's handover", out)
 	}
 	last := chat.reqs[len(chat.reqs)-1]
-	if last.Tools != nil || !strings.Contains(last.Input, "This is your last call") {
-		t.Fatalf("the last call carries tools %v or no ask for the answer", last.Tools)
+	if len(last.Tools) != 1 || last.Tools[0].Name != checkinAnswerTool || last.ToolChoice == nil || !strings.Contains(last.Input, "This is your last call") {
+		t.Fatalf("the last call posts tools %+v with choice %+v, want only the answer tool forced after the ask for the answer", last.Tools, last.ToolChoice)
 	}
 	if n := len(chat.reqs); n != 4 {
 		t.Fatalf("%d calls, want 3 evidence calls and the answer", n)
@@ -599,38 +604,86 @@ func TestParseCheckinAnswerNamesTheFinding(t *testing.T) {
 	})
 }
 
-// The conversation's last call carries no tools and asks for the answer,
-// and every tool answer before it tells the judge the calls it has left.
-func TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer(t *testing.T) {
+// The conversation's evidence calls post the answer tool beside the
+// evidence tools, and its last call posts only the answer tool, forced
+// by tool_choice, with the moment's schema; the ask for the answer names
+// the tool, and every tool answer before it tells the judge the calls it
+// has left.
+//
+// This test replaces TestCheckinLastCallCarriesNoToolsAndAsksForTheAnswer:
+// the last call no longer carries no tools, it posts the forced answer tool.
+func TestCheckinLastCallForcesTheAnswerTool(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{
 		{ToolName: "card_facts"},
-		{Text: `{"decision":"continue","reason":"research"}`},
+		{ToolName: checkinAnswerTool, ToolArgs: map[string]any{"decision": "continue", "reason": "research"}},
 	}}
 	out := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat,
 		scriptedTools{out: map[string]string{"card_facts": "budget 2 EUR"}}, 2, 1.5, 1, 2000, time.Hour)
 	if len(chat.gots) != 2 {
 		t.Fatalf("calls = %d, want the tool round and the answer", len(chat.gots))
 	}
-	if chat.gots[0].Tools == nil {
-		t.Error("the first call carries no tools")
+	evidence := chat.gots[0].Tools
+	if len(evidence) != len(checkinToolsFor(CheckInSession))+1 || evidence[len(evidence)-1].Name != checkinAnswerTool || chat.gots[0].ToolChoice != nil {
+		t.Fatalf("the evidence call posts %+v with choice %+v, want the evidence tools with the answer tool appended, unforced", evidence, chat.gots[0].ToolChoice)
 	}
-	if chat.gots[1].Tools != nil {
-		t.Errorf("the last call carries tools %v, want none", chat.gots[1].Tools)
+	last := chat.gots[1]
+	if len(last.Tools) != 1 || last.Tools[0].Name != checkinAnswerTool {
+		t.Fatalf("the last call posts tools %+v, want only the answer tool", last.Tools)
 	}
-	if !strings.HasSuffix(chat.gots[1].Input, "\n\nThis is your last call: answer now with the JSON object, no tool.") {
-		t.Errorf("the last call's input does not end on the ask for the answer:\n%s", chat.gots[1].Input)
+	if !reflect.DeepEqual(last.Tools[0], momentAnswerTool(ask)) {
+		t.Fatalf("the last call's tool = %+v, want the moment's answer schema", last.Tools[0])
 	}
-	if !strings.Contains(chat.gots[1].Input, "\n(calls left 1, your answer due within ") {
-		t.Errorf("the tool answer does not name the calls left:\n%s", chat.gots[1].Input)
+	decision, _ := momentAnswerSchema(ask)["properties"].(map[string]any)["decision"].(map[string]any)
+	if got, want := decision["enum"], any(momentDecisions(ask.Moment, ask.Replan)); !reflect.DeepEqual(got, want) {
+		t.Fatalf("the answer schema's decision enum = %v, want the moment's %v", got, want)
+	}
+	if !reflect.DeepEqual(last.ToolChoice, forcedToolChoice(checkinAnswerTool)) {
+		t.Errorf("the last call's tool_choice = %+v, want the named answer tool", last.ToolChoice)
+	}
+	if !strings.HasSuffix(last.Input, "\n\nThis is your last call: answer now through the answer tool.") {
+		t.Errorf("the last call's input does not end on the ask for the answer:\n%s", last.Input)
+	}
+	if !strings.Contains(last.Input, "\n(calls left 1, your answer due within ") {
+		t.Errorf("the tool answer does not name the calls left:\n%s", last.Input)
 	}
 	if out.Decision != "continue" {
 		t.Fatalf("outcome = %+v, want the last call's continue", out)
 	}
 }
 
-// A tool asked for on the last call is never run: the conversation ends
-// at the call cap's human ask under spend, which names the calls it had.
+// An answer that arrives as the answer tool's arguments parses to the
+// same outcome as the same JSON as text, and the answer tool itself is
+// never executed through the pod's tools.
+func TestCheckinAnswerToolCallParsesNeverRuns(t *testing.T) {
+	answerJSON := `{"findings":[{"text":"TasksByPR is undefined","verdict":"dropped","evidence":"store.go at main"},{"text":"no test covers the handler","verdict":"confirmed"}],"decision":"handover","handover":"drop one, fix the other"}`
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9", Findings: []CheckFinding{
+		{Text: "TasksByPR is undefined", Source: "review"},
+		{Text: "no test covers the handler", Source: "review"},
+	}}
+	var args map[string]any
+	if err := json.Unmarshal([]byte(answerJSON), &args); err != nil {
+		t.Fatal(err)
+	}
+	asText := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
+		&scriptedChat{answers: []CheckinResponse{{Text: answerJSON}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+	asTool := new(Runner).runCheckin(context.Background(), "t-1", "checkin", ask, nil,
+		&scriptedChat{answers: []CheckinResponse{{ToolName: checkinAnswerTool, ToolArgs: args}}}, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+	if asTool.Decision != asText.Decision || asTool.Handover != asText.Handover ||
+		!reflect.DeepEqual(asTool.Verdicts, asText.Verdicts) || !reflect.DeepEqual(asTool.Remarks, asText.Remarks) {
+		t.Fatalf("the tool answer's outcome = %+v, want the text answer's %+v", asTool, asText)
+	}
+	if asTool.Decision != CheckHandover || asTool.Verdicts["no test covers the handler"].State != CheckConfirmed {
+		t.Fatalf("the shared outcome = %+v, want the handover with its verdicts", asTool)
+	}
+	if asTool.Record.ToolCalls != 0 || asText.Record.ToolCalls != 0 {
+		t.Fatalf("tool calls ran: %+v %+v", asTool.Record, asText.Record)
+	}
+}
+
+// A tool asked for on the last call, other than the answer tool, is never
+// run: the conversation ends at the call cap's human ask under spend,
+// which names the calls it had.
 func TestCheckinToolAnswerOnTheLastCallIsTheCapStop(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
 	chat := &scriptedChat{answers: []CheckinResponse{{ToolName: "card_facts"}, {ToolName: "card_facts"}}}
@@ -1031,6 +1084,34 @@ func TestParseCheckinAnswerMoments(t *testing.T) {
 	}
 }
 
+// Every enum the answer chooses in is closed: a decision outside the
+// moment's vocabulary, a free-text reason_kind and a verdict outside the
+// three are each refused once, each refusal naming what broke.
+func TestParseCheckinAnswerRefusesOutsideItsEnums(t *testing.T) {
+	moments := map[string]*CheckInAsk{
+		"gate":    {Moment: CheckInGate, Findings: []CheckFinding{{Text: "f", Source: "review"}}},
+		"session": {Moment: CheckInSession, ParentSession: "s-live-1"},
+		"dead":    {Moment: CheckInDead, ParentSession: "s-dead-1"},
+	}
+	for name, ask := range moments {
+		t.Run(name, func(t *testing.T) {
+			_, err := parseCheckinAnswer(`{"decision":"teleport","reason":"r"}`, ask)
+			if err == nil || err.Error() != `unknown decision "teleport"` {
+				t.Fatalf("a teleport decision = %v, want the decision named", err)
+			}
+		})
+	}
+	ask := moments["gate"]
+	_, err := parseCheckinAnswer(`{"decision":"human","reason_kind":"policy class","reason":"r"}`, ask)
+	if err == nil || err.Error() != `unknown reason_kind "policy class"` {
+		t.Fatalf("a free-text reason_kind = %v, want the reason kind named", err)
+	}
+	_, err = parseCheckinAnswer(`{"findings":[{"text":"f","verdict":"maybe"}],"decision":"handover"}`, ask)
+	if err == nil || err.Error() != `unknown verdict "maybe"` {
+		t.Fatalf("an out-of-enum verdict = %v, want the verdict named", err)
+	}
+}
+
 // The gate and dead check-ins may run a command in the workspace; the
 // session's check-in may not, and gets the same list without it.
 func TestCheckinToolsForMoments(t *testing.T) {
@@ -1046,6 +1127,50 @@ func TestCheckinToolsForMoments(t *testing.T) {
 	}
 	if !reflect.DeepEqual(session, checkinTools[:len(checkinTools)-1]) {
 		t.Fatal("the session's tools are not the gate's list without run")
+	}
+}
+
+// The gateway's request body carries tool_choice when the call forces a
+// tool, in the named-function form the gateway accepts, and leaves the
+// field out when the call forces none.
+func TestCheckinGatewayPostsToolChoice(t *testing.T) {
+	var bodies [][]byte
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		raw, _ := io.ReadAll(r.Body)
+		bodies = append(bodies, raw)
+		w.Header().Set("Content-Type", "application/json")
+		w.Write([]byte(`{"choices":[{"message":{"content":"hi"}}],"usage":{"cost":0.01}}`))
+	}))
+	defer srv.Close()
+	g := &checkinGateway{URL: srv.URL, Token: "bearer"}
+	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{
+		System: "s", Input: "i",
+		Tools:      []CheckinTool{momentAnswerTool(&CheckInAsk{Moment: CheckInGate})},
+		ToolChoice: forcedToolChoice(checkinAnswerTool),
+	}); err != nil {
+		t.Fatalf("the forced call = %v", err)
+	}
+	if _, err := g.Call(context.Background(), "t-1", "checkin", CheckinRequest{System: "s", Input: "i"}); err != nil {
+		t.Fatalf("the unforced call = %v", err)
+	}
+	var forced map[string]any
+	if err := json.Unmarshal(bodies[0], &forced); err != nil {
+		t.Fatalf("the forced call's body is not JSON: %v", err)
+	}
+	choice, ok := forced["tool_choice"].(map[string]any)
+	if !ok || choice["type"] != "function" {
+		t.Fatalf("tool_choice = %v, want the named-function form", forced["tool_choice"])
+	}
+	fn, _ := choice["function"].(map[string]any)
+	if fn["name"] != checkinAnswerTool {
+		t.Fatalf("tool_choice names %q, want the answer tool", fn["name"])
+	}
+	var unforced map[string]any
+	if err := json.Unmarshal(bodies[1], &unforced); err != nil {
+		t.Fatalf("the unforced call's body is not JSON: %v", err)
+	}
+	if _, ok := unforced["tool_choice"]; ok {
+		t.Error("a call that forces no tool posts tool_choice")
 	}
 }
 
