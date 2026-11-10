@@ -554,9 +554,9 @@ func TestGateWatchChecksWaitRetriesItsTaskLookup(t *testing.T) {
 	}
 }
 
-// A retry tick that fires in the window after its wait left the watch's
-// table, before the wait's context is cancelled, arms nothing: it acts only
-// on the run that is still the table's.
+// A retry tick arms only the run that is the table's: a later attempt
+// took the same key while the old run's context is still live, and the old
+// run's tick must not arm anything.
 func TestGateWatchLookupTickArmsOnlyTheRunInTheTable(t *testing.T) {
 	base := newFakeStore()
 	base.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: "demo-app/demo-app"})
@@ -569,8 +569,8 @@ func TestGateWatchLookupTickArmsOnlyTheRunInTheTable(t *testing.T) {
 	live := &watchedRun{activity: ActivityWaitChecks, started: time.Now()}
 	g.runs = map[string]*watchedRun{"wf/1": live}
 	g.retryBound(live, "wf/1", context.Background(), "t1", 0)
-	defer live.timer.Stop()
 	if live.bound != time.Hour || live.timer == nil {
 		t.Fatalf("the run in the table was not armed: bound %s, timer %v", live.bound, live.timer)
 	}
+	live.timer.Stop()
 }

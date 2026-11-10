@@ -4264,9 +4264,9 @@ func (t *taskRun) endTrips() {
 func (t *taskRun) askGate(trip GateTrip, run *gateRun) workflow.Future {
 	// a session's wait would trip again past its own start-to-close, and
 	// so would any wait whose doubled bound outlasts the attempt (a merge:
-	// 2 x 90 s against 2 min; the checks wait since versionChecksWait,
-	// whose poll ends before a wait's doubled bound at a short bound, offers
-	// none);
+	// 2 x 90 s against 2 min; the checks wait from versionChecksWait on,
+	// whose poll ends a minute after the first trip's supervisor budget, so
+	// a second wait could not run, offers none);
 	// a retry on the last attempt would fail the activity
 	maxAttempts := run.opts.RetryPolicy.MaximumAttempts
 	in := GateSupervision{Trip: trip, Input: run.args, CanWait: !run.waited && trip.Activity != ActivityRunSession && 2*trip.Bound < run.opts.StartToCloseTimeout &&
