@@ -1055,3 +1055,31 @@ func TestFirstHumanMessageCarriesTheFactoryBasics(t *testing.T) {
 		t.Fatalf("supervisor messages = %q, want the check-in bare", texts[2:])
 	}
 }
+
+// The push credential is live through the end push: the session's cleanup
+// revokes it only after the session ended.
+func TestPushTokenSurvivesTheEndPushAndIsRevokedAfterIt(t *testing.T) {
+	task := Task{ID: "t1", Status: "running", Objective: "fix it", Repository: "sf/x", SHA: "abc123", BudgetEUR: 2, Track: "direct"}
+	kube := newFakeKube()
+	runner, hub, _ := newTestRunner(t, task, kube, &fakeObjectStore{})
+	var revokedAtPush []int64
+	worker := &fakeWorkerEndpoint{status: http.StatusNoContent, onPush: func() {
+		hub.mu.Lock()
+		defer hub.mu.Unlock()
+		revokedAtPush = slices.Clone(hub.revoked)
+	}}
+	worker.start(t, runner)
+
+	logs := pushRequestLine("c1") + "\n" + tokenLogs + pushedLine("c1") + "\n" + resultLine(true, "pushed c1")
+	if res, err := runSession(t, nil, runner, SessionInput{TaskID: "t1", Attempt: 1, Model: "m"}, nil, logs); err != nil || res.Outcome != OutcomePushed {
+		t.Fatalf("result = (%+v, %v), want pushed", res, err)
+	}
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	if len(revokedAtPush) != 0 {
+		t.Fatalf("revoked %v when the push token reached the worker, want the credential live through the push", revokedAtPush)
+	}
+	if len(hub.revoked) == 0 {
+		t.Fatal("the session's cleanup revoked nothing, want the push token revoked once the session ended")
+	}
+}
