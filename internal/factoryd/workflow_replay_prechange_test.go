@@ -289,3 +289,41 @@ func TestCheckinSpendResumeBeforeTheChangeBuysSession(t *testing.T) {
 		t.Fatalf("sessions = %d, usage = %+v, recorded = %+v; want one bought session on the answer's signal step", len(h.sessions), h.usage, h.recorded)
 	}
 }
+
+// [prechange_run_replays] A run recorded before the checks-wait change
+// carries no marker for it, so GetVersion answers DefaultVersion and the
+// replay keeps the recorded checks wait: its options stay the recorded
+// 45m + 1m and every command matches. The recording is a whole run of the
+// audit-beside card, with burst-accept's marker rewritten to the drained
+// blind proofs' one that a recording from before its deploy lacks.
+func TestWorkflowReplaysARunRecordedBeforeTheChecksWait(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "history-t-c35a843b9e57-audit-beside-merged.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	waits := 0
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 {
+			switch string(id[0].GetData()) {
+			case `"checks-wait"`:
+				t.Fatal("the recording holds the checks-wait marker: it is no run from before")
+			case `"burst-accept"`:
+				id[0].Data = []byte(`"blind-proofs"`)
+			}
+		}
+		if a := e.GetActivityTaskScheduledEventAttributes(); a.GetActivityType().GetName() == ActivityWaitChecks {
+			waits++
+			if got := a.GetStartToCloseTimeout().AsDuration(); got != 46*time.Minute {
+				t.Fatalf("recorded checks wait start-to-close = %s, want 46m0s", got)
+			}
+		}
+	}
+	if waits == 0 {
+		t.Fatal("the recording schedules no checks wait")
+	}
+	replaySplice(t, base.Events)
+}
