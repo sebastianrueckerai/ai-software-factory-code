@@ -648,3 +648,12 @@ func TestNewestAskCaseIsTheCardsLiveAsk(t *testing.T) {
 		t.Fatalf("NewestAskCase after the ask ended = %+v, %v; want case %d", c, err, older.ID)
 	}
 }
+
+func TestCaseFromAskCarriesTheRecommendedAnswer(t *testing.T) {
+	task := Task{ID: "t-plan", Kind: "agent"}
+	c, err := caseFromAsk(task, Event{Kind: EventQuestionAsked, Detail: map[string]any{"question": "Which?", "choices": []any{"a", "b"},
+		"recommended": "b", "grounds": "because", "revision": 1, "index": 1}}, "")
+	if err != nil || c.Kind != CasePlanQuestion || c.Facts["recommended"] != "b" || c.Facts["grounds"] != "because" {
+		t.Fatalf("case %+v (%v), want a plan_question with recommended b and its grounds in the facts", c, err)
+	}
+}
