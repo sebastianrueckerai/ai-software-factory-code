@@ -366,8 +366,8 @@ func (*accBatchTasks) IntakeRefusals(context.Context, string, int64) ([]factoryd
 	return nil, nil
 }
 
-func (*accBatchTasks) RoadmapHolder(context.Context, string, int, int64) (string, bool, error) {
-	return "", false, nil
+func (*accBatchTasks) RoadmapHolder(context.Context, string, int, int64) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, nil
 }
 
 // accBatchApprovals are the approval_requests rows in memory;
@@ -547,7 +547,7 @@ func (s *accBatchStore) UnsettledTasks(ctx context.Context, olderThan time.Durat
 func (s *accBatchStore) SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error) {
 	panic("unused")
 }
-func (s *accBatchStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason string) error {
+func (s *accBatchStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason, bodySHA string) error {
 	panic("unused")
 }
 func (s *accBatchStore) IntakeRefusals(ctx context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error) {

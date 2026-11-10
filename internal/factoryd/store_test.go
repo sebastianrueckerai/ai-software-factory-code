@@ -43,6 +43,7 @@ func TestFromJSONSurfacesDecodeErrors(t *testing.T) {
 // fakeStore is the in-memory Store for tests of everything that persists.
 type fakeStore struct {
 	refusals        map[string][]IntakeRefusal
+	released        map[string]bool
 	tasks           map[string]Task
 	sessions        map[string]Session
 	started         map[string]bool
@@ -441,15 +442,17 @@ func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
 	if t.RoadmapItem != 0 {
 		refile := AskedRefile(t.Objective)
 		for id, h := range s.tasks {
-			if h.Repository != t.Repository || h.RoadmapItem != t.RoadmapItem || id == t.ID {
+			if h.Repository != t.Repository || h.RoadmapItem != t.RoadmapItem || id == t.ID || s.released[id] {
 				continue
 			}
 			if refile != 0 && h.IssueNumber == refile && (h.Status == "closed" || h.Status == "failed") {
-				h.RoadmapItem = 0
-				s.tasks[id] = h
+				if s.released == nil {
+					s.released = map[string]bool{}
+				}
+				s.released[id] = true
 				continue
 			}
-			return &Refusal{Kind: RefusalRoadmap, Holder: id, Item: t.RoadmapItem, Repository: t.Repository}
+			return &Refusal{Kind: RefusalRoadmap, Holder: id, Status: h.Status, HolderIssue: h.IssueNumber, Item: t.RoadmapItem, Repository: t.Repository}
 		}
 	}
 	if t.Kind == "agent" && t.Gate == "" {
@@ -777,15 +780,16 @@ func (s *fakeStore) FiledFor(_ context.Context, repository string, issue int64) 
 
 // TaskByIssue mirrors PGStore.TaskByIssue: the live card first, the
 // newest one among the rest.
-func (s *fakeStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason string) error {
+func (s *fakeStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason, bodySHA string) error {
 	k := fmt.Sprintf("%s %d", repository, issue)
-	if slices.ContainsFunc(s.refusals[k], func(r IntakeRefusal) bool { return r.Key == key }) {
-		return nil
-	}
 	if s.refusals == nil {
 		s.refusals = map[string][]IntakeRefusal{}
 	}
-	s.refusals[k] = append(s.refusals[k], IntakeRefusal{Key: key, Reason: reason})
+	if i := slices.IndexFunc(s.refusals[k], func(r IntakeRefusal) bool { return r.Key == key }); i >= 0 {
+		s.refusals[k][i].At, s.refusals[k][i].BodySHA = time.Now(), bodySHA
+		return nil
+	}
+	s.refusals[k] = append(s.refusals[k], IntakeRefusal{Key: key, Reason: reason, BodySHA: bodySHA, At: time.Now()})
 	return nil
 }
 
@@ -5063,8 +5067,8 @@ func TestPGStoreOneCardPerRoadmapItem(t *testing.T) {
 		t.Fatalf("a done card still holds its item: %v", err)
 	}
 	// RoadmapHolder names the same holder the insert refuses.
-	if holder, ok, err := s.RoadmapHolder(ctx, repo, 276, 0); err != nil || !ok || holder != "t-holder" {
-		t.Fatalf("RoadmapHolder = %q, %v, %v; want t-holder", holder, ok, err)
+	if holder, ok, err := s.RoadmapHolder(ctx, repo, 276, 0); err != nil || !ok || holder.ID != "t-holder" {
+		t.Fatalf("RoadmapHolder = %+v, %v, %v; want t-holder", holder, ok, err)
 	}
 	if _, ok, err := s.RoadmapHolder(ctx, repo, 999, 0); err != nil || ok {
 		t.Fatalf("an item no card cites = %v, %v; want none", ok, err)

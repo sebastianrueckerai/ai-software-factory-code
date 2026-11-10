@@ -403,8 +403,9 @@ type Store interface {
 	// settled task is never listed again.
 	SettleSpendFinal(ctx context.Context, id string, reported float64) (bool, error)
 	// RecordRefusal keeps why the intake made no card for issue, once per
-	// key; IntakeRefusals lists them, oldest first.
-	RecordRefusal(ctx context.Context, repository string, issue int64, key, reason string) error
+	// key, and moves its time and hash when it is refused again;
+	// IntakeRefusals lists them, the least recently refused first.
+	RecordRefusal(ctx context.Context, repository string, issue int64, key, reason, bodySHA string) error
 	IntakeRefusals(ctx context.Context, repository string, issue int64) ([]IntakeRefusal, error)
 	// TaskByIssue looks up a task by the Forgejo issue mirroring it, for
 	// webhook redelivery idempotency, preferring the live card when a
@@ -1066,14 +1067,14 @@ func insertTask(ctx context.Context, db interface {
 	// ("Refile of #N") frees the item, and the filing takes it over.
 	refile := AskedRefile(t.Objective)
 	if t.RoadmapItem != 0 {
-		var holderID string
-		err := db.QueryRowContext(ctx, `SELECT id FROM tasks
-			WHERE repository = $1 AND roadmap_item = $2 AND id <> $3 AND NOT `+refiledCard("$4")+`
+		var holder Task
+		err := db.QueryRowContext(ctx, `SELECT id, status, COALESCE(issue_number, 0) FROM tasks
+			WHERE repository = $1 AND roadmap_item = $2 AND id <> $3 AND NOT roadmap_released AND NOT `+refiledCard("$4")+`
 			ORDER BY created_at LIMIT 1`, t.Repository, t.RoadmapItem, t.ID, refile).
-			Scan(&holderID)
+			Scan(&holder.ID, &holder.Status, &holder.IssueNumber)
 		switch {
 		case err == nil:
-			return &Refusal{Kind: RefusalRoadmap, Holder: holderID, Item: t.RoadmapItem, Repository: t.Repository}
+			return &Refusal{Kind: RefusalRoadmap, Holder: holder.ID, Status: holder.Status, HolderIssue: holder.IssueNumber, Item: t.RoadmapItem, Repository: t.Repository}
 		case !errors.Is(err, sql.ErrNoRows):
 			return err
 		}
@@ -1111,7 +1112,7 @@ func insertTask(ctx context.Context, db interface {
 	if err != nil || t.RoadmapItem == 0 || refile == 0 {
 		return err
 	}
-	_, err = db.ExecContext(ctx, `UPDATE tasks SET roadmap_item = NULL
+	_, err = db.ExecContext(ctx, `UPDATE tasks SET roadmap_released = true
 		WHERE repository = $1 AND roadmap_item = $2 AND id <> $3 AND `+refiledCard("$4"), t.Repository, t.RoadmapItem, t.ID, refile)
 	return err
 }
@@ -1132,17 +1133,17 @@ func (s *PGStore) insertTask(ctx context.Context, t Task, onConflict string) err
 
 // RoadmapHolder names the card of repository that builds roadmap item —
 // the check insertTask enforces — so the filing refuses before an issue
-// is posted; false when no card cites it.
-func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int, refile int64) (string, bool, error) {
-	var holder string
-	err := s.db.QueryRowContext(ctx, `SELECT id FROM tasks
-		WHERE repository = $1 AND roadmap_item = $2 AND NOT `+refiledCard("$3")+`
-		ORDER BY created_at LIMIT 1`, repository, item, refile).Scan(&holder)
+// is posted: the card's id, status and issue; false when no card holds it.
+func (s *PGStore) RoadmapHolder(ctx context.Context, repository string, item int, refile int64) (Task, bool, error) {
+	var holder Task
+	err := s.db.QueryRowContext(ctx, `SELECT id, status, COALESCE(issue_number, 0) FROM tasks
+		WHERE repository = $1 AND roadmap_item = $2 AND NOT roadmap_released AND NOT `+refiledCard("$3")+`
+		ORDER BY created_at LIMIT 1`, repository, item, refile).Scan(&holder.ID, &holder.Status, &holder.IssueNumber)
 	if errors.Is(err, sql.ErrNoRows) {
-		return "", false, nil
+		return Task{}, false, nil
 	}
 	if err != nil {
-		return "", false, err
+		return Task{}, false, err
 	}
 	return holder, true, nil
 }

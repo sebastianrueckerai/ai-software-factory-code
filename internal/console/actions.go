@@ -342,6 +342,19 @@ func issuePath(t factoryd.Task, suffix string) (string, error) {
 var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, policy.TrackPlan: factoryd.LabelPlan,
 	factoryd.LabelHuman: factoryd.LabelHuman}
 
+// roadmapRefusal is the refusal of a filing for roadmap item that holder
+// holds, naming its state and the way forward by it.
+func roadmapRefusal(holder factoryd.Task, item int) string {
+	head := fmt.Sprintf("Card %s (#%d, %s) already builds roadmap item %d.", holder.ID, holder.IssueNumber, holder.Status, item)
+	switch factoryd.RoadmapHold(holder.Status) {
+	case "open":
+		return head + fmt.Sprintf(" Wait for it to end, or close it and file again with refile_of %d.", holder.IssueNumber)
+	case "ended":
+		return head + fmt.Sprintf(" File again with refile_of %d.", holder.IssueNumber)
+	}
+	return strings.Replace(head, "builds", "built", 1) + " Cite a new roadmap item, or file without roadmap_item."
+}
+
 // doFileCard files an issue on project's repository as the member, labelled
 // with track's label (agent for direct, plan, human for a person's card)
 // and priority when given, reason the one line why the card takes the
@@ -357,7 +370,7 @@ var trackLabels = map[string]string{policy.TrackDirect: factoryd.LabelAgent, pol
 // and the issue's number. In a wake the chat bot posts the issue, and the
 // card_filed row that names the member is written before the answer: an
 // unrecorded filing closes its issue and refuses.
-func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int) (factoryd.Repo, int64, error) {
+func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body, track, reason, priority, size, rung, rungReason, image string, carry int64, roadmapItem int, refileOf int64) (factoryd.Repo, int64, error) {
 	title = strings.TrimSpace(title)
 	switch {
 	case title == "" || utf8.RuneCountInString(title) > 255:
@@ -372,6 +385,8 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "size must be small, medium or large")
 	case rung != "" && rung != factoryd.RungCheap && rung != factoryd.RungFrontier:
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "rung must be cheap or frontier")
+	case refileOf > 0 && roadmapItem == 0:
+		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "refile_of needs roadmap_item: it frees that item from the card it names")
 	case rung != "" && strings.TrimSpace(rungReason) == "":
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, "a rung needs its one-line reason")
 	}
@@ -392,13 +407,13 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 		return factoryd.Repo{}, 0, refuse(http.StatusBadRequest, fmt.Sprintf("Project %s follows process %s, which has no plan track: file the card on track direct.", ps[i].Name, ps[i].Process))
 	}
 	if roadmapItem > 0 {
-		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem, factoryd.AskedRefile(body))
+		holder, held, err := c.cfg.Tasks.RoadmapHolder(ctx, ps[i].Repository, roadmapItem, refileOf)
 		if err != nil {
 			log.Printf("console: the roadmap items of %s: %v", ps[i].Name, err)
 			return factoryd.Repo{}, 0, refuse(http.StatusInternalServerError, "cannot read the roadmap items of "+ps[i].Name+"; try again")
 		}
 		if held {
-			return factoryd.Repo{}, 0, refuse(http.StatusConflict, fmt.Sprintf("Card %s already builds roadmap item %d.", holder, roadmapItem))
+			return factoryd.Repo{}, 0, refuse(http.StatusConflict, roadmapRefusal(holder, roadmapItem))
 		}
 	}
 	detail := map[string]any{"track": track, "title": title}
@@ -425,6 +440,10 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	if roadmapItem > 0 {
 		fields = append(fields, fmt.Sprintf("Roadmap: #%d", roadmapItem))
 		detail["roadmap_item"] = roadmapItem
+		if refileOf > 0 {
+			fields = append(fields, fmt.Sprintf("Refile of #%d", refileOf))
+			detail["refile_of"] = refileOf
+		}
 	}
 	if len(fields) > 0 {
 		body += "\n\n" + strings.Join(fields, "\n")

@@ -2,9 +2,12 @@ package factoryd
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
 	"fmt"
 	"regexp"
 	"strconv"
+	"time"
 )
 
 // StateRefused is the state label of an issue the intake made no card
@@ -14,12 +17,13 @@ const StateRefused = "state/refused"
 // Refusal is the insert's refusal of a card whose issue or roadmap item a
 // card already holds: the intake tells the issue why, once.
 type Refusal struct {
-	Kind       string // "issue" or "roadmap"
-	Holder     string
-	Status     string // the holder's, for an issue
-	Item       int
-	IssueNo    int64
-	Repository string
+	Kind        string // "issue" or "roadmap"
+	Holder      string
+	Status      string // the holder's
+	HolderIssue int64  // the roadmap holder's issue
+	Item        int
+	IssueNo     int64
+	Repository  string
 }
 
 const (
@@ -34,15 +38,36 @@ func (r *Refusal) Error() string {
 	return fmt.Sprintf("card %s already holds issue %d of %s and is still %s", r.Holder, r.IssueNo, r.Repository, r.Status)
 }
 
-// Key tells one reason from another on the same issue.
-func (r *Refusal) Key() string { return r.Kind + " " + r.Holder }
+// Key tells one reason from another on the same issue: the holder and its
+// state, since the way forward differs by state.
+func (r *Refusal) Key() string { return r.Kind + " " + r.Holder + " " + r.Status }
 
-// IntakeRefusal is a recorded refusal: its key and the text the issue got.
-type IntakeRefusal struct {
-	Key, Reason string
+// RoadmapHold is how a card holds a roadmap item: "open" while it works,
+// "ended" once closed or failed, "built" once done.
+func RoadmapHold(status string) string {
+	switch status {
+	case "closed", "failed":
+		return "ended"
+	case "done":
+		return "built"
+	}
+	return "open"
 }
 
-var refileOf = regexp.MustCompile(`(?im)^\W*refile of #(\d+)\b`)
+// IntakeRefusal is a recorded refusal: its key, the text the issue got,
+// when it was last refused and the hash of the issue's text then.
+type IntakeRefusal struct {
+	Key, Reason, BodySHA string
+	At                   time.Time
+}
+
+// IssueSHA is the hash of an issue's title and body, to tell an edit.
+func IssueSHA(title, body string) string {
+	sum := sha256.Sum256([]byte(IssueObjective(title, body)))
+	return hex.EncodeToString(sum[:])
+}
+
+var refileOf = regexp.MustCompile(`(?im)^[ \t]*(?:[-*][ \t]+)?refile of #(\d+)\b`)
 
 // AskedRefile is the number in the body's line "Refile of #<n>", the
 // closed or failed card whose roadmap item this issue takes over; 0
@@ -56,17 +81,20 @@ func AskedRefile(body string) int64 {
 	return n
 }
 
-// RecordRefusal keeps reason as issue's refusal under key; a second
-// record of the same key changes nothing.
-func (s *PGStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason string) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO intake_refusals (repository, issue_number, key, reason)
-		VALUES ($1, $2, $3, $4) ON CONFLICT DO NOTHING`, repository, issue, key, reason)
+// RecordRefusal keeps reason as issue's refusal under key, with the hash
+// of the issue's text; a second record of the key keeps the reason and
+// moves the time and the hash.
+func (s *PGStore) RecordRefusal(ctx context.Context, repository string, issue int64, key, reason, bodySHA string) error {
+	_, err := s.db.ExecContext(ctx, `INSERT INTO intake_refusals (repository, issue_number, key, reason, body_sha)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (repository, issue_number, key) DO UPDATE SET at = now(), body_sha = EXCLUDED.body_sha`,
+		repository, issue, key, reason, bodySHA)
 	return err
 }
 
-// IntakeRefusals are issue's recorded refusals, oldest first.
+// IntakeRefusals are issue's recorded refusals, the least recently refused first.
 func (s *PGStore) IntakeRefusals(ctx context.Context, repository string, issue int64) ([]IntakeRefusal, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT key, reason FROM intake_refusals
+	rows, err := s.db.QueryContext(ctx, `SELECT key, reason, body_sha, at FROM intake_refusals
 		WHERE repository = $1 AND issue_number = $2 ORDER BY at, key`, repository, issue)
 	if err != nil {
 		return nil, err
@@ -75,7 +103,7 @@ func (s *PGStore) IntakeRefusals(ctx context.Context, repository string, issue i
 	var out []IntakeRefusal
 	for rows.Next() {
 		var r IntakeRefusal
-		if err := rows.Scan(&r.Key, &r.Reason); err != nil {
+		if err := rows.Scan(&r.Key, &r.Reason, &r.BodySHA, &r.At); err != nil {
 			return nil, err
 		}
 		out = append(out, r)

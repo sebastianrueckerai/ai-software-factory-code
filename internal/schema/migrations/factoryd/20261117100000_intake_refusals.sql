@@ -5,6 +5,11 @@ CREATE TABLE IF NOT EXISTS intake_refusals (
 	issue_number bigint NOT NULL,
 	key text NOT NULL,
 	reason text NOT NULL,
+	body_sha text NOT NULL,
 	at timestamptz NOT NULL DEFAULT now(),
 	PRIMARY KEY (repository, issue_number, key)
 );
+
+-- A card a refile took its roadmap item over from keeps its roadmap_item
+-- for its history and holds the item no longer.
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS roadmap_released boolean NOT NULL DEFAULT false;

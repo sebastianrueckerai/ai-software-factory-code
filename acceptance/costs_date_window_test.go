@@ -400,8 +400,8 @@ func (*acceptTasks) IntakeRefusals(context.Context, string, int64) ([]factoryd.I
 	return nil, nil
 }
 
-func (*acceptTasks) RoadmapHolder(context.Context, string, int, int64) (string, bool, error) {
-	return "", false, nil
+func (*acceptTasks) RoadmapHolder(context.Context, string, int, int64) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, nil
 }
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {

@@ -385,7 +385,7 @@ func (s *acceptanceStore) TasksByRuling(_ context.Context, repository, ruling st
 	return cards, nil
 }
 
-func (s *acceptanceStore) RecordRefusal(context.Context, string, int64, string, string) error {
+func (s *acceptanceStore) RecordRefusal(context.Context, string, int64, string, string, string) error {
 	return nil
 }
 

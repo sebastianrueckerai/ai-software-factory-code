@@ -1725,8 +1725,8 @@ func (a *AcceptanceRig) IntakeRefusals(context.Context, string, int64) ([]factor
 	return nil, nil
 }
 
-func (a *AcceptanceRig) RoadmapHolder(context.Context, string, int, int64) (string, bool, error) {
-	return "", false, nil
+func (a *AcceptanceRig) RoadmapHolder(context.Context, string, int, int64) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, nil
 }
 
 func (a *AcceptanceRig) Conversation(_ context.Context, _, _ string, n int64) (factoryd.ChatConversation, bool, error) {

@@ -68,6 +68,7 @@ type toolInput struct {
 	RungReason  string   `json:"rung_reason,omitempty"`
 	CarryPR     int64    `json:"carry_pr,omitempty"`
 	RoadmapItem int      `json:"roadmap_item,omitempty"`
+	RefileOf    int64    `json:"refile_of,omitempty"`
 	Acceptance  []string `json:"acceptance,omitempty"`
 	Attachments []string `json:"attachments,omitempty"`
 	By          string   `json:"by,omitempty"`
@@ -1475,6 +1476,7 @@ var tools = []chatTool{
 			"image":        str("a pinned sandbox image to run on, none for the default"),
 			"carry_pr":     map[string]any{"type": "integer", "minimum": 1, "description": "the pull request the card carries: its head is in the clone"},
 			"roadmap_item": map[string]any{"type": "integer", "minimum": 1, "description": "the roadmap item the card builds: one card per item"},
+			"refile_of":    map[string]any{"type": "integer", "minimum": 1, "description": "the issue of the closed or failed card it replaces"},
 			"attachments": map[string]any{"type": "array", "maxItems": 4, "items": map[string]any{"type": "string"},
 				"description": "the thread's images to attach (img1, as their rows show)"}},
 		required: []string{"title", "track", "track_reason"},
@@ -1492,7 +1494,7 @@ var tools = []chatTool{
 			if err := t.refuseCard(in, body); err != nil {
 				return "", nil, err
 			}
-			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem)
+			repo, issue, err := t.c.doFileCard(t.r.Context(), t.a, t.p.Name, in.Title, body, in.Track, in.TrackReason, "", in.Size, in.Rung, in.RungReason, in.Image, in.CarryPR, in.RoadmapItem, in.RefileOf)
 			if err != nil {
 				return "", nil, err
 			}
@@ -2170,7 +2172,7 @@ func (t *turn) diff(in toolInput) (string, error) {
 var toolNotes = `  diff, pr, file and ci read Forgejo; alerts, resources, settings and policy read what their console pages show.
   card is a card's state in one call: status, gate, spend, sessions, model calls per alias, dependencies, the question it waits on, its pull request and requests, and which of pr, plan and session holds the rest.
   A card's sessions are numbered from 1, the first; n names one, the newest by default.
-  new_card's tracks: direct builds a small change at once: before its first session, the factory sizes a direct card where the process has a plan track, and one that is not small turns plan-track; plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text. roadmap_item names the docs/roadmap.md item the card builds: the pull's own filings carry it, one card per item whatever its state, and a closed intake refuses it.
+  new_card's tracks: direct builds a small change at once: before its first session, the factory sizes a direct card where the process has a plan track, and one that is not small turns plan-track; plan plans first and files the plan's cards as direct cards, human is a person's. A direct or plan card needs 1 to 10 acceptance tests, one line each, in acceptance. Its rung: cheap for routine, well-specified work, frontier for a large change, a plan or factoryd's own package; none derives it from the size and the text. roadmap_item names the docs/roadmap.md item the card builds: the pull's own filings carry it, one card per item: a card that cites it holds it, open or done, unless it is closed or failed and refile_of names its issue, which takes the item over; a closed intake refuses it.
   github_export's mode mirror pushes every branch and tag; pull_requests opens a GitHub pull request per merged card.
   tell_card routes by the card's state: to its running session as a message (steer), at its pending merge request as changes requested (deny_merge), to the question it waits on as the answer (answer).
   answer takes a plan's open questions with the plan's revision, every one at once in answers; any other question takes text, one of its choices word for word or free.
