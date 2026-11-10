@@ -66,7 +66,7 @@ var wantTrip = map[string][]string{
 	"limits.warn_at":            {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). Finish what runs, run bash check changed if it is quick, and end the session with your last message, so the factory pushes your work."`},
 	"limits.plan_warn_at":       {`"factoryd: %.0f percent of this card's budget is spent, %.2f of %.2f EUR are left for its calls (the model review and the audit hold %.2f EUR of it). File the plan now with the file_plan tool, with what you have read: a plan filed late is better than none."`},
 	"limits.gate_reserve_eur":   {`"; the card spent %.2f EUR, and %.2f EUR is held for the review and the audit"`, "refused_budget"},
-	"limits.no_push_spend":      {`"%.2f of the card's %.2f EUR are spent (%.0f percent, the line is %.0f) and no work is pushed"`},
+	"limits.no_push_spend":      {`"this session spent %.2f EUR of the %.2f EUR the card had left at its start (%.0f percent, the line is %.0f) and no work is pushed"`},
 	"budget.task_default_eur":   {`"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d"`},
 	"budget.task_max_eur":       nil, // the cut is silent; only the load refuses
 	"budget.day_eur": {`"the day cap cannot fund a call: Answer, and the attempt waits on its own for the UTC day's headroom, or raise budget.day_eur in policy.yaml by a commit."`,

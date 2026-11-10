@@ -1,7 +1,10 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -437,5 +440,92 @@ func TestChatFundAndGoResumesTheStoppedTurns(t *testing.T) {
 	equal(t, "a fund where no turn stopped", events, []string{`applied {"result":"Raised the chat's budget from €18.00 to €19.00.","tool":"fund the chat"}`, `done {}`})
 	if n := len(g.calls()); n != 5 {
 		t.Fatalf("%d model calls after a fund where no turn stopped, want 5", n)
+	}
+}
+
+// The chat's stop opens one human card at the moment of the first refusal,
+// whichever turn meets it first: a wake turn of the budget of 50 EUR spent
+// files the card for the chat task and its budget; the next wake, refused
+// before any row, a human's message answered with the stop, and a second
+// stop at the same budget file no second card.
+func TestChatBudgetStopFilesOneCard(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	task, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 50, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == task.ID {
+			r.tasks.tasks[i].SpentEUR = 49.96
+		}
+	}
+	r.tasks.mu.Unlock()
+	var filed []string
+	r.c.cfg.FileChatBudgetCard = func(_ context.Context, p factoryd.Project, k factoryd.Task) error {
+		filed = append(filed, fmt.Sprintf("%s %s %.2f", p.Name, k.ID, k.BudgetEUR))
+		return nil
+	}
+	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "#13 asks about snapshots."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	want := []string{"ai-software-factory-code " + task.ID + " 50.00"}
+	if !slices.Equal(filed, want) {
+		t.Fatalf("after the wake's refusal the cards = %q, want %q", filed, want)
+	}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "#14 asks too."); !errors.Is(err, factoryd.ErrChatUnfunded) {
+		t.Fatalf("the second wake = %v, want ErrChatUnfunded", err)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	if !slices.Equal(filed, want) {
+		t.Fatalf("after the second refusals the cards = %q, want %q", filed, want)
+	}
+}
+
+// A card that fails to file changes nothing of the stop: the turn ends on
+// the stop row, the stop is recorded once, and the chat reads as stopped,
+// with the fund offered. The filing is factoryd's loop's to retry, so a
+// later refusal files nothing.
+func TestChatBudgetStopStandsWhenTheCardFails(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	crumbsChat(t, r)
+	calls := 0
+	r.c.cfg.FileChatBudgetCard = func(context.Context, factoryd.Project, factoryd.Task) error {
+		calls++
+		return errors.New("forgejo is down")
+	}
+	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	got, _ := stopOf(t, events)
+	fund := &chatBudget{BudgetEUR: 15, SpentEUR: 14.96, SuggestEUR: 1, CanFund: true}
+	if got.Message.Kind != factoryd.MessageBudget || !reflect.DeepEqual(got.Budget, fund) {
+		t.Fatalf("the stop = %+v, budget %+v; want a budget row and the fund %+v", got.Message, got.Budget, fund)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
+	if asks := eventsOf(r, factoryd.EventChatBudgetSpent); len(asks) != 1 || calls != 1 {
+		t.Fatalf("%d stops recorded, %d filings; want 1 and 1", len(asks), calls)
+	}
+	if answer := chatRead(t, r, ck, chatPath); !reflect.DeepEqual(answer.Budget, fund) {
+		t.Fatalf("GET /chat budget = %+v, want the fund %+v", answer.Budget, fund)
+	}
+}
+
+// The stop is found however many events of the chat task follow it.
+func TestChatStopIsFoundPastManyEvents(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	task := stoppedChat(t, r)
+	for range 80 {
+		r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: task.ID, Kind: factoryd.EventChatFunded, Actor: "sebastian", Via: factoryd.ViaChat})
+	}
+	s, err := r.c.chatStopOf(t.Context(), task)
+	if err != nil || !s.stopped {
+		t.Fatalf("chatStopOf = stopped %v, %v; want stopped past 80 later events", s.stopped, err)
 	}
 }

@@ -651,6 +651,12 @@ func (c *Console) waitsOnRetry(ctx context.Context, t factoryd.Task) ([]waitingC
 	return out, nil
 }
 
+// tailContext is the context of the work after a hand-over: the client
+// cannot cancel it, a minute bounds it.
+func tailContext(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), time.Minute)
+}
+
 // goWork hands the work of human card t, which waits on a person, to the
 // factory (factoryd's Go): the card's own words become an agent card and
 // the card closes on the note, so its wait ends at once. It answers the
@@ -665,6 +671,9 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
+	// the agent card is filed: a client that leaves now must not leave the old card waiting
+	ctx, stop := tailContext(ctx)
+	defer stop()
 	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
@@ -1359,8 +1368,8 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
-	if label == "" && (value != "" || text == "" || choiceCard(t)) {
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
+	if label == "" && (value != "" || text == "" || choiceCard(t) || len(q.Choices) > 0) {
+		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s. A remark goes on the issue.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
 	if err != nil {
@@ -1446,7 +1455,12 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return done(fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), 0, nil, kept)
 	case factoryd.AnswerGo:
 		note, posted, err := c.goWork(ctx, a, t)
-		return done(note, posted, err, chosen)
+		if err != nil {
+			return "", err
+		}
+		tail, stop := tailContext(ctx)
+		defer stop()
+		return c.choiceDone(tail, a, t, k.ID, chosen, note, posted)
 	}
 	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice
 	return done(note, posted, err, chosen)
@@ -2240,6 +2254,9 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 // supervisor's message path, marked as theirs, every GitHub token in it
 // scrubbed before it is sent or recorded.
 func (c *Console) doSteer(ctx context.Context, a actor, id, text string) (string, error) {
+	if c.cfg.Steer == nil {
+		return "", refuse(http.StatusNotImplemented, "This console cannot message a running session: it runs without factoryd's steer.")
+	}
 	text, github, chat := scrubTokens(strings.TrimSpace(text))
 	if text == "" || len(text) > 8<<10 {
 		return "", refuse(http.StatusBadRequest, "a message of up to 8 KiB is required")

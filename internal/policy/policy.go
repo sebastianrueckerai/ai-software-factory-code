@@ -406,9 +406,9 @@ type Limits struct {
 	WarnAt int `yaml:"warn_at,omitempty" json:"warn_at"`
 	// PlanWarnAt is WarnAt for a planner session. Absent: DefaultPlanWarnAt.
 	PlanWarnAt int `yaml:"plan_warn_at,omitempty" json:"plan_warn_at"`
-	// NoPushSpend is the percent of a card's budget spent with nothing
-	// pushed at which the session supervisor is called, 1 to 99. Absent:
-	// DefaultNoPushSpend.
+	// NoPushSpend is the percent of what a card had left at a session's start
+	// that the session spends with nothing pushed, at which the supervisor
+	// is called, 1 to 99. Absent: DefaultNoPushSpend.
 	NoPushSpend int `yaml:"no_push_spend,omitempty" json:"no_push_spend"`
 	// GateReserveEUR is the EUR held out of a card's budget for its
 	// gates: the whole of a model review and of an audit at the models

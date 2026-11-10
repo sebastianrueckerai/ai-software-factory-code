@@ -1528,3 +1528,21 @@ func TestDonePlanRowCarriesTheName(t *testing.T) {
 		t.Errorf("a named plan without an issue number lacks the bare name or shows #0:\n%s", face)
 	}
 }
+
+// A human card whose question has choices is answered by pressing one: its
+// drawer offers no free-text box, which doHumanAnswer would refuse. A card
+// whose question has none keeps the box.
+func TestHumanCardOffersTheAnswerBoxOnlyWithoutChoices(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{
+		humanAsk("t-pick", 51, factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"}),
+		humanAsk("t-free", 52),
+	}
+	ck, _ := r.loggedIn(t)
+	for id, want := range map[string]bool{"t-pick": false, "t-free": true} {
+		drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/"+id+"/drawer?tab=overview", nil), ck).Body.String()
+		if got := strings.Contains(drawer, `name="answer"`); got != want {
+			t.Errorf("%s: the drawer's answer box = %v, want %v:\n%s", id, got, want, drawer)
+		}
+	}
+}

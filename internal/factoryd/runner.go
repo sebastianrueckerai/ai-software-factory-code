@@ -649,9 +649,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// consumed is how many of the pod's log lines the loop took: the row
 	// keeps it for the reattach
 	consumed := 0
+	// spentAtStart is the card's enforced spend at the session's real
+	// start, nil where it could not be read
+	var spentAtStart *float64
 	if live != nil {
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
+		spentAtStart = live.SpentAtStart
 	} else {
+		if cur, ok, err := r.store.Task(ctx, t.ID); err != nil {
+			log.Printf("task %s: session %s: read the card's spend at the session's start: %s", t.ID, s.id, r.Scrub.String(err.Error()))
+		} else if ok {
+			spent := cur.EnforcedSpent()
+			spentAtStart = &spent
+		}
 		s.messageToken = rand.Text()
 		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), ReserveEUR: s.policy.Limits.GateReserve(), TimeLeft: time.Until(deadline),
 			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
@@ -659,7 +669,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, fmt.Errorf("create pod: %w", err)
 		}
 		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline}); err != nil {
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart}); err != nil {
 			return out, err
 		}
 	}
@@ -727,6 +737,12 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	supCfg := r.supervisorConfig(s.policy, s.agentTime, s.checkIn)
 	supCfg.ReadOnly = s.report != ""
 	supCfg.PriorPush = s.startRef != s.base
+	if spentAtStart != nil {
+		supCfg.SpentAtStart = *spentAtStart
+	} else {
+		log.Printf("task %s: session %s: the card's spend at the session's start is unknown, so spend_no_push is off for this session", t.ID, s.id)
+		supCfg.NoPushSpend = 0
+	}
 	if sizeBounded(t, s) {
 		supCfg.SizeLines = EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 	}

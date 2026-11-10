@@ -63,6 +63,9 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			io.WriteString(w, `{"default_branch":"main"}`)
 		case r.Method == http.MethodGet && r.URL.Path == repo+"/branches/main":
 			io.WriteString(w, `{"commit":{"id":"sha-demo-main"}}`)
+		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues" && fj.failNext > 0:
+			fj.failNext--
+			w.WriteHeader(http.StatusInternalServerError)
 		case r.Method == http.MethodPost && r.URL.Path == repo+"/issues":
 			var in struct{ Title, Body string }
 			json.NewDecoder(r.Body).Decode(&in) // #nosec G104 -- test stub
@@ -105,6 +108,8 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/dependencies", &n):
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d", &n):

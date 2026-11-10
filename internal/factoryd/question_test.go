@@ -543,6 +543,10 @@ func TestPlainQuestionReadsTheAgentsParts(t *testing.T) {
 	if q := plainQuestion(AgentAsks+"Which?", QuestionFacts{}, []string{"A", " ", ""}); !slices.Equal(q.Labels(), []string{"A", "Leave it waiting", "End the card"}) {
 		t.Errorf("empty choices offer buttons: %q", q.Labels())
 	}
+	q = plainQuestion(AgentAsks+"Which?", QuestionFacts{}, []string{"end the card", "A"})
+	if want := []string{"A", "Leave it waiting", "End the card"}; !slices.Equal(q.Labels(), want) || q.ChoiceValue("End the card") != AnswerClose {
+		t.Errorf("an agent label that reads as the factory's: labels %q, typed value %q; want %q and %q", q.Labels(), q.ChoiceValue("End the card"), want, AnswerClose)
+	}
 	if q := plainQuestion(AgentAsks+"Which?", QuestionFacts{}, []string{"park"}); q.Choices[0].Value != "say:park" {
 		t.Errorf("an agent's park label must not carry the park value: %+v", q.Choices)
 	}
