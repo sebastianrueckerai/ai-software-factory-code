@@ -299,11 +299,9 @@ func (c *Console) criteriaOf(ctx context.Context, k *approvalCard) error {
 	if err != nil {
 		return fmt.Errorf("verdicts of %s: %w", k.CriteriaSpec.Task, err)
 	}
-	cards, err := c.cfg.Tasks.PlanCards(ctx, k.TaskID)
-	if err != nil {
-		return fmt.Errorf("cards of %s: %w", k.TaskID, err)
+	if k.Delivered, _, err = c.cfg.Tasks.PlanDelivered(ctx, k.TaskID); err != nil {
+		return fmt.Errorf("the delivered cards of %s: %w", k.TaskID, err)
 	}
-	k.Delivered = !slices.ContainsFunc(cards, func(t factoryd.Task) bool { return t.Status != "done" && t.Status != "merged" })
 	for _, c := range p.Criteria {
 		v, _ := factoryd.StandingRow(rows, c)
 		k.Criteria = append(k.Criteria, criterionRow{PlanCriterion: c, Verdict: v.Verdict, Evidence: v.Evidence})

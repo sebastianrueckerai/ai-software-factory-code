@@ -326,6 +326,14 @@ type Session struct {
 	Model string
 }
 
+// TaskCallTotals is the count of a task's model calls (audit rows with
+// tool = ”) and the sums of their token columns, as the cost and state
+// block carries them.
+type TaskCallTotals struct {
+	Calls                                    int
+	PromptTokens, CachedTokens, OutputTokens int
+}
+
 // Store is the durable task and session state. The production implementation
 // is Postgres; tests use an in-memory fake.
 type Store interface {
@@ -467,6 +475,10 @@ type Store interface {
 	// audit rows in [from, to), whatever their kind: a session's cost and
 	// calls in the card digest.
 	SpendAndCallsBetween(ctx context.Context, taskID string, from, to time.Time) (float64, int, error)
+	// TaskCallTotals is the count of the task's model calls (audit rows
+	// with tool = '') and the sums of their token columns: the figures the
+	// cost and state block carries.
+	TaskCallTotals(ctx context.Context, taskID string) (TaskCallTotals, error)
 	// NewestCallAt is the time of the task's newest audit row, whatever
 	// its kind, zero when it has none: when a running card last answered,
 	// in the card digest.
@@ -1140,6 +1152,12 @@ func (s *PGStore) PlanCards(ctx context.Context, plan string) ([]Task, error) {
 	return s.tasks(ctx, `SELECT `+taskColumns+` FROM tasks WHERE parent_task = $1 AND source = $2 AND plan_key IS NOT NULL ORDER BY id`, plan, SourcePlan)
 }
 
+// PlanDelivered says whether every card plan filed is delivered — done
+// or merged, or cut into a successor that is (PlanDelivered).
+func (s *PGStore) PlanDelivered(ctx context.Context, plan string) (bool, Task, error) {
+	return PlanDelivered(ctx, s, plan)
+}
+
 // HeldPlanCards are the repository's plan cards waiting on a human's
 // approval, the cards a landed companion pin can wake (versionCompanions).
 func (s *PGStore) HeldPlanCards(ctx context.Context, repository string) ([]Task, error) {
@@ -1733,6 +1751,18 @@ func (s *PGStore) SpendAndCallsBetween(ctx context.Context, taskID string, from,
 		`SELECT COALESCE(SUM(call_cost_eur), 0)::float8, count(*) FROM audit WHERE task_id = $1 AND ts >= $2 AND ts < $3`,
 		taskID, from, to).Scan(&eur, &n)
 	return eur, n, err
+}
+
+// TaskCallTotals is the count of the task's model calls (audit rows with
+// tool = ”) and the sums of their token columns, in one scan; the cost and
+// state block reads them for the supervisor inputs.
+func (s *PGStore) TaskCallTotals(ctx context.Context, taskID string) (TaskCallTotals, error) {
+	var t TaskCallTotals
+	err := s.db.QueryRowContext(ctx,
+		`SELECT count(*), COALESCE(SUM(prompt_tokens), 0), COALESCE(SUM(cached_tokens), 0), COALESCE(SUM(output_tokens), 0)
+		 FROM audit WHERE task_id = $1 AND tool = ''`,
+		taskID).Scan(&t.Calls, &t.PromptTokens, &t.CachedTokens, &t.OutputTokens)
+	return t, err
 }
 
 // NewestCallAt is the time of the task's newest audit row, zero when it

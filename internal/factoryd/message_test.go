@@ -315,6 +315,13 @@ func commandsAt(from, n int, at time.Time) string {
 	return s
 }
 
+// withoutWipAsks drops the interim push's /wip asks from the endpoint's
+// texts: one runs at every check-in, racing the check-in's own message,
+// so the texts' order around it is nothing a test wants to pin.
+func withoutWipAsks(texts []string) []string {
+	return slices.DeleteFunc(slices.Clone(texts), func(s string) bool { return s == "POST /wip " })
+}
+
 // The check-in's message reaches the running worker through the nudge's
 // path; the pod runs on and the tripped detector is reset, so a third
 // read makes no second trip.
@@ -335,9 +342,10 @@ func TestMessageKeepsSessionRunning(t *testing.T) {
 		t.Fatalf("result = (%+v, %v), want pushed c1", res, err)
 	}
 	worker.mu.Lock()
-	defer worker.mu.Unlock()
-	if len(worker.texts) != 2 || worker.texts[0] != "POST /brief " || worker.texts[1] != "POST /message use the store's New" {
-		t.Fatalf("worker got %q", worker.texts)
+	texts := withoutWipAsks(worker.texts)
+	worker.mu.Unlock()
+	if len(texts) != 2 || texts[0] != "POST /brief " || texts[1] != "POST /message use the store's New" {
+		t.Fatalf("worker got %q", texts)
 	}
 	if chat.calls != 1 {
 		t.Fatalf("check-in conversations = %d, want 1", chat.calls)
@@ -457,7 +465,7 @@ func TestStuckTripHandoverClimbs(t *testing.T) {
 		t.Fatalf("check-in conversations = %d, want 2", chat.calls)
 	}
 	worker.mu.Lock()
-	texts := slices.Clone(worker.texts)
+	texts := withoutWipAsks(worker.texts)
 	worker.mu.Unlock()
 	want := []string{"POST /brief ", "POST /message use the store's New",
 		"POST /message factoryd: this session continues on the stronger model, big: switch to the edit. Carry on from where you are."}
@@ -550,7 +558,7 @@ func TestStuckTripHumanAnswerAsksTheHuman(t *testing.T) {
 		t.Fatalf("result = (%+v, %v), want the human's ask on the start rung", res, err)
 	}
 	worker.mu.Lock()
-	texts := slices.Clone(worker.texts)
+	texts := withoutWipAsks(worker.texts)
 	worker.mu.Unlock()
 	if want := []string{"POST /brief ", "POST /message use the store's New"}; !slices.Equal(texts, want) {
 		t.Fatalf("worker got %q, want %q: no climb", texts, want)
@@ -600,7 +608,7 @@ func TestStuckTripWithoutAJudgedAnswerClimbs(t *testing.T) {
 				t.Fatalf("result = (%+v, %v) after %d calls, want c1 pushed on the stronger model after %d", res, err, chat.calls, calls)
 			}
 			worker.mu.Lock()
-			texts := slices.Clone(worker.texts)
+			texts := withoutWipAsks(worker.texts)
 			worker.mu.Unlock()
 			want := []string{"POST /brief ", "POST /message use the store's New",
 				"POST /message factoryd: this session continues on the stronger model, big: " + stuck + ". Carry on from where you are."}
@@ -876,7 +884,7 @@ func TestCheckinStopAnswersThePushRequest(t *testing.T) {
 	if got := order(); !slices.Equal(got, []string{"delete pod", "POST /push"}) {
 		t.Fatalf("order = %v, want the push token posted after the stop", got)
 	}
-	if !slices.Equal(worker.texts, []string{"POST /brief ", "POST /push tok-task-t2"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2 write:repository factory-agent/repo"}) {
+	if !slices.Equal(withoutWipAsks(worker.texts), []string{"POST /brief ", "POST /push tok-task-t2"}) || !slices.Equal(writeMints(hub), []string{"mint task-t2 write:repository factory-agent/repo"}) {
 		t.Fatalf("worker got %q, write mints %v", worker.texts, writeMints(hub))
 	}
 	if len(hub.revoked) != 2 {

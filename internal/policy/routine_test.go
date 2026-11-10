@@ -63,7 +63,6 @@ func TestRoutineValidate(t *testing.T) {
 	}{
 		{Routine{Name: "Bad Name", Title: "t", Files: FilesHuman, Schedule: merges}, `routine "Bad Name": the name: lowercase letters, digits and dashes`},
 		{Routine{Name: "a", Title: "t", Files: "weekly", Schedule: merges}, `files is "weekly", not one of [human agent pull-request report]`},
-		{Routine{Name: "a", Title: "t", Files: FilesAgent, Schedule: merges}, "an agent routine names its skill"},
 		{Routine{Name: "a", Title: "t", Files: FilesPullRequest, Schedule: merges}, "a pull-request routine names its pass, template"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman}, "no schedule"},
 		{Routine{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Merges: 1, Cron: "0 6 * * 1"}}}, "a trigger is one of cron, merges or on"},
@@ -91,6 +90,8 @@ func TestRoutineValidate(t *testing.T) {
 		}
 	}
 	for _, r := range []Routine{
+		{Name: "a", Title: "t", Files: FilesAgent, Schedule: merges},
+		{Name: "weekly-bump", Title: "t", Files: FilesAgent, Schedule: []Trigger{{Cron: "0 6 * * 1"}}},
 		{Name: "a", Title: "t", Files: FilesPullRequest, Pass: PassTemplate, Schedule: merges, WhileOpen: WhileOpenFold, Tell: TellQuiet},
 		{Name: "a", Title: "t", Files: FilesReport, Schedule: merges, Tell: TellInbox},
 		{Name: "a", Title: "t", Files: FilesHuman, Schedule: []Trigger{{Cron: "0 3 1-7 * 0"}}},

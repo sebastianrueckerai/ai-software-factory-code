@@ -286,6 +286,54 @@ func TestCriteriaGapConfirm(t *testing.T) {
 	}
 }
 
+// A card cut into a successor that is merged counts as delivered: the
+// criteria_rerun request offers the Confirm button, and one whose
+// successor is still open does not. The route records the confirmation
+// through the same port the face reads.
+func TestCriteriaRerunDeliveredFollowsACutCardToItsSuccessor(t *testing.T) {
+	r := newRig(t)
+	verdictRig(r)
+	cut := factoryd.BoardTask{Task: factoryd.Task{ID: "t-cut-card", Kind: "agent", Repository: "sf/code", Status: "closed",
+		Parent: "t-plan", Source: factoryd.SourcePlan, PlanKey: "cut"}}
+	succ := factoryd.BoardTask{Task: factoryd.Task{ID: factoryd.SuccessorID(cut.ID), Kind: "agent", Repository: "sf/code", Status: "merged",
+		Parent: "t-plan", Source: factoryd.SourceSuccessor, PlanKey: "cut"}}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, cut, succ)
+	r.tasks.mu.Unlock()
+	var calls []string
+	r.c.cfg.ConfirmDeliveredCriteria = func(_ context.Context, id, by, line string) (int, error) {
+		calls = append(calls, fmt.Sprintf("confirm %s by %s: %q", id, by, line))
+		return 2, nil
+	}
+	ck, s := r.loggedIn(t)
+	board := func() string {
+		return col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code", nil), ck).Body.String(), "Needs you")
+	}
+	if card := board(); !strings.Contains(card, `action="/approvals/30/confirm"`) ||
+		!strings.Contains(card, `aria-label="Confirm the delivered cards of t-plan"`) {
+		t.Errorf("the criteria_rerun card lacks the confirm button when the cut card's successor merged:\n%s", card)
+	}
+	rec := r.do(post("/approvals/30/confirm", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusSeeOther {
+		t.Fatalf("confirm = %d %q", rec.Code, rec.Body.String())
+	}
+	if want := []string{`confirm t-plan by sebastian: ""`}; fmt.Sprint(calls) != fmt.Sprint(want) {
+		t.Errorf("calls = %q, want %q", calls, want)
+	}
+
+	// an open successor keeps the button off
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == succ.ID {
+			r.tasks.tasks[i].Status = "queued"
+		}
+	}
+	r.tasks.mu.Unlock()
+	if card := board(); strings.Contains(card, `action="/approvals/30/confirm"`) {
+		t.Errorf("a plan with a cut card whose successor is open offers the confirm button:\n%s", card)
+	}
+}
+
 // Fault 9: typed text on the board is draft state — every typed field it
 // renders carries the preserve treatment the find's form already carries,
 // so one criterion's Waive does not erase its siblings' reasons — and the
