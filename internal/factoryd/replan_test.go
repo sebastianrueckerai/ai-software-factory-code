@@ -1244,7 +1244,7 @@ func TestReplanFindings(t *testing.T) {
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
 			p.Criteria = []PlanCriterion{{ID: "queue_resolves", Kind: CriterionTest}, {ID: "all_green", Kind: CriterionInvariant}, {ID: "other", Kind: CriterionTest}}
-		}, []string{"take_off_main names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep api's key and leave it out of take_off_main, or file queue_resolves again under a new id with replaces"}},
+		}, []string{"take_off_main names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep api's key and leave it out of take_off_main, or file queue_resolves again, each under a new id with replaces"}},
 		{"take_off_main names a card whose criterion the revision re-filed under a new id", func(st *replanState, p *Plan) {
 			st.met = map[string][]string{"api": {"queue_resolves"}}
 			p.Cards = p.Cards[1:]
@@ -1257,11 +1257,6 @@ func TestReplanFindings(t *testing.T) {
 			p.TakeOffMain = []string{"api"}
 			p.Criteria = []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant}}
 		}, nil},
-		{"take_off_main names a card with no reason", func(_ *replanState, p *Plan) {
-			p.Cards = p.Cards[1:]
-			p.TakeOffMain = []string{"api"}
-			p.TakeOffReasons = map[string]string{"api": "  "}
-		}, []string{"take_off_main names api with no reason: say in take_off_reasons what breaks if its work stays on main, or leave api out of take_off_main"}},
 		{"a card taken off main kept", func(st *replanState, _ *Plan) { st.reverted = map[string]bool{"t-api": true} },
 			[]string{`card api was taken off main: leave its key out, and add a card with "from": "api" to land it again from salvage`}},
 		{"a card taken off main landed again from salvage", func(st *replanState, p *Plan) {
@@ -1315,12 +1310,6 @@ func TestReplanFindings(t *testing.T) {
 	} {
 		st, p := replanFixture()
 		tc.edit(&st, &p)
-		if p.TakeOffReasons == nil {
-			p.TakeOffReasons = map[string]string{}
-			for _, k := range p.TakeOffMain {
-				p.TakeOffReasons[k] = "its work breaks the build"
-			}
-		}
 		if got := replanFindings(st, p); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: findings %q, want %q", tc.name, got, tc.want)
 		}

@@ -518,7 +518,7 @@ func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	if strings.Contains(card, "Takes off main:") {
 		t.Errorf("the plan card still holds the take-off-main footnote:\n%s", card)
 	}
-	footnote := "<p>Takes off main: k2, k4, k5</p>"
+	footnote := "<p>Takes off main: k2: its queue cannot run, k4: its schema rejects notes, k5: its offer repeats</p>"
 	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, footnote) {
 		t.Errorf("the drawer lacks %q:\n%s", footnote, d)
 	}

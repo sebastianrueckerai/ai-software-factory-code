@@ -1053,7 +1053,7 @@ func fromRef(k Task) string {
 // card is kept by its key, changed by a new card whose from names it, and
 // dropped by leaving its key out. A merged card on main stays unless
 // take_off_main names it, which takes its work off main after the filing
-// and needs a reason, and which the revision's criteria must not still
+// and which the revision's criteria must not still
 // rely on: a criterion the card met is cited by none; one taken off main
 // lands again from salvage. An old key is a key with a card row. A from the
 // revision before held for the same key was judged at its filing.
@@ -1132,11 +1132,8 @@ func replanFindings(st replanState, next Plan) []string {
 		case keeps:
 			found = append(found, fmt.Sprintf("take_off_main names %s, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main", x))
 		default:
-			if strings.TrimSpace(next.TakeOffReasons[x]) == "" {
-				found = append(found, fmt.Sprintf("take_off_main names %s with no reason: say in take_off_reasons what breaks if its work stays on main, or leave %s out of take_off_main", x, x))
-			}
 			if still := metStill(next, st.met[x]); len(still) > 0 {
-				found = append(found, fmt.Sprintf("take_off_main names %s, which met %s that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep %s's key and leave it out of take_off_main, or file %s again under a new id with replaces", x, strings.Join(still, ", "), x, strings.Join(still, ", ")))
+				found = append(found, fmt.Sprintf("take_off_main names %s, which met %s that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep %s's key and leave it out of take_off_main, or file %s again, each under a new id with replaces", x, strings.Join(still, ", "), x, strings.Join(still, ", ")))
 			}
 		}
 	}

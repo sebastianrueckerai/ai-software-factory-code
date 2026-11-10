@@ -115,6 +115,38 @@ type Spec struct {
 	Glossary []string `json:"glossary,omitempty"`
 }
 
+// TakeOffReason is the reason the plan gives for taking key off main, ""
+// when it gives none.
+func (p Plan) TakeOffReason(key string) string {
+	return strings.TrimSpace(p.TakeOffReasons[key])
+}
+
+// TakeOffLines are the plan's take-off-main entries, one per key in
+// order: the key, and its reason after a colon when it has one.
+func (p Plan) TakeOffLines() []string {
+	lines := make([]string, len(p.TakeOffMain))
+	for i, k := range p.TakeOffMain {
+		lines[i] = k
+		if why := p.TakeOffReason(k); why != "" {
+			lines[i] += ": " + why
+		}
+	}
+	return lines
+}
+
+// takeOffReasonFindings refuses a take-off with no reason. It judges only
+// a revision as the planner files it: a reason is text of the revision
+// alone, so the stored revision is not judged on it again.
+func takeOffReasonFindings(p Plan) []string {
+	var found []string
+	for _, x := range p.TakeOffMain {
+		if p.TakeOffReason(x) == "" {
+			found = append(found, fmt.Sprintf("take_off_main names %s with no reason: say in take_off_reasons what breaks if its work stays on main, or leave %s out of take_off_main", x, x))
+		}
+	}
+	return slices.Compact(found)
+}
+
 // PlanCriterion is one criterion of the spec, a piece of its proof (the
 // spec-intake concept, piece 1), stated at the feature's surface and
 // naming no test: kind test names its claim, its inputs and the numbers
@@ -1022,8 +1054,8 @@ func planComment(t Task, revision int, p Plan, issues map[string]int64) string {
 		b.WriteString("\n")
 	}
 	if len(p.TakeOffMain) > 0 {
-		keys := make([]string, len(p.TakeOffMain))
-		for i, k := range p.TakeOffMain {
+		keys := p.TakeOffLines()
+		for i, k := range keys {
 			keys[i] = cell(k)
 		}
 		fmt.Fprintf(&b, "\nTakes off main: %s.\n", strings.Join(keys, ", "))
@@ -1217,7 +1249,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 		`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 		"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-		"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main, each with a reason in take_off_reasons, by key, saying what breaks if that work stays on main; " +
+		"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main; take_off_reasons: by key, what breaks if that card's work stays on main; " +
 		"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere. " +
 		"role: foundation, feature or integration. rung: the model rung the card starts on: cheap for routine, well-specified work, frontier for a large change or one in factoryd's own package; leave it out to derive it from the size. "
 	g += imagesLine(pins)
@@ -2759,6 +2791,7 @@ func (r *Runner) FilePlan(ctx context.Context, taskID, plan string) (PlanResult,
 		}
 		found = revisionFindings(revisions, p)
 	}
+	found = append(found, takeOffReasonFindings(p)...)
 	if found = append(found, replanFindings(st, p)...); len(found) > 0 {
 		return PlanResult{Findings: found}, nil
 	}

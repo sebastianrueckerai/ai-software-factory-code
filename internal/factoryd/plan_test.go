@@ -585,7 +585,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"A replan lists the plan's old cards in the findings. Keep a card by keeping its key. " +
 			`Change a card by adding a new card with "from": "<its key>" (or "#<issue>" for a card the findings name without a key): ` +
 			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
-			"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main, each with a reason in take_off_reasons, by key, saying what breaks if that work stays on main; " +
+			"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main; take_off_reasons: by key, what breaks if that card's work stays on main; " +
 			"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere.",
 		`"rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. `,
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
@@ -5137,10 +5137,41 @@ func dropRigCiting(t *testing.T, cites bool, takeOff ...string) (*Runner, *fakeS
 // finding.
 func TestFilingRefusesTakeOffOfWhatTheRevisionRelies(t *testing.T) {
 	_, _, _, _, res := dropRigCiting(t, true, "links-api")
-	want := []string{"take_off_main names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep links-api's key and leave it out of take_off_main, or file links_crud again under a new id with replaces"}
+	want := []string{"take_off_main names links-api, which met links_crud that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep links-api's key and leave it out of take_off_main, or file links_crud again, each under a new id with replaces"}
 	if res.Revision != 0 || !slices.Equal(res.Findings, want) {
 		t.Fatalf("the filing: %+v, want it refused with %q", res, want)
 	}
+}
+
+// A take-off with no reason, or a blank one, is refused when the planner
+// files the revision, one finding per card.
+func TestTakeOffReasonFindings(t *testing.T) {
+	p := Plan{TakeOffMain: []string{"api", "ui", "docs"}, TakeOffReasons: map[string]string{"ui": " \n", "docs": "the schema rejects notes"}}
+	want := []string{
+		"take_off_main names api with no reason: say in take_off_reasons what breaks if its work stays on main, or leave api out of take_off_main",
+		"take_off_main names ui with no reason: say in take_off_reasons what breaks if its work stays on main, or leave ui out of take_off_main",
+	}
+	if got := takeOffReasonFindings(p); !slices.Equal(got, want) {
+		t.Fatalf("findings %q, want %q", got, want)
+	}
+	if got, want := p.TakeOffLines(), []string{"api", "ui", "docs: the schema rejects notes"}; !slices.Equal(got, want) {
+		t.Fatalf("lines %q, want %q", got, want)
+	}
+}
+
+// A stored revision without reasons, from before the field, still files
+// when a human confirms.
+func TestStoredTakeOffWithoutReasonsStillFiles(t *testing.T) {
+	r, store, _, _ := takeOffAPI(t)
+	var p Plan
+	rev := store.plans["t-plan"][1]
+	if err := json.Unmarshal(rev.Plan, &p); err != nil || len(p.TakeOffMain) != 1 || p.TakeOffReason("links-api") == "" {
+		t.Fatalf("stored revision %+v, %v", p, err)
+	}
+	p.TakeOffReasons = nil
+	rev.Plan, _ = json.Marshal(p)
+	store.plans["t-plan"][1] = rev
+	fileRevision2(t, r)
 }
 
 // takeOffAPI is dropRig with links-api named in take_off_main, revision 2
@@ -5241,10 +5272,11 @@ func TestFilingDropsMergedCardsUnderAPause(t *testing.T) {
 // naming it in take_off_main stays on main: the revision files, and no
 // work comes off main. The integration card left out gives the same.
 func TestFilePlanKeepsAMergedOmissionOnMain(t *testing.T) {
-	_, store, _, calls, res := dropRig(t)
+	r, store, _, calls, res := dropRig(t)
 	if res.Revision != 2 || len(res.Findings) != 0 {
 		t.Fatalf("revision 2: %+v, want it filed", res)
 	}
+	fileRevision2(t, r)
 	if k := cardsByKey(t, store)["links-api"]; k.RevertedAt != nil || len(*calls) != 0 || len(store.pauses) != 0 {
 		t.Fatalf("links-api %+v, merges %q, pauses %+v; want it on main and nothing off main", k, *calls, store.pauses)
 	}

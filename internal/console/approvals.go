@@ -418,7 +418,9 @@ func (c *Console) planOf(ctx context.Context, k *approvalCard) error {
 				ref = fmt.Sprintf("#%d", n)
 			}
 			k.TakeOffRefs = append(k.TakeOffRefs, ref)
-			k.TakeOffWhys = append(k.TakeOffWhys, ref+": "+p.TakeOffReasons[key])
+			if why := p.TakeOffReason(key); why != "" {
+				k.TakeOffWhys = append(k.TakeOffWhys, ref+": "+why)
+			}
 		}
 	}
 	qs, err := c.cfg.Tasks.PlanQuestions(ctx, k.TaskID, k.PlanSpec.Revision)
