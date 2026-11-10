@@ -5,7 +5,8 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"strings"
+	"slices"
+	"sync"
 	"time"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
@@ -23,6 +24,8 @@ type ChatBudgetBook interface {
 	IntakeEvents(ctx context.Context, taskID string) ([]IntakeEvent, error)
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
+	TasksByParent(ctx context.Context, id string) ([]Task, error)
+	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	projectLookup
 	taskReader
@@ -33,52 +36,97 @@ type ChatBudgetBook interface {
 // budget or the month ends. The card is on the project's repository, its
 // Parent the chat task and its BudgetEUR the budget it was filed at.
 type ChatBudgetCards struct {
+	mu       sync.Mutex
 	Store    ChatBudgetBook
 	Forgejo  *Forgejo
 	Timeline *Timeline
 	Metrics  *telemetry.Metrics
 }
 
-// chatMonth is the UTC month of a chat task of project name: YYYY-MM.
-func chatMonth(name, taskID string) string {
-	return strings.TrimPrefix(taskID, "t-chat-"+name+"-")
+// chatMonth is the UTC month of chat task id: YYYY-MM, the id's tail.
+func chatMonth(id string) string {
+	return id[len(id)-len("2006-01"):]
 }
 
-func chatBudgetQuestion(budget float64, month string) HumanQuestion {
+func chatBudgetQuestion(chat Task) HumanQuestion {
+	month := chatMonth(chat.ID)
 	return HumanQuestion{
-		Ask:     fmt.Sprintf("The chat budget of %.2f EUR for %s is spent: raise it?", budget, month),
-		Why:     "Rung 2 of the ladder answers no stopped card through the chat until the chat budget is raised or the UTC month turns, so every stop reaches Needs you.",
-		Info:    "The action: raise the chat budget, with Fund and go on at the stop in the chat. The raise ends this card.",
+		Ask: fmt.Sprintf("The chat budget of %.2f EUR for %s is spent: raise it?", chat.BudgetEUR, month),
+		Why: fmt.Sprintf("The chat spent %.2f EUR of its budget of %.2f EUR in %s. Rung 2 of the ladder answers no stopped card through the chat until the chat budget is raised or the UTC month turns, so every stop reaches Needs you.",
+			chat.EnforcedSpent(), chat.BudgetEUR, month),
+		Info: "The action: raise the chat budget on the project screen, or press Fund and go on in the chat thread that hit the stop. " +
+			"Only a human who approves the project can do either. The raise ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
 	}
 }
 
 // File opens the card of project p's chat task chat at its budget, unless
-// that card is open already.
+// a card of that chat task and budget exists in any status: a card a human
+// closed by hand is not filed again.
 func (c *ChatBudgetCards) File(ctx context.Context, p Project, chat Task) error {
-	open, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	cards, err := c.Store.TasksByParent(ctx, chat.ID)
 	if err != nil {
 		return err
 	}
-	for _, t := range open {
-		if t.Source == SourceChatBudget && t.Parent == chat.ID && t.BudgetEUR == chat.BudgetEUR {
+	for _, t := range cards {
+		if t.Source == SourceChatBudget && t.BudgetEUR == chat.BudgetEUR {
 			return nil
 		}
 	}
 	t := Task{ID: NewTaskID(), Kind: "human", RiskClass: "standard", Source: SourceChatBudget, Parent: chat.ID, BudgetEUR: chat.BudgetEUR, Author: c.Forgejo.BotUser}
-	_, _, err = fileHumanTask(ctx, c.Store, c.Forgejo, c.Timeline, p.Repo(), chatBudgetQuestion(chat.BudgetEUR, chatMonth(p.Name, chat.ID)), nil, t, "")
+	_, _, err = fileHumanTask(ctx, c.Store, c.Forgejo, c.Timeline, p.Repo(), chatBudgetQuestion(chat), nil, t, "")
 	return err
 }
 
-// Check closes every open card whose chat task's budget was raised above
-// the card's, or whose month ended before now. A card that fails to close
-// does not stop the others; the failures are joined.
+// stoppedWithoutCard files the card of every running chat task whose
+// recorded stop stands at its budget: the filing of a stop that met a
+// failure is tried again here.
+func (c *ChatBudgetCards) stoppedWithoutCard(ctx context.Context, now time.Time) error {
+	running, err := c.Store.ListTasksByStatus(ctx, "running")
+	if err != nil {
+		return err
+	}
+	var errs []error
+	for _, chat := range running {
+		if chat.Kind != KindChat || chatMonth(chat.ID) < now.UTC().Format("2006-01") {
+			continue
+		}
+		events, err := c.Store.TaskEvents(ctx, chat.ID, 50)
+		if err != nil {
+			errs = append(errs, err)
+			continue
+		}
+		i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventChatBudgetSpent })
+		if i < 0 {
+			continue
+		}
+		if at, _ := events[i].Detail["budget_eur"].(float64); chat.BudgetEUR > at {
+			continue
+		}
+		p, ok, err := c.Store.ProjectByRepository(ctx, chat.Repository)
+		if err != nil || !ok {
+			errs = append(errs, err)
+			continue
+		}
+		if err := c.File(ctx, p, chat); err != nil {
+			errs = append(errs, err)
+		}
+	}
+	return errors.Join(errs...)
+}
+
+// Check files the cards of the stops that have none, then closes every
+// open card whose chat task's budget was raised above the card's, or whose
+// month ended before now. A card that fails does not stop the others; the
+// failures are joined.
 func (c *ChatBudgetCards) Check(ctx context.Context, now time.Time) error {
 	open, err := c.Store.ListTasksByStatus(ctx, "waiting-human")
 	if err != nil {
 		return err
 	}
-	var errs []error
+	errs := []error{c.stoppedWithoutCard(ctx, now)}
 	for _, t := range open {
 		if t.Source != SourceChatBudget {
 			continue
@@ -88,7 +136,7 @@ func (c *ChatBudgetCards) Check(ctx context.Context, now time.Time) error {
 			errs = append(errs, err)
 			continue
 		}
-		month := t.Parent[len(t.Parent)-len("2006-01"):]
+		month := chatMonth(t.Parent)
 		var msg string
 		switch {
 		case month < now.UTC().Format("2006-01"):

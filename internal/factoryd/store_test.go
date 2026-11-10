@@ -1262,6 +1262,17 @@ func (s *fakeStore) ListTasksByStatus(ctx context.Context, status string) ([]Tas
 	return tasks, nil
 }
 
+// TasksByParent is the tasks whose parent is task id, in any status.
+func (s *fakeStore) TasksByParent(ctx context.Context, id string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Parent == id {
+			out = append(out, t)
+		}
+	}
+	return out, nil
+}
+
 // TaskEvents is task id's events newest first, at most limit.
 func (s *fakeStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {
 	var out []Event

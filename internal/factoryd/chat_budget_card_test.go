@@ -4,6 +4,7 @@ import (
 	"context"
 	"reflect"
 	"slices"
+	"sync"
 	"testing"
 	"time"
 )
@@ -21,7 +22,7 @@ func TestChatBudgetCards(t *testing.T) {
 	forgejo, fj := newAlertForgejo(t)
 	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo}
 	p := Project{Name: "linkshort", Repository: "sf/linkshort"}
-	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50}
+	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50, SpentEUR: 49.96}
 	if err := store.CreateTask(ctx, chat); err != nil {
 		t.Fatal(err)
 	}
@@ -40,8 +41,8 @@ func TestChatBudgetCards(t *testing.T) {
 	events, _ := store.IntakeEvents(ctx, open[0].ID)
 	want := HumanQuestion{
 		Ask:     "The chat budget of 50.00 EUR for 2026-11 is spent: raise it?",
-		Why:     "Rung 2 of the ladder answers no stopped card through the chat until the chat budget is raised or the UTC month turns, so every stop reaches Needs you.",
-		Info:    "The action: raise the chat budget, with Fund and go on at the stop in the chat. The raise ends this card.",
+		Why:     "The chat spent 49.96 EUR of its budget of 50.00 EUR in 2026-11. Rung 2 of the ladder answers no stopped card through the chat until the chat budget is raised or the UTC month turns, so every stop reaches Needs you.",
+		Info:    "The action: raise the chat budget on the project screen, or press Fund and go on in the chat thread that hit the stop. Only a human who approves the project can do either. The raise ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
 	}
 	if len(events) != 1 || events[0].Question == nil || !reflect.DeepEqual(*events[0].Question, want) {
@@ -66,7 +67,6 @@ func TestChatBudgetCards(t *testing.T) {
 		t.Fatalf("close comments = %q", got)
 	}
 
-	chat.BudgetEUR = 60
 	if err := cards.File(ctx, p, chat); err != nil {
 		t.Fatal(err)
 	}
@@ -79,5 +79,69 @@ func TestChatBudgetCards(t *testing.T) {
 	}
 	if got := closeComments(t, store, second[0].ID); !slices.Equal(got, []string{"The UTC month 2026-11 ended: the card closes."}) {
 		t.Fatalf("close comments = %q", got)
+	}
+}
+
+// Two stops at the same moment file one card.
+func TestChatBudgetCardsFileOnceUnderRace(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	forgejo, fj := newAlertForgejo(t)
+	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo}
+	p := Project{Name: "linkshort", Repository: "sf/linkshort"}
+	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50}
+	var wg sync.WaitGroup
+	for range 8 {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			if err := cards.File(ctx, p, chat); err != nil {
+				t.Error(err)
+			}
+		}()
+	}
+	wg.Wait()
+	open, _ := store.ListTasksByStatus(ctx, "waiting-human")
+	if len(open) != 1 || len(fj.issues) != 1 {
+		t.Fatalf("8 stops at once filed %d cards and %d issues, want 1 and 1", len(open), len(fj.issues))
+	}
+}
+
+// A Forgejo outage at the stop leaves its card to the loop: Check files it
+// once Forgejo answers, once, and files none for a card a human closed by
+// hand, nor for a chat task whose raise lifted it above the recorded stop.
+func TestChatBudgetCardsLoopFilesAStopWithoutCard(t *testing.T) {
+	ctx := context.Background()
+	captureLog(t)
+	store := newFakeStore()
+	forgejo, fj := newAlertForgejo(t)
+	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo}
+	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", Repository: "sf/linkshort", BudgetEUR: 50}
+	if err := store.CreateTask(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	if err := cards.Check(ctx, now); err != nil || len(fj.issues) != 0 {
+		t.Fatalf("with no stop recorded Check = %v, issues %d, want nil and 0", err, len(fj.issues))
+	}
+	store.events = append(store.events, Event{TaskID: chat.ID, Kind: EventChatBudgetSpent, Detail: map[string]any{"budget_eur": 50.0}})
+	fj.failNext = 1
+	if err := cards.Check(ctx, now); err == nil || len(fj.issues) != 0 {
+		t.Fatalf("during the outage Check = %v, issues %d, want an error and 0", err, len(fj.issues))
+	}
+	for range 2 {
+		if err := cards.Check(ctx, now); err != nil {
+			t.Fatal(err)
+		}
+	}
+	open, _ := store.ListTasksByStatus(ctx, "waiting-human")
+	if len(open) != 1 || len(fj.issues) != 1 || open[0].BudgetEUR != 50 || open[0].Parent != chat.ID {
+		t.Fatalf("after the outage: cards %+v, issues %d; want one card at 50 of the chat task", open, len(fj.issues))
+	}
+	if err := store.TransitionTask(ctx, open[0].ID, []string{"waiting-human"}, "done"); err != nil {
+		t.Fatal(err)
+	}
+	if err := cards.Check(ctx, now); err != nil || len(fj.issues) != 1 {
+		t.Fatalf("after a human closed it Check = %v, issues %d, want nil and 1", err, len(fj.issues))
 	}
 }

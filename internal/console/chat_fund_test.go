@@ -488,26 +488,31 @@ func TestChatBudgetStopFilesOneCard(t *testing.T) {
 	}
 }
 
-// A card that fails to file leaves the stop unrecorded: the stop row still
-// ends the turn, and the next refusal files the card and records the stop.
-func TestChatBudgetCardRetriedAfterAFailure(t *testing.T) {
+// A card that fails to file changes nothing of the stop: the turn ends on
+// the stop row, the stop is recorded once, and the chat reads as stopped,
+// with the fund offered. The filing is factoryd's loop's to retry, so a
+// later refusal files nothing.
+func TestChatBudgetStopStandsWhenTheCardFails(t *testing.T) {
 	r, _, g := newChatRig(t)
 	ck, s := r.loggedIn(t)
 	crumbsChat(t, r)
 	calls := 0
 	r.c.cfg.FileChatBudgetCard = func(context.Context, factoryd.Project, factoryd.Task) error {
-		if calls++; calls == 1 {
-			return errors.New("forgejo is down")
-		}
-		return nil
+		calls++
+		return errors.New("forgejo is down")
 	}
 	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
-	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
-	if asks := eventsOf(r, factoryd.EventChatBudgetSpent); len(asks) != 0 || calls != 1 {
-		t.Fatalf("after the failed filing: %d stops recorded, %d filings; want 0 and 1", len(asks), calls)
+	_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	got, _ := stopOf(t, events)
+	fund := &chatBudget{BudgetEUR: 15, SpentEUR: 14.96, SuggestEUR: 1, CanFund: true}
+	if got.Message.Kind != factoryd.MessageBudget || !reflect.DeepEqual(got.Budget, fund) {
+		t.Fatalf("the stop = %+v, budget %+v; want a budget row and the fund %+v", got.Message, got.Budget, fund)
 	}
 	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
-	if asks := eventsOf(r, factoryd.EventChatBudgetSpent); len(asks) != 1 || calls != 2 {
-		t.Fatalf("after the retry: %d stops recorded, %d filings; want 1 and 2", len(asks), calls)
+	if asks := eventsOf(r, factoryd.EventChatBudgetSpent); len(asks) != 1 || calls != 1 {
+		t.Fatalf("%d stops recorded, %d filings; want 1 and 1", len(asks), calls)
+	}
+	if answer := chatRead(t, r, ck, chatPath); !reflect.DeepEqual(answer.Budget, fund) {
+		t.Fatalf("GET /chat budget = %+v, want the fund %+v", answer.Budget, fund)
 	}
 }

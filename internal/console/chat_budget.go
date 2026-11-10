@@ -110,9 +110,10 @@ func suggestFund(spent7 float64, now time.Time) float64 {
 // askFund records the chat's stop once, the chat_budget_spent event the
 // Poker turns into the inbox's needs-you row, with the fund it suggests,
 // and files the stop's human card: only while the chat is not stopped
-// already, so every refusal after the first asks nothing. A card that
-// fails to file leaves the stop unrecorded, and the next refusal tries
-// again. It answers the stop as it then stands.
+// already, so every refusal after the first asks nothing. The stop is
+// recorded whatever the filing does; a card that fails to file is filed by
+// factoryd's minute loop (factoryd.ChatBudgetCards.Check). It answers the
+// stop as it then stands.
 func (c *Console) askFund(ctx context.Context, p factoryd.Project, task factoryd.Task) chatStop {
 	s, err := c.chatStopOf(ctx, task)
 	if err != nil {
@@ -126,19 +127,16 @@ func (c *Console) askFund(ctx context.Context, p factoryd.Project, task factoryd
 	if err != nil {
 		log.Printf("console: the chat spend of %s: %v", p.Repository, err)
 	}
-	var filed error
 	if c.cfg.FileChatBudgetCard != nil {
-		if filed = c.cfg.FileChatBudgetCard(ctx, p, task); filed != nil {
-			log.Printf("console: the chat budget card of %s: %v", p.Repository, filed)
+		if err := c.cfg.FileChatBudgetCard(ctx, p, task); err != nil {
+			log.Printf("console: the chat budget card of %s: %v", p.Repository, err)
 		}
 	}
 	e := factoryd.Event{Repository: p.Repository, TaskID: task.ID, Kind: factoryd.EventChatBudgetSpent,
 		Actor: factoryd.FactoryDecider, Via: factoryd.ViaFactoryd, Detail: map[string]any{"budget_eur": task.BudgetEUR,
 			"spent_eur": task.EnforcedSpent(), "suggest_eur": suggestFund(spent7, now)}}
-	if filed == nil {
-		if e.ID, err = c.cfg.Events.Record(ctx, e); err != nil {
-			log.Printf("console: the chat ask of %s: %v", p.Repository, err)
-		}
+	if e.ID, err = c.cfg.Events.Record(ctx, e); err != nil {
+		log.Printf("console: the chat ask of %s: %v", p.Repository, err)
 	}
 	s.event, s.stopped = e, true
 	return s
