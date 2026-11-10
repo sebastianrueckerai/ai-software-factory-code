@@ -85,6 +85,8 @@ var Actions = []Action{
 	}},
 	{Name: ActRouteApproval, Rungs: rungs(0, 1, 2), InRun: true, Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
+		case f.Kind == CaseGateStop && f.Gate == ActivityWaitChecks:
+			return "a checks wait's stop goes on with wait_checks, not route_approval"
 		case !f.PROpen:
 			return "no pull request is open"
 		case f.Checks != "green":
@@ -301,11 +303,11 @@ func (a Action) refusal(f CaseFacts, rung int, r Resolution) string {
 			return a.Name + " would do nothing on a monitor flag's case: the card's run waits on none"
 		}
 	}
-	if a.Name == ActWaitChecks && rung < 3 && f.WaitedOnHead {
-		return "the checks wait on this head was run again once already"
-	}
 	if why := a.Applies(f, r); why != "" {
 		return why
+	}
+	if a.Name == ActWaitChecks && rung < 3 && f.WaitedOnHead {
+		return "the checks wait on this head was run again once already"
 	}
 	d, budget := r.draw()
 	if d.IsZero() {
