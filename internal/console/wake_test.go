@@ -661,7 +661,7 @@ func TestWakeApproveMergeRefusedWhenReviewDidNotRun(t *testing.T) {
 	const refused = "Refused: The review and the audit did not run, so the project agent cannot approve this merge. " +
 		"Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."
 	r, _, calls := mergeWake(t, policy.MergeAuto, true, func(r *rig) {
-		r.c.cfg.CheckMerge = func(context.Context, string, string) error {
+		r.c.cfg.CheckMerge = func(context.Context, string, int64, string) error {
 			return &factoryd.UnreviewedMergeError{Stages: []string{"review", "audit"}}
 		}
 	}, []string{call(1, "approve_merge", `{"task_id":"t-m"}`)}, []string{say("Left to a human.")})

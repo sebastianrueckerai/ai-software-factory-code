@@ -121,6 +121,7 @@ func main() {
 	if err := policyLoader.Boot(context.Background()); err != nil {
 		log.Fatalf("config: %v", err)
 	}
+	policyAt := factoryd.PolicyAtPin(policyLoader.Current, store.PolicyVersion)
 	log.Printf("config: version %d (commit %s) current", policyLoader.Current().ID, policyLoader.Current().Commit)
 
 	openActivities, err := factoryd.NewOpenActivities(metrics.Meter)
@@ -593,12 +594,12 @@ func main() {
 		Dependencies:     store,
 		PoolDrawn:        store.PoolDrawn,
 		Approvals:        store,
-		CheckMerge: func(ctx context.Context, taskID, approver string) error {
-			_, err := factoryd.CheckMergeApproval(ctx, store, policyLoader.Current, taskID, approver)
+		CheckMerge: func(ctx context.Context, taskID string, pin int64, approver string) error {
+			_, err := factoryd.CheckMergeApproval(ctx, store, policyAt, pin, taskID, approver)
 			return err
 		},
 		ApproveMerge: func(ctx context.Context, taskID string, pr int64, approver string) error {
-			return factoryd.ApproveMerge(ctx, store, policyLoader.Current, workflows, taskID, pr, approver)
+			return factoryd.ApproveMerge(ctx, store, policyAt, workflows, taskID, pr, approver)
 		},
 		RerunChecks: func(ctx context.Context, taskID string, pr int64, by string) error {
 			return factoryd.RerunFactoryChecks(ctx, store, workflows, taskID, pr, by)

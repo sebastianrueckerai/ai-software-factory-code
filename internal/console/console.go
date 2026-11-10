@@ -190,7 +190,7 @@ type Config struct {
 	ApproveMerge MergeApprover
 	// CheckMerge refuses an approval before any review is posted
 	// (factoryd.CheckMergeApproval).
-	CheckMerge func(ctx context.Context, taskID, approver string) error
+	CheckMerge func(ctx context.Context, taskID string, pin int64, approver string) error
 	// RerunChecks and CloseFactoryPR decide a factory pull request card's
 	// merge request as a member's re-run of its red checks or close with
 	// their words (factoryd.RerunFactoryChecks, factoryd.CloseFactoryPR).

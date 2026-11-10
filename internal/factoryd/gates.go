@@ -2564,12 +2564,18 @@ const consoleApproved = "approved in the console"
 // approver's and signals the task's workflow, which merges as
 // factory-merge. Only a pending merge request of the task, for that pull
 // request, is approved.
-func ApproveMerge(ctx context.Context, store Store, current func() policy.Version, wf Workflows, taskID string, pr int64, approver string) error {
+func ApproveMerge(ctx context.Context, store Store, policyAt PolicyAt, wf Workflows, taskID string, pr int64, approver string) error {
 	q, err := pendingMerge(ctx, store, taskID, pr)
 	if err != nil {
 		return err
 	}
-	note, err := CheckMergeApproval(ctx, store, current, taskID, approver)
+	var spec MergeSpec
+	if len(q.Spec) > 0 {
+		if err := json.Unmarshal(q.Spec, &spec); err != nil {
+			return fmt.Errorf("the merge request of task %s holds no readable spec: %w", taskID, err)
+		}
+	}
+	note, err := CheckMergeApproval(ctx, store, policyAt, spec.PolicyVersion, taskID, approver)
 	if err != nil {
 		return err
 	}
@@ -2580,7 +2586,7 @@ func ApproveMerge(ctx context.Context, store Store, current func() policy.Versio
 // approver's approval does anything: the project agent is refused when the
 // review or the audit did not run (UnreviewedMergeError); a human's
 // approval passes with a decision note that names what did not run.
-func CheckMergeApproval(ctx context.Context, store Store, current func() policy.Version, taskID, approver string) (string, error) {
+func CheckMergeApproval(ctx context.Context, store Store, policyAt PolicyAt, pin int64, taskID, approver string) (string, error) {
 	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
 	if err != nil {
 		return "", err
@@ -2590,7 +2596,8 @@ func CheckMergeApproval(ctx context.Context, store Store, current func() policy.
 	if err != nil {
 		return "", err
 	}
-	stages := unreadGates(events, unlistedStages(t, current()))
+	v, ok := policyAt(ctx, pin)
+	stages := unreadGates(events, unlistedStages(t, v, ok))
 	switch {
 	case len(stages) == 0:
 		return consoleApproved, nil
@@ -2600,9 +2607,33 @@ func CheckMergeApproval(ctx context.Context, store Store, current func() policy.
 	return consoleApproved + "; the " + strings.Join(stages, " and the ") + " did not run", nil
 }
 
+// PolicyAt reads the policy version a merge request opened under (pin 0:
+// the current one); false when it cannot be read.
+type PolicyAt func(ctx context.Context, pin int64) (policy.Version, bool)
+
+// PolicyAtPin is PolicyAt over the current version and the store's reader
+// of a pinned one.
+func PolicyAtPin(current func() policy.Version, read func(ctx context.Context, id int64) (policy.Version, bool, error)) PolicyAt {
+	return func(ctx context.Context, pin int64) (policy.Version, bool) {
+		if pin == 0 {
+			return current(), true
+		}
+		v, ok, err := read(ctx, pin)
+		if err != nil || !ok {
+			log.Printf("policy version %d unreadable (%v, found %v): the review and the audit stay required", pin, err, ok)
+			return policy.Version{}, false
+		}
+		return v, true
+	}
+}
+
 // unlistedStages are the review and audit stages that the process of task t
-// does not list in version v; none when the process cannot be found.
-func unlistedStages(t Task, v policy.Version) map[string]bool {
+// does not list in version v (found: v was read); none when the version or
+// the process cannot be found, which leaves both required.
+func unlistedStages(t Task, v policy.Version, found bool) map[string]bool {
+	if !found {
+		return nil
+	}
 	name := t.Process
 	if name == "" {
 		_, project, _ := v.ProjectOf(t.Repository)

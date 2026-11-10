@@ -85,7 +85,7 @@ func TestApproveReadsTheGateRowsBeforeTheReview(t *testing.T) {
 		Repository: "sf/code", IssueNumber: 9, PRNumber: 9}}}
 	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-card",
 		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
-	r.c.cfg.CheckMerge = func(context.Context, string, string) error { return fmt.Errorf("the store is down") }
+	r.c.cfg.CheckMerge = func(context.Context, string, int64, string) error { return fmt.Errorf("the store is down") }
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "Cannot read the card's review and audit rows. Approve again.") {

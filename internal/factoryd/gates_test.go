@@ -2548,17 +2548,17 @@ func TestApproveMerge(t *testing.T) {
 	store := newFakeStore()
 	wf := &recordedSignals{}
 	ctx := context.Background()
-	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, "sebastian"); err == nil {
 		t.Fatal("approved without a pending request")
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
 	store.events = append(store.events,
 		Event{TaskID: "t1", Kind: EventModelReview, Detail: map[string]any{"commit": "c1", "reviewed": true}},
 		Event{TaskID: "t1", Kind: EventGateAudit, Detail: map[string]any{"commit": "c1", "ran": true}})
-	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 8, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 8, "sebastian"); err == nil {
 		t.Fatal("approved another pull request")
 	}
-	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err != nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, "sebastian"); err != nil {
 		t.Fatal(err)
 	}
 	if !slices.Equal(wf.sent, []string{"t1 approved sebastian 9"}) {
@@ -2568,12 +2568,12 @@ func TestApproveMerge(t *testing.T) {
 	if a := store.approvals[0]; a.Status != "approved" || a.DecidedBy != "sebastian" || a.DecisionNote != "approved in the console" {
 		t.Fatalf("approval = %+v", a)
 	}
-	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, "sebastian"); err == nil || len(wf.sent) != 1 {
 		t.Fatalf("a second approve: %v, signals %v", err, wf.sent)
 	}
 	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t2", PRNumber: 3})
 	wf.err = errors.New("temporal unavailable")
-	if err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t2", 3, "sebastian"); err == nil {
+	if err := ApproveMerge(ctx, store, testPolicyAt, wf, "t2", 3, "sebastian"); err == nil {
 		t.Fatal("a failed signal answered no error")
 	}
 	if a := store.approvals[1]; a.Status != "pending" || a.DecidedBy != "" {
@@ -3892,7 +3892,7 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 			wf := &recordedSignals{}
 			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
 			store.events = append(store.events, c.events...)
-			err := ApproveMerge(ctx, store, testPolicyVersion, wf, "t1", 9, c.approver)
+			err := ApproveMerge(ctx, store, testPolicyAt, wf, "t1", 9, c.approver)
 			if c.refused != "" {
 				var u *UnreviewedMergeError
 				if !errors.As(err, &u) || err.Error() != c.refused {
@@ -3913,32 +3913,66 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 	}
 }
 
+// testPolicyAt reads every pin as the test policy version.
+func testPolicyAt(_ context.Context, _ int64) (policy.Version, bool) {
+	return testPolicyVersion(), true
+}
+
 // A stage the card's process does not list is not required of the project
-// agent's approval; a listed one still is.
+// agent's approval; a listed one still is. The version read is the one the
+// request pinned (the current one for pin 0); a process or version that
+// cannot be found leaves both stages required; a card with no process of
+// its own follows its project's.
 func TestApproveMergeLeavesOutAStageTheProcessDoesNotList(t *testing.T) {
 	ctx := context.Background()
-	version := func() policy.Version {
-		return policy.Version{Tree: policy.Tree{Processes: map[string]policy.Process{
-			"lean":   {Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageApproval}}},
-			"review": {Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageReview}, {Name: policy.StageApproval}}},
-		}}}
+	tree := func(processes map[string]policy.Process) policy.Version {
+		return policy.Version{Tree: policy.Tree{Processes: processes,
+			Projects: map[string]policy.ProjectConfig{"app": {Repository: "sf/app", Process: "lean"}}}}
 	}
-	for _, c := range []struct {
-		process, refused string
+	lean := policy.Process{Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageApproval}}}
+	withReview := policy.Process{Stages: []policy.Stage{{Name: policy.StageChecks}, {Name: policy.StageReview}, {Name: policy.StageApproval}}}
+	const (
+		noReview = "The review did not run, so the project agent cannot approve this merge."
+		both     = "The review and the audit did not run, so the project agent cannot approve this merge."
+	)
+	failedReview := Event{TaskID: "t1", Kind: EventModelReview, Detail: map[string]any{"commit": "c1", "reviewed": false}}
+	pushed := Event{TaskID: "t1", Kind: EventSessionPushed, Detail: map[string]any{}}
+	cases := []struct {
+		name    string
+		task    Task
+		pin     int64
+		current policy.Version
+		pinned  policy.Version
+		pinOK   bool
+		events  []Event
+		refused string
 	}{
-		{"lean", ""},
-		{"review", "The review did not run, so the project agent cannot approve this merge."},
-	} {
-		store := newFakeStore()
-		store.tasks["t1"] = Task{ID: "t1", Process: c.process}
-		store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
-		store.events = append(store.events, Event{TaskID: "t1", Kind: EventSessionPushed, Detail: map[string]any{}})
-		err := ApproveMerge(ctx, store, version, &recordedSignals{}, "t1", 9, ChatUser)
-		switch {
-		case c.refused == "" && err != nil:
-			t.Errorf("process %s: %v, want approved", c.process, err)
-		case c.refused != "" && (err == nil || err.Error() != c.refused):
-			t.Errorf("process %s: %v, want %q", c.process, err, c.refused)
-		}
+		{"the card's process lists neither", Task{Process: "lean"}, 0, tree(map[string]policy.Process{"lean": lean}), policy.Version{}, true, []Event{pushed}, ""},
+		{"the card's process lists the review", Task{Process: "review"}, 0, tree(map[string]policy.Process{"review": withReview}), policy.Version{}, true, []Event{pushed}, noReview},
+		{"no process of its own: the project's lean one", Task{Repository: "sf/app"}, 0, tree(map[string]policy.Process{"lean": lean}), policy.Version{}, true, []Event{pushed}, ""},
+		{"the process is missing from the version", Task{Process: "gone"}, 0, tree(map[string]policy.Process{"lean": lean}), policy.Version{}, true, []Event{pushed}, both},
+		{"the pinned version lists the review, the current one does not, a failed review row stands", Task{Process: "p"}, 7,
+			tree(map[string]policy.Process{"p": lean}), tree(map[string]policy.Process{"p": withReview}), true, []Event{pushed, failedReview}, noReview},
+		{"the pinned version cannot be read", Task{Process: "p"}, 7,
+			tree(map[string]policy.Process{"p": lean}), policy.Version{}, false, []Event{pushed}, both},
+	}
+	for _, c := range cases {
+		t.Run(c.name, func(t *testing.T) {
+			store := newFakeStore()
+			c.task.ID = "t1"
+			store.tasks["t1"] = c.task
+			spec := json.RawMessage(fmt.Sprintf(`{"policy_version":%d}`, c.pin))
+			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: spec})
+			store.events = append(store.events, c.events...)
+			at := PolicyAtPin(func() policy.Version { return c.current },
+				func(context.Context, int64) (policy.Version, bool, error) { return c.pinned, c.pinOK, nil })
+			err := ApproveMerge(ctx, store, at, &recordedSignals{}, "t1", 9, ChatUser)
+			switch {
+			case c.refused == "" && err != nil:
+				t.Errorf("%v, want approved", err)
+			case c.refused != "" && (err == nil || err.Error() != c.refused):
+				t.Errorf("%v, want %q", err, c.refused)
+			}
+		})
 	}
 }

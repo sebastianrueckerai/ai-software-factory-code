@@ -2435,7 +2435,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		case len(open) > 1:
 			return "", refuse(http.StatusConflict, fmt.Sprintf("Criteria %s have no verdict yet: settle each row on the card first.", textutil.AndList(open)))
 		}
-		if err := c.cfg.CheckMerge(ctx, q.TaskID, a.approver()); err != nil {
+		if err := c.cfg.CheckMerge(ctx, q.TaskID, spec.PolicyVersion, a.approver()); err != nil {
 			if refusal, ok := unreviewedRefusal(err, t, spec); ok {
 				return "", refusal
 			}
