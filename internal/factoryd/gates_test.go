@@ -629,6 +629,52 @@ func TestModelReviewSanitisesAnOutsidersBrief(t *testing.T) {
 	}
 }
 
+// The model review's first call carries the deterministic cost and state
+// block from the store, the later parts' calls do not, and the prompt names it.
+func TestModelReviewCarriesTheCostState(t *testing.T) {
+	want := map[string]any{"budget_eur": float64(3), "spent_eur": 0.75, "remaining_eur": 2.25,
+		"calls": float64(4), "prompt_tokens": float64(1500), "cached_tokens": float64(300), "output_tokens": float64(600),
+		"state": "in-review"}
+	for name, diff := range map[string]string{
+		"one part": "diff --git a/Makefile b/Makefile\n+check:\n",
+		"in parts": diffFile("a.go", 30<<10) + diffFile("b.go", 30<<10),
+	} {
+		t.Run(name, func(t *testing.T) {
+			task := gateTask
+			task.BudgetEUR, task.SpentEUR, task.Status = 3, 0.75, "in-review"
+			r, store, _ := newGateRunner(t, task, &gateForgejo{diff: diff})
+			store.callTotals["t1"] = TaskCallTotals{Calls: 4, PromptTokens: 1500, CachedTokens: 300, OutputTokens: 600}
+			ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+			r.supervisor = testSupervisorModel(ll.srv(t).URL)
+			if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+				t.Fatal(err)
+			}
+			chats := byPart(ll)
+			if want := map[string]int{"one part": 1, "in parts": 2}[name]; len(chats) != want {
+				t.Fatalf("calls = %d, want %d", len(chats), want)
+			}
+			if !strings.Contains(systemMessage(chats[0]), "the task's cost and state block (its budget, spend and remaining euros, its model calls and tokens, and its status) factoryd read from its store") {
+				t.Fatalf("the review prompt does not name the block: %s", systemMessage(chats[0]))
+			}
+			for i, chat := range chats {
+				var in map[string]any
+				if err := json.Unmarshal([]byte(userMessage(chat)), &in); err != nil {
+					t.Fatal(err)
+				}
+				if i > 0 {
+					if _, ok := in["cost"]; ok {
+						t.Fatalf("part %d carries the cost block: %s", i+1, userMessage(chat))
+					}
+					continue
+				}
+				if !reflect.DeepEqual(in["cost"], want) {
+					t.Fatalf("cost = %s\nwant  %s", jsonOf(in["cost"]), jsonOf(want))
+				}
+			}
+		})
+	}
+}
+
 // Roadmap 201: the review reads the objective without the intake's Size
 // and Rung lines, the card's fields, as every model brief does.
 func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
@@ -1213,7 +1259,7 @@ func TestModelReviewReadsTheDiffInParts(t *testing.T) {
 				keys                      []string
 			}{
 				{`"part":"file 1 of 2, part 1 of 2"`, "+++ b/a.go", "b/b.go", reviewPromptFor(GateResults{}),
-					[]string{"brief", "concurrency", "diff", "files", "gates", "head", "part", "pull_request"}},
+					[]string{"brief", "concurrency", "cost", "diff", "files", "gates", "head", "part", "pull_request"}},
 				{`"part":"file 2 of 2, part 2 of 2"`, "+++ b/b.go", "b/a.go", reviewPartPrompt,
 					[]string{"diff", "files", "objective", "part"}},
 			} {
