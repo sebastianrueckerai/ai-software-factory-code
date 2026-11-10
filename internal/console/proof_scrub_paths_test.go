@@ -3,14 +3,16 @@ package console
 import (
 	"context"
 	"errors"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
-	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
 	"strings"
 	"testing"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 const (
@@ -147,4 +149,24 @@ func TestStatusPanelScrubsTheMainError(t *testing.T) {
 	s.row(factoryd.Project{Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"})
 	s.mainErr = leakyError()
 	maskedLeak(t, "the status panel", html.UnescapeString(s.status(t)))
+}
+
+// A Forgejo token is 40 hex characters, which the generic rules keep as a
+// commit id: only the boot secrets the Config carries mask it.
+func TestErrTextMasksTheConfiguredSecret(t *testing.T) {
+	const secret = "0123456789abcdef0123456789abcdef01234567"
+	r := newRig(t)
+	cfg := r.c.cfg
+	if got := errText(errors.New("forgejo said " + secret)); !strings.Contains(got, secret) {
+		t.Fatalf("the default scrubber already masks the commit-id-shaped %q: %q", secret, got)
+	}
+	cfg.Scrub = redact.New(secret)
+	if _, err := New(cfg); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { scrubber.Store(redact.New()) })
+	got := errText(errors.New("forgejo said " + secret))
+	if strings.Contains(got, secret) || got != "forgejo said [redacted]" {
+		t.Errorf("errText = %q, want the configured secret masked", got)
+	}
 }

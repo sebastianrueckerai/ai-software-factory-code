@@ -575,6 +575,7 @@ func main() {
 		messengers = &console.Messengers{Store: store}
 	}
 	consoleHandler, err := console.New(console.Config{
+		Scrub:            scrub,
 		PublicURL:        publicURL,
 		Messengers:       messengers,
 		ForgejoURL:       forgejo.BaseURL,

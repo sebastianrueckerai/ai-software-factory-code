@@ -21,6 +21,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 	"unicode/utf8"
 
@@ -1123,14 +1124,18 @@ func scrubTokens(text string) (out string, github, chat bool) {
 }
 
 // scrubber masks what redact masks in every text a refusal builds from an
-// error.
-var scrubber = redact.New()
+// error: New sets it to the Config's scrubber, which holds the boot secrets.
+var scrubber = func() *atomic.Pointer[redact.Scrubber] {
+	p := &atomic.Pointer[redact.Scrubber]{}
+	p.Store(redact.New())
+	return p
+}()
 
 // scrubText is text with every token-shaped secret masked by scrubTokens
 // and every other credential by redact.Scrubber.
 func scrubText(text string) string {
 	out, _, _ := scrubTokens(text)
-	return scrubber.String(out)
+	return scrubber.Load().String(out)
 }
 
 // errText is err's scrubbed words, the <err> a refusal sentence embeds;

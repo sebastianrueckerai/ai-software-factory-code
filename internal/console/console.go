@@ -26,6 +26,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -147,6 +148,9 @@ type Tasks interface {
 // Config wires the console. ForgejoURL serves the code exchange and API
 // calls (in-cluster); ForgejoPublicURL is what browsers are sent to.
 type Config struct {
+	// Scrub masks the boot secrets in every text a refusal builds from an
+	// error; nil masks only what the generic rules find.
+	Scrub            *redact.Scrubber
 	PublicURL        string // https://console.aisoftwarefactory.world
 	ForgejoURL       string
 	ForgejoPublicURL string
@@ -612,6 +616,10 @@ func New(cfg Config) (*Console, error) {
 	case cfg.PoolDrawn == nil:
 		return nil, errors.New("console: no PoolDrawn")
 	}
+	if cfg.Scrub == nil {
+		cfg.Scrub = redact.New()
+	}
+	scrubber.Store(cfg.Scrub)
 	if cfg.HTTP == nil {
 		cfg.HTTP = &http.Client{Timeout: 15 * time.Second}
 	}
