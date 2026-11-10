@@ -3,6 +3,7 @@ package console
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
@@ -174,6 +175,21 @@ func TestChatEscalate(t *testing.T) {
 		}
 	}
 	equal(t, "refusals file nothing", len(filed), 1)
+}
+
+// A filing the factory's escalation refuses names the error and the two
+// remedies, at the gateway's own 502.
+func TestChatEscalateRefusalNamesTheError(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	_, s := r.loggedIn(t)
+	r.c.cfg.Escalate = func(context.Context, string, factoryd.HumanQuestion, string) (int64, error) {
+		return 0, errors.New("forgejo rejected the card: Needs you is closed for sf/code")
+	}
+	var events []string
+	trn := r.chatTurnOf(t, s, &events)
+	_, err := trn.escalate("Which store?", "the ledger is short", "the pool is dry", "Postgres", []string{"Postgres", "SQLite"})
+	refusedAs(t, err, http.StatusBadGateway, "The escalation could not be filed: forgejo rejected the card: Needs you is closed for sf/code. "+
+		"Try again, or post the question on the card's issue.")
 }
 
 // An answer that approves a merge needs an approver, as the board's

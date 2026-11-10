@@ -441,7 +441,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	repo := ps[i].Repo()
 	labels, err := c.labels(ctx, a.s, repo)
 	if err != nil {
-		return repo, 0, &forgejoRefusal{"read the labels", err}
+		return repo, 0, &forgejoRefusal{what: "read the labels", err: err}
 	}
 	var ids []int64
 	for _, name := range []string{trackLabels[track], priority} {
@@ -460,7 +460,7 @@ func (c *Console) doFileCard(ctx context.Context, a actor, project, title, body,
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 	if err := c.as(ctx, a.s, http.MethodPost, path, map[string]any{"title": title, "body": body, "labels": ids},
 		http.StatusCreated, &issue); err != nil {
-		return repo, 0, &forgejoRefusal{"file the issue", err}
+		return repo, 0, &forgejoRefusal{what: "file the issue", err: err}
 	}
 	log.Printf("console: %s filed %s#%d (%s) via %s", a.s.user, repo, issue.Number, track, a.via)
 	e := c.eventOf(a, repo.String(), "", issue.Number, factoryd.EventCardFiled, detail)
@@ -706,7 +706,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
 	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
-		return "", &forgejoRefusal{"post the answer on the issue (the answer is recorded)", err}
+		return "", &forgejoRefusal{what: "post the answer on the issue (the answer is recorded)", err: err}
 	}
 	log.Printf("console: %s answered question %d of plan %s via %s", a.s.user, idx, t.ID, a.via)
 	switch decision {
@@ -799,7 +799,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
 			decisionDetail(revision, ans.Idx, ans.Decision, ans.Text))
 		if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(ans.Idx, factoryd.PlanQuestion{Decision: ans.Decision, Answer: ans.Text}), nil); err != nil {
-			return "", &forgejoRefusal{"post the answer on the issue (the answers are recorded)", err}
+			return "", &forgejoRefusal{what: "post the answer on the issue (the answers are recorded)", err: err}
 		}
 	}
 	log.Printf("console: %s answered %d questions of plan %s via %s", a.s.user, len(batch), t.ID, a.via)
@@ -858,7 +858,7 @@ func (c *Console) doRequestChanges(ctx context.Context, a actor, id, text string
 		return "", err
 	}
 	if err := c.comment(ctx, a, t, text, nil); err != nil {
-		return "", &forgejoRefusal{"post the change request", err}
+		return "", &forgejoRefusal{what: "post the change request", err: err}
 	}
 	pending, err := c.cfg.Approvals.ApprovalRequests(ctx, "pending")
 	for _, q := range pending {
@@ -1340,7 +1340,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 	if label == "" {
 		var posted int64
 		if err := c.comment(ctx, a, t, text, &posted); err != nil {
-			return "", &forgejoRefusal{"post the comment", err}
+			return "", &forgejoRefusal{what: "post the comment", err: err}
 		}
 		return done(fmt.Sprintf("Commented on #%d; the card keeps waiting.", t.IssueNumber), posted, nil, factoryd.Resolution{Action: factoryd.ActNote, Note: text})
 	}
@@ -1520,7 +1520,7 @@ func (c *Console) posting(a actor, t factoryd.Task, res factoryd.Resolution) fun
 	return func(ctx context.Context) (int64, error) {
 		var posted int64
 		if err := c.comment(ctx, a, t, text, &posted); err != nil {
-			return 0, &forgejoRefusal{"post the answer", err}
+			return 0, &forgejoRefusal{what: "post the answer", err: err}
 		}
 		return posted, nil
 	}
@@ -1850,7 +1850,7 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 	var posted int64
 	if t.IssueNumber != 0 && note != "" {
 		if err := c.comment(ctx, a, t, note, &posted); err != nil {
-			return "", 0, &forgejoRefusal{"post the note", err}
+			return "", 0, &forgejoRefusal{what: "post the note", err: err}
 		}
 	}
 	if t.IssueNumber == 0 || t.Status == "merged" {
@@ -1866,7 +1866,7 @@ func (c *Console) closeIssue(ctx context.Context, a actor, t factoryd.Task, note
 		return "Closed card " + t.ID + ".", posted, nil
 	}
 	if err := c.editIssue(ctx, a, t, map[string]string{"state": "closed"}, nil); err != nil {
-		return "", 0, &forgejoRefusal{"close the issue", err}
+		return "", 0, &forgejoRefusal{what: "close the issue", err: err}
 	}
 	log.Printf("console: %s closed %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardClosed, map[string]any{"note": note})
@@ -1984,7 +1984,7 @@ func (c *Console) doEdit(ctx context.Context, a actor, id, title, body string) (
 	}
 	var issue struct{ Title, Body string }
 	if err := c.editIssue(ctx, a, t, fields, &issue); err != nil {
-		return "", &forgejoRefusal{"edit the issue", err}
+		return "", &forgejoRefusal{what: "edit the issue", err: err}
 	}
 	if err := c.cfg.Tasks.SetObjective(ctx, t.ID, factoryd.IssueObjective(issue.Title, issue.Body)); err != nil {
 		log.Printf("console: %s edited %s, its objective: %v", a.s.user, t.ID, err)
@@ -2066,7 +2066,7 @@ func (c *Console) doSetDependency(ctx context.Context, a actor, id, dependsOn st
 		store, verb = c.cfg.Tasks.RemoveTaskDeps, "remove"
 	}
 	if err := c.cfg.SetIssueDependency(ctx, repo, t.IssueNumber, d.IssueNumber, remove); err != nil {
-		return "", &forgejoRefusal{fmt.Sprintf("%s the dependency of #%d on #%d", verb, t.IssueNumber, d.IssueNumber), err}
+		return "", &forgejoRefusal{what: fmt.Sprintf("%s the dependency of #%d on #%d", verb, t.IssueNumber, d.IssueNumber), err: err}
 	}
 	if err := store(ctx, t.ID, []string{d.ID}); err != nil {
 		log.Printf("console: %s the dependency of %s on %s: %v", verb, t.ID, d.ID, err)
@@ -2163,7 +2163,7 @@ func (c *Console) doComment(ctx context.Context, a actor, id, text string) (post
 		}
 	}
 	if err := c.comment(ctx, a, t, text, &posted); err != nil {
-		return 0, "", &forgejoRefusal{"post the comment", err}
+		return 0, "", &forgejoRefusal{what: "post the comment", err: err}
 	}
 	log.Printf("console: %s commented on %s (%s#%d) via %s", a.s.user, t.ID, t.Repository, t.IssueNumber, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCardCommented, commentDetail(posted))
@@ -2191,7 +2191,7 @@ func (c *Console) doDeleteComment(ctx context.Context, a actor, id string, poste
 	}
 	path := fmt.Sprintf("/api/v1/repos/%s/%s/issues/comments/%d", url.PathEscape(repo.Owner), url.PathEscape(repo.Name), posted)
 	if err := c.as(ctx, a.s, http.MethodDelete, path, nil, http.StatusNoContent, nil); err != nil {
-		return "", &forgejoRefusal{"delete the comment", err}
+		return "", &forgejoRefusal{what: "delete the comment", err: err}
 	}
 	log.Printf("console: %s deleted comment %d of %s via %s", a.s.user, posted, t.ID, a.via)
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventCommentDeleted, commentDetail(posted))
@@ -2438,7 +2438,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		unsignalled := "the task's workflow could not be signalled; approve again"
 		if !agent {
 			if err := c.review(ctx, a, q, "APPROVED", "Approved in the factory console.", spec.HeadSHA); err != nil {
-				return "", &forgejoRefusal{"submit the approving review", err}
+				return "", &forgejoRefusal{what: "submit the approving review", err: err}
 			}
 			unsignalled = "your approving review is on the pull request, but " + unsignalled
 		}
@@ -2530,7 +2530,7 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 	switch action {
 	case "request_changes":
 		if err := c.review(ctx, a, q, "REQUEST_CHANGES", note, spec.HeadSHA); err != nil {
-			return "", &forgejoRefusal{"submit the change request", err}
+			return "", &forgejoRefusal{what: "submit the change request", err: err}
 		}
 		if err := c.decide(ctx, a, q, "denied", "changes requested: "+note); err != nil {
 			return "", err
@@ -2539,11 +2539,11 @@ func (c *Console) doDeny(ctx context.Context, a actor, id int64, action, note st
 		pr := fmt.Sprintf("/api/v1/repos/%s/%s", url.PathEscape(repo.Owner), url.PathEscape(repo.Name))
 		if err := c.as(ctx, a.s, http.MethodPost, fmt.Sprintf("%s/issues/%d/comments", pr, q.PRNumber),
 			map[string]string{"body": "Rejected in the factory console: " + note}, http.StatusCreated, nil); err != nil {
-			return "", &forgejoRefusal{"comment the rejection", err}
+			return "", &forgejoRefusal{what: "comment the rejection", err: err}
 		}
 		if err := c.as(ctx, a.s, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", pr, q.PRNumber),
 			map[string]string{"state": "closed"}, http.StatusCreated, nil); err != nil {
-			return "", &forgejoRefusal{"close the pull request", err}
+			return "", &forgejoRefusal{what: "close the pull request", err: err}
 		}
 		if err := c.decide(ctx, a, q, "denied", "rejected: "+note); err != nil {
 			return "", err
@@ -2732,7 +2732,7 @@ func (c *Console) doInvite(ctx context.Context, a actor, login string) (string, 
 		return "", refuse(http.StatusConflict, fmt.Sprintf("Project %s is a seed project, whose collaborators Forgejo keeps: invite %s there.", p.Name, login))
 	}
 	if err := c.cfg.AddCollaborator(ctx, p.Repo(), login, "write"); err != nil {
-		return "", &forgejoRefusal{"add " + login + " as a collaborator", err}
+		return "", &forgejoRefusal{what: "add " + login + " as a collaborator", err: err}
 	}
 	log.Printf("console: %s invited %s to %s via %s", a.s.user, login, p.Repository, a.via)
 	c.record(ctx, a, p.Repository, "", 0, factoryd.EventMemberInvited, map[string]any{"login": login})

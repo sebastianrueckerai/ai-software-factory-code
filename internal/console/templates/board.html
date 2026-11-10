@@ -174,7 +174,7 @@
 {{end}}{{end}}</div>
 {{end}}{{if .OpenedUnread}}<p class="problem">The console could not read the opened proofs; reload the board.</p>
 {{end}}{{with .Problem}}<p class="problem">{{.}}</p>
-{{end}}{{if .HeadUnread}}<p class="problem">The head's current checks could not be read, so the card may be stale; reload the board.</p>
+{{end}}{{if .HeadUnread}}<p class="problem">The head's current checks could not be read: {{.HeadUnreadWhy}}. Reload the board, or read the checks on the pull request.</p>
 {{end}}
 {{else}}<div class="need-top"><h4 id="approval-{{.ID}}{{.IDSuffix}}">{{if .Issue}}<span class="ref">#{{.Issue}}</span> {{end}}{{if .Writer}}<a href="#card={{.TaskID}}" class="open">Resource request</a>{{else}}Resource request{{end}}</h4>{{with .Waiting}} <span class="since" title="waiting for a human">◷ {{.}}</span>{{end}}</div>
 {{template "brief-block" .}}

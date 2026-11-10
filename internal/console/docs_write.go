@@ -230,8 +230,7 @@ func (c *Console) doSaveDoc(ctx context.Context, a actor, docRepo, project, docP
 	if err := c.as(ctx, a.s, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
 		"branch": "master", "message": a.attribution().Message(docPath + ": edited in the console"), "files": []map[string]string{change}},
 		http.StatusCreated, &landed); err != nil {
-		return nil, &forgejoRefusal{what: "commit the document", err: err,
-			say: "The document could not be committed: %s. Open the document again and save your change once more."}
+		return nil, &forgejoRefusal{what: "commit the document", err: err}
 	}
 	// The commit is on master: whatever the head-commit read answers a
 	// beat later, the save has landed and owes its event, so it answers

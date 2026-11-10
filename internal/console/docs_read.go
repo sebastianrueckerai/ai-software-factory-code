@@ -119,7 +119,7 @@ func (c *Console) docCommit(ctx context.Context, repo factoryd.Repo, docPath str
 	}
 	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet,
 		docAPI(repo)+"/commits?sha=master&path="+url.QueryEscape(docPath)+"&limit=1", nil, http.StatusOK, &rows); err != nil {
-		return "", time.Time{}, &forgejoRefusal{"read the document's commit", err}
+		return "", time.Time{}, &forgejoRefusal{what: "read the document's commit", err: err}
 	}
 	if len(rows) == 0 {
 		return "", time.Time{}, nil
@@ -158,7 +158,7 @@ func (c *Console) docAuthor(ctx context.Context, repo factoryd.Repo, docPath str
 	}
 	if err := c.api(ctx, c.cfg.DocsToken, http.MethodGet,
 		docAPI(repo)+"/commits?sha=master&path="+url.QueryEscape(docPath)+"&limit=1", nil, http.StatusOK, &rows); err != nil {
-		return "", time.Time{}, &forgejoRefusal{"read the document's commit", err}
+		return "", time.Time{}, &forgejoRefusal{what: "read the document's commit", err: err}
 	}
 	if len(rows) == 0 {
 		return "", time.Time{}, nil

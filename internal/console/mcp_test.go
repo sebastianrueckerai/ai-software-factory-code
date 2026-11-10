@@ -354,7 +354,7 @@ func TestTokenSessionNamesRefusedForgejoToken(t *testing.T) {
 	if err == nil || err.Error() != want {
 		t.Fatalf("as on a chat token = %v, want %q", err, want)
 	}
-	if got := (&turn{c: r.c, a: actor{s: s}}).sentence(&forgejoRefusal{"read the user", err}); got != want {
+	if got := (&turn{c: r.c, a: actor{s: s}}).sentence(&forgejoRefusal{what: "read the user", err: err}); got != want {
 		t.Fatalf("the chat reads %q, want %q", got, want)
 	}
 

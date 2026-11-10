@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"io"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -94,7 +95,7 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("the drawer = %d: %s", rec.Code, rec.Body.String())
 		}
-		want := "The plan could not be read: plan t-plan's revision 1 did not answer. Open the card again, or read the plan on its issue."
+		want := "The plan could not be read: plan t-plan&#39;s revision 1 did not answer. Open the card again, or read the plan on its issue."
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("the drawer's problem sentence is missing %q", want)
 		}
@@ -144,7 +145,7 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("the board = %d: %s", rec.Code, rec.Body.String())
 		}
-		want := "The plan could not be read: plan t-p's revision 1 did not answer. Open the plan's approval again, or read the plan on its issue."
+		want := "The plan could not be read: plan t-p&#39;s revision 1 did not answer. Open the plan&#39;s approval again, or read the plan on its issue."
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("the approval card's problem sentence is missing %q", want)
 		}
@@ -210,7 +211,7 @@ func TestProofRefusalPinsErrorAndAction(t *testing.T) {
 		if rec.Code != http.StatusOK {
 			t.Fatalf("the drawer = %d: %s", rec.Code, rec.Body.String())
 		}
-		want := "The routine's runs could not be read: runs of weekly-bump: the store did not answer. Open the routine again, or read its runs on Forgejo."
+		want := "The routine&#39;s runs could not be read: runs of weekly-bump: the store did not answer. Open the routine again, or read its runs on Forgejo."
 		if !strings.Contains(rec.Body.String(), want) {
 			t.Errorf("the routine drawer's problem sentence is missing %q", want)
 		}
@@ -228,4 +229,52 @@ type failingPromote struct {
 
 func (f failingPromote) Promote(context.Context, int64, string, func(string) policy.Standing) error {
 	return f.err
+}
+
+// failingPlans is a Tasks seam whose plan reads answer err.
+type failingPlans struct {
+	Tasks
+	err error
+}
+
+func (f failingPlans) PlanRevision(context.Context, string, int) (factoryd.PlanRevision, bool, error) {
+	return factoryd.PlanRevision{}, false, f.err
+}
+
+// failPath is an http.RoundTripper that answers a request whose path
+// holds marker with 502 and err's words as the body; every other
+// request goes to base.
+type failPath struct {
+	base   http.RoundTripper
+	marker string
+	err    string
+}
+
+func (f failPath) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, f.marker) {
+		return failAnswer(http.StatusBadGateway, f.err), nil
+	}
+	return f.base.RoundTrip(req)
+}
+
+// failStatus is an http.RoundTripper that answers a request whose path
+// holds marker with status and body; every other request goes to base.
+type failStatus struct {
+	base   http.RoundTripper
+	marker string
+	status int
+	body   string
+}
+
+func (f failStatus) RoundTrip(req *http.Request) (*http.Response, error) {
+	if strings.Contains(req.URL.Path, f.marker) {
+		return failAnswer(f.status, f.body), nil
+	}
+	return f.base.RoundTrip(req)
+}
+
+// failAnswer is a Forgejo answer that carries body.
+func failAnswer(status int, body string) *http.Response {
+	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(body)),
+		Header: http.Header{"Content-Type": []string{"text/plain"}}}
 }

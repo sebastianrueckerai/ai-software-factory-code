@@ -414,6 +414,7 @@ type undo struct {
 // imports, and the answer names what is left.
 func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProject, u undo, code int, err error, why string) {
 	user, branch := current(r).user, "project-"+p.Name
+	failure := err // the filing's own error, the one the answer names
 	closed := false
 	if u.pr > 0 {
 		err := c.asUser(r, http.MethodPatch, fmt.Sprintf("%s/pulls/%d", c.infraAPI(), u.pr), map[string]string{"state": "closed"},
@@ -454,7 +455,7 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	default:
 		msg += "; delete branch " + branch + " to file the name again"
 	}
-	http.Error(w, msg+": "+errText(err)+". Try again in a moment.", code)
+	http.Error(w, msg+": "+errText(failure)+". Try again in a moment.", code)
 }
 
 // branchHead reads infra's branch, with factoryd's config token: its head
@@ -852,7 +853,7 @@ func (c *Console) doGithubExport(ctx context.Context, a actor, p factoryd.Projec
 	}
 	if mode == factoryd.ModeMirror {
 		if err := c.cfg.Mirrors.AddPushMirror(ctx, repo, address, username, token); err != nil {
-			return "", &forgejoRefusal{"add the push mirror", errors.New(strings.ReplaceAll(err.Error(), token, tokenMask))}
+			return "", &forgejoRefusal{what: "add the push mirror", err: errors.New(strings.ReplaceAll(err.Error(), token, tokenMask))}
 		}
 	}
 	if err := c.cfg.Mirrors.PutMirror(ctx, factoryd.Mirror{Project: p.Name, Direction: factoryd.MirrorExport, Remote: remote,
@@ -946,12 +947,12 @@ func (c *Console) doRemoveGithubExport(ctx context.Context, a actor, p factoryd.
 func (c *Console) dropPushMirrors(ctx context.Context, repo factoryd.Repo, addresses ...string) error {
 	ms, err := c.cfg.Mirrors.PushMirrors(ctx, repo)
 	if err != nil {
-		return &forgejoRefusal{"list the push mirrors", err}
+		return &forgejoRefusal{what: "list the push mirrors", err: err}
 	}
 	for _, m := range ms {
 		if slices.ContainsFunc(addresses, func(a string) bool { return strings.EqualFold(a, m.RemoteAddress) }) {
 			if err := c.cfg.Mirrors.DeletePushMirror(ctx, repo, m.RemoteName); err != nil {
-				return &forgejoRefusal{"delete push mirror " + m.RemoteName, err}
+				return &forgejoRefusal{what: "delete push mirror " + m.RemoteName, err: err}
 			}
 		}
 	}

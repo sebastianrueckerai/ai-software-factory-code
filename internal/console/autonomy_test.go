@@ -176,6 +176,29 @@ func TestSetAutonomyFilesAndMergesAsTheApprover(t *testing.T) {
 	equal(t, "a refused file loads nothing", reloads, 1)
 }
 
+// A check that cannot read infra's head refuses the switch with the
+// error and the two remedies, committing nothing.
+func TestSetAutonomyNamesTheUnreadConfiguration(t *testing.T) {
+	r := newRig(t)
+	infra := withInfra(t, r)
+	infra.files = map[string]string{"factory/projects/demo-app.yaml": "# demo\nrepository: demo-app/demo-app\nmerge_rule: human\n"}
+	r.c.cfg.CheckChange = func(context.Context, map[string][]byte) ([]string, error) {
+		return nil, errors.New("infra's head did not answer the read of projects/demo-app.yaml")
+	}
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/projects/demo-app/autonomy", url.Values{"csrf": {s.csrf}, "autonomy": {"full auto"}}), ck)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("POST autonomy over an unread head = %d %s", rec.Code, rec.Body.String())
+	}
+	if got := strings.TrimSpace(rec.Body.String()); got != "The configuration at infra's head could not be read: infra's head did not answer the read of projects/demo-app.yaml. "+
+		"Try the switch again, or edit the project file on Forgejo." {
+		t.Errorf("the refusal = %q", got)
+	}
+	if len(infra.contents) != 0 {
+		t.Fatalf("an unread head committed: %+v", infra.contents)
+	}
+}
+
 // A level the project file already holds changes nothing: the POST
 // answers 409 naming the file, and no branch, pull request, merge or
 // event follows.

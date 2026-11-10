@@ -224,7 +224,7 @@ func (c *Console) showRoutineDrawer(w http.ResponseWriter, r *http.Request, tab 
 		runs, err := c.cfg.Routines.Runs(ctx, project, name, limit)
 		if err != nil {
 			log.Printf("console: the runs of routine %s of %s: %v", name, project, err)
-			d.Problems = append(d.Problems, "The routine's runs could not be read: "+errText(err)+". Reload the board.")
+			d.Problems = append(d.Problems, "The routine's runs could not be read: "+errText(err)+". Open the routine again, or read its runs on Forgejo.")
 		}
 		for _, run := range runs {
 			d.Runs = append(d.Runs, routineRunOf(run, loc))

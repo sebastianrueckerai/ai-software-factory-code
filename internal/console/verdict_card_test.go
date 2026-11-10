@@ -853,7 +853,7 @@ func TestTheMergeCardHoldsARowPerCriterion(t *testing.T) {
 	}
 
 	r.c.cfg.Timelines = failingObjects{}
-	if k := card(31); !strings.Contains(k, `<p class="problem">The console could not read the criterion rows: s3: 503. Reload the board.</p>`) {
+	if k := card(31); !strings.Contains(k, `<p class="problem">The console could not read the criterion rows: the artifact of pages_ok: s3: 503. Reload the board.</p>`) {
 		t.Errorf("a failed read of the rows is not said on the card:\n%s", k)
 	}
 }

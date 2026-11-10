@@ -166,17 +166,17 @@ func (c *Console) commitProjectFileGuarded(ctx context.Context, a actor, name, m
 	if err := c.as(ctx, a.s, http.MethodPost, infra+"/contents", map[string]any{
 		"branch": "main", "new_branch": branch, "message": a.attribution().Message(message), "files": files},
 		http.StatusCreated, nil); err != nil {
-		return 0, &forgejoRefusal{"commit the project file", err}
+		return 0, &forgejoRefusal{what: "commit the project file", err: err}
 	}
 	var pull struct {
 		Number int64 `json:"number"`
 	}
 	if err := c.as(ctx, a.s, http.MethodPost, infra+"/pulls", map[string]string{"head": branch, "base": "main", "title": message},
 		http.StatusCreated, &pull); err != nil {
-		return 0, &forgejoRefusal{"open the pull request", err}
+		return 0, &forgejoRefusal{what: "open the pull request", err: err}
 	}
 	if err := c.mergeInfra(ctx, a.s, pull.Number); err != nil {
-		return 0, &forgejoRefusal{fmt.Sprintf("merge the pull request #%d", pull.Number), err}
+		return 0, &forgejoRefusal{what: fmt.Sprintf("merge the pull request #%d", pull.Number), err: err}
 	}
 	if c.cfg.PolicyReload != nil {
 		if err := c.cfg.PolicyReload(ctx); err != nil {
@@ -198,7 +198,7 @@ func (c *Console) infraFile(ctx context.Context, path string) (content []byte, b
 		if apiStatus(err) == http.StatusNotFound {
 			return nil, "", false, nil
 		}
-		return nil, "", false, &forgejoRefusal{"read " + path, err}
+		return nil, "", false, &forgejoRefusal{what: "read " + path, err: err}
 	}
 	raw, err := base64.StdEncoding.DecodeString(strings.TrimSpace(file.Content))
 	if err != nil {
@@ -697,7 +697,7 @@ func (c *Console) doWriteDoc(ctx context.Context, a actor, docRepo, project, pat
 	if err := c.api(ctx, c.cfg.DocsToken, http.MethodPost, docAPI(repo)+"/contents", map[string]any{
 		"branch": "master", "message": a.attribution().Message("docs: " + path), "files": []map[string]string{change}},
 		http.StatusCreated, &committed); err != nil {
-		return "", &forgejoRefusal{"commit the document", err}
+		return "", &forgejoRefusal{what: "commit the document", err: err}
 	}
 	c.docWritten(ctx, a, project, path, factoryd.ContentHash(next), committed.Commit.SHA)
 	log.Printf("console: %s wrote %s on %s via %s", a.s.user, path, docRepo, a.via)

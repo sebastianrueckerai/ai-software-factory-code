@@ -473,7 +473,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	}
 
 	set(http.StatusUnprocessableEntity, 0, 0)
-	file(http.StatusBadGateway, "Forgejo refused to open the pull request; the filing was undone")
+	file(http.StatusBadGateway, "Forgejo refused to open the pull request; the filing was undone: forgejo POST /api/v1/repos/sf/infra/pulls: status 422: . Try again in a moment.")
 	if m, ok := r.mirrors.rows["linkshort import"]; ok || !slices.Equal(r.mirrors.deletes, []string{"linkshort import"}) {
 		t.Errorf("an unopened pull request: import row %+v (%v), deletes %q; want none, one delete", m, ok, r.mirrors.deletes)
 	}
@@ -514,7 +514,7 @@ func TestFailedFilingDropsItsImport(t *testing.T) {
 	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) {
 		return nil, errors.New("infra: 503")
 	}
-	file(http.StatusBadGateway, "cannot read the configuration at infra's head: infra: 503. Try again in a moment.")
+	file(http.StatusBadGateway, "The configuration at infra's head could not be read: infra: 503. Try the switch again, or edit the project file on Forgejo.")
 	if len(infra.contents) != 0 {
 		t.Fatalf("a failed check committed: %+v", infra.contents)
 	}
