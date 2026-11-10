@@ -505,7 +505,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	flagged := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", flag.ID)
+	const flagged = "The monitor flagged this card: what should happen? Answer it in the project chat."
 	record(EventQuestionAsked, map[string]any{"question": "Use a replica?"})
 	record(EventQuestionAsked, map[string]any{"question": flagged, "case_id": flag.ID, "case_kind": string(CaseMonitorFlag)})
 	if err := p.Pass(ctx); err != nil {
@@ -573,7 +573,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 			t.Fatal(err)
 		}
 		faced = append(faced, c.ID)
-		record(EventQuestionAsked, map[string]any{"question": fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", c.ID),
+		record(EventQuestionAsked, map[string]any{"question": "The monitor flagged this card (" + flag + "): what should happen? Answer it in the project chat.",
 			"case_id": c.ID, "case_kind": string(CaseMonitorFlag), "flag": flag})
 	}
 	copyWords := func() []string {

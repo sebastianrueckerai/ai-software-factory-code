@@ -547,12 +547,12 @@ func replyNext(reason string) string {
 // tripNext is the last line of a trip's face for case c: at a cap, where
 // a reply is a continue that asks again, the Extend form or the chat's
 // extend start the next attempt, at a budget floor the Fund form or the
-// chat's fund, for a monitor flag, whose card goes on, the case by its
-// number in the chat, and elsewhere a reply (replyNext).
+// chat's fund, for a monitor flag, whose card goes on, the flag in the
+// chat, and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
-		return fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", c.ID)
+		return "The card goes on meanwhile. Answer the flag in the project chat."
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseBudgetFloor:
@@ -608,7 +608,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
 		if beside {
-			shaped = monitorQuestion(reason, c.ID)
+			shaped = monitorQuestion(reason)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}

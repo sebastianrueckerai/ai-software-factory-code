@@ -226,11 +226,11 @@ const (
 	monitorHandsUp = "no resolver fits"
 )
 
-// face is the comment of monitor case n's face on card id for line: the
-// card goes on, and the case is answered by its number in the chat.
-func face(id, line string, n int64) string {
+// face is the comment of a monitor case's face on card id for line: the
+// card goes on, and the flag is answered in the chat.
+func face(id, line string) string {
 	return "factoryd: task " + id + " needs a human.\n\n```\n" + line + "\n```\n\n" +
-		fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", n)
+		"The card goes on meanwhile. Answer the flag in the project chat."
 }
 
 // assertQueueCase checks that card id carries the queue's flag case alone,
@@ -293,13 +293,13 @@ func TestMonitorPassOpensOneCasePerNewFlag(t *testing.T) {
 	g.pass(t)
 	g.assertQueueCase(t, "t1")
 	n := g.flagCases(t, "t1")[queuedKey].ID
-	if want := []string{face("t1", queuedLine, n)}; !slices.Equal(g.forge.comments[12], want) {
+	if want := []string{face("t1", queuedLine)}; !slices.Equal(g.forge.comments[12], want) {
 		t.Fatalf("comments = %q, want %q", g.forge.comments[12], want)
 	}
 	if got := g.cursor(t); got != filed {
 		t.Fatalf("cursor = %d, want at the card_created row %d it read", got, filed)
 	}
-	ask := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", n)
+	const ask = "The monitor flagged this card (queued_over_bound(work bound 3 of 3 for 3h)): what should happen? Answer it in the project chat."
 	if asks := (actRig{s: g.s}).rows(t, EventQuestionAsked); len(asks) != 1 || asks[0].Detail["ask"] != ask || asks[0].Detail["case_id"] != float64(n) ||
 		asks[0].Detail["case_kind"] != string(CaseMonitorFlag) || asks[0].Detail["flag"] != "queued_over_bound" || len(asks[0].Detail["choices"].([]any)) != 0 {
 		t.Fatalf("asks = %+v, want one on case %d of kind monitor_flag and flag queued_over_bound asking %q with no choices", asks, n, ask)
@@ -731,7 +731,7 @@ func TestMonitorFacesAQuietRunBesideIt(t *testing.T) {
 	if len(cases) != 1 || !ok || c.Status != CaseAtHuman || c.Problem != line {
 		t.Fatalf("t1's flag cases = %v, want wait_over_bound on run_quiet since 08:00 at the human", cases)
 	}
-	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line, c.ID)}) {
+	if task, _, _ := g.s.Task(ctx, "t1"); task.Status != "running" || !slices.Equal(g.forge.comments[12], []string{face("t1", line)}) {
 		t.Fatalf("t1 %s, comments %q; want it running with the case's one face", task.Status, g.forge.comments[12])
 	}
 	if tl, _ := g.objects.Get(ctx, "sessions/t1/timeline.jsonl"); len(tl) != 0 {
@@ -831,7 +831,7 @@ func TestMonitorFacesACaseWhoseFaceFailed(t *testing.T) {
 	g.event(t, "t1", 12, EventMergeDenied, nil, monitorAt)
 	g.pass(t)
 	g.assertQueueCase(t, "t1")
-	if !slices.Equal(g.forge.comments[12], []string{face("t1", queuedLine, cases[queuedKey].ID)}) {
+	if !slices.Equal(g.forge.comments[12], []string{face("t1", queuedLine)}) {
 		t.Fatalf("comments = %q, want the case's one face", g.forge.comments[12])
 	}
 }

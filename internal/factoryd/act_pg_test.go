@@ -202,7 +202,7 @@ func TestActResolvesAndDrawsInOneTransaction(t *testing.T) {
 	_, err = g.r.Act(ctx, ActInput{TaskID: "t1", CaseID: g.c.ID, By: "ana", Rung: 3, Res: oneSession})
 	var ended ErrCaseEnded
 	at := c.ResolvedAt.UTC().Format("15:04")
-	if !errors.As(err, &ended) || err.Error() != fmt.Sprintf("case %d was resolved by sebastian with extend at %s UTC", g.c.ID, at) {
+	if !errors.As(err, &ended) || err.Error() != "the session cap on #12 was resolved by sebastian with extend at "+at+" UTC" {
 		t.Fatalf("a second answer = %v, want the case resolved by sebastian with extend at %s UTC", err, at)
 	}
 	if card := g.card(t); card.Usage.RaisedSessions != 1 || len(g.rows(t, EventCardExtended)) != 1 {
@@ -449,8 +449,8 @@ func TestActWithdrawalWithNoNoteNamesWhoWithdrew(t *testing.T) {
 		t.Fatal(err)
 	}
 	c := caseByID(t, g.s, g.c.ID)
-	want := fmt.Sprintf("case %d was withdrawn at %s UTC: withdrawn by %s", c.ID, c.ResolvedAt.UTC().Format("15:04"), FactoryDecider)
-	if err := (ErrCaseEnded{c}); err.Error() != want {
+	want := fmt.Sprintf("the session cap on #12 was withdrawn at %s UTC: withdrawn by %s", c.ResolvedAt.UTC().Format("15:04"), FactoryDecider)
+	if err := (ErrCaseEnded{Case: c, Card: "#12"}); err.Error() != want {
 		t.Fatalf("the ended case reads %q, want %q", err.Error(), want)
 	}
 }
@@ -806,7 +806,7 @@ func TestActGrantsACheckinShare(t *testing.T) {
 	if !got.Drawn.IsZero() || !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("result = %+v, want nothing drawn and %+v", got, want)
 	}
-	if text := fmt.Sprintf("Case %d is resolved with extend: 1 more check-in share.", c.ID); got.Text != text {
+	if text := `The check-in share on #12 ("check-in: spend_above_policy: the check-in's share of the budget is spent") is resolved with extend: 1 more check-in share.`; got.Text != text {
 		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 	if card := g.card(t); card.Usage.ExtraCheckinShare != 1 {
@@ -895,7 +895,7 @@ func TestActStepNamesEveryPartOfAnExtend(t *testing.T) {
 	if !reflect.DeepEqual(got.Did, want) {
 		t.Fatalf("did = %+v, want %+v", got.Did, want)
 	}
-	if text := fmt.Sprintf("Case %d is resolved with extend: 1 session from the pool and 100 lines to its line bound.", g.c.ID); got.Text != text {
+	if text := `The session cap on #12 ("Card #12 used its sessions") is resolved with extend: 1 session from the pool and 100 lines to its line bound.`; got.Text != text {
 		t.Fatalf("text = %q, want %q", got.Text, text)
 	}
 }

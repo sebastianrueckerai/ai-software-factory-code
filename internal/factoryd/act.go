@@ -101,7 +101,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{}, err
 	}
-	c, err := r.actCase(ctx, t, in.CaseID)
+	c, err := r.actCase(ctx, t, in)
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
@@ -178,7 +178,7 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 			out.Case = c
 		}
 	}
-	out.Text = actText(t, c, res, out.Did)
+	out.Text = actText(in, t, c, res, out.Did)
 	if !answers {
 		return out, nil
 	}
@@ -216,15 +216,15 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 // actCase is the case in answers on card t: case id when it is live and
 // t's, else none for 0. An answer with no case on a card that waits on a
 // live ask case is refused: it would draw and leave the case waiting.
-func (r *Runner) actCase(ctx context.Context, t Task, id int64) (Case, error) {
-	if id == 0 {
+func (r *Runner) actCase(ctx context.Context, t Task, in ActInput) (Case, error) {
+	if in.CaseID == 0 {
 		c, err := r.store.NewestAskCase(ctx, t.ID)
 		if err == nil && c.ID != 0 {
-			err = ErrActRefused(fmt.Sprintf("card %s waits on its case %d: answer that case by its id", cardName(t), c.ID))
+			err = ErrActRefused(fmt.Sprintf("card %s waits on %s: answer that case, not the card", cardName(t), caseRef(in.Via, "", c)))
 		}
 		return Case{}, err
 	}
-	c, err := r.store.CaseByID(ctx, id)
+	c, err := r.store.CaseByID(ctx, in.CaseID)
 	if err != nil {
 		return Case{}, err
 	}
@@ -232,9 +232,9 @@ func (r *Runner) actCase(ctx context.Context, t Task, id int64) (Case, error) {
 	case c.TaskID != t.ID:
 		other, _, _ := r.store.Task(ctx, c.TaskID)
 		other.ID = c.TaskID
-		return Case{}, ErrActRefused(fmt.Sprintf("case %d is card %s's, not card %s's: answer it on its own card", c.ID, cardName(other), cardName(t)))
+		return Case{}, ErrActRefused(fmt.Sprintf("%s is card %s's, not card %s's: answer it on its own card", caseRef(in.Via, "", c), cardName(other), cardName(t)))
 	case c.Status != CaseOpen && c.Status != CaseAtHuman:
-		return c, ErrCaseEnded{c}
+		return c, ErrCaseEnded{Case: c, Card: cardName(t)}
 	}
 	return c, nil
 }
@@ -270,8 +270,13 @@ func (r *Runner) actWrite(ctx context.Context, t Task, c Case, in ActInput, did 
 		_, err = r.store.AppendCaseStep(ctx, step)
 	}
 	var bound *DrawBoundError
-	if errors.As(err, &bound) {
+	var ended ErrCaseEnded
+	switch {
+	case errors.As(err, &bound):
 		return ErrActRefused(bound.Error())
+	case errors.As(err, &ended) && ended.Card == "":
+		ended.Card = cardName(t)
+		return ended
 	}
 	return err
 }
@@ -686,19 +691,30 @@ func (r *Runner) answerComment(t Task, by string, res Resolution) string {
 	return body
 }
 
+// caseRef is case c of card as the reader of via takes it: the chat's
+// tools answer by the id, so it keeps the id beside the words.
+func caseRef(via, card string, c Case) string {
+	words := CaseWords(card, c)
+	if via == ViaChat {
+		words += fmt.Sprintf(" (case %d)", c.ID)
+	}
+	return words
+}
+
 // actText is the line an answer res on card t's case c leaves the human
 // or the chat, with what ran outside the run.
-func actText(t Task, c Case, res Resolution, did []CaseAction) string {
+func actText(in ActInput, t Task, c Case, res Resolution, did []CaseAction) string {
 	var text string
+	ref := caseRef(in.Via, cardName(t), c)
 	switch {
 	case c.ID == 0:
 		text = fmt.Sprintf("Card %s took %s.", cardName(t), res.Sentence())
 	case res.Action == ActNote:
-		text = fmt.Sprintf("The note is on case %d, which stays open.", c.ID)
+		text = fmt.Sprintf("The note is on %s, which stays open.", ref)
 	case res.Action == ActWithdraw:
-		text = fmt.Sprintf("Case %d is withdrawn.", c.ID)
+		text = fmt.Sprintf("%s is withdrawn.", upperFirst(ref))
 	default:
-		text = fmt.Sprintf("Case %d is resolved with %s.", c.ID, res.Sentence())
+		text = fmt.Sprintf("%s is resolved with %s.", upperFirst(ref), res.Sentence())
 	}
 	for _, a := range did {
 		if slices.Contains(outsideActions, a.Action) {
@@ -707,6 +723,8 @@ func actText(t Task, c Case, res Resolution, did []CaseAction) string {
 	}
 	return text
 }
+
+func upperFirst(s string) string { return strings.ToUpper(s[:1]) + s[1:] }
 
 // cardName is how a refusal names card t: its issue, else its task id.
 func cardName(t Task) string { return cardRef(Event{TaskID: t.ID}, t) }
