@@ -581,10 +581,8 @@ func TestLadderReplaysTheCheckinMoments(t *testing.T) {
 		l.store.tasks["t1"] = tk
 		spending := &spendingStore{Store: l.runner.store}
 		l.runner.store = spending
-		go func() {
-			time.Sleep(500 * time.Millisecond)
-			spending.added.Store(math.Float64bits(2.5)) // 62.5 percent of the 4 left, past the default 60
-		}()
+		// 62.5 percent of the 4 left, past the default 60
+		l.runner.kube.(*fakeKube).onCreatePod = func() { spending.added.Store(math.Float64bits(2.5)) }
 		l.runner.tick = 50 * time.Millisecond
 		setDetectors(l.runner, map[string]int{policy.DetectorNoProgress: 3600})
 		l.onChecks(ChecksResult{State: ChecksSuccess})

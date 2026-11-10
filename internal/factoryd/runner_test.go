@@ -2887,25 +2887,64 @@ func TestRunSessionReattachWeighsSpendFromTheSessionsStart(t *testing.T) {
 }
 
 // A baseline the store would not give leaves spend_no_push off for the
-// session: 4 EUR of 5 spent in all would trip the old lifetime rule.
+// session: 4 EUR of 5 spent in all would trip the old lifetime rule. Only
+// the baseline read (the third Task call) fails; the session runs in its
+// pod and the spend arrives after the pod is created.
 func TestRunSessionUnreadBaselineKeepsSpendNoPushOff(t *testing.T) {
-	runner, hub, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
+	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
 	tk := store.tasks["t2"]
 	tk.BudgetEUR, tk.SpentEUR = 5, 1
 	store.tasks["t2"] = tk
-	spending := &spendingStore{Store: runner.store}
-	spending.failing.Store(true)
+	spending := &spendingStore{Store: runner.store, failCall: 3}
 	runner.store = spending
-	go func() {
-		time.Sleep(300 * time.Millisecond)
-		spending.failing.Store(false)
-		spending.added.Store(math.Float64bits(3))
-	}()
+	kube.onCreatePod = func() { spending.added.Store(math.Float64bits(3)) }
 	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
 	runner.tick = 50 * time.Millisecond
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
+	if len(kube.podOrder) != 1 || spending.calls.Load() < 4 {
+		t.Fatalf("pods = %d, task reads = %d; want the session to run with its baseline read failing", len(kube.podOrder), spending.calls.Load())
+	}
+	if row, ok := store.liveSessions["t2"]; ok && row.SpentAtStart != nil {
+		t.Fatalf("live row baseline = %v, want none", *row.SpentAtStart)
+	}
+	if chat.calls != 0 || spendTripSeen(hub) {
+		t.Fatalf("chat = %d calls, trip seen = %v, want spend_no_push off", chat.calls, spendTripSeen(hub))
+	}
+}
+
+// A session reattached from a row written before the baseline column (null)
+// runs with spend_no_push off: 4 of 5 spent in all would trip the old rule.
+func TestRunSessionReattachWithNullBaselineKeepsSpendNoPushOff(t *testing.T) {
+	runner, hub, kube, _, chat, store, objects := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	store.tasks["t2"] = tk
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	first.SpentAtStart = nil
+	store.liveSessions["t2"] = first
+	tk = store.tasks["t2"]
+	tk.SpentEUR = 4
+	store.tasks["t2"] = tk
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if timeline := string(objGet(objects, "sessions/t2/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_reattached"`) {
+		t.Fatalf("timeline = %s, want the reattach", timeline)
+	}
 	if chat.calls != 0 || spendTripSeen(hub) {
 		t.Fatalf("chat = %d calls, trip seen = %v, want spend_no_push off", chat.calls, spendTripSeen(hub))
 	}
@@ -3931,12 +3970,14 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 // spendingStore reports the spend a session adds once the test sets it.
 type spendingStore struct {
 	Store
-	added   atomic.Uint64
-	failing atomic.Bool
+	added atomic.Uint64
+	// failCall is the 1-based Task call that fails; 0 = none
+	failCall int32
+	calls    atomic.Int32
 }
 
 func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error) {
-	if s.failing.Load() {
+	if s.calls.Add(1) == s.failCall {
 		return Task{}, false, errors.New("store down")
 	}
 	t, ok, err := s.Store.Task(ctx, id)
@@ -3948,16 +3989,13 @@ func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error)
 // pushed, asks the check-in: 1 EUR before the session leaves 4, and 2.5 EUR
 // spent in it is 62.5 percent of 4, past the default 60.
 func TestRunSessionSpendWithoutPushRunsCheckin(t *testing.T) {
-	runner, hub, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
+	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
 	tk := store.tasks["t2"]
 	tk.BudgetEUR, tk.SpentEUR = 5, 1
 	store.tasks["t2"] = tk
 	spending := &spendingStore{Store: runner.store}
 	runner.store = spending
-	go func() {
-		time.Sleep(500 * time.Millisecond)
-		spending.added.Store(math.Float64bits(2.5))
-	}()
+	kube.onCreatePod = func() { spending.added.Store(math.Float64bits(2.5)) }
 	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
 	runner.tick = 50 * time.Millisecond
 	ctx, cancel := context.WithCancel(context.Background())

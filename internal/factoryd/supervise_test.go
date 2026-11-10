@@ -1923,6 +1923,20 @@ func TestSpendWithoutPushWeighsTheSessionsOwnSpend(t *testing.T) {
 	}
 }
 
+// A fund during the session counts into what the card had left. 1 EUR was
+// spent at the start; with a budget of 5, 4 are left, the line is
+// 0.6 x 4 = 2.4 and 2.5 spent trips. After a fund to 6, 5 are left, the
+// line is 0.6 x 5 = 3.0 and 2.5 spent does not.
+func TestSpendWithoutPushCountsAFundDuringTheSession(t *testing.T) {
+	start := func(c *SupervisorConfig) { c.SpentAtStart = 1 }
+	if trip := spendSupervisor(t, start).Spent(3.5, 5); trip == nil {
+		t.Fatal("2.5 spent of 4 left did not trip")
+	}
+	if trip := spendSupervisor(t, start).Spent(3.5, 6); trip != nil {
+		t.Fatalf("2.5 spent of 5 left after a fund tripped: %+v", trip)
+	}
+}
+
 func TestSpendWithoutPushIgnoresAnExhaustedStart(t *testing.T) {
 	s := spendSupervisor(t, func(c *SupervisorConfig) { c.SpentAtStart = 5 })
 	if trip := s.Spent(6, 5); trip != nil {

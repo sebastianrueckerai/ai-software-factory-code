@@ -656,7 +656,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 		spentAtStart = live.SpentAtStart
 	} else {
-		if cur, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
+		if cur, ok, err := r.store.Task(ctx, t.ID); err != nil {
+			log.Printf("task %s: session %s: read the card's spend at the session's start: %s", t.ID, s.id, r.Scrub.String(err.Error()))
+		} else if ok {
 			spent := cur.EnforcedSpent()
 			spentAtStart = &spent
 		}

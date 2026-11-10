@@ -90,8 +90,9 @@ type SupervisorConfig struct {
 	// CheapCap: a session on the start rung's first attempt has this long
 	// to push before it climbs in place (roadmap 222, item 5); 0 = none.
 	CheapCap time.Duration
-	// NoPushSpend is the share of the card's budget (0 to under 1) whose
-	// spend with nothing pushed trips the supervisor; 0 = off. PriorPush:
+	// NoPushSpend is the share (0 to under 1) of what the card had left at
+	// the session's start that the session's own spend may reach with
+	// nothing pushed before the supervisor trips; 0 = off. PriorPush:
 	// an earlier session of the card already pushed work.
 	NoPushSpend float64
 	PriorPush   bool
@@ -633,7 +634,7 @@ const (
 	// TripCheapCap: the start rung's first attempt ran its cap without a
 	// push (roadmap 222, item 5)
 	TripCheapCap TripKind = "cheap_cap"
-	// TripSpendNoPush: the card spent its policy share of the budget and nothing is pushed
+	// TripSpendNoPush: the session spent its policy share of what the card had left at its start and nothing is pushed
 	TripSpendNoPush TripKind = "spend_no_push"
 )
 
