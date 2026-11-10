@@ -347,6 +347,31 @@ func cardReads(cfg *console.Config, tasks console.Tasks) {
 	cfg.PoolDrawn = func(context.Context, string, time.Time) (policy.Draw, error) { return policy.Draw{}, nil }
 	// the rigs keep no review or audit rows: every approval passes the gate
 	cfg.CheckMerge = func(context.Context, string, int64, string) error { return nil }
+	// the rest of the seams New requires: a rig that drives one wires its own
+	// over these; those that wire theirs later replace them
+	cfg.DeploymentHealth = func(context.Context, factoryd.Project, string, string) (string, error) { return "", nil }
+	if cfg.AnswerPlan == nil {
+		cfg.AnswerPlan = func(context.Context, string, int, int, string, string, string) error { return nil }
+	}
+	if cfg.AnswerPlanQuestions == nil {
+		cfg.AnswerPlanQuestions = func(context.Context, string, int, []factoryd.PlanAnswer, string) error { return nil }
+	}
+	cfg.DecideHoldout = func(context.Context, string, int, int, string, string) error { return nil }
+	cfg.GrantCriteria = func(context.Context, string, string, int64) (int, error) { return 0, nil }
+	cfg.DecideCriterion = func(context.Context, string, string, string, string, string) error { return nil }
+	cfg.ConfirmDeliveredCriteria = func(context.Context, string, string, string) (int, error) { return 0, nil }
+	cfg.RetryCard = func(context.Context, string, string) (int64, error) { return 0, nil }
+	cfg.GoCard = func(context.Context, string, string) (int64, error) { return 0, nil }
+	cfg.CloseCard = func(context.Context, string, string) error { return nil }
+	cfg.RerunStall = func(context.Context, string, string) error { return nil }
+	cfg.DismissStall = func(context.Context, string, string, string) error { return nil }
+	cfg.Replan = func(context.Context, string, string, string, bool) (string, error) { return "", nil }
+	cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
+	cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	cfg.MainExists = func(context.Context, factoryd.Repo) (bool, error) { return false, nil }
+	cfg.ReconcileError = func(string) string { return "" }
+	cfg.AddCollaborator = func(context.Context, factoryd.Repo, string, string) error { return nil }
+	cfg.SetIssueDependency = func(context.Context, factoryd.Repo, int64, int64, bool) error { return nil }
 }
 
 // Login logs the member in as Forgejo answers the OAuth flow and answers

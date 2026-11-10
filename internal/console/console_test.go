@@ -1526,7 +1526,14 @@ func newRig(t *testing.T) *rig {
 			r.invited = append(r.invited, repo.String()+" "+user+" "+permission)
 			return nil
 		},
-		DeployNow: func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
+		DeployNow:                func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld },
+		GrantCriteria:            func(context.Context, string, string, int64) (int, error) { return 0, nil },
+		DecideCriterion:          func(context.Context, string, string, string, string, string) error { return nil },
+		ConfirmDeliveredCriteria: func(context.Context, string, string, string) (int, error) { return 0, nil },
+		Replan:                   func(context.Context, string, string, string, bool) (string, error) { return "", nil },
+		CheckProject:             func(context.Context, string, []byte) ([]string, error) { return nil, nil },
+		MainExists:               func(context.Context, factoryd.Repo) (bool, error) { return false, nil },
+		ReconcileError:           func(string) string { return "" },
 		SetIssueDependency: func(_ context.Context, repo factoryd.Repo, number, dependency int64, remove bool) error {
 			edge := fmt.Sprintf("%s#%d on #%d", repo, number, dependency)
 			r.issueDeps = slices.DeleteFunc(r.issueDeps, func(e string) bool { return e == edge })
@@ -1762,14 +1769,35 @@ func TestLoginKeepsNoServerStateAndRefusesATamperedCookie(t *testing.T) {
 func TestNewRefusesAMissingCardRead(t *testing.T) {
 	r := newRig(t)
 	for name, drop := range map[string]func(*Config){
-		"CardDigest":    func(c *Config) { c.CardDigest = nil },
-		"CardStep":      func(c *Config) { c.CardStep = nil },
-		"BoardDigest":   func(c *Config) { c.BoardDigest = nil },
-		"OpenCasesOf":   func(c *Config) { c.OpenCasesOf = nil },
-		"CaseByID":      func(c *Config) { c.CaseByID = nil },
-		"CaseSteps":     func(c *Config) { c.CaseSteps = nil },
-		"NewestAskCase": func(c *Config) { c.NewestAskCase = nil },
-		"CheckMerge":    func(c *Config) { c.CheckMerge = nil },
+		"CardDigest":               func(c *Config) { c.CardDigest = nil },
+		"CardStep":                 func(c *Config) { c.CardStep = nil },
+		"BoardDigest":              func(c *Config) { c.BoardDigest = nil },
+		"OpenCasesOf":              func(c *Config) { c.OpenCasesOf = nil },
+		"CaseByID":                 func(c *Config) { c.CaseByID = nil },
+		"CaseSteps":                func(c *Config) { c.CaseSteps = nil },
+		"NewestAskCase":            func(c *Config) { c.NewestAskCase = nil },
+		"CheckMerge":               func(c *Config) { c.CheckMerge = nil },
+		"Writers":                  func(c *Config) { c.Writers = nil },
+		"Writes":                   func(c *Config) { c.Writes = nil },
+		"DeploymentHealth":         func(c *Config) { c.DeploymentHealth = nil },
+		"AnswerPlan":               func(c *Config) { c.AnswerPlan = nil },
+		"AnswerPlanQuestions":      func(c *Config) { c.AnswerPlanQuestions = nil },
+		"DecideHoldout":            func(c *Config) { c.DecideHoldout = nil },
+		"GrantCriteria":            func(c *Config) { c.GrantCriteria = nil },
+		"DecideCriterion":          func(c *Config) { c.DecideCriterion = nil },
+		"ConfirmDeliveredCriteria": func(c *Config) { c.ConfirmDeliveredCriteria = nil },
+		"RetryCard":                func(c *Config) { c.RetryCard = nil },
+		"GoCard":                   func(c *Config) { c.GoCard = nil },
+		"CloseCard":                func(c *Config) { c.CloseCard = nil },
+		"RerunStall":               func(c *Config) { c.RerunStall = nil },
+		"DismissStall":             func(c *Config) { c.DismissStall = nil },
+		"Replan":                   func(c *Config) { c.Replan = nil },
+		"DeployNow":                func(c *Config) { c.DeployNow = nil },
+		"CheckProject":             func(c *Config) { c.CheckProject = nil },
+		"MainExists":               func(c *Config) { c.MainExists = nil },
+		"ReconcileError":           func(c *Config) { c.ReconcileError = nil },
+		"AddCollaborator":          func(c *Config) { c.AddCollaborator = nil },
+		"SetIssueDependency":       func(c *Config) { c.SetIssueDependency = nil },
 	} {
 		cfg := r.c.cfg
 		drop(&cfg)
