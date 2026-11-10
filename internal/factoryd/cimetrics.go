@@ -156,7 +156,7 @@ func (c *CIRuns) pollJobs(ctx context.Context) error {
 func (c *CIRuns) pollRuns(ctx context.Context) error {
 	runID := func(r ActionRun) int64 { return r.ID }
 	runs, err := readPages(ctx, &c.runs, func(ctx context.Context, page int) ([]ActionRun, error) {
-		return c.Forgejo.ActionRuns(ctx, c.Token, c.Owner, c.Repo, url.Values{"page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(actionTasksPage)}})
+		return c.Forgejo.ActionRuns(ctx, c.Token, c.Owner, c.Repo, url.Values{"page": {strconv.Itoa(page)}, "limit": {strconv.Itoa(runsPage)}})
 	}, runID)
 	if err != nil {
 		return err

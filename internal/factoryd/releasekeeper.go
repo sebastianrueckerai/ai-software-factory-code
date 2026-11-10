@@ -472,7 +472,7 @@ func (k *ReleaseKeeper) pushRuns(ctx context.Context, repository string) (Projec
 	}
 	repo := p.Repo()
 	runs, err := k.Forgejo.ActionRuns(ctx, k.Forgejo.Access(p).Actions, repo.Owner, repo.Name,
-		url.Values{"event": {"push"}, "limit": {strconv.Itoa(rollRunsRead)}})
+		url.Values{"event": {"push"}, "limit": {strconv.Itoa(runsPage)}})
 	return p, runs, err
 }
 

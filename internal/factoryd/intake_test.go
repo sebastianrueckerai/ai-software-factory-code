@@ -2742,3 +2742,65 @@ func TestAnUnknownEventTypeLogsOnce(t *testing.T) {
 		t.Fatalf("a known type logged: %s", logs.String())
 	}
 }
+
+// An issue whose Directories line names only paths under workflow
+// directories is a human's card from its filing: the worker refuses the
+// push, so no session is bought. One path elsewhere, or no line, files the
+// agent card as before.
+func TestIntakeFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
+	for issue, tc := range map[int64]struct {
+		dirs  string
+		human bool
+	}{
+		31: {".forgejo/workflows/pr.yml", true},
+		32: {".forgejo/workflows/pr.yml, internal/x.go", false},
+		33: {".github/x.yml, .gitea/y.yml", true},
+		34: {"", false},
+	} {
+		t.Run(tc.dirs, func(t *testing.T) {
+			in, store, _ := trackIntake(t, "maintenance", maintenanceTracks)
+			body := "Fix the CI.\n"
+			if tc.dirs != "" {
+				body += "\nDirectories: " + tc.dirs + "\n"
+			}
+			post(t, in, "issues", issueOpenedBody(issue, "sebastian", []string{"agent"}, "A card", body))
+			got, started := card(store, issue), workflowsOf(in).started
+			if !tc.human {
+				if got.Kind != "agent" || len(started) != 1 {
+					t.Fatalf("card = %+v, started %q; want the agent card started", got, started)
+				}
+				return
+			}
+			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(started) != 0 || got.EnforcedSpent() != 0 {
+				t.Fatalf("card = %+v, started %q; want a human's card, no start, no spend", got, started)
+			}
+			var asks []HumanQuestion
+			for _, e := range store.intakeEvents {
+				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+					asks = append(asks, *e.Question)
+				}
+			}
+			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") || !strings.Contains(asks[0].Info, "Fix the CI.") {
+				t.Fatalf("asks = %+v, want one that names the push rule and carries the brief", asks)
+			}
+		})
+	}
+}
+
+func TestWorkflowOnly(t *testing.T) {
+	for _, tc := range []struct {
+		paths []string
+		want  bool
+	}{
+		{[]string{".forgejo/workflows/pr.yml"}, true},
+		{[]string{"./.github", ".Gitea/y.yml"}, true},
+		{[]string{".forgejo/x", "internal/x.go"}, false},
+		{[]string{"/.forgejo/x"}, false},
+		{[]string{".forgejo-helper/x"}, false},
+		{nil, false},
+	} {
+		if got := workflowOnly(tc.paths); got != tc.want {
+			t.Errorf("workflowOnly(%q) = %v, want %v", tc.paths, got, tc.want)
+		}
+	}
+}
