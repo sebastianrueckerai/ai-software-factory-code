@@ -1936,11 +1936,7 @@ func noLongerWaits(numbers []int64) string {
 	for i, n := range numbers {
 		names[i] = fmt.Sprintf("#%d", n)
 	}
-	list := strings.Join(names, " and ")
-	if len(names) > 2 {
-		list = strings.Join(names[:len(names)-1], ", ") + " and " + names[len(names)-1]
-	}
-	return "It no longer waits on " + list + "."
+	return "It no longer waits on " + textutil.AndList(names) + "."
 }
 
 // dropDependencies removes the issues card t's issue depends on, which
