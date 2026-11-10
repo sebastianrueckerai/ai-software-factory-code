@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -46,7 +45,7 @@ func TestPokeOf(t *testing.T) {
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
 		// a monitor's case sits beside the card's own ask: its row names the case
 		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "reason": "the wait ended"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "Case 12 needs you no more: its question is withdrawn because the wait ended."}, true},
+			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store needs you no more: its question is withdrawn because the wait ended."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
 		{"an agent's merge on red checks offers no Approve", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
@@ -531,7 +530,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := fmt.Sprintf("Case %d needs you no more: its question is withdrawn because the wait ended.", flag.ID); len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
+	if want := "The flag on #603 - Session store needs you no more: its question is withdrawn because the wait ended."; len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
 		t.Fatalf("the inbox = %+v, asks %+v; want the two asks and the withdrawal %q", rows, asks, want)
 	}
 	askRows := make([]ChatMessage, len(asks))
