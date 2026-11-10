@@ -44,16 +44,48 @@ func answerDecisions(f CaseFacts, rung int) []string {
 	return names
 }
 
+// RungHandUp is the decision of a rung that cannot resolve: it takes no
+// action and recommends one to the rung above.
+const RungHandUp = "hand_up"
+
+// decisionEnum is the decision enum: the offered actions, then hand_up.
+func decisionEnum(f CaseFacts, rung int) []string {
+	return append(answerDecisions(f, rung), RungHandUp)
+}
+
+// handUpActions are the names Offered lists for any rung from rung to the
+// human's, in table order.
+func handUpActions(f CaseFacts, rung int) []string {
+	var names []string
+	for _, a := range Actions {
+		for r := rung; r <= 3; r++ {
+			if slices.ContainsFunc(Offered(f, r), func(o Action) bool { return o.Name == a.Name }) {
+				names = append(names, a.Name)
+				break
+			}
+		}
+	}
+	return names
+}
+
+// recommendable is the recommendation's action enum for decision: the
+// actions for the rung above on a hand_up, the offered ones otherwise.
+func recommendable(f CaseFacts, rung int, decision string) []string {
+	if decision == RungHandUp {
+		return handUpActions(f, rung)
+	}
+	return answerDecisions(f, rung)
+}
+
 // AnswerSchema derives the answer tool's JSON schema from f and rung: the
 // decision an enum of exactly the action names Offered lists for the
 // rung, reason_kind the closed enum answerReasonKinds holds, the verdicts
 // an object keyed by the finding ids on f, each one of the check-in's
 // three verdicts with its evidence, a note, a recommendation with its
-// grounds that picks from the same offered actions, and an optional draw
+// grounds that picks from the offered actions, or from the rungs above on a hand_up, an optional model for a handover, and an optional draw
 // that rides beside the decision. Every required list is an array of
 // strings. The same facts and rung derive the same schema.
 func AnswerSchema(f CaseFacts, rung int) map[string]any {
-	offered := answerDecisions(f, rung)
 	verdicts := map[string]any{"type": "object", "additionalProperties": false}
 	if len(f.Findings) > 0 {
 		props := make(map[string]any, len(f.Findings))
@@ -76,20 +108,25 @@ func AnswerSchema(f CaseFacts, rung int) map[string]any {
 		"properties": map[string]any{
 			"decision": map[string]any{
 				"type":        "string",
-				"enum":        offered,
-				"description": "the action this rung takes, one of the offered actions",
+				"enum":        decisionEnum(f, rung),
+				"description": "the action this rung takes, one of the offered actions, or hand_up when the rung cannot resolve",
 			},
 			"reason_kind": map[string]any{
 				"type":        "string",
 				"enum":        slices.Clone(answerReasonKinds),
 				"description": "the kind of reason the answer answers",
 			},
+			"model": map[string]any{
+				"type":        "string",
+				"enum":        slices.Clone(handoverModels),
+				"description": "the model of the next session, required with the decision handover",
+			},
 			"verdicts": verdicts,
 			"note":     map[string]any{"type": "string", "description": "the note the answer hands the card"},
 			"recommendation": map[string]any{
 				"type": "object",
 				"properties": map[string]any{
-					"action":  map[string]any{"type": "string", "enum": slices.Clone(offered), "description": "the action the answer recommends"},
+					"action":  map[string]any{"type": "string", "enum": handUpActions(f, rung), "description": "the action the answer recommends: one of the offered actions, or on hand_up one for the rung above"},
 					"grounds": map[string]any{"type": "string", "description": "why, in plain words"},
 				},
 				"required":             []string{"action", "grounds"},
@@ -119,6 +156,7 @@ type RungAnswer struct {
 	Decision       string                 `json:"decision"`
 	ReasonKind     string                 `json:"reason_kind"`
 	Verdicts       map[string]RungVerdict `json:"verdicts"`
+	Model          string                 `json:"model,omitempty"`
 	Note           string                 `json:"note"`
 	Recommendation RungRecommendation     `json:"recommendation"`
 	Draw           *RungDraw              `json:"draw,omitempty"`
@@ -153,6 +191,7 @@ type rungAnswerJSON struct {
 	Decision       *string                     `json:"decision"`
 	ReasonKind     *string                     `json:"reason_kind"`
 	Verdicts       map[string]*rungVerdictJSON `json:"verdicts"`
+	Model          *string                     `json:"model"`
 	Note           *string                     `json:"note"`
 	Recommendation *rungRecommendationJSON     `json:"recommendation"`
 	Draw           *RungDraw                   `json:"draw"`
@@ -211,10 +250,10 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	case j.Recommendation == nil:
 		return RungAnswer{}, errors.New("the answer leaves recommendation out")
 	}
-	if !slices.Contains(offered, *j.Decision) {
+	if enumCheck("decision", *j.Decision, decisionEnum(f, rung)) != nil {
 		return RungAnswer{}, fmt.Errorf("decision %q is not offered at this rung: the rung answers with %s", *j.Decision, offeredText(offered))
 	}
-	if !slices.Contains(answerReasonKinds, *j.ReasonKind) {
+	if enumCheck("reason_kind", *j.ReasonKind, answerReasonKinds) != nil {
 		return RungAnswer{}, fmt.Errorf("reason_kind %q is outside the closed enum of the case kinds and the check reasons", *j.ReasonKind)
 	}
 	ids := make(map[string]bool, len(f.Findings))
@@ -251,7 +290,7 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 			return RungAnswer{}, fmt.Errorf("the verdict on %s leaves verdict out", id)
 		case v.Evidence == nil:
 			return RungAnswer{}, fmt.Errorf("the verdict on %s leaves evidence out", id)
-		case !slices.Contains([]string{CheckConfirmed, CheckDropped, CheckRemark}, *v.Verdict):
+		case enumCheck("verdict", *v.Verdict, checkVerdicts) != nil:
 			return RungAnswer{}, fmt.Errorf("the verdict %q on %s is not one of %s", *v.Verdict, id, textutil.AndList([]string{CheckConfirmed, CheckDropped, CheckRemark}))
 		}
 	}
@@ -261,8 +300,17 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 	if j.Recommendation.Grounds == nil {
 		return RungAnswer{}, errors.New("the recommendation leaves grounds out")
 	}
-	if !slices.Contains(offered, *j.Recommendation.Action) {
+	if enumCheck("action", *j.Recommendation.Action, recommendable(f, rung, *j.Decision)) != nil {
+		if *j.Decision == RungHandUp {
+			return RungAnswer{}, fmt.Errorf("the recommended action %q is not an action for the rungs above: they answer with %s", *j.Recommendation.Action, offeredText(handUpActions(f, rung)))
+		}
 		return RungAnswer{}, fmt.Errorf("the recommended action %q is not offered at this rung: the rung answers with %s", *j.Recommendation.Action, offeredText(offered))
+	}
+	if j.Model != nil && enumCheck("model", *j.Model, handoverModels) != nil {
+		return RungAnswer{}, fmt.Errorf("model %q is not one of %s", *j.Model, textutil.AndList(handoverModels))
+	}
+	if *j.Decision == ActHandover && j.Model == nil {
+		return RungAnswer{}, errors.New("a handover leaves model out; it names the model of the next session: " + textutil.AndList(handoverModels))
 	}
 	if j.Draw != nil && (j.Draw.Sessions < 0 || j.Draw.AgentTimeS < 0 || j.Draw.EUR < 0) {
 		return RungAnswer{}, fmt.Errorf("a draw does not go below zero: sessions %d, agent_time_s %d, eur %.2f", j.Draw.Sessions, j.Draw.AgentTimeS, j.Draw.EUR)
@@ -274,6 +322,9 @@ func ParseRungAnswer(f CaseFacts, rung int, text string) (RungAnswer, error) {
 		Note:           *j.Note,
 		Recommendation: RungRecommendation{Action: *j.Recommendation.Action, Grounds: *j.Recommendation.Grounds},
 		Draw:           j.Draw,
+	}
+	if j.Model != nil {
+		out.Model = *j.Model
 	}
 	for _, id := range f.Findings {
 		out.Verdicts[id] = RungVerdict{Verdict: *j.Verdicts[id].Verdict, Evidence: *j.Verdicts[id].Evidence}

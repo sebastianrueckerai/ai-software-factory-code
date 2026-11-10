@@ -71,6 +71,13 @@ func answerRequired(t *testing.T, schema map[string]any) []string {
 func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	noFindings := answerFacts
 	noFindings.Findings = nil
+	// the union of the actions offered from each rung up to the human's
+	handUpWant := map[int][]string{
+		0: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
+		1: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActWithdraw, ActNote},
+		2: {ActRouteApproval, ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
+		3: {ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote},
+	}
 	for _, c := range []struct {
 		name string
 		f    CaseFacts
@@ -81,11 +88,11 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 		for rung := 0; rung <= 3; rung++ {
 			schema := AnswerSchema(c.f, rung)
 			offered := offeredNames(c.f, rung)
-			if got := answerEnum(t, schema, "decision"); !slices.Equal(got, offered) {
-				t.Errorf("%s, rung %d: the decision enum is %v, want the offered actions %v", c.name, rung, got, offered)
+			if got, want := answerEnum(t, schema, "decision"), append(slices.Clone(offered), RungHandUp); !slices.Equal(got, want) {
+				t.Errorf("%s, rung %d: the decision enum is %v, want the offered actions then hand_up %v", c.name, rung, got, want)
 			}
-			if got := answerEnum(t, answerPart(t, schema, "recommendation"), "action"); !slices.Equal(got, offered) {
-				t.Errorf("%s, rung %d: the recommendation's action enum is %v, want the offered actions %v", c.name, rung, got, offered)
+			if got, want := answerEnum(t, answerPart(t, schema, "recommendation"), "action"), handUpWant[rung]; !slices.Equal(got, want) {
+				t.Errorf("%s, rung %d: the recommendation's action enum is %v, want %v", c.name, rung, got, want)
 			}
 			if got := answerEnum(t, schema, "reason_kind"); !slices.Equal(got, wantReasonKinds) {
 				t.Errorf("%s, rung %d: the reason_kind enum is %v, want %v", c.name, rung, got, wantReasonKinds)
@@ -105,10 +112,10 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	// rung: rung 3 answers the caps, rung 0 routes the approval and
 	// withdraws instead of closing
 	schema := AnswerSchema(answerFacts, 3)
-	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
+	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote, RungHandUp}; !slices.Equal(got, want) {
 		t.Errorf("rung 3's decision enum is %v, want %v", got, want)
 	}
-	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw}; !slices.Equal(got, want) {
+	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw, RungHandUp}; !slices.Equal(got, want) {
 		t.Errorf("rung 0's decision enum is %v, want %v", got, want)
 	}
 }
