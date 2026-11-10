@@ -71,7 +71,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: go vet ./...
-      - run: test -z "$(gofmt -l .)"
+      - name: gofmt names the files it would change
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then printf 'not gofmt-formatted:\n%s\n' "$files"; exit 1; fi
   security:
     runs-on: pr-untrusted
     steps:
@@ -198,11 +201,13 @@ jobs:
             if [ "$(date +%s)" -ge "$deadline" ]; then echo "buildkitd did not answer within 4 minutes of the runner's start"; exit 1; fi
             sleep 3
           done
-      - name: build changed images in parallel
+      - name: build changed images one at a time
         # Each build first copies its image's layer cache, written by main CI
         # to the in-cluster build cache (read-only from here),
         # into a local OCI layout that buildctl streams to the VM. A missing
-        # cache only means a cold build.
+        # cache only means a cold build. The builds run one after another:
+        # three at once on the one build VM starved Dockerfile.runner's
+        # warm-up step of memory and it never ended (#1619).
         run: |
           set -uo pipefail
           images="${{ needs.changes.outputs.images }}"
@@ -237,28 +242,21 @@ jobs:
               build --progress=plain --frontend dockerfile.v0 --local context=. --local dockerfile=. \
               --opt filename="$df" --output type=oci,dest=/dev/null "${import[@]}"
           }
-          declare -A pid_for
-          for df in $images; do
-            build "$df" >"$logdir/$df.log" 2>&1 &
-            pid_for[$df]=$!
-          done
-          # each build writes to its own log, so the console names every
-          # running build's newest line each 30 s: a slow build shows its
-          # progress, a stalled one its last word (roadmap 238)
-          while sleep 30; do
-            running=0
-            for df in $images; do
-              if kill -0 "${pid_for[$df]}" 2>/dev/null; then
-                running=1
-                echo "building $df, $SECONDS s: $(tail -n 1 "$logdir/$df.log" | cut -c1-200)"
-              fi
-            done
-            [ "$running" = 1 ] || break
-          done
           status=0
           for df in $images; do
-            wait "${pid_for[$df]}"
-            case $? in
+            build "$df" >"$logdir/$df.log" 2>&1 &
+            pid=$!
+            # the build writes to its own log, so the console names its
+            # newest line each 30 s: a slow build shows its progress, a
+            # stalled one its last word (roadmap 238)
+            while kill -0 "$pid" 2>/dev/null; do
+              sleep 30
+              kill -0 "$pid" 2>/dev/null && echo "building $df, $SECONDS s: $(tail -n 1 "$logdir/$df.log" | cut -c1-200)"
+            done
+            # the job's shell runs with -e: a failed build's wait must not end
+            # the step before its log is printed
+            rc=0; wait "$pid" || rc=$?
+            case $rc in
               0) result="ok: $df" ;;
               124) status=1; result="FAILED: $df, no end within 45 minutes" ;;
               *) status=1; result="FAILED: $df" ;;
