@@ -51,7 +51,8 @@
 {{end}}
 {{- with .Pool}}{{if .Words}}<span class="cell pool{{if or .Overdrawn (not .Readable)}} warn{{end}}" title="the escalation pool every extend and fund draws from, set in the policy tree (escalation.pool), {{.Policy}}, {{.Month}} UTC: the same figures the chat's status line reads">pool: {{.Words}}</span>
 {{end}}{{end}}
-{{- if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
+{{- range .Switches}}<span class="cell warn" title="the gateway serves this alias from its twin while it runs slower than the bound of the policy's routing block">{{.}}</span>
+{{end}}{{- if .ChatSpent}}<span class="cell warn" title="the chat's monthly budget is spent: the chat stands until it is raised or the month turns">chat budget spent</span>
 {{end}}{{if .RoutineCell}}<span class="cell routine{{if .RoutineHeld}} warn{{end}}">{{.RoutineCell}}</span>
 {{end}}{{with .Hold}}<span class="cell warn hold" title="{{.Reason}}: production waits until no plan is open on main">production held · {{.For}}</span>
 {{end}}{{with .GitHub}}<span class="cell gh">GitHub: {{.}}</span>

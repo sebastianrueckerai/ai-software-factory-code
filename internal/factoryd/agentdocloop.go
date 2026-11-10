@@ -405,6 +405,16 @@ func (s agentDocLoopStore) ReleaseHold(ctx context.Context, h policy.Hold, cost 
 	return policy.Booking{}, nil
 }
 
+func (s agentDocLoopStore) LatencySamples(context.Context, []string, time.Time) ([]policy.LatencySample, error) {
+	return nil, nil
+}
+
+func (s agentDocLoopStore) RecordAliasSwitch(context.Context, policy.AliasSwitch) error { return nil }
+
+func (s agentDocLoopStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
+	return nil, nil
+}
+
 // agentDocLoopEnv points opencode's own config, data and cache at a
 // throwaway home for the capture, so nothing of the machine's user or of
 // an earlier run leaks into the system prompt — the worker pod starts

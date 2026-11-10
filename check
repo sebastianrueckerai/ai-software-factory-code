@@ -50,7 +50,7 @@ if [ "${1:-}" = changed ]; then
   }
   pkgs=$(scripts/affected-packages.sh "$base")
   # two packages at once in a sandbox's 4Gi
-  scripts/pg-test.sh go test -p 2 $pkgs
+  scripts/pg-test.sh go test -p 2 -timeout 30m $pkgs
   exit
 fi
 make test

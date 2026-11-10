@@ -108,6 +108,7 @@ type fakeStore struct {
 	// estimates are CalibrateEstimate's earlier call and mean output by ref
 	estimates map[string]refHistory
 	openings  map[string]policy.Opening
+	switches  []policy.AliasSwitch
 	overHolds map[string]OverHoldCall
 	// createFails fails that many CreateTask calls
 	createFails int
@@ -2029,6 +2030,10 @@ func (s *fakeStore) CalibrateEstimate(ctx context.Context, r policy.HoldRequest)
 	h := s.estimates[r.Ref]
 	r.Earlier = h.earlier
 	return r, h.meanOut, nil
+}
+
+func (s *fakeStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
+	return s.switches, nil
 }
 
 func (s *fakeStore) Opening(ctx context.Context, taskID, ref string) (policy.Opening, error) {

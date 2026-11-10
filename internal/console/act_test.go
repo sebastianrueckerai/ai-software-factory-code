@@ -915,3 +915,34 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 	refused("t-e", 9, "Case 9 is #13's merge approval: decide it with approve_merge or deny_merge.")
 	refused("t-e", 10, "Case 10 is #13's plan question: answer revision 2, question 1 without a case number.")
 }
+
+// A card with a live case closes through Act, which removes its dependencies
+// itself (factoryd's close): the console sends the close as typed and removes
+// nothing first (its only write is the note's comment). A refusal of Act's close, whose error carries
+// URL userinfo and a bearer value, reaches the human with both masked.
+func TestCloseThroughActLeavesTheDependenciesToAct(t *testing.T) {
+	r := newRig(t)
+	caseCard(r)
+	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/13/dependencies": dependsOn(7)}
+	ck, s := r.loggedIn(t)
+	if rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}, "note": {"Done."}}), ck); rec.Code != http.StatusSeeOther {
+		t.Fatalf("close = %d: %s", rec.Code, rec.Body)
+	}
+	got, _ := actedOnce(t, r)
+	equal(t, "the close", []any{got.Res, writesOf(r.fg)}, []any{factoryd.Resolution{Action: factoryd.ActClose, Note: "Done."}, []string{"POST /api/v1/repos/sf/code/issues/13/comments"}})
+
+	r = newRig(t)
+	caseCard(r)
+	r.actErr = errors.New("forgejo PATCH https://user:pass@git.example/x: edge refused, Authorization: Bearer abcdef0123456789")
+	ck, s = r.loggedIn(t)
+	rec := r.do(post("/tasks/t-e/close", url.Values{"csrf": {s.csrf}}), ck)
+	equal(t, "the status", rec.Code, http.StatusInternalServerError)
+	for _, leak := range []string{"user:pass", "abcdef0123456789"} {
+		if strings.Contains(rec.Body.String(), leak) {
+			t.Errorf("the refusal %q leaks %q", rec.Body, leak)
+		}
+	}
+	if !strings.Contains(rec.Body.String(), "edge refused") {
+		t.Errorf("the refusal %q lost Forgejo's reason", rec.Body)
+	}
+}

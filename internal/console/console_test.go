@@ -18,6 +18,7 @@ import (
 	"reflect"
 	"regexp"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -90,8 +91,15 @@ type fakeForgejo struct {
 	commentN   int64    // forges a fresh comment id per POST, as Forgejo does
 	deleted    []string // DELETE paths
 	patched    []string // "path {body}" per PATCH of an issue
-	assets     []asset  // multipart uploads to an issue's or a comment's assets
-	failAssets bool     // asset uploads answer 500
+	// deps are the issues an issue's path depends on, as Forgejo lists them;
+	// a close answers 412 while one is left. depsStay makes a removal answer
+	// 201 and keep the edge, depsFail makes it answer failDeps's message
+	deps       map[string][]map[string]any
+	depsStay   bool
+	failDeps   string
+	depsStatus int     // failDeps's status, 500 when 0
+	assets     []asset // multipart uploads to an issue's or a comment's assets
+	failAssets bool    // asset uploads answer 500
 
 	statuses map[string]string // commit sha -> its combined status as Forgejo answers it
 	pullHead string            // PR 9's current head; empty answers no pull read
@@ -324,6 +332,32 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 		w.Write([]byte(`{"id":12}`))
+	case strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/") && strings.HasSuffix(r.URL.Path, "/dependencies"):
+		switch r.Method {
+		case http.MethodGet:
+			list := f.deps[r.URL.Path]
+			if r.URL.Query().Get("page") != "1" || list == nil {
+				list = []map[string]any{}
+			}
+			json.NewEncoder(w).Encode(list)
+		case http.MethodDelete:
+			if f.failDeps != "" {
+				http.Error(w, `{"message":`+strconv.Quote(f.failDeps)+`}`, cmp.Or(f.depsStatus, http.StatusInternalServerError))
+				return
+			}
+			var meta struct {
+				Index int64 `json:"index"`
+			}
+			json.NewDecoder(r.Body).Decode(&meta)
+			f.deleted = append(f.deleted, r.URL.Path+" "+strconv.FormatInt(meta.Index, 10))
+			if !f.depsStay {
+				f.deps[r.URL.Path] = slices.DeleteFunc(f.deps[r.URL.Path], func(d map[string]any) bool { return d["number"] == float64(meta.Index) || d["number"] == meta.Index })
+			}
+			w.WriteHeader(http.StatusCreated)
+			w.Write([]byte(`{}`))
+		}
+	case r.Method == http.MethodPatch && len(f.deps[r.URL.Path+"/dependencies"]) > 0:
+		http.Error(w, `{"message":"cannot close this issue because it still has open dependencies"}`, http.StatusPreconditionFailed)
 	case r.Method == http.MethodPatch && strings.HasPrefix(r.URL.Path, "/api/v1/repos/sf/code/issues/"):
 		// the issue as it stands after the edit: the rig's issues are titled
 		// "Fix the cache" with the body "It drops entries." until edited
@@ -1206,6 +1240,7 @@ type rig struct {
 	mirrors  *fakeMirrors
 	routines *fakeRoutines
 	deps     *fakeDeps
+	switches *fakeSwitches
 	figures  *fakeFigures
 	// repoWriters are the writers of each project's repository, the
 	// writer lists' map (writers.by)
@@ -1306,6 +1341,7 @@ func newRig(t *testing.T) *rig {
 		mirrors:     &fakeMirrors{rows: map[string]factoryd.Mirror{}, push: map[string][]factoryd.PushMirror{}},
 		routines:    &fakeRoutines{},
 		deps:        &fakeDeps{},
+		switches:    &fakeSwitches{},
 		repoWriters: repoWriters,
 		chatToken:   "chat-token"}
 	r.chatTokens = &fakeChatTokens{}
@@ -1316,7 +1352,7 @@ func newRig(t *testing.T) *rig {
 		PublicURL: "https://console.example", ForgejoURL: fg.srv.URL, ForgejoPublicURL: "https://git.example",
 		ClientID: "cid", ClientSecret: "csecret", SessionKey: []byte("0123456789abcdef0123456789abcdef"),
 		Sessions: r.sessions,
-		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps,
+		Tasks:    r.tasks, Writers: r.writers.list, Writes: r.writers.writes, Timelines: r.objects, Policies: r.ledger, Costs: r.ledger, Dependencies: r.deps, Switches: r.switches,
 		ConfigRepo: "https://git.example/sf/infra", ConfigDir: "factory",
 		Approvals: r.approvals, Resources: r.resources, Alerts: r.alerts,
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
