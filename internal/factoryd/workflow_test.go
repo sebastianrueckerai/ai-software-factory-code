@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"slices"
+	"strconv"
 	"strings"
 	"sync"
 	"testing"
@@ -30,6 +31,7 @@ import (
 	"go.temporal.io/sdk/testsuite"
 	"go.temporal.io/sdk/worker"
 	"go.temporal.io/sdk/workflow"
+	"google.golang.org/protobuf/reflect/protoreflect"
 	"google.golang.org/protobuf/types/known/timestamppb"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
@@ -2615,9 +2617,7 @@ func TestWorkflowDefaultVersionKeepsFirstSignalReview(t *testing.T) {
 // error, and the newest input each activity recorded across them decodes
 // into today's activity of that name: a roll retries an activity in
 // flight with the input the old worker recorded. Older inputs are history
-// the rolls since have passed and keep only their replay. A recording
-// from before the blind proofs' deploy carries no marker and is refused
-// by the drained read, so nothing replays it again.
+// the rolls since have passed and keep only their replay.
 func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/history-*.json")
 	if len(files) == 0 {
@@ -2625,9 +2625,7 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 	}
 	newest := map[string]recordedInput{}
 	for _, f := range files {
-		if !replayHistory(t, f) {
-			continue
-		}
+		replayHistory(t, f)
 		data, err := os.ReadFile(f)
 		if err != nil {
 			t.Fatal(err)
@@ -2645,9 +2643,7 @@ func TestWorkflowReplaysLiveHistories(t *testing.T) {
 
 // Histories a dev server recorded under stub activities replay too: a run
 // that consumed the chain-done marker and waits in review takes today's
-// end. Their stub inputs are no live input, so no decode reads them. A
-// recording from before the blind proofs' deploy is refused by the
-// drained read, as the live histories are.
+// end. Their stub inputs are no live input, so no decode reads them.
 func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 	files, _ := filepath.Glob("testdata/devserver-*.json")
 	if len(files) == 0 {
@@ -2658,21 +2654,138 @@ func TestWorkflowReplaysDevServerHistories(t *testing.T) {
 	}
 }
 
-// replayHistory replays the history in file f against TaskWorkflow; false
-// when the drained blind proofs read refuses a recording from before its
-// marker, which no roll can pick up again.
-func replayHistory(t *testing.T, f string) bool {
+// replayHistory replays the history in file f against TaskWorkflow. A
+// recording from before the blind proofs' deploy carries no drained
+// marker, which the run now reads; the replay gives it the marker the
+// run would have recorded, as that deploy's own runs carry it.
+func replayHistory(t *testing.T, f string) {
 	t.Helper()
-	replayer := worker.NewWorkflowReplayer()
-	replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
-	err := replayer.ReplayWorkflowHistoryFromJSONFile(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), f)
-	if err != nil {
-		if strings.Contains(err.Error(), `for "blind-proofs" changeID`) {
-			return false
-		}
+	hist := loadHistory(t, f)
+	if err := withDrainedMarker(hist); err != nil {
 		t.Fatalf("%s: %v", f, err)
 	}
-	return true
+	if err := replayEvents(hist); err != nil {
+		t.Fatalf("%s: %v", f, err)
+	}
+}
+
+func loadHistory(t *testing.T, f string) *historypb.History {
+	t.Helper()
+	data, err := os.ReadFile(f)
+	if err != nil {
+		t.Fatal(err)
+	}
+	hist, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatalf("%s: %v", f, err)
+	}
+	return hist
+}
+
+func replayEvents(hist *historypb.History) error {
+	replayer := worker.NewWorkflowReplayer()
+	replayer.RegisterWorkflowWithOptions(TaskWorkflow{Config: func() WorkflowConfig { return testWorkflowConfig }}.Run, workflow.RegisterOptions{Name: "TaskWorkflow"})
+	return replayer.ReplayWorkflowHistory(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))), hist)
+}
+
+// The replay of a live recording is real: without the marker the drained
+// read refuses it, and with it a changed activity name is a
+// nondeterminism error.
+func TestReplayOfALiveHistoryIsStrict(t *testing.T) {
+	f := "testdata/history-t-104cc3af2bbb-gate-escalate-closed.json"
+	if err := replayEvents(loadHistory(t, f)); err == nil || !strings.Contains(err.Error(), `for "blind-proofs" changeID`) {
+		t.Fatalf("unmarked replay error = %v, want the blind-proofs refusal", err)
+	}
+	hist := loadHistory(t, f)
+	if err := withDrainedMarker(hist); err != nil {
+		t.Fatal(err)
+	}
+	for _, e := range hist.Events {
+		if a := e.GetActivityTaskScheduledEventAttributes(); a != nil {
+			a.ActivityType.Name = "NoSuchActivity"
+			break
+		}
+	}
+	if err := replayEvents(hist); err == nil {
+		t.Fatal("a history whose first activity is renamed replayed clean")
+	}
+}
+
+// withDrainedMarker adds the blind-proofs version marker and its search
+// attribute upsert at the end of the first workflow task's leading markers
+// and upserts, and shifts every later event id, reference and command id by
+// the two events.
+func withDrainedMarker(hist *historypb.History) error {
+	ev := hist.Events
+	first := slices.IndexFunc(ev, func(e *historypb.HistoryEvent) bool {
+		return e.EventType == enumspb.EVENT_TYPE_WORKFLOW_TASK_COMPLETED
+	})
+	if first < 0 {
+		return errors.New("no completed workflow task")
+	}
+	at := first + 1
+	var versions []string
+	for ; at < len(ev) && (ev[at].GetMarkerRecordedEventAttributes() != nil || ev[at].GetUpsertWorkflowSearchAttributesEventAttributes() != nil); at++ {
+		if f := ev[at].GetUpsertWorkflowSearchAttributesEventAttributes().GetSearchAttributes().GetIndexedFields()["TemporalChangeVersion"]; f != nil {
+			if err := json.Unmarshal(f.Data, &versions); err != nil {
+				return err
+			}
+		}
+		if m := ev[at].GetMarkerRecordedEventAttributes(); m != nil && m.MarkerName == "Version" {
+			if id := m.Details["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"blind-proofs"` {
+				return nil
+			}
+		}
+	}
+	jsonPayload := func(data string, extra map[string][]byte) *commonpb.Payloads {
+		md := map[string][]byte{"encoding": []byte("json/plain")}
+		for k, v := range extra {
+			md[k] = v
+		}
+		return &commonpb.Payloads{Payloads: []*commonpb.Payload{{Metadata: md, Data: []byte(data)}}}
+	}
+	versionList, _ := json.Marshal(append(versions, "blind-proofs-1"))
+	stamp, completed := ev[at-1].EventTime, ev[first].EventId
+	marker := &historypb.HistoryEvent{EventTime: stamp, EventType: enumspb.EVENT_TYPE_MARKER_RECORDED,
+		Attributes: &historypb.HistoryEvent_MarkerRecordedEventAttributes{MarkerRecordedEventAttributes: &historypb.MarkerRecordedEventAttributes{
+			MarkerName:                   "Version",
+			Details:                      map[string]*commonpb.Payloads{"change-id": jsonPayload(`"blind-proofs"`, nil), "version": jsonPayload(`1`, nil)},
+			WorkflowTaskCompletedEventId: completed,
+		}}}
+	upsert := &historypb.HistoryEvent{EventTime: stamp, EventType: enumspb.EVENT_TYPE_UPSERT_WORKFLOW_SEARCH_ATTRIBUTES,
+		Attributes: &historypb.HistoryEvent_UpsertWorkflowSearchAttributesEventAttributes{UpsertWorkflowSearchAttributesEventAttributes: &historypb.UpsertWorkflowSearchAttributesEventAttributes{
+			WorkflowTaskCompletedEventId: completed,
+			SearchAttributes: &commonpb.SearchAttributes{IndexedFields: map[string]*commonpb.Payload{
+				"TemporalChangeVersion": jsonPayload(string(versionList), map[string][]byte{"type": []byte("KeywordList")}).Payloads[0],
+			}},
+		}}}
+	for _, e := range ev[at:] {
+		shiftIDs(e.ProtoReflect(), int64(at))
+	}
+	marker.EventId, upsert.EventId = int64(at+1), int64(at+2)
+	hist.Events = slices.Concat(ev[:at], []*historypb.HistoryEvent{marker, upsert}, ev[at:])
+	return nil
+}
+
+// shiftIDs adds two to every event id, event reference and numeric command
+// id in m that lies after event number after.
+func shiftIDs(m protoreflect.Message, after int64) {
+	m.Range(func(fd protoreflect.FieldDescriptor, v protoreflect.Value) bool {
+		name := string(fd.Name())
+		switch {
+		case fd.Kind() == protoreflect.Int64Kind && !fd.IsList() && (name == "event_id" || strings.HasSuffix(name, "_event_id")):
+			if v.Int() > after {
+				m.Set(fd, protoreflect.ValueOfInt64(v.Int()+2))
+			}
+		case fd.Kind() == protoreflect.StringKind && !fd.IsList() && (name == "activity_id" || name == "timer_id"):
+			if n, err := strconv.ParseInt(v.String(), 10, 64); err == nil && n > after {
+				m.Set(fd, protoreflect.ValueOfString(strconv.FormatInt(n+2, 10)))
+			}
+		case fd.Kind() == protoreflect.MessageKind && !fd.IsList() && !fd.IsMap():
+			shiftIDs(v.Message(), after)
+		}
+		return true
+	})
 }
 
 // retyped lists each activity whose parameters a commit changed on
