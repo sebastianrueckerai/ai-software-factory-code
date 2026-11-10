@@ -413,6 +413,9 @@ built in: 2 CPU / 4Gi / 10Gi, a closed standing block) and
 file its row, and a row whose file is gone keeps its tokens while nothing
 acts on it. The console shows the projects read-only with links to their
 files; a change is a commit.
+The autonomy dial writes `autonomy` and `merge_rule` together through a pull
+request on the file: manual, assisted and autonomous write `merge_rule: human`,
+and only full auto writes `merge_rule: auto` (with `autonomy: autonomous`).
 
 The factory's own repositories are projects like any other: no
 Go source names them (a test greps). Two settings replace the old special

@@ -62,7 +62,7 @@ func autonomyRefusal(state string, queueCap int) string {
 // doSetAutonomy writes project name's autonomy state and queue cap, 0
 // for the file's own, into its project file as the member, an approver,
 // through commitProjectFile. Full auto writes autonomous with merge_rule
-// auto, autonomous merge_rule human; manual and assisted leave the rule.
+// auto; every other level writes merge_rule human.
 // The change records one event naming the member.
 func (c *Console) doSetAutonomy(ctx context.Context, name, state string, queueCap int, a actor) error {
 	if line := autonomyRefusal(state, queueCap); line != "" {
@@ -295,8 +295,8 @@ func keyIndex(m *yaml.Node, key string) int {
 }
 
 // autonomyEdit sets the project file to autonomy state with queue_cap:
-// full auto is autonomous with merge_rule auto, autonomous takes
-// merge_rule human, manual and assisted keep the rule; a cap of 0 keeps
+// full auto is autonomous with merge_rule auto, every other level takes
+// merge_rule human; a cap of 0 keeps
 // the file's, another lands only away from the default, and an existing
 // key set to the default comes off.
 func autonomyEdit(state string, queueCap int) func(doc *yaml.Node) error {
@@ -316,11 +316,9 @@ func autonomyEdit(state string, queueCap int) func(doc *yaml.Node) error {
 		case policy.AutonomyFullAuto:
 			set("autonomy", policy.AutonomyAutonomous)
 			set("merge_rule", policy.MergeAuto)
-		case policy.AutonomyAutonomous:
-			set("autonomy", state)
-			set("merge_rule", policy.MergeHuman)
 		default:
 			set("autonomy", state)
+			set("merge_rule", policy.MergeHuman)
 		}
 		switch i := keyIndex(m, "queue_cap"); {
 		case queueCap == 0:

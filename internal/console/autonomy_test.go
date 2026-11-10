@@ -98,15 +98,14 @@ func TestEditProjectFile(t *testing.T) {
 }
 
 // The four states in the project file (C14): full auto is autonomous with
-// merge_rule auto, autonomous takes merge_rule human, assisted and manual
-// keep the rule.
+// merge_rule auto, every other level writes merge_rule human.
 func TestEditProjectFileStates(t *testing.T) {
 	raw := []byte("repository: sf/code\nmerge_rule: auto\n")
 	for _, tt := range []struct{ state, want string }{
-		{policy.AutonomyAssisted, "repository: sf/code\nmerge_rule: auto\nautonomy: assisted\n"},
+		{policy.AutonomyAssisted, "repository: sf/code\nmerge_rule: human\nautonomy: assisted\n"},
 		{policy.AutonomyAutonomous, "repository: sf/code\nmerge_rule: human\nautonomy: autonomous\n"},
 		{policy.AutonomyFullAuto, "repository: sf/code\nmerge_rule: auto\nautonomy: autonomous\n"},
-		{policy.AutonomyManual, "repository: sf/code\nmerge_rule: auto\nautonomy: manual\n"},
+		{policy.AutonomyManual, "repository: sf/code\nmerge_rule: human\nautonomy: manual\n"},
 	} {
 		out, err := editProjectFile(raw, autonomyEdit(tt.state, 0))
 		equal(t, tt.state, []any{string(out), err}, []any{tt.want, error(nil)})
