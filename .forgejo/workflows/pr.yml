@@ -71,7 +71,10 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - run: go vet ./...
-      - run: test -z "$(gofmt -l .)"
+      - name: gofmt names the files it would change
+        run: |
+          files=$(gofmt -l .)
+          if [ -n "$files" ]; then printf 'not gofmt-formatted:\n%s\n' "$files"; exit 1; fi
   security:
     runs-on: pr-untrusted
     steps:
