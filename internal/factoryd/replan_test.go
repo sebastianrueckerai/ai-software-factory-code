@@ -2859,3 +2859,17 @@ func TestReplanStateCutOfAnInterimBranchHoldsWork(t *testing.T) {
 		t.Fatalf("a cut of an interim branch: cut %q, work %t, %v", st.cut, st.cutWork, err)
 	}
 }
+
+// A replan's record fetches the branch of a card that holds only an interim
+// push: that is work on the branch, which the planner reads.
+func TestReplanRecordKeepsAnInterimBranch(t *testing.T) {
+	r, store, _, hub, _ := oldCardsRig(t, personReplan)
+	hub.branches["factory/t-ui"], hub.committers = "w2", map[string]string{"w2": wipEmail}
+	rec, ok, err := r.replanRecord(context.Background(), store.tasks["t-plan"], planTimeline(t, r))
+	if err != nil || !ok {
+		t.Fatalf("replanRecord: %t, %v", ok, err)
+	}
+	if !slices.Equal(rec.findings[1:], oldCardLines) || !slices.Equal(rec.branches, []string{"factory/t-ui:card/31"}) {
+		t.Fatalf("findings %q, branches %q; want ui's work on its branch card/31", rec.findings[1:], rec.branches)
+	}
+}
