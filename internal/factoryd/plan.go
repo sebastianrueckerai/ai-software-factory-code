@@ -3670,11 +3670,17 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			}
 		}
 		body := r.untrusted(t, cardBody(c, p.Criteria, of, i+1, len(order), approver, deps, spec, start))
-		card, err := r.store.CreatePlanCard(ctx, Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
+		row := Task{ID: NewTaskID(), Priority: t.Priority, RiskClass: "standard",
 			BudgetEUR: policy.CardBudget(v.Document.Budget, project.Budget, c.Size, c.Rung == RungFrontier, 0), Status: "queued",
 			Track: policy.TrackDirect, RequiredCapabilities: []string{direct.Class}, SHA: base, Process: process,
 			Objective: title + "\n\n" + body, Repository: t.Repository, Kind: "agent", Source: SourcePlan, Parent: t.ID, PlanKey: c.Key,
-			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer})
+			Rung: c.Rung, Size: c.Size, Image: cardImage(c.Image), Author: approver, AuthorWriter: writer}
+		human := workflowOnly(c.Directories)
+		if human {
+			continues = false
+			row.Kind, row.Status, row.Track, row.Process, row.RequiredCapabilities, row.SHA = "human", "waiting-human", "", "", nil, ""
+		}
+		card, err := r.store.CreatePlanCard(ctx, row)
 		if err != nil {
 			return nil, err
 		}
@@ -3727,13 +3733,22 @@ func (r *Runner) fileChildren(ctx context.Context, t Task, repo Repo, v policy.V
 			if err := r.timeline.RecordFactRow(ctx, fact.Event(t.Repository, card.IssueNumber, extra)); err != nil {
 				return nil, fmt.Errorf("card %s: record its filing row: %w", c.Key, err)
 			}
-			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, []string{LabelAgent, "state/queued"}); err != nil {
+			labels := []string{LabelAgent, "state/queued"}
+			if human {
+				labels = []string{LabelHuman, "state/waiting-human"}
+			}
+			if err := r.forgejo.ReplaceIssueLabels(ctx, repo.Owner, repo.Name, card.IssueNumber, labels); err != nil {
 				return nil, err
 			}
 			if err := r.store.SetTaskIssue(ctx, card.ID, card.IssueNumber); err != nil {
 				return nil, err
 			}
 			r.timeline.recordEvent(ctx, card.ID, EventCardCreated, map[string]any{"by": approver, "issue": card.IssueNumber, "plan": t.ID, "track": policy.TrackDirect, "budget_eur": card.BudgetEUR})
+			if human {
+				if err := recordAsk(ctx, r.store, r.timeline, card, workflowQuestion(title, body), "factoryd", SourcePlan, ViaFactoryd, ""); err != nil {
+					return nil, err
+				}
+			}
 		}
 		cards[c.Key] = card
 	}

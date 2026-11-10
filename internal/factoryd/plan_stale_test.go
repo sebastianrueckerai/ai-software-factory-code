@@ -1157,3 +1157,59 @@ func TestFilePlanRecordsNoRowForARevisionTheStoreAlreadyHolds(t *testing.T) {
 		t.Fatalf("rows written for a revision already stored: %+v", rec.rows)
 	}
 }
+
+// A card whose directories all sit under a workflow directory is filed as a
+// human's card: no queued row, no start, no capability, and an ask that
+// names the push rule. A card with one directory outside them, or with
+// none, is filed as before.
+func TestFileChildrenFilesAWorkflowOnlyCardForAHuman(t *testing.T) {
+	ctx := context.Background()
+	for _, tc := range []struct {
+		name  string
+		dirs  []string
+		human bool
+	}{
+		{"one workflow file", []string{".forgejo/workflows/pr.yml"}, true},
+		{"two workflow directories", []string{".github/x.yml", ".gitea/y.yml"}, true},
+		{"a workflow file and a source file", []string{".forgejo/workflows/pr.yml", "internal/x.go"}, false},
+		{"no directories", nil, false},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r, store, _, _ := newPlanRunner(t, testPlan())
+			wf := &fakeWorkflows{}
+			r.cfg.Workflows = wf
+			pinned := fixtureVersion(t)
+			r.cfg.Policy = func() policy.Version { return pinned }
+			p := Plan{Summary: "s", Cards: []PlanCard{{Key: "ci", Role: RoleFeature, Title: "Fix the CI", Brief: "Change the workflow.", Size: "small",
+				Directories: tc.dirs, Acceptance: []PlanItem{{Text: "it runs"}}}}}
+			plan, repo, err := r.task(ctx, "t-plan")
+			if err != nil {
+				t.Fatal(err)
+			}
+			cards, err := r.fileChildren(ctx, plan, repo, pinned, "spec", "plan #1", p, FactoryDecider, true, 1, "", nil)
+			if err != nil || len(cards) != 1 {
+				t.Fatalf("fileChildren = %+v, %v", cards, err)
+			}
+			got := store.tasks[cards[0].ID]
+			var asks []HumanQuestion
+			for _, e := range store.intakeEvents {
+				if e.TaskID == got.ID && e.Kind == IntakeEscalation && e.Question != nil {
+					asks = append(asks, *e.Question)
+				}
+			}
+			if !tc.human {
+				if got.Kind != "agent" || got.Status != "queued" || len(asks) != 0 || !slices.Equal(wf.started, []string{got.ID}) {
+					t.Fatalf("card = %+v, asks %v, started %q; want a queued agent card started, no ask", got, asks, wf.started)
+				}
+				return
+			}
+			if got.Kind != "human" || got.Status != "waiting-human" || got.Track != "" || len(wf.started) != 0 || got.EnforcedSpent() != 0 {
+				t.Fatalf("card = %+v, started %q; want a human's card waiting, no start, no spend", got, wf.started)
+			}
+			if len(asks) != 1 || !strings.Contains(asks[0].Why, "push rule refuses changes to workflow files") ||
+				!strings.Contains(asks[0].Info, "A human opens the pull request") || !strings.Contains(asks[0].Info, "Change the workflow.") {
+				t.Fatalf("asks = %+v, want one that names the push rule, the human and the brief", asks)
+			}
+		})
+	}
+}
