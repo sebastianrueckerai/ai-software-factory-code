@@ -1,12 +1,14 @@
 package factoryd
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
 	"log"
 	"os"
 	"path/filepath"
+	"strings"
 )
 
 // The interim push of a session's work in progress, factoryd's half of
@@ -46,18 +48,19 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 		// factoryd stopping cuts the ask: its own shutdown is the last
 		// word, and the stop's logs already say it
 		if !errors.Is(err, errWorkerStop) {
-			r.wipFailure(ctx, t, s, "ask", err)
+			r.wipFailure(ctx, t, s, "ask", r.Scrub.String(err.Error()))
 		}
 	case commit == "":
 		// the tree equals the start's: there is nothing to ship
 	default:
 		head, err := r.pushWip(ctx, t, s, commit, bundle)
 		if err != nil {
-			r.wipFailure(ctx, t, s, "push", err)
+			text := r.Scrub.String(err.Error())
+			r.wipFailure(ctx, t, s, "push", text)
 			if errors.Is(err, ErrPushRefused) || errors.Is(err, ErrPushOverBound) {
 				// the rules judged the work itself, and the work can
 				// change: the refusal is the agent's to act on
-				return wipOutcome{refusal: err.Error()}
+				return wipOutcome{refusal: "factoryd's interim push of your work in progress was refused: " + text}
 			}
 			return wipOutcome{}
 		}
@@ -69,9 +72,9 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 
 // wipFailure records one interim push that did not land: logged for the
 // operator, and a wip_push_failed timeline step for the session's story.
-func (r *Runner) wipFailure(ctx context.Context, t Task, s sessionSpec, at string, err error) {
-	log.Printf("task %s: session %s: interim push, at the %s: %v", t.ID, s.id, at, err)
-	r.record(ctx, t.ID, "wip_push_failed", map[string]any{"session": s.id, "at": at, "error": err.Error()})
+func (r *Runner) wipFailure(ctx context.Context, t Task, s sessionSpec, at, text string) {
+	log.Printf("task %s: session %s: interim push, at the %s: %s", t.ID, s.id, at, text)
+	r.record(ctx, t.ID, "wip_push_failed", map[string]any{"session": s.id, "at": at, "error": text})
 }
 
 // pushWip guards and pushes the work in progress the pod shipped. The
@@ -79,8 +82,8 @@ func (r *Runner) wipFailure(ctx context.Context, t Task, s sessionSpec, at strin
 // name, never touching the sandbox — holds the session's start first:
 // the fork's task branch when a past push left one, else the repository's
 // main, which a first session starts from. Then it takes the bundle —
-// verified as a bundle before anything is taken from it, its objects
-// fscked as they arrive — and refuses a WIP that does not descend from
+// verified as a bundle before anything is taken from it, its pack
+// indexed under git's strict object checks — and refuses a WIP that does not descend from
 // the session's start, the shape the worker's own /wip builds its WIP
 // in: a commit from another history is not the session's work. What it
 // pushes is factoryd's own commit, built from the shipped tree alone —
@@ -117,11 +120,19 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 	if _, err := git(ctx, own, "", "bundle", "verify", file); err != nil {
 		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
-	// the bundle carries the WIP on its own branch, with the start as
-	// its prerequisite, so the fetch is answered from the bundle alone;
-	// fscking the transfer keeps a lying object from landing in the repo
-	if _, err := git(ctx, own, "", "-c", "transfer.fsckObjects=true", "fetch", "-q", file, "+refs/heads/wip:refs/heads/wip"); err != nil {
-		return "", fmt.Errorf("fetch the shipped bundle: %w", err)
+	// the bundle's pack is indexed under git's strict object checks, which
+	// a fetch from a bundle does not apply: a lying object never lands.
+	// The bundle's own ref line names the WIP, and its prerequisites are
+	// the objects fetched above
+	hdr, pack, ok := bytes.Cut(bundle, []byte("\n\n"))
+	if !ok {
+		return "", errors.New("the shipped body is no bundle: no header end")
+	}
+	if got := bundleCommit(hdr); got != commit {
+		return "", fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
+	}
+	if _, err := gitRun(ctx, own, "", nil, bytes.NewReader(pack), "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
+		return "", fmt.Errorf("index the shipped bundle: %w", err)
 	}
 	if _, err := git(ctx, own, "", "rev-parse", "--verify", "--quiet", commit+"^{commit}"); err != nil {
 		return "", fmt.Errorf("the bundle ships no commit %s: %w", commit, err)
@@ -161,6 +172,17 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 		return "", err
 	}
 	return head, nil
+}
+
+// bundleCommit is the commit a bundle header's ref line names for
+// refs/heads/wip, or "".
+func bundleCommit(header []byte) string {
+	for _, line := range strings.Split(string(header), "\n") {
+		if id, ref, ok := strings.Cut(line, " "); ok && ref == "refs/heads/wip" {
+			return id
+		}
+	}
+	return ""
 }
 
 // rulesGit is the push rules' git (PushGit) over factoryd's own: the

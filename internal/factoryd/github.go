@@ -131,10 +131,16 @@ func git(ctx context.Context, dir, login string, args ...string) (string, error)
 // file, a commit identity — which reach the process as its environment,
 // never an argument or an error.
 func gitEnv(ctx context.Context, dir, login string, env []string, args ...string) (string, error) {
+	return gitRun(ctx, dir, login, env, nil, args...)
+}
+
+// gitRun is gitEnv with a standard input, for the commands that read one.
+func gitRun(ctx context.Context, dir, login string, env []string, stdin io.Reader, args ...string) (string, error) {
 	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 	defer cancel()
 	cmd := exec.CommandContext(ctx, "git", args...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names
 	cmd.Dir = dir
+	cmd.Stdin = stdin
 	config := gitConfig
 	if login != "" {
 		config = append(slices.Clip(config), "http.extraHeader=Authorization: Basic "+login)

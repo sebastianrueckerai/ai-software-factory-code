@@ -1324,11 +1324,11 @@ func sessionResult(s sessionSpec, out sessionOutcome) SessionResult {
 	if out.overHold != nil {
 		res.Summary = strings.TrimPrefix(res.Summary+"; "+out.overHold.state(), "; ")
 	}
+	res.Commit = cmp.Or(out.commit, out.wip)
 	ended := "previous session ended without a pushed commit: "
-	if out.commit != "" {
+	if res.Commit != "" {
 		ended = "previous session ended unfinished: "
 	}
-	res.Commit = cmp.Or(out.commit, out.wip)
 	res.Findings = []string{ended + res.Summary}
 	if out.pending != nil {
 		res.Outcome = OutcomeNotStarted

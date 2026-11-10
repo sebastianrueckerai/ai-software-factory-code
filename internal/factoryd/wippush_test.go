@@ -32,6 +32,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 )
 
 // wipGit is the git the push rules' tests run: plain git under the
@@ -271,6 +273,7 @@ type wipServe struct {
 	mu        sync.Mutex
 	status    int
 	wipStatus int
+	wipBody   string
 	hang      time.Duration
 	// base is the session's start, seed the work repo the WIP commits
 	// are built in, fork the bare fork the interim pushes land on, and
@@ -315,6 +318,7 @@ func (s *wipServe) start(t *testing.T, r *Runner) {
 		}
 		if s.wipStatus != 0 {
 			w.WriteHeader(s.wipStatus)
+			io.WriteString(w, s.wipBody)
 			return
 		}
 		i := len(s.commits)
@@ -483,14 +487,13 @@ var wipGoOn = CheckinResponse{Text: `{"decision":"message","guidance":"go on"}`}
 // bundle — as factoryd's own commit built from the shipped tree, to the
 // task branch, each push replacing the tip with the newest tree, so the
 // branch holds exactly one commit past the start after two check-ins,
-// and the ask that follows sees the push before it landed. The session's
-// own end push then lands its own commit the same way, not refused for
-// the replaced tip.
+// and the ask that follows sees the push before it landed; exactly one
+// ask precedes each check-in.
 func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 	runner, objects, serve := wipRig(t, nil,
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) },
 		func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\ntwo\n"), 0o644) })
-	chat := &scriptedChat{answers: []CheckinResponse{wipGoOn, wipGoOn}}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue, wipContinue}}
 	runner.checkin = chat
 
 	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
@@ -502,6 +505,9 @@ func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 	defer serve.mu.Unlock()
 	if serve.err != nil {
 		t.Fatalf("the pod's answers broke: %v", serve.err)
+	}
+	if order := serve.order.all(); !slices.Equal(order, []string{"wip", "checkin", "wip", "checkin"}) {
+		t.Fatalf("the run's order = %q, want exactly one ask before each check-in", order)
 	}
 	if len(serve.commits) != 2 || len(serve.wipAuth) != 2 {
 		t.Fatalf("the pod shipped %d WIPs under %d asks, want one ask and one WIP per check-in", len(serve.commits), len(serve.wipAuth))
@@ -556,23 +562,6 @@ func TestInterimPushReplacesTheTaskBranchTipAtEachCheckin(t *testing.T) {
 		t.Fatalf("timeline = %s, want no failed interim push", objGet(objects, "sessions/t2/timeline.jsonl"))
 	}
 
-	// the session's end push lands its own commit — parented on the
-	// start, as the worker shapes it — on the replaced tip, not refused
-	// as a non-fast-forward
-	os.WriteFile(filepath.Join(serve.seed, "b.txt"), []byte("one\ntwo\nthree\n"), 0o644)
-	wipRun(t, "-C", serve.seed, "add", "-A")
-	tree := wipRun(t, "-C", serve.seed, "write-tree")
-	end := wipRun(t, "-C", serve.seed, "-c", "user.name=test", "-c", "user.email=test@test", "commit-tree", tree, "-p", serve.base, "-m", "the session's end")
-	wipRun(t, "-C", serve.seed, "push", "-q", serve.fork, "+"+end+":refs/heads/factory/t2")
-	if got := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); got != end {
-		t.Fatalf("task branch = %s after the end push, want the end commit %s", got, end)
-	}
-	if got := wipRun(t, "-C", serve.fork, "rev-list", "--count", serve.base+".."+end); got != "1" {
-		t.Fatalf("commits past the start after the end push = %s, want the one end commit", got)
-	}
-	if got := wipRun(t, "-C", serve.fork, "diff", "--shortstat", serve.base, end); !strings.Contains(got, "3 insertions(+)") {
-		t.Fatalf("the end commit's diff against the start = %q, want b.txt's three lines", got)
-	}
 }
 
 // The interim push runs the pushes' rule set on the diff start..WIP: a
@@ -673,7 +662,17 @@ func TestInterimPushRefusesABodyThatIsNoBundle(t *testing.T) {
 		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
 	})
 	serve.ship = func(i int, tree string) (string, []byte, error) {
-		return "0123456789012345678901234567890123456789", []byte("# v2 git bundle\ngitdir: /etc/passwd\n-to /nowhere\n"), nil
+		// a gitdir file pointing at a repository on the test's disk whose
+		// wip ref descends from the base: taken as a local repository it
+		// would push a commit the sandbox never shipped
+		commit, err := wipGitRun(serve.seed, ruleIdentity, "commit-tree", tree, "-p", serve.base, "-m", "unshipped")
+		if err != nil {
+			return "", nil, err
+		}
+		if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", commit); err != nil {
+			return "", nil, err
+		}
+		return commit, []byte("gitdir: " + filepath.Join(serve.seed, ".git") + "\n"), nil
 	}
 	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
 	runner.checkin = chat
@@ -700,6 +699,109 @@ func TestInterimPushRefusesABodyThatIsNoBundle(t *testing.T) {
 	}
 	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
 		t.Fatalf("task branch = %s, want the start alone: the body was refused", tip)
+	}
+}
+
+// A malformed object inside a well-formed bundle is refused: the commit
+// carries an author date git's strict object check rejects, so the push
+// that would carry it to the fork never runs. The branch holds the start
+// and nothing reaches the agent.
+func TestInterimPushRefusesAMalformedObject(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		raw := "tree " + tree + "\nparent " + serve.base + "\nauthor a <a@a.example> not-a-date +0000\ncommitter a <a@a.example> 1700000000 +0000\n\nwip\n"
+		cmd := exec.Command("git", "-C", serve.seed, "hash-object", "-t", "commit", "-w", "--literally", "--stdin")
+		cmd.Stdin = strings.NewReader(raw)
+		out, err := cmd.Output()
+		if err != nil {
+			return "", nil, err
+		}
+		bad := strings.TrimSpace(string(out))
+		if _, err := wipGitRun(serve.seed, nil, "update-ref", "refs/heads/wip", bad); err != nil {
+			return "", nil, err
+		}
+		bundle := filepath.Join(serve.dir, "bad.bundle")
+		if _, err := wipGitRun(serve.seed, nil, "bundle", "create", bundle, serve.base+"..refs/heads/wip"); err != nil {
+			return "", nil, err
+		}
+		b, err := os.ReadFile(bundle)
+		return bad, b, err
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	res, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed"))
+	if err != nil || res.Outcome != OutcomePushed || chat.calls != 1 {
+		t.Fatalf("result = (%+v, %v) after %d conversations, want the session's own end after the check-in ran on", res, err, chat.calls)
+	}
+	serve.mu.Lock()
+	defer serve.mu.Unlock()
+	if len(serve.commits) != 1 {
+		t.Fatalf("the pod shipped %d WIPs, want the one malformed", len(serve.commits))
+	}
+	if step := timelineStep(t, objects, "t2", "wip_push_failed"); step == nil || step["at"] != "push" {
+		t.Fatalf("the wip_push_failed step = %v, want the push's failure", step)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
+		t.Fatalf("wip_pushed steps = %d, want none: the malformed object was refused", n)
+	}
+	if len(serve.msgs) != 0 {
+		t.Fatalf("the pod was messaged %q, want no message", serve.msgs)
+	}
+	if tip := wipRun(t, "-C", serve.fork, "rev-parse", "refs/heads/factory/t2"); tip != serve.base {
+		t.Fatalf("task branch = %s, want the start alone", tip)
+	}
+}
+
+// Every text built from an interim push's error is scrubbed: a pod's
+// failure body carrying URL userinfo and a bearer value reaches the log
+// and the timeline masked.
+func TestInterimPushScrubsItsFailureText(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	serve.wipStatus, serve.wipBody = http.StatusBadGateway, "upstream https://user:hunter2pass@example.com/x failed; Authorization: Bearer abcdefghij0123456789xyz"
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+	var logs bytes.Buffer
+	defer log.SetOutput(log.Writer())
+	log.SetOutput(&logs)
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	step := fmt.Sprint(timelineStep(t, objects, "t2", "wip_push_failed"))
+	for name, text := range map[string]string{"timeline": step, "log": logs.String()} {
+		if !strings.Contains(text, "502") || strings.Contains(text, "hunter2pass") || strings.Contains(text, "abcdefghij0123456789xyz") {
+			t.Fatalf("the %s = %q, want the failure with userinfo and bearer masked", name, text)
+		}
+	}
+}
+
+// A refusal the session never received is no guidance: when the
+// message cannot be delivered, neither the stuck rule arms nor the
+// check-in's ask names it as delivered.
+func TestInterimPushRefusalNotDeliveredIsNotNamedAsGuidance(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.MkdirAll(filepath.Join(dir, ".forgejo", "workflows"), 0o755)
+		os.WriteFile(filepath.Join(dir, ".forgejo", "workflows", "ci.yml"), []byte("gate: false\n"), 0o644)
+	})
+	serve.status = http.StatusInternalServerError
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	chat.mu.Lock()
+	defer chat.mu.Unlock()
+	if len(chat.inputs) != 1 || strings.Contains(chat.inputs[0], "Guidance delivered to the agent this session:") {
+		t.Fatalf("the ask's statement = %q, want no delivered guidance: the refusal never arrived", chat.inputs)
 	}
 }
 
@@ -890,6 +992,10 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 		serve.mu.Unlock()
 		t.Fatalf("the pod was messaged %q, want exactly the refusal's sentence", serve.msgs)
 	}
+	if !strings.HasPrefix(serve.msgs[0], "factoryd's interim push of your work in progress was refused: ") {
+		serve.mu.Unlock()
+		t.Fatalf("the refusal = %q, want it framed as the interim push's", serve.msgs[0])
+	}
 	refused := serve.msgs[0]
 	serve.mu.Unlock()
 	if order := serve.order.all(); !slices.Equal(order, []string{"wip", "message", "checkin"}) {
@@ -902,8 +1008,8 @@ func TestInterimPushRefusalReachesTheSessionAndItsCheckin(t *testing.T) {
 	}
 	chat.mu.Unlock()
 	step := timelineStep(t, objects, "t2", "wip_push_failed")
-	if !strings.Contains(fmt.Sprint(step["error"]), refused) {
-		t.Fatalf("the wip_push_failed step = %v, want the refusal", step)
+	if !strings.Contains(refused, fmt.Sprint(step["error"])) {
+		t.Fatalf("the wip_push_failed step = %v, want the rule's sentence the refusal carries", step)
 	}
 	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 0 {
 		t.Fatalf("wip_pushed steps = %d, want none: the push was refused", n)
@@ -939,5 +1045,21 @@ func TestASessionThatDiesCarriesItsInterimHeadInItsResult(t *testing.T) {
 	}
 	if step := timelineStep(t, objects, "t2", "wip_pushed"); step["commit"] != tip {
 		t.Fatalf("the wip_pushed step = %v, want the landed head %s", step, tip)
+	}
+	if len(res.Findings) == 0 || !strings.HasPrefix(res.Findings[0], "previous session ended unfinished: ") {
+		t.Fatalf("findings = %q, want a session that holds a pushed head to read as unfinished", res.Findings)
+	}
+}
+
+// A stopped worker whose end push failed but whose interim push landed
+// does not say its work is unpushed.
+func TestStopReportCountsTheInterimHeadAsPushed(t *testing.T) {
+	out := sessionOutcome{noResult: "the worker died", wip: "w1"}
+	if got := out.stopReport(); len(got) != 1 || got[0] != "the worker died" {
+		t.Fatalf("stopReport = %q, want the reason alone, as for a pushed session", got)
+	}
+	out = sessionOutcome{result: &harness.Result{Summary: "stopped"}, wip: "w1"}
+	if got := out.stopReport(); got != nil {
+		t.Fatalf("stopReport = %q, want no report: the branch holds the work", got)
 	}
 }

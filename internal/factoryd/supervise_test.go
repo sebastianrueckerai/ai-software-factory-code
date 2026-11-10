@@ -1859,6 +1859,30 @@ func TestCheapCapTripsAtTheCapWithoutAPush(t *testing.T) {
 	}
 }
 
+// A message factoryd delivers mid-trip (the interim push's refusal) arms
+// the stuck rule while the trip in hand stays: after the check-in resumes
+// the session, a detector trip with no write since is stuck.
+func TestSupervisorStuckAfterMessageInTrip(t *testing.T) {
+	cfg := SupervisorConfig{NoProgressAfter: 10 * time.Hour, WallClockCap: 100 * time.Hour, RepetitionEvents: 2,
+		NoWriteAfter: 100 * time.Hour, CheckIn: 45 * time.Minute}
+	s, _ := NewSupervisor(cfg, minute(0), minute(0))
+	s.Event(toolEvent("read", map[string]any{"filePath": "a"}), minute(1))
+	trip := s.Event(toolEvent("read", map[string]any{"filePath": "b"}), minute(1))
+	if trip == nil {
+		t.Fatal("no first trip")
+	}
+	s.messagedInTrip(minute(2))
+	if s.tripped != trip {
+		t.Fatal("the message in the trip cleared the trip in hand")
+	}
+	s.Resume(minute(3))
+	s.Event(toolEvent("read", map[string]any{"filePath": "c"}), minute(4))
+	trip = s.Event(toolEvent("read", map[string]any{"filePath": "d"}), minute(4))
+	if trip == nil || trip.Stuck == "" {
+		t.Fatalf("trip = %+v, want the stuck line after an ignored refusal", trip)
+	}
+}
+
 // An interim push grants no push credit: an EventPushed with detail wip
 // — the check-in's interim push of the work in progress — leaves the
 // cheap cap and the spend-without-push line armed, so both still trip

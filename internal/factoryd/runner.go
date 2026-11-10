@@ -19,6 +19,7 @@ import (
 	"os"
 	"path/filepath"
 	"reflect"
+	"regexp"
 	"slices"
 	"strconv"
 	"strings"
@@ -598,9 +599,9 @@ type sessionOutcome struct {
 // report came, which says the work is not pushed only when no push was.
 func (out sessionOutcome) stopReport() []string {
 	switch {
-	case out.result != nil && out.commit == "":
+	case out.result != nil && cmp.Or(out.commit, out.wip) == "":
 		return []string{"the stopped worker reported: " + out.result.Summary}
-	case out.result == nil && out.noResult != "" && out.commit != "":
+	case out.result == nil && out.noResult != "" && cmp.Or(out.commit, out.wip) != "":
 		return []string{out.noResult}
 	case out.result == nil && out.noResult != "":
 		return []string{"work in progress not pushed: " + out.noResult}
@@ -912,25 +913,29 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			// credential (interimPush, wippush.go), done — landed,
 			// refused or given up — before the ask is built, so the ask
 			// carries its outcome and the stop's end push cannot race it
-			wip := r.interimPush(callCtx, t, s, ns, podName, workerStop)
+			pctx, stopPush := context.WithCancel(callCtx)
+			go func() {
+				select {
+				case <-workerStop:
+					stopPush()
+				case <-pctx.Done():
+				}
+			}()
+			wip := r.interimPush(pctx, t, s, ns, podName, workerStop)
+			stopPush()
 			out.wip = cmp.Or(wip.head, out.wip)
-			if wip.head != "" {
-				// the supervisor sees the interim push as what it is, a
-				// push of work in progress (detail wip): it grants no push
-				// credit (supervise.go). The trip in hand is sticky, so
-				// the event moves no detector here
-				sup.Event(harness.Event{Kind: harness.EventPushed, Detail: map[string]any{"wip": true, "commit": wip.head}}, time.Now())
-			}
 			if wip.refusal != "" {
 				// a push rule's refusal is a message the agent can act on:
 				// it reaches the running session — a write answers it, so
 				// an agent that ignores it meets the stuck rule — and the
 				// ask's messages, so the check-in judges it too
-				if err := r.message(ctx, t, s, ns, podName, wip.refusal); err != nil && !errors.Is(err, harness.ErrNotRunning) {
+				err := r.message(ctx, t, s, ns, podName, wip.refusal)
+				if err == nil || errors.Is(err, harness.ErrNotRunning) {
+					sup.messagedInTrip(time.Now())
+					messages = append(messages, wip.refusal)
+				} else {
 					log.Printf("task %s: deliver the interim push's refusal to the session: %v", t.ID, err)
 				}
-				sup.messagedInTrip(time.Now())
-				messages = append(messages, wip.refusal)
 			}
 			answered := make(chan struct{})
 			lines, started := sup.CardLines(), sup.started
@@ -1393,6 +1398,10 @@ func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, 
 // body's bundle.
 const wipCommitHeader = "Wip-Commit"
 
+// wipCommitID is the shape of a commit id the pod may name: it reaches
+// git's arguments, so nothing else passes.
+var wipCommitID = regexp.MustCompile(`^([0-9a-f]{40}|[0-9a-f]{64})$`)
+
 // wipBundleCap bounds the bundle one /wip answer may ship, as the worker
 // bounds the record a check-in hands factoryd. wipAskTimeout bounds one
 // ask, which the worker answers by staging a commit: a worker that hangs
@@ -1429,7 +1438,7 @@ func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, []
 		return "", nil, nil // the tree equals the start's: nothing to ship
 	case resp.StatusCode != http.StatusOK:
 		return "", nil, &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
-	case resp.Header.Get(wipCommitHeader) == "", len(body) == 0, len(body) > wipBundleCap:
+	case !wipCommitID.MatchString(resp.Header.Get(wipCommitHeader)), len(body) == 0, len(body) > wipBundleCap:
 		return "", nil, fmt.Errorf("the /wip answer names commit %q over %d bytes of bundle", resp.Header.Get(wipCommitHeader), len(body))
 	}
 	return resp.Header.Get(wipCommitHeader), body, nil
