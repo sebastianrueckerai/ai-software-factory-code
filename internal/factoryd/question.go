@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/textutil"
 )
@@ -878,9 +879,31 @@ func configRejectedQuestion(dir, short, link, stays, reasons string) HumanQuesti
 	}
 }
 
+// outerGuardRefused reports whether refusal is LiteLLM's outer guard firing
+// while the ledger eur is below the cap limit.
+func outerGuardRefused(refusal string, eur, limit float64) bool {
+	return strings.HasPrefix(refusal, gateway.ProxyBudgetRefusal) && eur < limit
+}
+
 // monthCapCardQuestion is the board card of the month cap reached at eur
-// of limit in month; refusal is the gateway's first refusal, if any.
+// of limit in month; refusal is the gateway's newest refusal, if any. When
+// that refusal is LiteLLM's outer guard and eur is below limit, the guard
+// fired under the cap and link is the file that sets it.
 func monthCapCardQuestion(limit float64, month string, eur float64, link, refusal string) HumanQuestion {
+	if outerGuardRefused(refusal, eur, limit) {
+		return HumanQuestion{
+			Ask: fmt.Sprintf("LiteLLM's outer guard refused calls at %.2f EUR, below the month cap of %.2f EUR: raise max_budget in k8s/platform/litellm/helmrelease.yaml", eur, limit),
+			Why: fmt.Sprintf("The factory's variable spend this month (%s, UTC) is %.2f EUR, below the cap of %.2f EUR (`budget.month_eur`), "+
+				"yet LiteLLM's proxy-wide `max_budget` refused a call. `max_budget` is the outer guard behind the cap and counts in USD; "+
+				"scripts/budget-backstop-check keeps it at 1.25 times `budget.month_eur` or more, and it has fallen under that.", month, eur, limit),
+			Info: "Raise `max_budget` in the LiteLLM helmrelease, which stays at 1.25 times the cap or more: " + link +
+				"\n\nThe policy cap needs no change. Close this issue once decided.\n\nThe newest refusal:\n\n" + fenced(refusal),
+			Choices: []QuestionChoice{
+				{AnswerPark, "Let it stand"},
+				{AnswerClose, "Decided, close"},
+			},
+		}
+	}
 	info := "The gateway refuses every further call with `refused_month_cap` until the month ends or the cap is raised; " +
 		"a task it refused waits on its card and resumes on its own once the cap is raised or the month turns. Raising the cap is a commit to the `month_eur` line, " +
 		"like any setting: " + link + "\n\nClose this issue once decided."

@@ -13,8 +13,11 @@ import (
 	"go.temporal.io/api/serviceerror"
 	"go.temporal.io/sdk/mocks"
 
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/gateway"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 )
+
+const gatewayRefusal = "the month cap budget.month_eur is reached: spent 49.98 EUR of 50.00 EUR"
 
 const proxyRefusal = "litellm proxy budget exceeded (litellm_settings.max_budget, the proxy-wide monthly stop behind budget.month_eur): Budget has been exceeded! Current cost: 55.0123, Max budget: 55.0"
 
@@ -72,19 +75,19 @@ func TestMonthAlarm(t *testing.T) {
 	}
 	// a failed filing is filed at the next check, once
 	fj.failNext = 1
-	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal, RefusedAt: refusedAt}
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: gatewayRefusal, RefusedAt: refusedAt}
 	if err := alarm.Check(ctx); err == nil {
 		t.Fatal("a failed filing raised nothing")
 	}
-	step(MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: proxyRefusal, RefusedAt: refusedAt}, "2026-09/50", "2026-09/80", "2026-09/100/50")
-	step(MonthSpend{Month: "2026-09", EUR: 49.99, Refusal: proxyRefusal, RefusedAt: refusedAt}, "2026-09/50", "2026-09/80", "2026-09/100/50")
+	step(MonthSpend{Month: "2026-09", EUR: 49.98, Refusal: gatewayRefusal, RefusedAt: refusedAt}, "2026-09/50", "2026-09/80", "2026-09/100/50")
+	step(MonthSpend{Month: "2026-09", EUR: 49.99, Refusal: gatewayRefusal, RefusedAt: refusedAt}, "2026-09/50", "2026-09/80", "2026-09/100/50")
 	if len(fj.issues) != 1 {
 		t.Fatalf("issues = %d, want 1", len(fj.issues))
 	}
 	for _, want := range []string{"The month cap of 50.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?\n\n",
 		"49.98 EUR of the cap of 50.00 EUR",
 		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/factory/policy.yaml#L7",
-		"refused_month_cap", "The newest refusal:\n\n```\n" + proxyRefusal + "\n```"} {
+		"refused_month_cap", "The newest refusal:\n\n```\n" + gatewayRefusal + "\n```"} {
 		if !strings.Contains(fj.issues[0], want) {
 			t.Errorf("issue lacks %q:\n%s", want, fj.issues[0])
 		}
@@ -532,5 +535,51 @@ func TestMonthAlarmClosesAnEndedMonthsCardUnderACapOfZero(t *testing.T) {
 	}
 	if got := taskOf(t, store, "2026-09/100/50"); got.Status != "done" || len(monthAlerts(store)) != 3 {
 		t.Fatalf("September's card = %s, alerts %v", got.Status, monthAlerts(store))
+	}
+}
+
+// A ledger of 500.00 under a cap of 600.00 and a newest refusal from LiteLLM's
+// outer guard: the card tells the human to raise max_budget, not the cap, and
+// shows the refusal with its credentials masked.
+func TestMonthAlarmNamesTheOuterGuard(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 600)
+	refusal := gateway.ProxyBudgetRefusal + "Budget has been exceeded! https://user:pass@litellm.example/v1 Authorization: Bearer abc123def456"
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 500, Refusal: refusal, RefusedAt: refusedAt}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 {
+		t.Fatalf("issues = %d, want 1", len(fj.issues))
+	}
+	got := fj.issues[0]
+	for _, want := range []string{"LiteLLM's outer guard refused calls at 500.00 EUR, below the month cap of 600.00 EUR: raise max_budget in k8s/platform/litellm/helmrelease.yaml",
+		"600.00 EUR (`budget.month_eur`)", "1.25 times", "scripts/budget-backstop-check",
+		"https://git.example/sf/ai-software-factory-infra/src/commit/c9/k8s/platform/litellm/helmrelease.yaml",
+		"litellm proxy budget exceeded"} {
+		if !strings.Contains(got, want) {
+			t.Errorf("issue lacks %q:\n%s", want, got)
+		}
+	}
+	for _, bad := range []string{"raise it", "pass@", "abc123def456"} {
+		if strings.Contains(got, bad) {
+			t.Errorf("issue holds %q:\n%s", bad, got)
+		}
+	}
+}
+
+// The ledger at the cap of 600.00 and the gateway's own refusal: the cap card.
+func TestMonthAlarmAtTheCapAsksToRaiseIt(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	alarm, fj := monthAlarm(t, store, 600)
+	store.monthSpend = MonthSpend{Month: "2026-09", EUR: 600, Refusal: gatewayRefusal, RefusedAt: refusedAt}
+	if err := alarm.Check(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if len(fj.issues) != 1 || !strings.Contains(fj.issues[0], "The month cap of 600.00 EUR is reached (2026-09): raise it, or let the factory stand until the month ends?") ||
+		strings.Contains(fj.issues[0], "max_budget") {
+		t.Fatalf("issues = %q", fj.issues)
 	}
 }
