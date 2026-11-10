@@ -10,6 +10,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/stretchr/testify/mock"
+	"go.temporal.io/sdk/workflow"
 )
 
 func surgeTree(bound int, surge *int) policy.Tree {
@@ -48,7 +49,7 @@ func TestAdmitResumeStartsTheSurgeAndQueuesTheRestInAnswerOrder(t *testing.T) {
 	var started, queued []string
 	for i := 1; i <= 8; i++ {
 		id := fmt.Sprintf("p%d", i)
-		s, err := r.AdmitResume(ctx, id)
+		s, err := r.AdmitResume(ctx, id, time.Time{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -82,7 +83,7 @@ func TestAdmitResumeStartsTheSurgeAndQueuesTheRestInAnswerOrder(t *testing.T) {
 		granted bool
 		ahead   int
 	}{{"p5", false, 2}, {"p3", true, 0}, {"p4", true, 0}, {"p5", false, 0}} {
-		s, err := r.AdmitResume(ctx, c.id)
+		s, err := r.AdmitResume(ctx, c.id, time.Time{})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -104,10 +105,10 @@ func TestAdmitResumeSurgeZeroAllowsNoOvershoot(t *testing.T) {
 	rev.Gate = GateReview
 	store.tasks["rev"] = rev
 	r := surgeRunner(store, surgeTree(2, &zero))
-	if s, _ := r.AdmitResume(ctx, "rev"); !s.Granted {
+	if s, _ := r.AdmitResume(ctx, "rev", time.Time{}); !s.Granted {
 		t.Fatal("a card in review holds its slot: it passes")
 	}
-	if s, err := r.AdmitResume(ctx, "p1"); err != nil || s.Granted {
+	if s, err := r.AdmitResume(ctx, "p1", time.Time{}); err != nil || s.Granted {
 		t.Fatalf("p1 at the bound with no surge: granted %v, err %v", s.Granted, err)
 	}
 }
@@ -210,7 +211,7 @@ func TestSetSlotWaitsOrdersResumedBeforeFresh(t *testing.T) {
 func TestWorkflowWaitsForASlotBeforeItsSession(t *testing.T) {
 	h := newWorkflowHarness(t)
 	asks := 0
-	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1").Return(func(ctx context.Context, taskID string) (ResumeSlot, error) {
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
 		asks++
 		return ResumeSlot{Granted: asks == 2, Ahead: 1}, nil
 	})
@@ -229,7 +230,7 @@ func TestWorkflowWaitsForASlotBeforeItsSession(t *testing.T) {
 // An issue closed while the card waits for a slot ends it: no session ran.
 func TestWorkflowEndsWhileWaitingForASlot(t *testing.T) {
 	h := newWorkflowHarness(t)
-	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1").Return(ResumeSlot{Ahead: 3}, nil)
+	h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(ResumeSlot{Ahead: 3}, nil)
 	h.signalAfter(time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
 	if final := h.run(t); final != "closed" {
 		t.Fatalf("final = %q, finals %v", final, h.finals)
@@ -239,8 +240,7 @@ func TestWorkflowEndsWhileWaitingForASlot(t *testing.T) {
 	}
 }
 
-// A card in review holds its slot through its checks, so its CI pod is
-// part of the slot: at bound 5 and surge 2, four running cards and three in
+// A card in review holds its slot through its checks: at bound 5 and surge 2, four running cards and three in
 // their checks are seven live, and a resumed card waits.
 func TestAdmitResumeCountsCardsInTheirChecks(t *testing.T) {
 	ctx := context.Background()
@@ -256,11 +256,11 @@ func TestAdmitResumeCountsCardsInTheirChecks(t *testing.T) {
 	}
 	store.tasks["p1"] = parkedCard("p1", "waiting-human")
 	r := surgeRunner(store, surgeTree(5, &two))
-	if s, err := r.AdmitResume(ctx, "p1"); err != nil || s.Granted {
+	if s, err := r.AdmitResume(ctx, "p1", time.Time{}); err != nil || s.Granted {
 		t.Fatalf("granted %v (err %v), want a wait at 7 live", s.Granted, err)
 	}
 	store.tasks["c3"] = parkedCard("c3", "done")
-	if s, err := r.AdmitResume(ctx, "p1"); err != nil || !s.Granted {
+	if s, err := r.AdmitResume(ctx, "p1", time.Time{}); err != nil || !s.Granted {
 		t.Fatalf("granted %v (err %v), want a start at 6 live", s.Granted, err)
 	}
 }
@@ -279,7 +279,7 @@ func TestAdmitResumeScrubsItsErrors(t *testing.T) {
 	leak := fmt.Errorf("count: https://user:pass@host/x Authorization: Bearer abcdefghijklmnopqrstuvwx")
 	r := surgeRunner(store, surgeTree(5, nil))
 	r.store = countFails{store, leak}
-	_, err := execActivity(t, r, ActivityAdmitResume, "p1")
+	_, err := execActivity(t, r, ActivityAdmitResume, "p1", time.Time{})
 	if err == nil || !strings.Contains(err.Error(), "count:") || strings.Contains(err.Error(), "pass@") || strings.Contains(err.Error(), "abcdefghijklmnop") {
 		t.Fatalf("err = %v, want the count named and both secrets masked", err)
 	}
@@ -302,5 +302,83 @@ func TestHealPassStartsAndWakesAResumedWaiter(t *testing.T) {
 		Timeline: &Timeline{Objects: &fakeObjectStore{}}}, nil, noneCompleted)
 	if !slices.Equal(wf.started, []string{"tw"}) || len(wf.signals) != 1 || !strings.HasPrefix(wf.signals[0], "tw "+SignalSlotFree) {
 		t.Fatalf("starts %v, signals %v; want tw started and woken with %s", wf.started, wf.signals, SignalSlotFree)
+	}
+}
+
+// The planner's session after a plan answer starts through the surge
+// bound: the card asks AdmitResume at each session start and the second
+// session waits until the ask is granted. A run from before the change
+// (the marker answers DefaultVersion) never asks.
+func TestPlanLoopSessionsPassTheSurgeBound(t *testing.T) {
+	for name, before := range map[string]bool{"current": false, "before the change": true} {
+		t.Run(name, func(t *testing.T) {
+			h := newPlanHarness(t, PlanResult{Revision: 1, SHA256: "sha-1"}, PlanResult{Revision: 2, SHA256: "sha-2"}, PlanResult{Revision: 3, SHA256: "sha-3"})
+			h.open, h.file = []int{1, 0, 0}, map[int]bool{3: true}
+			asks := 0
+			if before {
+				h.env.OnGetVersion("surge-resume", workflow.DefaultVersion, versionSurgeResume).Return(workflow.DefaultVersion)
+			} else {
+				h.env.OnActivity(ActivityAdmitResume, mock.Anything, "t1", mock.Anything).Return(func(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
+					asks++
+					return ResumeSlot{Granted: asks != 2, Ahead: 1}, nil
+				})
+				h.signalAfter(time.Minute, SignalSlotFree, TaskSignal{})
+			}
+			h.signalAfter(time.Hour, SignalPlanAnswered, TaskSignal{Author: "alice", Revision: 1, Index: 1})
+			h.signalAfter(2*time.Hour, SignalPlanAnswered, TaskSignal{Author: "bob", Revision: 1, Index: 2})
+			h.signalAfter(3*time.Hour, SignalPlanAnswered, TaskSignal{Author: "carol", Revision: 1, Index: 2})
+			h.signalAfter(4*time.Hour, SignalPlanAnswered, TaskSignal{Author: "dave", Revision: 2, Index: 1})
+			if final := h.run(t); final != "done" {
+				t.Fatalf("final = %q, finals %v", final, h.finals)
+			}
+			if want := map[bool]int{false: 4, true: 0}[before]; asks != want {
+				t.Fatalf("asks = %d, want %d: one for each of three sessions and one refusal", asks, want)
+			}
+			if len(h.plans) != 3 {
+				t.Fatalf("planner sessions = %d, want 3", len(h.plans))
+			}
+		})
+	}
+}
+
+// The queue keeps the order the waits ended in, not the order the cards
+// reached AdmitResume: p2's answer came first though p1 asked first.
+func TestAdmitResumeQueuesByWhenTheWaitEnded(t *testing.T) {
+	ctx := context.Background()
+	zero := 0
+	store := newFakeStore()
+	store.tasks["r1"] = parkedCard("r1", "running")
+	store.tasks["p1"] = parkedCard("p1", "waiting-human")
+	store.tasks["p2"] = parkedCard("p2", "waiting-human")
+	r := surgeRunner(store, surgeTree(1, &zero))
+	at := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	for _, c := range []struct {
+		id    string
+		since time.Time
+	}{{"p1", at.Add(time.Minute)}, {"p2", at}} {
+		if _, err := r.AdmitResume(ctx, c.id, c.since); err != nil {
+			t.Fatal(err)
+		}
+	}
+	waiters, _ := store.ResumeWaiters(ctx, "demo/app")
+	if len(waiters) != 2 || waiters[0].ID != "p2" || waiters[1].ID != "p1" {
+		t.Fatalf("waiters = %+v, want p2 then p1", waiters)
+	}
+}
+
+// A resumed waiter holds a slot-less queued row that admit never judges:
+// a signal to it leaves its reason alone and reaches its workflow.
+func TestBoundedPassesAResumedWaiterWithoutAnAdmissionStamp(t *testing.T) {
+	ctx := context.Background()
+	store, rec, bounded := boundedFixture(t, 3)
+	at := time.Date(2026, 11, 10, 12, 0, 0, 0, time.UTC)
+	w := parkedCard("t-w", "queued")
+	w.IssueNumber, w.ResumedAt, w.QueueReason = 5, &at, ResumedWaitReason+"7 of 7 live, 0 ahead"
+	store.tasks["t-w"] = w
+	if err := bounded.Signal(ctx, "t-w", SignalHumanComment, TaskSignal{}); err != nil {
+		t.Fatal(err)
+	}
+	if got, _, _ := store.Task(ctx, "t-w"); got.QueueReason != w.QueueReason || len(rec.signals) != 1 {
+		t.Fatalf("reason %q, signals %v; want the reason kept and the signal delivered", got.QueueReason, rec.signals)
 	}
 }

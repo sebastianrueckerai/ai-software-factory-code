@@ -1825,6 +1825,11 @@ func (t *taskRun) switchFromWait(sw PlanSwitch, step ReplanStep, back string) (f
 			return "failed", "supersede the approval: " + errMessage(err), true
 		}
 	}
+	if t.surge >= versionSurgeResume {
+		if final, why := t.awaitSlot(); final != "" {
+			return final, why, true
+		}
+	}
 	if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 		return "failed", "set running: " + errMessage(err), true
 	}
@@ -2048,6 +2053,11 @@ func (t *taskRun) planLoop() (string, error) {
 		}
 		if remaining <= 0 {
 			return t.finish("failed", "wall-clock cap reached")
+		}
+		if t.surge >= versionSurgeResume {
+			if final, why := t.awaitSlot(); final != "" {
+				return t.finish(final, why)
+			}
 		}
 		if err := workflow.ExecuteActivity(t.short, ActivitySetState, t.taskID, "running").Get(t.ctx, nil); err != nil {
 			return t.finish("failed", "set running: "+errMessage(err))

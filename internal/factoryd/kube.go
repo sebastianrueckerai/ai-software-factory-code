@@ -18,6 +18,7 @@ import (
 	"os"
 	"path/filepath"
 	"slices"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -80,6 +81,10 @@ type Kube interface {
 	// /api/v1/namespaces/<ns>/resourcequotas.
 	Create(ctx context.Context, path string, obj map[string]any) error
 	CreatePod(ctx context.Context, namespace, name string, pod map[string]any) error
+	// NodeStorage lists every node with its allocatable ephemeral storage
+	// and the ephemeral-storage requests of the pods placed on it, in bytes;
+	// the requests of pods no node holds yet come back as Unplaced.
+	NodeStorage(ctx context.Context) (nodes []NodeStorage, unplaced []int64, err error)
 	DeletePod(ctx context.Context, namespace, name string) error
 	// PodStatus reports the pod phase and the container exit code (-1 while
 	// the container has not terminated).
@@ -1272,4 +1277,109 @@ func (k *InClusterKube) Deployments(ctx context.Context, namespace string) ([]De
 			UpdatedReplicas: d.Status.UpdatedReplicas, AvailableReplicas: d.Status.AvailableReplicas, Images: images})
 	}
 	return out, nil
+}
+
+// NodeStorage is one node's allocatable ephemeral storage and the
+// ephemeral storage its live pods request, in bytes.
+type NodeStorage struct {
+	Name        string
+	Allocatable int64
+	Requested   int64
+}
+
+// NodeStorage reads the nodes and every pod not yet ended. A pod's request
+// is the larger of its containers' sum and its largest init container's,
+// as the scheduler counts it.
+func (k *InClusterKube) NodeStorage(ctx context.Context) ([]NodeStorage, []int64, error) {
+	var nodeList struct {
+		Items []struct {
+			Metadata struct {
+				Name string `json:"name"`
+			} `json:"metadata"`
+			Status struct {
+				Allocatable map[string]string `json:"allocatable"`
+			} `json:"status"`
+		} `json:"items"`
+	}
+	if err := k.getJSON(ctx, "/api/v1/nodes", &nodeList); err != nil {
+		return nil, nil, err
+	}
+	type container struct {
+		Resources struct {
+			Requests map[string]string `json:"requests"`
+		} `json:"resources"`
+	}
+	var podList struct {
+		Items []struct {
+			Spec struct {
+				NodeName       string      `json:"nodeName"`
+				Containers     []container `json:"containers"`
+				InitContainers []container `json:"initContainers"`
+			} `json:"spec"`
+		} `json:"items"`
+	}
+	q := url.Values{"fieldSelector": []string{"status.phase!=Succeeded,status.phase!=Failed"}}
+	if err := k.getJSON(ctx, "/api/v1/pods?"+q.Encode(), &podList); err != nil {
+		return nil, nil, err
+	}
+	nodes := make([]NodeStorage, 0, len(nodeList.Items))
+	at := map[string]int{}
+	for _, n := range nodeList.Items {
+		alloc, err := parseBytes(n.Status.Allocatable["ephemeral-storage"])
+		if err != nil {
+			return nil, nil, fmt.Errorf("node %s ephemeral-storage: %w", n.Metadata.Name, err)
+		}
+		at[n.Metadata.Name] = len(nodes)
+		nodes = append(nodes, NodeStorage{Name: n.Metadata.Name, Allocatable: alloc})
+	}
+	var unplaced []int64
+	for _, p := range podList.Items {
+		var sum, most int64
+		for _, c := range p.Spec.Containers {
+			b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
+			if err != nil {
+				return nil, nil, err
+			}
+			sum += b
+		}
+		for _, c := range p.Spec.InitContainers {
+			b, err := parseBytes(c.Resources.Requests["ephemeral-storage"])
+			if err != nil {
+				return nil, nil, err
+			}
+			most = max(most, b)
+		}
+		req := max(sum, most)
+		if i, ok := at[p.Spec.NodeName]; ok {
+			nodes[i].Requested += req
+		} else if p.Spec.NodeName == "" && req > 0 {
+			unplaced = append(unplaced, req)
+		}
+	}
+	return nodes, unplaced, nil
+}
+
+// parseBytes reads a Kubernetes quantity of bytes: a plain integer or one
+// with a binary (Ki..Ti) or decimal (k..T) suffix; "" is 0.
+func parseBytes(q string) (int64, error) {
+	if q == "" {
+		return 0, nil
+	}
+	units := []struct {
+		suffix string
+		mult   int64
+	}{{"Ki", 1 << 10}, {"Mi", 1 << 20}, {"Gi", 1 << 30}, {"Ti", 1 << 40}, {"k", 1e3}, {"M", 1e6}, {"G", 1e9}, {"T", 1e12}}
+	mult := int64(1)
+	num := q
+	for _, u := range units {
+		if strings.HasSuffix(q, u.suffix) {
+			mult, num = u.mult, strings.TrimSuffix(q, u.suffix)
+			break
+		}
+	}
+	n, err := strconv.ParseInt(num, 10, 64)
+	if err != nil {
+		return 0, fmt.Errorf("quantity %q: %w", q, err)
+	}
+	return n * mult, nil
 }

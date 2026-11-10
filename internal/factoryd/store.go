@@ -2161,13 +2161,17 @@ func (s *PGStore) Ping(ctx context.Context) error {
 // transitionSet and transitionWhere are TransitionTask's update: $1 the
 // task, $2 the status it moves to, $3 the statuses it may move from. A
 // card that moves back from a final status (a reopen) is unfinished and
-// unsettled again.
+// unsettled again, and any move ends a wait to resume: the card is no
+// resumed waiter, and its reason and time go with the wait.
 const (
 	transitionSet = `status = $2,
 		 finished_at = CASE WHEN $2 IN ('done', 'failed', 'closed', 'merged') THEN now() ELSE NULL END,
 		 settled_at = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN settled_at ELSE NULL END,
 		 gate = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN '' ELSE gate END,
-		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END`
+		 gate_since = CASE WHEN $2 IN ('done', 'failed', 'closed') THEN NULL ELSE gate_since END,
+		 queue_reason = CASE WHEN resumed_at IS NOT NULL THEN '' ELSE queue_reason END,
+		 queue_since = CASE WHEN resumed_at IS NOT NULL THEN NULL ELSE queue_since END,
+		 resumed_at = NULL`
 	transitionWhere = `id = $1 AND status = ANY($3)`
 )
 

@@ -31,6 +31,11 @@ rules:
 - apiGroups: [""]
   resources: [persistentvolumes]
   verbs: [list, delete]
+# the CI spawner spawns a runner pod only where its ephemeral storage fits:
+# the nodes' allocatable and the live pods' requests
+- apiGroups: [""]
+  resources: [nodes, pods]
+  verbs: [list]
 # the platform's rollouts, whose windows hold the alerts that fire in them
 - apiGroups: [kustomize.toolkit.fluxcd.io]
   resources: [kustomizations]

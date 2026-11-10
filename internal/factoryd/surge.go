@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.temporal.io/sdk/workflow"
 )
@@ -50,9 +51,11 @@ func resumesIntoSlot(t Task) bool {
 // out of the bound's reach, passes. A parked card runs while its project's
 // live count is under work_in_progress plus surge and no resumed card is
 // ahead of it; else it waits queued, holding no slot, and a freed slot
-// wakes it (SignalSlotFree). Granting moves it to running inside the same
-// lock that counts, so two grants never take one slot.
-func (r *Runner) AdmitResume(ctx context.Context, taskID string) (ResumeSlot, error) {
+// wakes it (SignalSlotFree). since is when the wait it resumes from ended,
+// the order the queue keeps. Granting moves the card to running inside the
+// lock that counts, so two grants never take one slot; the approvals and the
+// issue's label follow outside it, in the workflow's SetState.
+func (r *Runner) AdmitResume(ctx context.Context, taskID string, since time.Time) (ResumeSlot, error) {
 	t, _, err := r.task(ctx, taskID)
 	if err != nil {
 		return ResumeSlot{}, err
@@ -60,14 +63,19 @@ func (r *Runner) AdmitResume(ctx context.Context, taskID string) (ResumeSlot, er
 	if !resumesIntoSlot(t) {
 		return ResumeSlot{Granted: true}, nil
 	}
-	slot, err := r.admitResume(ctx, t)
-	if err == nil && slot.Granted {
-		wakeResumed(ctx, r.store, r.cfg.Workflows, t.Repository)
+	slot, err := r.admitResume(ctx, t, since)
+	if err != nil {
+		return ResumeSlot{}, err
 	}
-	return slot, err
+	if slot.Granted {
+		wakeResumed(ctx, r.store, r.cfg.Workflows, t.Repository)
+	} else if t.ResumedAt == nil {
+		mirrorTaskState(ctx, r.forgejo, t, "queued")
+	}
+	return slot, nil
 }
 
-func (r *Runner) admitResume(ctx context.Context, t Task) (ResumeSlot, error) {
+func (r *Runner) admitResume(ctx context.Context, t Task, since time.Time) (ResumeSlot, error) {
 	admitMu.Lock()
 	defer admitMu.Unlock()
 	v := r.cfg.Policy()
@@ -88,14 +96,11 @@ func (r *Runner) admitResume(ctx context.Context, t Task) (ResumeSlot, error) {
 		}
 	}
 	if ahead == 0 && live < limit {
-		return ResumeSlot{Granted: true}, r.SetState(ctx, t.ID, "running")
+		return ResumeSlot{Granted: true}, r.store.MarkStarted(ctx, t.ID)
 	}
 	reason := fmt.Sprintf(ResumedWaitReason+"%d of %d live, %d ahead", live, limit, ahead)
-	if err := r.store.SetResumeWait(ctx, t.ID, reason, r.clock()); err != nil {
+	if err := r.store.SetResumeWait(ctx, t.ID, reason, since); err != nil {
 		return ResumeSlot{}, err
-	}
-	if t.ResumedAt == nil {
-		mirrorTaskState(ctx, r.forgejo, t, "queued")
 	}
 	return ResumeSlot{Ahead: ahead}, nil
 }
@@ -104,9 +109,14 @@ func (r *Runner) admitResume(ctx context.Context, t Task) (ResumeSlot, error) {
 // AdmitResume until it grants, between asks the wait for a freed slot or a
 // terminal signal. final is set when that signal decided the card.
 func (t *taskRun) awaitSlot() (final, why string) {
+	since := t.waitEnded
+	if since.IsZero() {
+		since = workflow.Now(t.ctx)
+	}
+	t.waitEnded = time.Time{}
 	for {
 		var s ResumeSlot
-		if err := workflow.ExecuteActivity(t.short, ActivityAdmitResume, t.taskID).Get(t.ctx, &s); err != nil {
+		if err := workflow.ExecuteActivity(t.short, ActivityAdmitResume, t.taskID, since).Get(t.ctx, &s); err != nil {
 			return "failed", "admit the resumed session: " + errMessage(err)
 		}
 		if s.Granted {

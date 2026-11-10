@@ -1611,6 +1611,9 @@ type taskRun struct {
 	// surge: a resumed card's session passes the surge bound
 	// (versionSurgeResume)
 	surge workflow.Version
+	// waitEnded is when the wait of a human ended, the time a resumed card
+	// queues by for a slot (versionSurgeResume)
+	waitEnded time.Time
 	// queueWaits: the approval wait is out of the merge queue
 	// (versionQueueWaits)
 	queueWaits workflow.Version
@@ -1792,6 +1795,7 @@ func (t *taskRun) lifecycle() (string, error) {
 	// it join the next session's findings (the human's comments are in
 	// t.answers) and its resolution is taken (versionCases)
 	held := func(final, why string, answer []string) (string, string) {
+		t.waitEnded = workflow.Now(t.ctx)
 		if final == "" {
 			t.readRaise(&u)
 			addFindings(answer, "changes")

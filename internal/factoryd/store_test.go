@@ -921,6 +921,9 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
 	}
 	t.Status = to
+	if t.ResumedAt != nil {
+		t.ResumedAt, t.QueueReason, t.QueueSince = nil, "", nil
+	}
 	if !Final(to) {
 		delete(s.settled, id)
 	}
@@ -987,14 +990,16 @@ func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now t
 func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
 	t, ok := s.tasks[id]
 	if !ok {
-		return fmt.Errorf("task %s: %w", id, ErrNotFound)
+		return nil
 	}
-	if t.Status == "queued" && t.ResumedAt == nil {
+	parked := slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
+	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) {
 		return nil
 	}
 	if t.ResumedAt == nil {
-		t.ResumedAt, t.QueueSince = &now, &now
+		t.ResumedAt = &now
 	}
+	t.QueueSince = t.ResumedAt
 	t.Status, t.QueueReason = "queued", reason
 	s.tasks[id] = t
 	return nil

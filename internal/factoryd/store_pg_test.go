@@ -196,6 +196,25 @@ func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
 			if n, _ := s.ResumeWaiters(ctx, "sf/r"); len(n) != 2 {
 				t.Fatalf("a never-started card became a resumed waiter: %+v", n)
 			}
+			if err := s.SetResumeWait(ctx, "t-run", "resumed: no", at); err != nil {
+				t.Fatal(err)
+			}
+			if run, _, _ := s.Task(ctx, "t-run"); run.Status != "running" || run.ResumedAt != nil {
+				t.Fatalf("a running card became a waiter: %s, %v", run.Status, run.ResumedAt)
+			}
+			if err := s.TransitionTask(ctx, "t-a", []string{"queued"}, "closed"); err != nil {
+				t.Fatal(err)
+			}
+			closed, _, _ := s.Task(ctx, "t-a")
+			if closed.ResumedAt != nil || closed.QueueReason != "" || closed.QueueSince != nil {
+				t.Fatalf("t-a closed while it waited keeps resumed %v, reason %q, since %v", closed.ResumedAt, closed.QueueReason, closed.QueueSince)
+			}
+			if err := s.TransitionTask(ctx, "t-a", []string{"closed"}, "queued"); err != nil {
+				t.Fatal(err)
+			}
+			if n, _ := s.ResumeWaiters(ctx, "sf/r"); len(n) != 1 || n[0].ID != "t-b" {
+				t.Fatalf("a reopened card is a resumed waiter: %+v", n)
+			}
 			if err := s.MarkStarted(ctx, "t-b"); err != nil {
 				t.Fatal(err)
 			}
@@ -203,8 +222,8 @@ func TestResumeWaitHoldsNoSlotAndListsOldestFirst(t *testing.T) {
 			if started.Status != "running" || started.ResumedAt != nil || started.QueueReason != "" || started.QueueSince != nil {
 				t.Fatalf("t-b after MarkStarted = %s, resumed %v, reason %q, since %v", started.Status, started.ResumedAt, started.QueueReason, started.QueueSince)
 			}
-			if n, _ := s.CountAdmitted(ctx, "sf/r"); n != 2 {
-				t.Fatalf("CountAdmitted = %d, want 2 with t-b running", n)
+			if n, _ := s.CountAdmitted(ctx, "sf/r"); n != 3 {
+				t.Fatalf("CountAdmitted = %d, want 3: t-run, t-b running and the reopened, admitted t-a queued", n)
 			}
 		})
 	}
