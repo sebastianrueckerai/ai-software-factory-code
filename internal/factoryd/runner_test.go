@@ -2839,6 +2839,78 @@ func TestRunSessionDoesNotFloorAReattachedSession(t *testing.T) {
 	}
 }
 
+func spendTripSeen(hub *forgejoHub) bool {
+	hub.mu.Lock()
+	defer hub.mu.Unlock()
+	return slices.ContainsFunc(hub.comments, func(c string) bool { return strings.Contains(c, "spend_no_push") })
+}
+
+// A session reattached after a restart weighs its spend from its real
+// start: 1 EUR spent of 5 when it started leaves 4, and 2.5 EUR spent by
+// the reattach is 62.5 percent of 4, past the line of 60. Weighed from the
+// reattach (3.5 spent, 1.5 left) nothing would have been spent.
+func TestRunSessionReattachWeighsSpendFromTheSessionsStart(t *testing.T) {
+	runner, hub, kube, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue","reason":"it is making progress"}`})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	store.tasks["t2"] = tk
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	stop := make(chan struct{})
+	kube.onCreatePod = func() { go func() { time.Sleep(20 * time.Millisecond); close(stop) }() }
+	if _, err := runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, []string{hangLogs}, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerStopChannel(stop)
+	}); err == nil || !strings.Contains(err.Error(), "factoryd stopping") {
+		t.Fatalf("err = %v, want the detach", err)
+	}
+	first := store.liveSessions["t2"]
+	if first.SpentAtStart == nil || *first.SpentAtStart != 1 {
+		t.Fatalf("live row baseline = %v, want 1", first.SpentAtStart)
+	}
+	tk = store.tasks["t2"]
+	tk.SpentEUR = 3.5
+	store.tasks["t2"] = tk
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		for end := time.Now().Add(10 * time.Second); time.Now().Before(end) && !spendTripSeen(hub); {
+			time.Sleep(10 * time.Millisecond)
+		}
+		cancel()
+	}()
+	runSessionIn(t, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, func(env *testsuite.TestActivityEnvironment) {
+		env.SetWorkerOptions(worker.Options{BackgroundActivityContext: ctx})
+		env.SetHeartbeatDetails(sessionProgress{SessionID: first.SessionID, Running: true, Events: 1})
+	})
+	if chat.calls != 1 || !strings.Contains(chat.gots[0].Input, "spend_no_push") {
+		t.Fatalf("chat = %d calls, want the spend trip's conversation", chat.calls)
+	}
+}
+
+// A baseline the store would not give leaves spend_no_push off for the
+// session: 4 EUR of 5 spent in all would trip the old lifetime rule.
+func TestRunSessionUnreadBaselineKeepsSpendNoPushOff(t *testing.T) {
+	runner, hub, _, _, chat, store, _ := liveRig(t, CheckinResponse{Text: `{"decision":"continue"}`})
+	tk := store.tasks["t2"]
+	tk.BudgetEUR, tk.SpentEUR = 5, 1
+	store.tasks["t2"] = tk
+	spending := &spendingStore{Store: runner.store}
+	spending.failing.Store(true)
+	runner.store = spending
+	go func() {
+		time.Sleep(300 * time.Millisecond)
+		spending.failing.Store(false)
+		spending.added.Store(math.Float64bits(3))
+	}()
+	setDetectors(runner, map[string]int{policy.DetectorNoProgress: 3600})
+	runner.tick = 50 * time.Millisecond
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	runSession(t, ctx, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "factory/big"}, nil, hangLogs)
+	if chat.calls != 0 || spendTripSeen(hub) {
+		t.Fatalf("chat = %d calls, trip seen = %v, want spend_no_push off", chat.calls, spendTripSeen(hub))
+	}
+}
+
 // A live row whose pod is gone (a crash took it) starts the attempt over
 // as before: a new pod, and the row replaced by the new session's.
 func TestRunSessionReattachFindsNoPodAndStartsOver(t *testing.T) {
@@ -3859,10 +3931,14 @@ func TestRunSessionRepeatsAWarningTheWorkerRefused(t *testing.T) {
 // spendingStore reports the spend a session adds once the test sets it.
 type spendingStore struct {
 	Store
-	added atomic.Uint64
+	added   atomic.Uint64
+	failing atomic.Bool
 }
 
 func (s *spendingStore) Task(ctx context.Context, id string) (Task, bool, error) {
+	if s.failing.Load() {
+		return Task{}, false, errors.New("store down")
+	}
 	t, ok, err := s.Store.Task(ctx, id)
 	t.SpentEUR += math.Float64frombits(s.added.Load())
 	return t, ok, err
