@@ -372,6 +372,10 @@ type MergeSpec struct {
 	Factory bool `json:"factory,omitempty"`
 	// RedChecks: the head's checks were not green when the request opened.
 	RedChecks bool `json:"red_checks,omitempty"`
+	// FailedTests are the failing tests of the red jobs, read from their
+	// logs when the request opened: what CI says, apart from any other
+	// timeout, such as the criteria prover's own suite run.
+	FailedTests []FailedTest `json:"failed_tests,omitempty"`
 }
 
 // ApprovalInput is RequestApproval's argument; WhyHuman is what kept the
@@ -2039,7 +2043,7 @@ func reviewComment(model, commit string, rv Review, read string) string {
 // are red, which its actions follow (roadmap 264). The approval gate holds
 // no work slot, so the next queued card takes the card's.
 func (r *Runner) RequestApproval(ctx context.Context, taskID string, in ApprovalInput) error {
-	t, _, err := r.task(ctx, taskID)
+	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
 		return err
 	}
@@ -2068,12 +2072,16 @@ func (r *Runner) RequestApproval(ctx context.Context, taskID string, in Approval
 		}
 		in.WhyHuman = append([]string{fmt.Sprintf(line, g.Class, strings.Join(g.Paths, ", "))}, in.WhyHuman...)
 	}
+	var failed []FailedTest
+	if in.RedChecks {
+		failed = r.failedTests(ctx, t, repo, in.Commit)
+	}
 	if err := r.openMergeRequest(ctx, t, in.PR.Number, in.Commit, MergeSpec{
 		RiskClass: g.Class, Migration: len(g.Migrations) > 0, Migrations: g.Migrations,
 		VerdictSummary: cmp.Or(in.Review.Summary, in.Review.Note), Review: in.Review, Reproduction: in.Gates.Reproduction,
 		HeadSHA: in.Commit, PRURL: in.PR.URL, PolicyVersion: g.PolicyVersion,
 		Recommendation: t.AgentSummary, WhyHuman: in.WhyHuman, EarlierReviews: in.EarlierReviews, Audit: in.Gates.Audit,
-		Factory: in.Factory, RedChecks: in.RedChecks,
+		Factory: in.Factory, RedChecks: in.RedChecks, FailedTests: failed,
 	}, reason); err != nil {
 		return err
 	}

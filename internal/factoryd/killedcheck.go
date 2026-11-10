@@ -55,15 +55,10 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 		return false, nil
 	}
 	token := r.forgejo.Access(p).Actions
-	prefix := "/" + repo.Owner + "/" + repo.Name + "/actions/runs/"
 	seen := map[int64]bool{}
 	for _, s := range cs.Statuses {
-		if s.State != "failure" && s.State != "error" || !strings.HasPrefix(s.TargetURL, prefix) {
-			continue
-		}
-		number, _, _ := strings.Cut(strings.TrimPrefix(s.TargetURL, prefix), "/")
-		n, err := strconv.ParseInt(number, 10, 64)
-		if err != nil || seen[n] {
+		n, ok := runNumberOf(s, repo)
+		if !ok || seen[n] {
 			continue
 		}
 		seen[n] = true
@@ -98,6 +93,18 @@ func (r *Runner) killedChecks(ctx context.Context, t Task, repo Repo, cs Combine
 		}
 	}
 	return unsettled, notes
+}
+
+// runNumberOf is the number of the actions run of repo that failing status
+// s points at.
+func runNumberOf(s CommitStatus, repo Repo) (int64, bool) {
+	prefix := "/" + repo.Owner + "/" + repo.Name + "/actions/runs/"
+	if s.State != "failure" && s.State != "error" || !strings.HasPrefix(s.TargetURL, prefix) {
+		return 0, false
+	}
+	number, _, _ := strings.Cut(strings.TrimPrefix(s.TargetURL, prefix), "/")
+	n, err := strconv.ParseInt(number, 10, 64)
+	return n, err == nil
 }
 
 // rerunning is whether j, not done, is a re-run in progress: past its first

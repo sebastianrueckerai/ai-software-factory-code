@@ -287,6 +287,9 @@ func briefFacts(a ApprovalRequest, t Task, criteria []criterionFact, life string
 		m["review_verdict"], m["review_summary"] = s.Review.Verdict, s.VerdictSummary
 		m["why_human"], m["recommendation"] = s.WhyHuman, s.Recommendation
 		m["red_checks"], m["factory_pr"] = s.RedChecks, s.Factory
+		if len(s.FailedTests) > 0 {
+			m["failed_tests"] = s.FailedTests
+		}
 		if s.Audit != nil {
 			m["audit_verdict"], m["audit_findings"] = s.Audit.Verdict, len(s.Audit.Findings)
 		}

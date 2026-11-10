@@ -350,7 +350,7 @@ func TestAWithdrawalWithdrawsTheCase(t *testing.T) {
 // does.
 func openMerge(t *testing.T, s *PGStore, head string) int64 {
 	t.Helper()
-	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: head, RedChecks: true})
+	spec, err := json.Marshal(MergeSpec{RiskClass: "standard", HeadSHA: head, RedChecks: true, FailedTests: []FailedTest{{Test: "TestA", Package: "p/q"}}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -375,6 +375,9 @@ func TestAnApprovalRequestOpensAMergeCaseAndItsDecisionResolvesIt(t *testing.T) 
 	}
 	if c.Facts["pr"] != float64(1479) || c.Facts["class"] != "standard" || c.Facts["red_checks"] != true || c.Facts["approval"] != float64(id) {
 		t.Fatalf("merge facts = %v", c.Facts)
+	}
+	if want := []any{map[string]any{"test": "TestA", "package": "p/q"}}; !reflect.DeepEqual(c.Facts["failed_tests"], want) {
+		t.Fatalf("merge case failed_tests = %v, want %v", c.Facts["failed_tests"], want)
 	}
 	if steps := caseStepsOf(t, s, c.ID); len(steps) != 1 || steps[0].Rung != 3 || steps[0].Outcome != StepInProgress {
 		t.Fatalf("steps = %+v; want one running rung 3 step", steps)
