@@ -439,25 +439,35 @@ func TestChatChoiceNamedLikeAStallValueClosesTheCard(t *testing.T) {
 func TestExtendRaisesTheCapsAndAnswers(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "the restructure is worth it"); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, "the restructure is worth it"); err != nil {
 		t.Fatalf("extend: %v", err)
 	}
 	got, posts := actedOnce(t, r)
 	equal(t, "the extend", []any{got, posts}, []any{factoryd.ActInput{TaskID: "t-e", CaseID: 1, By: "sebastian", Via: factoryd.ViaChat, Rung: 3,
-		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 500}, Fund: &policy.Draw{EUR: 2},
+		Res: factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 1, "lines": 500, "agent_time_s": 0}, Fund: &policy.Draw{EUR: 2},
 			Note: "the restructure is worth it"}}, true})
 	r.fg.mu.Lock()
 	posted := r.fg.comments["/api/v1/repos/sf/code/issues/13/comments"]
 	r.fg.mu.Unlock()
 	equal(t, "the answer posted", posted, "the restructure is worth it")
 
+	// the Extend form's minutes field raises the card's agent time, the
+	// chat's extend's agent_time_s by its own door
 	r = fundRig(t)
-	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 1.5, ""); err != nil {
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 20, 0, ""); err != nil {
+		t.Fatalf("extend by minutes: %v", err)
+	}
+	got, _ = actedOnce(t, r)
+	equal(t, "the minutes alone", got.Res, factoryd.Resolution{Action: factoryd.ActExtend, Args: map[string]any{"sessions": 0, "lines": 0, "agent_time_s": 1200},
+		Note: "Extended the card: +0 sessions, +20 minutes of agent time, +0 lines, +0.00 EUR."})
+
+	r = fundRig(t)
+	if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 0, 0, 0, 1.5, ""); err != nil {
 		t.Fatalf("extend by money alone: %v", err)
 	}
 	got, _ = actedOnce(t, r)
 	equal(t, "the money alone", got.Res, factoryd.Resolution{Action: factoryd.ActFund, Args: map[string]any{"eur": 1.5},
-		Note: "Extended the card: +0 sessions, +0 lines, +1.50 EUR."})
+		Note: "Extended the card: +0 sessions, +0 minutes of agent time, +0 lines, +1.50 EUR."})
 }
 
 // Nothing extends when the raise names nothing or names a negative: the
@@ -466,12 +476,12 @@ func TestExtendRefusesWhatChangesNothing(t *testing.T) {
 	r := fundRig(t)
 	_, s := r.loggedIn(t)
 	for _, in := range []struct {
-		sessions, lines int
-		eur             float64
+		sessions, lines, minutes int
+		eur                      float64
 	}{
-		{0, 0, 0}, {-1, 0, 0}, {0, -500, 0}, {0, 0, -2}, {1, 0, -5},
+		{0, 0, 0, 0}, {-1, 0, 0, 0}, {0, -500, 0, 0}, {0, 0, -20, 0}, {0, 0, 0, -2}, {1, 0, 0, -5},
 	} {
-		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.eur, "")
+		_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", in.sessions, in.lines, in.minutes, in.eur, "")
 		var no *refusal
 		if !errors.As(err, &no) || no.status != http.StatusBadRequest {
 			t.Errorf("extend %+v = %v, want a 400 refusal", in, err)
@@ -515,10 +525,30 @@ func TestExtendFormShowsWhereTheAskOffersIt(t *testing.T) {
 	r.tasks.mu.Unlock()
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="sessions"`, `name="lines"`, `name="eur"`, `value="overrule"`} {
+	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="minutes"`, `name="sessions"`, `name="lines"`, `name="eur"`, `value="overrule"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the card lacks %s", want)
 		}
+	}
+}
+
+// A planner's time stop shows the Extend form's minutes field first: the
+// stop asks agent time, and the form's own order says so.
+func TestExtendFormLeadsWithMinutesAtAPlannerTimeStop(t *testing.T) {
+	r := fundRig(t)
+	r.tasks.set(factoryd.PlannerOutOfTime+" and its automatic second session without filing a plan: an extend of its agent time starts one more planner session, with the answer among its findings",
+		factoryd.Task{ID: "t-e", Kind: "agent", Status: "waiting-human", Repository: "sf/code", IssueNumber: 13,
+			Objective: "Plan the API.", BudgetEUR: 2, ModelAlias: "factory/small"})
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
+	i := strings.Index(body, `action="/tasks/t-e/extend"`)
+	if i < 0 {
+		t.Fatalf("the board lacks the extend form of t-e")
+	}
+	form := body[i:]
+	minutes, sessions := strings.Index(form, `name="minutes"`), strings.Index(form, `name="sessions"`)
+	if minutes < 0 || sessions < 0 || minutes > sessions {
+		t.Fatalf("the extend form at the planner's stop leads with %q; want the minutes field before the sessions", form[:min(len(form), 300)])
 	}
 }
 
@@ -535,7 +565,7 @@ func TestExtendRaisesALiveCardWithoutPosting(t *testing.T) {
 		r := fundRig(t)
 		setStatus(r, status)
 		_, s := r.loggedIn(t)
-		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, ""); err != nil {
+		if _, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, ""); err != nil {
 			t.Fatalf("%s: extend: %v", status, err)
 		}
 		got, _ := actedOnce(t, r)
@@ -556,7 +586,7 @@ func TestExtendRefusesADoneCard(t *testing.T) {
 	r := fundRig(t)
 	setStatus(r, "done")
 	_, s := r.loggedIn(t)
-	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 2, "")
+	_, err := r.c.doExtend(t.Context(), actor{s: s, repository: "sf/code", via: factoryd.ViaChat}, "t-e", 1, 500, 0, 2, "")
 	var no *refusal
 	if !errors.As(err, &no) || no.status != http.StatusConflict {
 		t.Fatalf("extend of a done card = %v, want a 409 refusal", err)
@@ -573,7 +603,7 @@ func TestExtendFormShowsOnALiveCardToApprovers(t *testing.T) {
 	setStatus(r, "running")
 	ck, _ := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-e/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="sessions"`, `name="lines"`, `name="eur"`} {
+	for _, want := range []string{`action="/tasks/t-e/extend"`, `name="minutes"`, `name="sessions"`, `name="lines"`, `name="eur"`} {
 		if !strings.Contains(body, want) {
 			t.Errorf("the running card's drawer lacks %s", want)
 		}

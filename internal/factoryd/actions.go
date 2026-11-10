@@ -134,6 +134,8 @@ var Actions = []Action{
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
 		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
 			return "an extend needs sessions, agent time, lines or check-in shares above 0"
+		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
+			return fmt.Sprintf("the agent time cap of %s is reached: an extend of its agent time starts the session, sessions alone buy none", minutesWord(time.Duration(f.AgentTimeCapS)*time.Second))
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -246,11 +248,23 @@ func ActionByName(name string) (Action, bool) {
 
 // probes are the smallest answers Offered tries the actions that need
 // arguments or a note with: one session, one cent, the same model, one
-// note.
+// note. At an agent time cap the extend's probe buys agent time, the
+// part its stop names.
 var probes = map[string]Resolution{
 	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
 	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
 	ActContinue: {Note: "probe"}, ActNote: {Note: "probe"},
+}
+
+// probe is action a's smallest answer on facts f: its probe, an extend of
+// one minute of agent time at an agent time cap, where a raise of the
+// sessions alone is refused with the stop's own words.
+func probe(a Action, f CaseFacts) Resolution {
+	p := probes[a.Name]
+	if a.Name == ActExtend && f.Kind == CaseAgentTimeCap {
+		p.Args = map[string]any{"agent_time_s": 60}
+	}
+	return p
 }
 
 // Offered lists the actions rung may take on facts f, in table order: its
@@ -259,7 +273,7 @@ var probes = map[string]Resolution{
 func Offered(f CaseFacts, rung int) []Action {
 	var out []Action
 	for _, a := range Actions {
-		p := probes[a.Name]
+		p := probe(a, f)
 		if a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}) == "" {
 			out = append(out, a)
 		}

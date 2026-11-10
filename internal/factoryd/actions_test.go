@@ -429,7 +429,7 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	const asked = "this card asked a question, not for a session: answer it, or extend at its cap"
 	one := Resolution{Args: map[string]any{"sessions": 1}}
 	for kind, want := range map[CaseKind]string{
-		CaseSessionCap: "", CaseAgentTimeCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
+		CaseSessionCap: "", CaseCheckinShare: "", CaseGateStop: "", CaseFindingsRepeated: "", "": "",
 		CaseAgentEscalate: asked, CaseAgentRequestInfo: asked, CaseOther: asked, CaseCheckinHuman: asked,
 		CaseBudgetFloor: "this card waits on money, not a session: fund it",
 		CaseMonthCap:    "this card waits on the month cap, not a session: raise budget.month_eur or wait for the month to turn, then fund or retry",
@@ -440,6 +440,35 @@ func TestExtendAnswersACapAlone(t *testing.T) {
 	}
 	if got := offeredNames(CaseFacts{Kind: CaseAgentEscalate, SessionCap: 3, AgentTimeCapS: 7200}, 3); slices.Contains(got, ActExtend) {
 		t.Errorf("the human on an ask is offered %v, want no extend", got)
+	}
+}
+
+// An agent time cap is answered by agent time: an extend that raises none
+// of the time its stop names, sessions or lines alone, is refused with the
+// stop's own words before it draws, so it leaves the card's last draw as
+// it stands and the next extend is not already refused for having bought
+// nothing. The extend stays offered there, probed on the agent time it
+// takes.
+func TestExtendAtATimeCapTakesAgentTime(t *testing.T) {
+	timeCap := CaseFacts{Kind: CaseAgentTimeCap, SessionCap: 5, AgentTimeCapS: 1200, AgentTimeS: 1200}
+	for _, tc := range []struct {
+		name string
+		r    Resolution
+		want string
+	}{
+		{"sessions alone", Resolution{Args: map[string]any{"sessions": 1}},
+			"the agent time cap of 20 minutes is reached: an extend of its agent time starts the session, sessions alone buy none"},
+		{"lines alone", Resolution{Args: map[string]any{"lines": 200}},
+			"the agent time cap of 20 minutes is reached: an extend of its agent time starts the session, sessions alone buy none"},
+		{"agent time", Resolution{Args: map[string]any{"agent_time_s": 600}}, ""},
+		{"agent time and sessions", Resolution{Args: map[string]any{"agent_time_s": 600, "sessions": 1}}, ""},
+	} {
+		if got := applies(t, ActExtend, timeCap, tc.r); got != tc.want {
+			t.Errorf("%s at the agent time cap = %q, want %q", tc.name, got, tc.want)
+		}
+	}
+	if got := offeredNames(timeCap, 3); !slices.Contains(got, ActExtend) {
+		t.Errorf("the human at the agent time cap is offered %v, want the extend", got)
 	}
 }
 

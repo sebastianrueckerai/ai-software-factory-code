@@ -101,7 +101,7 @@ func escalationSource(reason string) string {
 	switch {
 	case strings.HasPrefix(reason, AgentAsks):
 		return "agent"
-	case AtSessionCap(reason), strings.HasPrefix(reason, plannerOutOfTime):
+	case AtSessionCap(reason), strings.HasPrefix(reason, PlannerOutOfTime):
 		return "cap"
 	case strings.HasPrefix(reason, monthCapReached):
 		return SourceMonthCap
