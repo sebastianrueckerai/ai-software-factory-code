@@ -226,6 +226,35 @@ func TestCheckinStatement(t *testing.T) {
 	})
 }
 
+// The opening statement carries the deterministic cost and state block
+// beside the pace line: the task's settled figures, its model calls and
+// tokens, and its status, assembled by factoryd from its store.
+func TestCheckinStatementCarriesTheCostState(t *testing.T) {
+	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9",
+		Pace: &Pace{Lines: 10, BoundLines: 300, SpentEUR: 1.2, BudgetEUR: 4, SpentMinutes: 12, LeftMinutes: 30, Attempt: 1, Sessions: 2},
+		CostState: &CostState{BudgetEUR: 4, SpentEUR: 1.2, RemainingEUR: 2.8, Calls: 5,
+			PromptTokens: 2000, CachedTokens: 400, OutputTokens: 800, State: "running"}}
+	s := checkinStatement(ask, nil, 7, 1.5, 2000)
+	want := `Cost and state: {"budget_eur":4,"spent_eur":1.2,"remaining_eur":2.8,"calls":5,"prompt_tokens":2000,"cached_tokens":400,"output_tokens":800,"state":"running"}`
+	if !strings.Contains(s, want) {
+		t.Fatalf("statement lacks the cost and state block:\n%s", s)
+	}
+	if strings.Count(s, `"prompt_tokens":2000`) != 1 {
+		t.Errorf("the block renders %d times, want once:\n%s", strings.Count(s, `"prompt_tokens":2000`), s)
+	}
+	// beside the pace line, before the record's tail
+	pace, cost, tail := strings.Index(s, "Pace of the card:"), strings.Index(s, "Cost and state:"), strings.Index(s, "record is absent")
+	if pace < 0 || cost < 0 || !(pace < cost && cost < tail) {
+		t.Errorf("the block does not ride beside the pace: pace %d, cost %d, tail %d", pace, cost, tail)
+	}
+
+	t.Run("no block without figures", func(t *testing.T) {
+		if s := checkinStatement(&CheckInAsk{Moment: CheckInGate}, nil, 7, 1.5, 2000); strings.Contains(s, "Cost and state:") {
+			t.Errorf("statement carries the block with no figures:\n%s", s)
+		}
+	})
+}
+
 // scriptedChat answers a check-in's conversations in order. Fails makes
 // the first calls error before the answers apply; delay holds each call,
 // honouring the caller's context, so a session's deadline cuts it; onCall
