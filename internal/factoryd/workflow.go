@@ -1417,6 +1417,13 @@ const (
 	// to the card as a finding and the run goes on. A run from before
 	// copies nothing.
 	versionUpstreamCopy workflow.Version = 1
+	// versionSizedLeast (change id "sized-least"): the agent time a session
+	// needs to start is minSession, or the card's whole agent time when
+	// shorter, as the card's size sets it, so a small card whose class gives
+	// under 10 minutes starts its first session. Read where it differs from
+	// the class's unsized time. A run from before reads that, and such a
+	// card asks the agent-time cap before its first session.
+	versionSizedLeast workflow.Version = 1
 )
 
 // budgetRefused opens the card of a task whose remaining budget cannot
@@ -1726,8 +1733,18 @@ func (t *taskRun) lifecycle() (string, error) {
 	var u TaskUsage
 	reason := "no session produced a result"
 	refusals := 0 // provider_refused sessions in a row (versionProviderWait)
-	// least is the agent time a session needs to start (versionKeepWork)
-	least := min(minSession, t.cfg.WallClockCap)
+	// least is the agent time a session needs to start (versionKeepWork):
+	// minSession, or the card's whole agent time when shorter, as its size
+	// sets it (versionSizedLeast); a run from before reads the class's
+	// agent time before sizing, unsized
+	unsized := min(minSession, t.cfg.WallClockCap)
+	least := func() time.Duration {
+		sized := min(minSession, t.cfg.WallClockCap)
+		if sized != unsized && workflow.GetVersion(t.ctx, "sized-least", workflow.DefaultVersion, versionSizedLeast) >= versionSizedLeast {
+			return sized
+		}
+		return unsized
+	}
 	// capAnswer is what an answer at a cap buys: an attempt only at the
 	// session cap, else the agent time alone (versionSessionLadder)
 	capAnswer := func() {
@@ -1755,7 +1772,7 @@ func (t *taskRun) lifecycle() (string, error) {
 		}
 		own, reason = nil, v.reason
 		if t.keepWork >= versionKeepWork && v.requested &&
-			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least) {
+			(u.Attempts >= t.cfg.MaxSessions+u.SessionsAdded() || t.cfg.WallClockCap+u.TimeAdded()-u.AgentTime < least()) {
 			before := u
 			capAnswer()
 			draw := policy.Draw{Sessions: u.ExtraAttempts - before.ExtraAttempts, AgentTime: u.ExtraTime - before.ExtraTime}
@@ -2273,7 +2290,7 @@ func (t *taskRun) lifecycle() (string, error) {
 			}
 		}
 		remaining := t.cfg.WallClockCap + u.TimeAdded() - u.AgentTime
-		if t.keepWork >= versionKeepWork && remaining < least {
+		if t.keepWork >= versionKeepWork && remaining < least() {
 			if final, why := timeCap(); final != "" {
 				return t.finish(final, why)
 			}

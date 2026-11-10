@@ -6142,3 +6142,35 @@ func TestWorkflowChecksWaitTimeoutFollowsItsBound(t *testing.T) {
 		})
 	}
 }
+
+// A small card whose class gives 8 minutes gets 4, under minSession: its
+// first session starts on them, as the size sets the least too
+// (versionSizedLeast). A run from before reads the class's 8 minutes
+// unsized, so the least is 5 minutes, more than the card's 4, and it asks
+// the agent-time cap before any session.
+func TestWorkflowSmallCardUnderTenMinutesStartsItsFirstSession(t *testing.T) {
+	for name, before := range map[string]bool{"sized": false, "before the change": true} {
+		t.Run(name, func(t *testing.T) {
+			h := newWorkflowHarness(t)
+			if before {
+				h.env.OnGetVersion("sized-least", workflow.DefaultVersion, versionSizedLeast).Return(workflow.DefaultVersion)
+			}
+			h.taskConfig = &TaskConfig{Process: "maintenance", Track: policy.TrackDirect, Class: policy.ClassCoder, Session: policy.SessionCode,
+				Stages: testStages(), Queue: policy.QueueNone, AgentTime: 8 * time.Minute}
+			h.state = RunState{Size: "small"}
+			h.onSessions(pushed("s1", "c1"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(48*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			if before {
+				if final := h.run(t); final != "closed" || len(h.sessions) != 0 || !capAsked(h) {
+					t.Fatalf("final %q, sessions %d, asks %q; want the agent-time cap asked before any session", final, len(h.sessions), h.escalated)
+				}
+				return
+			}
+			h.signalAfter(time.Hour, SignalPRMerged, TaskSignal{Author: "sebastian", PR: 9})
+			if final := h.run(t); final != "done" || len(h.sessions) != 1 || capAsked(h) {
+				t.Fatalf("final %q, sessions %d, asks %q; want the first session run and the card done", final, len(h.sessions), h.escalated)
+			}
+		})
+	}
+}

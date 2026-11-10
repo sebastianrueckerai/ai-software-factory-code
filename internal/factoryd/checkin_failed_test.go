@@ -375,9 +375,10 @@ func TestFailedCheckinReplyStartsASession(t *testing.T) {
 }
 
 // The face names what starts the attempt by the card's room: a reply where
-// a session fits, the cap's Extend where none does, for the stops whose
-// reply buys a session. The facts are the run's rule: a 7200 s cap, 3
-// sessions, and 300 s a session needs to start.
+// a session fits, the cap's Extend or the Fund form where none does, for
+// the stops whose reply buys a session. The facts are the run's rule: a
+// 7200 s cap, 3 sessions, and 300 s a session needs to start; no money
+// facts read as a budget that funds one.
 func TestFailedStopFaceByAgentTime(t *testing.T) {
 	facts := func(attempts int, used float64) map[string]any {
 		return map[string]any{"attempts": attempts, "session_cap": 3, "agent_time_cap_s": 7200, "agent_time_s": used, "session_least_s": 300}
@@ -403,6 +404,17 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		if limit := tripNext(Case{Kind: kind, Facts: facts(3, 600)}, "x"); !strings.Contains(limit, "the session cap next") || strings.Contains(limit, "Reply on this issue to start") {
 			t.Errorf("%s at the session limit: %q", kind, limit)
 		}
+		// 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening needs
+		short := facts(1, 600)
+		short["left_eur"], short["reserve_eur"], short["floor_eur"] = 0.48, 0.4, 0.3
+		if got := tripNext(Case{Kind: kind, Facts: short}, "x"); !strings.Contains(got, "the budget floor next") || !strings.Contains(got, "the Fund form on the board") {
+			t.Errorf("%s with the budget short: %q", kind, got)
+		}
+		floorUnread := facts(1, 600)
+		floorUnread["partial"] = []any{"floor"}
+		if got := tripNext(Case{Kind: kind, Facts: floorUnread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "the Fund form") {
+			t.Errorf("%s with the floor unread: %q", kind, got)
+		}
 		unread := facts(1, 600)
 		delete(unread, "agent_time_cap_s")
 		if got := tripNext(Case{Kind: kind, Facts: unread}, "x"); strings.Contains(got, "Reply on this issue to start") || !strings.Contains(got, "Extend on the board") {
@@ -413,9 +425,9 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 
 // A reply during a cap's wait, the day's, the month's or the project's,
 // starts the next session sooner when the card has room, and starts none
-// when its agent time is spent or its last session ran: the run asks that
-// cap after the reply. The wait's face says which. The capped session made
-// calls, so it counts.
+// when its agent time is spent, its last session ran or its own budget no
+// longer funds a session: the run asks that stop after the reply. The
+// wait's face says which. The capped session made calls, so it counts.
 func TestCapWaitReplyByAgentTime(t *testing.T) {
 	const project = "free headroom 0.000001 EUR (task 2.000000, day 12.000000, month 40.000000, project 0.000001); " +
 		"the project cap budget.month_eur in projects/linkshort.yaml is spent, and only a human raises it, by a commit"
@@ -441,11 +453,17 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 			"time left":     {10 * time.Minute, 0, 2, "", ""},
 			"time spent":    {20 * time.Minute, 0, 1, "agent-time cap", timeCapReached},
 			"session limit": {10 * time.Minute, testWorkflowConfig.MaxSessions - 1, 1, "session cap", capReached},
+			"budget short":  {10 * time.Minute, 0, 1, "budget floor", budgetRefused},
 		} {
 			t.Run(capName+" cap with "+name, func(t *testing.T) {
 				h, _ := capHarness(t, tc.took, capped, pushed("s2", "c1"))
 				h.env.SetStartTime(worked.At)
 				h.state = RunState{Usage: TaskUsage{Attempts: tc.before}}
+				money := fundedMoney
+				if tc.asked == budgetRefused {
+					fundUntilAsked(h)
+					money = shortMoney
+				}
 				h.onChecks(ChecksResult{State: ChecksSuccess})
 				h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
 				h.signalAfter(48*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
@@ -456,7 +474,7 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 				if tc.sessions == 1 && !slices.ContainsFunc(h.escalated, func(s string) bool { return strings.Contains(s, tc.asked) }) {
 					t.Fatalf("asks %q, want the %s asked after the reply", h.escalated, tc.cap)
 				}
-				face := stopFace(t, h, c.wait)
+				face := stopFace(t, h, c.wait, money)
 				if tc.sessions == 2 && !strings.Contains(face, "start a new attempt sooner") ||
 					tc.sessions == 1 && (!strings.Contains(face, "A reply alone starts no attempt") || !strings.Contains(face, tc.cap) || strings.Contains(face, "sooner")) {
 					t.Fatalf("face %q, want it to say what the reply does", face)
@@ -469,17 +487,20 @@ func TestCapWaitReplyByAgentTime(t *testing.T) {
 // Every case kind's face against what a reply does, which the test named
 // in each row drives through the run (no test drives a row no trip
 // reaches: unreached says why). A kind whose reply buys a session names the
-// reply with room and the cap's Extend at the agent-time cap or the session
-// limit; the gate's reply runs the gate again; a dependency's starts the
-// card anyway; the deadlock's changes nothing. The facts are the run's
-// rule: a 7200 s cap, 3 sessions, and 300 s a session needs to start.
+// reply with room, the cap's Extend at the agent-time cap or the session
+// limit, and the Fund form with the budget short of a session; the gate's
+// reply runs the gate again; a dependency's starts the card anyway; the
+// deadlock's changes nothing. The facts are the run's rule: a 7200 s cap,
+// 3 sessions, 300 s a session needs to start, and 0.30 EUR its opening.
 func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 	const reply = "Reply on this issue to start a new attempt"
 	const none = "A reply alone starts no attempt"
-	facts := func(attempts, used int) map[string]any {
-		return map[string]any{"attempts": attempts, "session_cap": 3, "agent_time_cap_s": 7200, "agent_time_s": used, "session_least_s": 300}
+	facts := func(attempts, used int, left float64) map[string]any {
+		return map[string]any{"attempts": attempts, "session_cap": 3, "agent_time_cap_s": 7200, "agent_time_s": used, "session_least_s": 300,
+			"left_eur": left, "reserve_eur": 0.4, "floor_eur": 0.3}
 	}
-	room, spent, limit := facts(1, 600), facts(1, 7000), facts(3, 600)
+	// short: 0.48 EUR left less the 0.40 reserve is 0.08, under the 0.30 an opening needs
+	room, spent, limit, short := facts(1, 600, 2), facts(1, 7000, 2), facts(3, 600, 2), facts(1, 600, 0.48)
 	covered := map[CaseKind]bool{}
 	defer func() {
 		for _, name := range caseKindNames {
@@ -504,32 +525,42 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseCheckinFailed, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinFailed, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinFailed, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseCheckinFailed, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinHuman, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinHuman, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinHuman, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseCheckinHuman, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseCheckinShare, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseCheckinShare, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CasePodNeverStarted, podNeverStarted, room, reply, none, TestReplyAtProviderAndPodStops, ""},
 		{CasePodNeverStarted, podNeverStarted, spent, none, reply, TestReplyAtProviderAndPodStops, ""},
 		{CasePodNeverStarted, podNeverStarted, limit, none, reply, TestReplyAtProviderAndPodStops, ""},
+		{CasePodNeverStarted, podNeverStarted, short, none, reply, TestReplyAtProviderAndPodStops, ""},
 		{CaseProviderRefused, providerRefused, room, reply, none, TestReplyAtProviderAndPodStops, ""},
 		{CaseProviderRefused, providerRefused, spent, none, reply, TestReplyAtProviderAndPodStops, ""},
 		{CaseProviderRefused, providerRefused, limit, none, reply, TestReplyAtProviderAndPodStops, ""},
+		{CaseProviderRefused, providerRefused, short, none, reply, TestReplyAtProviderAndPodStops, ""},
 		{CaseNoAnswer, noModelAnswer, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseNoAnswer, noModelAnswer, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseNoAnswer, noModelAnswer, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseImageWait, imageWaited, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseImageWait, imageWaited, spent, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseImageWait, imageWaited, limit, reply, none, TestReplyAtStopsThatBuyASession, ""},
+		{CaseImageWait, imageWaited, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseContentFilter, contentFilterRefusal, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseContentFilter, contentFilterRefusal, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseAgentEscalate, AgentAsks, limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseAgentEscalate, AgentAsks, short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseOther, "x", room, reply, none, TestReplyAtStopsThatBuyASession, ""},
 		{CaseOther, "x", spent, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseOther, "x", limit, none, reply, TestReplyAtStopsThatBuyASession, ""},
+		{CaseOther, "x", short, none, reply, TestReplyAtStopsThatBuyASession, ""},
 		{CaseScreeningSuspect, screeningAsks + "x", room, "let the agent work on it", "new attempt", TestReplyAtASuspectScreening, ""},
 		{CaseHumanCard, "x", room, "No attempt starts", reply, TestHumanCardRunsNoSession, ""},
 		{CaseWaitExpired, staleQuiet, room, "on its own form", "Reply on this issue", nil, "nothing writes a stale ask"},
@@ -540,6 +571,7 @@ func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
 		{CaseDayCap, dayWait, room, "start a new attempt sooner", none, TestCapWaitReplyByAgentTime, ""},
 		{CaseDayCap, dayWait, spent, none, "start a new attempt sooner", TestCapWaitReplyByAgentTime, ""},
 		{CaseDayCap, dayWait, limit, none, "start a new attempt sooner", TestCapWaitReplyByAgentTime, ""},
+		{CaseDayCap, dayWait, short, none, "start a new attempt sooner", TestCapWaitReplyByAgentTime, ""},
 		{CaseMonthCap, monthWait, room, "start a new attempt sooner", none, TestCapWaitReplyByAgentTime, ""},
 		{CaseMonthCap, monthWait, limit, none, "start a new attempt sooner", TestCapWaitReplyByAgentTime, ""},
 		{CaseProjectCap, projectWait, spent, none, "start a new attempt sooner", TestCapWaitReplyByAgentTime, ""},

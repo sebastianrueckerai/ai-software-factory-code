@@ -37,7 +37,7 @@ type CaseFacts struct {
 	// AgentTimeS is the agent time the card used and AgentTimeCapS its cap,
 	// the class's sized by the card plus what was added, in seconds with
 	// their fraction. SessionLeastS is what a session needs to start, as
-	// the run reads it: minSession, or the class's whole agent time when
+	// the run reads it: minSession, or the card's sized agent time when
 	// shorter. The cap and the least are 0 when the config is unread.
 	AgentTimeS    float64 `json:"agent_time_s"`
 	AgentTimeCapS float64 `json:"agent_time_cap_s"`
@@ -109,13 +109,26 @@ func (f CaseFacts) agentTime() (limit, left, need time.Duration) {
 // seconds is s seconds to the nanosecond.
 func seconds(s float64) time.Duration { return time.Duration(math.Round(s * float64(time.Second))) }
 
-// noSession is the cap the run asks at its loop top on f before a
-// session, "" when one fits: the session cap once the attempts reached it,
-// else the agent-time cap when less is left than a session needs. read is
-// false when a limit is unread, which fits none.
-func (f CaseFacts) noSession() (asked CaseKind, read bool) {
+// unfunded: what is left for a session is under what its opening needs,
+// the gateway's own test of the card's headroom (policy.FitResource).
+func (f CaseFacts) unfunded() bool { return f.FloorEUR > f.SessionLeft() }
+
+// noSession is the stop the run asks at its loop top on f before a
+// session, "" when one fits, in the run's order: the budget floor when the
+// card's money no longer funds a session's opening, the session cap once
+// the attempts reached it, the agent-time cap when less is left than a
+// session needs. A reply that buys back what the stopped session took
+// (refund) leaves the floor alone to weigh. read is false when a limit
+// weighed is unread, which fits none.
+func (f CaseFacts) noSession(refund bool) (asked CaseKind, read bool) {
 	limit, left, need := f.agentTime()
 	switch {
+	case slices.Contains(f.Partial, "floor"):
+		return "", false
+	case f.unfunded():
+		return CaseBudgetFloor, true
+	case refund:
+		return "", true
 	case f.SessionCap <= 0 || limit <= 0 || need <= 0:
 		return "", false
 	case f.Attempts >= f.SessionCap:
@@ -197,8 +210,9 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		{"config", func() error {
 			tc, err := r.TaskConfig(ctx, t.ID, 0)
 			if err == nil {
-				f.AgentTimeCapS = (policy.SizeAgentTime(t.Size, tc.AgentTime) + t.Usage.TimeAdded()).Seconds()
-				f.SessionLeastS = min(minSession, tc.AgentTime).Seconds()
+				sized := policy.SizeAgentTime(t.Size, tc.AgentTime)
+				f.AgentTimeCapS = (sized + t.Usage.TimeAdded()).Seconds()
+				f.SessionLeastS = min(minSession, sized).Seconds()
 			}
 			return err
 		}},

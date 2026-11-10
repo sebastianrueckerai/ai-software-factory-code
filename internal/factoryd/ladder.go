@@ -553,28 +553,31 @@ func replyNext(reason string) string {
 }
 
 // noRoom is the face's line at a stop of case c whose card has no room
-// for a session by its facts (CaseFacts.noSession): a reply starts none,
-// the task asks the cap next, which an extend answers. With a limit
-// unread a reply may start none. "" when a session fits.
-func noRoom(c Case) string {
+// for a session by its facts (CaseFacts.noSession, refund as there): a
+// reply starts none, the task asks the stop next, which a fund or an
+// extend answers. With a limit unread a reply may start none. "" when a
+// session fits.
+func noRoom(c Case, refund bool) string {
 	const extend = "Extend on the board or the project chat's extend"
 	var f CaseFacts
 	if b, err := json.Marshal(c.Facts); err == nil {
 		// a fact of the wrong type stays zero: unread
 		_ = json.Unmarshal(b, &f)
 	}
-	var lead, asked string
-	switch kind, read := f.noSession(); {
+	var lead, asked, answer string
+	switch kind, read := f.noSession(refund); {
 	case !read:
-		return "The card's session and agent-time limits could not be read, so a reply alone may start no attempt: " + extend + " buys one. Close this issue to end the task."
+		return "The card's limits could not be read, so a reply alone may start no attempt: " + extend + " buys sessions and time, the Fund form on the board or the chat's fund buys budget. Close this issue to end the task."
+	case kind == CaseBudgetFloor:
+		lead, asked, answer = "The card's budget no longer funds a session.", "budget floor", "the Fund form on the board or the project chat's fund"
 	case kind == CaseSessionCap:
-		lead, asked = "The card's sessions are used up.", "session cap"
+		lead, asked, answer = "The card's sessions are used up.", "session cap", extend
 	case kind == CaseAgentTimeCap:
-		lead, asked = "The card's agent time is spent.", "agent-time cap"
+		lead, asked, answer = "The card's agent time is spent.", "agent-time cap", extend
 	default:
 		return ""
 	}
-	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + extend + " answers. Close this issue to end the task."
+	return lead + " A reply alone starts no attempt: the task asks the " + asked + " next, which " + answer + " answers. Close this issue to end the task."
 }
 
 // tripNext is the last line of a trip's face for case c: at a cap, where
@@ -590,17 +593,21 @@ func tripNext(c Case, reason string) string {
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseCheckinFailed:
 		const failed = "The factory's own check-in failed, not the card's work. "
-		if no := noRoom(c); no != "" {
+		if no := noRoom(c, false); no != "" {
 			return failed + no
 		}
 		return failed + "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 	case CaseCheckinHuman, CaseCheckinShare, CasePodNeverStarted, CaseProviderRefused,
 		CaseContentFilter, CaseAgentEscalate, CaseOther:
-		if no := noRoom(c); no != "" {
+		if no := noRoom(c, false); no != "" {
+			return no
+		}
+	case CaseNoAnswer, CaseImageWait:
+		if no := noRoom(c, true); no != "" {
 			return no
 		}
 	case CaseDayCap, CaseMonthCap, CaseProjectCap:
-		if no := noRoom(c); capWaitDecision(reason) != "" && no != "" {
+		if no := noRoom(c, false); capWaitDecision(reason) != "" && no != "" {
 			return "The task resumes on its own as above. " + no
 		}
 	case CaseGateStop:

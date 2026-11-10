@@ -493,3 +493,38 @@ func TestWorkflowReplaysAPlanRunRecordedBeforeTheSurgeResume(t *testing.T) {
 		t.Fatalf("the replay scheduled %d SetState, the recording holds %d", states, recordedStates)
 	}
 }
+
+// [prechange_run_replays] A small card's run recorded on a dev server before
+// the sized-least change, under stub activities: its class gives 8 minutes,
+// its size 4, and the least read the 8 minutes unsized, 5 minutes, so the
+// run asked the agent-time cap before any session and the issue's close
+// ended it. It carries no marker, so where the two leasts differ GetVersion
+// answers DefaultVersion and the replay asks the cap again, with no
+// RunSession.
+func TestWorkflowReplaysASmallCardRecordedBeforeTheSizedLeast(t *testing.T) {
+	data, err := os.ReadFile(filepath.Join("testdata", "devserver-small-card-agent-time-cap.json"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	base, err := client.HistoryFromJSON(bytes.NewReader(data), client.HistoryJSONOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var recorded []string
+	for _, e := range base.Events {
+		if id := e.GetMarkerRecordedEventAttributes().GetDetails()["change-id"].GetPayloads(); len(id) == 1 && string(id[0].GetData()) == `"sized-least"` {
+			t.Fatal("the recording holds the sized-least marker: it is no run from before")
+		}
+		if name := e.GetActivityTaskScheduledEventAttributes().GetActivityType().GetName(); name != "" {
+			recorded = append(recorded, name)
+		}
+	}
+	if slices.Contains(recorded, ActivityRunSession) || !slices.Contains(recorded, ActivityOpenTrip) {
+		t.Fatalf("the recording schedules %q, want the cap's trip and no session", recorded)
+	}
+	var got []string
+	replaySplice(t, base.Events, &activitiesSeen{got: &got})
+	if !slices.Equal(got, recorded) {
+		t.Fatalf("the replay scheduled %q, the recording %q", got, recorded)
+	}
+}
