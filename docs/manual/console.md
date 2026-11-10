@@ -121,7 +121,7 @@ decimals: a task's model calls cost fractions of a cent.
 - Alerts: no page lists them. Three kinds exist. `gate_bound` is an
   activity still running at its policy bound, written once per run by the
   `GateWatch` worker interceptor (the policy's `bounds` section, seconds
-  per activity and `default`; without it RunSession 1260,
+  per activity and `default`; without it RunSession 1260, WaitChecks 3000,
   GateReproduction 900, ModelReview 180, Merge 90, SuperviseGate 360,
   every other activity 120). `supervisor_trip` is every detector trip the
   supervisor decided; `continue` is `noise`, any other action `real`. The

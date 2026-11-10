@@ -118,6 +118,13 @@ decided in code. The activity bound of `RunSession` is a large card's agent time
 `SuperviseGate` the supervisor timeout plus two, unless `bounds` names
 them.
 
+The checks wait (`WaitChecks`, the poll of a pull request head's combined
+status) takes its bound from the policy field `waits.checks`. Its code
+default is 50m: the pull-request image build's own 2700 s timeout plus a
+five-minute margin. The gate watch alerts past that bound, and the wait's own
+timeout is at least that bound plus a minute. An explicit `bounds: WaitChecks`
+still overrides the field.
+
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over
 all tasks, `session_floor_cheap_eur` for the least free budget a session on the cheap rung starts on,
@@ -733,10 +740,7 @@ lease) is booked in full and flagged: `COST OVER HOLD` in the log and an
 `accrued` audit row carrying it in `over_hold`. Once a commission's
 rows are closed and fully booked, the rest of the reservation returns.
 factoryd's hold sweep skips resource reservations: accrual books and
-drops them. The checks wait (`WaitChecks`, the poll of a pull request head's
-combined status) reads its bound from the waits row `waits.checks`
-(default 50m: the pull-request image build's own 2700 s timeout plus a
-five-minute margin); an explicit `bounds: WaitChecks` still overrides it. A create whose answer was lost is booked too: a release that
+drops them. A create whose answer was lost is booked too: a release that
 finds it by its label records its id first, and a collector that deletes
 it as unknown gives its closed row the id. Two kinds
 (`cloud_resources.lifetime`): a task's commission is `lease`; promotion in the
