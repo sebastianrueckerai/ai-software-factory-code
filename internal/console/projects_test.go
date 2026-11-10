@@ -746,7 +746,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s.infra.set(map[string]any{"number": 12, "state": "closed", "merged": false, "html_url": "https://git.example/sf/infra/pulls/12", "user": map[string]any{"login": "sebastian"}})
 		}, []string{"failed", "waiting", "waiting", "waiting"}, []string{"#12 was closed without merging."}, []string{`action="/projects/linkshort/merge"`}},
 		{"pull request unreadable", func(s *statusRig) { s.infra.set(map[string]any{"number": 12, "state": 12}) }, []string{"failed", "waiting", "waiting", "waiting"},
-			[]string{"Cannot read the pull request; the factoryd log says why."}, nil},
+			[]string{"The pull request could not be read: ", ". Load the page again, or read the pull request on Forgejo."}, nil},
 		{"merge refused", func(s *statusRig) {
 			s.infra.set(openPull)
 			s.c.runs["linkshort"] = &projectRun{merge: "Does not have enough approvals"}
@@ -770,7 +770,7 @@ func TestStatusStepsFromSources(t *testing.T) {
 			s.reconcileErr = "seed: forgejo: status 500"
 		}, []string{"done", "done", "failed", "waiting"}, []string{"The reconcile failed: seed: forgejo: status 500. It tries again at least hourly."}, nil},
 		{"main unreadable", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.mainErr = errors.New("boom") }, []string{"done", "done", "failed", "waiting"},
-			[]string{"Cannot read the repository&#39;s main; the factoryd log says why."}, nil},
+			[]string{"The repository&#39;s main could not be read: boom. Load the page again, or read the repository on Forgejo."}, nil},
 		{"created, reconciling", func(s *statusRig) { s.force.load("linkshort"); s.row(minted); s.main = true }, []string{"done", "done", "done", "running"},
 			[]string{"linkshort/linkshort with main.", "Waiting for a reconcile that finds every object in place; one runs at least hourly."}, []string{`type="password"`}},
 		{"reconcile failed", func(s *statusRig) {

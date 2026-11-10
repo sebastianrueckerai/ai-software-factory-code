@@ -18,7 +18,7 @@ func TestProofNoLogPointerAnyCase(t *testing.T) {
 		t.Fatal("the test's own file is unknown")
 	}
 	root := filepath.Dir(filepath.Dir(filepath.Dir(here)))
-	grep := exec.Command("git", "-C", root, "grep", "-i", "see the factoryd log", "--", "internal/console", ":!*_test.go")
+	grep := exec.Command("git", "-C", root, "grep", "-i", "factoryd log", "--", "internal/console", ":!*_test.go")
 	out, err := grep.Output()
 	if err != nil && !strings.Contains(err.Error(), "exit status 1") {
 		t.Fatalf("git grep: %v", err)

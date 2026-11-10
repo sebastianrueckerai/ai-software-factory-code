@@ -5,6 +5,7 @@ import (
 	"errors"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/factoryd"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"html"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -138,4 +139,12 @@ func TestForgejoFailedKeepsTheRawBodyOut(t *testing.T) {
 			t.Errorf("forgejoFailed holds the raw apiError text %q: %q", raw, body)
 		}
 	}
+}
+
+func TestStatusPanelScrubsTheMainError(t *testing.T) {
+	s := newStatusRig(t)
+	s.force.load("linkshort")
+	s.row(factoryd.Project{Name: "linkshort", Repository: "linkshort/linkshort", Objects: "factory", Agents: "coder", File: true, GitToken: "g"})
+	s.mainErr = leakyError()
+	maskedLeak(t, "the status panel", html.UnescapeString(s.status(t)))
 }

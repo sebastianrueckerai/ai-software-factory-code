@@ -592,7 +592,7 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 		switch {
 		case err != nil:
 			log.Printf("console: pull request of project-%s: %v", name, err)
-			pulled.State, pulled.Detail = stepFailed, "Cannot read the pull request; the factoryd log says why."
+			pulled.State, pulled.Detail = stepFailed, "The pull request could not be read: "+forgejoCause(err)+". Load the page again, or read the pull request on Forgejo."
 		case !found:
 		case pr.Merged:
 			pulled.State, pulled.Detail, pulled.Link = stepDone, fmt.Sprintf("#%d, filed by %s", pr.Number, pr.User.Login), pr.HTMLURL
@@ -630,7 +630,7 @@ func (c *Console) panel(r *http.Request, name string) (statusPanel, error) {
 		switch {
 		case mainErr != nil:
 			log.Printf("console: main of %s: %v", row.Repository, mainErr)
-			created.State, created.Detail = stepFailed, "Cannot read the repository's main; the factoryd log says why."
+			created.State, created.Detail = stepFailed, "The repository's main could not be read: "+errText(mainErr)+". Load the page again, or read the repository on Forgejo."
 		case row.Minted() && hasMain:
 			created.State, created.Detail = stepDone, row.Repository+" with main."
 		case reconcileErr != "":
