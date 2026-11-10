@@ -585,10 +585,22 @@ func tripNext(c Case, reason string) string {
 			return "The factory's own check-in failed, not the card's work, and the card's agent time is spent. " + spentReply
 		}
 		return "The factory's own check-in failed, not the card's work. Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
-	case CaseCheckinHuman, CaseCheckinShare:
+	case CaseCheckinHuman, CaseCheckinShare, CasePodNeverStarted, CaseProviderRefused, CaseNoAnswer:
 		if agentTimeSpent(c) {
 			return "The card's agent time is spent. " + spentReply
 		}
+	case CaseDayCap, CaseMonthCap, CaseProjectCap:
+		if capWaitDecision(reason) != "" && agentTimeSpent(c) {
+			return "The task resumes on its own as above, then asks the agent-time cap, because its agent time is spent. " + spentReply
+		}
+	case CaseGateStop:
+		if !strings.HasPrefix(reason, leftQueue) {
+			return "Reply on this issue to run the gate again with your comment as guidance, or close the issue to end the task."
+		}
+	case CaseFindingsRepeated:
+		return "A reply alone changes nothing: the stop repeats until the card's limits or the review's word change. Use the exits above (extend the card, overrule the review, end the card, or close into a successor), or close this issue to end the task."
+	case CaseDependencyClosed, CaseDependencyFailed:
+		return "Reply on this issue to start the card anyway with your comment as guidance, or close the issue to end the task."
 	case CaseBudgetFloor:
 		return "Use the Fund form on the board, or ask the project chat to fund the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	}

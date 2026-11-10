@@ -394,3 +394,77 @@ func TestFailedStopFaceByAgentTime(t *testing.T) {
 		}
 	}
 }
+
+// A reply during a cap's wait starts the next session sooner when the card
+// has agent time, and starts none when it is spent: the run asks the
+// agent-time cap after the reply.
+func TestCapWaitReplyByAgentTime(t *testing.T) {
+	worked := dayRefusal
+	worked.Allowed = true
+	capped := dayCapped
+	capped.Capped = &worked
+	for name, tc := range map[string]struct {
+		took     time.Duration
+		sessions int
+	}{"time left": {10 * time.Minute, 2}, "time spent": {20 * time.Minute, 1}} {
+		t.Run(name, func(t *testing.T) {
+			h, _ := capHarness(t, tc.took, capped, pushed("s2", "c1"))
+			h.onChecks(ChecksResult{State: ChecksSuccess})
+			h.signalAfter(time.Hour, SignalHumanComment, TaskSignal{Author: "sebastian", Body: "go on", Comment: 700})
+			h.signalAfter(48*time.Hour, SignalIssueClosed, TaskSignal{Author: "sebastian"})
+			h.run(t)
+			if len(h.sessions) != tc.sessions {
+				t.Fatalf("sessions = %d, want %d; asks %q", len(h.sessions), tc.sessions, h.escalated)
+			}
+			if tc.sessions == 1 && !slices.ContainsFunc(h.escalated, func(s string) bool { return strings.Contains(s, timeCapReached) }) {
+				t.Fatalf("asks %q, want the agent-time cap asked after the reply", h.escalated)
+			}
+		})
+	}
+}
+
+// Every case kind's face against what a reply does, which the tests named in
+// the table drive through the run. A kind whose reply buys a session names
+// the reply with time left and the agent-time cap's Extend with none; the
+// gate's reply runs the gate again; a dependency's starts the card anyway; the
+// deadlock's changes nothing. Kinds with a face of their own (plans, the
+// monitor, the caps' Extend and Fund) are asserted by their own tests.
+func TestEveryFaceMatchesWhatAReplyDoes(t *testing.T) {
+	const reply = "Reply on this issue to start a new attempt"
+	const none = "A reply alone starts no attempt"
+	room := map[string]any{"agent_time_cap_s": 7200, "agent_time_s": 600}
+	spent := map[string]any{"agent_time_cap_s": 7200, "agent_time_s": 7000}
+	for _, tc := range []struct {
+		kind    CaseKind
+		reason  string
+		facts   map[string]any
+		want    string
+		notWant string
+		drive   string
+	}{
+		{CaseCheckinFailed, "x", room, reply, none, "TestFailedCheckinReplyStartsASession"},
+		{CaseCheckinFailed, "x", spent, none, reply, "TestFailedCheckinReplyStartsASession"},
+		{CaseCheckinHuman, "x", room, reply, none, "TestFailedCheckinReplyStartsASession"},
+		{CaseCheckinHuman, "x", spent, none, reply, "TestFailedCheckinReplyStartsASession"},
+		{CaseCheckinShare, "x", room, reply, none, "TestFailedCheckinReplyStartsASession"},
+		{CaseCheckinShare, "x", spent, none, reply, "TestFailedCheckinReplyStartsASession"},
+		{CasePodNeverStarted, podNeverStarted, room, reply, none, "TestWorkflowSessionWhosePodNeverStartedIsNoAttempt"},
+		{CasePodNeverStarted, podNeverStarted, spent, none, reply, ""},
+		{CaseProviderRefused, providerRefused, room, reply, none, ""},
+		{CaseProviderRefused, providerRefused, spent, none, reply, ""},
+		{CaseNoAnswer, noModelAnswer, room, reply, none, ""},
+		{CaseNoAnswer, noModelAnswer, spent, none, reply, ""},
+		{CaseDayCap, capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), room, "start a new attempt sooner", none, "TestWorkflowDayCapWaitTakesAnAnswerOrTheClose"},
+		{CaseDayCap, capWaitReason(policy.RefusedDayCap, capFloor(policy.RefusedDayCap), "x", time.Now().Add(time.Hour)), spent, none, "start a new attempt sooner", "TestCapWaitReplyByAgentTime"},
+		{CaseGateStop, gateStopped + ActivityModelReview + " after 3 tries", room, "run the gate again", "new attempt", "TestWorkflowGateEscalationAnswerRunsTheGateAgain"},
+		{CaseGateStop, gateStopped + ActivityModelReview + " after 3 tries", spent, "run the gate again", "new attempt", "TestWorkflowGateEscalationAnswerRunsTheGateAgain"},
+		{CaseDependencyClosed, "dependency #1 (a) ended closed", room, "start the card anyway", "new attempt", "TestWorkflowTripsOnAFailedDependency"},
+		{CaseDependencyFailed, depFailed + "#1", spent, "start the card anyway", "new attempt", "TestWorkflowTripsOnAFailedDependency"},
+		{CaseFindingsRepeated, deadlockAskMark, room, "A reply alone changes nothing", reply, ""},
+	} {
+		got := tripNext(Case{Kind: tc.kind, Facts: tc.facts}, tc.reason)
+		if !strings.Contains(got, tc.want) || strings.Contains(got, tc.notWant) {
+			t.Errorf("%s (%v): face %q, want %q and not %q", tc.kind, tc.facts["agent_time_s"], got, tc.want, tc.notWant)
+		}
+	}
+}
