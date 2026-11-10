@@ -192,6 +192,9 @@ type Events interface {
 	ProjectEvents(ctx context.Context, repository string, after int64, limit int) ([]Event, error)
 	// TaskEvents lists task id's events newest first, at most limit.
 	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
+	// TaskEventsOfKind lists task id's events of kind newest first, at
+	// most limit, however many events of other kinds follow them.
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
 	// TaskEventsFor is TaskEvents over many cards at once, keyed by task
 	// id. A card with no event gets no entry.
 	TaskEventsFor(ctx context.Context, ids []string, limit int) (map[string][]Event, error)
@@ -309,6 +312,11 @@ func (s *PGStore) FiledFor(ctx context.Context, repository string, issue int64) 
 
 func (s *PGStore) TaskEvents(ctx context.Context, id string, limit int) ([]Event, error) {
 	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE task_id = $1 ORDER BY id DESC LIMIT $2`, id, limit)
+}
+
+// TaskEventsOfKind is task id's events of kind newest first, at most limit.
+func (s *PGStore) TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error) {
+	return s.events(ctx, `SELECT `+eventColumns+` FROM events WHERE task_id = $1 AND kind = $2 ORDER BY id DESC LIMIT $3`, id, kind, limit)
 }
 
 // TaskEventsFor is TaskEvents over many cards at once, keyed by task id:

@@ -22,9 +22,8 @@ import (
 // the stop and every stopped turn goes on.
 
 const (
-	// chatStopEvents bounds a stop's read of the chat task's events, which
-	// are its stops and its funds alone.
-	chatStopEvents = 50
+	// chatFundEvents bounds a stop's read of the chat task's funds.
+	chatFundEvents = 50
 	// chatFundNote is the note of a fund pressed in the chat.
 	chatFundNote = "funded in the chat"
 )
@@ -44,17 +43,15 @@ type chatStop struct {
 // chatStopOf reads chat task task's stop.
 func (c *Console) chatStopOf(ctx context.Context, task factoryd.Task) (chatStop, error) {
 	s := chatStop{task: task}
-	events, err := c.cfg.Events.TaskEvents(ctx, task.ID, chatStopEvents)
+	stops, err := c.cfg.Events.TaskEventsOfKind(ctx, task.ID, factoryd.EventChatBudgetSpent, 1)
 	if err != nil {
 		return s, err
 	}
-	for _, e := range events {
-		switch {
-		case e.Kind == factoryd.EventChatBudgetSpent && s.event.ID == 0:
-			s.event = e
-		case e.Kind == factoryd.EventChatFunded:
-			s.funds = append(s.funds, e)
-		}
+	if len(stops) > 0 {
+		s.event = stops[0]
+	}
+	if s.funds, err = c.cfg.Events.TaskEventsOfKind(ctx, task.ID, factoryd.EventChatFunded, chatFundEvents); err != nil {
+		return s, err
 	}
 	if s.event.ID != 0 {
 		at, _ := s.event.Detail["budget_eur"].(float64)

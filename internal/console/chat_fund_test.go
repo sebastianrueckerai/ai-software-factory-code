@@ -516,3 +516,16 @@ func TestChatBudgetStopStandsWhenTheCardFails(t *testing.T) {
 		t.Fatalf("GET /chat budget = %+v, want the fund %+v", answer.Budget, fund)
 	}
 }
+
+// The stop is found however many events of the chat task follow it.
+func TestChatStopIsFoundPastManyEvents(t *testing.T) {
+	r, _, _ := newChatRig(t)
+	task := stoppedChat(t, r)
+	for range 80 {
+		r.events.Record(t.Context(), factoryd.Event{Repository: "sf/code", TaskID: task.ID, Kind: factoryd.EventChatFunded, Actor: "sebastian", Via: factoryd.ViaChat})
+	}
+	s, err := r.c.chatStopOf(t.Context(), task)
+	if err != nil || !s.stopped {
+		t.Fatalf("chatStopOf = stopped %v, %v; want stopped past 80 later events", s.stopped, err)
+	}
+}

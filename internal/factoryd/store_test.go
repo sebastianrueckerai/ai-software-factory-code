@@ -1284,6 +1284,17 @@ func (s *fakeStore) TaskEvents(ctx context.Context, id string, limit int) ([]Eve
 	return out, nil
 }
 
+// TaskEventsOfKind is task id's events of kind newest first, at most limit.
+func (s *fakeStore) TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error) {
+	var out []Event
+	for i := len(s.events) - 1; i >= 0 && len(out) < limit; i-- {
+		if s.events[i].TaskID == id && s.events[i].Kind == kind {
+			out = append(out, s.events[i])
+		}
+	}
+	return out, nil
+}
+
 // NewestTaskEvents is the newest event of each of tasks, newest row last.
 func (s *fakeStore) NewestTaskEvents(ctx context.Context, tasks []string) (map[string]Event, error) {
 	set := map[string]bool{}
@@ -5608,5 +5619,42 @@ func TestFakeStoreKeepsTheCheckinShare(t *testing.T) {
 	}
 	if u := s.tasks["t1"].Usage; u.ExtraCheckinShare != 1 || u.Attempts != 2 {
 		t.Fatalf("usage = %+v, want the share 1 kept and attempts 2", u)
+	}
+}
+
+// TasksByParent is a task's children in any status in creation order: the
+// two cards of a chat task, not an unrelated task.
+func TestPGStoreTasksByParent(t *testing.T) {
+	ctx := context.Background()
+	s, err := OpenStore(ctx, schematest.DSN(t, "factoryd"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer s.Close()
+	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks CASCADE`); err != nil {
+		t.Fatal(err)
+	}
+	at := time.Date(2026, 11, 10, 9, 0, 0, 0, time.UTC)
+	chat := "t-chat-p-2026-11"
+	for _, c := range []Task{
+		{ID: chat, Status: "running", Repository: "sf/r", Kind: KindChat, CreatedAt: at.Add(-time.Hour)},
+		{ID: "t-b", Status: "done", Repository: "sf/r", Kind: "human", Parent: chat, CreatedAt: at.Add(time.Hour)},
+		{ID: "t-a", Status: "waiting-human", Repository: "sf/r", Kind: "human", Parent: chat, CreatedAt: at},
+		{ID: "t-other", Status: "queued", Repository: "sf/r", Kind: "agent", Track: "direct", CreatedAt: at},
+	} {
+		if err := s.CreateTask(ctx, c); err != nil {
+			t.Fatalf("CreateTask %s: %v", c.ID, err)
+		}
+	}
+	got, err := s.TasksByParent(ctx, chat)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ids []string
+	for _, k := range got {
+		ids = append(ids, k.ID)
+	}
+	if !slices.Equal(ids, []string{"t-a", "t-b"}) {
+		t.Fatalf("TasksByParent = %v, want [t-a t-b] in creation order", ids)
 	}
 }

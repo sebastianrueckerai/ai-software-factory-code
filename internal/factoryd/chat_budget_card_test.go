@@ -90,6 +90,9 @@ func TestChatBudgetCardsFileOnceUnderRace(t *testing.T) {
 	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo}
 	p := Project{Name: "linkshort", Repository: "sf/linkshort"}
 	chat := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50}
+	if err := store.CreateTask(ctx, chat); err != nil {
+		t.Fatal(err)
+	}
 	var wg sync.WaitGroup
 	for range 8 {
 		wg.Add(1)
@@ -125,6 +128,9 @@ func TestChatBudgetCardsLoopFilesAStopWithoutCard(t *testing.T) {
 		t.Fatalf("with no stop recorded Check = %v, issues %d, want nil and 0", err, len(fj.issues))
 	}
 	store.events = append(store.events, Event{TaskID: chat.ID, Kind: EventChatBudgetSpent, Detail: map[string]any{"budget_eur": 50.0}})
+	for range 60 {
+		store.events = append(store.events, Event{TaskID: chat.ID, Kind: EventChatFunded})
+	}
 	fj.failNext = 1
 	if err := cards.Check(ctx, now); err == nil || len(fj.issues) != 0 {
 		t.Fatalf("during the outage Check = %v, issues %d, want an error and 0", err, len(fj.issues))
@@ -143,5 +149,28 @@ func TestChatBudgetCardsLoopFilesAStopWithoutCard(t *testing.T) {
 	}
 	if err := cards.Check(ctx, now); err != nil || len(fj.issues) != 1 {
 		t.Fatalf("after a human closed it Check = %v, issues %d, want nil and 1", err, len(fj.issues))
+	}
+}
+
+// A raise that lands between the loop's read of the chat task and File's
+// filing leaves no card at the old budget: File reads the task again.
+func TestChatBudgetCardsFileNothingAfterARaise(t *testing.T) {
+	ctx := context.Background()
+	store := newFakeStore()
+	forgejo, fj := newAlertForgejo(t)
+	cards := &ChatBudgetCards{Store: store, Forgejo: forgejo}
+	p := Project{Name: "linkshort", Repository: "sf/linkshort"}
+	read := Task{ID: "t-chat-linkshort-2026-11", Kind: KindChat, Status: "running", BudgetEUR: 50}
+	raised := read
+	raised.BudgetEUR = 60
+	if err := store.CreateTask(ctx, raised); err != nil {
+		t.Fatal(err)
+	}
+	if err := cards.File(ctx, p, read); err != nil {
+		t.Fatal(err)
+	}
+	open, _ := store.ListTasksByStatus(ctx, "waiting-human")
+	if len(open) != 0 || len(fj.issues) != 0 {
+		t.Fatalf("a snapshot at 50 of a chat raised to 60 filed %d cards and %d issues, want none", len(open), len(fj.issues))
 	}
 }

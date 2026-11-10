@@ -5,7 +5,6 @@ import (
 	"errors"
 	"fmt"
 	"log"
-	"slices"
 	"sync"
 	"time"
 
@@ -25,7 +24,7 @@ type ChatBudgetBook interface {
 	ConfirmFactoryClose(ctx context.Context, taskID string, issue int64) error
 	ListTasksByStatus(ctx context.Context, status string) ([]Task, error)
 	TasksByParent(ctx context.Context, id string) ([]Task, error)
-	TaskEvents(ctx context.Context, id string, limit int) ([]Event, error)
+	TaskEventsOfKind(ctx context.Context, id, kind string, limit int) ([]Event, error)
 	TransitionTask(ctx context.Context, id string, from []string, to string) error
 	projectLookup
 	taskReader
@@ -66,6 +65,11 @@ func chatBudgetQuestion(chat Task) HumanQuestion {
 func (c *ChatBudgetCards) File(ctx context.Context, p Project, chat Task) error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
+	read := chat
+	chat, ok, err := c.Store.Task(ctx, read.ID)
+	if err != nil || !ok || chat.Status != "running" || chat.BudgetEUR != read.BudgetEUR {
+		return err
+	}
 	cards, err := c.Store.TasksByParent(ctx, chat.ID)
 	if err != nil {
 		return err
@@ -93,16 +97,15 @@ func (c *ChatBudgetCards) stoppedWithoutCard(ctx context.Context, now time.Time)
 		if chat.Kind != KindChat || chatMonth(chat.ID) < now.UTC().Format("2006-01") {
 			continue
 		}
-		events, err := c.Store.TaskEvents(ctx, chat.ID, 50)
+		stops, err := c.Store.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 1)
 		if err != nil {
 			errs = append(errs, err)
 			continue
 		}
-		i := slices.IndexFunc(events, func(e Event) bool { return e.Kind == EventChatBudgetSpent })
-		if i < 0 {
+		if len(stops) == 0 {
 			continue
 		}
-		if at, _ := events[i].Detail["budget_eur"].(float64); chat.BudgetEUR > at {
+		if at, _ := stops[0].Detail["budget_eur"].(float64); chat.BudgetEUR > at {
 			continue
 		}
 		p, ok, err := c.Store.ProjectByRepository(ctx, chat.Repository)
