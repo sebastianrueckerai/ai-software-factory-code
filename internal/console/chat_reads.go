@@ -151,6 +151,9 @@ func (t *turn) cardText(in toolInput) (string, error) {
 				default:
 					b.WriteString("; checks red")
 				}
+				if len(spec.FailedTests) > 0 {
+					b.WriteString("; " + failedLine(spec.FailedTests, spec.FailedTestsMore))
+				}
 			}
 			if len(spec.WhyHuman) > 0 {
 				b.WriteString("; a human decides because " + strings.Join(spec.WhyHuman, ", "))
@@ -899,3 +902,20 @@ func (t *turn) webErr(err error) error {
 	}
 	return err
 }
+
+// failedLine names the first chatFailedTests of a merge request's red
+// entries and counts the rest.
+func failedLine(tests []factoryd.FailedTest, more int) string {
+	shown := tests[:min(len(tests), chatFailedTests)]
+	parts := make([]string, len(shown))
+	for i, f := range shown {
+		parts[i] = f.String()
+	}
+	line := "red in the logs: " + strings.Join(parts, ", ")
+	if rest := len(tests) - len(shown) + more; rest > 0 {
+		line += fmt.Sprintf(", and %d more", rest)
+	}
+	return line
+}
+
+const chatFailedTests = 10
