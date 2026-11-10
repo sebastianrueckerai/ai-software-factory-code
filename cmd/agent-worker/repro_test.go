@@ -336,7 +336,14 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	write("a/a.go", "package a\n\nfunc One() int { return 1 }\n")
 	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 1 {\n\t\tt.Fatal(\"one\")\n\t}\n}\n")
 	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n")
+	write("a/main_test.go", "package a\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { m.Run(); os.Exit(3) }\n")
+	write("r.go", "package m\n\nconst R = 1\n")
 	base := commit()
+	run("-C", seed, "rm", "-q", "a/main_test.go")
+	write("r.go", "package m\n\nconst R = 2\n")
+	write(":!zz_test.go", "package m\n")
+	write("a/dir_test.go/x.txt", "a directory, not a test file\n")
+	write("a/a.go", "package a\n\nfunc One() int { return 2 }\n")
 	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 2 {\n\t\tt.Fatal(\"head asserts two\")\n\t}\n}\n")
 	write("a/new_test.go", "package a\n\nimport \"testing\"\n\nfunc TestNew(t *testing.T) {}\n")
 	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { t.Fatal(\"head b\") }\n")
@@ -345,7 +352,9 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	run("-C", remote, "update-ref", "refs/pull/9/head", head)
 	reproEnvs(t, remote, head, "true")
 	t.Setenv("CHECKOUT_SHA", base)
-	t.Setenv("OVERLAY_PKG", "a")
+	// ./a and a are one package; the overlay is the head's test files, the
+	// base's TestMain (deleted at the head) gone, the base's a.go kept
+	t.Setenv("OVERLAY_PKG", "./a")
 	ws := t.TempDir()
 	if code := runReproFetch(nolog, ws); code != 0 {
 		t.Fatalf("fetch exit %d", code)
@@ -357,6 +366,15 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	goTest := func(name, pkg string) harness.Repro {
 		return reproduce(reproEnv{argv: []string{"go", "test", "-count=1", "-run", "^" + name + "$", pkg}, timeout: time.Minute}, repo)
 	}
+	if _, err := os.Stat(filepath.Join(repo, "a", "main_test.go")); err == nil {
+		t.Fatal("the base's own test file stays beside the head's")
+	}
+	if _, err := os.Stat(filepath.Join(repo, "a", "dir_test.go")); err == nil {
+		t.Fatal("a directory named like a test file was copied")
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "a", "a.go")); !strings.Contains(string(b), "return 1") {
+		t.Fatalf("a.go = %q, want the base's", b)
+	}
 	if got := goTest("TestOne", "./a"); got.Exit != 1 || !strings.Contains(got.Output, "head asserts two") {
 		t.Fatalf("TestOne at base with the head's tests = %+v, want its new body failing", got)
 	}
@@ -366,10 +384,28 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	if got := goTest("TestB", "./b"); got.Exit != 0 {
 		t.Fatalf("TestB = %+v, want the base's test, the package not being overlaid", got)
 	}
+	// a package the head lacks fails the fetch: the run is unsettled
 	t.Setenv("OVERLAY_PKG", "nosuchdir")
 	ws = t.TempDir()
-	if code := runReproFetch(nolog, ws); code != 0 || fetched(ws) != nil {
-		t.Fatalf("a package the head lacks: exit %d, %v", code, fetched(ws))
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil || !strings.Contains(err.Error(), "no package directory nosuchdir") {
+		t.Fatalf("a package the head lacks: %v", err)
+	}
+	if got := repro(ws); got.Exit != -1 {
+		t.Fatalf("repro = %+v, want exit -1", got)
+	}
+	// the root package: a head file named like a pathspec is no pathspec
+	t.Setenv("OVERLAY_PKG", ".")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "repo", "r.go")); !strings.Contains(string(b), "R = 1") {
+		t.Fatalf("r.go = %q, want the base's", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "repo", ":!zz_test.go")); err != nil {
+		t.Fatalf("the head's test file was not copied: %v", err)
 	}
 	t.Setenv("OVERLAY_PKG", "../x")
 	ws = t.TempDir()

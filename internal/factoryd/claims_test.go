@@ -312,11 +312,11 @@ func TestTestArgvIsFixed(t *testing.T) {
 		c    Claim
 		want []string
 	}{
-		{testClaim(0, "TestY", "internal/x", RefBase, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "7m30s", "-run", "^TestY$", "./internal/x"}},
-		{testClaim(0, "TestY/a.b-c", "./internal/x", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "7m30s", "-run", `^TestY$/^a\.b-c$`, "./internal/x"}},
-		{testClaim(0, "TestY", ".", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "7m30s", "-run", "^TestY$", "./"}},
+		{testClaim(0, "TestY", "internal/x", RefBase, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "0", "-run", "^TestY$", "./internal/x"}},
+		{testClaim(0, "TestY/a.b-c", "./internal/x", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "0", "-run", `^TestY$/^a\.b-c$`, "./internal/x"}},
+		{testClaim(0, "TestY", ".", RefHead, OutcomePass), []string{"go", "test", "-count=1", "-timeout", "0", "-run", "^TestY$", "./"}},
 	} {
-		if got := testArgv(tc.c, 450*time.Second); !slices.Equal(got, tc.want) {
+		if got := testArgv(tc.c); !slices.Equal(got, tc.want) {
 			t.Errorf("argv of %+v = %q, want %q", tc.c, got, tc.want)
 		}
 	}
@@ -376,12 +376,12 @@ func TestApplyClaimsLeavesUnsettledRunsStanding(t *testing.T) {
 		err  error
 		want string
 	}{
-		"cannot start":   {err: errors.New("no sandbox"), want: "Y passes: TestY in internal/x at base could not be run: no sandbox"},
-		"timed out":      {run: claimRun{Exit: -1, Output: "(timed out after 10m0s)"}, want: "Y passes: TestY in internal/x at base is unsettled: the run did not finish (exit -1)"},
-		"build failed":   {run: claimRun{Exit: 1, Output: "FAIL\tx [build failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
-		"setup failed":   {run: claimRun{Exit: 1, Output: "FAIL\tx [setup failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
-		"go timed out":   {run: claimRun{Exit: 1, Output: "panic: test timed out after 7m30s\nFAIL\tx\t450s"}, want: "Y passes: TestY in internal/x at base is unsettled: go test timed out"},
-		"test not there": {run: claimRun{Exit: 0, Output: "ok  \tx\t0.01s [no tests to run]"}, want: "Y passes: TestY in internal/x at base is unsettled: no such test at that ref"},
+		"cannot start":        {err: errors.New("no sandbox"), want: "Y passes: TestY in internal/x at base could not be run: no sandbox"},
+		"timed out":           {run: claimRun{Exit: -1, Output: "(timed out after 10m0s)"}, want: "Y passes: TestY in internal/x at base is unsettled: the run did not finish (exit -1)"},
+		"build failed":        {run: claimRun{Exit: 1, Output: "FAIL\tx [build failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
+		"setup failed":        {run: claimRun{Exit: 1, Output: "FAIL\tx [setup failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
+		"killed at its bound": {run: claimRun{Exit: -1, Output: "--- FAIL: TestY\nFAIL\tx\t0.1s\n(timed out after 10m0s)"}, want: "Y passes: TestY in internal/x at base is unsettled: the run did not finish (exit -1)"},
+		"test not there":      {run: claimRun{Exit: 0, Output: "ok  \tx\t0.01s [no tests to run]"}, want: "Y passes: TestY in internal/x at base is unsettled: no such test at that ref"},
 	} {
 		got := applyClaims(Review{Findings: []string{"Y passes"}, Claims: []Claim{base}}, nil, nil, func(Claim) (claimRun, error) { return tc.run, tc.err })
 		if len(got.Findings) != 1 || got.Dropped != nil || !slices.Equal(got.Unsettled, []string{tc.want}) {
@@ -433,7 +433,7 @@ func TestDropContradictedRunsTheClaimAsAnArgvInTheSandbox(t *testing.T) {
 		t.Fatalf("evidence = %q, want the run with both secrets masked", ev)
 	}
 	spec, _ := json.Marshal(kube.podAt(0).spec)
-	for _, want := range []string{`{"name":"REPRO_ARGV","value":"[\"go\",\"test\",\"-count=1\",\"-timeout\",\"7m30s\",\"-run\",\"^TestY$/^sub$\",\"./internal/x\"]"}`,
+	for _, want := range []string{`{"name":"REPRO_ARGV","value":"[\"go\",\"test\",\"-count=1\",\"-timeout\",\"0\",\"-run\",\"^TestY$/^sub$\",\"./internal/x\"]"}`,
 		`{"name":"CHECKOUT_SHA","value":"base"}`, `{"name":"MODE","value":"repro"}`} {
 		if !strings.Contains(string(spec), want) {
 			t.Fatalf("base pod spec lacks %s: %s", want, spec)
@@ -442,7 +442,7 @@ func TestDropContradictedRunsTheClaimAsAnArgvInTheSandbox(t *testing.T) {
 	if strings.Contains(string(spec), "REPRO_COMMAND") {
 		t.Fatalf("pod spec carries a shell command: %s", spec)
 	}
-	if !strings.Contains(string(spec), `{"name":"OVERLAY_PKG","value":"internal/x"}`) || !strings.Contains(string(spec), `"-timeout\",\"7m30s\"`) {
+	if !strings.Contains(string(spec), `{"name":"OVERLAY_PKG","value":"internal/x"}`) || !strings.Contains(string(spec), `"-timeout\",\"0\"`) {
 		t.Fatalf("base pod spec lacks the overlay of the claimed package or go's timeout: %s", spec)
 	}
 	if head, _ := json.Marshal(kube.podAt(1).spec); strings.Contains(string(head), "OVERLAY_PKG") {
@@ -489,7 +489,7 @@ func TestTestArgvRunsOnlyTheNamedSubtest(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	argv := testArgv(testClaim(0, "TestY/sub", "a", RefHead, OutcomePass), time.Minute)
+	argv := testArgv(testClaim(0, "TestY/sub", "a", RefHead, OutcomePass))
 	cmd := exec.Command(argv[0], argv[1:]...)
 	cmd.Dir = dir
 	if out, err := cmd.CombinedOutput(); err != nil {
@@ -510,7 +510,8 @@ func TestReviewCommentFencesTheRunsOutputAndListsUnsettled(t *testing.T) {
 }
 
 func TestModelReviewRecordsUnsettledTestClaims(t *testing.T) {
-	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n"}
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n",
+		mintError: `{"message":"denied for https://user:pass@host.example/x with Authorization: Bearer abcdef0123456789"}`}
 	r, _, objects := newGateRunner(t, gateTask, fj)
 	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"s","findings":["TestY passes at base"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"internal/x","ref":"base","outcome":"pass"}]}`}
 	r.supervisor = testSupervisorModel(ll.srv(t).URL)
@@ -519,11 +520,16 @@ func TestModelReviewRecordsUnsettledTestClaims(t *testing.T) {
 	if len(rv.Findings) != 1 || len(rv.Unsettled) != 1 || !strings.HasPrefix(rv.Unsettled[0], "TestY passes at base: TestY in internal/x at base could not be run: ") {
 		t.Fatalf("review = %+v, want the finding kept and unsettled", rv)
 	}
+	for _, secret := range []string{"user:pass", "abcdef0123456789"} {
+		if strings.Contains(rv.Unsettled[0], secret) || strings.Contains(timeline(t, objects), secret) || strings.Contains(strings.Join(fj.comments, "\n"), secret) {
+			t.Fatalf("%s reached the review, the step or the comment", secret)
+		}
+	}
 	step := timelineStep(t, objects, "t1", "model_review")
 	if u, _ := step["unsettled"].([]any); len(u) != 1 || u[0] != rv.Unsettled[0] {
 		t.Fatalf("model_review step = %v, want the unsettled line", step)
 	}
-	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Not settled by a run: "+rv.Unsettled[0]) {
+	if len(fj.comments) != 1 || !strings.Contains(fj.comments[0], "Not settled by a run: TestY passes at base: TestY in internal/x at base could not be run: forgejo POST") {
 		t.Fatalf("comments = %q", fj.comments)
 	}
 }
@@ -535,10 +541,20 @@ func TestReviewSchemaNamesTestClaims(t *testing.T) {
 }
 
 // The settle tells the gate watch the waves of its calls so far and the
-// waves its runs add: 2 runs of (10 min start + 10 min command) and one
-// 10 min setup are 50 one-minute waves.
+// waves its runs add, in the supervisor timeout's own unit: 2 runs of
+// (10 min start + 10 min command) and one 10 min setup are 3000 s: 100
+// waves of 30 s, ceil(66.7) = 67 of 45 s, 50 of a minute.
 func TestDropContradictedRaisesTheGateWatchBound(t *testing.T) {
-	for told, want := range map[int]int{0: policy.ReviewParts + 50, policy.ReviewParts + 7: policy.ReviewParts + 57} {
+	type tc struct {
+		call time.Duration
+		told int
+	}
+	for c, want := range map[tc]int{
+		{time.Minute, 0}:                      policy.ReviewParts + 50,
+		{time.Minute, policy.ReviewParts + 7}: policy.ReviewParts + 57,
+		{30 * time.Second, 0}:                 policy.ReviewParts + 100,
+		{45 * time.Second, 0}:                 policy.ReviewParts + 67,
+	} {
 		kube := newFakeKube()
 		r, _, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
 		var waves int
@@ -547,12 +563,38 @@ func TestDropContradictedRaisesTheGateWatchBound(t *testing.T) {
 		done := make(chan struct{})
 		go func() {
 			defer close(done)
-			r.dropContradicted(ctx, gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, told, rv, nil)
+			r.dropContradicted(ctx, gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", c.call, c.told, rv, nil)
 		}()
 		scriptReproPods(kube, reproLine(0, "ok"))
 		<-done
 		if waves != want {
-			t.Errorf("told %d: bound waves = %d, want %d", told, waves, want)
+			t.Errorf("%+v: bound waves = %d, want %d", c, waves, want)
+		}
+	}
+}
+
+func TestDropContradictedOverlaysTheCleanedPackage(t *testing.T) {
+	kube := newFakeKube()
+	r, _, _ := newTestRunner(t, gateTask, kube, &fakeObjectStore{})
+	rv := Review{Findings: []string{"Y passes at base"}, Claims: []Claim{testClaim(0, "TestY", "./internal/x", RefBase, OutcomePass)}}
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		r.dropContradicted(context.Background(), gateTask, Repo{Owner: "sf", Name: "repo"}, 9, "c1", time.Minute, 0, rv, nil)
+	}()
+	scriptReproPods(kube, reproLine(0, "ok"))
+	<-done
+	if spec, _ := json.Marshal(kube.podAt(0).spec); !strings.Contains(string(spec), `{"name":"OVERLAY_PKG","value":"internal/x"}`) ||
+		!strings.Contains(string(spec), `\"./internal/x\"]`) {
+		t.Fatalf("pod spec = %s, want ./internal/x overlaid as internal/x and run as ./internal/x", spec)
+	}
+}
+
+func TestWavesSinceCountsInTheRealCallUnit(t *testing.T) {
+	began := time.Now().Add(-10 * time.Minute)
+	for call, want := range map[time.Duration]int{45 * time.Second: 14, 6 * time.Minute: 2} {
+		if got := wavesSince(began, call); got != want {
+			t.Errorf("waves of %v = %d, want %d", call, got, want)
 		}
 	}
 }

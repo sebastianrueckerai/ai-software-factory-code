@@ -8,6 +8,7 @@ import (
 	"log"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"slices"
@@ -64,15 +65,16 @@ func validClaim(c Claim) bool {
 
 // testArgv is the fixed command that settles a valid test-outcome claim:
 // no shell reads it. Each subtest element is anchored, for go test matches
-// the elements of -run apart; timeout is go's own, below the run's bound.
-func testArgv(c Claim, timeout time.Duration) []string {
+// the elements of -run apart; go's own timeout is off, so the run's bound
+// alone ends an overlong run, and a killed run is unsettled.
+func testArgv(c Claim) []string {
 	pkg := "./" + strings.TrimPrefix(strings.TrimPrefix(c.Package, "."), "/")
 	parts := strings.Split(c.Symbol, "/")
 	for i, p := range parts {
 		parts[i] = regexp.QuoteMeta(p)
 	}
 	pattern := "^" + strings.Join(parts, "$/^") + "$"
-	return []string{"go", "test", "-count=1", "-timeout", timeout.String(), "-run", pattern, pkg}
+	return []string{"go", "test", "-count=1", "-timeout", "0", "-run", pattern, pkg}
 }
 
 // claimRun is one settling run: the commit it ran at, its exit and output.
@@ -91,8 +93,6 @@ func (t claimRun) outcome() (outcome, why string) {
 		return "", fmt.Sprintf("the run did not finish (exit %d)", t.Exit)
 	case strings.Contains(t.Output, "[build failed]") || strings.Contains(t.Output, "[setup failed]"):
 		return "", "the package did not build"
-	case strings.Contains(t.Output, "panic: test timed out"):
-		return "", "go test timed out"
 	case t.Exit == 0 && strings.Contains(t.Output, "no tests to run"):
 		return "", "no such test at that ref"
 	case t.Exit == 0:
@@ -329,7 +329,7 @@ func (r *Runner) dropContradicted(ctx context.Context, t Task, repo Repo, pr int
 		// calls: it is told the waves told so far (at least its first
 		// bound's) and the waves the runs add.
 		budget := maxTestRuns*(podStartWait+r.cfg.ReproTimeout) + podStartWait
-		call = max(call, time.Minute)
+		call = max(call, time.Second)
 		boundByParts(ctx, max(policy.ReviewParts, told)+int((budget+call-1)/call))
 		var cancel context.CancelFunc
 		ctx, cancel = context.WithTimeout(ctx, budget)
@@ -367,13 +367,13 @@ func (r *Runner) testSettler(ctx context.Context, t Task, repo Repo, pr int64, c
 		}
 		at, ran, overlay := "", commit, ""
 		if c.Ref == RefBase {
-			overlay = c.Package
+			overlay = path.Clean(c.Package)
 			if at = cmp.Or(t.ReproBase, t.SHA); at == "" {
 				return claimRun{}, errors.New("the task has no base commit")
 			}
 			ran = at
 		}
-		rep, err := r.runArgv(ctx, t, repo, pullRef(pr), commit, at, testArgv(c, r.cfg.ReproTimeout*3/4), overlay)
+		rep, err := r.runArgv(ctx, t, repo, pullRef(pr), commit, at, testArgv(c), overlay)
 		if err != nil {
 			return claimRun{}, errors.New(r.Scrub.String(err.Error()))
 		}

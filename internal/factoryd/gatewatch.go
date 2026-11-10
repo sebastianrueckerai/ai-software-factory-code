@@ -160,6 +160,7 @@ type watchedRun struct {
 	attempt  int32
 	started  time.Time
 	bound    time.Duration
+	told     time.Duration // the largest bound its activity told by waves
 	timer    *time.Timer
 	extended bool
 	raise    func(bound time.Duration, extended bool)
@@ -314,15 +315,17 @@ func (g *GateWatch) retryBound(run *watchedRun, key string, ctx context.Context,
 }
 
 // rebound moves run's bound to bound, from the attempt's start: a model
-// review's or an audit's once it knows its waves of calls. A run that
-// tripped or waited already keeps its own.
+// review's or an audit's once it knows its waves of calls. The first tell
+// may lower the bound the run began with; a later one never goes below the
+// largest told before it. A run that tripped or waited already keeps its own.
 func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
 	if run.extended || !run.timer.Stop() {
 		return
 	}
-	run.bound = bound
+	bound = max(bound, run.told)
+	run.bound, run.told = bound, bound
 	run.timer = time.AfterFunc(time.Until(run.started.Add(bound)), func() { run.raise(bound, false) })
 }
 

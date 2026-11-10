@@ -15,6 +15,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
@@ -374,30 +375,49 @@ func fetchHead(e fetchEnv, dir string) error {
 	return os.RemoveAll(scratch)
 }
 
-// overlayTests writes the *_test.go files directly in pkg at sha over dir:
-// the head's tests against the base's code.
+// overlayTests makes pkg's *_test.go files in dir the head's (sha's): the
+// base's are removed, then the head's regular files of that name, none
+// else, are written from scratch. A package directory the head lacks is an
+// error: the claim names nothing there.
 func overlayTests(w workerEnv, scratch, sha, pkg, dir string) error {
+	pkg = path.Clean(filepath.ToSlash(pkg))
 	if !filepath.IsLocal(pkg) {
 		return fmt.Errorf("overlay package %q is not inside the repository", pkg)
 	}
-	tree := sha
+	list := []string{"ls-tree", "-z", sha}
 	if pkg != "." {
-		tree += ":" + filepath.ToSlash(pkg)
+		if kind, err := w.git(scratch, "cat-file", "-t", sha+":"+pkg); err != nil || kind != "tree" {
+			return fmt.Errorf("the head has no package directory %s", pkg)
+		}
+		list = append(list, "--", pkg+"/")
 	}
-	listing, err := w.git(scratch, "ls-tree", "-z", "--name-only", tree)
+	listing, err := w.git(scratch, list...)
 	if err != nil {
-		return nil // the head has no such directory: no tests to overlay
+		return fmt.Errorf("list the head's %s: %w", pkg, err)
 	}
 	var paths []string
-	for _, name := range strings.Split(listing, "\x00") {
-		if strings.HasSuffix(name, "_test.go") {
-			paths = append(paths, filepath.ToSlash(filepath.Join(pkg, name)))
+	for _, rec := range strings.Split(listing, "\x00") {
+		meta, name, ok := strings.Cut(rec, "\t")
+		if f := strings.Fields(meta); ok && len(f) == 3 && f[1] == "blob" && strings.HasSuffix(name, "_test.go") {
+			paths = append(paths, name)
+		}
+	}
+	at := filepath.Join(dir, filepath.FromSlash(pkg))
+	entries, err := os.ReadDir(at)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), "_test.go") {
+			if err := os.Remove(filepath.Join(at, e.Name())); err != nil {
+				return err
+			}
 		}
 	}
 	if len(paths) == 0 {
 		return nil
 	}
-	if _, err := w.git(scratch, append([]string{"--work-tree=" + dir, "checkout", "-q", "-f", sha, "--"}, paths...)...); err != nil {
+	if _, err := w.git(scratch, append([]string{"--literal-pathspecs", "--work-tree=" + dir, "checkout", "-q", "-f", sha, "--"}, paths...)...); err != nil {
 		return fmt.Errorf("overlay the head's tests of %s: %w", pkg, err)
 	}
 	return nil

@@ -1082,6 +1082,12 @@ func lastLines(s string, n int) []string {
 	return out
 }
 
+// wavesSince is the waves of call each, rounded up, that began has run.
+func wavesSince(began time.Time, call time.Duration) int {
+	call = max(call, time.Second)
+	return int((time.Since(began) + call - 1) / call)
+}
+
 // podStartWait is how long a runner pod may take to start.
 const podStartWait = 10 * time.Minute
 
@@ -2002,7 +2008,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 		behaviours, rv.Note = readPlanCalls(results[len(parts):])
 	}
 	if rv.Note == "" {
-		rv = r.dropContradicted(ctx, t, repo, pr.Number, commit, pinned.Limits.SupervisorTimeout, int((time.Since(began)+pinned.Limits.SupervisorTimeout-1)/max(pinned.Limits.SupervisorTimeout, time.Minute)), combineReviews(answers), prFiles)
+		rv = r.dropContradicted(ctx, t, repo, pr.Number, commit, pinned.Limits.SupervisorTimeout, wavesSince(began, pinned.Limits.SupervisorTimeout), combineReviews(answers), prFiles)
 		if criteria != nil {
 			rv.Behaviours = behaviours
 			r.reviewCriteriaStep(ctx, t, repo, criteria.plan, criteria.revision, round, &rv)

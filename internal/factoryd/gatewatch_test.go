@@ -207,7 +207,8 @@ func TestGateWatchWaitExtendsTheBoundOnce(t *testing.T) {
 // A model review's bound follows the parts its diff reads in
 // (boundByParts): until it read the diff it is policy.ReviewParts parts',
 // 300 ms at 100 ms a part, so a review that runs 200 ms never trips;
-// told one part, it trips at 100 ms, the trip carrying that bound.
+// told one part, it trips at 100 ms, the trip carrying that bound; told
+// three and then one it keeps three.
 func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
 	for _, tc := range []struct {
 		name  string
@@ -216,6 +217,7 @@ func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
 	}{
 		{"one part", 1, []time.Duration{100 * time.Millisecond}},
 		{"no parts told", 0, nil},
+		{"a later tell never lowers", -3, nil},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			store := newFakeStore()
@@ -227,6 +229,11 @@ func TestGateWatchReviewBoundFollowsItsParts(t *testing.T) {
 			env.RegisterActivityWithOptions(func(ctx context.Context, _ string) error {
 				if tc.parts > 0 {
 					boundByParts(ctx, tc.parts)
+				}
+				if tc.parts < 0 {
+					// three waves told, then one: the bound stays at three
+					boundByParts(ctx, -tc.parts)
+					boundByParts(ctx, 1)
 				}
 				time.Sleep(200 * time.Millisecond)
 				return nil
