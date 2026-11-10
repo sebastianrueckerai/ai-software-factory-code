@@ -103,6 +103,10 @@ type Tasks interface {
 	PlanProofs(ctx context.Context, id string) ([]factoryd.PlanProof, error)
 	// PlanCards are the cards plan task plan filed.
 	PlanCards(ctx context.Context, plan string) ([]factoryd.Task, error)
+	// PlanDelivered says whether every card plan filed is delivered —
+	// done or merged, or cut into a successor that is — and the first
+	// card that is not (factoryd.PlanDelivered).
+	PlanDelivered(ctx context.Context, plan string) (bool, factoryd.Task, error)
 	// CriteriaVerdicts are task's criteria verdict rows (the spec-intake
 	// concept, pieces 7 and 8), every source's, in criterion order.
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]factoryd.CriterionVerdict, error)

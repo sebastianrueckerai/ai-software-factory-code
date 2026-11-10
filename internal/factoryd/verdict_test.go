@@ -1568,6 +1568,45 @@ func TestConfirmDeliveredCriteria(t *testing.T) {
 	if rows, _ := s2.CriteriaVerdicts(ctx, "t-open-int"); len(rows) != 0 {
 		t.Errorf("a refused confirm wrote rows: %+v", rows)
 	}
+
+	// a card cut into a successor that is merged counts as delivered; the
+	// confirmation stands and meets every open criterion.
+	s3 := seedVerdictPlan(t, "t-cut-plan", "t-cut-int", "done")
+	cut := Task{ID: "t-cut-card", Repository: "sf/code", Parent: "t-cut-plan", Source: SourcePlan, PlanKey: "cut", Status: "closed"}
+	succ := Task{ID: SuccessorID(cut.ID), Repository: "sf/code", Parent: "t-cut-plan", Source: SourceSuccessor, PlanKey: "cut", Status: "merged"}
+	s3.tasks[cut.ID], s3.tasks[succ.ID] = cut, succ
+	if err := s3.PutCriteriaVerdicts(ctx, "t-cut-int", "review", FactoryDecider, []CriterionVerdict{
+		{Criterion: "c1", Verdict: "met", Kind: CriterionTest},
+	}); err != nil {
+		t.Fatal(err)
+	}
+	n, err = ConfirmDeliveredCriteria(ctx, s3, "t-cut-plan", "sebastian", "the successor landed")
+	if err != nil || n != 2 {
+		t.Fatalf("confirm with a cut card whose successor merged = %d, %v; want 2, nil", n, err)
+	}
+	rows, _ = s3.CriteriaVerdicts(ctx, "t-cut-int")
+	if len(rows) != 3 || rows[1].Verdict != "met" || rows[2].Verdict != "met" {
+		t.Errorf("rows after the cut-successor confirm = %v", rows)
+	}
+
+	// a cut card whose successor is still open refuses naming the successor
+	s4 := seedVerdictPlan(t, "t-cut-open", "t-cut-open-int", "done")
+	cutOpen := Task{ID: "t-cut-open-card", Repository: "sf/code", Parent: "t-cut-open", Source: SourcePlan, PlanKey: "cut", Status: "closed"}
+	succOpen := Task{ID: SuccessorID(cutOpen.ID), Repository: "sf/code", Parent: "t-cut-open", Source: SourceSuccessor, PlanKey: "cut", Status: "queued"}
+	s4.tasks[cutOpen.ID], s4.tasks[succOpen.ID] = cutOpen, succOpen
+	_, err = ConfirmDeliveredCriteria(ctx, s4, "t-cut-open", "sebastian", "they are done")
+	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), succOpen.ID) || !strings.Contains(err.Error(), "queued") {
+		t.Fatalf("confirm with an open successor = %v, want ErrChildOpen naming the successor", err)
+	}
+
+	// a cut card with no successor row at all refuses naming the cut card
+	s5 := seedVerdictPlan(t, "t-cut-gone", "t-cut-gone-int", "done")
+	cutGone := Task{ID: "t-cut-gone-card", Repository: "sf/code", Parent: "t-cut-gone", Source: SourcePlan, PlanKey: "cut", Status: "closed"}
+	s5.tasks[cutGone.ID] = cutGone
+	_, err = ConfirmDeliveredCriteria(ctx, s5, "t-cut-gone", "sebastian", "they are done")
+	if !errors.Is(err, ErrChildOpen) || !strings.Contains(err.Error(), cutGone.ID) || !strings.Contains(err.Error(), "closed") {
+		t.Fatalf("confirm with a missing successor = %v, want ErrChildOpen naming the cut card", err)
+	}
 }
 
 // The store guards a stale board: a criterion that stands met takes no
