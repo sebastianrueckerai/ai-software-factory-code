@@ -176,11 +176,14 @@ func (w *outCap) Write(p []byte) (int, error) {
 
 func (w *outCap) String() string { return w.buf.String() }
 
+// gitTimeout is the longest one git call runs: at its end its whole process
+// group is killed. A var, so a test shortens it.
+var gitTimeout = 2 * time.Minute
+
 // gitRun is gitEnv under limits, for the commands that read the sandbox's bytes.
 func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits, args ...string) (string, error) {
-	ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
-	defer cancel()
-	argv := append([]string{"git"}, args...)
+	// the wait for the slot is bounded by the caller's context; the call's own
+	// timeout starts once the slot is taken
 	if lim.addressSpace > 0 {
 		select {
 		case cappedGit <- struct{}{}:
@@ -188,6 +191,11 @@ func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits,
 		case <-ctx.Done():
 			return "", fmt.Errorf("git %s: waiting for a capped git slot: %w", args[0], ctx.Err())
 		}
+	}
+	ctx, cancel := context.WithTimeout(ctx, gitTimeout)
+	defer cancel()
+	argv := append([]string{"git"}, args...)
+	if lim.addressSpace > 0 {
 		argv = append([]string{"prlimit", "--as=" + strconv.FormatInt(lim.addressSpace, 10), "--"}, argv...)
 	}
 	cmd := exec.CommandContext(ctx, argv[0], argv[1:]...) // #nosec G204 -- no shell; the arguments are refs, SHAs and URLs factoryd builds from checked names

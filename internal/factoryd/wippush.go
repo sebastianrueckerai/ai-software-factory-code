@@ -167,17 +167,9 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	default:
 		return "", fmt.Errorf("fetch the task branch: %w", err)
 	}
-	// the header is read as a bundle's before anything is taken from the
-	// body: a body that is no bundle, whatever it says it ships, costs the
-	// interim push alone. list-heads reads the header only, so it maps no
-	// pack of the repository
-	if _, err := run(nil, "bundle", "list-heads", bundle); err != nil {
-		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
-	}
-	// the bundle's pack is indexed under git's strict object checks, which
-	// a fetch from a bundle does not apply: a lying object never lands.
-	// The bundle's own ref line names the WIP, and its prerequisites are
-	// the objects fetched above
+	// the header is read and bounded here, in Go, before git sees the file: a
+	// body that is no bundle, whatever it says it ships, costs the interim
+	// push alone, and a header git would spend seconds on never reaches it
 	f, err := os.Open(bundle) // #nosec G304 -- the temporary file postWip made
 	if err != nil {
 		return "", err
@@ -192,12 +184,20 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bun
 	if !ok {
 		return "", errors.New("the shipped body is no bundle: no header end")
 	}
+	// the bundle's pack is indexed under git's strict object checks, which
+	// a fetch from a bundle does not apply: a lying object never lands.
+	// The bundle's own ref line names the WIP, and its prerequisites are
+	// the objects fetched above
 	if got := bundleCommit(hdr); got != commit {
 		return "", fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
 	}
 	prerequisites := bundlePrerequisites(hdr)
 	if len(prerequisites) > wipMaxPrerequisites {
 		return "", fmt.Errorf("the bundle lists %d prerequisites, not the worker's one", len(prerequisites))
+	}
+	// list-heads reads the header only, so it maps no pack of the repository
+	if _, err := run(nil, "bundle", "list-heads", bundle); err != nil {
+		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
 	for _, id := range prerequisites {
 		if _, err := run(nil, "cat-file", "-e", id+"^{commit}"); err != nil {
@@ -365,8 +365,8 @@ func checkShippedSize(ctx context.Context, own, commit, start string, lim func(i
 func bundlePrerequisites(header []byte) []string {
 	var ids []string
 	for line := range strings.SplitSeq(string(header), "\n") {
-		if id, _, _ := strings.Cut(strings.TrimPrefix(line, "-"), " "); strings.HasPrefix(line, "-") && wipCommitID.MatchString(id) {
-			ids = append(ids, id)
+		if id, _, _ := strings.Cut(strings.TrimPrefix(line, "-"), " "); strings.HasPrefix(line, "-") && wipCommitID.MatchString(strings.ToLower(id)) {
+			ids = append(ids, strings.ToLower(id))
 		}
 	}
 	return ids

@@ -964,6 +964,23 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 			}
 			return seedGit(seed, top.String(), "mktree")
 		}},
+		"tree-bound-alone": {edit: noEdit, tree: func(seed string) (string, error) {
+			// 40,000 entries with 40-character names: a 2.7 MB tree, over the tree
+			// bound and under every other bound
+			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
+			if err != nil {
+				return "", err
+			}
+			var dir strings.Builder
+			for i := range 40000 {
+				fmt.Fprintf(&dir, "100644 blob %s\t%040d\n", empty, i)
+			}
+			id, err := seedGit(seed, dir.String(), "mktree")
+			if err != nil {
+				return "", err
+			}
+			return seedGit(seed, "040000 tree "+id+"\twide\n", "mktree")
+		}},
 		"wide-tree": {edit: noEdit, tree: func(seed string) (string, error) {
 			empty, err := seedGit(seed, "", "hash-object", "-w", "--stdin")
 			if err != nil {
@@ -1855,5 +1872,57 @@ func TestInterimPushRemovesItsBundleFile(t *testing.T) {
 				t.Fatalf("bundle files left behind: %v", left)
 			}
 		})
+	}
+}
+
+// A header Go can refuse never reaches git: a header with no end inside its
+// bound, and one with 17 prerequisites in upper case, which the bound counts
+// like lower case.
+func TestInterimPushBoundsTheBundleHeaderBeforeGit(t *testing.T) {
+	id := "0123456789abcdef0123456789abcdef01234567"
+	upper := strings.ToUpper("fedcba9876543210fedcba9876543210fedcba98")
+	for name, tc := range map[string]struct {
+		body string
+		want string
+	}{
+		"header-without-an-end":             {"# v2 git bundle\n" + strings.Repeat("-"+upper+" x\n", 3000), "no header end"},
+		"seventeen-uppercase-prerequisites": {"# v2 git bundle\n" + strings.Repeat("-"+upper+" x\n", 17) + id + " refs/heads/wip\n\nPACK", "lists 17 prerequisites"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			edit := func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) }
+			runner, objects, serve := wipRig(t, nil, edit)
+			serve.ship = func(int, string) (string, []byte, error) { return id, []byte(tc.body), nil }
+			calls := gitSpy(t)
+			chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+			runner.checkin = chat
+
+			if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+				commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+				t.Fatal(err)
+			}
+			if text := fmt.Sprint(timelineStep(t, objects, "t2", "wip_push_failed")["error"]); !strings.Contains(text, tc.want) {
+				t.Fatalf("the refusal = %q, want %q", text, tc.want)
+			}
+			log, _ := os.ReadFile(calls)
+			if slices.Contains(strings.Fields(string(log)), "bundle") || slices.Contains(strings.Fields(string(log)), "cat-file") {
+				t.Fatalf("git read the refused header: %s", log)
+			}
+		})
+	}
+}
+
+// A call's own timeout starts once it holds the capped slot: a wait for the
+// slot longer than the timeout does not fail it.
+func TestCappedGitTimeoutStartsAfterTheSlot(t *testing.T) {
+	old := gitTimeout
+	gitTimeout = 400 * time.Millisecond
+	t.Cleanup(func() { gitTimeout = old })
+	cappedGit <- struct{}{}
+	go func() {
+		time.Sleep(700 * time.Millisecond)
+		<-cappedGit
+	}()
+	if out, err := gitRun(context.Background(), t.TempDir(), "", nil, gitLimits{addressSpace: wipGitMemory}, "--version"); err != nil || !strings.HasPrefix(out, "git version") {
+		t.Fatalf("gitRun = (%q, %v), want it to run after waiting longer than its timeout", out, err)
 	}
 }
