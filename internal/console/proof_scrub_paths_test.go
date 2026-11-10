@@ -370,3 +370,51 @@ func TestBranchReadRefusalIsScrubbed(t *testing.T) {
 		}
 	}
 }
+
+// failAfter is an http.RoundTripper that answers the nth and later branch
+// reads with 502; every other request goes to base.
+type failAfter struct {
+	base http.RoundTripper
+	n    *int
+}
+
+func (f failAfter) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/branches/") {
+		*f.n++
+		if *f.n > 1 {
+			return failAnswer(http.StatusBadGateway, "the branch read did not answer"), nil
+		}
+	}
+	return f.base.RoundTrip(req)
+}
+
+// A refused commit whose undo cannot read the branch names no deletion
+// after a 4xx and only a conditional one after a 5xx.
+func TestFailedCommitWithAnUnreadableBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"a refusal", http.StatusUnprocessableEntity, "Forgejo refused to commit the project's file: 422 Unprocessable Entity; " +
+			"another filing of linkshort holds the name. Choose another name, or open that filing's project when it lands."},
+		{"a server error", http.StatusInternalServerError, "Forgejo refused to commit the project's file: 500 Internal Server Error. " +
+			"Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			infra := withInfra(t, r)
+			r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+			ck, s := r.loggedIn(t)
+			infra.mu.Lock()
+			infra.branches, infra.contentsStatus = map[string]string{}, tc.status
+			infra.mu.Unlock()
+			reads := 0
+			r.c.cfg.HTTP = &http.Client{Transport: failAfter{http.DefaultTransport, &reads}}
+			rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+			if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusBadGateway || !strings.HasSuffix(got, tc.want) {
+				t.Errorf("the filing = %d %q, want 502 ending %q", rec.Code, got, tc.want)
+			}
+		})
+	}
+}

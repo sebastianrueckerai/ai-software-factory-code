@@ -457,9 +457,9 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	switch {
 	case deleted:
 		msg += "; the filing was undone. Try again in a moment."
-	case err == nil && u.held:
-		msg += "; another filing of " + p.Name + " holds the name."
-	case err == nil:
+	case (err == nil || u.commit == "") && u.held:
+		msg += "; another filing of " + p.Name + " holds the name. Choose another name, or open that filing's project when it lands."
+	case err == nil || u.commit == "":
 		msg += ". Branch " + branch + " may be left. If no other filing of " + p.Name + " is in progress, delete it on Forgejo, then file the project again."
 	default:
 		msg += "; delete branch " + branch + " to file the name again."
