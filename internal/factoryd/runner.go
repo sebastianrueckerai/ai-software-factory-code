@@ -153,6 +153,8 @@ type Runner struct {
 	startPoll, configGrace time.Duration
 	// workerPort replaces harness.MessagePort in tests
 	workerPort int
+	// newOwner names a RunSession attempt (LiveSession.Owner); nil: random
+	newOwner func() string
 
 	liveMu  sync.Mutex
 	live    map[string]*liveSession // by task: its running session
@@ -483,7 +485,9 @@ func (s sessionSpec) readable(extra ...Repo) []Repo {
 // sessionSpec is what one worker pod runs: its identity, the chain it
 // continues, and where it starts.
 type sessionSpec struct {
-	id     string
+	id string
+	// owner is the RunSession attempt that runs the session (LiveSession.Owner)
+	owner  string
 	parent string
 	// parentStop, parentOutcome and parentTrip are how the parent ended:
 	// its stop reason and its trip, which the copied working state names,
@@ -674,7 +678,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			return out, fmt.Errorf("create pod: %w", err)
 		}
 		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart}); err != nil {
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart, Owner: s.owner}); err != nil {
 			return out, err
 		}
 	}
@@ -688,6 +692,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
+		if r.superseded(delCtx, t.ID, s.owner) {
+			return
+		}
 		if err := r.kube.DeletePod(delCtx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: delete pod %s: %v", t.ID, podName, err)
 		}
@@ -1245,6 +1252,26 @@ func (r *Runner) costState(ctx context.Context, t Task) *CostState {
 	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, RemainingEUR: t.BudgetEUR - t.SpentEUR,
 		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,
 		State: t.Status}
+}
+
+func (r *Runner) ownerID() string {
+	if r.newOwner != nil {
+		return r.newOwner()
+	}
+	return rand.Text()[:8]
+}
+
+// superseded: a newer RunSession attempt owns the card's live session, so
+// this attempt's cleanup would delete the pod, the namespace and the
+// tokens the newer one runs on. A row that is gone is the attempt's own
+// doing, and its cleanup goes on.
+func (r *Runner) superseded(ctx context.Context, taskID, owner string) bool {
+	l, ok, err := r.store.LiveSession(ctx, taskID)
+	if err != nil {
+		log.Printf("task %s: read the live session: %v", taskID, err)
+		return false
+	}
+	return ok && l.Owner != owner
 }
 
 // sizeBounded: the session codes a card the work bound covers, so the

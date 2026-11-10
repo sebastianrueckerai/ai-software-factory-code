@@ -14,20 +14,25 @@ import (
 // there.
 type LiveSession struct {
 	TaskID, SessionID, Namespace, Pod, MessageToken string
-	StartedAt, Deadline                             time.Time
-	Lines                                           int
+	// Owner names the RunSession attempt that runs the session: a retry
+	// that reattaches takes the row over, and the attempt it replaced,
+	// which Temporal may have timed out while its goroutine still runs,
+	// leaves the pod, the namespace and the credentials alone.
+	Owner               string
+	StartedAt, Deadline time.Time
+	Lines               int
 	// SpentAtStart is the card's enforced spend when the session started;
 	// nil where it could not be read.
 	SpentAtStart *float64
 }
 
 func (s *PGStore) PutLiveSession(ctx context.Context, l LiveSession) error {
-	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)
+	_, err := s.db.ExecContext(ctx, `INSERT INTO live_sessions (task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10)
 		ON CONFLICT (task_id) DO UPDATE SET session_id = EXCLUDED.session_id, namespace = EXCLUDED.namespace, pod = EXCLUDED.pod,
 		message_token = EXCLUDED.message_token, started_at = EXCLUDED.started_at, deadline = EXCLUDED.deadline, lines = EXCLUDED.lines,
-		spent_at_start = EXCLUDED.spent_at_start`,
-		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart)
+		spent_at_start = EXCLUDED.spent_at_start, owner = EXCLUDED.owner`,
+		l.TaskID, l.SessionID, l.Namespace, l.Pod, l.MessageToken, l.StartedAt, l.Deadline, l.Lines, l.SpentAtStart, l.Owner)
 	return err
 }
 
@@ -38,8 +43,8 @@ func (s *PGStore) SetLiveSessionLines(ctx context.Context, taskID string, lines 
 
 func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
 	var l LiveSession
-	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start
-		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart)
+	err := s.db.QueryRowContext(ctx, `SELECT task_id, session_id, namespace, pod, message_token, started_at, deadline, lines, spent_at_start, owner
+		FROM live_sessions WHERE task_id = $1`, taskID).Scan(&l.TaskID, &l.SessionID, &l.Namespace, &l.Pod, &l.MessageToken, &l.StartedAt, &l.Deadline, &l.Lines, &l.SpentAtStart, &l.Owner)
 	if errors.Is(err, sql.ErrNoRows) {
 		return LiveSession{}, false, nil
 	}

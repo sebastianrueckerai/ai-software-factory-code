@@ -923,7 +923,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("task", err)
 	}
 	defer r.sessionRuns(t.ID)()
-	s := sessionSpec{id: newID("s-"), parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
+	s := sessionSpec{id: newID("s-"), owner: r.ownerID(), parent: in.ParentSessionID, parentStop: in.ParentStop, parentOutcome: in.ParentOutcome, parentTrip: in.ParentTrip, parentDeadEnd: in.ParentDeadEnd,
 		findings: in.Findings, answers: in.Answers, posterInfo: in.PosterInfo, model: in.Model, repo: repo, attempt: in.Attempt, checkInAsk: in.CheckInAsk,
 		lastGates: in.LastGates, handover: in.Handover}
 	if s.policy, err = r.pinned(ctx, in.PolicyVersion); err != nil {
@@ -1033,6 +1033,10 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	} else if ok {
 		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
 			live = &l
+			l.Owner = s.owner
+			if err := r.store.PutLiveSession(ctx, l); err != nil {
+				return SessionResult{}, named("live session", err)
+			}
 			s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.parentDeadEnd, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.ParentDeadEnd, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
 			return SessionResult{}, named("live session", err)
@@ -1051,7 +1055,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	// retry; its sandbox and credentials stay
 	detached := false
 	defer func() {
-		if detached {
+		if detached || r.superseded(cleanup, t.ID, s.owner) {
 			return
 		}
 		r.forgetNamespace(cleanup, t.ID)

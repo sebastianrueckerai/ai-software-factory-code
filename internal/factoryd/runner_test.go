@@ -821,6 +821,7 @@ func newTestRunner(t *testing.T, task Task, kube *fakeKube, objects ObjectStore)
 	}
 	runner.stopWait = 500 * time.Millisecond
 	runner.endpointWait = 50 * time.Millisecond
+	runner.newOwner = func() string { return "own" }
 	return runner, hub, store
 }
 
@@ -905,7 +906,7 @@ func TestRunSessionHappyPathPushesInOwnSandbox(t *testing.T) {
 	}
 	// read on the base repository and the fork to clone, write on the fork at the push: nothing else
 	if !slices.Contains(hub.calls, "mint task-t1-base read:repository sf/ai-software-factory-code,factory-agent/ai-software-factory-code") ||
-		!slices.Contains(hub.calls, "mint task-t1 write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
+		!slices.Contains(hub.calls, "mint task-t1-push-own write:repository factory-agent/ai-software-factory-code") || len(hub.minted()) != 2 {
 		t.Fatalf("forgejo calls = %v, want a read token on sf and a write token on the fork", hub.calls)
 	}
 	if !slices.Equal(hub.revoked, []int64{101, 102}) {
@@ -2664,6 +2665,63 @@ func TestRunSessionCancelCleansUpAndFails(t *testing.T) {
 	}
 	if timeline := string(objGet(objects, "sessions/t6/timeline.jsonl")); !strings.Contains(timeline, `"step":"session_end"`) || !strings.Contains(timeline, `"outcome":"aborted"`) {
 		t.Fatalf("timeline = %s, want the aborted session's end", timeline)
+	}
+}
+
+// takeoverStore plays the next attempt: once the session's row is written,
+// the row is the newer attempt's, which minted a push token, and the stale
+// attempt's context ends.
+type takeoverStore struct {
+	Store
+	hub    *forgejoHub
+	cancel func()
+}
+
+func (s *takeoverStore) PutLiveSession(ctx context.Context, l LiveSession) error {
+	if l.Owner == "newer" {
+		return s.Store.PutLiveSession(ctx, l)
+	}
+	if err := s.Store.PutLiveSession(ctx, l); err != nil {
+		return err
+	}
+	l.Owner = "newer"
+	if err := s.Store.PutLiveSession(ctx, l); err != nil {
+		return err
+	}
+	s.hub.mu.Lock()
+	s.hub.tokens = append(s.hub.tokens, TokenRef{ID: 9, Name: PushTokenName(l.TaskID, "newer")})
+	s.hub.mu.Unlock()
+	s.cancel()
+	return nil
+}
+
+// An attempt Temporal timed out keeps running while the next attempt
+// reattaches to the same pod: when the stale attempt's context ends, its
+// cleanup must leave the newer attempt's pod, namespace and push token
+// alone, and the row stays the newer attempt's.
+func TestStaleAttemptCleanupLeavesTheNewerAttemptsSession(t *testing.T) {
+	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
+	kube := newFakeKube()
+	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+	ctx, cancel := context.WithCancel(context.Background())
+	runner.store = &takeoverStore{Store: store, hub: hub, cancel: cancel}
+	if _, err := runSession(t, ctx, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs); err == nil {
+		t.Fatal("the stale attempt ended without its cancel")
+	}
+	hub.mu.Lock()
+	revoked := slices.Clone(hub.revoked)
+	hub.mu.Unlock()
+	if len(revoked) != 0 {
+		t.Fatalf("revoked = %v, want the newer attempt's tokens alone", revoked)
+	}
+	if len(kube.deletedPods) != 0 {
+		t.Fatalf("deleted pods = %v, want the newer attempt's pod alone", kube.deletedPods)
+	}
+	if _, ok := kube.namespaces["factory-agents-t6"]; !ok {
+		t.Fatal("the stale attempt deleted the newer attempt's namespace")
+	}
+	if l, ok, _ := store.LiveSession(context.Background(), "t6"); !ok || l.Owner != "newer" {
+		t.Fatalf("live session = %+v, %v; want the newer attempt's row", l, ok)
 	}
 }
 

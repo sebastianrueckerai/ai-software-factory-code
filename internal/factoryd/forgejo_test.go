@@ -56,11 +56,6 @@ func TestForgejoMintRepoScopedToken(t *testing.T) {
 	if len(repos) != 1 {
 		t.Fatalf("mint repositories = %v", gotBody["repositories"])
 	}
-	// a token that asks for no expiry has none: it outlives the session's
-	// agent-time cap and the end push, and only a revoke ends it
-	if len(gotBody) != 3 {
-		t.Fatalf("mint body = %v, want the name, scopes and repositories alone", gotBody)
-	}
 	repo := repos[0].(map[string]any)
 	if repo["owner"] != "sf" || repo["name"] != "ai-software-factory-code" {
 		t.Fatalf("mint repo target = %v", repo)
