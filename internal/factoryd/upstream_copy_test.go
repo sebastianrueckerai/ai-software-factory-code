@@ -59,6 +59,7 @@ type fakeUpstream struct {
 	manifestReads  int
 	blobReads      int
 	bearerRequired bool
+	headerDelay    time.Duration // a manifest's headers wait this long
 	active         atomic.Int32
 	maxActive      atomic.Int32
 	srv            *httptest.Server
@@ -76,6 +77,9 @@ func newFakeUpstream(t *testing.T, images ...fakeImg) *fakeUpstream {
 		for m := u.maxActive.Load(); n > m && !u.maxActive.CompareAndSwap(m, n); m = u.maxActive.Load() {
 		}
 		time.Sleep(5 * time.Millisecond)
+		if strings.Contains(r.URL.Path, "/manifests/") {
+			time.Sleep(u.headerDelay)
+		}
 		u.mu.Lock()
 		defer u.mu.Unlock()
 		if r.URL.Path == "/token" {
@@ -128,6 +132,7 @@ type fakeImgStore struct {
 	blobs     map[string][]byte // repository/digest
 	manifests map[string][]byte // repository/reference
 	uploads   int
+	putDelay  time.Duration // a blob PUT's answer waits this long
 	writes    int
 	badAuth   []string
 	srv       *httptest.Server
@@ -170,6 +175,7 @@ func newFakeImgStore(t *testing.T) *fakeImgStore {
 			w.Header().Set("Location", "/v2/"+strings.TrimSuffix(rest, "uploads/")+"uploads/u1")
 			w.WriteHeader(http.StatusAccepted)
 		case r.Method == http.MethodPut && strings.Contains(rest, "/blobs/uploads/"):
+			time.Sleep(s.putDelay)
 			repo, _, _ := strings.Cut(rest, "/blobs/")
 			body, _ := io.ReadAll(r.Body)
 			d := r.URL.Query().Get("digest")
@@ -701,5 +707,28 @@ func TestUpstreamCopyWaitingCopyReturnsAtItsDeadline(t *testing.T) {
 	}
 	if up.manifestReads != 0 {
 		t.Errorf("%d upstream reads while waiting", up.manifestReads)
+	}
+}
+
+// The header timeout bounds the upstream registries alone: Forgejo answers
+// a blob's PUT after it wrote the blob to its storage, which takes longer.
+func TestUpstreamCopyHeaderTimeoutBoundsTheUpstreamNotTheStore(t *testing.T) {
+	const timeout = 100 * time.Millisecond
+	im := newFakeImage("slow")
+	up, store := newFakeUpstream(t, im), newFakeImgStore(t)
+	store.putDelay = 3 * timeout
+	c := store.copier(up)
+	c.HeaderTimeout = timeout
+	if findings, err := c.Copy(t.Context(), "", goLine(im.digest)+"\n"); err != nil || len(findings) != 0 {
+		t.Fatalf("a store slower than the header timeout: Copy = %q, %v", findings, err)
+	}
+
+	slow, store2 := newFakeImage("stalled"), newFakeImgStore(t)
+	up2 := newFakeUpstream(t, slow)
+	up2.headerDelay = 3 * timeout
+	c2 := store2.copier(up2)
+	c2.HeaderTimeout = timeout
+	if _, err := c2.Copy(t.Context(), "", goLine(slow.digest)+"\n"); err == nil {
+		t.Fatal("an upstream that delays its headers past the timeout was waited for")
 	}
 }

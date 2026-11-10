@@ -2,6 +2,7 @@ package factoryd
 
 import (
 	"bufio"
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -94,13 +95,18 @@ type UpstreamCopier struct {
 	// Endpoint is the base URL of a registry host; nil serves https://host,
 	// docker.io's from registry-1.docker.io.
 	Endpoint func(host string) string
-	// HTTP has no overall timeout: a blob is large, ctx bounds the copy.
-	HTTP  *http.Client
-	Scrub *redact.Scrubber
+	// HeaderTimeout is how long an upstream registry may take to answer
+	// with headers; zero is 30 s. The store's requests have no such bound:
+	// Forgejo answers a blob's PUT after it wrote the blob to its storage.
+	HeaderTimeout time.Duration
+	Scrub         *redact.Scrubber
 
 	// slot is the one copy at a time: each holds a blob in the shared /tmp
 	slotOnce sync.Once
 	slot     chan struct{}
+
+	clientOnce     sync.Once
+	upstreamClient *http.Client
 }
 
 // findingError is a line the copy cannot make, which the card hears as a
@@ -157,22 +163,27 @@ func (c *UpstreamCopier) scrubbed(err error) error {
 	return errors.New(s.String(err.Error()))
 }
 
-func (c *UpstreamCopier) client() *http.Client {
-	if c.HTTP != nil {
-		return c.HTTP
-	}
-	return upstreamClient
-}
-
-// upstreamClient bounds the connect and the wait for headers, so a stalled
-// upstream does not hold the copy's slot; a body's read is bounded by the
-// activity's context.
-var upstreamClient = &http.Client{Transport: &http.Transport{
-	Proxy:                 http.ProxyFromEnvironment,
-	DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
-	TLSHandshakeTimeout:   30 * time.Second,
-	ResponseHeaderTimeout: 30 * time.Second,
+// storeClient has no timeout of its own: ctx bounds the copy.
+var storeClient = &http.Client{Transport: &http.Transport{
+	Proxy:               http.ProxyFromEnvironment,
+	DialContext:         (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+	TLSHandshakeTimeout: 30 * time.Second,
 }}
+
+// upstream is the client of the upstream registries: connect and the wait
+// for headers are bounded, so a stalled upstream does not hold the copy's
+// slot; a body's read is bounded by ctx.
+func (c *UpstreamCopier) upstream() *http.Client {
+	c.clientOnce.Do(func() {
+		c.upstreamClient = &http.Client{Transport: &http.Transport{
+			Proxy:                 http.ProxyFromEnvironment,
+			DialContext:           (&net.Dialer{Timeout: 30 * time.Second}).DialContext,
+			TLSHandshakeTimeout:   30 * time.Second,
+			ResponseHeaderTimeout: cmp.Or(c.HeaderTimeout, 30*time.Second),
+		}}
+	})
+	return c.upstreamClient
+}
 
 func (c *UpstreamCopier) image(ctx context.Context, admin AdminAuth, ref string) error {
 	m := imageLine.FindStringSubmatch(ref)
@@ -372,7 +383,7 @@ func (j *copyJob) store(ctx context.Context, method, path, contentType string, b
 		req.Header.Set("Content-Type", contentType)
 	}
 	req.SetBasicAuth(j.admin.User, j.admin.Password)
-	res, err := j.c.client().Do(req)
+	res, err := storeClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("store %s %s: %w", method, path, err)
 	}
@@ -395,7 +406,7 @@ func (j *copyJob) get(ctx context.Context, path, accept string) (*http.Response,
 		if j.token != "" {
 			req.Header.Set("Authorization", "Bearer "+j.token)
 		}
-		res, err := j.c.client().Do(req)
+		res, err := j.c.upstream().Do(req)
 		if err != nil {
 			return nil, fmt.Errorf("upstream GET %s: %w", path, err)
 		}
@@ -445,7 +456,7 @@ func (j *copyJob) login(ctx context.Context, challenge string) error {
 	if err != nil {
 		return err
 	}
-	res, err := j.c.client().Do(req)
+	res, err := j.c.upstream().Do(req)
 	if err != nil {
 		return fmt.Errorf("upstream token for %s: %w", j.path, err)
 	}
