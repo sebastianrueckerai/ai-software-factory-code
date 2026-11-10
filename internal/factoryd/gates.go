@@ -2568,17 +2568,17 @@ func ApproveMerge(ctx context.Context, store Store, wf Workflows, taskID string,
 	if err != nil {
 		return err
 	}
+	var spec MergeSpec
+	if err := json.Unmarshal(q.Spec, &spec); len(q.Spec) > 0 && err != nil {
+		return fmt.Errorf("the merge request of task %s holds no readable spec: %w", taskID, err)
+	}
 	events, err := store.TaskEvents(ctx, taskID, cardDigestEvents)
 	if err != nil {
 		return err
 	}
 	slices.Reverse(events)
 	note := consoleApproved
-	if missing := gatesNotRun(events); len(missing) > 0 {
-		stages := make([]string, len(missing))
-		for i, m := range missing {
-			stages[i] = m.stage
-		}
+	if stages := unreadGates(events, spec.HeadSHA); len(stages) > 0 {
 		if approver == ChatUser {
 			return &UnreviewedMergeError{Stages: stages}
 		}

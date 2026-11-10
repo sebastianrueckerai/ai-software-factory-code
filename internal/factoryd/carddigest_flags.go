@@ -310,3 +310,36 @@ func gatesNotRun(events []Event) []gateNotRun {
 	}
 	return out
 }
+
+// unreadGates lists the stages, review then audit, whose gate has no row
+// that ran on head among events oldest first. Only rows since the newest
+// session push count, and a stage the task skipped since then (disabled,
+// not switched on for the project) is not required.
+func unreadGates(events []Event, head string) []string {
+	ran := map[string]bool{}
+	skipped := map[string]bool{}
+	for _, e := range events {
+		switch e.Kind {
+		case EventSessionPushed:
+			clear(ran)
+			clear(skipped)
+		case EventModelReview:
+			ok, _ := e.Detail["reviewed"].(bool)
+			ran["review"] = ok && head != "" && e.Detail["commit"] == head
+		case EventGateAudit:
+			ok, _ := e.Detail["ran"].(bool)
+			ran["audit"] = ok && head != "" && e.Detail["commit"] == head
+		case EventStageSkipped:
+			if stage, _ := e.Detail["stage"].(string); stage != "" {
+				skipped[stage] = true
+			}
+		}
+	}
+	var out []string
+	for _, stage := range []string{"review", "audit"} {
+		if !ran[stage] && !skipped[stage] {
+			out = append(out, stage)
+		}
+	}
+	return out
+}

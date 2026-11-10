@@ -2551,7 +2551,10 @@ func TestApproveMerge(t *testing.T) {
 	if err := ApproveMerge(ctx, store, wf, "t1", 9, "sebastian"); err == nil {
 		t.Fatal("approved without a pending request")
 	}
-	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+	store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
+	store.events = append(store.events,
+		Event{TaskID: "t1", Kind: EventModelReview, Detail: map[string]any{"commit": "c1", "reviewed": true}},
+		Event{TaskID: "t1", Kind: EventGateAudit, Detail: map[string]any{"commit": "c1", "ran": true}})
 	if err := ApproveMerge(ctx, store, wf, "t1", 8, "sebastian"); err == nil {
 		t.Fatal("approved another pull request")
 	}
@@ -3842,19 +3845,24 @@ func TestGatePolicyRefusesOverTheCardLineBound(t *testing.T) {
 	}
 }
 
-// The project agent's approval of a merge whose review or audit did not run
-// on the head is refused by name, whichever path calls ApproveMerge; the
-// same approval with a review that ran passes, a push resets the rows, and
-// a human's approval passes and records the missing gate.
+// The project agent's approval of a merge is refused unless the review and
+// the audit both ran on the head the approval names (a row that ran, on that
+// head), whichever path calls ApproveMerge; a stage the task skipped is not
+// required, a push resets the rows, and a human's approval passes and
+// records the missing gate.
 func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 	ctx := context.Background()
 	row := func(kind string, detail map[string]any) Event {
 		return Event{TaskID: "t1", Kind: kind, Detail: detail}
 	}
-	notReviewed := row(EventModelReview, map[string]any{"commit": "c1", "reviewed": false, "reason": "model review not run: gateway deadline"})
-	reviewed := row(EventModelReview, map[string]any{"commit": "c1", "reviewed": true, "verdict": "approve"})
-	notAudited := row(EventGateAudit, map[string]any{"commit": "c1", "ran": false, "reason": "gateway deadline"})
+	review := func(head string, ran bool) Event {
+		return row(EventModelReview, map[string]any{"commit": head, "reviewed": ran, "reason": "model review not run: gateway deadline"})
+	}
+	audit := func(head string, ran bool) Event {
+		return row(EventGateAudit, map[string]any{"commit": head, "ran": ran, "reason": "gateway deadline"})
+	}
 	pushed := row(EventSessionPushed, map[string]any{"session": "s-2"})
+	skipAudit := row(EventStageSkipped, map[string]any{"stage": "audit", "reason": auditNotSwitchedOn})
 	cases := []struct {
 		name     string
 		events   []Event
@@ -3862,20 +3870,25 @@ func TestApproveMergeNeedsTheGatesToHaveRun(t *testing.T) {
 		refused  string
 		note     string
 	}{
-		{"review failed, agent", []Event{pushed, notReviewed}, ChatUser, "review", ""},
-		{"review and audit failed, agent", []Event{pushed, notReviewed, notAudited}, ChatUser, "review and the audit", ""},
-		{"audit failed after a reviewed row, agent", []Event{pushed, reviewed, notAudited}, ChatUser, "audit", ""},
-		{"review verdict, agent", []Event{pushed, reviewed}, ChatUser, "", consoleApproved},
-		{"a later review ran, agent", []Event{pushed, notReviewed, reviewed}, ChatUser, "", consoleApproved},
-		{"a push reset the rows, agent", []Event{notReviewed, pushed}, ChatUser, "", consoleApproved},
-		{"review failed, human", []Event{pushed, notReviewed}, "sebastian", "", consoleApproved + "; the review did not run on this head"},
-		{"both failed, human", []Event{pushed, notReviewed, notAudited}, "sebastian", "", consoleApproved + "; the review and the audit did not run on this head"},
+		{"no rows, agent", []Event{pushed}, ChatUser, "review and the audit", ""},
+		{"no audit row, agent", []Event{pushed, review("c1", true)}, ChatUser, "audit", ""},
+		{"no review row, agent", []Event{pushed, audit("c1", true)}, ChatUser, "review", ""},
+		{"rows only on an older head, agent", []Event{pushed, review("c0", true), audit("c0", true)}, ChatUser, "review and the audit", ""},
+		{"review failed, agent", []Event{pushed, review("c1", false), audit("c1", true)}, ChatUser, "review", ""},
+		{"both failed, agent", []Event{pushed, review("c1", false), audit("c1", false)}, ChatUser, "review and the audit", ""},
+		{"a push reset the rows, agent", []Event{review("c1", true), audit("c1", true), pushed}, ChatUser, "review and the audit", ""},
+		{"both ran on the head, agent", []Event{pushed, review("c1", true), audit("c1", true)}, ChatUser, "", consoleApproved},
+		{"a later review ran, agent", []Event{pushed, review("c1", false), audit("c1", true), review("c1", true)}, ChatUser, "", consoleApproved},
+		{"the audit is skipped, agent", []Event{pushed, skipAudit, review("c1", true)}, ChatUser, "", consoleApproved},
+		{"a skip before the push is void, agent", []Event{skipAudit, pushed, review("c1", true)}, ChatUser, "audit", ""},
+		{"review failed, human", []Event{pushed, review("c1", false), audit("c1", true)}, "sebastian", "", consoleApproved + "; the review did not run on this head"},
+		{"no rows, human", []Event{pushed}, "sebastian", "", consoleApproved + "; the review and the audit did not run on this head"},
 	}
 	for _, c := range cases {
 		t.Run(c.name, func(t *testing.T) {
 			store := newFakeStore()
 			wf := &recordedSignals{}
-			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9})
+			store.OpenApproval(ctx, ApprovalRequest{Kind: "merge", TaskID: "t1", PRNumber: 9, Spec: json.RawMessage(`{"head_sha":"c1"}`)})
 			store.events = append(store.events, c.events...)
 			err := ApproveMerge(ctx, store, wf, "t1", 9, c.approver)
 			if c.refused != "" {
