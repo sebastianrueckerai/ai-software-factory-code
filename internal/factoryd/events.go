@@ -64,7 +64,7 @@ const (
 	// EventCriteriaGateRun records a run of the criteria gate on a done
 	// plan whose criteria held no verdict row, on the plan task: detail
 	// {"task", "pr", "commit", "outcome", "attempt"}, the outcome ran, cut
-	// or no_room, the attempt "1" or "2" (a cut run runs once more). A
+	// no_room or started (written before the run), the attempt "1" or "2" (a cut run runs once more). A
 	// quiet record, no poke.
 	EventCriteriaGateRun = "criteria_gate_run"
 	// EventProductionReleased records the end of a project's production

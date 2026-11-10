@@ -1032,6 +1032,9 @@ const (
 	gateDone   = "ran"
 	gateCut    = "cut"
 	gateNoRoom = "no_room"
+	// gateStarted is the row written before a run; with no outcome after
+	// it, the attempt was cut.
+	gateStarted = "started"
 )
 
 // criteriaGateBound is the bound of a criteria gate run, the one the gate
@@ -1042,33 +1045,42 @@ const criteriaGateBound = reproActivityTimeout
 // minute.
 const CriteriaGatePassBound = criteriaGateBound + time.Minute
 
-// gateRuns are the runs of plan id's criteria gate on record, newest
-// first: the events rows, which the timeline's lines only mirror.
-func (r *Runner) gateRuns(ctx context.Context, id string) ([]Event, error) {
-	return r.store.TaskEventsOfKind(ctx, id, EventCriteriaGateRun, 20)
+// gateRuns are the runs of the criteria gate on integration card task of
+// plan id on record, newest first: the events rows, which the timeline's
+// lines only mirror. A later round's integration card has runs of its own.
+func (r *Runner) gateRuns(ctx context.Context, id, task string) ([]Event, error) {
+	rows, err := r.store.TaskEventsOfKind(ctx, id, EventCriteriaGateRun, 50)
+	return slices.DeleteFunc(rows, func(e Event) bool { return e.Detail["task"] != task }), err
 }
 
-// gateRan tells whether runs hold a run of outcome, of attempt too when
-// attempt is not empty.
-func gateRan(runs []Event, outcome, attempt string) bool {
-	return slices.ContainsFunc(runs, func(e Event) bool {
-		return e.Detail["outcome"] == outcome && (attempt == "" || e.Detail["attempt"] == attempt)
-	})
+// gateRan tells whether runs hold a run of outcome.
+func gateRan(runs []Event, outcome string) bool {
+	return slices.ContainsFunc(runs, func(e Event) bool { return e.Detail["outcome"] == outcome })
+}
+
+// gateAttempts counts the attempts runs record: a run that started and
+// recorded no outcome, a restart's or a lost write's, was cut.
+func gateAttempts(runs []Event) int {
+	seen := map[any]bool{}
+	for _, e := range runs {
+		seen[e.Detail["attempt"]] = true
+	}
+	return len(seen)
 }
 
 // gateDue tells whether the criteria gate is still to run for plan id on
-// its integration card: the card has a pull request, and no run ran, found
-// no room, or was cut twice. A record that cannot be read is an error: the
-// gate waits.
+// its integration card: the card has a pull request, and no attempt ran
+// or found no room, and fewer than two were cut. A record that cannot be
+// read is an error: the gate waits.
 func (r *Runner) gateDue(ctx context.Context, id string, integration Task) (bool, error) {
 	if integration.PRNumber == 0 {
 		return false, nil
 	}
-	runs, err := r.gateRuns(ctx, id)
+	runs, err := r.gateRuns(ctx, id, integration.ID)
 	if err != nil {
 		return false, err
 	}
-	return !gateRan(runs, gateDone, "") && !gateRan(runs, gateNoRoom, "") && !gateRan(runs, gateCut, "2"), nil
+	return !gateRan(runs, gateDone) && !gateRan(runs, gateNoRoom) && gateAttempts(runs) < 2, nil
 }
 
 // gateWanted tells whether plan's criteria gate runs now: gate-judged
@@ -1151,17 +1163,17 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 	if !ok {
 		return
 	}
-	runs, err := r.gateRuns(rctx, id)
+	runs, err := r.gateRuns(rctx, id, integration.ID)
 	if err != nil {
 		log.Printf("plan %s: the criteria gate's record: %s", id, r.Scrub.String(err.Error()))
 		return
 	}
-	attempt := "1"
-	if gateRan(runs, gateCut, "1") {
-		attempt = "2"
+	attempt := fmt.Sprint(gateAttempts(runs) + 1)
+	detail := func(outcome, commit string) map[string]any {
+		return map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": commit, "outcome": outcome, "attempt": attempt}
 	}
 	record := func(outcome, commit string) {
-		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, map[string]any{"task": integration.ID, "pr": integration.PRNumber, "commit": commit, "outcome": outcome, "attempt": attempt})
+		r.timeline.recordEvent(rctx, id, EventCriteriaGateRun, detail(outcome, commit))
 	}
 	pr, err := r.forgejo.PullRequestState(ctx, repo.Owner, repo.Name, integration.PRNumber)
 	if err != nil {
@@ -1190,6 +1202,13 @@ func (r *Runner) runCriteriaGate(ctx context.Context, id string) {
 		}
 	}
 	if _, _, _, ok = wanted(); !ok {
+		return
+	}
+	// the start is on record before the run, so an outcome that is lost
+	// leaves a cut attempt, never a fresh one
+	if _, err := r.store.Record(rctx, Event{Repository: plan.Repository, TaskID: id, IssueNumber: plan.IssueNumber, Kind: EventCriteriaGateRun,
+		Actor: FactoryDecider, Via: ViaFactoryd, Detail: detail(gateStarted, pr.HeadSHA)}); err != nil {
+		log.Printf("plan %s: record the criteria gate's start: %s", id, r.Scrub.String(err.Error()))
 		return
 	}
 	gate := r.criteriaGate
@@ -1285,12 +1304,12 @@ func (r *Runner) askRerun(ctx context.Context, t Task, repo Repo, never, unmet [
 		parts = append(parts, human+" "+verb+" yours to settle on this card")
 	}
 	if gate != "" {
-		runs, err := r.gateRuns(ctx, t.ID)
+		runs, err := r.gateRuns(ctx, t.ID, integration.ID)
 		if err != nil {
 			log.Printf("plan %s: the criteria gate's record: %s", t.ID, r.Scrub.String(err.Error()))
 			return
 		}
-		if gateRan(runs, gateNoRoom, "") {
+		if gateRan(runs, gateNoRoom) {
 			parts = append(parts, "the card's ceiling left no room for the gate")
 		}
 	}

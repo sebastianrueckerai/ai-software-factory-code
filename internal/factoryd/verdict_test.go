@@ -2159,6 +2159,15 @@ type leakyStore struct {
 	rows, fund, closed, events error
 	// onTask runs before every task read; afterFund after a raise
 	onTask, afterFund func()
+	// lose drops the rows it names with an error
+	lose func(Event) bool
+}
+
+func (s *leakyStore) Record(ctx context.Context, e Event) (int64, error) {
+	if s.lose != nil && s.lose(e) {
+		return 0, errors.New("db down")
+	}
+	return s.fakeStore.Record(ctx, e)
 }
 
 func (s *leakyStore) PlanClosed(ctx context.Context, plan string) (time.Time, bool, error) {
@@ -2362,5 +2371,80 @@ func TestRunCriteriaGateChecksAgainBeforeTheRaiseAndTheRun(t *testing.T) {
 		if got := s.tasks["t-int"].BudgetEUR; calls != 0 || got != c.wantBudget {
 			t.Errorf("%s: gate calls %d, budget %.2f, want no run and %.2f", c.name, calls, got, c.wantBudget)
 		}
+	}
+}
+
+// A lost outcome write leaves an attempt that started with no outcome,
+// which the next pass counts as a cut: the gate runs twice at most, then
+// the human is asked.
+func TestCriteriaGateCountsALostOutcomeAsACut(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+			calls++
+			return CriteriaResult{}, nil
+		}
+	})
+	ls := &leakyStore{fakeStore: s, lose: func(e Event) bool {
+		return e.Kind == EventCriteriaGateRun && e.Detail["outcome"] != gateStarted
+	}}
+	r.store, r.timeline = ls, &Timeline{Objects: r.timeline.Objects, Events: ls, Store: ls}
+	for range 5 {
+		sweep(ctx, r)
+	}
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if calls != 2 || len(pending) != 1 || pending[0].Kind != ApprovalCriteriaRerun {
+		t.Errorf("gate calls %d, pending %+v, want 2 runs and the criteria_rerun ask", calls, pending)
+	}
+}
+
+// A run is not made when its start cannot be recorded.
+func TestCriteriaGateWaitsWhenItsStartIsNotRecorded(t *testing.T) {
+	ctx := context.Background()
+	calls := 0
+	r, s := gatePlan(t, 5, 5, func(*fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(context.Context, string, int64, string) (CriteriaResult, error) {
+			calls++
+			return CriteriaResult{}, nil
+		}
+	})
+	r.store = &leakyStore{fakeStore: s, lose: func(e Event) bool { return e.Kind == EventCriteriaGateRun }}
+	sweep(ctx, r)
+	sweep(ctx, r)
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); calls != 0 || len(pending) != 0 {
+		t.Errorf("gate calls %d, pending %+v, want no run and no ask", calls, pending)
+	}
+}
+
+// A later round's integration card has its own gate run: round 1's run
+// on t-int does not stand for round 2's t-int2.
+func TestCriteriaGateRunsOnceForEachRoundsIntegrationCard(t *testing.T) {
+	ctx := context.Background()
+	var calls []string
+	r, s := gatePlan(t, 5, 1, func(s *fakeStore) func(context.Context, string, int64, string) (CriteriaResult, error) {
+		return func(_ context.Context, id string, _ int64, _ string) (CriteriaResult, error) {
+			calls = append(calls, id)
+			return CriteriaResult{}, nil
+		}
+	})
+	sweep(ctx, r)
+	if !slices.Equal(calls, []string{"t-int"}) {
+		t.Fatalf("round 1: gate calls %v, want t-int", calls)
+	}
+	delete(s.tasks, "t-int")
+	s.tasks["t-int2"] = Task{ID: "t-int2", Repository: "sf/code", Parent: "t-plan", Source: SourcePlan, PlanKey: "integration", Status: "done", PRNumber: 9, BudgetEUR: 5, CeilingEUR: 6}
+	mergeCard(s, "t-int2")
+	if err := s.PutCriteriaVerdicts(ctx, "t-int2", "approver", "sebastian", []CriterionVerdict{{Criterion: "c2", Verdict: "met", Kind: CriterionHuman}}); err != nil {
+		t.Fatal(err)
+	}
+	sweep(ctx, r)
+	sweep(ctx, r)
+	pending, _ := s.ApprovalRequests(ctx, "pending")
+	if !slices.Equal(calls, []string{"t-int", "t-int2"}) {
+		t.Errorf("round 2: gate calls %v, want t-int then t-int2 once", calls)
+	}
+	if len(pending) != 1 {
+		t.Errorf("pending %+v, want the one ask after round 2's gate wrote no rows", pending)
 	}
 }
