@@ -455,15 +455,20 @@ func reproQuestion(title, poster, reason string) HumanQuestion {
 	}
 }
 
+// workflowPath tells whether p, a path in the repository, sits under a
+// workflow directory; an absolute path is none.
+func workflowPath(p string) bool {
+	clean := path.Clean(p)
+	top, _, _ := strings.Cut(clean, "/")
+	_, ok := WorkflowDir(top)
+	return ok && !path.IsAbs(clean)
+}
+
 // workflowOnly tells whether every path in paths sits under a workflow
 // directory; no paths is false. The worker refuses a push that changes
 // one, so no session lands such a card.
 func workflowOnly(paths []string) bool {
-	return len(paths) > 0 && !slices.ContainsFunc(paths, func(p string) bool {
-		top, _, _ := strings.Cut(strings.TrimPrefix(path.Clean(p), "/"), "/")
-		_, ok := WorkflowDir(top)
-		return !ok
-	})
+	return len(paths) > 0 && !slices.ContainsFunc(paths, func(p string) bool { return !workflowPath(p) })
 }
 
 // workflowQuestion is the person's card of a card whose files all sit

@@ -804,14 +804,12 @@ func cardFindings(c PlanCard, limits policy.Limits) []string {
 	}
 	for _, d := range c.Directories {
 		clean := path.Clean(d)
-		first, _, _ := strings.Cut(clean, "/")
-		_, workflow := WorkflowDir(first)
-		switch {
-		case d == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../"):
+		if d == "" || path.IsAbs(clean) || clean == ".." || strings.HasPrefix(clean, "../") {
 			add("directory %q: a relative path inside the repository", d)
-		case workflow:
-			add("directory %q: closed to agents, the template owns it", d)
 		}
+	}
+	if slices.ContainsFunc(c.Directories, workflowPath) && !workflowOnly(c.Directories) {
+		add("directories mix workflow paths (%s) with others: put the workflow paths in a card of their own, which a human does", strings.Join(WorkflowDirs, ", "))
 	}
 	lines := make([]string, len(c.Acceptance))
 	for i, it := range c.Acceptance {
