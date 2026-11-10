@@ -135,7 +135,7 @@ var spendRailRows = []spendRow{
 		"the card reads \"the remaining budget cannot fund a call: Raise the budget (Fund on the board) and answer, or close the card.\" with the state \"%.3f EUR of the %.3f EUR budget remains\""},
 	{"budget.session_floor_frontier_eur",
 		"the least free budget a session on the frontier rung (above the ladder's start) needs to start",
-		"0 and absent read the same: no floor beyond the session's opening calls",
+		"0 and absent read the same: no floor beyond the session's opening calls. This is one of the caps a missing key reads as zero",
 		"the same card as the cheap rung's floor, the frontier floor weighed"},
 	{"budget.premium_month_eur",
 		"the calls on Premium together per UTC calendar month, inside the caps above",
