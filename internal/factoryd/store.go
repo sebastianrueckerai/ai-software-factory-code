@@ -549,6 +549,12 @@ type Store interface {
 	SetLiveSessionLines(ctx context.Context, taskID string, lines int) error
 	LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error)
 	DeleteLiveSession(ctx context.Context, taskID string) error
+	// ReleaseLiveSession deletes the row only while owner holds it and
+	// answers whether it did: an attempt that deletes none holds nothing
+	// of the session. TakeLiveSession gives the row from owner from to owner
+	// to and answers whether it did.
+	ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error)
+	TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error)
 	// SetRollHold holds new sessions for roll task taskID from since to
 	// until; ClearRollHold ends its hold; RollHold is the newest hold in
 	// force at now, if any.

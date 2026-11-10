@@ -693,13 +693,48 @@ func TestPGStoreLiveSessionKeepsItsSpendBaseline(t *testing.T) {
 	}
 	base := 3.54
 	for name, want := range map[string]*float64{"known": &base, "unread": nil} {
-		l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now(), SpentAtStart: want}
+		l := LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now(), SpentAtStart: want, Owner: "o1"}
 		if err := s.PutLiveSession(ctx, l); err != nil {
 			t.Fatal(err)
 		}
 		got, ok, err := s.LiveSession(ctx, task.ID)
-		if err != nil || !ok || (want == nil) != (got.SpentAtStart == nil) || (want != nil && *got.SpentAtStart != *want) {
+		if err != nil || !ok || got.Owner != "o1" || (want == nil) != (got.SpentAtStart == nil) || (want != nil && *got.SpentAtStart != *want) {
 			t.Fatalf("%s: read back %+v, %v, %v; want baseline %v", name, got, ok, err, want)
 		}
+	}
+}
+
+// The row's owner is the claim: a take succeeds only from the owner it
+// names, and a release deletes the row only for its owner, so an attempt
+// that lost the row deletes nothing.
+func TestPGStoreLiveSessionOwnerIsACompareAndSet(t *testing.T) {
+	s, ctx := chatStore(t), context.Background()
+	task, err := s.EnsureChatTask(ctx, "linkshort", "linkshort/linkshort", 5, time.Date(2026, 10, 11, 9, 0, 0, 0, time.UTC))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := s.PutLiveSession(ctx, LiveSession{TaskID: task.ID, SessionID: "s1", Namespace: "ns", Pod: "p", MessageToken: "tok", StartedAt: time.Now(), Deadline: time.Now(), Owner: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if ok, err := s.TakeLiveSession(ctx, task.ID, "stale", "b"); err != nil || ok {
+		t.Fatalf("take from a stranger = %v, %v, want refused", ok, err)
+	}
+	if ok, err := s.TakeLiveSession(ctx, task.ID, "a", "b"); err != nil || !ok {
+		t.Fatalf("take from the owner = %v, %v, want taken", ok, err)
+	}
+	if l, _, _ := s.LiveSession(ctx, task.ID); l.Owner != "b" {
+		t.Fatalf("owner = %q, want b", l.Owner)
+	}
+	if ok, err := s.ReleaseLiveSession(ctx, task.ID, "a"); err != nil || ok {
+		t.Fatalf("release by the old owner = %v, %v, want no row deleted", ok, err)
+	}
+	if _, ok, _ := s.LiveSession(ctx, task.ID); !ok {
+		t.Fatal("the old owner's release deleted the new owner's row")
+	}
+	if ok, err := s.ReleaseLiveSession(ctx, task.ID, "b"); err != nil || !ok {
+		t.Fatalf("release by the owner = %v, %v, want the row deleted", ok, err)
+	}
+	if ok, err := s.ReleaseLiveSession(ctx, task.ID, "b"); err != nil || ok {
+		t.Fatalf("second release = %v, %v, want no row", ok, err)
 	}
 }

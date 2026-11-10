@@ -51,6 +51,23 @@ func (s *PGStore) LiveSession(ctx context.Context, taskID string) (LiveSession, 
 	return l, err == nil, err
 }
 
+func (s *PGStore) ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error) {
+	return s.rowChanged(ctx, `DELETE FROM live_sessions WHERE task_id = $1 AND owner = $2`, taskID, owner)
+}
+
+func (s *PGStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
+	return s.rowChanged(ctx, `UPDATE live_sessions SET owner = $3 WHERE task_id = $1 AND owner = $2`, taskID, from, to)
+}
+
+func (s *PGStore) rowChanged(ctx context.Context, query string, args ...any) (bool, error) {
+	res, err := s.db.ExecContext(ctx, query, args...)
+	if err != nil {
+		return false, err
+	}
+	n, err := res.RowsAffected()
+	return n > 0, err
+}
+
 func (s *PGStore) DeleteLiveSession(ctx context.Context, taskID string) error {
 	_, err := s.db.ExecContext(ctx, `DELETE FROM live_sessions WHERE task_id = $1`, taskID)
 	return err

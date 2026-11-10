@@ -2682,60 +2682,102 @@ func TestRunSessionCancelCleansUpAndFails(t *testing.T) {
 	}
 }
 
-// takeoverStore plays the next attempt: once the session's row is written,
-// the row is the newer attempt's, which minted a push token, and the stale
-// attempt's context ends.
+// takeoverStore plays the next attempt. Once the session's row is written
+// its context ends (the stale attempt). Where the newer attempt acts: at the
+// write ("put": it took the row over and minted a push token), or in the
+// window of the stale attempt's cleanup, at its first read or release of the
+// row ("race": the takeover lands after the read, before the delete) or
+// after the newer attempt finished ("gone": it deleted its own row).
 type takeoverStore struct {
 	Store
 	hub    *forgejoHub
 	cancel func()
+	when   string
+	// ended: the stale attempt's context has ended
+	ended, done bool
+}
+
+func (s *takeoverStore) newer(l LiveSession, deleteRow bool) {
+	s.done = true
+	s.hub.mu.Lock()
+	s.hub.tokens = append(s.hub.tokens, TokenRef{ID: 9, Name: PushTokenName(l.TaskID, "newer")})
+	s.hub.mu.Unlock()
+	if deleteRow {
+		s.Store.DeleteLiveSession(context.Background(), l.TaskID)
+		return
+	}
+	l.Owner = "newer"
+	s.Store.PutLiveSession(context.Background(), l)
 }
 
 func (s *takeoverStore) PutLiveSession(ctx context.Context, l LiveSession) error {
-	if l.Owner == "newer" {
+	if l.Owner == "newer" || s.done {
 		return s.Store.PutLiveSession(ctx, l)
 	}
 	if err := s.Store.PutLiveSession(ctx, l); err != nil {
 		return err
 	}
-	l.Owner = "newer"
-	if err := s.Store.PutLiveSession(ctx, l); err != nil {
-		return err
+	if s.when == "put" {
+		s.newer(l, false)
 	}
-	s.hub.mu.Lock()
-	s.hub.tokens = append(s.hub.tokens, TokenRef{ID: 9, Name: PushTokenName(l.TaskID, "newer")})
-	s.hub.mu.Unlock()
+	s.ended = true
 	s.cancel()
 	return nil
+}
+
+func (s *takeoverStore) LiveSession(ctx context.Context, taskID string) (LiveSession, bool, error) {
+	if s.ended && !s.done && s.when == "gone" {
+		l, _, _ := s.Store.LiveSession(ctx, taskID)
+		s.newer(l, true)
+	}
+	l, ok, err := s.Store.LiveSession(ctx, taskID)
+	if s.ended && !s.done && s.when == "race" {
+		s.newer(l, false)
+	}
+	return l, ok, err
+}
+
+func (s *takeoverStore) ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error) {
+	if s.ended && !s.done && s.when != "put" {
+		l, _, _ := s.Store.LiveSession(ctx, taskID)
+		s.newer(l, s.when == "gone")
+	}
+	return s.Store.ReleaseLiveSession(ctx, taskID, owner)
 }
 
 // An attempt Temporal timed out keeps running while the next attempt
 // reattaches to the same pod: when the stale attempt's context ends, its
 // cleanup must leave the newer attempt's pod, namespace and push token
-// alone, and the row stays the newer attempt's.
+// alone, whenever the newer attempt acts: before the cleanup, between its
+// read and its delete, or after the newer attempt ended.
 func TestStaleAttemptCleanupLeavesTheNewerAttemptsSession(t *testing.T) {
-	task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
-	kube := newFakeKube()
-	runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
-	ctx, cancel := context.WithCancel(context.Background())
-	runner.store = &takeoverStore{Store: store, hub: hub, cancel: cancel}
-	if _, err := runSession(t, ctx, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs); err == nil {
-		t.Fatal("the stale attempt ended without its cancel")
-	}
-	hub.mu.Lock()
-	revoked := slices.Clone(hub.revoked)
-	hub.mu.Unlock()
-	if len(revoked) != 0 {
-		t.Fatalf("revoked = %v, want the newer attempt's tokens alone", revoked)
-	}
-	if len(kube.deletedPods) != 0 {
-		t.Fatalf("deleted pods = %v, want the newer attempt's pod alone", kube.deletedPods)
-	}
-	if _, ok := kube.namespaces["factory-agents-t6"]; !ok {
-		t.Fatal("the stale attempt deleted the newer attempt's namespace")
-	}
-	if l, ok, _ := store.LiveSession(context.Background(), "t6"); !ok || l.Owner != "newer" {
-		t.Fatalf("live session = %+v, %v; want the newer attempt's row", l, ok)
+	for _, when := range []string{"put", "race", "gone"} {
+		t.Run(when, func(t *testing.T) {
+			task := Task{ID: "t6", Status: "running", Objective: "long", Repository: "sf/repo", Track: "direct"}
+			kube := newFakeKube()
+			runner, hub, store := newTestRunner(t, task, kube, &fakeObjectStore{})
+			ctx, cancel := context.WithCancel(context.Background())
+			runner.store = &takeoverStore{Store: store, hub: hub, cancel: cancel, when: when}
+			if _, err := runSession(t, ctx, runner, SessionInput{TaskID: "t6", Attempt: 1, Model: "m"}, nil, hangLogs); err == nil {
+				t.Fatal("the stale attempt ended without its cancel")
+			}
+			hub.mu.Lock()
+			revoked := slices.Clone(hub.revoked)
+			hub.mu.Unlock()
+			if len(revoked) != 0 {
+				t.Fatalf("revoked = %v, want the newer attempt's tokens alone", revoked)
+			}
+			if len(kube.deletedPods) != 0 {
+				t.Fatalf("deleted pods = %v, want the newer attempt's pod alone", kube.deletedPods)
+			}
+			if _, ok := kube.namespaces["factory-agents-t6"]; !ok {
+				t.Fatal("the stale attempt deleted the newer attempt's namespace")
+			}
+			l, ok, _ := store.LiveSession(context.Background(), "t6")
+			if (when == "gone") == ok || ok && l.Owner != "newer" {
+				t.Fatalf("live session = %+v, %v; want the newer attempt's row (none once it ended)", l, ok)
+			}
+		})
 	}
 }
 

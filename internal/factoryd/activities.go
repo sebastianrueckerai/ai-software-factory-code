@@ -1033,12 +1033,14 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 		return SessionResult{}, named("live session", err)
 	} else if ok {
 		if phase, _, perr := r.kube.PodStatus(ctx, l.Namespace, l.Pod); perr == nil && (phase == "Running" || phase == "Pending" || phase == "Succeeded" || phase == "Failed") {
-			live = &l
-			l.Owner = s.owner
-			if err := r.store.PutLiveSession(ctx, l); err != nil {
+			// the takeover is a compare-and-set: a row another attempt took
+			// since the read is theirs, and this attempt starts fresh
+			if taken, err := r.store.TakeLiveSession(ctx, t.ID, l.Owner, s.owner); err != nil {
 				return SessionResult{}, named("live session", err)
+			} else if taken {
+				live = &l
+				s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.parentDeadEnd, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.ParentDeadEnd, in.Findings
 			}
-			s.id, s.parent, s.parentStop, s.parentOutcome, s.parentTrip, s.parentDeadEnd, s.findings = l.SessionID, in.ParentSessionID, in.ParentStop, in.ParentOutcome, in.ParentTrip, in.ParentDeadEnd, in.Findings
 		} else if err := r.store.DeleteLiveSession(ctx, t.ID); err != nil {
 			return SessionResult{}, named("live session", err)
 		}
@@ -1054,9 +1056,9 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	cleanup := context.WithoutCancel(ctx)
 	// detached: factoryd is stopping and the session runs on for the
 	// retry; its sandbox and credentials stay
-	detached := false
+	detached, superseded := false, false
 	defer func() {
-		if detached || r.superseded(cleanup, t.ID, s.owner) {
+		if detached || superseded {
 			return
 		}
 		r.forgetNamespace(cleanup, t.ID)
@@ -1097,6 +1099,7 @@ func (r *Runner) RunSession(ctx context.Context, in SessionInput) (SessionResult
 	}
 	began := rfc3339(startedAt)
 	out, err := r.runSession(ctx, t, r.agentNamespace(t.ID), s, deadline, hb.update, activity.GetWorkerStopChannel(ctx), live)
+	superseded = out.superseded
 	if err != nil {
 		if errors.Is(err, errWorkerStop) {
 			// the row and the last heartbeat are what the retry resumes from

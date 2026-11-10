@@ -598,6 +598,12 @@ type sessionOutcome struct {
 	overHold *OverHoldCall   // the session's newest call booked beyond its hold
 	reads    []string        // the paths a report session read
 	checkIn  *CheckInOutcome // the check-in that ran at the session's start
+	// superseded: another attempt holds the session's row, so this one's
+	// cleanup left the pod, the namespace and the tokens alone
+	superseded bool
+	// overBound names where finished work an end push the line bound
+	// refused was shipped, for the next session
+	overBound string
 }
 
 // stopReport is what a stopped worker left for the next session beside
@@ -692,14 +698,19 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		}
 		delCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
-		if r.superseded(delCtx, t.ID, s.owner) {
+		// the delete of the attempt's own row is the claim: an attempt that
+		// deletes none, or cannot tell, holds nothing of the pod and leaves
+		// it, the namespace and the tokens to whoever does
+		owned, err := r.store.ReleaseLiveSession(delCtx, t.ID, s.owner)
+		if err != nil || !owned {
+			if err != nil {
+				log.Printf("task %s: release live session %s: %v", t.ID, s.id, err)
+			}
+			out.superseded = true
 			return
 		}
 		if err := r.kube.DeletePod(delCtx, ns, podName); err != nil && !errors.Is(err, ErrNotFound) {
 			log.Printf("task %s: delete pod %s: %v", t.ID, podName, err)
-		}
-		if err := r.store.DeleteLiveSession(delCtx, t.ID); err != nil {
-			log.Printf("task %s: forget live session %s: %v", t.ID, s.id, err)
 		}
 	}()
 

@@ -2295,6 +2295,25 @@ func (s *fakeStore) DeleteLiveSession(ctx context.Context, taskID string) error 
 	return nil
 }
 
+func (s *fakeStore) ReleaseLiveSession(ctx context.Context, taskID, owner string) (bool, error) {
+	l, ok := s.liveSessions[taskID]
+	if !ok || l.Owner != owner {
+		return false, nil
+	}
+	delete(s.liveSessions, taskID)
+	return true, nil
+}
+
+func (s *fakeStore) TakeLiveSession(ctx context.Context, taskID, from, to string) (bool, error) {
+	l, ok := s.liveSessions[taskID]
+	if !ok || l.Owner != from {
+		return false, nil
+	}
+	l.Owner = to
+	s.liveSessions[taskID] = l
+	return true, nil
+}
+
 func (s *fakeStore) SetRollHold(ctx context.Context, taskID string, since, until time.Time) error {
 	if s.holds == nil {
 		s.holds = map[string]RollHold{}
