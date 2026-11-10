@@ -312,7 +312,7 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	switch _, exists, err := c.branchHead(r.Context(), branch); {
 	case err != nil:
 		log.Printf("console: branch %s of %s: %v", branch, c.cfg.InfraRepo, err)
-		http.Error(w, "cannot read infra's branches: "+errText(err)+". Try again in a moment.", http.StatusBadGateway)
+		http.Error(w, "cannot read infra's branches: "+forgejoCause(err)+". Try again in a moment.", http.StatusBadGateway)
 		return
 	case exists:
 		c.renderNewProject(w, r, http.StatusUnprocessableEntity, p,
@@ -451,7 +451,7 @@ func (c *Console) failFiling(w http.ResponseWriter, r *http.Request, p newProjec
 	case deleted:
 		msg += "; the filing was undone. Try again in a moment."
 	case err == nil:
-		msg += "; branch " + branch + " is left: its head is not this filing's commit."
+		msg += "; branch " + branch + " is left: its head is not this filing's commit. Delete branch " + branch + " on Forgejo, then file the project again."
 	default:
 		msg += "; delete branch " + branch + " to file the name again."
 	}

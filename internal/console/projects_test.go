@@ -912,7 +912,7 @@ func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	infra.mu.Unlock()
 	rec = r.do(post("/projects", linkshortForm(s.csrf)), ck)
 	if body := rec.Body.String(); rec.Code != http.StatusBadGateway ||
-		!strings.Contains(body, "Forgejo refused to commit the project's file: 500 Internal Server Error; branch project-linkshort is left: its head is not this filing's commit.") {
+		!strings.Contains(body, "Forgejo refused to commit the project's file: 500 Internal Server Error; branch project-linkshort is left: its head is not this filing's commit. Delete branch project-linkshort on Forgejo, then file the project again.") {
 		t.Fatalf("a failed commit: POST /projects = %d %q, want 502 saying the branch is left", rec.Code, body)
 	}
 	infra.mu.Lock()
@@ -954,7 +954,7 @@ func TestRacingFilingsKeepTheWinnersBranch(t *testing.T) {
 		won, lost = 1, 0
 	}
 	if codes[won] != http.StatusSeeOther || codes[lost] != http.StatusBadGateway ||
-		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file: branch already exists; branch project-linkshort is left: its head is not this filing's commit.") {
+		!strings.Contains(bodies[lost], "Forgejo refused to commit the project's file: branch already exists; branch project-linkshort is left: its head is not this filing's commit. Delete branch project-linkshort on Forgejo, then file the project again.") {
 		t.Errorf("racing filings answered %d %q and %d %q; want one 303 and one 502 leaving the branch", codes[0], bodies[0], codes[1], bodies[1])
 	}
 	infra.mu.Lock()

@@ -144,7 +144,7 @@ func (f failingPlans) PlanRevision(context.Context, string, int) (factoryd.PlanR
 }
 
 // failPath is an http.RoundTripper that answers a request whose path
-// holds marker with 502 and err's words as the body; every other
+// holds marker with 502 and a JSON message of err's words; every other
 // request goes to base.
 type failPath struct {
 	base   http.RoundTripper
@@ -160,22 +160,23 @@ func (f failPath) RoundTrip(req *http.Request) (*http.Response, error) {
 }
 
 // failStatus is an http.RoundTripper that answers a request whose path
-// holds marker with status and body; every other request goes to base.
+// holds marker with status and a JSON message; every other request goes
+// to base.
 type failStatus struct {
-	base   http.RoundTripper
-	marker string
-	status int
-	body   string
+	base    http.RoundTripper
+	marker  string
+	status  int
+	message string
 }
 
 func (f failStatus) RoundTrip(req *http.Request) (*http.Response, error) {
 	if strings.Contains(req.URL.Path, f.marker) {
-		return failAnswer(f.status, f.body), nil
+		return failAnswer(f.status, f.message), nil
 	}
 	return f.base.RoundTrip(req)
 }
 
-// failAnswer is a Forgejo answer that carries body.
+// failAnswer is a Forgejo answer whose JSON body carries message.
 func failAnswer(status int, message string) *http.Response {
 	body, _ := json.Marshal(map[string]string{"message": message})
 	return &http.Response{StatusCode: status, Body: io.NopCloser(strings.NewReader(string(body))),

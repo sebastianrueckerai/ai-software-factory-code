@@ -41,6 +41,7 @@ func maskedLeak(t *testing.T, path, text string) {
 	}
 }
 
+// errText masks URL userinfo and a bearer value.
 func TestErrTextScrubsUserinfoAndBearer(t *testing.T) {
 	maskedLeak(t, "errText", errText(leakyError()))
 }
@@ -51,12 +52,14 @@ func leakyAPIError() *apiError {
 	return &apiError{method: "POST", path: "/api/v1/x", status: 409, body: []byte(`{"message":"` + leakMessage + `"}`)}
 }
 
+// forgejoCause masks the reason of an apiError, a refusal and a plain error.
 func TestForgejoCauseScrubsTheAPIReason(t *testing.T) {
 	maskedLeak(t, "forgejoCause of an apiError", forgejoCause(leakyAPIError()))
 	maskedLeak(t, "forgejoCause of a refusal", forgejoCause(&forgejoRefusal{what: "merge", err: leakyAPIError()}))
 	maskedLeak(t, "forgejoCause of a plain error", forgejoCause(leakyError()))
 }
 
+// errSentence masks the error on each of its arms.
 func TestErrSentenceScrubsEveryArm(t *testing.T) {
 	a := actor{s: &session{user: "sebastian"}, via: "chat"}
 	for name, err := range map[string]error{
@@ -69,6 +72,7 @@ func TestErrSentenceScrubsEveryArm(t *testing.T) {
 	}
 }
 
+// The merge refusal and the panel's kept refusal carry Forgejo's reason masked.
 func TestMergeRefusalScrubsForgejoReason(t *testing.T) {
 	s := newStatusRig(t)
 	s.infra.set(openPull)
@@ -90,6 +94,7 @@ func chatActorOf(t *testing.T, r *rig, s *session) actor {
 	return actor{s: s, repository: p.Repository, via: factoryd.ViaChat}
 }
 
+// The answer, answers and hold-out refusals embed errText.
 func TestRawErrorRefusalsAreScrubbed(t *testing.T) {
 	r, _ := batchAnswerRig(t)
 	_, s := r.loggedIn(t)
@@ -106,6 +111,7 @@ func TestRawErrorRefusalsAreScrubbed(t *testing.T) {
 	maskedLeak(t, "the hold-out refusal", err.Error())
 }
 
+// The analysis refusal embeds errText.
 func TestAnalysisRefusalIsScrubbed(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	_, s := r.loggedIn(t)
@@ -117,6 +123,7 @@ func TestAnalysisRefusalIsScrubbed(t *testing.T) {
 	maskedLeak(t, "the analysis refusal", err.Error())
 }
 
+// The grant refusal embeds errText.
 func TestGrantRefusalIsScrubbed(t *testing.T) {
 	r, _, g := newChatRig(t)
 	verdictRig(r)
@@ -128,6 +135,7 @@ func TestGrantRefusalIsScrubbed(t *testing.T) {
 	maskedLeak(t, "the grant refusal", strings.Join(events, "\n"))
 }
 
+// forgejoFailed shows Forgejo's reason, masked, without method, path, status or body.
 func TestForgejoFailedKeepsTheRawBodyOut(t *testing.T) {
 	r, _, _ := newChatRig(t)
 	ck, s := r.loggedIn(t)
@@ -145,6 +153,7 @@ func TestForgejoFailedKeepsTheRawBodyOut(t *testing.T) {
 	}
 }
 
+// The status panel masks the error of the main read.
 func TestStatusPanelScrubsTheMainError(t *testing.T) {
 	s := newStatusRig(t)
 	s.force.load("linkshort")
@@ -341,4 +350,23 @@ func TestBoardHeadUnreadWhyIsScrubbed(t *testing.T) {
 		leakMessage}}
 	body := html.UnescapeString(r.do(httptest.NewRequest(http.MethodGet, "/", nil), ck).Body.String())
 	maskedLeak(t, "the board's head-checks problem", body)
+}
+
+// A branch read Forgejo refuses answers Forgejo's message only, masked.
+func TestBranchReadRefusalIsScrubbed(t *testing.T) {
+	r := newRig(t)
+	withInfra(t, r)
+	r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+	ck, s := r.loggedIn(t)
+	r.c.cfg.HTTP = &http.Client{Transport: failStatus{http.DefaultTransport, "/branches/", http.StatusInternalServerError, leakMessage}}
+	rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+	if rec.Code != http.StatusBadGateway {
+		t.Fatalf("the filing = %d: %s", rec.Code, rec.Body)
+	}
+	maskedLeak(t, "the branch read refusal", rec.Body.String())
+	for _, raw := range []string{"forgejo GET", "status 500", "/api/v1/"} {
+		if strings.Contains(rec.Body.String(), raw) {
+			t.Errorf("the branch read refusal holds the raw apiError text %q: %s", raw, rec.Body)
+		}
+	}
 }
