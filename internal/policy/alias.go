@@ -26,7 +26,11 @@ func canonicalKeys(m map[string]ToolCap) map[string]ToolCap {
 	}
 	out := make(map[string]ToolCap, len(m))
 	for k, v := range m {
-		out[CanonicalTool(k)] = v
+		if n := CanonicalTool(k); n == k {
+			out[k] = v
+		} else if _, own := m[n]; !own {
+			out[n] = v
+		}
 	}
 	return out
 }
@@ -35,8 +39,14 @@ func (c *ChatConfig) canonicalTools() {
 	if c == nil {
 		return
 	}
-	for i, t := range c.Confirm {
-		c.Confirm[i] = CanonicalTool(t)
+	if c.Confirm != nil {
+		out := make([]string, 0, len(c.Confirm))
+		for _, t := range c.Confirm {
+			if t = CanonicalTool(t); !slices.Contains(out, t) {
+				out = append(out, t)
+			}
+		}
+		c.Confirm = out
 	}
 	c.Tools = canonicalKeys(c.Tools)
 }

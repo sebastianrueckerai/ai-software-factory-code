@@ -259,34 +259,43 @@ func (k fileKind) schema() (*jsonschema.Schema, error) {
 }
 
 var (
-	resolvedOnce sync.Once
-	resolved     map[string]*jsonschema.Resolved
-	resolvedErr  error
+	resolvedMu  sync.Mutex
+	resolved    map[string]*jsonschema.Resolved
+	resolvedErr error
 )
+
+func resolvedSchemas() (map[string]*jsonschema.Resolved, error) {
+	resolvedMu.Lock()
+	defer resolvedMu.Unlock()
+	if resolved != nil || resolvedErr != nil {
+		return resolved, resolvedErr
+	}
+	out := map[string]*jsonschema.Resolved{}
+	for _, kind := range fileKinds {
+		s, err := kind.schema()
+		if err == nil {
+			out[kind.name], err = s.Resolve(nil)
+		}
+		if err != nil {
+			resolvedErr = err
+			return nil, err
+		}
+	}
+	resolved = out
+	return resolved, nil
+}
 
 // validate checks a decoded YAML document against the kind's schema.
 func (k fileKind) validate(doc any) error {
-	resolvedOnce.Do(func() {
-		resolved = map[string]*jsonschema.Resolved{}
-		for _, kind := range fileKinds {
-			s, err := kind.schema()
-			if err == nil {
-				resolved[kind.name], err = s.Resolve(nil)
-			}
-			if err != nil {
-				resolvedErr = err
-				return
-			}
-		}
-	})
-	if resolvedErr != nil {
-		return resolvedErr
+	schemas, err := resolvedSchemas()
+	if err != nil {
+		return err
 	}
 	v, err := jsonValue(doc)
 	if err != nil {
 		return err
 	}
-	return resolved[k.name].Validate(v)
+	return schemas[k.name].Validate(v)
 }
 
 // Schemas are the generated schema files by name, as `factoryd schema`

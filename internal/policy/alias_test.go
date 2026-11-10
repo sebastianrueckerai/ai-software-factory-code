@@ -3,16 +3,21 @@ package policy
 import (
 	"slices"
 	"strings"
-	"sync"
 	"testing"
 )
+
+func resetSchemaCache() {
+	resolvedMu.Lock()
+	defer resolvedMu.Unlock()
+	resolved, resolvedErr = nil, nil
+}
 
 func withAliases(t *testing.T, a map[string]string) {
 	t.Helper()
 	old := ToolAliases
 	ToolAliases = a
-	resolvedOnce = sync.Once{}
-	t.Cleanup(func() { ToolAliases = old; resolvedOnce = sync.Once{} })
+	resetSchemaCache()
+	t.Cleanup(func() { ToolAliases = old; resetSchemaCache() })
 }
 
 func TestCanonicalTool(t *testing.T) {
@@ -94,5 +99,49 @@ func TestSchemaEnumsHoldAliasKeys(t *testing.T) {
 	got := confirmEnum()
 	if len(got) != len(ChatTools)+1 || got[len(got)-1] != "ask" {
 		t.Fatalf("confirm enum = %v, want ChatTools plus ask", got)
+	}
+}
+
+func TestCanonicalisationEdges(t *testing.T) {
+	withAliases(t, map[string]string{"ask": "answer", "old_scrape": "web_scrape"})
+	c := ChatConfig{Confirm: []string{"ask", "close", "answer"}}
+	c.canonicalTools()
+	if !slices.Equal(c.Confirm, []string{"answer", "close"}) {
+		t.Fatalf("confirm = %v, want [answer close]", c.Confirm)
+	}
+	own, old := ToolCap{MaxRequests: 7, MaxEUR: 2}, ToolCap{MaxRequests: 1, MaxEUR: 1}
+	for range 50 {
+		got := canonicalKeys(map[string]ToolCap{"old_scrape": old, "web_scrape": own})
+		if len(got) != 1 || got["web_scrape"] != own {
+			t.Fatalf("keys = %v, want the new name's own entry", got)
+		}
+	}
+}
+
+func TestDecodeProjectCanonicalises(t *testing.T) {
+	withAliases(t, map[string]string{"ask": "answer", "old_scrape": "web_scrape"})
+	p, err := DecodeProject([]byte("repository: a/b\nchat:\n  confirm: [ask]\n  tools:\n    old_scrape: {max_requests: 5, max_eur: 1}\n"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !slices.Equal(p.Chat.Confirm, []string{"answer"}) {
+		t.Fatalf("confirm = %v, want [answer]", p.Chat.Confirm)
+	}
+	if _, ok := p.Chat.Tools["web_scrape"]; !ok || len(p.Chat.Tools) != 1 {
+		t.Fatalf("tools = %v, want web_scrape only", p.Chat.Tools)
+	}
+}
+
+func TestProjectFileChatToolsAliased(t *testing.T) {
+	withAliases(t, map[string]string{"old_scrape": "web_scrape"})
+	files := fixtureTree(t)
+	files["policy.yaml"] = append(files["policy.yaml"], "chat:\n  tools:\n    web_scrape: {max_requests: 9, max_eur: 2}\n"...)
+	files["projects/linkshort.yaml"] = append(files["projects/linkshort.yaml"], "chat:\n  tools:\n    old_scrape: {max_requests: 5, max_eur: 1}\n"...)
+	tree, err := ParseTree(files)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := tree.Projects["linkshort"].Chat.Tools["web_scrape"]; !ok {
+		t.Fatalf("tools = %v, want web_scrape", tree.Projects["linkshort"].Chat.Tools)
 	}
 }
