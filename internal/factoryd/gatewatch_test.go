@@ -581,3 +581,31 @@ func TestGateWatchLookupTickArmsOnlyTheRunInTheTable(t *testing.T) {
 	}
 	live.timer.Stop()
 }
+
+// A run past a trip and a wait takes a later tell that is more than twice
+// its bound: a review told one wave of 100 ms trips at 100 ms, its wait
+// extends to 200 ms, and a settle that tells ten waves (1 s) is not tripped
+// again at 200 ms.
+func TestGateWatchExtendedRunTakesALargerTell(t *testing.T) {
+	store := newFakeStore()
+	store.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct"})
+	sig := &signalled{}
+	g := &GateWatch{Store: store, Bound: func(_ context.Context, _ string, _ int64, parts int) time.Duration {
+		return time.Duration(parts) * 100 * time.Millisecond
+	}, Signal: sig.signal}
+	sig.onTrip = func(wf string, tr GateTrip) { g.Wait(wf, tr.ActivityID, tr.Attempt) }
+	env := signallingEnv(g)
+	env.RegisterActivityWithOptions(func(ctx context.Context, _ string) error {
+		boundByParts(ctx, 1)
+		time.Sleep(150 * time.Millisecond)
+		boundByParts(ctx, 10)
+		time.Sleep(300 * time.Millisecond)
+		return nil
+	}, activity.RegisterOptions{Name: ActivityModelReview})
+	if _, err := env.ExecuteActivity(ActivityModelReview, "t1"); err != nil {
+		t.Fatal(err)
+	}
+	if trips, _ := sig.got(); len(trips) != 1 {
+		t.Fatalf("trips = %+v, want the one at 100 ms and none at 200 ms", trips)
+	}
+}

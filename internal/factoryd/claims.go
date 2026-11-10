@@ -93,7 +93,7 @@ func (t claimRun) outcome() (outcome, why string) {
 		return "", fmt.Sprintf("the run did not finish (exit %d)", t.Exit)
 	case strings.Contains(t.Output, "[build failed]") || strings.Contains(t.Output, "[setup failed]"):
 		return "", "the package did not build"
-	case t.Exit == 0 && strings.Contains(t.Output, "no tests to run"):
+	case t.Exit == 0 && (strings.Contains(t.Output, "no tests to run") || strings.Contains(t.Output, "[no test files]")):
 		return "", "no such test at that ref"
 	case t.Exit == 0:
 		return OutcomePass, ""

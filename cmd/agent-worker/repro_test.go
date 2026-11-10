@@ -303,10 +303,11 @@ func TestReproRunsAtTheBase(t *testing.T) {
 	}
 }
 
-// With OVERLAY_PKG the base's tree gets the head's test files of that
-// package alone: a test the head extends runs its new body on the base's
-// code, a test the head adds whole runs, another package's tests stay the
-// base's, and a package without tests at the head changes nothing.
+// With OVERLAY_PKG the base's tree gets the head's test files and testdata
+// of that package alone (regular files only, the base's own removed): a
+// test the head extends runs its new body on the base's code, a test the
+// head adds whole runs, another package's tests stay the base's, a head
+// without the package directory fails the fetch.
 func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	run := func(args ...string) string {
 		t.Helper()
@@ -338,12 +339,19 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n")
 	write("a/main_test.go", "package a\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { m.Run(); os.Exit(3) }\n")
 	write("r.go", "package m\n\nconst R = 1\n")
+	write("a/testdata/old.txt", "base fixture\n")
 	base := commit()
 	run("-C", seed, "rm", "-q", "a/main_test.go")
 	write("r.go", "package m\n\nconst R = 2\n")
 	write(":!zz_test.go", "package m\n")
 	write("a/dir_test.go/x.txt", "a directory, not a test file\n")
 	write("a/a.go", "package a\n\nfunc One() int { return 2 }\n")
+	write("a/testdata/want.txt", "head fixture\n")
+	write("a/sub/x_test.go", "package sub\n")
+	if err := os.Symlink("../r.go", filepath.Join(seed, "a", "link_test.go")); err != nil {
+		t.Fatal(err)
+	}
+	run("-C", seed, "rm", "-q", "a/testdata/old.txt")
 	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 2 {\n\t\tt.Fatal(\"head asserts two\")\n\t}\n}\n")
 	write("a/new_test.go", "package a\n\nimport \"testing\"\n\nfunc TestNew(t *testing.T) {}\n")
 	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { t.Fatal(\"head b\") }\n")
@@ -369,6 +377,14 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	if _, err := os.Stat(filepath.Join(repo, "a", "main_test.go")); err == nil {
 		t.Fatal("the base's own test file stays beside the head's")
 	}
+	if b, err := os.ReadFile(filepath.Join(repo, "a", "testdata", "want.txt")); err != nil || string(b) != "head fixture\n" {
+		t.Fatalf("the head's testdata fixture = %q, %v", b, err)
+	}
+	for _, gone := range []string{"testdata/old.txt", "link_test.go", "sub/x_test.go"} {
+		if _, err := os.Lstat(filepath.Join(repo, "a", gone)); err == nil {
+			t.Fatalf("a/%s is in the overlaid tree", gone)
+		}
+	}
 	if _, err := os.Stat(filepath.Join(repo, "a", "dir_test.go")); err == nil {
 		t.Fatal("a directory named like a test file was copied")
 	}
@@ -393,6 +409,13 @@ func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
 	}
 	if got := repro(ws); got.Exit != -1 {
 		t.Fatalf("repro = %+v, want exit -1", got)
+	}
+	// a package that is a file at the head is no package directory
+	t.Setenv("OVERLAY_PKG", "a/a.go")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil || !strings.Contains(err.Error(), "no package directory a/a.go") {
+		t.Fatalf("a file as the package: %v", err)
 	}
 	// the root package: a head file named like a pathspec is no pathspec
 	t.Setenv("OVERLAY_PKG", ".")
@@ -1161,5 +1184,63 @@ func TestProofsCountTheWaitAgainstTheBudget(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the check ran: %v", err)
+	}
+}
+
+// A failing listing of the head fails the overlay, never an empty one.
+func TestOverlayFailsWhenTheListingFails(t *testing.T) {
+	err := overlayTests(workerEnv{}, filepath.Join(t.TempDir(), "no-repository"), "abc", ".", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "list the head's") {
+		t.Fatalf("overlay = %v, want the listing's failure", err)
+	}
+}
+
+// The base's package directory may be a symlink out of the workspace: the
+// removal of its test files cannot follow it.
+func TestOverlayRemovalStaysInTheWorkspace(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim_test.go")
+	if err := os.WriteFile(victim, []byte("package v\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	run("init", "-q", "-b", "main", seed)
+	commit := func() string {
+		run("-C", seed, "add", "-A")
+		run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	if err := os.Symlink(outside, filepath.Join(seed, "a")); err != nil {
+		t.Fatal(err)
+	}
+	base := commit()
+	run("-C", seed, "rm", "-q", "a")
+	if err := os.MkdirAll(filepath.Join(seed, "a"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "a", "a_test.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	head := commit()
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "update-ref", "refs/pull/9/head", head)
+	reproEnvs(t, remote, head, "true")
+	t.Setenv("CHECKOUT_SHA", base)
+	t.Setenv("OVERLAY_PKG", "a")
+	ws := t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil {
+		t.Fatal("the overlay followed the base's symlinked package directory")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("the file outside the workspace is gone: %v", err)
 	}
 }

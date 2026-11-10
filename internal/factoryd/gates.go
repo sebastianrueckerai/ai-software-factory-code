@@ -1772,8 +1772,8 @@ func retriedInput(in any, retry *answerRetry) any {
 // retry's cost books to the card like the first call; an answer that
 // parses is the review's, and the second one that does not parse, or a
 // failed or refused call, is the note as today.
-func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, call reviewCall, why string) Review {
-	boundByParts(ctx, 1)
+func (r *Runner) reviewRetry(ctx context.Context, taskID, model string, timeout time.Duration, began time.Time, call reviewCall, why string) Review {
+	boundByParts(ctx, wavesSince(began, timeout)+1)
 	content, _, err := r.supervisor.Chat(ctx, taskID, model, policy.PurposeReview, timeout, call.Prompt,
 		retriedInput(call.Input(), &answerRetry{ParseError: why, Bounds: reviewAnswerBounds}))
 	return reviewAnswer(content, err)
@@ -1984,7 +1984,7 @@ func (r *Runner) ModelReview(ctx context.Context, taskID string, pr PullRequest,
 			// must keep (reviewRetry); the second answer that does not
 			// parse is the note as today
 			_, why := parseReviewWhy(res.Content)
-			a = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, calls[i], why)
+			a = r.reviewRetry(ctx, t.ID, model, pinned.Limits.SupervisorTimeout, began, calls[i], why)
 		}
 		if a.Verdict == "" {
 			if len(parts) > 1 {

@@ -317,11 +317,25 @@ func (g *GateWatch) retryBound(run *watchedRun, key string, ctx context.Context,
 // rebound moves run's bound to bound, from the attempt's start: a model
 // review's or an audit's once it knows its waves of calls. The first tell
 // may lower the bound the run began with; a later one never goes below the
-// largest told before it. A run that tripped or waited already keeps its own.
+// largest told before it. A run that
+// tripped and waited keeps its deadline unless the bound is more than
+// twice its own.
 func (g *GateWatch) rebound(run *watchedRun, bound time.Duration) {
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if run.extended || !run.timer.Stop() {
+	if !run.timer.Stop() {
+		return
+	}
+	if run.extended {
+		// past a trip and a wait, only outward: the extended deadline is
+		// twice the bound the wait found
+		if bound <= 2*run.bound {
+			extended := 2 * run.bound
+			run.timer = time.AfterFunc(max(time.Until(run.started.Add(extended)), 0), func() { run.raise(extended, true) })
+			return
+		}
+		run.bound, run.told = bound/2, bound
+		run.timer = time.AfterFunc(max(time.Until(run.started.Add(bound)), 0), func() { run.raise(bound, true) })
 		return
 	}
 	bound = max(bound, run.told)

@@ -6,11 +6,18 @@ import (
 	"errors"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/harness"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"go.temporal.io/sdk/interceptor"
+	tlog "go.temporal.io/sdk/log"
+	"go.temporal.io/sdk/testsuite"
+	"go.temporal.io/sdk/worker"
+	"io"
+	"log/slog"
 	"os"
 	"os/exec"
 	"path/filepath"
 	"slices"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -381,6 +388,7 @@ func TestApplyClaimsLeavesUnsettledRunsStanding(t *testing.T) {
 		"build failed":        {run: claimRun{Exit: 1, Output: "FAIL\tx [build failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
 		"setup failed":        {run: claimRun{Exit: 1, Output: "FAIL\tx [setup failed]"}, want: "Y passes: TestY in internal/x at base is unsettled: the package did not build"},
 		"killed at its bound": {run: claimRun{Exit: -1, Output: "--- FAIL: TestY\nFAIL\tx\t0.1s\n(timed out after 10m0s)"}, want: "Y passes: TestY in internal/x at base is unsettled: the run did not finish (exit -1)"},
+		"no test files":       {run: claimRun{Exit: 0, Output: "?   \tx\t[no test files]"}, want: "Y passes: TestY in internal/x at base is unsettled: no such test at that ref"},
 		"test not there":      {run: claimRun{Exit: 0, Output: "ok  \tx\t0.01s [no tests to run]"}, want: "Y passes: TestY in internal/x at base is unsettled: no such test at that ref"},
 	} {
 		got := applyClaims(Review{Findings: []string{"Y passes"}, Claims: []Claim{base}}, nil, nil, func(Claim) (claimRun, error) { return tc.run, tc.err })
@@ -596,5 +604,55 @@ func TestWavesSinceCountsInTheRealCallUnit(t *testing.T) {
 		if got := wavesSince(began, call); got != want {
 			t.Errorf("waves of %v = %d, want %d", call, got, want)
 		}
+	}
+}
+
+// A pinned supervisor timeout of 1 s and a diff answer 3.5 s late: the
+// activity has run ceil(3.5 s / 1 s) = 4 waves when the settle tells the
+// watch, so it tells 4 + 3000 s / 1 s = 3004 waves, not ReviewParts + 3000.
+func TestModelReviewTellsTheWatchItsElapsedWaves(t *testing.T) {
+	fj := &gateForgejo{diff: "diff --git a/b.go b/b.go\n--- /dev/null\n+++ b/b.go\n@@ -0,0 +1 @@\n+package a\n", diffDelay: 3500 * time.Millisecond,
+		mintError: `{"message":"no"}`}
+	r, _, _ := newGateRunner(t, gateTask, fj)
+	ll := &fakeLiteLLM{content: `{"verdict":"concerns","summary":"s","findings":["Y"],"claims":[{"finding":0,"kind":"test","symbol":"TestY","package":"x","ref":"head","outcome":"pass"}]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	pinned := testPolicyVersion()
+	pinned.Document.Limits.SupervisorTimeout = time.Second
+	r.cfg.PolicyVersion = func(_ context.Context, id int64) (policy.Version, bool, error) { return pinned, id == 7, nil }
+	var mu sync.Mutex
+	var told []int
+	var suite testsuite.WorkflowTestSuite
+	suite.SetLogger(tlog.NewStructuredLogger(slog.New(slog.NewTextHandler(io.Discard, nil))))
+	env := suite.NewTestActivityEnvironment()
+	env.SetWorkerOptions(worker.Options{Interceptors: []interceptor.WorkerInterceptor{&TerminalForgejoErrors{},
+		&GateWatch{Store: r.store, Bound: func(_ context.Context, _ string, _ int64, waves int) time.Duration {
+			mu.Lock()
+			defer mu.Unlock()
+			told = append(told, waves)
+			return time.Hour
+		}}}})
+	r.RegisterActivities(env)
+	if _, err := env.ExecuteActivity(ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{Pin: 7, Policy: PolicyGate{Class: "normal"}}); err != nil {
+		t.Fatal(err)
+	}
+	mu.Lock()
+	defer mu.Unlock()
+	if last := told[len(told)-1]; last != 3004 {
+		t.Fatalf("waves told = %v, want the last 3004", told)
+	}
+}
+
+// The retry of an answer that did not parse gets a wave of its own: 10 min
+// in at 6 min a wave is ceil(1.67) = 2 waves, so it tells 3.
+func TestReviewRetryTellsAWaveBeyondTheElapsedOnes(t *testing.T) {
+	r, _, _ := newGateRunner(t, gateTask, &gateForgejo{})
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok"}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	var told []int
+	ctx := context.WithValue(context.Background(), wavesKey{}, func(n int) { told = append(told, n) })
+	call := reviewCall{Prompt: "p", Input: func() any { return map[string]string{} }}
+	r.reviewRetry(ctx, "t1", "big", 6*time.Minute, time.Now().Add(-10*time.Minute), call, "why")
+	if len(told) != 1 || told[0] != 3 {
+		t.Fatalf("told = %v, want 3 (two elapsed waves, and one for the retry)", told)
 	}
 }

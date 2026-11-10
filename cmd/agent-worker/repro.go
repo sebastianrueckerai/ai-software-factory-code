@@ -375,44 +375,65 @@ func fetchHead(e fetchEnv, dir string) error {
 	return os.RemoveAll(scratch)
 }
 
-// overlayTests makes pkg's *_test.go files in dir the head's (sha's): the
-// base's are removed, then the head's regular files of that name, none
-// else, are written from scratch. A package directory the head lacks is an
-// error: the claim names nothing there.
+// overlayTests makes pkg's *_test.go files and its testdata directory in
+// dir the head's (sha's): the base's are removed, then the head's files of
+// mode 100644 or 100755, none else (no symlink, no submodule), are written
+// from scratch. A package directory the head lacks is an error: the claim
+// names nothing there. The removal goes through a root on dir, so a
+// symlink in the base's tree cannot lead it out.
 func overlayTests(w workerEnv, scratch, sha, pkg, dir string) error {
 	pkg = path.Clean(filepath.ToSlash(pkg))
 	if !filepath.IsLocal(pkg) {
 		return fmt.Errorf("overlay package %q is not inside the repository", pkg)
 	}
-	list := []string{"ls-tree", "-z", sha}
 	if pkg != "." {
 		if kind, err := w.git(scratch, "cat-file", "-t", sha+":"+pkg); err != nil || kind != "tree" {
 			return fmt.Errorf("the head has no package directory %s", pkg)
 		}
-		list = append(list, "--", pkg+"/")
 	}
-	listing, err := w.git(scratch, list...)
-	if err != nil {
-		return fmt.Errorf("list the head's %s: %w", pkg, err)
+	prefix := ""
+	if pkg != "." {
+		prefix = pkg + "/"
 	}
 	var paths []string
-	for _, rec := range strings.Split(listing, "\x00") {
-		meta, name, ok := strings.Cut(rec, "\t")
-		if f := strings.Fields(meta); ok && len(f) == 3 && f[1] == "blob" && strings.HasSuffix(name, "_test.go") {
-			paths = append(paths, name)
+	for _, testdata := range []bool{false, true} {
+		args, where := []string{"ls-tree", "-z", sha}, prefix
+		if testdata {
+			args, where = []string{"ls-tree", "-r", "-z", sha}, prefix+"testdata/"
+		}
+		if where != "" {
+			args = append(args, "--", where)
+		}
+		listing, err := w.git(scratch, args...)
+		if err != nil {
+			return fmt.Errorf("list the head's %s: %w", where, err)
+		}
+		for _, rec := range strings.Split(listing, "\x00") {
+			meta, name, ok := strings.Cut(rec, "\t")
+			f := strings.Fields(meta)
+			if ok && len(f) == 3 && f[1] == "blob" && (f[0] == "100644" || f[0] == "100755") && (testdata || strings.HasSuffix(name, "_test.go")) {
+				paths = append(paths, name)
+			}
 		}
 	}
-	at := filepath.Join(dir, filepath.FromSlash(pkg))
-	entries, err := os.ReadDir(at)
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), pkg)
 	if err != nil && !errors.Is(err, fs.ErrNotExist) {
 		return err
 	}
 	for _, e := range entries {
 		if !e.IsDir() && strings.HasSuffix(e.Name(), "_test.go") {
-			if err := os.Remove(filepath.Join(at, e.Name())); err != nil {
+			if err := root.Remove(path.Join(pkg, e.Name())); err != nil {
 				return err
 			}
 		}
+	}
+	if err := root.RemoveAll(path.Join(pkg, "testdata")); err != nil {
+		return err
 	}
 	if len(paths) == 0 {
 		return nil
