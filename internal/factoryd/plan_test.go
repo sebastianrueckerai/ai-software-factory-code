@@ -893,6 +893,9 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 				}
 			}
 			json.NewEncoder(w).Encode(list)
+		case r.Method == "POST" && len(parts) == 3 && parts[2] == "comments" && strings.TrimSpace(body["body"].(string)) == "":
+			// Forgejo requires a comment's body
+			http.Error(w, `{"message":"Body is empty"}`, http.StatusUnprocessableEntity)
 		case r.Method == "POST" && len(parts) == 3 && parts[2] == "comments":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			c := &stubComment{id: int64(700 + len(f.comments)), issue: n, body: body["body"].(string), author: "factory-agent"}
@@ -904,6 +907,8 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && len(parts) == 2 && parts[0] == "issues":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			fmt.Fprintf(w, `{"number":%d,"state":%q}`, n, f.issues[n].state)
+		case r.Method == "GET" && len(parts) == 3 && parts[0] == "issues" && parts[2] == "timeline":
+			w.Write([]byte(`[{"type":"close","user":{"login":"factory-agent"}}]`))
 		case r.Method == "GET" && strings.HasPrefix(rest, "pulls"):
 			json.NewEncoder(w).Encode([]any{})
 		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":

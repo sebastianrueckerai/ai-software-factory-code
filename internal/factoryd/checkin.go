@@ -6,8 +6,10 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
+	"slices"
 	"strings"
 	"time"
 	"unicode"
@@ -325,7 +327,7 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 			}
 		}
 
-		b.WriteString("Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace).\n")
+		b.WriteString(checkinToolsLine + "\n")
 	}
 	if ask.Pace != nil {
 		b.WriteString(ask.Pace.Line() + "\n\n")
@@ -412,11 +414,13 @@ type podTools interface {
 }
 
 // CheckinRequest is one call of the check-in's conversation: the system
-// persona, the conversation so far as the user turn, and the tools.
+// persona, the conversation so far as the user turn, the tools, and
+// tool_choice when the call forces one of them.
 type CheckinRequest struct {
-	System string
-	Input  string
-	Tools  []CheckinTool
+	System     string
+	Input      string
+	Tools      []CheckinTool
+	ToolChoice any
 }
 
 // CheckinResponse is the model's answer: its text, or the one tool call it
@@ -425,7 +429,11 @@ type CheckinResponse struct {
 	Text     string
 	ToolName string
 	ToolArgs map[string]any
-	UsageEUR float64
+	// ToolErr and ToolRaw are the parse error and the raw text of a tool
+	// call whose arguments were not one JSON object; the loop scrubs them
+	// before the model or the record sees them.
+	ToolErr, ToolRaw string
+	UsageEUR         float64
 }
 
 // CheckinTool is one tool the check-in may call, in the OpenAI form.
@@ -452,6 +460,90 @@ func checkinSystemFor(moment string, replan bool) string {
 		return `You are the factory's check-in before a fresh session: the session before you ended without a result, and you write the handover it starts from. Read its record and the workspace as they are; you never edit anything. Your final answer is one JSON object and nothing else: {"decision":"handover|human","reason_kind":"...","reason":"...","handover":"..."}. When only a human can act, name the reason kind and why, in one sentence, with the state of the work.`
 	}
 	return checkinSystem
+}
+
+// checkinToolsLine is the statement's tool line: the evidence tools the
+// check-in's calls post beside the answer tool, one line.
+const checkinToolsLine = "Your tools: transcript_search (search the parent session's record), transcript_read (read a span of it), card_facts (the card's digest and facts), card_step (one step of the digest in full), gates (the gates' full results), read_file (a file in the workspace), grep (git grep the workspace at a ref), git_log (the workspace's history), run (a command in the workspace)."
+
+// momentDecisions is one moment's closed decision vocabulary: the gate
+// judges findings and may drop them all, the session decides the
+// session's next step, the dead one writes the note or asks. The same
+// schema mechanism as the rung's answerDecisions, on this vocabulary.
+func momentDecisions(moment string, replan bool) []string {
+	switch moment {
+	case CheckInSession:
+		ds := []string{"continue", "message", CheckHandover, CheckHuman}
+		if replan {
+			ds = append(ds, CheckReplan)
+		}
+		return ds
+	case CheckInDead:
+		return []string{CheckHandover, CheckHuman}
+	}
+	return []string{CheckHandover, CheckHuman, CheckDroppedAll}
+}
+
+// checkReasonKinds are the moments' closed reason-kind vocabulary: the
+// shapes of a stop only a human can act on. An answer that names no
+// reason kind answers "", which the enum holds.
+var checkReasonKinds = []string{"", CheckGoalConflict, CheckSpend, CheckPolicyClass, CheckAccess}
+
+// checkVerdicts is the closed verdict vocabulary of a finding's verdict.
+var checkVerdicts = []string{CheckConfirmed, CheckDropped, CheckRemark}
+
+// enumCheck refuses value unless the closed enum of holds it, naming the
+// kind, the value and the allowed values. It closes the moments' answers
+// (parseCheckinAnswer).
+func enumCheck(kind, value string, of []string) error {
+	if slices.Contains(of, value) {
+		return nil
+	}
+	allowed := slices.DeleteFunc(slices.Clone(of), func(v string) bool { return v == "" })
+	return fmt.Errorf("unknown %s %q; allowed: %s", kind, value, strings.Join(allowed, ", "))
+}
+
+// checkinAnswerTool is the answer tool's name: every check-in call posts
+// it beside the evidence tools, and the last call forces it with
+// tool_choice, so the answer arrives as its arguments against a schema.
+const checkinAnswerTool = "answer"
+
+// forcedToolChoice is tool_choice in its named-function form: the call
+// answers through the named tool and through nothing else.
+func forcedToolChoice(name string) map[string]any {
+	return map[string]any{"type": "function", "function": map[string]any{"name": name}}
+}
+
+// momentAnswerSchema is the moments' answer schema: the same mechanism as
+// the rung's AnswerSchema, on the moment's own vocabulary — the decision
+// and the reason kind closed enums, the verdicts closed where findings
+// are judged, the note, the reason and the guidance as text.
+func momentAnswerSchema(ask *CheckInAsk) map[string]any {
+	props := map[string]any{
+		"decision":    map[string]any{"type": "string", "enum": momentDecisions(ask.Moment, ask.Replan)},
+		"reason_kind": map[string]any{"type": "string", "enum": slices.Clone(checkReasonKinds)},
+		"reason":      map[string]any{"type": "string"},
+		"handover":    map[string]any{"type": "string"},
+		"guidance":    map[string]any{"type": "string"},
+	}
+	if ask.Moment != CheckInSession && ask.Moment != CheckInDead {
+		props["findings"] = map[string]any{"type": "array", "items": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"id":       map[string]any{"type": "string"},
+				"text":     map[string]any{"type": "string"},
+				"verdict":  map[string]any{"type": "string", "enum": slices.Clone(checkVerdicts)},
+				"evidence": map[string]any{"type": "string"},
+			},
+		}}
+	}
+	return map[string]any{"type": "object", "properties": props, "required": []string{"decision"}, "additionalProperties": false}
+}
+
+// momentAnswerTool is the answer tool the check-in's calls post.
+func momentAnswerTool(ask *CheckInAsk) CheckinTool {
+	return CheckinTool{Name: checkinAnswerTool, Description: "the check-in's final answer, one JSON object as this tool's arguments",
+		Parameters: momentAnswerSchema(ask)}
 }
 
 // checkinTools is the tool list the statement names: the transcript and the
@@ -482,6 +574,29 @@ func checkinToolsFor(moment string) []CheckinTool {
 		return checkinTools[:len(checkinTools)-1]
 	}
 	return checkinTools
+}
+
+// toolShape lists the named tool's parameters, the required ones marked.
+func toolShape(tools []CheckinTool, name string) string {
+	for _, t := range tools {
+		if t.Name != name {
+			continue
+		}
+		params, _ := t.Parameters.(map[string]any)
+		props, _ := params["properties"].(map[string]any)
+		required, _ := params["required"].([]string)
+		names := slices.Sorted(maps.Keys(props))
+		for i, n := range names {
+			if slices.Contains(required, n) {
+				names[i] = n + " (required)"
+			}
+		}
+		if len(names) == 0 {
+			return "no parameters"
+		}
+		return strings.Join(names, ", ")
+	}
+	return "see the tool list"
 }
 
 func toolArg(description string) map[string]any {
@@ -534,25 +649,26 @@ func foldFindingText(s string) string {
 }
 
 // parseCheckinAnswer reads the model's final answer against the ask: the
-// moment's decisions, at the session moment a message's guidance, a
-// handover's note and a replan's reason (replan only where the ask offers
-// it), and at the gate a verdict for every finding the ask named, by its
-// id, by its text exactly, or by its text with whitespace and punctuation
-// folded, none for a finding it did not. Every verdict lands keyed by the
-// ask's own text, whatever wording the answer carried.
+// moment's decisions, the reason kinds and every verdict held to their
+// closed enums, each refusal naming what broke; at the session moment a
+// message's guidance, a handover's note and a replan's reason (replan
+// only where the ask offers it), and at the gate a verdict for every
+// finding the ask named, by its id, by its text exactly, or by its text
+// with whitespace and punctuation folded, none for a finding it did not.
+// Every verdict lands keyed by the ask's own text, whatever wording the
+// answer carried.
 func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 	var a checkinAnswer
 	if err := json.Unmarshal([]byte(text), &a); err != nil {
 		return a, fmt.Errorf("not one JSON object: %v", err)
 	}
-	switch ask.Moment {
-	case CheckInSession:
-		switch {
-		case a.Decision == "continue", a.Decision == "message", a.Decision == CheckHandover, a.Decision == CheckHuman:
-		case a.Decision == CheckReplan && ask.Replan:
-		default:
-			return a, fmt.Errorf("unknown decision %q", a.Decision)
-		}
+	if err := enumCheck("decision", a.Decision, momentDecisions(ask.Moment, ask.Replan)); err != nil {
+		return a, err
+	}
+	if err := enumCheck("reason_kind", a.ReasonKind, checkReasonKinds); err != nil {
+		return a, err
+	}
+	if ask.Moment == CheckInSession {
 		if a.Decision == "message" && strings.TrimSpace(a.Guidance) == "" {
 			return a, fmt.Errorf("a message needs its guidance")
 		}
@@ -562,18 +678,6 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 		// a note-less handover is the shape of a refused call (checkinLive)
 		if a.Decision == CheckHandover && strings.TrimSpace(a.Handover) == "" {
 			return a, fmt.Errorf("a handover needs the note to the next session")
-		}
-	case CheckInDead:
-		switch a.Decision {
-		case CheckHandover, CheckHuman:
-		default:
-			return a, fmt.Errorf("unknown decision %q", a.Decision)
-		}
-	default:
-		switch a.Decision {
-		case CheckHandover, CheckHuman, CheckDroppedAll:
-		default:
-			return a, fmt.Errorf("unknown decision %q", a.Decision)
 		}
 	}
 	byID := make(map[string]string, len(ask.Findings))
@@ -604,10 +708,8 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 			}
 			return a, fmt.Errorf("unknown finding %q", name)
 		}
-		switch answered.Verdict {
-		case CheckConfirmed, CheckDropped, CheckRemark:
-		default:
-			return a, fmt.Errorf("unknown verdict %q", answered.Verdict)
+		if err := enumCheck("verdict", answered.Verdict, checkVerdicts); err != nil {
+			return a, err
 		}
 		a.Findings[i].Text = canonical
 		seen[canonical] = true
@@ -626,13 +728,16 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // refuses every call ends it as a handover with no note and no verdicts —
 // the round runs as if no check-in existed. An answer the runner cannot
 // read gets one repair round and then a human, at once on the last call.
-// The last call carries no tools and asks for the answer; a tool asked
-// for on it is the call cap's human ask under spend. The last call comes
-// at the call cap or once an evidence call as long as the longest so far
-// would not end before the answer is due, whichever is first, and an
-// evidence call still running when the answer is due is cut. An answer
-// call the cap cuts is the time cap's human ask under spend. Every call
-// lands in the record.
+// Every call posts the answer tool beside the evidence tools; the last
+// call posts only it and forces it with tool_choice, so the answer
+// arrives as its arguments against the moment's schema. A call of the
+// answer tool is the answer, parsed wherever it comes; any other tool
+// asked for on the last call is the call cap's human ask under spend. The
+// last call comes at the call cap or once an evidence call as long as the
+// longest so far would not end before the answer is due, whichever is
+// first, and an evidence call still running when the answer is due is
+// cut. An answer call the cap cuts is the time cap's human ask under
+// spend. Every call lands in the record.
 func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int, timeCap time.Duration) CheckInOutcome {
 	start := time.Now()
 	ctx, cancel := context.WithTimeout(ctx, timeCap)
@@ -656,12 +761,15 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		}
 		last := calls >= callsLeft-1 || time.Until(due()) < longest
 		if last {
-			conv += "\n\nThis is your last call: answer now with the JSON object, no tool."
+			conv += "\n\nThis is your last call: answer now through the answer tool."
 		}
 		req := CheckinRequest{System: checkinSystemFor(ask.Moment, ask.Replan), Input: conv}
 		callCtx, cancelCall := ctx, context.CancelFunc(func() {})
-		if !last {
-			req.Tools = checkinToolsFor(ask.Moment)
+		if last {
+			req.Tools = []CheckinTool{momentAnswerTool(ask)}
+			req.ToolChoice = forcedToolChoice(checkinAnswerTool)
+		} else {
+			req.Tools = slices.Concat(checkinToolsFor(ask.Moment), []CheckinTool{momentAnswerTool(ask)})
 			callCtx, cancelCall = context.WithDeadline(ctx, due())
 		}
 		calls++
@@ -682,27 +790,44 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+err.Error()
 			return CheckInOutcome{Decision: CheckHandover, Record: rec}
 		}
+		answer := resp.Text
 		if resp.ToolName != "" {
-			if last {
-				reason := checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft))
-				rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
-				return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
+			if resp.ToolName != checkinAnswerTool {
+				if last {
+					reason := checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft))
+					rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckSpend, reason
+					return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckSpend, Reason: reason, Record: rec}
+				}
+				args, _ := json.Marshal(resp.ToolArgs)
+				at := time.Now()
+				var out string
+				var cut bool
+				var terr error
+				if resp.ToolErr != "" {
+					excerpt := textutil.Truncate(r.Scrub.String(resp.ToolRaw), 200)
+					args = []byte(excerpt)
+					terr = fmt.Errorf("the arguments are not one JSON object (%s): %s; call %s again with one JSON object of its parameters: %s",
+						r.Scrub.String(resp.ToolErr), excerpt, resp.ToolName, toolShape(checkinToolsFor(ask.Moment), resp.ToolName))
+				} else {
+					out, cut, terr = tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
+				}
+				d := time.Since(at)
+				if terr != nil {
+					out = "tool error: " + terr.Error()
+				} else if cut {
+					out += "\n(output cut)"
+				}
+				rec.Calls = append(rec.Calls, CheckCall{Name: resp.ToolName, Args: textutil.Truncate(string(args), 512), ResultBytes: len(out), Duration: d})
+				rec.ToolCalls++
+				conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d, your answer due within %s)", resp.ToolName, args, out, callsLeft-calls, max(0, time.Until(due())).Round(time.Second))
+				continue
 			}
+			// the answer tool's arguments are the answer, parsed here and
+			// never executed through the pod's tools
 			args, _ := json.Marshal(resp.ToolArgs)
-			at := time.Now()
-			out, cut, terr := tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
-			d := time.Since(at)
-			if terr != nil {
-				out = "tool error: " + terr.Error()
-			} else if cut {
-				out += "\n(output cut)"
-			}
-			rec.Calls = append(rec.Calls, CheckCall{Name: resp.ToolName, Args: textutil.Truncate(string(args), 512), ResultBytes: len(out), Duration: d})
-			rec.ToolCalls++
-			conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d, your answer due within %s)", resp.ToolName, args, out, callsLeft-calls, max(0, time.Until(due())).Round(time.Second))
-			continue
+			answer = string(args)
 		}
-		a, perr := parseCheckinAnswer(resp.Text, ask)
+		a, perr := parseCheckinAnswer(answer, ask)
 		if perr == nil {
 			return checkinOutcome(rec, ask, a, handoverCap, sessions)
 		}
@@ -712,7 +837,7 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			return CheckInOutcome{Decision: CheckHuman, Reason: reason, Record: rec}
 		}
 		repairs++
-		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again as one JSON object."
+		conv += "\n\nYour last answer was unreadable: " + perr.Error() + ". Answer again through the answer tool."
 	}
 }
 
@@ -782,6 +907,9 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 	if len(in.Tools) > 0 {
 		body["tools"] = in.Tools
 	}
+	if in.ToolChoice != nil {
+		body["tool_choice"] = in.ToolChoice
+	}
 	payload, err := json.Marshal(body)
 	if err != nil {
 		return CheckinResponse{}, err
@@ -843,7 +971,13 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		resp.ToolName = msg.ToolCalls[0].Function.Name
 		if args := msg.ToolCalls[0].Function.Arguments; args != "" {
 			if err := json.Unmarshal([]byte(args), &resp.ToolArgs); err != nil {
-				return CheckinResponse{}, fmt.Errorf("unreadable tool arguments: %w", err)
+				if resp.ToolName != checkinAnswerTool {
+					resp.ToolErr, resp.ToolRaw = err.Error(), args
+					return resp, nil
+				}
+				// a malformed answer reaches the parser as text, so it gets
+				// its repair round and then the human
+				resp.ToolName, resp.ToolArgs, resp.Text = "", nil, args
 			}
 		}
 	}

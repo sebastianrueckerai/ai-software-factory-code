@@ -128,7 +128,7 @@ func TestChatClose(t *testing.T) {
 
 	code, msg := refused(t, r, "close", toolInput{TaskID: "t-done"})
 	equal(t, "close of a done card", []any{code, msg},
-		[]any{http.StatusConflict, "Card #7 is done, not a card that is not final: the card is final: a new card continues the work."})
+		[]any{http.StatusConflict, "Card #7 is done, so there is nothing to close: a new card continues the work."})
 
 	ck, s := r.loggedIn(t)
 	before = r.events.count()
@@ -292,7 +292,7 @@ func TestChatSetDependency(t *testing.T) {
 		{toolInput{TaskID: "t-a", DependsOn: "t-b"}, http.StatusConflict, "#22 already depends on #21, so #21 cannot depend on #22."},
 		{toolInput{TaskID: "t-b", DependsOn: "t-a"}, http.StatusConflict, "#22 already depends on #21."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-done"}, http.StatusConflict,
-			"Card #7 is done, not a card that is not final: the card is final: a new card continues the work."},
+			"Card #7 is done, not a card that is not final: a new card continues the work."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-m", Remove: true}, http.StatusConflict, "#21 does not depend on #5."},
 		{toolInput{TaskID: "t-a", DependsOn: "t-a"}, http.StatusBadRequest, "a card cannot depend on itself"},
 		{toolInput{TaskID: "t-k1", DependsOn: "t-d"}, http.StatusConflict,
@@ -1150,44 +1150,238 @@ func TestCloseAFailedCardWithAnIssue(t *testing.T) {
 	equal(t, "CloseCard", r.closed, []string(nil))
 }
 
-// A done plan whose newest revision leaves parts to later rounds is
-// between rounds: the face offers a writer Close behind a failed card's
-// confirm, and Close closes the plan's issue alone, which intake turns
-// into the card's end. A done plan in its last round offers none, and its
-// close is refused as any final card's.
-func TestCloseAPlanBetweenRounds(t *testing.T) {
+// A done plan that holds production offers a writer Close behind a
+// confirm. A plan with open criteria offers instead a Close with a
+// required note whose label says the note becomes each open criterion's
+// waiver reason; a plan whose plan_closed row stands and none open offers
+// none. Close hands the note to factoryd, which waives each open
+// criterion and records plan_closed; the issue hears the closing words and
+// closes, and the answer says what happened. A close that factoryd
+// refuses closes nothing.
+func TestCloseADonePlan(t *testing.T) {
 	r, g := newWritesRig(t)
 	r.tasks.mu.Lock()
+	crit := factoryd.Plan{Round: 2, Criteria: []factoryd.PlanCriterion{{ID: "k1", Kind: factoryd.CriterionInvariant}, {ID: "k2", Kind: factoryd.CriterionInvariant}, {ID: "k3", Kind: factoryd.CriterionInvariant}},
+		Cards: []factoryd.PlanCard{{Key: "int", Role: factoryd.RoleIntegration}}}
+	critJSON, err := json.Marshal(crit)
+	if err != nil {
+		t.Fatal(err)
+	}
 	r.tasks.tasks = append(r.tasks.tasks,
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-br", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 50,
 			Objective: "Build the stats."}},
 		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 51,
-			Objective: "Build the links."}})
+			Objective: "Build the links."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-one", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 53,
+			Objective: "Build the one."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cl", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 54,
+			Objective: "Build the closed one."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fp", Kind: "agent", Status: "failed", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 56,
+			Objective: "Build the failed one."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cc", Kind: "agent", Status: "closed", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 59,
+			Objective: "Build the closed one with criteria open."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cc-int", Kind: "agent", Status: "merged", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-cc", PlanKey: "int", Repository: "sf/code", IssueNumber: 61,
+			Objective: "Integrate."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-fp-int", Kind: "agent", Status: "merged", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-fp", PlanKey: "int", Repository: "sf/code", IssueNumber: 57,
+			Objective: "Integrate."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-cl-int", Kind: "agent", Status: "merged", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-cl", PlanKey: "int", Repository: "sf/code", IssueNumber: 58,
+			Objective: "Integrate."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr-int", Kind: "agent", Status: "merged", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-lr", PlanKey: "int", Repository: "sf/code", IssueNumber: 52,
+			Objective: "Integrate."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-one-int", Kind: "agent", Status: "merged", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-one", PlanKey: "int", Repository: "sf/code", IssueNumber: 55,
+			Objective: "Integrate."}})
 	if r.tasks.plans == nil {
 		r.tasks.plans = map[string][]factoryd.PlanRevision{}
 	}
+	one := crit
+	one.Criteria = crit.Criteria[:1]
+	oneJSON, _ := json.Marshal(one)
 	r.tasks.plans["t-br"] = []factoryd.PlanRevision{{TaskID: "t-br", Revision: 1, Plan: json.RawMessage(`{"round": 1, "outline": ["the console"]}`)}}
-	r.tasks.plans["t-lr"] = []factoryd.PlanRevision{{TaskID: "t-lr", Revision: 1, Plan: json.RawMessage(`{"round": 2}`)}}
+	r.tasks.plans["t-lr"] = []factoryd.PlanRevision{{TaskID: "t-lr", Revision: 1, Plan: critJSON}}
+	r.tasks.plans["t-one"] = []factoryd.PlanRevision{{TaskID: "t-one", Revision: 1, Plan: oneJSON}}
+	r.tasks.plans["t-fp"] = []factoryd.PlanRevision{{TaskID: "t-fp", Revision: 1, Plan: oneJSON}}
+	r.tasks.plans["t-cc"] = []factoryd.PlanRevision{{TaskID: "t-cc", Revision: 1, Plan: oneJSON}}
+	r.tasks.plans["t-cl"] = []factoryd.PlanRevision{{TaskID: "t-cl", Revision: 1, Plan: oneJSON}}
+	r.tasks.criteria = map[string][]factoryd.CriterionVerdict{
+		"t-lr-int":  {{Criterion: "k1", Verdict: "met", Source: "review", Kind: factoryd.CriterionInvariant}},
+		"t-one-int": {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
+		"t-fp-int":  {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
+		"t-cl-int":  {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
+		"t-cc-int":  {{Criterion: "k1", Verdict: "unmet", Source: "review", Kind: factoryd.CriterionInvariant}},
+	}
+	r.tasks.planClosed = map[string]time.Time{"t-cl": time.Now()}
 	r.tasks.mu.Unlock()
+	var closes []string
+	closeErr := error(nil)
+	decide := func(id, note string, approver bool) (int, error) {
+		open := map[string]int{"t-lr": 2, "t-one": 1}[id]
+		switch {
+		case closeErr != nil:
+			return 0, closeErr
+		case open > 0 && !approver:
+			return 0, factoryd.ErrNotApprover
+		case open > 0 && strings.TrimSpace(note) == "":
+			return 0, factoryd.ErrNoReason
+		}
+		return open, nil
+	}
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, note string, approver bool) error {
+		_, err := decide(id, note, approver)
+		return err
+	}
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, bool, error) {
+		open, err := decide(id, note, approver)
+		if err != nil {
+			return 0, "", false, err
+		}
+		closes = append(closes, fmt.Sprintf("%s by %s: %d waived with %q", id, by, open, note))
+		return open, factoryd.PlanCloseWords(by, note, true), true, nil
+	}
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
-	closeForm := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" ` +
+	plain := `<form method="post" action="/tasks/t-br/close" hx-post="/tasks/t-br/close" ` +
 		`hx-confirm="Close #50? Its issue closes as you, and the card ends." class="inline close" data-to="closed">`
-	if face := faceOf(t, body, "t-br"); !strings.Contains(face, closeForm) {
-		t.Errorf("the plan between rounds' face =\n%s\nwant it to hold\n%s", face, closeForm)
+	if face := faceOf(t, body, "t-br"); !strings.Contains(face, plain) {
+		t.Errorf("the plan without open criteria: face =\n%s\nwant it to hold\n%s", face, plain)
 	}
-	if face := faceOf(t, body, "t-lr"); strings.Contains(face, `action="/tasks/t-lr/close"`) {
-		t.Errorf("the plan in its last round's face =\n%s\nwant no Close", face)
+	if face := faceOf(t, body, "t-cl"); strings.Contains(face, `action="/tasks/t-cl/close"`) {
+		t.Errorf("the plan whose plan_closed row stands, a criterion open again: face =\n%s\nwant no Close", face)
 	}
+	equal(t, "the action that fits a done plan", fitting(factoryd.Task{Status: "done", Track: policy.TrackPlan}, capFacts{}),
+		"Close with a note ends a plan that still holds production; a new card continues the work")
+	for id, label := range map[string]string{
+		"t-fp":  `aria-label="note: becomes the waiver reason of the open criterion"`,
+		"t-cc":  `aria-label="note: becomes the waiver reason of the open criterion"`,
+		"t-lr":  `aria-label="note: becomes the waiver reason of each of the 2 open criteria"`,
+		"t-one": `aria-label="note: becomes the waiver reason of the open criterion"`,
+	} {
+		face := faceOf(t, body, id)
+		for _, want := range []string{
+			`<form method="post" action="/tasks/` + id + `/close" hx-post="/tasks/` + id + `/close" class="inline close" data-to="closed">`,
+			`<textarea name="note" rows="1" maxlength="2000" required ` + label + `></textarea>`,
+		} {
+			if !strings.Contains(face, want) {
+				t.Errorf("the plan %s with open criteria: face =\n%s\nwant it to hold %s", id, face, want)
+			}
+		}
+		if strings.Contains(face, "hx-confirm") {
+			t.Errorf("the plan %s with open criteria offers a Close without a note:\n%s", id, face)
+		}
+	}
+	if face := faceOf(t, body, "t-lr"); !strings.Contains(face, `aria-label="Close #51 and waive 2 open criteria with this note">Close with note</button>`) {
+		t.Errorf("the plan with two open criteria: face =\n%s\nwant the button to name them", face)
+	}
+	if face := faceOf(t, body, "t-one"); !strings.Contains(face, `aria-label="Close #53 and waive 1 open criterion with this note">Close with note</button>`) {
+		t.Errorf("the plan with one open criterion: face =\n%s\nwant the button to name it", face)
+	}
+	if strings.Contains(body, `role="alert"`) && strings.Contains(body, "the criteria of") {
+		t.Errorf("the board shows a problem for a plan's criteria")
+	}
+
 	rec := r.do(post("/tasks/t-br/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the button", rec.Code, http.StatusSeeOther)
 	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/50 {"state":"closed"}`})
+	equal(t, "the closing words", r.fg.comments["/api/v1/repos/sf/code/issues/50/comments"], "closed by sebastian; its merged cards stay on main")
 	equal(t, "CloseCard", r.closed, []string(nil))
-	_, done, _ := proposeAndDo(t, r, g, "close", `{"task_id":"t-br"}`)
-	equal(t, "Do it", done, ran("close", `{"task_id":"t-br"}`, "Closed #50; factoryd ends the card."))
+	equal(t, "the plan close", closes, []string{`t-br by sebastian: 0 waived with ""`})
+
+	closes = nil
 	code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr"})
-	equal(t, "close of the plan in its last round", []any{code, msg},
-		[]any{http.StatusConflict, "Card #51 is done, not a card that is not final: the card is final: a new card continues the work."})
+	equal(t, "close without a note", []any{code, msg, closes, len(r.fg.patched)},
+		[]any{http.StatusBadRequest, "Plan #51 has open criteria, and Close waives each with your note as the reason: write the note and close again.", []string(nil), 1})
+	args := `{"task_id":"t-lr","note":"The cards moved to the rebuild."}`
+	_, done, _ := proposeAndDo(t, r, g, "close", args)
+	equal(t, "Do it", done, ran("close", args, "Closed plan #51: its open criteria are waived, and its merged cards stay on main."))
+	equal(t, "the waivers", closes, []string{`t-lr by sebastian: 2 waived with "The cards moved to the rebuild."`})
+	equal(t, "the closing words", r.fg.comments["/api/v1/repos/sf/code/issues/51/comments"],
+		"closed by sebastian: The cards moved to the rebuild; its merged cards stay on main")
+	equal(t, "the patch", r.fg.patched, []string{`/api/v1/repos/sf/code/issues/50 {"state":"closed"}`, `/api/v1/repos/sf/code/issues/51 {"state":"closed"}`})
+
+	for _, tc := range []struct {
+		name string
+		err  error
+		code int
+		want string
+	}{
+		{"a note too long", factoryd.ErrNoteTooLong, http.StatusBadRequest, "The note of a plan's Close is at most 2000 bytes, as it becomes each waiver's reason: shorten it."},
+		{"a plan closed already", factoryd.ErrPlanClosed, http.StatusConflict, "Plan #51 is closed already: reload the board."},
+		{"a plan no longer at rest", factoryd.ErrNotDonePlan, http.StatusConflict, "Plan #51 is no longer at rest, so Close no longer fits: reload the board."},
+		{"a terminal error", errors.New("plan t-lr has no integration card (type: terminal, retryable: false)"), http.StatusInternalServerError,
+			"The plan could not be closed: plan t-lr has no integration card. Reload the board and press Close again, or ask an approver."},
+	} {
+		closeErr = tc.err
+		code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "again"})
+		equal(t, tc.name, []any{code, msg}, []any{tc.code, tc.want})
+	}
+	// the sweep's finishing step posts the words between factoryd's write
+	// and the console's post: the issue carries them once
+	closeErr = nil
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	const issue53 = "/api/v1/repos/sf/code/issues/53/comments"
+	words := "closed by sebastian: swept first; its merged cards stay on main"
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
+		r.fg.mu.Lock()
+		r.fg.posted[issue53] = append(r.fg.posted[issue53], words)
+		r.fg.mu.Unlock()
+		return 1, factoryd.PlanCloseWords(by, note, true), true, nil
+	}
+	rec = r.do(post("/tasks/t-one/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"swept first"}}), ck)
+	equal(t, "the press after the sweep", rec.Code, http.StatusSeeOther)
+	equal(t, "the words once", r.fg.commentBodies(issue53), []string{words})
+	r.c.cfg.CloseHeldPlan = func(context.Context, string, string, string, bool) (int, string, bool, error) {
+		return 0, "", false, closeErr
+	}
+	closeErr = leakyError()
+	code, msg = refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "again"})
+	equal(t, "a failed waiver", code, http.StatusInternalServerError)
+	maskedLeak(t, "the waiver's refusal", msg)
+	equal(t, "patched after the failures", len(r.fg.patched), 3)
+}
+
+// A writer who is no approver cannot close a plan with open criteria: the
+// refusal names the role and the action that fits, and nothing closes.
+func TestCloseADonePlanNeedsAnApprover(t *testing.T) {
+	r, _ := newWritesRig(t)
+	r.ledger.approvers = []string{"alice"}
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan,
+		Repository: "sf/code", IssueNumber: 51, Objective: "Build the links."}})
+	r.tasks.mu.Unlock()
+	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/51/dependencies": dependsOn(7)}
+	var approvers []bool
+	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _ string, approver bool) error {
+		approvers = append(approvers, approver)
+		return factoryd.ErrNotApprover
+	}
+	r.c.cfg.CloseHeldPlan = func(context.Context, string, string, string, bool) (int, string, bool, error) {
+		t.Error("a refused Close reached the write")
+		return 0, "", false, nil
+	}
+	code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "done with it"})
+	equal(t, "a writer's close", []any{code, msg, approvers, len(r.fg.patched)}, []any{http.StatusForbidden,
+		"Only the approvers of project ai-software-factory-code may close plan #51 while it has open criteria, because Close waives each of them: ask an approver to close it.", []bool{false}, 0})
+	equal(t, "a refused Close writes nothing, its dependencies stay", writesOf(r.fg), []string(nil))
+}
+
+// The answer to a plan's Close says its merged cards stay on main only when
+// the plan holds a merge.
+func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nm", Kind: "agent", Status: "failed", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 70, Objective: "Never merged."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 71, Objective: "Merged."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm-card", Kind: "agent", Status: "done", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-mm", PlanKey: "a", Repository: "sf/code", IssueNumber: 72, Objective: "A card."}})
+	r.tasks.mu.Unlock()
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, bool, error) {
+		return 0, factoryd.PlanCloseWords(by, note, id == "t-mm"), id == "t-mm", nil
+	}
+	for id, want := range map[string]string{"t-nm": "Closed plan #70.", "t-mm": "Closed plan #71: its merged cards stay on main."} {
+		args := `{"task_id":"` + id + `"}`
+		_, done, _ := proposeAndDo(t, r, g, "close", args)
+		equal(t, id, done, ran("close", args, want))
+	}
 }
 
 // The face offers a writer Close on a card waiting on a human, behind a
@@ -1382,4 +1576,46 @@ func TestCloseRefusalNamesForgejosReason(t *testing.T) {
 	rec := r.do(post("/tasks/t-f/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
 	equal(t, "the refusal", []any{rec.Code, strings.TrimSpace(rec.Body.String())}, []any{http.StatusBadGateway,
 		"Forgejo refused to close the issue: cannot close this issue because it still has open dependencies. Try again in a moment."})
+}
+
+// A plan's Close takes the plan issue's own dependencies off first, as any
+// Close does, because Forgejo refuses to close over them: a removal that
+// fails refuses before factoryd writes anything; otherwise the words come
+// first, then the sentence naming the removed edges, then the close.
+func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
+	r, _ := newWritesRig(t)
+	const plan = "/api/v1/repos/sf/code/issues/60/dependencies"
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-dep", Kind: "agent", Status: "failed", Track: policy.TrackPlan,
+		Repository: "sf/code", IssueNumber: 60, Objective: "Build the dependent."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-shut", Kind: "agent", Status: "closed", Track: policy.TrackPlan,
+			Repository: "sf/code", IssueNumber: 62, Objective: "Already closed."}})
+	r.tasks.mu.Unlock()
+	var closes int
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, bool) error { return nil }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, bool, error) {
+		closes++
+		return 0, factoryd.PlanCloseWords(by, note, false), false, nil
+	}
+	r.fg.deps = map[string][]map[string]any{plan: dependsOn(7)}
+	r.fg.failDeps = "no push"
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-dep/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "a refused removal", []any{rec.Code, closes}, []any{http.StatusBadGateway, 0})
+	r.fg.failDeps = ""
+	rec = r.do(post("/tasks/t-dep/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	equal(t, "the button", rec.Code, http.StatusSeeOther)
+	equal(t, "the order", writesOf(r.fg), []string{"DELETE " + plan, "DELETE " + plan, "POST /api/v1/repos/sf/code/issues/60/comments",
+		"POST /api/v1/repos/sf/code/issues/60/comments", "PATCH /api/v1/repos/sf/code/issues/60"})
+	equal(t, "the comments", r.fg.commentBodies("/api/v1/repos/sf/code/issues/60/comments"),
+		[]string{"closed by sebastian", "It no longer waits on #7."})
+	equal(t, "closes", closes, 1)
+
+	// a closed plan's issue is closed already: its dependencies stay
+	r.fg.deleted = nil
+	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/62/dependencies": dependsOn(7)}
+	r.do(post("/tasks/t-shut/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	// (the fake refuses the PATCH over an open dependency whatever the issue's
+	// state; only the removal is under test)
+	equal(t, "the removals on a closed plan", r.fg.deleted, []string(nil))
 }

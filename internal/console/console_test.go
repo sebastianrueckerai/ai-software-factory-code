@@ -396,6 +396,12 @@ func (f *fakeForgejo) serve(w http.ResponseWriter, r *http.Request) {
 		}
 		w.WriteHeader(http.StatusCreated)
 		w.Write([]byte(`{}`))
+	case r.Method == http.MethodGet && strings.HasSuffix(r.URL.Path, "/comments"):
+		out := []map[string]string{}
+		for _, b := range f.posted[r.URL.Path] {
+			out = append(out, map[string]string{"body": b})
+		}
+		json.NewEncoder(w).Encode(out)
 	case r.Method == http.MethodPost && strings.HasSuffix(r.URL.Path, "/comments"):
 		var body map[string]string
 		json.NewDecoder(r.Body).Decode(&body)
@@ -432,6 +438,11 @@ type fakeTasks struct {
 	questions map[string][]factoryd.PlanQuestion
 	// proofs are the plans' proof rows by task, idx order
 	proofs map[string][]factoryd.PlanProof
+	// mergedRows are the cards with a pull_request_merged row, which merges
+	// a card without a merge commit
+	mergedRows map[string]bool
+	// planClosed are the plans that hold a plan_closed row
+	planClosed map[string]time.Time
 	// criteria are the criteria verdict rows by task
 	criteria map[string][]factoryd.CriterionVerdict
 	deps     map[string][]string // the tasks a task depends on
@@ -3972,4 +3983,22 @@ func TestPoolReadMonth(t *testing.T) {
 	if want := "the pool is 30 sessions, 30 h of agent time and €60.00 this UTC month, but what its cards drew could not be read"; pl.Readable || pl.Words != want {
 		t.Errorf("unreadable = %+v; want %q", pl, want)
 	}
+}
+
+func (s *fakeTasks) PlanClosed(_ context.Context, plan string) (time.Time, bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	at, closed := s.planClosed[plan]
+	return at, closed, nil
+}
+
+func (s *fakeTasks) PlanMerged(_ context.Context, plan string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		if t.Parent == plan && t.Source == factoryd.SourcePlan && t.PlanKey != "" && t.RevertedAt == nil && (t.MergeCommit != "" || s.mergedRows[t.ID]) {
+			return true, nil
+		}
+	}
+	return false, nil
 }

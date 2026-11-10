@@ -47,7 +47,8 @@ func New(secrets ...string) *Scrubber {
 	return s
 }
 
-// String is v with every rule applied.
+// String is v with every rule applied; a nil scrubber applies the rules
+// with no configured secret.
 func (s *Scrubber) String(v string) string {
 	v = s.Values(pemBlock.ReplaceAllString(v, "[pem redacted]"))
 	v = userinfo.ReplaceAllString(v, "${1}[redacted]@")
