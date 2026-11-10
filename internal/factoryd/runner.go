@@ -533,6 +533,10 @@ type sessionSpec struct {
 	// reportSession's alike): supervisorConfig's WallClockCap and
 	// CheckIn, and the session's deadline.
 	agentTime, checkIn time.Duration
+	// checkinExtra is the time the workflow added to the session's activity
+	// for the check-in that opens it: the deadline moves out by what the
+	// check-in took, so it costs the session none of its own time
+	checkinExtra time.Duration
 	// report is a report session's guide; "" for a coding
 	// session
 	report string
@@ -657,6 +661,10 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 	// spentAtStart is the card's enforced spend at the session's real
 	// start, nil where it could not be read
 	var spentAtStart *float64
+	if live == nil {
+		deadline = deadline.Add(-s.checkinExtra)
+	}
+	var row LiveSession
 	if live != nil {
 		podName, s.messageToken, consumed = live.Pod, live.MessageToken, live.Lines
 		spentAtStart = live.SpentAtStart
@@ -673,8 +681,9 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
 		}
-		if err := r.store.PutLiveSession(ctx, LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
-			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart}); err != nil {
+		row = LiveSession{TaskID: t.ID, SessionID: s.id, Namespace: ns, Pod: podName,
+			MessageToken: s.messageToken, StartedAt: time.Now(), Deadline: deadline, SpentAtStart: spentAtStart}
+		if err := r.store.PutLiveSession(ctx, row); err != nil {
 			return out, err
 		}
 	}
@@ -731,6 +740,13 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			out.checkIn, stop = r.checkinBlock(ctx, t, s, ns, podName, workerStop, deadline, parentRecord)
 			if stop {
 				return out, nil
+			}
+			if took := checkinTook(out.checkIn, s.checkinExtra); took > 0 {
+				deadline = deadline.Add(took)
+				row.Deadline = deadline
+				if err := r.store.PutLiveSession(ctx, row); err != nil {
+					log.Printf("task %s: session %s: record the deadline past the check-in: %v", t.ID, s.id, err)
+				}
 			}
 		} else {
 			r.pushBrief(ctx, workerStop, t.ID, ns, podName, s.messageToken, s.handover, priorState(s, parentRecord), s.proofs)
@@ -1188,7 +1204,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		tools := &runnerTools{r: r, taskID: t.ID, ns: ns, pod: pod, token: s.messageToken, parent: parent,
 			facts: checkinFacts(t, s, ""), ask: &ask}
 		out := r.runCheckin(ctx, t.ID, alias, &ask, cutTail(parent, limits.CheckinTailBytes()), r.checkin, tools,
-			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline))
+			limits.CheckinCallCap(), eurLeft, limits.CheckinSessionCount(), limits.CheckinHandoverCap(), startCheckinTime(limits, deadline.Add(s.checkinExtra)))
 		out.Share = share
 		if out.Record != nil {
 			out.Record.Session = s.id
@@ -1203,6 +1219,15 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 	// check-in was asked, and its brief carries no handover note
 	brief("")
 	return nil, false
+}
+
+// checkinTook is the time a start check-in took that the session's deadline
+// moves out by: all of it, up to the extra the workflow gave the session.
+func checkinTook(ck *CheckInOutcome, extra time.Duration) time.Duration {
+	if ck == nil || ck.Record == nil {
+		return 0
+	}
+	return min(ck.Record.Duration, extra)
 }
 
 // startCheckinTime is a start check-in's time cap: the policy's, cut at
