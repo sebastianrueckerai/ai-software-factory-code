@@ -2980,6 +2980,88 @@ func TestACardRecordedLateGetsItsCarryRow(t *testing.T) {
 	}
 }
 
+// Two merges, A (#12) then B (#14). A's run is a stale run the workflow
+// skipped: the run reads success, its test context reads skipped, and B
+// is main's head. A's card never ran its tests on A's commit, so it
+// takes the verdict of B's run, the first later run that tested a commit
+// containing it; B's card takes it too. A head run that is green gives
+// success, a red one failure.
+func TestASupersededRunsCardsTakeTheNextRunsVerdict(t *testing.T) {
+	const test = "ci / test (push)"
+	for name, tc := range map[string]struct{ b, want string }{
+		"green": {"success", "success"},
+		"red":   {"failure", "failure"},
+	} {
+		t.Run(name, func(t *testing.T) {
+			f := &chainForgejo{
+				runs: map[string][]map[string]any{codeRepo: {pushRun(62, commitC2, "success"), pushRun(61, commitC1, "success")}},
+				carries: map[string]map[string][]map[string]any{codeRepo: {
+					"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}},
+					"parent-of-" + commitC1 + "..." + commitC2: {{"sha": mergePR12}, {"sha": mergePR14}},
+					commitC1 + "..." + commitC2:                {{"sha": mergePR14}},
+				}},
+				statuses: map[string]map[string][]map[string]string{codeRepo: {
+					commitC1: {{"status": "skipped", "context": test}},
+					commitC2: {{"status": tc.b, "context": test}},
+				}},
+			}
+			p, store := newTestPoller(t, f, seedProject(codeRepo))
+			p.Policy = func() policy.Version {
+				return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+					"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{test}}},
+				}}}
+			}
+			store.tasks["t-12"] = Task{ID: "t-12", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
+			store.tasks["t-14"] = Task{ID: "t-14", Repository: codeRepo, PRNumber: 14, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR14, Track: "direct"}
+			p.End = func(context.Context, string, int64) error { return nil }
+			p.Workflows = &fakeWorkflows{}
+			p.Forgejo.PublicURL = "https://git.example"
+			for range 2 {
+				if err := p.Tick(context.Background()); err != nil {
+					t.Fatal(err)
+				}
+			}
+			want := []fakeChainRun{
+				{repo: codeRepo, pr: 0, sha: commitC2, run: 62, status: tc.want},
+				{repo: codeRepo, pr: 12, sha: commitC2, run: 62, status: tc.want},
+				{repo: codeRepo, pr: 14, sha: commitC2, run: 62, status: tc.want},
+			}
+			if got := chainOf(store, codeRepo); !slices.Equal(got, want) {
+				t.Fatalf("chain %+v, want the head and both cards at run 62 with %s", got, tc.want)
+			}
+		})
+	}
+}
+
+// A run whose test context is skipped while its commit is still main's
+// head is not superseded: its cards record it, success as before.
+func TestASkippedTestOnTheHeadKeepsItsRun(t *testing.T) {
+	const test = "ci / test (push)"
+	f := &chainForgejo{
+		runs:     map[string][]map[string]any{codeRepo: {pushRun(61, commitC1, "success")}},
+		carries:  map[string]map[string][]map[string]any{codeRepo: {"parent-of-" + commitC1 + "..." + commitC1: {{"sha": mergePR12}}}},
+		statuses: map[string]map[string][]map[string]string{codeRepo: {commitC1: {{"status": "skipped", "context": test}}}},
+	}
+	p, store := newTestPoller(t, f, seedProject(codeRepo))
+	p.Policy = func() policy.Version {
+		return policy.Version{Tree: policy.Tree{Projects: map[string]policy.ProjectConfig{
+			"code": {Repository: codeRepo, Chain: policy.ChainConfig{Requires: []string{test}}},
+		}}}
+	}
+	store.tasks["t-12"] = Task{ID: "t-12", Repository: codeRepo, PRNumber: 12, Status: "merged", FinishedAt: justNow(), MergeCommit: mergePR12, Track: "direct"}
+	p.End = func(context.Context, string, int64) error { return nil }
+	if err := p.Tick(context.Background()); err != nil {
+		t.Fatal(err)
+	}
+	want := []fakeChainRun{
+		{repo: codeRepo, pr: 0, sha: commitC1, run: 61, status: "success"},
+		{repo: codeRepo, pr: 12, sha: commitC1, run: 61, status: "success"},
+	}
+	if got := chainOf(store, codeRepo); !slices.Equal(got, want) {
+		t.Fatalf("chain %+v, want %+v", got, want)
+	}
+}
+
 // The late path never gates the main one: a compare it cannot make logs
 // once, and the head row is written and the covered card ended all the
 // same.

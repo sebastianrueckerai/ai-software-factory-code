@@ -920,6 +920,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		verdicts[sha] = v
 		return v, nil
 	}
+	superseded := p.supersededOf(ctx, repo, cfg, seen)
 	main := seen
 	if head == 0 {
 		main = main[len(main)-1:] // the first recording: the newest only
@@ -938,6 +939,18 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	}
 	prev := ""
 	for _, run := range main {
+		if run.ID > head {
+			skip, err := superseded(run)
+			if err != nil {
+				return err
+			}
+			if skip {
+				if prev, err = p.passOver(ctx, repo, run, prev); err != nil {
+					return err
+				}
+				continue
+			}
+		}
 		if run.ID <= head {
 			if run.Finished() && unsettled[run.CommitSHA] {
 				v, err := verdictOf(run.CommitSHA)
@@ -988,6 +1001,13 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 		if run.Status != "success" {
 			continue
 		}
+		skip, err := superseded(run)
+		if err != nil {
+			return err
+		}
+		if skip {
+			continue
+		}
 		v, err := verdictOf(run.CommitSHA)
 		if err != nil {
 			return err
@@ -1002,7 +1022,7 @@ func (p *ChainPoller) record(ctx context.Context, proj Project, cfg policy.Chain
 	p.watch(ctx, proj, verdict, cfg.Stall, newest, findings, stuck)
 	// the late path never gates the head, the watch or the reconciler
 	key := proj.Repository + " late"
-	if err := p.recordLate(ctx, proj, seen, verdictOf, uncarried); err != nil {
+	if err := p.recordLate(ctx, proj, seen, verdictOf, superseded, uncarried); err != nil {
 		if p.failed[key] != err.Error() {
 			log.Printf("chain poller: %s: late carry rows: %v", proj.Repository, err)
 		}
@@ -1163,7 +1183,7 @@ const chainRangesKept = 512
 // run of the window whose range holds the card's merge commit records
 // it, with the commit's verdict. Only a card without a row is written,
 // so no row moves, and nothing is read while no such card exists.
-func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []ActionRun, verdictOf func(string) (string, error), uncarried *uncarriedCards) error {
+func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []ActionRun, verdictOf func(string) (string, error), superseded func(ActionRun) (bool, error), uncarried *uncarriedCards) error {
 	if err := uncarried.load(ctx, p.Store, proj.Repository); err != nil {
 		return err
 	}
@@ -1178,6 +1198,16 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 	}
 	prev := ""
 	for _, run := range seen {
+		skip, err := superseded(run)
+		if err != nil {
+			return err
+		}
+		if skip {
+			if prev, err = p.passOver(ctx, proj.Repo(), run, prev); err != nil {
+				return err
+			}
+			continue
+		}
 		shas, err := p.rangeSHAs(ctx, proj.Repo(), run, prev)
 		if err != nil {
 			return err
@@ -1205,6 +1235,62 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 	return nil
 }
 
+// supersededOf answers, once per commit, whether a run is superseded: it
+// finished success, main has moved past its commit (a later run of
+// another commit exists), and a required context of its commit is
+// skipped or was never reported — the workflow skipped the run's tests
+// for the newer head. Such a run's range joins the next run's, so its
+// cards take the verdict of the first later run that tested them.
+func (p *ChainPoller) supersededOf(ctx context.Context, repo Repo, cfg policy.ChainConfig, seen []ActionRun) func(ActionRun) (bool, error) {
+	answers := map[string]bool{}
+	return func(run ActionRun) (bool, error) {
+		if len(cfg.Requires) == 0 || run.Status != "success" || seen[len(seen)-1].CommitSHA == run.CommitSHA {
+			return false, nil
+		}
+		if v, ok := answers[run.CommitSHA]; ok {
+			return v, nil
+		}
+		reported, err := p.reportedContexts(ctx, repo, run.CommitSHA)
+		if err != nil {
+			return false, err
+		}
+		skipped := false
+		for _, want := range cfg.Requires {
+			if state := reported[want]; state == "" || state == "skipped" {
+				skipped = true
+			}
+		}
+		answers[run.CommitSHA] = skipped
+		return skipped, nil
+	}
+}
+
+// passOver is the prev a superseded run leaves: the one it found, or its
+// own parent when it opens the window, so the next run's compare covers
+// the run's commits.
+func (p *ChainPoller) passOver(ctx context.Context, repo Repo, run ActionRun, prev string) (string, error) {
+	if prev != "" {
+		return prev, nil
+	}
+	return p.Forgejo.CommitParent(ctx, repo.Owner, repo.Name, run.CommitSHA)
+}
+
+// reportedContexts is the state each status context of sha reports.
+func (p *ChainPoller) reportedContexts(ctx context.Context, repo Repo, sha string) (map[string]string, error) {
+	combined, err := p.Forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
+	if errors.Is(err, ErrNotFound) {
+		combined, err = CombinedStatus{}, nil // a commit nothing reported on yet
+	}
+	if err != nil {
+		return nil, err
+	}
+	reported := make(map[string]string, len(combined.Statuses))
+	for _, s := range combined.Statuses {
+		reported[s.Context] = s.State
+	}
+	return reported, nil
+}
+
 // headVerdict is sha's head verdict: the AND of every main run the poll
 // sees on the commit and every required context of the repository. A run
 // concluded failure, or a context concluded failure or error, fails the
@@ -1213,7 +1299,10 @@ func (p *ChainPoller) recordLate(ctx context.Context, proj Project, seen []Actio
 // next push's superseding run (the common transient: it advances the
 // head), a required context missing from the commit or still pending —
 // holds it pending; only all green is success, where a skipped context
-// counts green as Forgejo ranks it. The cancelled and skipped runs are
+// counts green as Forgejo ranks it. A run whose tests a newer head
+// skipped never reaches here as a verdict of its cards (supersededOf):
+// the skipped-counts-green rule serves the commit that is still main's
+// head. The cancelled and skipped runs are
 // the stall ladder's, not repair's. findings name each red run
 // and context of a red head, each pending one of a pending head, a
 // pending run with its link; stuck are the runs on the commit still
@@ -1240,16 +1329,9 @@ func (p *ChainPoller) headVerdict(ctx context.Context, repo Repo, cfg policy.Cha
 		}
 	}
 	if len(cfg.Requires) > 0 {
-		combined, err := p.Forgejo.CombinedStatus(ctx, repo.Owner, repo.Name, sha)
-		if errors.Is(err, ErrNotFound) {
-			combined, err = CombinedStatus{}, nil // a commit nothing reported on yet
-		}
+		reported, err := p.reportedContexts(ctx, repo, sha)
 		if err != nil {
 			return "", nil, nil, err
-		}
-		reported := make(map[string]string, len(combined.Statuses))
-		for _, s := range combined.Statuses {
-			reported[s.Context] = s.State
 		}
 		for _, want := range cfg.Requires {
 			switch reported[want] {

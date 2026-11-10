@@ -47,7 +47,7 @@ jobs:
       - id: head
         run: |
           set -euo pipefail
-          main=$(git ls-remote origin refs/heads/main | cut -f1)
+          main=$(git ls-remote --exit-code origin refs/heads/main | cut -f1)
           echo "head=$([ "$main" = "$GITHUB_SHA" ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
           echo "main is at $main, this run tests $GITHUB_SHA"
 
