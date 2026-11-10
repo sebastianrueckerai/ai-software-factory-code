@@ -592,6 +592,10 @@ func (s *acceptanceStore) Opening(context.Context, string, string) (policy.Openi
 	return policy.Opening{}, nil
 }
 
+func (s *acceptanceStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
+	return nil, nil
+}
+
 func (s *acceptanceStore) SetRollHold(context.Context, string, time.Time, time.Time) error {
 	return nil
 }

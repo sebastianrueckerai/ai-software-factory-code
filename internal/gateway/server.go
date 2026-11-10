@@ -23,6 +23,7 @@ import (
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/health"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/telemetry"
 )
 
@@ -42,6 +43,9 @@ type KeyMinter interface {
 // Pricer is an alias's worst-case price. Implemented by policy.PriceBook.
 type Pricer interface {
 	Price(ctx context.Context, alias string) (policy.Price, error)
+	// Deployments are the deployments LiteLLM serves alias from,
+	// provider/model.
+	Deployments(ctx context.Context, alias string) ([]string, error)
 }
 
 var (
@@ -161,11 +165,15 @@ type Server struct {
 	mu         sync.Mutex
 	keysByTask map[string]*liveKey
 	mints      singleflight.Group
+	scrub      *redact.Scrubber
 
 	now   func() time.Time
 	polMu sync.Mutex
 	pol   policy.Version
 	polAt time.Time // when pol was read; zero = never
+
+	routeMu sync.Mutex
+	routes  map[string]*aliasRoute // nil until the open switches are read
 }
 
 // PolicyTTL bounds how long the gateway enforces a policy version after
@@ -180,7 +188,7 @@ func NewServer(opts ServerOptions) *Server {
 	if tel == nil {
 		tel = noTelemetry()
 	}
-	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, now: time.Now}
+	return &Server{opts: opts, tel: tel, http: opts.HTTP, keysByTask: map[string]*liveKey{}, scrub: redact.New(), now: time.Now}
 }
 
 // currentPolicy is the policy version in force, read from Postgres at most
@@ -297,9 +305,19 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 			chatReq.Model, http.StatusForbidden, "permission_error")
 		return
 	}
-	price, err := s.price(ctx, pv, task, chatReq.Model)
+	rt := s.route(ctx, pv, chatReq.Model)
+	served, routed := rt.alias, rt.note
+	// a refusal before the hold gives back the call's turn in the probe schedule
+	admitted := false
+	defer func() {
+		if !admitted && rt.undo != nil {
+			rt.undo()
+		}
+	}()
+	chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
+	price, err := s.price(ctx, pv, task, served)
 	if err != nil {
-		s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+		s.refuse(w, pid, id.TaskID, purpose, "error_price", s.scrub.String(err.Error()), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 		return
 	}
 
@@ -314,9 +332,10 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	slot, models := task.ID, pv.Document.Models(task.Classes)
+	listed := func(twin string) bool { _, err := s.opts.Prices.Deployments(ctx, twin); return err == nil }
+	slot, models := task.ID, pv.Document.Routing.WithTwins(pv.Document.Models(task.Classes), listed)
 	if purpose != "" {
-		slot, models = task.ID+"/"+factorydSA, pv.Document.FactoryModels(task.Classes)
+		slot, models = task.ID+"/"+factorydSA, pv.Document.Routing.WithTwins(pv.Document.FactoryModels(task.Classes), listed)
 	}
 	project, projectEUR := pv.ProjectCap(task.Repository)
 	req := policy.HoldRequest{
@@ -342,9 +361,15 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if errors.As(err, &refusal) && refusal.Decision == policy.RefusedPremiumCap {
 		// at the premium cap the call is served on big
 		note = refusal.Reason + "; served on " + policy.Big
-		chatReq.Model, chatReq.fields["model"] = policy.Big, json.RawMessage(strconv.Quote(policy.Big))
-		if req.Price, err = s.price(ctx, pv, task, policy.Big); err != nil {
-			s.refuse(w, pid, id.TaskID, purpose, "error_price", err.Error(), chatReq.Model, http.StatusServiceUnavailable, "server_error")
+		chatReq.Model = policy.Big
+		if rt.undo != nil {
+			rt.undo()
+		}
+		rt = s.route(ctx, pv, policy.Big)
+		served, routed = rt.alias, rt.note
+		chatReq.fields["model"] = json.RawMessage(strconv.Quote(served))
+		if req.Price, err = s.price(ctx, pv, task, served); err != nil {
+			s.refuse(w, pid, id.TaskID, purpose, "error_price", s.scrub.String(err.Error()), chatReq.Model, http.StatusServiceUnavailable, "server_error")
 			return
 		}
 		req.Ref, req.PremiumEUR = policy.LedgerRef(purpose, policy.Big), 0
@@ -362,8 +387,12 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 		s.refuse(w, pid, id.TaskID, purpose, "error_store", err.Error(), chatReq.Model, http.StatusInternalServerError, "server_error")
 		return
 	}
-	call := &modelCall{pid: pid, task: task, hold: hold, alias: chatReq.Model, kind: purpose,
+	admitted = true
+	call := &modelCall{pid: pid, task: task, hold: hold, alias: served, kind: purpose,
 		slot: slot, saUID: id.SAUID, models: models, pv: pv, started: s.now(), imgStripped: chatReq.image.stripped, note: note}
+	if routed != "" {
+		call.addNote(routed)
+	}
 	if purpose != "" && purpose != auditFactoryd {
 		// read only behind factoryd's token: a sandbox names no thread
 		if th := r.Header.Get(HeaderFactoryThread); len(th) <= maxThread {
@@ -409,15 +438,23 @@ func (s *Server) handleWindow(w http.ResponseWriter, r *http.Request) {
 		http.Error(w, err.Error(), http.StatusUnauthorized)
 		return
 	}
-	price, err := s.opts.Prices.Price(r.Context(), r.PathValue("alias"))
+	alias := r.PathValue("alias")
+	price, err := s.opts.Prices.Price(r.Context(), alias)
 	if err != nil {
 		http.Error(w, err.Error(), http.StatusNotFound)
 		return
 	}
+	// calls of a slow alias run on its twin: the smaller window holds on both
+	window := price.Window
+	if pv, err := s.currentPolicy(r.Context()); err == nil {
+		if tp, err := s.opts.Prices.Price(r.Context(), pv.Document.Routing.Twin(alias)); err == nil && tp.Window > 0 {
+			window = cmp.Or(min(window, tp.Window), tp.Window)
+		}
+	}
 	w.Header().Set("Content-Type", "application/json")
 	json.NewEncoder(w).Encode(struct { // #nosec G104 -- best-effort response write
 		Window int `json:"window"`
-	}{price.Window})
+	}{window})
 }
 
 // price is alias's LiteLLM price under the version's output limit; a
@@ -428,7 +465,7 @@ func (s *Server) price(ctx context.Context, pv *policy.Version, task Task, alias
 		price, err = pv.Document.Limited(alias, price)
 	}
 	if err != nil {
-		log.Printf("PRICE MISSING: task %s, model %s: %v; every call of this alias is refused", task.ID, alias, err)
+		log.Printf("PRICE MISSING: task %s, model %s: %s; every call of this alias is refused", task.ID, alias, s.scrub.String(err.Error()))
 	}
 	return price, err
 }

@@ -37,6 +37,9 @@ type Document struct {
 	// past its bound opens a case. Each bound lies between 1m and 7 days.
 	// Absent or 0: the default.
 	Waits Waits `yaml:"waits,omitempty" json:"waits"`
+	// Routing sends an alias that runs slow to its twin: the bound and the
+	// twin of each alias. Absent keys take their defaults one by one.
+	Routing Routing `yaml:"routing,omitempty" json:"routing"`
 	// Classes are the capability classes a task can hold, by name.
 	Classes map[string]Class `yaml:"classes" json:"classes"`
 	// Prices are the tool prices no provider API reports.
@@ -1222,9 +1225,13 @@ type ToolPrices struct {
 // Limited is alias's price p with its output limit:
 // prices.max_output_tokens, lowered to the largest its deployments
 // publish when that is less. An alias without one is refused like an
-// unpriced one: no hold may take all the free headroom.
+// unpriced one: no hold may take all the free headroom. A twin without a
+// limit of its own takes its alias's.
 func (d Document) Limited(alias string, p Price) (Price, error) {
 	limit, ok := d.Prices.MaxOutputTokens[alias]
+	if !ok {
+		limit, ok = d.Prices.MaxOutputTokens[d.Routing.primary(alias)]
+	}
 	if !ok {
 		return Price{}, fmt.Errorf("%s has no output limit: prices.max_output_tokens in policy.yaml names none", alias)
 	}
@@ -1328,6 +1335,9 @@ func (d Document) Validate() error {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if err := d.Waits.validate(); err != nil {
+		return fmt.Errorf("policy: %w", err)
+	}
+	if err := d.Routing.validate(); err != nil {
 		return fmt.Errorf("policy: %w", err)
 	}
 	if len(d.Classes) == 0 {

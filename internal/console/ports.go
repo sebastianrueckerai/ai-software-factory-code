@@ -79,6 +79,12 @@ type Dependencies interface {
 	DependencyStates(ctx context.Context) ([]factoryd.DependencyState, error)
 }
 
+// AliasSwitches reads the aliases the gateway serves from their twin for
+// being slow (factoryd.PGStore). Nil seats nothing.
+type AliasSwitches interface {
+	OpenAliasSwitches(ctx context.Context) ([]policy.AliasSwitch, error)
+}
+
 // Alerts are the alerts rows (factoryd.PGStore): machine alerts judged by
 // the machine, human escalations judged by an approver.
 type Alerts interface {

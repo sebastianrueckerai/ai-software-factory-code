@@ -47,6 +47,7 @@ var (
 // field's values, a map field's keys, a slice field's items.
 var enums = map[string][]string{
 	"Document.Bounds":         append(slices.Clone(BoundActivities), BoundDefault),
+	"Routing.Twins":           TextClasses,
 	"Document.Supervisor":     slices.Sorted(maps.Keys(DefaultDetectors)),
 	"Class.Tools":             append(slices.Clone(PaidTools), FreeTools...),
 	"RiskClass.Outcome":       {OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto},
@@ -91,7 +92,7 @@ const durationPattern = `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 
 // The schema types' own source, for their doc comments.
 //
-//go:embed policy.go project.go risk.go process.go commands.go routine.go escalation.go waits.go
+//go:embed policy.go project.go risk.go process.go commands.go routine.go escalation.go waits.go routing.go
 var typeSources embed.FS
 
 var (

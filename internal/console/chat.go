@@ -2442,6 +2442,9 @@ func (t *turn) snapshot() (string, error) {
 	if s.Pool.Words != "" {
 		pool = "; pool: " + s.Pool.Words
 	}
+	for _, w := range s.Switches {
+		pool += "; " + w
+	}
 	return fmt.Sprintf("Status: %s; %d working%s; %d need you; %s%s%s", s.State, s.Working, s.waiting(), s.NeedYou, spendWords(s.Spend, s.CapEUR, s.FactoryCap), pool, github), nil
 }
 
