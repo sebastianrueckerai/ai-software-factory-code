@@ -2021,10 +2021,18 @@ func (c *Console) boardCard(ctx context.Context, v *boardView, bt factoryd.Board
 	}
 	if t.Track == policy.TrackPlan && (t.Status == "failed" || t.Status == "closed") {
 		// a plan whose plan_closed row stands holds nothing: no further reads
-		if _, closed, err := c.cfg.Tasks.PlanClosed(ctx, t.ID); err == nil && !closed {
-			if _, p, ok, err := c.planTable(ctx, t.ID, 0); err == nil && ok {
-				c.planHold(ctx, v, t, p, &k)
-			}
+		_, closed, err := c.cfg.Tasks.PlanClosed(ctx, t.ID)
+		var p factoryd.Plan
+		var ok bool
+		if err == nil && !closed {
+			_, p, ok, err = c.planTable(ctx, t.ID, 0)
+		}
+		switch {
+		case err != nil:
+			log.Printf("console: the plan of %s: %v", t.ID, err)
+			v.problems = append(v.problems, "the plan of "+t.ID+" could not be read")
+		case !closed && ok:
+			c.planHold(ctx, v, t, p, &k)
 		}
 	}
 	// a retry that stopped before its replacement got an issue is finished by the next

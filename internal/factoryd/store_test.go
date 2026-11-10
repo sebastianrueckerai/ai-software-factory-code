@@ -556,6 +556,24 @@ func (s *fakeStore) HeldPlanCards(ctx context.Context, repository string) ([]Tas
 	return out, nil
 }
 
+// cardMerged is the rule of groupOpenings: a merge commit or a
+// pull_request_merged row, and no revert.
+func (s *fakeStore) cardMerged(c Task) bool {
+	if c.RevertedAt != nil {
+		return false
+	}
+	return c.MergeCommit != "" || slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == c.ID && e.Kind == "pull_request_merged" })
+}
+
+func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
+	for _, c := range s.tasks {
+		if c.Parent == plan && c.Source == SourcePlan && c.PlanKey != "" && s.cardMerged(c) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
@@ -570,7 +588,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			groups[c.Parent] = g
 		}
 		g.Children[c.Status]++
-		if c.MergeCommit == "" || c.RevertedAt != nil {
+		if !s.cardMerged(c) {
 			continue
 		}
 		merged[c.Parent] = true
@@ -596,7 +614,9 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 func (s *fakeStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
 	out := map[string]string{}
 	for _, e := range s.events {
-		if words, _ := e.Detail["words"].(string); e.Kind == EventPlanClosed && words != "" && (s.tasks[e.TaskID].Status == "done" || s.tasks[e.TaskID].Status == "failed") && (e.At.IsZero() || time.Since(e.At) > time.Minute) {
+		words, _ := e.Detail["words"].(string)
+		status := s.tasks[e.TaskID].Status
+		if e.Kind == EventPlanClosed && (status == "failed" || status == "done" && words != "") && (e.At.IsZero() || time.Since(e.At) > time.Minute) {
 			out[e.TaskID] = words
 		}
 	}

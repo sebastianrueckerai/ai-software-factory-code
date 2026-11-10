@@ -1002,6 +1002,10 @@ func (s *acceptanceStore) PlanClosesToFinish(context.Context) (map[string]string
 	return nil, nil
 }
 
+func (s *acceptanceStore) PlanMerged(context.Context, string) (bool, error) {
+	return false, nil
+}
+
 func (s *acceptanceStore) PlansBetweenRounds(context.Context) ([]string, error) {
 	return nil, nil
 }

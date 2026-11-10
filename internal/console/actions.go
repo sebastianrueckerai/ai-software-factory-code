@@ -1894,34 +1894,30 @@ func (c *Console) doClose(ctx context.Context, a actor, id, note string) (string
 	return c.choiceDone(ctx, a, t, k.ID, closing, said, posted)
 }
 
-// closePlan closes plan t at rest as a: the issue's own dependencies come
-// off first (freeForClose), as Forgejo refuses to close over them; then
-// factoryd waives every open criterion with the note as the reason, ends the
-// plan's criteria asks and, once every card is final, records plan_closed,
-// in one write, an approver's act as the waive press is; then the issue
-// hears the closing words and closes as a, so the card ends closed. An
-// issue close that fails after the write is finished by the sweep.
+// closePlan closes plan t at rest as a. Factoryd checks first what could
+// refuse the Close (the role, the note, the plan's state), so a refused Close
+// changes nothing; then the issue's own dependencies come off
+// (freeForClose), as Forgejo refuses to close over them; then factoryd
+// waives every open criterion with the note as the reason, ends the plan's
+// criteria asks and, once every card is final, records plan_closed, in one
+// write, an approver's act as the waive press is; then the issue hears the
+// closing words and closes as a, so the card ends closed. An issue close
+// that fails after the write is finished by the sweep.
 func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note string) (string, error) {
-	freed, err := c.freeForClose(ctx, a, t, "")
-	if err != nil {
-		return "", err
+	approver := c.isApprover(ctx, a.s.user, t.Repository)
+	if err := c.cfg.CheckClosePlan(ctx, t.ID, a.s.user, note, approver); err != nil {
+		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
-	n, words, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, c.isApprover(ctx, a.s.user, t.Repository))
-	switch {
-	case errors.Is(err, factoryd.ErrNotApprover):
-		return "", refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d while it has open criteria, because Close waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
-	case errors.Is(err, factoryd.ErrNoReason):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Plan #%d has open criteria, and Close waives each with your note as the reason: write the note and close again.", t.IssueNumber))
-	case errors.Is(err, factoryd.ErrNoteTooLong):
-		return "", refuse(http.StatusBadRequest, fmt.Sprintf("The note of a plan's Close is at most %d bytes, as it becomes each waiver's reason: shorten it.", factoryd.MaxWaiverNote))
-	case errors.Is(err, factoryd.ErrPlanClosed):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is closed already, and its merged cards stay on main: reload the board.", t.IssueNumber))
-	case errors.Is(err, factoryd.ErrNotDonePlan):
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is no longer at rest, so Close no longer fits: reload the board.", t.IssueNumber))
-	case err != nil:
-		log.Printf("console: %s closes plan %s: %v", a.s.user, t.ID, err)
-		text, _, _ := strings.Cut(errText(err), " (type: ")
-		return "", refuse(http.StatusInternalServerError, "The plan could not be closed: "+text+". Reload the board and press Close again, or ask an approver.")
+	freed := ""
+	if t.Status != "closed" {
+		var err error
+		if freed, err = c.freeForClose(ctx, a, t, ""); err != nil {
+			return "", err
+		}
+	}
+	n, words, err := c.cfg.CloseHeldPlan(ctx, t.ID, a.s.user, note, approver)
+	if err != nil {
+		return "", c.planCloseRefusal(ctx, a, t, err)
 	}
 	if n > 0 {
 		log.Printf("console: %s waived %d criteria of %s via %s", a.s.user, n, t.ID, a.via)
@@ -1944,10 +1940,36 @@ func (c *Console) closePlan(ctx context.Context, a actor, t factoryd.Task, note 
 	if t.IssueNumber != 0 {
 		card = fmt.Sprintf("plan #%d", t.IssueNumber)
 	}
-	if n > 0 {
+	merged, err := c.cfg.Tasks.PlanMerged(ctx, t.ID)
+	switch {
+	case err == nil && n > 0 && merged:
 		return fmt.Sprintf("Closed %s: its open criteria are waived, and its merged cards stay on main.", card), nil
+	case err == nil && n > 0:
+		return fmt.Sprintf("Closed %s: its open criteria are waived.", card), nil
+	case err == nil && merged:
+		return fmt.Sprintf("Closed %s: its merged cards stay on main.", card), nil
 	}
-	return fmt.Sprintf("Closed %s: its merged cards stay on main.", card), nil
+	return fmt.Sprintf("Closed %s.", card), nil
+}
+
+// planCloseRefusal is the refusal of a plan's Close that factoryd refused:
+// it names the state and the action that fits.
+func (c *Console) planCloseRefusal(ctx context.Context, a actor, t factoryd.Task, err error) error {
+	switch {
+	case errors.Is(err, factoryd.ErrNotApprover):
+		return refuse(http.StatusForbidden, fmt.Sprintf("Only the approvers of project %s may close plan #%d while it has open criteria, because Close waives each of them: ask an approver to close it.", c.projectName(ctx, t.Repository), t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNoReason):
+		return refuse(http.StatusBadRequest, fmt.Sprintf("Plan #%d has open criteria, and Close waives each with your note as the reason: write the note and close again.", t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNoteTooLong):
+		return refuse(http.StatusBadRequest, fmt.Sprintf("The note of a plan's Close is at most %d bytes, as it becomes each waiver's reason: shorten it.", factoryd.MaxWaiverNote))
+	case errors.Is(err, factoryd.ErrPlanClosed):
+		return refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is closed already: reload the board.", t.IssueNumber))
+	case errors.Is(err, factoryd.ErrNotDonePlan):
+		return refuse(http.StatusConflict, fmt.Sprintf("Plan #%d is no longer at rest, so Close no longer fits: reload the board.", t.IssueNumber))
+	}
+	log.Printf("console: %s closes plan %s: %v", a.s.user, t.ID, err)
+	text, _, _ := strings.Cut(errText(err), " (type: ")
+	return refuse(http.StatusInternalServerError, "The plan could not be closed: "+text+". Reload the board and press Close again, or ask an approver.")
 }
 
 // closeIssue closes card t's issue as a, its note commented first when

@@ -1820,13 +1820,19 @@ func TestCloseHeldPlanWaives(t *testing.T) {
 
 // The words of a close read plainly whatever the note ends with.
 func TestPlanCloseWords(t *testing.T) {
-	for _, tc := range []struct{ note, want string }{
-		{"", "closed by sebastian; its merged cards stay on main"},
-		{"The cards moved.", "closed by sebastian: The cards moved; its merged cards stay on main"},
-		{" moved on ", "closed by sebastian: moved on; its merged cards stay on main"},
+	for _, tc := range []struct {
+		note   string
+		merged bool
+		want   string
+	}{
+		{"", true, "closed by sebastian; its merged cards stay on main"},
+		{"The cards moved.", true, "closed by sebastian: The cards moved; its merged cards stay on main"},
+		{" moved on ", true, "closed by sebastian: moved on; its merged cards stay on main"},
+		{"nothing merged", false, "closed by sebastian: nothing merged"},
+		{"", false, "closed by sebastian"},
 	} {
-		if got := PlanCloseWords("sebastian", tc.note); got != tc.want {
-			t.Errorf("PlanCloseWords(%q) = %q, want %q", tc.note, got, tc.want)
+		if got := PlanCloseWords("sebastian", tc.note, tc.merged); got != tc.want {
+			t.Errorf("PlanCloseWords(%q, %t) = %q, want %q", tc.note, tc.merged, got, tc.want)
 		}
 	}
 }

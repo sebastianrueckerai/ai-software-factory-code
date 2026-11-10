@@ -865,6 +865,10 @@ func (s *accBatchStore) PlanClosesToFinish(context.Context) (map[string]string, 
 	panic("unused")
 }
 
+func (s *accBatchStore) PlanMerged(context.Context, string) (bool, error) {
+	panic("unused")
+}
+
 func (s *accBatchStore) PlansBetweenRounds(context.Context) ([]string, error) {
 	panic("unused")
 }
@@ -1822,3 +1826,5 @@ func (s *accBatchStore) ClearRevertPause(context.Context, string, string) error 
 func (s *accBatchTasks) PlanClosed(context.Context, string) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }
+
+func (s *accBatchTasks) PlanMerged(context.Context, string) (bool, error) { return false, nil }

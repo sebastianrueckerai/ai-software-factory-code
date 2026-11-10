@@ -139,10 +139,27 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `TRUNCATE tasks, criteria_verdicts, events, approval_requests CASCADE`); err != nil {
 		t.Fatalf("truncate: %v", err)
 	}
-	for _, id := range []string{"t1", "t2", "t3"} {
+	for _, id := range []string{"t1", "t2", "t3", "t5"} {
 		if err := s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "done", Objective: "x", Repository: "sf/r", IssueNumber: 1, Track: "plan"}); err != nil {
 			t.Fatalf("CreateTask: %v", err)
 		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE tasks SET status = 'failed' WHERE id = 't5'`); err != nil {
+		t.Fatal(err)
+	}
+	// a plan whose only merge is a pull_request_merged row holds production,
+	// as the open groups read it; one with neither commit nor row does not
+	if err := s.CreateTask(ctx, Task{ID: "t3-card", Kind: "agent", Status: "done", Objective: "x", Repository: "sf/r", IssueNumber: 3, Track: "direct", Source: SourcePlan, Parent: "t3", PlanKey: "a"}); err != nil {
+		t.Fatal(err)
+	}
+	if merged, err := s.PlanMerged(ctx, "t3"); err != nil || merged {
+		t.Fatalf("PlanMerged with no commit and no row = %t, %v; want false", merged, err)
+	}
+	if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: "t3-card", Kind: "pull_request_merged"}); err != nil {
+		t.Fatal(err)
+	}
+	if merged, err := s.PlanMerged(ctx, "t3"); err != nil || !merged {
+		t.Fatalf("PlanMerged with a pull_request_merged row and no merge commit = %t, %v; want true", merged, err)
 	}
 	if err := s.CreateTask(ctx, Task{ID: "t4", Kind: "agent", Status: "running", Objective: "x", Repository: "sf/r", IssueNumber: 2, Track: "plan"}); err != nil {
 		t.Fatal(err)
@@ -210,7 +227,17 @@ func TestPGStoreClosePlanWithWaivers(t *testing.T) {
 	if _, err := s.db.ExecContext(ctx, `UPDATE events SET at = now() - interval '2 minutes' WHERE task_id = 't1'`); err != nil {
 		t.Fatal(err)
 	}
-	if got, err := s.PlanClosesToFinish(ctx); err != nil || len(got) != 1 || got["t1"] != "closed by sebastian" {
-		t.Fatalf("PlanClosesToFinish = %v, %v; want t1's words alone (a factoryd close carries none)", got, err)
+	// a failed plan factoryd closed itself (a row without words) is to finish
+	// too; a done one with such a row is not
+	for _, id := range []string{"t2", "t5"} {
+		if _, err := s.Record(ctx, Event{Repository: "sf/r", TaskID: id, Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if _, err := s.db.ExecContext(ctx, `UPDATE events SET at = now() - interval '2 minutes' WHERE kind = 'plan_closed'`); err != nil {
+		t.Fatal(err)
+	}
+	if got, err := s.PlanClosesToFinish(ctx); err != nil || len(got) != 2 || got["t1"] != "closed by sebastian" || got["t5"] != "" {
+		t.Fatalf("PlanClosesToFinish = %v, %v; want t1's words and the failed t5 without any", got, err)
 	}
 }

@@ -137,9 +137,9 @@ func (s *PGStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 }
 
 func (s *PGStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT t.id, e.detail->>'words' FROM tasks t JOIN events e ON e.task_id = t.id AND e.kind = 'plan_closed'
-		WHERE t.status IN ('done', 'failed') AND t.track = $1 AND COALESCE(e.detail->>'words', '') <> ''
-			AND e.at < now() - interval '1 minute'`, policy.TrackPlan)
+	rows, err := s.db.QueryContext(ctx, `SELECT t.id, COALESCE(e.detail->>'words', '') FROM tasks t JOIN events e ON e.task_id = t.id AND e.kind = 'plan_closed'
+		WHERE t.track = $1 AND e.at < now() - interval '1 minute'
+			AND (t.status = 'failed' OR t.status = 'done' AND COALESCE(e.detail->>'words', '') <> '')`, policy.TrackPlan)
 	if err != nil {
 		return nil, err
 	}
@@ -153,6 +153,14 @@ func (s *PGStore) PlanClosesToFinish(ctx context.Context) (map[string]string, er
 		out[id] = words
 	}
 	return out, rows.Err()
+}
+
+// PlanMerged says whether a card of plan holds an unreverted merge: the
+// plan has an opening in groupOpenings, as OpenGroups reads it.
+func (s *PGStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
+	var merged bool
+	err := s.db.QueryRowContext(ctx, `SELECT EXISTS (SELECT 1 FROM (`+groupOpenings+`) g WHERE g.plan = $1)`, plan).Scan(&merged)
+	return merged, err
 }
 
 func (s *PGStore) PlansBetweenRounds(ctx context.Context) ([]string, error) {

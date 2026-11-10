@@ -269,8 +269,9 @@ func TestPlanIssueActsOnlyAfterTheComment(t *testing.T) {
 }
 
 // A plan none of whose cards holds an unreverted merge holds nothing in
-// production: nothing is open, a writer's Close takes it, and a done one's
-// issue close ends it without a hold; a reverted merge counts as none.
+// production: nothing is open and a writer's Close takes it; a reverted
+// merge counts as none, and a pull_request_merged row counts as a merge
+// without a merge commit, as the production hold reads it.
 func TestPlanWithoutAMergeHoldsNothing(t *testing.T) {
 	ctx := context.Background()
 	r, s, _ := plannedCards(t, nil, "done")
@@ -329,5 +330,54 @@ func TestCriteriaPassFinishesAFailedPlanClose(t *testing.T) {
 	r.CriteriaPass(ctx)
 	if got, status := commentBodies(fj), s.tasks["t-plan"].Status; len(got) != 1 || status != "closed" || fj.issues[1].state != "closed" {
 		t.Errorf("comments %q, status %q, issue %q; want the words once, closed, closed", got, status, fj.issues[1].state)
+	}
+}
+
+// A card with a pull_request_merged row and no merge commit (a merge whose
+// commit read failed, or one from before merge commits were recorded) holds
+// production: its criteria are open and a writer's Close is refused.
+func TestPlanMergedByARowAloneHolds(t *testing.T) {
+	ctx := context.Background()
+	r, s, _ := tenCriteriaPlan(t, "done")
+	card := s.tasks["card-1"]
+	card.MergeCommit = ""
+	s.tasks["card-1"] = card
+	if merged, err := s.PlanMerged(ctx, "t-plan"); err != nil || merged {
+		t.Fatalf("PlanMerged with no commit and no row = %t, %v; want false", merged, err)
+	}
+	s.Record(ctx, Event{Repository: "sf/code", TaskID: "card-1", Kind: "pull_request_merged"})
+	if merged, err := s.PlanMerged(ctx, "t-plan"); err != nil || !merged {
+		t.Fatalf("PlanMerged with a pull_request_merged row = %t, %v; want true", merged, err)
+	}
+	if _, _, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+		t.Errorf("a writer's Close: %v, want ErrNotApprover", err)
+	}
+	if err := r.CheckClosePlan(ctx, "t-plan", "mallory", "why", false); !errors.Is(err, ErrNotApprover) {
+		t.Errorf("a writer's check: %v, want ErrNotApprover", err)
+	}
+}
+
+// A failed plan that factoryd closed itself keeps its card failed (the
+// bot's close does not end it): a person's Close ends it closed, and the
+// sweep does the same without one.
+func TestFailedPlanClosedByFactorydEnds(t *testing.T) {
+	ctx := context.Background()
+	for _, byPerson := range []bool{true, false} {
+		r, s, _ := plannedCards(t, nil, "done")
+		card := s.tasks["card-1"]
+		card.MergeCommit = ""
+		s.tasks["card-1"] = card
+		setStatus(s, "t-plan", "failed")
+		s.Record(ctx, Event{Repository: "linkshort/linkshort", TaskID: "t-plan", Kind: EventPlanClosed, Actor: FactoryDecider, Via: ViaFactoryd})
+		if byPerson {
+			if n, words, err := r.CloseHeldPlan(ctx, "t-plan", "mallory", "", false); err != nil || n != 0 || words != "closed by mallory" {
+				t.Fatalf("a person's Close = %d, %q, %v; want 0, the words without merged cards, no error", n, words, err)
+			}
+		} else {
+			r.CriteriaPass(ctx)
+		}
+		if got := s.tasks["t-plan"].Status; got != "closed" {
+			t.Errorf("by a person %t: status %q, want closed", byPerson, got)
+		}
 	}
 }

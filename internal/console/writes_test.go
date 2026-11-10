@@ -1213,18 +1213,29 @@ func TestCloseADonePlan(t *testing.T) {
 	r.tasks.mu.Unlock()
 	var closes []string
 	closeErr := error(nil)
-	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, error) {
+	decide := func(id, note string, approver bool) (int, error) {
 		open := map[string]int{"t-lr": 2, "t-one": 1}[id]
 		switch {
 		case closeErr != nil:
-			return 0, "", closeErr
+			return 0, closeErr
 		case open > 0 && !approver:
-			return 0, "", factoryd.ErrNotApprover
+			return 0, factoryd.ErrNotApprover
 		case open > 0 && strings.TrimSpace(note) == "":
-			return 0, "", factoryd.ErrNoReason
+			return 0, factoryd.ErrNoReason
+		}
+		return open, nil
+	}
+	r.c.cfg.CheckClosePlan = func(_ context.Context, id, _, note string, approver bool) error {
+		_, err := decide(id, note, approver)
+		return err
+	}
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, approver bool) (int, string, error) {
+		open, err := decide(id, note, approver)
+		if err != nil {
+			return 0, "", err
 		}
 		closes = append(closes, fmt.Sprintf("%s by %s: %d waived with %q", id, by, open, note))
-		return open, factoryd.PlanCloseWords(by, note), nil
+		return open, factoryd.PlanCloseWords(by, note, true), nil
 	}
 	ck, s := r.loggedIn(t)
 	body := r.do(httptest.NewRequest(http.MethodGet, "/?project=ai-software-factory-code&view=wide", nil), ck).Body.String()
@@ -1293,8 +1304,8 @@ func TestCloseADonePlan(t *testing.T) {
 		want string
 	}{
 		{"a note too long", factoryd.ErrNoteTooLong, http.StatusBadRequest, "The note of a plan's Close is at most 2000 bytes, as it becomes each waiver's reason: shorten it."},
-		{"a plan closed already", factoryd.ErrPlanClosed, http.StatusConflict, "Plan #51 is closed already, and its merged cards stay on main: reload the board."},
-		{"a plan not done any more", factoryd.ErrNotDonePlan, http.StatusConflict, "Plan #51 is no longer at rest, so Close no longer fits: reload the board."},
+		{"a plan closed already", factoryd.ErrPlanClosed, http.StatusConflict, "Plan #51 is closed already: reload the board."},
+		{"a plan no longer at rest", factoryd.ErrNotDonePlan, http.StatusConflict, "Plan #51 is no longer at rest, so Close no longer fits: reload the board."},
 		{"a terminal error", errors.New("plan t-lr has no integration card (type: terminal, retryable: false)"), http.StatusInternalServerError,
 			"The plan could not be closed: plan t-lr has no integration card. Reload the board and press Close again, or ask an approver."},
 	} {
@@ -1305,13 +1316,14 @@ func TestCloseADonePlan(t *testing.T) {
 	// the sweep's finishing step posts the words between factoryd's write
 	// and the console's post: the issue carries them once
 	closeErr = nil
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	const issue53 = "/api/v1/repos/sf/code/issues/53/comments"
 	words := "closed by sebastian: swept first; its merged cards stay on main"
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
 		r.fg.mu.Lock()
 		r.fg.posted[issue53] = append(r.fg.posted[issue53], words)
 		r.fg.mu.Unlock()
-		return 1, factoryd.PlanCloseWords(by, note), nil
+		return 1, factoryd.PlanCloseWords(by, note, true), nil
 	}
 	rec = r.do(post("/tasks/t-one/close", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}, "note": {"swept first"}}), ck)
 	equal(t, "the press after the sweep", rec.Code, http.StatusSeeOther)
@@ -1333,14 +1345,41 @@ func TestCloseADonePlanNeedsAnApprover(t *testing.T) {
 	r.tasks.tasks = append(r.tasks.tasks, factoryd.BoardTask{Task: factoryd.Task{ID: "t-lr", Kind: "agent", Status: "done", Track: policy.TrackPlan,
 		Repository: "sf/code", IssueNumber: 51, Objective: "Build the links."}})
 	r.tasks.mu.Unlock()
+	r.fg.deps = map[string][]map[string]any{"/api/v1/repos/sf/code/issues/51/dependencies": dependsOn(7)}
 	var approvers []bool
-	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, _, _ string, approver bool) (int, string, error) {
+	r.c.cfg.CheckClosePlan = func(_ context.Context, _, _, _ string, approver bool) error {
 		approvers = append(approvers, approver)
-		return 0, "", factoryd.ErrNotApprover
+		return factoryd.ErrNotApprover
+	}
+	r.c.cfg.CloseHeldPlan = func(context.Context, string, string, string, bool) (int, string, error) {
+		t.Error("a refused Close reached the write")
+		return 0, "", nil
 	}
 	code, msg := refused(t, r, "close", toolInput{TaskID: "t-lr", Note: "done with it"})
 	equal(t, "a writer's close", []any{code, msg, approvers, len(r.fg.patched)}, []any{http.StatusForbidden,
 		"Only the approvers of project ai-software-factory-code may close plan #51 while it has open criteria, because Close waives each of them: ask an approver to close it.", []bool{false}, 0})
+	equal(t, "a refused Close writes nothing, its dependencies stay", writesOf(r.fg), []string(nil))
+}
+
+// The answer to a plan's Close says its merged cards stay on main only when
+// the plan holds a merge.
+func TestClosePlanAnswerNamesMergedCardsOnlyWhenThereAreSome(t *testing.T) {
+	r, g := newWritesRig(t)
+	r.tasks.mu.Lock()
+	r.tasks.tasks = append(r.tasks.tasks,
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-nm", Kind: "agent", Status: "failed", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 70, Objective: "Never merged."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm", Kind: "agent", Status: "done", Track: policy.TrackPlan, Repository: "sf/code", IssueNumber: 71, Objective: "Merged."}},
+		factoryd.BoardTask{Task: factoryd.Task{ID: "t-mm-card", Kind: "agent", Status: "done", MergeCommit: "abc", Source: factoryd.SourcePlan, Parent: "t-mm", PlanKey: "a", Repository: "sf/code", IssueNumber: 72, Objective: "A card."}})
+	r.tasks.mu.Unlock()
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
+	r.c.cfg.CloseHeldPlan = func(_ context.Context, id, by, note string, _ bool) (int, string, error) {
+		return 0, factoryd.PlanCloseWords(by, note, id == "t-mm"), nil
+	}
+	for id, want := range map[string]string{"t-nm": "Closed plan #70.", "t-mm": "Closed plan #71: its merged cards stay on main."} {
+		args := `{"task_id":"` + id + `"}`
+		_, done, _ := proposeAndDo(t, r, g, "close", args)
+		equal(t, id, done, ran("close", args, want))
+	}
 }
 
 // The face offers a writer Close on a card waiting on a human, behind a
@@ -1549,9 +1588,10 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 		Repository: "sf/code", IssueNumber: 60, Objective: "Build the dependent."}})
 	r.tasks.mu.Unlock()
 	var closes int
+	r.c.cfg.CheckClosePlan = func(context.Context, string, string, string, bool) error { return nil }
 	r.c.cfg.CloseHeldPlan = func(_ context.Context, _, by, note string, _ bool) (int, string, error) {
 		closes++
-		return 0, factoryd.PlanCloseWords(by, note), nil
+		return 0, factoryd.PlanCloseWords(by, note, false), nil
 	}
 	r.fg.deps = map[string][]map[string]any{plan: dependsOn(7)}
 	r.fg.failDeps = "no push"
@@ -1564,6 +1604,6 @@ func TestClosePlanRemovesItsOwnDependencies(t *testing.T) {
 	equal(t, "the order", writesOf(r.fg), []string{"DELETE " + plan, "DELETE " + plan, "POST /api/v1/repos/sf/code/issues/60/comments",
 		"POST /api/v1/repos/sf/code/issues/60/comments", "PATCH /api/v1/repos/sf/code/issues/60"})
 	equal(t, "the comments", r.fg.commentBodies("/api/v1/repos/sf/code/issues/60/comments"),
-		[]string{"closed by sebastian; its merged cards stay on main", "It no longer waits on #7."})
+		[]string{"closed by sebastian", "It no longer waits on #7."})
 	equal(t, "closes", closes, 1)
 }

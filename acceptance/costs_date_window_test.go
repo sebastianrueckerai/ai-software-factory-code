@@ -1467,3 +1467,5 @@ func (f *acceptChat) ThreadTotals(context.Context, string) (int, float64, error)
 func (s *acceptTasks) PlanClosed(context.Context, string) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }
+
+func (s *acceptTasks) PlanMerged(context.Context, string) (bool, error) { return false, nil }

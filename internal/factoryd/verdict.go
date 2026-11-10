@@ -305,8 +305,9 @@ var ErrNotApprover = errors.New("only an approver may waive criteria")
 // ErrNoteTooLong refuses a close note beyond MaxWaiverNote bytes.
 var ErrNoteTooLong = fmt.Errorf("a close note is at most %d bytes", MaxWaiverNote)
 
-// ErrNotDonePlan refuses a close of a card that is not a done plan.
-var ErrNotDonePlan = errors.New("the card is not a done plan")
+// ErrNotDonePlan refuses a close of a card that is not a plan at rest
+// (done, failed or closed).
+var ErrNotDonePlan = errors.New("the card is not a plan at rest")
 
 // ErrPlanClosed refuses a close of a plan whose plan_closed row stands.
 var ErrPlanClosed = errors.New("the plan is closed already")
@@ -316,24 +317,32 @@ var ErrPlanClosed = errors.New("the plan is closed already")
 const MaxWaiverNote = 2000
 
 // PlanCloseWords is what a person's close of a plan says on its issue and
-// in its plan_closed row.
-func PlanCloseWords(by, note string) string {
+// in its plan_closed row; merged says the plan holds a merge, whose cards
+// stay on main.
+func PlanCloseWords(by, note string, merged bool) string {
 	words := "closed by " + by
 	if note = strings.TrimRight(strings.TrimSpace(note), ". "); note != "" {
 		words += ": " + note
 	}
-	return words + "; its merged cards stay on main"
+	if merged {
+		words += "; its merged cards stay on main"
+	}
+	return words
 }
 
-// PlanVerdictReader reads a plan's cards and the verdict rows of its cards.
+// PlanVerdictReader reads a plan's cards, whether one of them holds a merge
+// in production, and the verdict rows of its cards.
 type PlanVerdictReader interface {
 	PlanCards(ctx context.Context, plan string) ([]Task, error)
+	// PlanMerged says whether a card of plan holds an unreverted merge: the
+	// rule that opens the plan's production group (groupOpenings).
+	PlanMerged(ctx context.Context, plan string) (bool, error)
 	CriteriaVerdicts(ctx context.Context, taskID string) ([]CriterionVerdict, error)
 }
 
 // PlanOpenCriteria is planOpen for the console: the criteria of plan id's p
-// that stand neither met nor waived, none while no integration card holds
-// rows.
+// that stand neither met nor waived and so hold production, as planOpen
+// decides.
 func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p Plan) ([]PlanCriterion, error) {
 	open, _, err := planOpen(ctx, store, id, p)
 	return open, err
@@ -341,24 +350,24 @@ func PlanOpenCriteria(ctx context.Context, store PlanVerdictReader, id string, p
 
 // planOpen are the criteria of plan id's p that stand neither met nor
 // waived, and the card that holds the rows: the integration card. A plan
-// none of whose cards holds an unreverted merge holds nothing in
-// production, and nothing is open. A plan
-// between rounds (its outline holds later rounds) has filed none yet and
-// has no rows to waive: nothing is open. A plan in its last round that has
-// none keeps its rows on the plan card, and every criterion without one is
-// open.
+// none of whose cards holds an unreverted merge (PlanMerged, the rule of
+// the production hold) holds nothing, and nothing is open. A plan between
+// rounds (its outline holds later rounds) has filed no integration card
+// yet and has no rows to waive: nothing is open. A plan in its last round
+// that has none keeps its rows on the plan card, and every criterion
+// without one is open.
 func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (open []PlanCriterion, home string, err error) {
 	if len(p.Criteria) == 0 {
 		return nil, id, nil
+	}
+	if merged, err := store.PlanMerged(ctx, id); err != nil || !merged {
+		return nil, id, err
 	}
 	cards, err := store.PlanCards(ctx, id)
 	if err != nil {
 		return nil, "", err
 	}
 	home = id
-	if !slices.ContainsFunc(cards, func(c Task) bool { return c.MergeCommit != "" && c.RevertedAt == nil }) {
-		return nil, id, nil
-	}
 	if integration, ok := integrationCardOf(cards, p); ok {
 		home = integration.ID
 	} else if len(p.Outline) > 0 {
@@ -371,51 +380,97 @@ func planOpen(ctx context.Context, store PlanVerdictReader, id string, p Plan) (
 	return openCriteria(p, rows), home, nil
 }
 
-// CloseHeldPlan is a person's close of plan id at rest: it waives every
-// open criterion with note as the reason (an approver's act, and a note is
-// required), ends the plan's criteria asks and, once every card of the plan
-// is final (a plan that filed none records none), records plan_closed, in one transaction, so the close check
-// never finds waivers without the close. While a card still runs the sweep
-// records plan_closed when the last one ends. It reports how many criteria
-// it waived and the words the close says on the plan's issue. The caller
-// closes the issue afterwards.
-func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (int, string, error) {
+// planCloseOpen reads plan t's newest revision and the criteria that hold
+// production, and refuses a close that needs an approver or a note it lacks.
+func (r *Runner) planCloseOpen(ctx context.Context, t Task, note string, approver bool) (p Plan, open []PlanCriterion, home string, err error) {
+	switch rev, ok, err := r.store.PlanRevision(ctx, t.ID, 0); {
+	case err != nil:
+		return p, nil, "", err
+	case ok:
+		if err := json.Unmarshal(rev.Plan, &p); err != nil {
+			return p, nil, "", terminalError("plan %s revision %d: %v", t.ID, rev.Revision, err)
+		}
+	}
+	if open, home, err = planOpen(ctx, r.store, t.ID, p); err != nil {
+		return p, nil, "", err
+	}
+	switch {
+	case len(open) > 0 && !approver:
+		return p, nil, "", ErrNotApprover
+	case len(open) > 0 && note == "":
+		return p, nil, "", ErrNoReason
+	}
+	return p, open, home, nil
+}
+
+// closablePlan reads plan id and refuses what no Close takes: a card that is
+// no plan at rest, and a note beyond the limit.
+func (r *Runner) closablePlan(ctx context.Context, id, note string) (Task, error) {
 	t, ok, err := r.store.Task(ctx, id)
 	if err != nil {
-		return 0, "", fmt.Errorf("plan %s: %w", id, err)
+		return t, fmt.Errorf("plan %s: %w", id, err)
 	}
-	if !ok {
-		return 0, "", fmt.Errorf("plan %s: %w", id, ErrNotFound)
+	switch {
+	case !ok:
+		return t, fmt.Errorf("plan %s: %w", id, ErrNotFound)
+	case !ClosablePlan(t):
+		return t, ErrNotDonePlan
+	case len(note) > MaxWaiverNote:
+		return t, ErrNoteTooLong
 	}
-	if !ClosablePlan(t) {
-		return 0, "", ErrNotDonePlan
-	}
+	return t, nil
+}
+
+// CheckClosePlan says whether CloseHeldPlan would take plan id now, by the
+// same refusals and without writing: the console asks before it removes the
+// issue's dependencies, so a refused Close changes nothing.
+func (r *Runner) CheckClosePlan(ctx context.Context, id, by, note string, approver bool) error {
 	note = strings.TrimSpace(note)
-	if len(note) > MaxWaiverNote {
-		return 0, "", ErrNoteTooLong
+	t, err := r.closablePlan(ctx, id, note)
+	if err != nil {
+		return err
 	}
-	words := PlanCloseWords(by, note)
+	if _, closed, err := r.store.PlanClosed(ctx, id); err != nil {
+		return err
+	} else if closed && t.Status != "failed" {
+		return ErrPlanClosed
+	}
+	_, _, _, err = r.planCloseOpen(ctx, t, note, approver)
+	return err
+}
+
+// CloseHeldPlan is a person's close of plan id at rest: it waives every
+// open criterion with note as the reason (an approver's act, and a note is
+// required), ends the plan's criteria asks and, once every card of the
+// plan is final (a plan that filed none records none), records plan_closed,
+// in one transaction, so the close check never finds waivers without the
+// close. While a card still runs the sweep records plan_closed when the
+// last one ends. A failed plan whose plan_closed row stands (factoryd
+// closed it, and the bot's close does not end a failed card) ends closed.
+// It reports how many criteria it waived and the words the close says on
+// the plan's issue. The caller closes the issue afterwards.
+func (r *Runner) CloseHeldPlan(ctx context.Context, id, by, note string, approver bool) (int, string, error) {
+	note = strings.TrimSpace(note)
+	t, err := r.closablePlan(ctx, id, note)
+	if err != nil {
+		return 0, "", err
+	}
+	merged, err := r.store.PlanMerged(ctx, id)
+	if err != nil {
+		return 0, "", err
+	}
+	words := PlanCloseWords(by, note, merged)
+	if _, closed, err := r.store.PlanClosed(ctx, id); err != nil {
+		return 0, "", err
+	} else if closed && t.Status == "failed" {
+		return 0, words, r.store.TransitionTask(ctx, id, []string{"failed"}, "closed")
+	}
 	criteria, waived := 0, 0
 	recorded := false
 	err = r.store.ClosePlanWithWaivers(ctx, id, by, func(ctx context.Context) (PlanClose, error) {
-		var p Plan
-		switch rev, ok, err := r.store.PlanRevision(ctx, id, 0); {
-		case err != nil:
-			return PlanClose{}, err
-		case ok:
-			if err := json.Unmarshal(rev.Plan, &p); err != nil {
-				return PlanClose{}, terminalError("plan %s revision %d: %v", id, rev.Revision, err)
-			}
-		}
-		open, home, err := planOpen(ctx, r.store, id, p)
+		p, open, home, err := r.planCloseOpen(ctx, t, note, approver)
 		if err != nil {
 			return PlanClose{}, err
-		}
-		switch {
-		case len(open) > 0 && !approver:
-			return PlanClose{}, ErrNotApprover
-		case len(open) > 0 && note == "":
-			return PlanClose{}, ErrNoReason
 		}
 		cards, err := r.store.PlanCards(ctx, id)
 		if err != nil {
@@ -1223,7 +1278,8 @@ func (r *Runner) planCloseCheck(ctx context.Context, parent string) {
 			log.Printf("plan %s: the close check: %v", parent, err)
 			return
 		}
-		// a card that merged is settled for the hold, as the integration card is
+		// a card in status merged counts as settled, as the integration card does:
+		// a merged card can only move on to a final status, never back to work
 		if slices.ContainsFunc(cards, func(c Task) bool { return !Final(c.Status) && c.Status != "merged" }) {
 			return
 		}
@@ -1514,9 +1570,10 @@ func (r *Runner) criteriaParents(ctx context.Context) []string {
 	return slices.Sorted(maps.Keys(parents))
 }
 
-// finishPlanClose finishes a person's Close of done or failed plan id whose issue
-// close failed after plan_closed was recorded: the issue hears the closing
-// words once and closes, and the card ends closed. A words post that fails
+// finishPlanClose finishes the close of done or failed plan id whose issue
+// close failed after plan_closed was recorded, or whose failed card factoryd
+// closed itself (no words): the issue hears the closing words once, if any,
+// and closes, and the card ends closed. A words post that fails
 // leaves the issue open and the close to the next pass.
 func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 	t, repo, err := r.task(ctx, id)
@@ -1525,9 +1582,11 @@ func (r *Runner) finishPlanClose(ctx context.Context, id, words string) {
 		return
 	}
 	if t.IssueNumber != 0 {
-		if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, words); err != nil {
-			log.Printf("plan %s: the closing words on #%d: %v", id, t.IssueNumber, err)
-			return
+		if words != "" {
+			if err := r.forgejo.CommentOnce(ctx, repo.Owner, repo.Name, t.IssueNumber, words); err != nil {
+				log.Printf("plan %s: the closing words on #%d: %v", id, t.IssueNumber, err)
+				return
+			}
 		}
 		if !r.closePlanIssue(ctx, t, repo, "") {
 			return

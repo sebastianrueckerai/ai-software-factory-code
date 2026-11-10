@@ -639,6 +639,9 @@ func main() {
 		DecideCriterion: func(ctx context.Context, id, cid, verdict, by, reason string) error {
 			return factoryd.DecideCriterion(ctx, store, id, cid, verdict, by, reason)
 		},
+		CheckClosePlan: func(ctx context.Context, id, by, note string, approver bool) error {
+			return runner.CheckClosePlan(ctx, id, by, note, approver)
+		},
 		CloseHeldPlan: func(ctx context.Context, id, by, note string, approver bool) (int, string, error) {
 			return runner.CloseHeldPlan(ctx, id, by, note, approver)
 		},

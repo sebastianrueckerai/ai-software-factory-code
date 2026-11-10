@@ -1916,3 +1916,5 @@ func (a *AcceptanceRig) ThreadTotals(context.Context, string) (int, float64, err
 func (s *AcceptanceRig) PlanClosed(context.Context, string) (time.Time, bool, error) {
 	return time.Time{}, false, nil
 }
+
+func (s *AcceptanceRig) PlanMerged(context.Context, string) (bool, error) { return false, nil }

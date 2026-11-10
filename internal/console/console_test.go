@@ -3988,3 +3988,14 @@ func (s *fakeTasks) PlanClosed(_ context.Context, plan string) (time.Time, bool,
 	at, closed := s.planClosed[plan]
 	return at, closed, nil
 }
+
+func (s *fakeTasks) PlanMerged(_ context.Context, plan string) (bool, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for _, t := range s.tasks {
+		if t.Parent == plan && t.Source == factoryd.SourcePlan && t.MergeCommit != "" && t.RevertedAt == nil {
+			return true, nil
+		}
+	}
+	return false, nil
+}
