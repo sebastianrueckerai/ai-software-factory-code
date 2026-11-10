@@ -431,3 +431,27 @@ func TestFactorydMaySuspendItsKustomization(t *testing.T) {
 		t.Errorf("variables.factorySuspend in the first validation %v, in the Kustomization rule %v; want both", first, kustomization)
 	}
 }
+
+// The upstream copy pulls from every registry upstream-images.txt names
+// and the hosts their token endpoints and blobs sit on: the egress admits
+// each one on 443 by name.
+func TestFactorydEgressAdmitsTheUpstreamRegistries(t *testing.T) {
+	list, err := os.ReadFile("../../upstream-images.txt")
+	if err != nil {
+		t.Fatal(err)
+	}
+	hosts := map[string]bool{"registry-1.docker.io": true, "auth.docker.io": true, "production.cloudfront.docker.com": true,
+		"pkg-containers.githubusercontent.com": true, "cdn.registry.k8s.io": true, "cdn.factory.talos.dev": true}
+	for _, l := range strings.Split(string(list), "\n") {
+		if f := strings.Fields(l); len(f) > 0 && !strings.HasPrefix(f[0], "#") && !strings.HasPrefix(f[0], "https://") {
+			host, _, _ := strings.Cut(f[0], "/")
+			hosts[host] = true
+		}
+	}
+	for h := range hosts {
+		if h == "docker.io" {
+			continue
+		}
+		t.Run(h, func(t *testing.T) { egressAdmits(t, "https://"+h) })
+	}
+}
