@@ -959,6 +959,9 @@ func (s *fakeStore) TransitionTask(ctx context.Context, id string, from []string
 		return fmt.Errorf("task %s: %w (not in %v, cannot move to %s)", id, ErrNotFound, from, to)
 	}
 	t.Status = to
+	if t.ResumedAt != nil {
+		t.ResumedAt, t.QueueReason, t.QueueSince = nil, "", nil
+	}
 	if !Final(to) {
 		delete(s.settled, id)
 	}
@@ -985,7 +988,7 @@ func (s *fakeStore) MarkStarted(ctx context.Context, id string) error {
 	if !ok || !slices.Contains([]string{"queued", "waiting-deps", "running", "in-review", "waiting-human", "waiting-poster"}, t.Status) {
 		return fmt.Errorf("task %s: %w", id, ErrNotFound)
 	}
-	t.Status = "running"
+	t.Status, t.ResumedAt, t.QueueReason, t.QueueSince = "running", nil, "", nil
 	s.tasks[id] = t
 	s.started[id] = true
 	return nil
@@ -1018,6 +1021,37 @@ func (s *fakeStore) SetQueueReason(ctx context.Context, id, reason string, now t
 	t.QueueReason = reason
 	s.tasks[id] = t
 	return nil
+}
+
+// SetResumeWait mirrors Postgres: a parked card goes queued with its
+// resumption's first time kept.
+func (s *fakeStore) SetResumeWait(ctx context.Context, id, reason string, now time.Time) error {
+	t, ok := s.tasks[id]
+	if !ok {
+		return nil
+	}
+	parked := slices.Contains([]string{"waiting-deps", "in-review", "waiting-human", "waiting-poster", "waiting-image"}, t.Status)
+	if !parked && !(t.Status == "queued" && t.ResumedAt != nil) {
+		return nil
+	}
+	if t.ResumedAt == nil {
+		t.ResumedAt = &now
+	}
+	t.QueueSince = t.ResumedAt
+	t.Status, t.QueueReason = "queued", reason
+	s.tasks[id] = t
+	return nil
+}
+
+func (s *fakeStore) ResumeWaiters(ctx context.Context, repository string) ([]Task, error) {
+	var out []Task
+	for _, t := range s.tasks {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.ResumedAt != nil {
+			out = append(out, t)
+		}
+	}
+	slices.SortFunc(out, func(a, b Task) int { return cmp.Or(a.ResumedAt.Compare(*b.ResumedAt), strings.Compare(a.ID, b.ID)) })
+	return out, nil
 }
 
 func (s *fakeStore) CountAdmitted(ctx context.Context, repository string) (int, error) {
@@ -1053,7 +1087,7 @@ func factorydFinal(status string) bool {
 func (s *fakeStore) ListQueuedByRepository(ctx context.Context, repository string) ([]Task, error) {
 	var out []Task
 	for _, t := range s.tasks {
-		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.IssueNumber > 0 {
+		if t.Repository == repository && t.Kind == "agent" && !t.Unbound() && t.Status == "queued" && t.IssueNumber > 0 && t.ResumedAt == nil {
 			out = append(out, t)
 		}
 	}

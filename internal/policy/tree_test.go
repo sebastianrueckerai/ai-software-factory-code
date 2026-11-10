@@ -76,6 +76,9 @@ func TestParseTreeAccepts(t *testing.T) {
 		t.Fatalf("work_in_progress: demo-app %d, of demo-app %d, of none %d (default %d)",
 			demo.WorkInProgress, tree.WorkInProgressOf("demo-app/demo-app"), tree.WorkInProgressOf("no-such/repo"), DefaultWorkInProgress)
 	}
+	if tree.SurgeOf("demo-app/demo-app") != 1 || tree.SurgeOf("no-such/repo") != DefaultSurge || DefaultSurge != 2 {
+		t.Fatalf("surge: demo-app %d, of none %d (default %d)", tree.SurgeOf("demo-app/demo-app"), tree.SurgeOf("no-such/repo"), DefaultSurge)
+	}
 	var names []string
 	for _, s := range tree.Processes["maintenance"].Stages {
 		names = append(names, s.Name)
@@ -159,6 +162,7 @@ func TestParseTreeRejects(t *testing.T) {
 			"project ai-software-factory-infra: objects seed: environments, quota and secrets are registration's"},
 		"factory with tokens":          {edit("projects/demo-app.yaml", "agents: coder\n", "agents: coder\ntokens: {read: forgejo-config}\n"), "project demo-app: objects factory: tokens are registration's"},
 		"negative work_in_progress":    {edit("projects/demo-app.yaml", "work_in_progress: 2", "work_in_progress: -1"), "project demo-app: work_in_progress -1: a count of cards"},
+		"negative surge":               {edit("projects/demo-app.yaml", "surge: 1", "surge: -1"), "project demo-app: surge -1: a count of cards"},
 		"factory not its organisation": {edit("projects/demo-app.yaml", "repository: demo-app/demo-app", "repository: demo/app"), `project demo-app: objects factory: repository "demo/app": a project is its own organisation`},
 		"factory in a reserved namespace": {edit("projects/demo-app.yaml", "namespaces: [demo-staging, demo-prod]", "namespaces: [demo-staging, demo-prod, platform]"),
 			`project demo-app: objects factory: namespace "platform" is the cluster's or the factory's`},
