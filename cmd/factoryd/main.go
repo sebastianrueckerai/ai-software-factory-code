@@ -443,6 +443,8 @@ func main() {
 	monthAlarm := &factoryd.MonthAlarm{Store: store, Forgejo: forgejo, Repo: configRepo, Dir: configDir, Config: configSource, Current: policyLoader.Current,
 		Timeline: runner.Timeline(), Metrics: metrics}
 	go monthAlarm.Loop(ctx, time.Minute)
+	chatBudgetCards := &factoryd.ChatBudgetCards{Store: store, Forgejo: forgejo, Timeline: runner.Timeline(), Metrics: metrics}
+	go chatBudgetCards.Loop(ctx, time.Minute)
 	ciRuns := &factoryd.CIRuns{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Metrics: metrics, Runs: store}
 	go ciRuns.Run(ctx)
 	rolls := &factoryd.RollWatcher{Forgejo: forgejo, Owner: own.Repo().Owner, Repo: own.Repo().Name, Token: forgejo.Access(own).Actions, Branch: "main",
@@ -648,16 +650,17 @@ func main() {
 		DeploymentHealth: func(ctx context.Context, p factoryd.Project, deployment, namespace string) (string, error) {
 			return factoryd.DeploymentHealthText(ctx, kube, p, deployment, namespace, time.Now())
 		},
-		Projects:   store,
-		Events:     store,
-		Figures:    store,
-		Bus:        eventBus,
-		ConfigRepo: forgejo.PublicURL + "/" + configRepo.String(),
-		ConfigDir:  configDir,
-		InfraRepo:  configRepo,
-		InfraToken: forgejo.Seeded[policy.SecretConfig],
-		ChatToken:  func(p factoryd.Project) string { return forgejo.Access(p).Chat },
-		DocsToken:  docsToken,
+		Projects:           store,
+		Events:             store,
+		Figures:            store,
+		Bus:                eventBus,
+		ConfigRepo:         forgejo.PublicURL + "/" + configRepo.String(),
+		ConfigDir:          configDir,
+		InfraRepo:          configRepo,
+		InfraToken:         forgejo.Seeded[policy.SecretConfig],
+		ChatToken:          func(p factoryd.Project) string { return forgejo.Access(p).Chat },
+		FileChatBudgetCard: chatBudgetCards.File,
+		DocsToken:          docsToken,
 		CheckProject: func(ctx context.Context, name string, file []byte) ([]string, error) {
 			return checkProject(ctx, configSource, name, file, ladder.Aliases())
 		},

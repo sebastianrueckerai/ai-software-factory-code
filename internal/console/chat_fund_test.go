@@ -1,7 +1,10 @@
 package console
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"net/url"
@@ -437,5 +440,74 @@ func TestChatFundAndGoResumesTheStoppedTurns(t *testing.T) {
 	equal(t, "a fund where no turn stopped", events, []string{`applied {"result":"Raised the chat's budget from €18.00 to €19.00.","tool":"fund the chat"}`, `done {}`})
 	if n := len(g.calls()); n != 5 {
 		t.Fatalf("%d model calls after a fund where no turn stopped, want 5", n)
+	}
+}
+
+// The chat's stop opens one human card at the moment of the first refusal,
+// whichever turn meets it first: a wake turn of the budget of 50 EUR spent
+// files the card for the chat task and its budget; the next wake, refused
+// before any row, a human's message answered with the stop, and a second
+// stop at the same budget file no second card.
+func TestChatBudgetStopFilesOneCard(t *testing.T) {
+	r, chat, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	task, err := chat.EnsureChatTask(t.Context(), "ai-software-factory-code", "sf/code", 50, time.Now())
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.tasks.mu.Lock()
+	for i := range r.tasks.tasks {
+		if r.tasks.tasks[i].ID == task.ID {
+			r.tasks.tasks[i].SpentEUR = 49.96
+		}
+	}
+	r.tasks.mu.Unlock()
+	var filed []string
+	r.c.cfg.FileChatBudgetCard = func(_ context.Context, p factoryd.Project, k factoryd.Task) error {
+		filed = append(filed, fmt.Sprintf("%s %s %.2f", p.Name, k.ID, k.BudgetEUR))
+		return nil
+	}
+	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
+	conv, err := chat.EnsureInbox(t.Context(), "sf/code", "sebastian")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "#13 asks about snapshots."); err != nil {
+		t.Fatalf("StartWake: %v", err)
+	}
+	want := []string{"ai-software-factory-code " + task.ID + " 50.00"}
+	if !slices.Equal(filed, want) {
+		t.Fatalf("after the wake's refusal the cards = %q, want %q", filed, want)
+	}
+	if err := r.c.StartWake(t.Context(), "ai-software-factory-code", "sebastian", conv, "wake_ask", "#14 asks too."); !errors.Is(err, factoryd.ErrChatUnfunded) {
+		t.Fatalf("the second wake = %v, want ErrChatUnfunded", err)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	if !slices.Equal(filed, want) {
+		t.Fatalf("after the second refusals the cards = %q, want %q", filed, want)
+	}
+}
+
+// A card that fails to file leaves the stop unrecorded: the stop row still
+// ends the turn, and the next refusal files the card and records the stop.
+func TestChatBudgetCardRetriedAfterAFailure(t *testing.T) {
+	r, _, g := newChatRig(t)
+	ck, s := r.loggedIn(t)
+	crumbsChat(t, r)
+	calls := 0
+	r.c.cfg.FileChatBudgetCard = func(context.Context, factoryd.Project, factoryd.Task) error {
+		if calls++; calls == 1 {
+			return errors.New("forgejo is down")
+		}
+		return nil
+	}
+	g.replies = [][]string{{refuseFor(policy.RefusedBudget, budgetReason)}, {refuseFor(policy.RefusedBudget, budgetReason)}}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"what is open?"}})
+	if asks := eventsOf(r, factoryd.EventChatBudgetSpent); len(asks) != 0 || calls != 1 {
+		t.Fatalf("after the failed filing: %d stops recorded, %d filings; want 0 and 1", len(asks), calls)
+	}
+	chatPost(t, r, ck, s, chatPath, url.Values{"message": {"and now?"}})
+	if asks := eventsOf(r, factoryd.EventChatBudgetSpent); len(asks) != 1 || calls != 2 {
+		t.Fatalf("after the retry: %d stops recorded, %d filings; want 1 and 2", len(asks), calls)
 	}
 }

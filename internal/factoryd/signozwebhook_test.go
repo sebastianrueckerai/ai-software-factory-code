@@ -105,6 +105,8 @@ func newAlertForgejo(t *testing.T) (*Forgejo, *alertForgejo) {
 			fj.comments = append(fj.comments, fmt.Sprintf("#%d %s", n, in.Body))
 			w.WriteHeader(http.StatusCreated)
 			io.WriteString(w, `{"id":1}`)
+		case r.Method == http.MethodGet && r.URL.Path == repo+"/issues":
+			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d/dependencies", &n):
 			io.WriteString(w, `[]`)
 		case r.Method == http.MethodGet && fmtScan(r.URL.Path, repo+"/issues/%d", &n):

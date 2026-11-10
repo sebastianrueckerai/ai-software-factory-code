@@ -290,6 +290,10 @@ type Config struct {
 	// Chat): every Forgejo call of a wake goes out with it; "" or nil
 	// refuses the wake.
 	ChatToken func(p factoryd.Project) string
+	// FileChatBudgetCard opens the human card of project p's chat task
+	// once its budget is spent (factoryd.ChatBudgetCards.File); nil files
+	// none.
+	FileChatBudgetCard func(ctx context.Context, p factoryd.Project, chat factoryd.Task) error
 	// DocsToken is the docs writer's Forgejo token, which write_doc
 	// commits documents with (FORGEJO_DOCS_TOKEN); empty: no chat writes
 	// documents.
