@@ -782,8 +782,8 @@ func TestImagerPinsReadyImagesThroughOnePullRequest(t *testing.T) {
 // block that pins default at its desired key and old, which images.yaml no
 // longer declares.
 func demoPinned(main map[string]string) {
-	main[demoProjectFile] = strings.Replace(main[demoProjectFile], "merge_rule: auto\n",
-		"merge_rule: auto\n# the pins: factoryd's\nimages:\n"+
+	main[demoProjectFile] = strings.Replace(main[demoProjectFile], "merge_rule: human\n",
+		"merge_rule: human\n# the pins: factoryd's\nimages:\n"+
 			"  default:\n    digest: sha256:"+strings.Repeat("d", 64)+"\n    key: "+keyDefault+"\n    tools: [jq]\n"+
 			"  old:\n    digest: sha256:"+strings.Repeat("e", 64)+"\n    key: k-"+strings.Repeat("0", 24)+"\n    tools: [make]\n    egress: [old.example.org]\n"+
 			"\n# objects: the registration's\n", 1)
@@ -832,7 +832,7 @@ func TestImagerDropsAnUndeclaredPin(t *testing.T) {
 // demoBothPinned pins demo-app's default and browser images at the keys
 // bothImages desires.
 func demoBothPinned(main map[string]string) {
-	main[demoProjectFile] = strings.Replace(main[demoProjectFile], "merge_rule: auto\n", "merge_rule: auto\nimages:\n"+
+	main[demoProjectFile] = strings.Replace(main[demoProjectFile], "merge_rule: human\n", "merge_rule: human\nimages:\n"+
 		"  browser:\n    digest: sha256:"+strings.Repeat("b", 64)+"\n    key: "+keyBrowser+"\n    tools: [chromium]\n    egress: [cdn.example.org]\n"+
 		"  default:\n    digest: sha256:"+strings.Repeat("d", 64)+"\n    key: "+keyDefault+"\n    tools: [jq]\n", 1)
 }
@@ -1218,7 +1218,7 @@ func TestImagerAutoMergeRefusals(t *testing.T) {
 			case c.tamper != nil:
 				r.fj.tamper("factory-pins/demo-app", c.tamper)
 			case c.code == "fields":
-				r.fj.tamper("factory-pins/demo-app", map[string]string{demoProjectFile: strings.Replace(r.fj.file("factory-pins/demo-app", demoProjectFile), "merge_rule: auto", "merge_rule: human", 1)})
+				r.fj.tamper("factory-pins/demo-app", map[string]string{demoProjectFile: strings.Replace(r.fj.file("factory-pins/demo-app", demoProjectFile), "process: maintenance", "process: other", 1)})
 			}
 			r.fj.refuse = c.refuse
 			r.pass(t)

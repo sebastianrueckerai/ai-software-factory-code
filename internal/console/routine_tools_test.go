@@ -82,7 +82,7 @@ func lastCommit(t *testing.T, infra *infraFake) []string {
 // routineDetail is a routine event's detail on demo-app, which the chat
 // runs at manual with merge rule auto, the member deciding.
 func routineDetail(more map[string]any) map[string]any {
-	d := map[string]any{"project": "demo-app", "autonomy": "manual", "merge_rule": "auto", "decider": "member",
+	d := map[string]any{"project": "demo-app", "autonomy": "manual", "merge_rule": "human", "decider": "member",
 		"chat_task": factoryd.ChatTaskID("demo-app", time.Now())}
 	for k, v := range more {
 		d[k] = v

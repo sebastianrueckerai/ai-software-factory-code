@@ -294,6 +294,15 @@ func keyIndex(m *yaml.Node, key string) int {
 	return -1
 }
 
+// autonomyKeys are the autonomy and merge_rule values the project file
+// holds for state: only full auto is autonomous with merge_rule auto.
+func autonomyKeys(state string) (autonomy, mergeRule string) {
+	if state == policy.AutonomyFullAuto {
+		return policy.AutonomyAutonomous, policy.MergeAuto
+	}
+	return state, policy.MergeHuman
+}
+
 // autonomyEdit sets the project file to autonomy state with queue_cap:
 // full auto is autonomous with merge_rule auto, every other level takes
 // merge_rule human; a cap of 0 keeps
@@ -312,14 +321,9 @@ func autonomyEdit(state string, queueCap int) func(doc *yaml.Node) error {
 				m.Content = append(m.Content, scalar(key, "!!str"), scalar(v, "!!str"))
 			}
 		}
-		switch state {
-		case policy.AutonomyFullAuto:
-			set("autonomy", policy.AutonomyAutonomous)
-			set("merge_rule", policy.MergeAuto)
-		default:
-			set("autonomy", state)
-			set("merge_rule", policy.MergeHuman)
-		}
+		level, rule := autonomyKeys(state)
+		set("autonomy", level)
+		set("merge_rule", rule)
 		switch i := keyIndex(m, "queue_cap"); {
 		case queueCap == 0:
 		case queueCap != policy.DefaultQueueCap && i >= 0:

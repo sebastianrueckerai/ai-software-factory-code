@@ -1,6 +1,6 @@
 # yaml-language-server: $schema=../schema/project.schema.json
 repository: demo-app/demo-app
-merge_rule: auto
+merge_rule: human
 objects: factory
 agents: coder
 process: maintenance

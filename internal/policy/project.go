@@ -724,6 +724,9 @@ func (p ProjectConfig) Validate(name string) error {
 	if p.Autonomy != "" && !slices.Contains(AutonomyValues, p.Autonomy) {
 		bad("autonomy %q: want one of %v", p.Autonomy, AutonomyValues)
 	}
+	if p.MergeRule == MergeAuto && p.Autonomy != AutonomyAutonomous {
+		bad("merge_rule auto: only full auto merges without a human, so set autonomy: autonomous for full auto, or merge_rule: human")
+	}
 	if p.QueueCap < 0 {
 		bad("queue_cap %d: a count of cards", p.QueueCap)
 	}

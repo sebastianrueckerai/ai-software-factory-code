@@ -25,11 +25,11 @@
 <label for="token">GitHub token</label>
 <input id="token" name="token" type="password" autocomplete="off" aria-describedby="token-help">
 <p id="token-help" class="meta">For a private repository: a token that reads it. Registration uses it once for the copy and forgets it; no agent sees it.</p>
-{{end}}<label for="merge_rule">Merge rule</label>
-<select id="merge_rule" name="merge_rule">
-<option value="human"{{if eq .Form.MergeRule "human"}} selected{{end}}>human</option>
-<option value="auto"{{if eq .Form.MergeRule "auto"}} selected{{end}}>auto</option>
+{{end}}<label for="autonomy">Autonomy</label>
+<select id="autonomy" name="autonomy" aria-describedby="autonomy-help">
+{{range .Levels}}<option value="{{.}}"{{if eq . $.Form.Autonomy}} selected{{end}}>{{.}}</option>{{end}}
 </select>
+<p id="autonomy-help" class="meta">The dial's position. Only full auto merges a reviewed pull request without a human.</p>
 {{if .Approver}}<button type="submit">File the project</button>{{else}}<p class="meta">Only the factory's approvers may file a project.</p>{{end}}
 </form>
 </div>
