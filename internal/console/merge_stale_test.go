@@ -76,3 +76,48 @@ func TestStaleCardMergeApprovalRefuses(t *testing.T) {
 		t.Fatalf("merges = %q, want the one before", merged)
 	}
 }
+
+// A human's approve whose gate rows cannot be read fails before the
+// approving review is posted, so it half-happens nowhere.
+func TestApproveReadsTheGateRowsBeforeTheReview(t *testing.T) {
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-card", Kind: "agent", Status: "in-review",
+		Repository: "sf/code", IssueNumber: 9, PRNumber: 9}}}
+	r.approvals.rows = append(r.approvals.rows, factoryd.ApprovalRequest{ID: 31, Kind: factoryd.ApprovalMerge, TaskID: "t-card",
+		Project: "sf/code", PRNumber: 9, Status: "pending", Spec: json.RawMessage(`{"head_sha":"b7e04c19d2a3"}`)})
+	r.c.cfg.CheckMerge = func(context.Context, string, int64, string) error { return fmt.Errorf("the store is down") }
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/approvals/31/approve", url.Values{"csrf": {s.csrf}, "project": {"ai-software-factory-code"}}), ck)
+	if rec.Code != http.StatusInternalServerError || !strings.Contains(rec.Body.String(), "Cannot read the card's review and audit rows. Approve again.") {
+		t.Fatalf("approve = %d %q", rec.Code, rec.Body.String())
+	}
+	if len(r.fg.reviews) != 0 {
+		t.Fatalf("reviews posted: %v", r.fg.reviews)
+	}
+}
+
+// The refusal of the agent's approval of an unreviewed merge offers a
+// request for changes only where an agent can take the card back: a factory
+// pull request and a roll have none.
+func TestUnreviewedRefusalPicksTheRemedy(t *testing.T) {
+	err := &factoryd.UnreviewedMergeError{Stages: []string{"audit"}}
+	const state = "The audit did not run, so the project agent cannot approve this merge."
+	for _, c := range []struct {
+		name string
+		task factoryd.Task
+		spec factoryd.MergeSpec
+		want string
+	}{
+		{"agent card", factoryd.Task{}, factoryd.MergeSpec{}, state + " Leave the call to a human, or deny the merge with a request for changes (deny_merge with request_changes), which sends the card back so the gates run on its next head."},
+		{"factory pull request", factoryd.Task{}, factoryd.MergeSpec{Factory: true}, state + " Leave the call to a human: no agent works on this pull request."},
+		{"roll", factoryd.Task{Source: factoryd.SourceRoll}, factoryd.MergeSpec{}, state + " Leave the call to a human: no agent works on this pull request."},
+	} {
+		got, ok := unreviewedRefusal(fmt.Errorf("approve: %w", err), c.task, c.spec)
+		if r, isRefusal := got.(*refusal); !ok || !isRefusal || r.status != http.StatusConflict || r.msg != c.want {
+			t.Errorf("%s: %v, want 409 %q", c.name, got, c.want)
+		}
+	}
+	if _, ok := unreviewedRefusal(fmt.Errorf("the store is down"), factoryd.Task{}, factoryd.MergeSpec{}); ok {
+		t.Error("another error read as a refusal")
+	}
+}

@@ -159,6 +159,9 @@ func (tl *Timeline) append(ctx context.Context, taskID, step string, detail map[
 		return false, err
 	}
 	tl.gate(ctx, step, detail, now)
+	if step == StepStageSkipped {
+		tl.RecordRow(ctx, taskID, EventStageSkipped, FactoryDecider, ViaFactoryd, detail)
+	}
 	return true, nil
 }
 

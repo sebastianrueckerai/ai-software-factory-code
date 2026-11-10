@@ -1421,6 +1421,7 @@ func newRig(t *testing.T) *rig {
 			r.synced = append(r.synced, project+" by "+by)
 			return "Pull request #3 brings GitHub's default branch of acme/app at abc1234 to main.", r.syncErr
 		},
+		CheckMerge: func(context.Context, string, int64, string) error { return nil },
 		ApproveMerge: func(_ context.Context, taskID string, pr int64, approver string) error {
 			fg.mu.Lock()
 			fg.calls = append(fg.calls, fmt.Sprintf("SIGNAL approved %s #%d by %s", taskID, pr, approver))

@@ -1469,3 +1469,15 @@ func TestProviderBackoffAgesFromTheDueRetry(t *testing.T) {
 		t.Fatalf("at +1:13: Flags = %v, want %v", d.Flags, want)
 	}
 }
+
+// A skipped stage's timeline line also writes its events row, which the
+// approval rule reads to leave the stage out.
+func TestSkippedStageWritesItsEventRow(t *testing.T) {
+	g := newDigestRig(nil)
+	if err := g.r.timeline.Append(context.Background(), "t1410", StepStageSkipped, map[string]any{"stage": "audit", "reason": "off"}); err != nil {
+		t.Fatal(err)
+	}
+	if len(g.store.events) != 1 || g.store.events[0].Kind != EventStageSkipped || g.store.events[0].Detail["stage"] != "audit" {
+		t.Fatalf("events = %+v, want one stage_skipped row for audit", g.store.events)
+	}
+}

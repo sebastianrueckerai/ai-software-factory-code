@@ -588,7 +588,7 @@ func (t *taskRun) skipReason(s policy.Stage) string {
 
 func (t *taskRun) recordSkip(stage, why string) {
 	detail := map[string]any{"stage": stage, "reason": why}
-	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, "stage_skipped", detail).Get(t.ctx, nil); err != nil {
+	if err := workflow.ExecuteActivity(t.short, ActivityRecordStep, t.taskID, StepStageSkipped, detail).Get(t.ctx, nil); err != nil {
 		workflow.GetLogger(t.ctx).Warn("record skipped stage", "error", err)
 	}
 }
