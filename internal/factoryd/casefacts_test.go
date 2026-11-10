@@ -137,7 +137,7 @@ func (g factsRig) timeline(t *testing.T) {
 // the draws, by hand:
 //   - the checks ran again on h1, not on h2: until a case on h2 does
 //   - sessions 3 + 1 raised = 4; agent time 10m, 15m for a large card, + 5m
-//     raised = 1200 s, 480 s used
+//     raised = 1200 s, 480 s used; a session needs min(5m, 10m) = 300 s
 //   - spent 4.50 + 0.25 held = 4.75, left 0.25; an opening on small needs
 //     its recorded opening, 0.607001, above the cheap floor 0.30; the
 //     ceiling task_max_eur 5; the gate reserve is the default 0.40
@@ -162,7 +162,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 	}
 	drawn := factsAt(10, 4)
 	want := CaseFacts{Head: "h2", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Stage: GateApproval,
-		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, Model: "small",
+		Attempts: 3, SessionCap: 4, AgentTimeS: 480, AgentTimeCapS: 1200, SessionLeastS: 300, Model: "small",
 		BudgetEUR: 5, SpentEUR: 4.75, LeftEUR: 0.25, ReserveEUR: 0.4, FloorEUR: got.FloorEUR, CeilingEUR: 5,
 		Findings:   []string{idA, idB},
 		LastDrawAt: &drawn, DrawHead: "h2", DrawChecks: "green", DrawFindings: []string{idA, idB}, Pushed: true,

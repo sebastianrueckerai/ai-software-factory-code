@@ -409,11 +409,11 @@ func raiseRefusal(eur float64) string {
 
 // sessionRoom is why f leaves no room to open a session, "" when it has
 // it: none running, an attempt under the cap, the agent time a session
-// needs (minSession, or the whole cap when it is shorter), and the money
-// an opening needs, with the action that makes the room.
+// needs (SessionLeastS), and the money an opening needs, with the action
+// that makes the room.
 func sessionRoom(f CaseFacts) string {
-	limit, left := time.Duration(f.AgentTimeCapS)*time.Second, time.Duration(f.AgentTimeCapS-f.AgentTimeS)*time.Second
-	switch need := min(minSession, limit); {
+	limit, left, need := f.agentTime()
+	switch {
 	case f.Running:
 		return "a session is running"
 	case f.Attempts >= f.SessionCap:

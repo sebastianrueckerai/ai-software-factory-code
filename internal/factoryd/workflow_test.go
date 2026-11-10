@@ -111,13 +111,14 @@ type workflowHarness struct {
 	arrivedAt []time.Time
 	left      []string
 	leaveErr  error // LeaveImagePark's error, nil = none
-	// trips are OpenTrip's inputs in order. rungZero, when set, is the
-	// resolution rung 0 takes on the nth trip (from 1), nil to ask. A trip
-	// that asks opens case 700+n with Escalate's comment. ended are
-	// EndCase's calls as "case reason"
-	trips    []TripInput
-	rungZero func(n int, in TripInput) *Resolution
-	ended    []string
+	// trips are OpenTrip's inputs in order and tripUsage the usage the row
+	// held at each. rungZero, when set, is the resolution rung 0 takes on
+	// the nth trip (from 1), nil to ask. A trip that asks opens case 700+n
+	// with Escalate's comment. ended are EndCase's calls as "case reason"
+	trips     []TripInput
+	tripUsage []TaskUsage
+	rungZero  func(n int, in TripInput) *Resolution
+	ended     []string
 }
 
 // recordedStep is a RecordStep call and when on the workflow's clock.
@@ -334,7 +335,7 @@ func newWorkflowHarness(t *testing.T, wf ...TaskWorkflow) *workflowHarness {
 		}).AfterFn(func() time.Duration { return h.escalateAfter })
 	h.env.OnActivity(ActivityOpenTrip, mock.Anything, mock.Anything).Return(
 		func(ctx context.Context, in TripInput) (TripOutcome, error) {
-			h.trips = append(h.trips, in)
+			h.trips, h.tripUsage = append(h.trips, in), append(h.tripUsage, h.rowUsage)
 			n := len(h.trips)
 			if h.rungZero != nil {
 				if res := h.rungZero(n, in); res != nil {

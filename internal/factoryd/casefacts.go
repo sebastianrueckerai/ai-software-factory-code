@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"math"
 	"slices"
 	"time"
 
@@ -33,8 +34,14 @@ type CaseFacts struct {
 	Stage          string `json:"stage,omitempty"`           // the gate the card is in
 	Attempts       int    `json:"attempts"`
 	SessionCap     int    `json:"session_cap"`
-	AgentTimeS     int64  `json:"agent_time_s"`
-	AgentTimeCapS  int64  `json:"agent_time_cap_s"`
+	// AgentTimeS is the agent time the card used and AgentTimeCapS its cap,
+	// the class's sized by the card plus what was added, in seconds with
+	// their fraction. SessionLeastS is what a session needs to start, as
+	// the run reads it: minSession, or the class's whole agent time when
+	// shorter. The cap and the least are 0 when the config is unread.
+	AgentTimeS    float64 `json:"agent_time_s"`
+	AgentTimeCapS float64 `json:"agent_time_cap_s"`
+	SessionLeastS float64 `json:"session_least_s"`
 	// Model is the model the next session runs on, "" when none is known
 	// yet: the class's session_model, else the card's last session's.
 	Model      string   `json:"model,omitempty"`
@@ -92,6 +99,33 @@ type DrawFacts struct {
 // reads: what the card has left less the gate reserve held for its gates.
 func (f CaseFacts) SessionLeft() float64 { return policy.SessionHeadroom(f.LeftEUR, f.ReserveEUR) }
 
+// agentTime is f's agent-time cap, what is left of it and what a session
+// needs to start.
+func (f CaseFacts) agentTime() (limit, left, need time.Duration) {
+	limit = seconds(f.AgentTimeCapS)
+	return limit, limit - seconds(f.AgentTimeS), seconds(f.SessionLeastS)
+}
+
+// seconds is s seconds to the nanosecond.
+func seconds(s float64) time.Duration { return time.Duration(math.Round(s * float64(time.Second))) }
+
+// noSession is the cap the run asks at its loop top on f before a
+// session, "" when one fits: the session cap once the attempts reached it,
+// else the agent-time cap when less is left than a session needs. read is
+// false when a limit is unread, which fits none.
+func (f CaseFacts) noSession() (asked CaseKind, read bool) {
+	limit, left, need := f.agentTime()
+	switch {
+	case f.SessionCap <= 0 || limit <= 0 || need <= 0:
+		return "", false
+	case f.Attempts >= f.SessionCap:
+		return CaseSessionCap, true
+	case left < need:
+		return CaseAgentTimeCap, true
+	}
+	return "", true
+}
+
 // atCase weighs f for case c: its kind, and the gate a gate stop names.
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
@@ -119,7 +153,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 	_, project, _ := v.ProjectOf(t.Repository)
 	f := CaseFacts{Head: head, PR: t.PRNumber, PROpen: t.PRNumber > 0 && t.Status != "merged" && !Final(t.Status), Stage: t.Gate,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
-		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
+		AgentTimeS: t.Usage.AgentTime.Seconds(), Model: sessionModel(v.Document, t, t.ModelAlias),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
 		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
 	if Final(t.Status) {
@@ -163,7 +197,8 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		{"config", func() error {
 			tc, err := r.TaskConfig(ctx, t.ID, 0)
 			if err == nil {
-				f.AgentTimeCapS = int64((policy.SizeAgentTime(t.Size, tc.AgentTime) + t.Usage.TimeAdded()) / time.Second)
+				f.AgentTimeCapS = (policy.SizeAgentTime(t.Size, tc.AgentTime) + t.Usage.TimeAdded()).Seconds()
+				f.SessionLeastS = min(minSession, tc.AgentTime).Seconds()
 			}
 			return err
 		}},

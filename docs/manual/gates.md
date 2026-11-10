@@ -450,7 +450,9 @@ session's statement carries no pace line. A conversation gets
 `limits.checkin_time` (90 s a call when absent, 30m at 20 calls, at most
 30m, and never past the session's end); past either, the check-in has
 failed, which is the factory's own failure, not the card's work: it opens
-a checkin_failed case, which a reply answers with a new attempt. The time a
+a checkin_failed case, which a reply answers with a new attempt while a
+session fits the card; at its session cap, or with less agent time left
+than a session needs, the reply asks that cap, which an extend answers. The time a
 check-in takes at a session's start is no agent time of the card, and the session's deadline moves out by it.
 `limits.checkin_share` (10 percent of the card's budget) caps all the
 card's conversations, checked before each, and a trip past it asks a
