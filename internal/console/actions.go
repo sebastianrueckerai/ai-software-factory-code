@@ -702,7 +702,7 @@ func (c *Console) doAnswerPlanQuestion(ctx context.Context, a actor, id string, 
 		return "", refuse(http.StatusBadGateway, "The answer is recorded, but factoryd could not pass it to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers question %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answer could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered, decisionDetail(revision, idx, decision, answer))
 	if err := c.comment(ctx, a, t, factoryd.PlanAnswerComment(idx, factoryd.PlanQuestion{Decision: decision, Answer: answer}), nil); err != nil {
@@ -793,7 +793,7 @@ func (c *Console) doAnswerPlanQuestions(ctx context.Context, a actor, id string,
 		return "", refuse(http.StatusBadGateway, "The answers are recorded, but factoryd could not pass them to the plan; request_changes sends the plan to the planner with the answers.")
 	case err != nil:
 		log.Printf("console: %s answers %d questions of revision %d of plan %s: %v", a.s.user, len(batch), revision, t.ID, err)
-		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %v. Read the plan again and answer the open questions of its newest revision.", err))
+		return "", refuse(http.StatusConflict, fmt.Sprintf("The answers could not be recorded: %s. Read the plan again and answer the open questions of its newest revision.", errText(err)))
 	}
 	for _, ans := range batch {
 		c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventPlanQuestionAnswered,
@@ -838,7 +838,7 @@ func (c *Console) doDecideHoldout(ctx context.Context, a actor, id string, revis
 		return refuse(http.StatusConflict, err.Error())
 	case err != nil:
 		log.Printf("console: %s decides hold-out %d of revision %d of plan %s: %v", a.s.user, idx, revision, t.ID, err)
-		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %v. Reload the board and press Okay or Drop again.", err))
+		return refuse(http.StatusConflict, fmt.Sprintf("The decision could not be recorded: %s. Reload the board and press Okay or Drop again.", errText(err)))
 	}
 	c.record(ctx, a, t.Repository, t.ID, t.IssueNumber, factoryd.EventHoldoutDecided, map[string]any{"revision": revision, "index": idx, "verb": verb})
 	log.Printf("console: %s %s hold-out %d of revision %d of plan %s via %s", a.s.user, verb, idx, revision, t.ID, a.via)
@@ -2368,7 +2368,7 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 			return "", refuse(http.StatusNotFound, fmt.Sprintf("There is no plan %s.", q.TaskID))
 		case err != nil:
 			log.Printf("console: %s granted the gap of %s, the dues failed: %v", a.s.user, q.TaskID, err)
-			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %v. Grant again, or Fund the card when the refusal names money.", err))
+			return "", refuse(http.StatusInternalServerError, fmt.Sprintf("The grant could not be recorded: %s. Grant again, or Fund the card when the refusal names money.", errText(err)))
 		case n == 0:
 			return "", refuse(http.StatusConflict, "Cannot grant one more card: every criterion is met or waived already, and the request closes on the next sweep.")
 		}
