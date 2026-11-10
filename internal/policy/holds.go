@@ -669,8 +669,8 @@ func readTaskFree(ctx context.Context, q rowQuerier, taskID string) (TaskFree, e
 	var t TaskFree
 	var expires sql.NullTime
 	err := q.QueryRowContext(ctx,
-		`SELECT status, budget_eur::float8, h.eur, h.n, h.expires, spent_eur::float8
-		 FROM tasks, (SELECT COALESCE(sum(eur), 0)::float8 AS eur, count(*) AS n, min(expires_at) AS expires FROM holds WHERE task_id = $1) h
+		`SELECT status, round(budget_eur, 6)::float8, h.eur, h.n, h.expires, round(spent_eur, 6)::float8
+		 FROM tasks, (SELECT round(COALESCE(sum(eur), 0), 6)::float8 AS eur, count(*) AS n, min(expires_at) AS expires FROM holds WHERE task_id = $1) h
 		 WHERE id = $1`, taskID).Scan(&t.Status, &t.Budget, &t.Held, &t.Holds, &expires, &t.Spent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskFree{}, fmt.Errorf("hold: no task row for %s", taskID)

@@ -1536,11 +1536,14 @@ func TestOffersToolFollowsWhereTheProjectRuns(t *testing.T) {
 }
 
 // Money compares at the micro-euro: the inputs are run-time floats, whose
-// subtractions leave noise a constant expression would not: 1.01 - 0.31 is
+// subtractions leave noise a constant expression would not: 1.1 - 0.4 is
 // 0.7000000000000001, and 0.7 - 0.4 is 0.29999999999999993. Less the 0.40
 // reserve both read 0.30 here, as the 0.30 EUR floor does.
 func TestSessionHeadroomRoundsToTheMicroEuro(t *testing.T) {
-	a, b, c, reserve := 1.01, 0.31, 0.7, 0.4
+	a, b, c, reserve := 1.1, 0.4, 0.7, 0.4
+	if a-b == c {
+		t.Fatal("1.1 - 0.4 carries no float noise: the check proves nothing")
+	}
 	noisy := c - reserve
 	if noisy == 0.3 {
 		t.Fatal("the input carries no float noise: the check proves nothing")
@@ -1561,5 +1564,16 @@ func TestSessionHeadroomRoundsToTheMicroEuro(t *testing.T) {
 	}
 	if got := CeilMicro(0.3); got != 0.3 {
 		t.Errorf("CeilMicro(0.3) = %v, want 0.3", got)
+	}
+}
+
+// Left subtracts the spend and the holds together, then rounds once:
+// 1.00 - (0.3000004 + 0.1000004) = 0.5999992 reads 0.599999. Rounding
+// budget - spent first (0.6999996, 0.70) and taking the holds off after
+// would read 0.5999996.
+func TestLeftSubtractsTheSpendAndTheHoldsTogether(t *testing.T) {
+	budget, spent, held := 1.0, 0.3000004, 0.1000004
+	if got := Left(budget, spent, held); got != 0.599999 {
+		t.Errorf("Left = %v, want 0.599999", got)
 	}
 }
