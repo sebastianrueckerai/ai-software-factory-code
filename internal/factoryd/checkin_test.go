@@ -231,7 +231,7 @@ func TestCheckinStatement(t *testing.T) {
 // tokens, and its status, assembled by factoryd from its store.
 func TestCheckinStatementCarriesTheCostState(t *testing.T) {
 	ask := &CheckInAsk{Moment: CheckInGate, ParentSession: "s-parent-9",
-		Pace:      &Pace{Lines: 10, BoundLines: 300, SpentEUR: 1.2, BudgetEUR: 4, SpentMinutes: 12, LeftMinutes: 30, Attempt: 1, Sessions: 2},
+		Pace: &Pace{Lines: 10, BoundLines: 300, SpentEUR: 1.2, BudgetEUR: 4, SpentMinutes: 12, LeftMinutes: 30, Attempt: 1, Sessions: 2},
 		CostState: &CostState{BudgetEUR: 4, SpentEUR: 1.2, RemainingEUR: 2.8, Calls: 5,
 			PromptTokens: 2000, CachedTokens: 400, OutputTokens: 800, State: "running"}}
 	s := checkinStatement(ask, nil, 7, 1.5, 2000)

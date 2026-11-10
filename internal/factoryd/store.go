@@ -327,7 +327,7 @@ type Session struct {
 }
 
 // TaskCallTotals is the count of a task's model calls (audit rows with
-// tool = '') and the sums of their token columns, as the cost and state
+// tool = ”) and the sums of their token columns, as the cost and state
 // block carries them.
 type TaskCallTotals struct {
 	Calls                                    int
@@ -1748,7 +1748,7 @@ func (s *PGStore) SpendAndCallsBetween(ctx context.Context, taskID string, from,
 }
 
 // TaskCallTotals is the count of the task's model calls (audit rows with
-// tool = '') and the sums of their token columns, in one scan; the cost and
+// tool = ”) and the sums of their token columns, in one scan; the cost and
 // state block reads them for the supervisor inputs.
 func (s *PGStore) TaskCallTotals(ctx context.Context, taskID string) (TaskCallTotals, error) {
 	var t TaskCallTotals
