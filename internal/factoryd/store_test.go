@@ -413,7 +413,8 @@ func (s *fakeStore) UnnamedOpenPlans(ctx context.Context) ([]Task, error) {
 func newFakeStore() *fakeStore {
 	return &fakeStore{tasks: map[string]Task{}, sessions: map[string]Session{},
 		started: map[string]bool{}, finished: map[string]time.Time{}, settled: map[string]bool{},
-		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]time.Time{}}
+		routineStates: map[string]RoutineState{}, routineRuns: map[string][]RoutineRun{}, closed: map[string]time.Time{},
+		callTotals: map[string]TaskCallTotals{}}
 }
 
 func (s *fakeStore) CreateTask(ctx context.Context, t Task) error {
