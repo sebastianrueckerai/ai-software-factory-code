@@ -45,6 +45,13 @@ type HoldRequest struct {
 	// read it from the call's token; "" for factoryd's calls and a
 	// resource's reservation.
 	Session string
+	// ReserveEUR is the gate reserve (Limits.GateReserve) held out of
+	// the task headroom for this call: a session's call carries it, so
+	// the card's budget keeps the price of its model review and its
+	// audit and its sessions stop at budget - spent - reserve; a
+	// factoryd call (the gates', a waiting card's brief) and a
+	// resource's reservation leave it 0 and keep the full headroom.
+	ReserveEUR float64
 	// Bytes is a model call's request body length. Earlier is the task's
 	// newest settled call on the same ref with usage, which calibrates the
 	// prompt tokens Bytes carries; without one, a token covers at least
@@ -196,9 +203,9 @@ func Fit(f Free, r HoldRequest) (Hold, error) {
 	}
 	maxOut := min(outFit, full)
 	if maxOut <= 0 || maxOut < MinCallTokens && maxOut != r.WantOut {
-		return Hold{}, refusal(decision, KindModel, r.Project, fmt.Sprintf(
+		return Hold{}, refusal(decision, KindModel, r.Project, f.stop(decision, fmt.Sprintf(
 			"free headroom %.6f EUR (%s) fits %d output tokens after a request of %d bytes (%s %.0f prompt tokens), below the minimum call of %d",
-			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens))
+			free, f.figures(), max(outFit, 0), r.Bytes, measure, tokens, MinCallTokens)))
 	}
 	// a premium call keeps its whole output or runs on big: a reasoning
 	// model at max effort can spend a clamped limit before it answers
@@ -232,8 +239,8 @@ func FitTool(f Free, requests int, usedEUR float64, r HoldRequest) (Hold, error)
 func FitResource(f Free, r HoldRequest) (Hold, error) {
 	free, decision := f.bound()
 	if r.EUR > free {
-		return Hold{}, refusal(decision, r.Kind, r.Project, fmt.Sprintf(
-			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (%s)", r.Ref, r.EUR, free, f.figures()))
+		return Hold{}, refusal(decision, r.Kind, r.Project, f.stop(decision, fmt.Sprintf(
+			"%s: worst case %.6f EUR exceeds the free headroom %.6f EUR (%s)", r.Ref, r.EUR, free, f.figures())))
 	}
 	return Hold{TaskID: r.TaskID, Kind: r.Kind, Ref: r.Ref, Session: r.Session, EUR: r.EUR}, nil
 }
@@ -478,10 +485,14 @@ func LockHeadroom(ctx context.Context, tx *sql.Tx) error {
 // Free is a task's, the day's, the month's and the task's project's month
 // headroom after every outstanding hold. The project's is +Inf for a
 // project without a cap. Premium is the premium month headroom of a call
-// on Premium under a premium cap, nil for any other call.
+// on Premium under a premium cap, nil for any other call. Task already
+// holds r's gate reserve out (ReadFree), and Reserve and Spent name it:
+// a session call's refused_budget refusal — the money stop — states what
+// the card spent and what the gates keep.
 type Free struct {
 	Task, Day, Month, Project float64
 	Premium                   *float64
+	Reserve, Spent            float64
 }
 
 // bound is HeadroomBound over f, and the premium headroom below it.
@@ -504,6 +515,19 @@ func (f Free) figures() string {
 		s += fmt.Sprintf(", premium %.6f", *f.Premium)
 	}
 	return s
+}
+
+// stop is reason with the money stop appended: a budget refusal of a
+// call whose reserve is held out (a session's) names the card's spent
+// EUR and the EUR held for its model review and its audit, so a card
+// that spent to its session ceiling says what its gates still run on.
+// Any other refusal, or a call that kept the full headroom (factoryd's),
+// reads as before.
+func (f Free) stop(decision, reason string) string {
+	if decision == RefusedBudget && f.Reserve > 0 {
+		return reason + fmt.Sprintf("; the card spent %.2f EUR, and %.2f EUR is held for the model review and the audit", f.Spent, f.Reserve)
+	}
+	return reason
 }
 
 // MonthSpentSQL is the spend over the ledger in the UTC calendar month of
@@ -571,7 +595,10 @@ func FreeHeadroom(ctx context.Context, tx *sql.Tx, r HoldRequest) (Free, error) 
 // under a cap (+Inf otherwise). Every outstanding hold counts against the
 // day and the month. A call under a premium cap (r.PremiumEUR) also reads
 // the premium month headroom: the cap less the month's spend and the
-// outstanding holds on Premium.
+// outstanding holds on Premium. The task's headroom holds r's gate
+// reserve out (ReserveEUR): a session's call fits budget - spent -
+// reserve, factoryd's and a reservation's the full budget - spent, and
+// the Free carries the reserve and the spent EUR a money stop names.
 func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free, error) {
 	taskID, at := r.TaskID, now()
 	t, err := readTaskFree(ctx, q, taskID)
@@ -587,7 +614,8 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 	).Scan(&day, &month, &allHeld); err != nil {
 		return TaskFree{}, Free{}, err
 	}
-	f.Task, f.Day, f.Month, f.Project = t.Free(), day-allHeld, month-allHeld, math.Inf(1)
+	f.Task, f.Day, f.Month, f.Project = t.Free()-r.ReserveEUR, day-allHeld, month-allHeld, math.Inf(1)
+	f.Reserve, f.Spent = r.ReserveEUR, t.Spent
 	if r.PremiumEUR > 0 {
 		var premium float64
 		if err := q.QueryRowContext(ctx,
@@ -616,11 +644,13 @@ func ReadFree(ctx context.Context, q rowQuerier, r HoldRequest) (TaskFree, Free,
 // TaskFree is a task's own headroom: its budget less its spend before any
 // hold (Headroom), and its outstanding holds, Held EUR in Holds of them,
 // the earliest expiring at Expires (zero without one). Status is the
-// task's, which decides whether it may take a hold.
+// task's, which decides whether it may take a hold. Spent is the card's
+// spent EUR, which a money stop names beside the gate reserve.
 type TaskFree struct {
 	Status   string
 	Headroom float64
 	Held     float64
+	Spent    float64
 	Holds    int
 	Expires  time.Time
 }
@@ -635,9 +665,9 @@ func readTaskFree(ctx context.Context, q rowQuerier, taskID string) (TaskFree, e
 	var t TaskFree
 	var expires sql.NullTime
 	err := q.QueryRowContext(ctx,
-		`SELECT status, (budget_eur - spent_eur)::float8, h.eur, h.n, h.expires
+		`SELECT status, (budget_eur - spent_eur)::float8, h.eur, h.n, h.expires, spent_eur::float8
 		 FROM tasks, (SELECT COALESCE(sum(eur), 0)::float8 AS eur, count(*) AS n, min(expires_at) AS expires FROM holds WHERE task_id = $1) h
-		 WHERE id = $1`, taskID).Scan(&t.Status, &t.Headroom, &t.Held, &t.Holds, &expires)
+		 WHERE id = $1`, taskID).Scan(&t.Status, &t.Headroom, &t.Held, &t.Holds, &expires, &t.Spent)
 	if errors.Is(err, sql.ErrNoRows) {
 		return TaskFree{}, fmt.Errorf("hold: no task row for %s", taskID)
 	}

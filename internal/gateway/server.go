@@ -329,6 +329,13 @@ func (s *Server) handleChat(w http.ResponseWriter, r *http.Request) {
 	if chatReq.Model == policy.Premium {
 		req.PremiumEUR = pv.Document.Budget.PremiumMonthEUR
 	}
+	if id.Session != "" {
+		// a session's call holds the card's gate reserve out of its
+		// headroom: the review and the audit of a card whose sessions
+		// spend to the ceiling still run (Limits.GateReserve); a
+		// factoryd call keeps the full headroom
+		req.ReserveEUR = pv.Document.Limits.GateReserve()
+	}
 	hold, err := s.opts.Store.TakeHold(ctx, req)
 	var refusal *policy.Refusal
 	var note string

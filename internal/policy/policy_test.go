@@ -1155,6 +1155,36 @@ func TestStepCap(t *testing.T) {
 	}
 }
 
+// A policy without limits.gate_reserve_eur, and a version pinned before
+// the key existed, hold DefaultGateReserveEUR out of a card's sessions.
+func TestGateReserve(t *testing.T) {
+	d, err := Parse([]byte(valid))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.GateReserve(); got != DefaultGateReserveEUR {
+		t.Errorf("default gate reserve = %g, want %g", got, DefaultGateReserveEUR)
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, gate_reserve_eur: 0.4}", 1)))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := d.Limits.GateReserve(); got != 0.4 {
+		t.Errorf("gate reserve = %g, want 0.4", got)
+	}
+	var pinned Limits
+	if err := json.Unmarshal([]byte(`{"sessions":3,"agent_time":"20m0s","supervisor_calls":3,"supervisor_timeout":"6m0s","stronger_after":1}`), &pinned); err != nil {
+		t.Fatal(err)
+	}
+	if got := pinned.GateReserve(); got != DefaultGateReserveEUR {
+		t.Errorf("pinned version without gate_reserve_eur: gate reserve = %g, want %g", got, DefaultGateReserveEUR)
+	}
+	d, err = Parse([]byte(strings.Replace(valid, "stronger_after: 1}", "stronger_after: 1, gate_reserve_eur: -0.1}", 1)))
+	if err == nil || !strings.Contains(err.Error(), "limits.gate_reserve_eur must not be negative") {
+		t.Errorf("negative gate_reserve_eur: error = %v, want refusal naming limits.gate_reserve_eur", err)
+	}
+}
+
 // A policy without the nudge keys, and a version pinned before they
 // existed, nudge once after three identical calls in a row.
 func TestNudge(t *testing.T) {

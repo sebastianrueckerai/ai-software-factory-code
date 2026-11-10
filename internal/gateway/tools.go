@@ -664,12 +664,19 @@ func (s *Server) runPaid(ctx context.Context, c *toolCaller, tool string, toolCa
 		return "", &toolRefusal{decision, reason}
 	}
 	project, projectEUR := c.pv.ProjectCap(c.task.Repository)
-	hold, err := s.opts.Store.TakeHold(ctx, policy.HoldRequest{
+	req := policy.HoldRequest{
 		TaskID: c.task.ID, Kind: policy.KindTool, Ref: tool, Session: c.session, EUR: worst, Cap: toolCap,
 		DayEUR:   c.pv.Document.Budget.DayEUR,
 		MonthEUR: c.pv.Document.Budget.MonthEUR,
 		Project:  project, ProjectEUR: projectEUR,
-	})
+	}
+	if c.session != "" {
+		// a session's paid tool call holds the card's gate reserve out
+		// as any of its calls does; the tool door's callers beside a
+		// session (the checkin, the planner) keep the full headroom
+		req.ReserveEUR = c.pv.Document.Limits.GateReserve()
+	}
+	hold, err := s.opts.Store.TakeHold(ctx, req)
 	var refusal *policy.Refusal
 	if errors.As(err, &refusal) {
 		return "", &toolRefusal{refusal.Decision, refusal.Reason}
