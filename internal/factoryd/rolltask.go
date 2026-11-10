@@ -470,9 +470,14 @@ func (r *Roller) Run(ctx context.Context) {
 	}
 }
 
+// runsPage is how many runs one read of the runs list asks for: a run
+// carries its event payload, so a page of 20 answers about 470 KB and a
+// page of 50 passes maxForgejoAnswer.
+const runsPage = 20
+
 // rollRunsRead is how many of the newest push runs a poll reads for the
 // newest green one.
-const rollRunsRead = 20
+const rollRunsRead = runsPage
 
 func (r *Roller) poll(ctx context.Context) error {
 	settled, err := r.Store.SettleRollRequests(ctx)
