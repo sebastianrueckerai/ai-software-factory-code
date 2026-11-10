@@ -1,6 +1,8 @@
 package policy
 
 import (
+	"bytes"
+	"os"
 	"slices"
 	"strings"
 	"testing"
@@ -73,5 +75,22 @@ func TestSpendRail(t *testing.T) {
 	}
 	if _, err := RewriteSpendRails([]byte("no markers here")); err == nil {
 		t.Fatal("a document without markers rewrites, want the refusal")
+	}
+}
+
+// TestSpendRailNoDrift fails when the marked section of the manual page
+// differs from the table this build generates, so a cap that lands in the
+// schema or the catalogue without the table following cannot pass.
+func TestSpendRailNoDrift(t *testing.T) {
+	doc, err := os.ReadFile("../../docs/manual/policy.md")
+	if err != nil {
+		t.Fatal(err)
+	}
+	rewritten, err := RewriteSpendRails(doc)
+	if err != nil {
+		t.Fatalf("RewriteSpendRails: %v", err)
+	}
+	if !bytes.Equal(rewritten, doc) {
+		t.Fatal("docs/manual/policy.md's spend-rail section differs from the generated table; run: go run ./cmd/factoryd manual --out docs/manual/policy.md")
 	}
 }

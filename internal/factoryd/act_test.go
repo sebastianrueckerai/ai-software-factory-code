@@ -20,9 +20,9 @@ import (
 // refused with the one action rung 1 may take on a card that waits on no
 // case, a replan, and a successor is refused for want of a case. On its
 // case 7, rung 1's close is refused with what rung 1 may take: route to
-// approval, re-verify, a successor, a replan and a withdrawal. An action
-// the table does not hold is refused with the human's: re-verify, a raise
-// of the ceiling, a successor, a replan and a close. With case 7 live, an
+// approval, re-verify, a successor, a replan, a withdrawal and a note. An
+// action the table does not hold is refused with the human's: re-verify,
+// a raise of the ceiling, a successor, a replan, a close and a note. With case 7 live, an
 // answer with no case is refused naming it. Nothing is written.
 func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 	g := newFactsRig(t)
@@ -53,9 +53,9 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		want string
 	}{
 		{"rung 1's close", ActInput{CaseID: 7, By: "factory-checkin", Rung: 1, Res: Resolution{Action: ActClose, Note: "done"}},
-			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor, replan and withdraw"},
+			"rung 1 may not pick close: rung 2 and the human may, and rung 1 may take route_approval, reverify, successor, replan, withdraw and note"},
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
-			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan and close"},
+			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
 			"card #12 waits on its case 7: answer that case by its id"},
 	} {

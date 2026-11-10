@@ -55,7 +55,7 @@ func main() {
 		case "remove-project":
 			removeProjectMain(os.Args[2:])
 			return
-		case "schema", "config":
+		case "schema", "config", "manual":
 			os.Exit(run(os.Args[1:], os.Stdout, os.Stderr))
 		case "image":
 			os.Exit(runImage(os.Args[2:], os.Stdout, os.Stderr))

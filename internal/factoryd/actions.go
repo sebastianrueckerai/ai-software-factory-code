@@ -245,18 +245,22 @@ func ActionByName(name string) (Action, bool) {
 }
 
 // probes are the smallest answers Offered tries the actions that need
-// arguments with: one session, one cent, the same model.
-var probes = map[string]map[string]any{
-	ActHandover: {"model": "same"}, ActExtend: {"sessions": 1}, ActFund: {"eur": 0.01}, ActRaiseCeiling: {"eur": 0.01},
+// arguments or a note with: one session, one cent, the same model, one
+// note.
+var probes = map[string]Resolution{
+	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
+	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
+	ActContinue: {Note: "probe"}, ActNote: {Note: "probe"},
 }
 
 // Offered lists the actions rung may take on facts f, in table order: its
 // rows whose Applies holds and whose draw fits rung's bounds, tried with
-// the smallest arguments (probes) where an action needs them.
+// the smallest answers (probes) where an action needs arguments or a note.
 func Offered(f CaseFacts, rung int) []Action {
 	var out []Action
 	for _, a := range Actions {
-		if a.refusal(f, rung, Resolution{Action: a.Name, Args: probes[a.Name]}) == "" {
+		p := probes[a.Name]
+		if a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}) == "" {
 			out = append(out, a)
 		}
 	}
