@@ -450,11 +450,16 @@ func retryRefusal(d DepFact) string {
 }
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
-// since, the head, the checks and the findings unchanged since it. A draw
-// whose row recorded no findings, or one on facts whose timeline could
-// not be read, is weighed on the head and the checks.
+// and no filed revision since, the head, the checks and the findings
+// unchanged since it. A draw whose row recorded no findings, or one on
+// facts whose timeline could not be read, is weighed on the head and the
+// checks. At an agent time stop a draw that raised no agent time raised
+// nothing the stop names and is no draw.
 func boughtNothing(f CaseFacts) bool {
-	return f.LastDrawAt != nil && !f.PushedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks &&
+	if f.Kind == CaseAgentTimeCap && f.DrawAgentTimeS == 0 {
+		return false
+	}
+	return f.LastDrawAt != nil && !f.PushedSinceDraw && !f.RevisedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks &&
 		(f.DrawFindings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(f.DrawFindings, f.Findings))
 }
 

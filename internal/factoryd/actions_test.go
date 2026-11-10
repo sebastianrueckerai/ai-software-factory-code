@@ -600,3 +600,44 @@ func TestMonitorCaseOffersOnlyWhatActDoes(t *testing.T) {
 		t.Errorf("a settle of a cap case = %q, want %q", got, want)
 	}
 }
+
+// A planner never pushes: its draw bought something once it filed a
+// revision since. At an agent time stop a draw that raised no agent time
+// raised nothing the stop names, so it is no draw to weigh the next one
+// against; one that raised time still is.
+func TestBoughtNothingWeighsAPlannerOnItsRevision(t *testing.T) {
+	at := time.Date(2026, 11, 10, 11, 29, 0, 0, time.UTC)
+	f := CaseFacts{Kind: CaseAgentTimeCap, Head: "", Checks: "", LastDrawAt: &at, DrawAgentTimeS: 300}
+	if !boughtNothing(f) {
+		t.Error("a draw of 5 minutes, no push and no revision since: want bought nothing")
+	}
+	f.RevisedSinceDraw = true
+	if boughtNothing(f) {
+		t.Error("a revision filed since the draw: the draw bought something")
+	}
+	f.RevisedSinceDraw, f.DrawAgentTimeS = false, 0
+	if boughtNothing(f) {
+		t.Error("a draw that raised no agent time at a time stop is no draw")
+	}
+	f.Kind = CaseSessionCap
+	if !boughtNothing(f) {
+		t.Error("the same draw at a session cap is weighed as before")
+	}
+}
+
+// The facts read a filed revision after the newest draw, and the agent
+// time that draw raised, from the events newest first.
+func TestEventFactsReadARevisionSinceTheDraw(t *testing.T) {
+	draw := Event{At: factsAt(11, 29), Kind: EventCardExtended, Detail: map[string]any{"pool": true, "head": "", "checks": "", "sessions": 0.0, "agent_time_s": 300.0}}
+	revision := Event{At: factsAt(11, 40), Kind: EventPlanRevision}
+	var f CaseFacts
+	f.eventFacts([]Event{revision, draw})
+	if !f.RevisedSinceDraw || f.DrawAgentTimeS != 300 {
+		t.Errorf("revised since draw %v, draw time %ds; want true and 300", f.RevisedSinceDraw, f.DrawAgentTimeS)
+	}
+	var before CaseFacts
+	before.eventFacts([]Event{draw, revision})
+	if before.RevisedSinceDraw {
+		t.Error("a revision filed before the draw is not one since")
+	}
+}

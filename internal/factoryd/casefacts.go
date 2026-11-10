@@ -50,16 +50,21 @@ type CaseFacts struct {
 	DrawChecks string     `json:"draw_checks,omitempty"`
 	// DrawFindings are the finding ids the newest draw's row recorded,
 	// nil when it recorded none, which is not the empty list.
-	DrawFindings    []string    `json:"draw_findings"`
-	PushedSinceDraw bool        `json:"pushed_since_draw,omitempty"`
-	Pushed          bool        `json:"pushed,omitempty"` // a session pushed a branch head
-	Dependencies    []DepFact   `json:"dependencies,omitempty"`
-	Plan            string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
-	Running         bool        `json:"running,omitempty"` // a session is live
-	Autonomy        string      `json:"autonomy"`
-	PoolLeft        policy.Draw `json:"pool_left"`
-	CardDrawLeft    policy.Draw `json:"card_draw_left"`
-	Partial         []string    `json:"partial,omitempty"` // the readers that failed, by name
+	DrawFindings    []string `json:"draw_findings"`
+	PushedSinceDraw bool     `json:"pushed_since_draw,omitempty"`
+	// RevisedSinceDraw is set when a planner filed a revision since the
+	// last draw: what a planner's draw buys, as a push does for an agent.
+	RevisedSinceDraw bool `json:"revised_since_draw,omitempty"`
+	// DrawAgentTimeS is the agent time the last draw raised.
+	DrawAgentTimeS int64       `json:"draw_agent_time_s,omitempty"`
+	Pushed         bool        `json:"pushed,omitempty"` // a session pushed a branch head
+	Dependencies   []DepFact   `json:"dependencies,omitempty"`
+	Plan           string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
+	Running        bool        `json:"running,omitempty"` // a session is live
+	Autonomy       string      `json:"autonomy"`
+	PoolLeft       policy.Draw `json:"pool_left"`
+	CardDrawLeft   policy.Draw `json:"card_draw_left"`
+	Partial        []string    `json:"partial,omitempty"` // the readers that failed, by name
 }
 
 // DepFact is one dependency of the card that is not done.
@@ -215,6 +220,9 @@ func (f *CaseFacts) eventFacts(events []Event) {
 	at := events[i].At
 	f.LastDrawAt, f.DrawHead, f.DrawChecks = &at, head, checks
 	f.PushedSinceDraw = slices.ContainsFunc(events[:i], pushed)
+	f.RevisedSinceDraw = slices.ContainsFunc(events[:i], func(e Event) bool { return e.Kind == EventPlanRevision })
+	seconds, _ := toInt(events[i].Detail["agent_time_s"])
+	f.DrawAgentTimeS = int64(seconds)
 	switch ids := events[i].Detail["findings"].(type) {
 	case []string:
 		f.DrawFindings = append([]string{}, ids...)
