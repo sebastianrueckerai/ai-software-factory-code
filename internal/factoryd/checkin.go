@@ -4,9 +4,9 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
+	"maps"
 	"net/http"
 	"regexp"
 	"slices"
@@ -429,10 +429,11 @@ type CheckinResponse struct {
 	Text     string
 	ToolName string
 	ToolArgs map[string]any
-	// ToolErr is the scrubbed reason a tool call's arguments were not one
-	// JSON object; the loop shows it to the model as the tool's answer.
-	ToolErr  string
-	UsageEUR float64
+	// ToolErr and ToolRaw are the parse error and the raw text of a tool
+	// call whose arguments were not one JSON object; the loop scrubs them
+	// before the model or the record sees them.
+	ToolErr, ToolRaw string
+	UsageEUR         float64
 }
 
 // CheckinTool is one tool the check-in may call, in the OpenAI form.
@@ -573,6 +574,29 @@ func checkinToolsFor(moment string) []CheckinTool {
 		return checkinTools[:len(checkinTools)-1]
 	}
 	return checkinTools
+}
+
+// toolShape lists the named tool's parameters, the required ones marked.
+func toolShape(tools []CheckinTool, name string) string {
+	for _, t := range tools {
+		if t.Name != name {
+			continue
+		}
+		params, _ := t.Parameters.(map[string]any)
+		props, _ := params["properties"].(map[string]any)
+		required, _ := params["required"].([]string)
+		names := slices.Sorted(maps.Keys(props))
+		for i, n := range names {
+			if slices.Contains(required, n) {
+				names[i] = n + " (required)"
+			}
+		}
+		if len(names) == 0 {
+			return "no parameters"
+		}
+		return strings.Join(names, ", ")
+	}
+	return "see the tool list"
 }
 
 func toolArg(description string) map[string]any {
@@ -780,7 +804,14 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 				var cut bool
 				var terr error
 				if resp.ToolErr != "" {
-					terr = errors.New(resp.ToolErr)
+					scrub := r.Scrub
+					if scrub == nil {
+						scrub = redact.New()
+					}
+					excerpt := textutil.Truncate(scrub.String(resp.ToolRaw), 200)
+					args = []byte(excerpt)
+					terr = fmt.Errorf("the arguments are not one JSON object (%s): %s; call %s again with one JSON object of its parameters: %s",
+						scrub.String(resp.ToolErr), excerpt, resp.ToolName, toolShape(checkinToolsFor(ask.Moment), resp.ToolName))
 				} else {
 					out, cut, terr = tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
 				}
@@ -945,7 +976,7 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		if args := msg.ToolCalls[0].Function.Arguments; args != "" {
 			if err := json.Unmarshal([]byte(args), &resp.ToolArgs); err != nil {
 				if resp.ToolName != checkinAnswerTool {
-					resp.ToolErr = redact.New().String(fmt.Sprintf("the arguments are not one JSON object (%v): %s", err, textutil.Truncate(args, 200)))
+					resp.ToolErr, resp.ToolRaw = err.Error(), args
 					return resp, nil
 				}
 				// a malformed answer reaches the parser as text, so it gets

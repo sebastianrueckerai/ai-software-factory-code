@@ -16,6 +16,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
+	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
 )
 
 func TestEvidenceShape(t *testing.T) {
@@ -1383,12 +1384,46 @@ func TestCheckinGatewayMalformedEvidenceCallIsAToolError(t *testing.T) {
 		t.Fatalf("%d calls, want 2", len(inputs))
 	}
 	in := inputs[1]
-	if !strings.Contains(in, "tool read_file") || !strings.Contains(in, "tool error: the arguments are not one JSON object") {
+	if !strings.Contains(in, "tool read_file") || !strings.Contains(in, "tool error: the arguments are not one JSON object") ||
+		!strings.Contains(in, "call read_file again with one JSON object of its parameters: path (required)") {
 		t.Errorf("the second call lacks the tool error:\n%s", in)
 	}
 	for _, leak := range []string{"user:pass", "abcdef123456789"} {
 		if strings.Contains(in, leak) {
 			t.Errorf("the tool error leaks %q", leak)
 		}
+	}
+}
+
+// The excerpt of a malformed call is scrubbed before it is cut, so a secret
+// that straddles the cut leaves no part of itself behind; the record keeps
+// the scrubbed excerpt as the call's arguments.
+func TestCheckinMalformedCallExcerptIsScrubbedBeforeItIsCut(t *testing.T) {
+	const token = "a1b2c3d4e5f6g7h8i9j0k1l2m3n4o5p6q7r8s9t0"
+	raw := `{"path":"` + strings.Repeat("x ", 90) + token
+	if i := strings.Index(raw, token); i >= 200 || i+len(token) <= 200 {
+		t.Fatalf("the token sits at %d..%d, want it across byte 200", i, i+len(token))
+	}
+	ask := &CheckInAsk{Moment: CheckInSession, ParentSession: "s-live-1", Trip: &TripReport{Detector: TripRepetition}}
+	chat := &scriptedChat{answers: []CheckinResponse{
+		{ToolName: "read_file", ToolErr: "unexpected end of JSON input", ToolRaw: raw},
+		{ToolName: checkinAnswerTool, ToolArgs: map[string]any{"decision": "handover", "handover": "n"}},
+	}}
+	r := &Runner{Scrub: redact.New()}
+	out := r.runCheckin(context.Background(), "t-1", "checkin", ask, nil, chat, scriptedTools{}, 12, 1.5, 1, 2000, time.Hour)
+	if out.Decision != CheckHandover {
+		t.Fatalf("outcome = %+v", out)
+	}
+	if in := chat.gots[1].Input; strings.Contains(in, token[:10]) || !strings.Contains(in, "[redacted]") {
+		t.Errorf("the second call holds part of the token or no mask:\n%s", in)
+	}
+	var args string
+	for _, c := range out.Record.Calls {
+		if c.Name == "read_file" {
+			args = c.Args
+		}
+	}
+	if args == "" || strings.Contains(args, token[:10]) {
+		t.Errorf("the record's args = %q, want the scrubbed excerpt", args)
 	}
 }
