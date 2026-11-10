@@ -341,25 +341,27 @@ func TestRollFailedCardAnswersInTheChat(t *testing.T) {
 
 // A human card's answers act by its choices: park keeps the card, posts
 // nothing and leaves a note on its case, close ends it on the label and
-// resolves its case with the value, free words are the human's comment
-// and a note, and the card keeps waiting; a value the question does not
-// offer is refused with the labels. The go choice is
+// resolves its case with the value, free words on a card that offers no
+// choice are the human's comment and a note, and the card keeps waiting;
+// on a card that offers choices, words that match none and a value the
+// question does not offer are refused with the labels. The go choice is
 // TestGoHandsTheWaitingCardOver's.
 func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	const comments = "/api/v1/repos/sf/code/issues/51/comments"
-	q := func() factoryd.BoardTask {
-		return humanAsk("t-hq", 51, factoryd.QuestionChoice{Value: "go", Label: "Have the factory do it"},
-			factoryd.QuestionChoice{Value: "park", Label: "Wait for it"}, factoryd.QuestionChoice{Value: "close", Label: "Done"})
-	}
-	click := func(t *testing.T, form url.Values) (*rig, *fakeEvents, int, int, string) {
+	choices := []factoryd.QuestionChoice{{Value: "go", Label: "Have the factory do it"},
+		{Value: "park", Label: "Wait for it"}, {Value: "close", Label: "Done"}}
+	clickOn := func(t *testing.T, form url.Values, choices ...factoryd.QuestionChoice) (*rig, *fakeEvents, int, int, string) {
 		t.Helper()
 		r, ev := newRigWithEvents(t)
-		r.tasks.tasks = []factoryd.BoardTask{q()}
+		r.tasks.tasks = []factoryd.BoardTask{humanAsk("t-hq", 51, choices...)}
 		ck, s := r.loggedIn(t)
 		form.Set("csrf", s.csrf)
 		before := ev.count()
 		rec := r.do(post("/tasks/t-hq/answer", form), ck)
 		return r, ev, before, rec.Code, rec.Body.String()
+	}
+	click := func(t *testing.T, form url.Values) (*rig, *fakeEvents, int, int, string) {
+		return clickOn(t, form, choices...)
 	}
 	act := func(action, note string) factoryd.ActInput {
 		return factoryd.ActInput{TaskID: "t-hq", CaseID: 1, By: "sebastian", Via: factoryd.ViaButton, Rung: 3,
@@ -380,7 +382,7 @@ func TestHumanAnswerParksClosesAndComments(t *testing.T) {
 	got, _ = actedOnce(t, r)
 	equal(t, "the close", got, act(factoryd.AnswerClose, "Done"))
 
-	r, _, _, code, _ = click(t, url.Values{"answer": {"Use Postgres."}})
+	r, _, _, code, _ = clickOn(t, url.Values{"answer": {"Use Postgres."}})
 	if code != http.StatusSeeOther || r.fg.comments[comments] != "Use Postgres." || len(r.fg.patched) != 0 {
 		t.Errorf("free text = %d, comment %q, patched %v; want one comment and the card kept", code, r.fg.comments[comments], r.fg.patched)
 	}

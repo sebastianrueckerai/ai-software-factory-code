@@ -665,6 +665,8 @@ func (c *Console) goWork(ctx context.Context, a actor, t factoryd.Task) (string,
 		log.Printf("console: %s hands %s to the factory: %v", a.s.user, t.ID, err)
 		return "", 0, refuse(http.StatusInternalServerError, "The card could not be handed to the factory: "+errText(err)+". Try again in a moment.")
 	}
+	// the agent card is filed: a client that leaves now must not leave the old card waiting
+	ctx = context.WithoutCancel(ctx)
 	_, posted, err := c.closeIssue(ctx, a, t, fmt.Sprintf("The factory runs it as #%d.", issue))
 	if err != nil {
 		return "", 0, err
@@ -1349,7 +1351,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
-	if label == "" && (value != "" || text == "" || choiceCard(t)) {
+	if label == "" && (value != "" || text == "" || choiceCard(t) || len(q.Choices) > 0) {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
@@ -1436,6 +1438,9 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		return done(fmt.Sprintf("Noted: the card keeps waiting; nothing was posted on #%d.", t.IssueNumber), 0, nil, kept)
 	case factoryd.AnswerGo:
 		note, posted, err := c.goWork(ctx, a, t)
+		if err == nil {
+			ctx = context.WithoutCancel(ctx)
+		}
 		return done(note, posted, err, chosen)
 	}
 	note, posted, err := c.closeIssue(ctx, a, t, label) // check again, close, any other choice

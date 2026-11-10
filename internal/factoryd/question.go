@@ -75,15 +75,21 @@ type QuestionChoice struct {
 	Label string `json:"label"`
 }
 
-// ChoiceValue returns the value of the choice labelled label, "" when the
+// ChoiceValue returns the value of the choice whose label words equal
+// words up to case, surrounding space and end punctuation, "" when the
 // question has no such choice.
-func (q *HumanQuestion) ChoiceValue(label string) string {
+func (q *HumanQuestion) ChoiceValue(words string) string {
+	words = labelWords(words)
 	for _, c := range q.Choices {
-		if c.Label == label {
+		if strings.EqualFold(labelWords(c.Label), words) {
 			return c.Value
 		}
 	}
 	return ""
+}
+
+func labelWords(s string) string {
+	return strings.TrimRight(strings.TrimSpace(s), ".!?,;: \t")
 }
 
 // ChoiceLabel returns the label of the choice valued value, "" when the
