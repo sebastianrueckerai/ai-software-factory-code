@@ -434,6 +434,9 @@ func (accKube) PodStatus(context.Context, string, string) (string, int32, error)
 func (accKube) PodIP(context.Context, string, string) (string, error) {
 	return "", factoryd.ErrNotFound
 }
+func (accKube) NodeStorage(context.Context) ([]factoryd.NodeStorage, []int64, error) {
+	return nil, nil, nil
+}
 func (accKube) PodInitFinished(context.Context, string, string) (time.Time, bool, error) {
 	return time.Time{}, false, factoryd.ErrNotFound
 }

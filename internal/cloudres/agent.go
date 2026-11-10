@@ -182,6 +182,9 @@ type CommissionRequest struct {
 	Envelope     policy.Envelope // the project's: its file's, else the policy's default
 	DayEUR       float64
 	MonthEUR     float64
+	// ReserveEUR is the gate reserve a session's commission holds out of
+	// the card's headroom; 0 for a call that keeps it whole.
+	ReserveEUR float64
 	// Project names the task's project and ProjectEUR its month cap: +Inf
 	// for none.
 	Project    string
@@ -339,7 +342,7 @@ func (a AgentStore) Reserve(ctx context.Context, r CommissionRequest) (Commissio
 	}
 
 	req := policy.HoldRequest{TaskID: r.TaskID, Kind: policy.KindResource, Ref: r.ServerType, EUR: r.Quote.ReservationEUR,
-		DayEUR: r.DayEUR, MonthEUR: r.MonthEUR, Project: r.Project, ProjectEUR: r.ProjectEUR}
+		DayEUR: r.DayEUR, MonthEUR: r.MonthEUR, Project: r.Project, ProjectEUR: r.ProjectEUR, ReserveEUR: r.ReserveEUR}
 	free, err := policy.FreeHeadroom(ctx, tx, req)
 	if err != nil {
 		return Commission{}, err

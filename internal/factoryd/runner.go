@@ -668,7 +668,7 @@ func (r *Runner) runSession(ctx context.Context, t Task, ns string, s sessionSpe
 			spentAtStart = &spent
 		}
 		s.messageToken = rand.Text()
-		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), TimeLeft: time.Until(deadline),
+		s.facts = SessionFacts{BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), ReserveEUR: s.policy.Limits.GateReserve(), TimeLeft: time.Until(deadline),
 			Attempt: s.attempt, Sessions: s.sessions, Size: t.Size, LargeLines: s.policy.Risk.LargeLines, Usage: t.Usage}.Line()
 		if err := r.kube.CreatePod(ctx, ns, podName, r.workerPodSpec(t, s)); err != nil {
 			return out, fmt.Errorf("create pod: %w", err)
@@ -1174,7 +1174,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
-		ask.CostState = r.costState(ctx, t)
+		ask.CostState = r.costState(ctx, t, limits.GateReserve())
 		var parent []byte
 		if s.parent != "" {
 			if rec, err := parentRecord(); err == nil {
@@ -1222,15 +1222,20 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
 	}
-	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.EnforcedSpent(), BudgetEUR: t.BudgetEUR,
+	return &Pace{Lines: lines, BoundLines: bound, SpentEUR: t.EnforcedSpent(), BudgetEUR: t.BudgetEUR, ReserveEUR: s.policy.Limits.GateReserve(),
 		SpentMinutes: int((t.Usage.AgentTime + time.Since(started)).Minutes()), LeftMinutes: int(time.Until(deadline).Minutes()),
 		Attempt: s.attempt, Sessions: s.sessions}
 }
 
 // costState assembles the cost and state block from the store: the task
-// row's settled figures and status, and the model-call and token totals of
-// its audit rows. Never from the agent; nil when the totals cannot be read.
-func (r *Runner) costState(ctx context.Context, t Task) *CostState {
+// row's figures and status, and the model-call and token totals of its
+// audit rows. Never from the agent; nil when the totals cannot be read.
+// SpentEUR is the settled spend and HeldEUR what outstanding calls hold.
+// RemainingEUR is the room a session has: the budget less the spend and
+// the holds (Task.Left), less the reserve (ReserveEUR, the review's and the
+// audit's), through policy.SessionHeadroom and clamped at 0, as the pace's
+// left reads it. The gates' supervisor passes no reserve.
+func (r *Runner) costState(ctx context.Context, t Task, reserve float64) *CostState {
 	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
 		t = fresh
 	}
@@ -1239,7 +1244,7 @@ func (r *Runner) costState(ctx context.Context, t Task) *CostState {
 		log.Printf("task %s: read the call totals: %v", t.ID, err)
 		return nil
 	}
-	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, RemainingEUR: t.BudgetEUR - t.SpentEUR,
+	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, HeldEUR: t.HeldEUR, RemainingEUR: math.Round(max(policy.SessionHeadroom(t.Left(), reserve), 0)*100) / 100, ReserveEUR: reserve,
 		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,
 		State: t.Status}
 }
@@ -1273,7 +1278,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
-		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline), CostState: r.costState(ctx, t)}
+		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline), CostState: r.costState(ctx, t, limits.GateReserve())}
 	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,
