@@ -675,6 +675,25 @@ func TestModelReviewCarriesTheCostState(t *testing.T) {
 	}
 }
 
+// A call-totals read that fails sends no block: zeros the prompt calls
+// figures read from the store would be a false fact.
+func TestModelReviewSendsNoCostStateWhenTheTotalsFail(t *testing.T) {
+	r, store, _ := newGateRunner(t, gateTask, &gateForgejo{diff: "diff --git a/Makefile b/Makefile\n+check:\n"})
+	store.callTotalsErr = map[string]error{"t1": errors.New("the store is gone")}
+	ll := &fakeLiteLLM{content: `{"verdict":"approve","summary":"ok","findings":[]}`}
+	r.supervisor = testSupervisorModel(ll.srv(t).URL)
+	if _, err := execActivity(t, r, ActivityModelReview, "t1", PullRequest{Number: 9}, "c1", GateResults{}); err != nil {
+		t.Fatal(err)
+	}
+	var in map[string]any
+	if err := json.Unmarshal([]byte(userMessage(ll.chats[0])), &in); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := in["cost"]; ok {
+		t.Fatalf("the input carries a cost block over a failed read: %s", userMessage(ll.chats[0]))
+	}
+}
+
 // Roadmap 201: the review reads the objective without the intake's Size
 // and Rung lines, the card's fields, as every model brief does.
 func TestModelReviewReadsTheObjectiveWithoutIntakeFields(t *testing.T) {
