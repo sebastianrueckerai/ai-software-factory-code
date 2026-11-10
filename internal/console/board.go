@@ -3057,7 +3057,7 @@ func (c *Console) createTask(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0)
+	_, _, err := c.doFileCard(r.Context(), button(r), form.Project, form.Title, form.Body, form.Track, "", form.Priority, form.Size, "", "", "", 0, 0, 0)
 	if err != nil {
 		c.fail(w, r, err)
 		return
@@ -3086,11 +3086,20 @@ func (c *Console) answer(w http.ResponseWriter, r *http.Request) {
 	c.pressed(w, r, nil)
 }
 
-// extendCard raises a waiting card's caps (doExtend).
+// extendCard raises a waiting card's caps (doExtend): its sessions, its
+// minutes of agent time, its lines and its budget.
 func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
 	sessions, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("sessions")))
 	if err != nil {
 		c.fail(w, r, refuse(http.StatusBadRequest, "sessions is a whole number"))
+		return
+	}
+	minutes, err := 0, error(nil)
+	if m := strings.TrimSpace(r.PostFormValue("minutes")); m != "" {
+		minutes, err = strconv.Atoi(m)
+	}
+	if err != nil {
+		c.fail(w, r, refuse(http.StatusBadRequest, "minutes is a whole number"))
 		return
 	}
 	lines, err := strconv.Atoi(strings.TrimSpace(r.PostFormValue("lines")))
@@ -3103,7 +3112,7 @@ func (c *Console) extendCard(w http.ResponseWriter, r *http.Request) {
 		c.fail(w, r, refuse(http.StatusBadRequest, "an amount in EUR is required"))
 		return
 	}
-	_, err = c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, eur, r.PostFormValue("reason"))
+	_, err = c.doExtend(r.Context(), button(r), r.PathValue("id"), sessions, lines, minutes, eur, r.PostFormValue("reason"))
 	c.pressed(w, r, err)
 }
 
@@ -3563,7 +3572,7 @@ func (c *Console) drawer(w http.ResponseWriter, r *http.Request, tab string) {
 			if _, p, _, err := c.planTable(ctx, bt.ID, 0); err != nil {
 				problem("plan", "Open the card again, or read the plan on its issue.", err)
 			} else {
-				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffMain
+				d.PlanSummary, d.PlanRows, d.TakeOffMain = p.Summary, factoryd.PlanRows(p), p.TakeOffLines()
 				if p.Round > 1 || len(p.Outline) > 0 {
 					if cards, err := c.cfg.Tasks.PlanCards(ctx, bt.ID); err != nil {
 						problem("plan's cards", "Reload the board.", err)

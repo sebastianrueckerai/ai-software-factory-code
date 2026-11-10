@@ -285,6 +285,40 @@ func retriedTwice(t *testing.T, second ActInput) {
 	}
 }
 
+// A card stopped at its agent time cap takes an extend of its agent time,
+// not one of the sessions alone: that raises nothing the stop names, is
+// refused with the stop's own words before it draws — no row, no raise, the
+// case open — so the stop's next answer is not already weighed as a draw
+// that bought nothing. The same extend with its minutes of agent time
+// raises the card and resolves the stop.
+func TestActRefusesASessionsOnlyExtendAtTheTimeCap(t *testing.T) {
+	g := newFactsRig(t)
+	g.store.cases = append(g.store.cases, Case{ID: 7, TaskID: "t1", Kind: CaseAgentTimeCap, Status: CaseAtHuman,
+		Facts: map[string]any{"trip": "trip-701"}})
+	events, usage := len(g.store.events), g.store.tasks["t1"].Usage
+	in := ActInput{TaskID: "t1", CaseID: 7, By: "sebastian", Via: ViaConsole, Rung: 3,
+		Res: Resolution{Action: ActExtend, Args: map[string]any{"sessions": 1}, Fund: &policy.Draw{EUR: 1}}}
+	var refused ErrActRefused
+	if _, err := g.r.Act(context.Background(), in); !errors.As(err, &refused) ||
+		!strings.HasPrefix(err.Error(), "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none") {
+		t.Fatalf("a sessions-only extend at the time cap = %v, want the stop's own refusal", err)
+	}
+	if len(g.store.events) != events || g.store.tasks["t1"].Usage != usage || len(g.store.resolved) != 0 ||
+		g.store.cases[len(g.store.cases)-1].Status != CaseAtHuman {
+		t.Fatalf("the refused extend wrote rows (%d events, usage %+v, resolved %v); want nothing drawn and the case open",
+			len(g.store.events)-events, g.store.tasks["t1"].Usage, g.store.resolved)
+	}
+	in.Res = Resolution{Action: ActExtend, Args: map[string]any{"agent_time_s": 300}}
+	in.Post = func(context.Context) (int64, error) { return 801, nil }
+	out, err := g.r.Act(context.Background(), in)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if out.Drawn.AgentTime != 5*time.Minute || g.store.tasks["t1"].Usage.RaisedTime != usage.RaisedTime+5*time.Minute {
+		t.Fatalf("drawn %+v, usage %+v; want the 5 minutes of agent time drawn and raised", out.Drawn, g.store.tasks["t1"].Usage)
+	}
+}
+
 // A fund on a card that ended is refused naming its end, with no case
 // needed, and nothing is drawn.
 func TestActRefusesAFundOnAnEndedCard(t *testing.T) {

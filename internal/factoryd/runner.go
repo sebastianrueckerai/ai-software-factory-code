@@ -123,6 +123,8 @@ type LeaseReader interface {
 // credentials, worker pod, supervision and session records. Its exported
 // methods are the Temporal activities TaskWorkflow calls.
 type Runner struct {
+	// deltaLast is the plan the delta pass visited last; only that pass reads it
+	deltaLast  string
 	cfg        RunnerConfig
 	store      Store
 	kube       Kube

@@ -69,7 +69,7 @@ func (t *turn) cardText(in toolInput) (string, error) {
 	fmt.Fprintf(&b, "\nsessions: %d of %d", k.Usage.Attempts, factoryd.SessionCap(k, v.Document.Limits.Sessions)+k.Usage.SessionsAdded())
 	if f := capFactsFrom(k, v.Document.Limits.Sessions, bt.Escalation, all); f.capped {
 		capName := "session cap"
-		if factoryd.AtTimeCap(bt.Escalation) {
+		if f.timeCap {
 			capName = "agent-time cap"
 		}
 		fmt.Fprintf(&b, "\nat its %s: %d of %d sessions used, %d granted", capName, f.attempts, f.sessions, f.extra)
@@ -150,6 +150,9 @@ func (t *turn) cardText(in toolInput) (string, error) {
 					b.WriteString("; checks red: " + strings.Join(red, ", "))
 				default:
 					b.WriteString("; checks red")
+				}
+				if len(spec.FailedTests) > 0 {
+					b.WriteString("; " + failedLine(spec.FailedTests, spec.FailedTestsMore))
 				}
 			}
 			if len(spec.WhyHuman) > 0 {
@@ -313,7 +316,7 @@ func (t *turn) planText(in toolInput) (string, error) {
 		}
 	}
 	if len(p.TakeOffMain) > 0 {
-		b.WriteString("\ntakes off main: " + strings.Join(p.TakeOffMain, ", "))
+		b.WriteString("\ntakes off main: " + strings.Join(p.TakeOffLines(), "; "))
 	}
 	if totals, err := t.c.cfg.Costs.CallTotals(ctx, []string{plan.ID}); err != nil {
 		return "", err
@@ -899,3 +902,20 @@ func (t *turn) webErr(err error) error {
 	}
 	return err
 }
+
+// failedLine names the first chatFailedTests of a merge request's red
+// entries and counts the rest.
+func failedLine(tests []factoryd.FailedTest, more int) string {
+	shown := tests[:min(len(tests), chatFailedTests)]
+	parts := make([]string, len(shown))
+	for i, f := range shown {
+		parts[i] = f.String()
+	}
+	line := "red in the logs: " + strings.Join(parts, ", ")
+	if rest := len(tests) - len(shown) + more; rest > 0 {
+		line += fmt.Sprintf(", and %d more", rest)
+	}
+	return line
+}
+
+const chatFailedTests = 10

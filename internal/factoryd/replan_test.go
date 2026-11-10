@@ -1216,8 +1216,7 @@ func TestReplanFindings(t *testing.T) {
 			st.old[2].Status = "closed"
 			p.Cards = append(p.Cards, st.prev.Cards[2])
 		}, []string{"card docs ended closed before it started: leave its key out, and add its work under a new key"}},
-		{"R5 a merged card on main left out", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] },
-			[]string{"card api is merged on main: keep its key, or name it in take_off_main to take its work off main"}},
+		{"a merged card on main left out stays on main", func(_ *replanState, p *Plan) { p.Cards = p.Cards[1:] }, nil},
 		{"a merged card on main taken off main", func(_ *replanState, p *Plan) {
 			p.Cards = p.Cards[1:]
 			p.TakeOffMain = []string{"api"}
@@ -1240,6 +1239,24 @@ func TestReplanFindings(t *testing.T) {
 			[]string{"take_off_main names int, the integration card, whose code stays on main; leave it out of take_off_main"}},
 		{"take_off_main names a card the revision keeps", func(_ *replanState, p *Plan) { p.TakeOffMain = []string{"api"} },
 			[]string{"take_off_main names api, which this revision keeps; leave its key out to take its work off main, or leave it out of take_off_main"}},
+		{"take_off_main names a card whose criterion the criteria still cite", func(st *replanState, p *Plan) {
+			st.met = map[string][]string{"api": {"queue_resolves", "all_green"}}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Criteria = []PlanCriterion{{ID: "queue_resolves", Kind: CriterionTest}, {ID: "all_green", Kind: CriterionInvariant}, {ID: "other", Kind: CriterionTest}}
+		}, []string{"take_off_main names api, which met queue_resolves that this revision's criteria still cite: its work leaves main, so the criteria lose their proof; keep api's key and leave it out of take_off_main, or file queue_resolves again, each under a new id with replaces"}},
+		{"take_off_main names a card whose criterion the revision re-filed under a new id", func(st *replanState, p *Plan) {
+			st.met = map[string][]string{"api": {"queue_resolves"}}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Criteria = []PlanCriterion{{ID: "queue_resolves_2", Kind: CriterionTest, Replaces: "queue_resolves"}}
+		}, nil},
+		{"take_off_main names a card that met only an invariant", func(st *replanState, p *Plan) {
+			st.met = map[string][]string{"api": {"all_green"}}
+			p.Cards = p.Cards[1:]
+			p.TakeOffMain = []string{"api"}
+			p.Criteria = []PlanCriterion{{ID: "all_green", Kind: CriterionInvariant}}
+		}, nil},
 		{"a card taken off main kept", func(st *replanState, _ *Plan) { st.reverted = map[string]bool{"t-api": true} },
 			[]string{`card api was taken off main: leave its key out, and add a card with "from": "api" to land it again from salvage`}},
 		{"a card taken off main landed again from salvage", func(st *replanState, p *Plan) {
@@ -2493,7 +2510,7 @@ func TestRecordReplanTakesOffMain(t *testing.T) {
 	if err := r.recordReplan(ctx, p, repo, 2, next, step, map[string]int64{"api2": 22}); err != nil {
 		t.Fatal(err)
 	}
-	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api), #23 (cli) off main.\nAsked by ana: the api is wrong."
+	want := "factoryd: replanned at revision 2: kept 0, changed 0, dropped 2, added 1. It takes #21 (api); #23 (cli) off main.\nAsked by ana: the api is wrong."
 	if got := commentsOn(fj, 1); !slices.Equal(got, []string{want}) {
 		t.Fatalf("the plan's comments %q, want %q", got, want)
 	}

@@ -488,21 +488,41 @@ func TestGoHandsTheWaitingCardOver(t *testing.T) {
 	}
 }
 
-// A revision that takes merged cards off main says which, in each view
-// that lists it: the plan's approval card, its drawer and the chat's plan
-// read.
+// A revision that takes merged cards off main names them on the confirm
+// button's own line (the plan approval card), and as a footnote in the
+// plan card's drawer. The chat's read keeps its own line.
 func TestPlanViewsShowTakeOffMain(t *testing.T) {
 	r := newRig(t)
 	planRig(r)
-	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"old-api", "old-ui"},
-		Cards: []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
+	r.tasks.questions = map[string][]factoryd.PlanQuestion{"t-plan 2": {{Kind: factoryd.QuestionConfirmation, Text: "Does the plan match the spec?"}}}
+	plan, _ := json.Marshal(factoryd.Plan{Summary: "Foundation first, then the API, then the acceptance tests.", TakeOffMain: []string{"k2", "k4", "k5"},
+		TakeOffReasons: map[string]string{"k2": "its queue cannot run", "k4": "its schema rejects notes", "k5": "  "},
+		Cards:          []factoryd.PlanCard{{Key: "foundation", Role: "foundation", Title: "Foundation", Size: "medium"}}})
 	r.tasks.plans["t-plan"][1].Plan = plan
+	for _, t := range planTasks() {
+		if t.Parent == "t-plan" && (t.PlanKey == "k2" || t.PlanKey == "k4" || t.PlanKey == "k5") {
+			r.tasks.tasks = append(r.tasks.tasks, t)
+		}
+	}
 	ck, _ := r.loggedIn(t)
-	want := "<p>Takes off main: old-api, old-ui</p>"
-	if card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you"); !strings.Contains(card, want) {
+	want := "<button type=\"submit\">Confirm reverts #2, #4 and #5 from main</button>"
+	card := col(t, r.do(httptest.NewRequest(http.MethodGet, "/?project=linkshort", nil), ck).Body.String(), "Needs you")
+	if !strings.Contains(card, want) {
 		t.Errorf("the plan card lacks %q:\n%s", want, card)
 	}
-	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, want) {
-		t.Errorf("the drawer lacks %q:\n%s", want, d)
+	for _, why := range []string{"#2: its queue cannot run", "#4: its schema rejects notes"} {
+		if !strings.Contains(card, why) {
+			t.Errorf("the plan card lacks the reason %q:\n%s", why, card)
+		}
+	}
+	if strings.Contains(card, "#5:") {
+		t.Errorf("the plan card shows a line for #5, which has a blank reason:\n%s", card)
+	}
+	if strings.Contains(card, "Takes off main:") {
+		t.Errorf("the plan card still holds the take-off-main footnote:\n%s", card)
+	}
+	footnote := "<p>Takes off main: k2: its queue cannot run; k4: its schema rejects notes; k5</p>"
+	if d := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-plan/drawer?tab=overview&project=linkshort", nil), ck).Body.String(); !strings.Contains(d, footnote) {
+		t.Errorf("the drawer lacks %q:\n%s", footnote, d)
 	}
 }

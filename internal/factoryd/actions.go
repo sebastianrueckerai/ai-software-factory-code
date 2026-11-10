@@ -146,6 +146,10 @@ var Actions = []Action{
 			return "this card asked a question, not for a session: answer it, or extend at its cap"
 		case d.Sessions == 0 && d.AgentTime == 0 && lines == 0 && shares == 0:
 			return "an extend needs sessions, agent time, lines or check-in shares above 0"
+		case d.AgentTime > MaxExtendMinutes*time.Minute:
+			return fmt.Sprintf("an extend raises at most %d minutes of agent time at once", MaxExtendMinutes)
+		case f.Kind == CaseAgentTimeCap && d.AgentTime == 0:
+			return "this card stopped for agent time: an extend of its agent time starts the next session; sessions, lines or check-in shares alone buy none"
 		case !d.IsZero() && boughtNothing(f):
 			return boughtNothingText(f)
 		}
@@ -258,11 +262,23 @@ func ActionByName(name string) (Action, bool) {
 
 // probes are the smallest answers Offered tries the actions that need
 // arguments or a note with: one session, one cent, the same model, one
-// note.
+// note. At an agent time cap the extend's probe buys agent time, the
+// part its stop names.
 var probes = map[string]Resolution{
 	ActHandover: {Args: map[string]any{"model": "same"}}, ActExtend: {Args: map[string]any{"sessions": 1}},
 	ActFund: {Args: map[string]any{"eur": 0.01}}, ActRaiseCeiling: {Args: map[string]any{"eur": 0.01}},
 	ActContinue: {Note: "probe"}, ActNote: {Note: "probe"},
+}
+
+// probe is action a's smallest answer on facts f: its probe, an extend of
+// one minute of agent time at an agent time cap, where a raise of the
+// sessions alone is refused with the stop's own words.
+func probe(a Action, f CaseFacts) Resolution {
+	p := probes[a.Name]
+	if a.Name == ActExtend && f.Kind == CaseAgentTimeCap {
+		p.Args = map[string]any{"agent_time_s": 60}
+	}
+	return p
 }
 
 // Offered lists the actions rung may take on facts f, in table order: its
@@ -271,7 +287,7 @@ var probes = map[string]Resolution{
 func Offered(f CaseFacts, rung int) []Action {
 	var out []Action
 	for _, a := range Actions {
-		p := probes[a.Name]
+		p := probe(a, f)
 		if a.refusal(f, rung, Resolution{Action: a.Name, Args: p.Args, Note: p.Note}) == "" {
 			out = append(out, a)
 		}
@@ -379,7 +395,7 @@ func badDraw(d policy.Draw) bool {
 func extendDraw(args map[string]any) policy.Draw {
 	sessions, _ := toInt(args["sessions"])
 	seconds, _ := toInt(args["agent_time_s"])
-	return policy.Draw{Sessions: sessions, AgentTime: time.Duration(seconds) * time.Second}
+	return policy.Draw{Sessions: sessions, AgentTime: time.Duration(min(seconds, math.MaxInt32)) * time.Second}
 }
 
 // raiseRefusal is why a raise of the ceiling by eur is refused, "" when it
@@ -451,18 +467,43 @@ func retryRefusal(d DepFact) string {
 }
 
 // boughtNothing reports the design's refusal of a draw: a draw happened, no push
-// since, the head, the checks and the findings unchanged since it. A draw
-// whose row recorded no findings, or one on facts whose timeline could
-// not be read, is weighed on the head and the checks.
+// and no filed revision since, the head, the checks and the findings
+// unchanged since it. A draw whose row recorded no findings, or one on
+// facts whose timeline could not be read, is weighed on the head and the
+// checks. At an agent time stop the draw weighed is the newest that
+// raised agent time: one that raised nothing the stop names is no draw.
 func boughtNothing(f CaseFacts) bool {
-	return f.LastDrawAt != nil && !f.PushedSinceDraw && f.DrawHead == f.Head && f.DrawChecks == f.Checks &&
-		(f.DrawFindings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(f.DrawFindings, f.Findings))
+	d, ok := weighedDraw(f)
+	return ok && !d.Pushed && !d.Revised && d.Head == f.Head && d.Checks == f.Checks &&
+		(d.Findings == nil || slices.Contains(f.Partial, "timeline") || slices.Equal(d.Findings, f.Findings))
+}
+
+// weighedDraw is the draw the guard weighs on f.
+func weighedDraw(f CaseFacts) (DrawFacts, bool) {
+	if f.Kind == CaseAgentTimeCap {
+		if f.TimeDraw == nil {
+			return DrawFacts{}, false
+		}
+		return *f.TimeDraw, true
+	}
+	if f.LastDrawAt == nil {
+		return DrawFacts{}, false
+	}
+	return DrawFacts{At: *f.LastDrawAt, Head: f.DrawHead, Checks: f.DrawChecks, Findings: f.DrawFindings, Pushed: f.PushedSinceDraw, Revised: f.RevisedSinceDraw}, true
 }
 
 // boughtNothingText is boughtNothing's refusal, with the actions that
 // draw nothing.
 func boughtNothingText(f CaseFacts) string {
-	return "the last draw at " + f.LastDrawAt.UTC().Format("15:04") + " UTC bought nothing, with no push since and the head, " +
+	d, _ := weighedDraw(f)
+	what, since := "draw", "push"
+	if f.Kind == CaseAgentTimeCap {
+		what = "agent-time draw"
+	}
+	if f.Planner {
+		since = "plan revision"
+	}
+	return "the last " + what + " at " + d.At.UTC().Format("15:04") + " UTC bought nothing, with no " + since + " since and the head, " +
 		"the checks and the findings unchanged: hand over, start a successor, replan or close"
 }
 

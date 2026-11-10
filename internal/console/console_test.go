@@ -404,9 +404,10 @@ type fakeTasks struct {
 	carries  map[string][]string // the cards a roll task carries
 	// roadmap names, by "repository item", the card that builds a roadmap
 	// item (the roadmap pull of 2026-11-01)
-	roadmap map[string]string
-	chain   map[string]factoryd.ChainFacts
-	read    func(s *fakeTasks, id string)
+	roadmap  map[string]factoryd.Task
+	refusals map[string][]factoryd.IntakeRefusal
+	chain    map[string]factoryd.ChainFacts
+	read     func(s *fakeTasks, id string)
 	// parks are the open image parks, every project's
 	parks []factoryd.ImagePark
 }
@@ -486,11 +487,20 @@ func (s *fakeTasks) CountAdmitted(_ context.Context, repository string) (int, er
 }
 
 // RoadmapHolder names the card that builds repository's roadmap item.
-func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int) (string, bool, error) {
+func (s *fakeTasks) RoadmapHolder(_ context.Context, repository string, item int, refile int64) (factoryd.Task, bool, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	holder, ok := s.roadmap[fmt.Sprintf("%s %d", repository, item)]
+	if ok && refile > 0 && holder.IssueNumber == refile && (holder.Status == "closed" || holder.Status == "failed") {
+		return factoryd.Task{}, false, nil
+	}
 	return holder, ok, nil
+}
+
+func (s *fakeTasks) IntakeRefusals(_ context.Context, repository string, issue int64) ([]factoryd.IntakeRefusal, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.refusals[fmt.Sprintf("%s %d", repository, issue)], nil
 }
 
 func (s *fakeTasks) CountQueue(_ context.Context, repository string) (int, error) {
@@ -1282,7 +1292,7 @@ func newRig(t *testing.T) *rig {
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely",` +
 					`"verdicts":{"internal/api.go: the handler leaks the client":{"state":"dropped","evidence":"grep finds the client closed in handler.go:40","round":1},` +
 					`"a follow-up files the docs":{"state":"remark"}}},"head_sha":"abc123",` +
-					`"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
+					`"failed_tests":[{"job":"test","test":"TestA","package":"p/q","kind":"failed"}],"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
 					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"],` +
 					`"verdicts":{"0018_x.sql: add a default":{"state":"dropped","evidence":"main already held the default","round":1}}}],` +
 					`"audit":{"verdict":"findings","model":"big","deployment":"zai/glm-5.3","findings":[` +
@@ -2580,12 +2590,12 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	// the drawer carries the merge request's five-part ask: why a
 	// human, the model review's verdict and summary, the recommendation
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}
 	}
-	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation"} {
+	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
 		if strings.Contains(lane, wall) {
 			t.Errorf("the wide approval card shows the facts wall %q", wall)
 		}

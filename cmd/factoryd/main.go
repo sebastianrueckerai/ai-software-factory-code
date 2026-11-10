@@ -304,7 +304,7 @@ func main() {
 	webhookIntake := &factoryd.Intake{
 		Store: store, Forgejo: forgejo, Workflows: workflows, BotUser: forgejo.BotUser,
 		Secret: webhookSecret, Policy: func() policy.Tree { return policyLoader.Current().Tree }, Projects: store, Metrics: metrics,
-		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged, ProjectsUser: projectsUser(), Filings: store,
+		Timeline: runner.Timeline(), CloseMerged: runner.CloseMerged, ProjectsUser: projectsUser(), Filings: store, Scrub: scrub,
 	}
 	runner.Writes = webhookIntake.Writes
 	// the factory's own project deploys into factoryd's namespace: its CI
@@ -407,6 +407,10 @@ func main() {
 	}
 	passes.Run(ctx, "criteria", time.Minute, 4*time.Minute, func(ctx context.Context) error {
 		runner.CriteriaPass(ctx)
+		return nil
+	})
+	passes.RunLive(ctx, "delta", time.Minute, runner.DeltaPassBound, func(ctx context.Context) error {
+		runner.DeltaPass(ctx)
 		return nil
 	})
 	passes.Run(ctx, "revert_pause", time.Minute, 2*time.Minute, func(ctx context.Context) error {

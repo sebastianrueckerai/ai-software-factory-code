@@ -2074,6 +2074,15 @@ func TestChatNamesACardByItsIssue(t *testing.T) {
 		`done {}`})
 }
 
+// An issue the intake made no card for is answered with the refusal, not
+// with "no such card".
+func TestChatAnswersARefusedIssueWithItsRefusal(t *testing.T) {
+	r, _, g := newChatRig(t)
+	r.tasks.refusals = map[string][]factoryd.IntakeRefusal{"sf/code 67": {{Key: "roadmap t-h", Reason: "The factory made no card for this issue: card t-h already builds roadmap item 66 of sf/code."}}}
+	got := reads(t, r, g, "card", `{"task_id":"#67"}`)[0]
+	equal(t, "the card read", got, "Refused: Issue #67 has no card. The factory made no card for this issue: card t-h already builds roadmap item 66 of sf/code.")
+}
+
 // The card read leads with the card's digest, then a blank line, then
 // the card in full.
 func TestChatCardLeadsWithTheDigest(t *testing.T) {

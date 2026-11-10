@@ -54,16 +54,36 @@ type CaseFacts struct {
 	DrawChecks string     `json:"draw_checks,omitempty"`
 	// DrawFindings are the finding ids the newest draw's row recorded,
 	// nil when it recorded none, which is not the empty list.
-	DrawFindings    []string    `json:"draw_findings"`
-	PushedSinceDraw bool        `json:"pushed_since_draw,omitempty"`
-	Pushed          bool        `json:"pushed,omitempty"` // a session pushed a branch head
-	Dependencies    []DepFact   `json:"dependencies,omitempty"`
-	Plan            string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
-	Running         bool        `json:"running,omitempty"` // a session is live
-	Autonomy        string      `json:"autonomy"`
-	PoolLeft        policy.Draw `json:"pool_left"`
-	CardDrawLeft    policy.Draw `json:"card_draw_left"`
-	Partial         []string    `json:"partial,omitempty"` // the readers that failed, by name
+	DrawFindings    []string `json:"draw_findings"`
+	PushedSinceDraw bool     `json:"pushed_since_draw,omitempty"`
+	// RevisedSinceDraw is set when a planner filed a revision since the
+	// last draw: what a planner's draw buys, as a push does for an agent.
+	RevisedSinceDraw bool `json:"revised_since_draw,omitempty"`
+	// TimeDraw is the newest draw that raised agent time, the one an agent
+	// time stop weighs: a fund or a sessions extend beside it raised
+	// nothing that stop names.
+	TimeDraw     *DrawFacts  `json:"time_draw,omitempty"`
+	Pushed       bool        `json:"pushed,omitempty"` // a session pushed a branch head
+	Dependencies []DepFact   `json:"dependencies,omitempty"`
+	Planner      bool        `json:"planner,omitempty"` // the card is a plan, whose sessions file revisions and push nothing
+	Plan         string      `json:"plan,omitempty"`    // the plan's task id, for a plan or a plan's card
+	Running      bool        `json:"running,omitempty"` // a session is live
+	Autonomy     string      `json:"autonomy"`
+	PoolLeft     policy.Draw `json:"pool_left"`
+	CardDrawLeft policy.Draw `json:"card_draw_left"`
+	Partial      []string    `json:"partial,omitempty"` // the readers that failed, by name
+}
+
+// DrawFacts is a draw as the bought-nothing guard weighs it: its time, the
+// head, the checks and the findings it recorded, and whether a session
+// pushed or a planner filed a revision after it.
+type DrawFacts struct {
+	At       time.Time `json:"at"`
+	Head     string    `json:"head"`
+	Checks   string    `json:"checks"`
+	Findings []string  `json:"findings"`
+	Pushed   bool      `json:"pushed,omitempty"`
+	Revised  bool      `json:"revised,omitempty"`
 }
 
 // SessionLeft is the budget a session may spend, the headroom SessionFunded
@@ -99,7 +119,7 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 		Attempts: t.Usage.Attempts, SessionCap: SessionCap(t, v.Document.Limits.Sessions) + t.Usage.SessionsAdded(),
 		AgentTimeS: int64(t.Usage.AgentTime / time.Second), Model: sessionModel(v.Document, t, t.ModelAlias),
 		BudgetEUR: t.BudgetEUR, SpentEUR: t.EnforcedSpent(), LeftEUR: t.Left(), ReserveEUR: v.Document.Limits.GateReserve(), CeilingEUR: cmp.Or(t.CeilingEUR, CardCeiling(v.Document, project)),
-		Running: t.Status == "running", Autonomy: project.AutonomyState()}
+		Planner: t.Track == policy.TrackPlan, Running: t.Status == "running", Autonomy: project.AutonomyState()}
 	if Final(t.Status) {
 		f.Final = t.Status
 	}
@@ -202,8 +222,10 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head string) (CaseFacts,
 // gate_head row unless f has one, the newest model_review of the head,
 // and the newest draw from the pool, when its row recorded the head and
 // the checks, with the findings it recorded and whether a session pushed
-// after it. A row of no sessions, no agent time and no money, an extend
-// of lines or of a check-in share alone, drew nothing and is no draw.
+// after it or a planner filed a revision. A row of no sessions, no agent
+// time and no money, an extend of lines or of a check-in share alone,
+// drew nothing and is no draw. TimeDraw is the newest draw that raised
+// agent time, read the same way: the one an agent time stop weighs.
 func (f *CaseFacts) eventFacts(events []Event) {
 	word := func(e Event, k string) string { s, _ := e.Detail[k].(string); return s }
 	pushed := func(e Event) bool { return e.Kind == EventSessionPushed }
@@ -217,35 +239,48 @@ func (f *CaseFacts) eventFacts(events []Event) {
 		reviewed, _ := events[i].Detail["reviewed"].(bool)
 		f.ReviewApproved = reviewed && word(events[i], "verdict") == "approve"
 	}
-	i := slices.IndexFunc(events, func(e Event) bool {
-		sessions, _ := toInt(e.Detail["sessions"])
-		seconds, _ := toInt(e.Detail["agent_time_s"])
-		eur, _ := e.Detail["amount_eur"].(float64)
-		return (e.Kind == EventCardFunded || e.Kind == EventCardExtended) && e.Detail["pool"] == true && (sessions != 0 || seconds != 0 || eur != 0)
-	})
+	drawn := func(timeOnly bool) int {
+		return slices.IndexFunc(events, func(e Event) bool {
+			sessions, _ := toInt(e.Detail["sessions"])
+			seconds, _ := toInt(e.Detail["agent_time_s"])
+			eur, _ := e.Detail["amount_eur"].(float64)
+			return (e.Kind == EventCardFunded || e.Kind == EventCardExtended) && e.Detail["pool"] == true &&
+				(seconds != 0 || !timeOnly && (sessions != 0 || eur != 0))
+		})
+	}
+	if d := drawFactsAt(events, drawn(false), pushed); d != nil {
+		f.LastDrawAt, f.DrawHead, f.DrawChecks, f.DrawFindings = &d.At, d.Head, d.Checks, d.Findings
+		f.PushedSinceDraw, f.RevisedSinceDraw = d.Pushed, d.Revised
+	}
+	f.TimeDraw = drawFactsAt(events, drawn(true), pushed)
+}
+
+// drawFactsAt reads the draw at events[i], nil when i is none or its row
+// recorded no head and checks.
+func drawFactsAt(events []Event, i int, pushed func(Event) bool) *DrawFacts {
 	if i < 0 {
-		return
+		return nil
 	}
 	head, hasHead := events[i].Detail["head"].(string)
 	checks, hasChecks := events[i].Detail["checks"].(string)
 	if !hasHead || !hasChecks {
-		return
+		return nil
 	}
-	at := events[i].At
-	f.LastDrawAt, f.DrawHead, f.DrawChecks = &at, head, checks
-	f.PushedSinceDraw = slices.ContainsFunc(events[:i], pushed)
+	d := &DrawFacts{At: events[i].At, Head: head, Checks: checks, Pushed: slices.ContainsFunc(events[:i], pushed),
+		Revised: slices.ContainsFunc(events[:i], func(e Event) bool { return e.Kind == EventPlanRevision })}
 	switch ids := events[i].Detail["findings"].(type) {
 	case []string:
-		f.DrawFindings = append([]string{}, ids...)
+		d.Findings = append([]string{}, ids...)
 	case []any:
-		f.DrawFindings = []string{}
+		d.Findings = []string{}
 		for _, id := range ids {
 			if s, ok := id.(string); ok {
-				f.DrawFindings = append(f.DrawFindings, s)
+				d.Findings = append(d.Findings, s)
 			}
 		}
 	}
-	slices.Sort(f.DrawFindings)
+	slices.Sort(d.Findings)
+	return d
 }
 
 // headFindings are the sorted finding ids that head's newest checks, its

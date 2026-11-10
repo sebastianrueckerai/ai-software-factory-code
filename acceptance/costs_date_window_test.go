@@ -396,8 +396,12 @@ type acceptEvents struct {
 }
 
 func (*acceptTasks) CountQueue(context.Context, string) (int, error) { return 0, nil }
-func (*acceptTasks) RoadmapHolder(context.Context, string, int) (string, bool, error) {
-	return "", false, nil
+func (*acceptTasks) IntakeRefusals(context.Context, string, int64) ([]factoryd.IntakeRefusal, error) {
+	return nil, nil
+}
+
+func (*acceptTasks) RoadmapHolder(context.Context, string, int, int64) (factoryd.Task, bool, error) {
+	return factoryd.Task{}, false, nil
 }
 
 func (f *acceptEvents) Record(_ context.Context, e factoryd.Event) (int64, error) {

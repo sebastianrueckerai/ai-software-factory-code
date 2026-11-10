@@ -1692,3 +1692,49 @@ func TestPlanCloseCheckAsksNoGapWhileADueStands(t *testing.T) {
 		t.Fatalf("the ask stands beside an undrafted due: %+v", pending)
 	}
 }
+
+// A plan whose integration card ended off main closes when a person
+// waived every criterion but an invariant its gate met: the criteria
+// request resolves approved. A test criterion that stands on a gate row
+// alone keeps the plan open.
+func TestPlanCloseOffMainTakesAnInvariantTheGateMet(t *testing.T) {
+	ctx := context.Background()
+	rig := func(c1Source string) (*fakeStore, *fakeObjectStore, *Runner) {
+		s := seedVerdictPlan(t, "t-plan", "t-int", "closed")
+		put := func(source string, rows ...CriterionVerdict) {
+			if err := s.PutCriteriaVerdicts(ctx, "t-int", source, FactoryDecider, rows); err != nil {
+				t.Fatal(err)
+			}
+		}
+		put(c1Source, CriterionVerdict{Criterion: "c1", Verdict: "met", Kind: CriterionTest})
+		put(CriteriaSourceApprover, CriterionVerdict{Criterion: "c2", Verdict: "waived", Kind: CriterionHuman})
+		put(CriteriaSourceGate, CriterionVerdict{Criterion: "c3", Verdict: "met", Kind: CriterionInvariant})
+		if _, err := s.OpenApproval(ctx, ApprovalRequest{Kind: ApprovalCriteria, TaskID: "t-plan", Project: "sf/code", Spec: json.RawMessage(`{}`), Reason: "gap"}); err != nil {
+			t.Fatal(err)
+		}
+		objs := &fakeObjectStore{}
+		return s, objs, &Runner{cfg: RunnerConfig{Policy: testPolicyVersion}, store: s, forgejo: planIssues(t), timeline: &Timeline{Objects: objs, Events: s, Store: s}}
+	}
+	closes := func(objs *fakeObjectStore) int {
+		body, _ := objs.Get(ctx, "sessions/t-plan/timeline.jsonl")
+		return strings.Count(string(body), `"event":"`+EventPlanClosed+`"`)
+	}
+
+	s, objs, r := rig(CriteriaSourceApprover)
+	r.CriteriaPass(ctx)
+	if got := closes(objs); got != 1 {
+		t.Fatalf("plan_closed recorded %d times, want 1", got)
+	}
+	if pending, _ := s.ApprovalRequests(ctx, "pending"); len(pending) != 0 {
+		t.Fatalf("pending approvals %+v, want the criteria request resolved", pending)
+	}
+	if approved, _ := s.ApprovalRequests(ctx, "approved"); len(approved) != 1 || approved[0].Kind != ApprovalCriteria {
+		t.Fatalf("approved approvals %+v, want the criteria request", approved)
+	}
+
+	_, objs, r = rig(CriteriaSourceGate)
+	r.CriteriaPass(ctx)
+	if got := closes(objs); got != 0 {
+		t.Fatalf("a test criterion on a gate row alone: plan_closed recorded %d times, want 0", got)
+	}
+}
