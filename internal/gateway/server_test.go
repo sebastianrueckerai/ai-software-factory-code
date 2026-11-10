@@ -14,6 +14,7 @@ import (
 	"net/http"
 	"net/http/httptest"
 	"reflect"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -66,6 +67,19 @@ func (f fakePrices) Price(_ context.Context, alias string) (policy.Price, error)
 	return policy.Price{}, fmt.Errorf("LiteLLM has no model %q", alias)
 }
 
+// testDeployments are the deployments LiteLLM serves each test alias from.
+var testDeployments = map[string][]string{
+	"big": {"zai/glm-5.3"}, "big-alibaba": {"dashscope/qwen3.8-max"},
+	"small": {"zai/glm-5.3-flash"}, "small-alibaba": {"dashscope/qwen3.8-flash"}, "premium": {"openai/gpt-6.1-sol"},
+}
+
+func (f fakePrices) Deployments(_ context.Context, alias string) ([]string, error) {
+	if d, ok := testDeployments[alias]; ok {
+		return d, nil
+	}
+	return nil, fmt.Errorf("LiteLLM has no model %q", alias)
+}
+
 var testPrices = fakePrices{"small": testPrice, "big": testPrice, "vision": testPrice}
 
 // memStore is the in-memory Store fake for tests only: tasks, holds and the
@@ -85,6 +99,8 @@ type memStore struct {
 	// month's before today
 	day, month float64
 	pol        *policy.Version // nil = none loaded
+	switches   []policy.AliasSwitch
+	recorded   []policy.AliasSwitch // every RecordAliasSwitch call, kept or not
 	polReads   int
 }
 
@@ -274,6 +290,70 @@ func (m *memStore) InsertAudit(_ context.Context, row AuditRow) error {
 	defer m.mu.Unlock()
 	m.audits = append(m.audits, row)
 	return nil
+}
+
+// LatencySamples reads the audits as the Postgres store does, whatever
+// their age: the tests seed only the window.
+func (m *memStore) LatencySamples(_ context.Context, aliases []string, _ time.Time) ([]policy.LatencySample, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var out []policy.LatencySample
+	for _, r := range m.audits {
+		if slices.Contains(aliases, r.ModelAlias) && r.Tool == "" && r.Decision == "allowed" && r.Deployment != "" && strings.HasPrefix(r.Status, "2") {
+			out = append(out, policy.LatencySample{Alias: r.ModelAlias, Deployment: r.Deployment, OutputTokens: r.OutputTokens, DurationMS: r.DurationMS})
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) RecordAliasSwitch(_ context.Context, sw policy.AliasSwitch) error {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	m.recorded = append(m.recorded, sw)
+	for i := len(m.switches) - 1; i >= 0; i-- {
+		if m.switches[i].Alias == sw.Alias {
+			if m.switches[i].Kind == sw.Kind {
+				return nil
+			}
+			break
+		}
+	}
+	m.switches = append(m.switches, sw)
+	return nil
+}
+
+func (m *memStore) OpenAliasSwitches(context.Context) ([]policy.AliasSwitch, error) {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	newest := map[string]policy.AliasSwitch{}
+	for _, sw := range m.switches {
+		newest[sw.Alias] = sw
+	}
+	var out []policy.AliasSwitch
+	for _, sw := range newest {
+		if sw.Kind == policy.SwitchOn {
+			out = append(out, sw)
+		}
+	}
+	return out, nil
+}
+
+func (m *memStore) recordCalls(alias, kind string) int {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	n := 0
+	for _, sw := range m.recorded {
+		if sw.Alias == alias && sw.Kind == kind {
+			n++
+		}
+	}
+	return n
+}
+
+func (m *memStore) switchRows() []policy.AliasSwitch {
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	return append([]policy.AliasSwitch(nil), m.switches...)
 }
 
 func (m *memStore) auditRows() []AuditRow {
@@ -1596,7 +1676,7 @@ func TestDayCapAcrossTasks(t *testing.T) {
 	if rr := call("b", "0.5"); rr.Code != http.StatusOK {
 		t.Fatalf("b's first call = %d, want 200", rr.Code)
 	}
-	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", "big,small"}) || calls[1] != (mintCall{"b", "big,small"}) {
+	if calls := minter.mintCalls(); len(calls) != 2 || calls[0] != (mintCall{"a", "big,big-alibaba,small,small-alibaba"}) || calls[1] != (mintCall{"b", "big,big-alibaba,small,small-alibaba"}) {
 		t.Fatalf("mint calls = %+v, want a's, then b's", calls)
 	}
 	for _, task := range []string{"a", "b"} {
@@ -1661,8 +1741,8 @@ func TestProjectCapAcrossTasks(t *testing.T) {
 	if rr := call("c", "0.1"); rr.Code != http.StatusOK {
 		t.Fatalf("c's call = %d %s, want 200: notes has no cap", rr.Code, rr.Body.String())
 	}
-	if calls := minter.mintCalls(); len(calls) != 3 || calls[0] != (mintCall{"a", "big,small"}) ||
-		calls[1] != (mintCall{"b", "big,small"}) || calls[2] != (mintCall{"c", "big,small"}) {
+	if calls := minter.mintCalls(); len(calls) != 3 || calls[0] != (mintCall{"a", "big,big-alibaba,small,small-alibaba"}) ||
+		calls[1] != (mintCall{"b", "big,big-alibaba,small,small-alibaba"}) || calls[2] != (mintCall{"c", "big,big-alibaba,small,small-alibaba"}) {
 		t.Fatalf("mint calls = %+v, want a's, b's, then c's", calls)
 	}
 	audits := store.auditRows()
@@ -1752,8 +1832,8 @@ func TestKeyRemintedOnPolicyVersion(t *testing.T) {
 	call() // version 2: only small
 
 	want := []mintCall{
-		{"42", "big,small"},
-		{"42", "small"},
+		{"42", "big,big-alibaba,small,small-alibaba"},
+		{"42", "small,small-alibaba"},
 	}
 	if calls := minter.mintCalls(); !reflect.DeepEqual(calls, want) {
 		t.Fatalf("mints = %+v, want %+v", calls, want)
@@ -1997,7 +2077,7 @@ func TestFactorydReviewCall(t *testing.T) {
 				t.Fatalf("upstream calls = %d, want %d", len(auths), tc.want.upstream)
 			}
 			if tc.want.upstream > 0 {
-				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor" || calls[0].taskID != "42" {
+				if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor" || calls[0].taskID != "42" {
 					t.Fatalf("mints = %+v, want one key for task 42 on the factory aliases only", calls)
 				}
 			}
@@ -2056,7 +2136,7 @@ func TestOperatorCallOnTheChatTask(t *testing.T) {
 			if !reflect.DeepEqual(store.ledger, tc.ledger) {
 				t.Fatalf("ledger = %+v, want %+v", store.ledger, tc.ledger)
 			}
-			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "big,small,vision") {
+			if calls := minter.mintCalls(); tc.status == 200 && (len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,vision") {
 				t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
 			}
 		})
@@ -2095,7 +2175,7 @@ func TestFactorydKeyIsNotTheSessionKey(t *testing.T) {
 		t.Fatalf("agent call = %d", rr.Code)
 	}
 	calls := minter.mintCalls()
-	if len(calls) != 2 || calls[0].models != "big,small" || calls[1].models != "big,small,supervisor" {
+	if len(calls) != 2 || calls[0].models != "big,big-alibaba,small,small-alibaba" || calls[1].models != "big,big-alibaba,small,small-alibaba,supervisor" {
 		t.Fatalf("mints = %+v, want the session's key and factoryd's", calls)
 	}
 	if b := minter.blockedKeys(); len(b) != 0 {
@@ -2892,7 +2972,7 @@ func TestFactorydVisionCallStripsThePayloadFromTheHold(t *testing.T) {
 	if got := stub.bodies[0]; !strings.Contains(got, "data:image/png;base64,") {
 		t.Fatalf("LiteLLM received %q, want the data URL forwarded whole", got)
 	}
-	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,vision" {
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,vision" {
 		t.Fatalf("mints = %+v, want one key on the chat task's three aliases", calls)
 	}
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeOperator, body); rr.Code != http.StatusBadRequest || !strings.Contains(rr.Body.String(), "only text parts") {
@@ -2922,7 +3002,7 @@ func TestFactorydVisionCallOnACodersTask(t *testing.T) {
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeVision, body); rr.Code != http.StatusOK {
 		t.Fatalf("the vision call = %d: %s", rr.Code, rr.Body)
 	}
-	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor,vision" {
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor,vision" {
 		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases", calls)
 	}
 
@@ -2954,7 +3034,7 @@ func TestFactorydDigestCallOnACodersTask(t *testing.T) {
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeDigest, digest("small")); rr.Code != http.StatusOK {
 		t.Fatalf("the digest call = %d: %s", rr.Code, rr.Body)
 	}
-	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,small,supervisor" {
+	if calls := minter.mintCalls(); len(calls) != 1 || calls[0].models != "big,big-alibaba,small,small-alibaba,supervisor" {
 		t.Fatalf("mints = %+v, want one key on the coder's factoryd aliases, small among them", calls)
 	}
 	if rr := doFactorydChat(t, h, testFactorydToken, "42", policy.PurposeDigest, digest("big")); rr.Code != http.StatusForbidden || rr.Header().Get(HeaderDecision) != "refused_capability" {

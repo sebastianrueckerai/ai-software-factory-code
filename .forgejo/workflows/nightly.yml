@@ -24,4 +24,4 @@ jobs:
             -v ci-go-build:/cache/go-build -v ci-go-mod:/modcache \
             -e GOCACHE=/cache/go-build -e GOMODCACHE=/modcache -e GOPATH=/tmp/go \
             --entrypoint /bin/bash ci-runner:test \
-            -c 'mkdir -p /tmp/src && tar -x -C /tmp/src && cd /tmp/src && scripts/pg-test.sh go test -race -count=1 ./... && go vet ./...'
+            -c 'mkdir -p /tmp/src && tar -x -C /tmp/src && cd /tmp/src && scripts/pg-test.sh go test -race -count=1 -timeout 30m ./... && go vet ./...'

@@ -47,6 +47,7 @@ var (
 // field's values, a map field's keys, a slice field's items.
 var enums = map[string][]string{
 	"Document.Bounds":         append(slices.Clone(BoundActivities), BoundDefault),
+	"Routing.Twins":           TextClasses,
 	"Document.Supervisor":     slices.Sorted(maps.Keys(DefaultDetectors)),
 	"Class.Tools":             append(slices.Clone(PaidTools), FreeTools...),
 	"RiskClass.Outcome":       {OutcomeForbidden, OutcomeRequiresApproval, OutcomeAuto},
@@ -91,7 +92,7 @@ const durationPattern = `^([0-9]+(\.[0-9]+)?(ns|us|µs|ms|s|m|h))+$`
 
 // The schema types' own source, for their doc comments.
 //
-//go:embed policy.go project.go risk.go process.go commands.go routine.go escalation.go waits.go
+//go:embed policy.go project.go risk.go process.go commands.go routine.go escalation.go waits.go routing.go
 var typeSources embed.FS
 
 var (
@@ -198,7 +199,7 @@ func schemaFor(t reflect.Type, docs map[string]string) (*jsonschema.Schema, erro
 			if p.Description = docs[id]; p.Description == "" {
 				return nil, fmt.Errorf("%s has no doc comment", id)
 			}
-			if values, ok := enums[id]; ok {
+			if values, ok := enumOf(id); ok {
 				enum := make([]any, len(values))
 				for i, v := range values {
 					enum[i] = v
@@ -259,34 +260,43 @@ func (k fileKind) schema() (*jsonschema.Schema, error) {
 }
 
 var (
-	resolvedOnce sync.Once
-	resolved     map[string]*jsonschema.Resolved
-	resolvedErr  error
+	resolvedMu  sync.Mutex
+	resolved    map[string]*jsonschema.Resolved
+	resolvedErr error
 )
+
+func resolvedSchemas() (map[string]*jsonschema.Resolved, error) {
+	resolvedMu.Lock()
+	defer resolvedMu.Unlock()
+	if resolved != nil || resolvedErr != nil {
+		return resolved, resolvedErr
+	}
+	out := map[string]*jsonschema.Resolved{}
+	for _, kind := range fileKinds {
+		s, err := kind.schema()
+		if err == nil {
+			out[kind.name], err = s.Resolve(nil)
+		}
+		if err != nil {
+			resolvedErr = err
+			return nil, err
+		}
+	}
+	resolved = out
+	return resolved, nil
+}
 
 // validate checks a decoded YAML document against the kind's schema.
 func (k fileKind) validate(doc any) error {
-	resolvedOnce.Do(func() {
-		resolved = map[string]*jsonschema.Resolved{}
-		for _, kind := range fileKinds {
-			s, err := kind.schema()
-			if err == nil {
-				resolved[kind.name], err = s.Resolve(nil)
-			}
-			if err != nil {
-				resolvedErr = err
-				return
-			}
-		}
-	})
-	if resolvedErr != nil {
-		return resolvedErr
+	schemas, err := resolvedSchemas()
+	if err != nil {
+		return err
 	}
 	v, err := jsonValue(doc)
 	if err != nil {
 		return err
 	}
-	return resolved[k.name].Validate(v)
+	return schemas[k.name].Validate(v)
 }
 
 // Schemas are the generated schema files by name, as `factoryd schema`
