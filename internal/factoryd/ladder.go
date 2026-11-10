@@ -547,15 +547,22 @@ func replyNext(reason string) string {
 	return "Reply on this issue to start a new attempt with your comment as guidance, or close the issue to end the task."
 }
 
+// monitorFace is the face of a monitor flag on t: the reason's flag text
+// is agent-derived, so it is fenced and scrubbed as every text a human
+// reads.
+func (r *Runner) monitorFace(t Task, reason string) *HumanQuestion {
+	return monitorQuestion(r.Scrub.String(r.untrusted(t, reason)))
+}
+
 // tripNext is the last line of a trip's face for case c: at a cap, where
 // a reply is a continue that asks again, the Extend form or the chat's
 // extend start the next attempt, at a budget floor the Fund form or the
-// chat's fund, for a monitor flag, whose card goes on, the case by its
-// number in the chat, and elsewhere a reply (replyNext).
+// chat's fund, for a monitor flag, whose card goes on, the flag in the
+// chat, and elsewhere a reply (replyNext).
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
-		return fmt.Sprintf("The card goes on meanwhile. Answer case %d in the project chat.", c.ID)
+		return "The card goes on meanwhile. Answer the flag in the project chat."
 	case CaseSessionCap, CaseAgentTimeCap:
 		return "Use Extend on the board, or ask the project chat to extend the card, to start a new attempt. A reply alone starts none. Close this issue to end the task."
 	case CaseBudgetFloor:
@@ -611,7 +618,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// stop's own numbers; every other ask gets the same five parts
 		// from its reason, so no card asks with words alone
 		if beside {
-			shaped = monitorQuestion(reason, c.ID)
+			shaped = r.monitorFace(t, reason)
 		} else {
 			shaped = ShapedQuestion(reason, r.questionFacts(ctx, t, reason), choices)
 		}

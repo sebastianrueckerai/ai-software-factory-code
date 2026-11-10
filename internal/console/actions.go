@@ -1107,7 +1107,7 @@ func (c *Console) doAnswerCase(ctx context.Context, a actor, id string, caseID i
 // kinds.
 func (c *Console) noLiveCase(ctx context.Context, t factoryd.Task, id int64, open []factoryd.Case) error {
 	ref := issueRef(t.ID, t.IssueNumber)
-	why := fmt.Sprintf("Card %s has no case %d.", ref, id)
+	why := "Card " + ref + " has no case by that number."
 	k, err := c.cfg.CaseByID(ctx, id)
 	switch {
 	case errors.Is(err, factoryd.ErrNotFound):
@@ -1115,10 +1115,10 @@ func (c *Console) noLiveCase(ctx context.Context, t factoryd.Task, id int64, ope
 		log.Printf("console: case %d: %v", id, err)
 		return refuse(http.StatusServiceUnavailable, "The case could not be read, so nothing was answered. Try again.")
 	case k.TaskID == t.ID:
-		why = fmt.Sprintf("Case %d ended.", id)
+		why = "That case ended."
 	case k.Repository == t.Repository:
 		other, _, _ := c.cfg.Tasks.Task(ctx, k.TaskID)
-		why = fmt.Sprintf("Case %d is %s's.", id, issueRef(k.TaskID, other.IssueNumber))
+		why = "That case is " + issueRef(k.TaskID, other.IssueNumber) + "'s."
 	}
 	if len(open) == 0 {
 		return refuse(http.StatusConflict, why+" Card "+ref+" has no live case.")

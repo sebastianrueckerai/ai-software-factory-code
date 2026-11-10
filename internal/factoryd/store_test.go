@@ -1576,7 +1576,7 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 		return answered == comment
 	}
 	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman && !copied(c) {
-		return ErrCaseEnded{c}
+		return ErrCaseEnded{Case: c}
 	}
 	if d != nil {
 		if err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {

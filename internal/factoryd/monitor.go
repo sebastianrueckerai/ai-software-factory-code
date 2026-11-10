@@ -203,7 +203,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 			// the row names its case, which the events writer withdraws,
 			// and settles the case's ask in the inbox
 			_, err = m.Store.Record(ctx, Event{Repository: c.Repository, TaskID: c.TaskID, IssueNumber: int64(d.Head.Issue), Kind: EventQuestionWithdrawn,
-				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason}})
+				Actor: FactoryDecider, Via: ViaFactoryd, Detail: map[string]any{"case_id": c.ID, "reason": reason, "problem": monitorFlagText(c.Problem)}})
 		}
 		if err != nil {
 			errs = append(errs, fmt.Errorf("withdraw %s: %w", c.StateKey, err))
@@ -212,7 +212,7 @@ func (m *Monitor) card(ctx context.Context, taskID string) error {
 	head := digestHeadCommit(d)
 	for _, o := range opens {
 		o.facts["flag"], o.facts["detail"], o.facts["state"], o.facts["digest"] = o.f.Name, o.f.Detail, o.state, d.Render()
-		in := TripInput{TaskID: taskID, Reason: "Monitor flag: " + flagsText([]DigestFlag{o.f}), Head: head, Kind: CaseMonitorFlag, StateKey: o.key, Extra: o.facts}
+		in := TripInput{TaskID: taskID, Reason: monitorFlagPrefix + flagsText([]DigestFlag{o.f}), Head: head, Kind: CaseMonitorFlag, StateKey: o.key, Extra: o.facts}
 		if _, err := m.Runner.OpenTrip(ctx, in, tripAttempt{}); err != nil {
 			errs = append(errs, fmt.Errorf("%s: %w", o.key, err))
 		}
