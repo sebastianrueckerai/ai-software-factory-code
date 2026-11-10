@@ -212,12 +212,13 @@ func (i *gateWatchInbound) ExecuteActivity(ctx context.Context, in *interceptor.
 	}
 	i.g.runs[key] = run
 	if lookup {
-		run.timer = time.AfterFunc(i.g.lookupRetry(), func() { i.g.retryBound(run, ctx, taskID, pin) })
+		run.timer = time.AfterFunc(i.g.lookupRetry(), func() { i.g.retryBound(run, key, ctx, taskID, pin) })
 	} else {
 		run.timer = time.AfterFunc(run.bound, func() { run.raise(run.bound, false) })
 	}
 	i.g.mu.Unlock()
 	defer func() {
+		cancel(nil)
 		i.g.mu.Lock()
 		defer i.g.mu.Unlock()
 		run.timer.Stop()
@@ -295,16 +296,16 @@ func (g *GateWatch) lookupRetry() time.Duration {
 // retryBound is the tick of a checks wait whose task was unreadable at its
 // start: it reads the task again and arms the bound from the attempt's
 // start, or waits for the next tick.
-func (g *GateWatch) retryBound(run *watchedRun, ctx context.Context, taskID string, pin int64) {
+func (g *GateWatch) retryBound(run *watchedRun, key string, ctx context.Context, taskID string, pin int64) {
 	t, ok, err := g.Store.Task(ctx, taskID)
 	g.mu.Lock()
 	defer g.mu.Unlock()
-	if ctx.Err() != nil {
+	if ctx.Err() != nil || g.runs[key] != run {
 		return
 	}
 	if err != nil || !ok {
 		log.Printf("task %s: the bound of %s still waits for its task: %v (found %v)", taskID, run.activity, err, ok)
-		run.timer = time.AfterFunc(g.lookupRetry(), func() { g.retryBound(run, ctx, taskID, pin) })
+		run.timer = time.AfterFunc(g.lookupRetry(), func() { g.retryBound(run, key, ctx, taskID, pin) })
 		return
 	}
 	run.bound = g.Bound(context.WithValue(ctx, repositoryKey{}, t.Repository), run.activity, pin, policy.ReviewParts)

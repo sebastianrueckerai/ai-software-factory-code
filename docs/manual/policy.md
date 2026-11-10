@@ -125,7 +125,7 @@ file may shorten. Its code default is 50m: the pull-request image build's own
 supervisor decides at that bound. The wait outlives it by the supervisor's
 whole budget, so that trip is the one stop path: its timeout is the bound, a
 minute for the supervisor's reads, the pinned `limits.supervisor_timeout` and
-two minutes (59m at the defaults), and its poll ends one minute before that.
+two minutes (59m at the shipped policy's 6m `supervisor_timeout`), and its poll ends one minute before that.
 An explicit `bounds: WaitChecks` still overrides the field.
 
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,

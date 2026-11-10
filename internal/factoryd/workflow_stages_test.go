@@ -542,6 +542,7 @@ func TestStagesReviewBesideTheChecksKeepsItsTripsForTheStage(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := newGateHarnessWith(t, stagesWorkflow(3, nil), func(g *gateHarness) { g.reviewDelay = 3 * time.Hour })
 			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(workflow.DefaultVersion)
+			g.env.OnGetVersion("checks-wait", workflow.DefaultVersion, versionChecksWait).Return(workflow.DefaultVersion)
 			g.onSessions(pushed("s1", "c1"))
 			g.env.OnActivity(ActivityOpenPullRequest, mock.Anything, "t1", mock.Anything).Return(PullRequest{Number: 9}, nil)
 			tc.setup(g)
@@ -1595,6 +1596,7 @@ func TestStagesGatesBesideTheChecksAreSupervisedWhenTheyTrip(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			g := besideAudit(t, 20*time.Minute, nil, func(g *gateHarness) { g.reviewDelay, g.auditDelay = 30*time.Minute, 3*time.Hour })
 			g.env.OnGetVersion("beside-ladder", workflow.DefaultVersion, versionBesideLadder).Return(tc.ladder)
+			g.env.OnGetVersion("checks-wait", workflow.DefaultVersion, versionChecksWait).Return(workflow.DefaultVersion)
 			var asked []string
 			g.env.OnActivity(ActivitySuperviseGate, mock.Anything, "t1", mock.Anything).After(10 * time.Minute).Return(
 				func(ctx context.Context, taskID string, in GateSupervision) (GateDecision, error) {

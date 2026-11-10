@@ -6094,7 +6094,7 @@ func TestWorkflowRunsNoProofsAtMainOffAPlanCardOrAfterAPush(t *testing.T) {
 // [checks_wait_timeout_50m] A current run schedules WaitChecks with the
 // supervisor's whole budget after the bound: start-to-close = bound + 1m of
 // the supervisor's reads + the pinned supervisor_timeout + 2m, so the trip
-// at the bound is the one stop. At the defaults 50m + 1m + 6m + 2m = 59m; at
+// at the bound is the one stop. At the shipped policy's 6m supervisor_timeout 50m + 1m + 6m + 2m = 59m; at
 // a project bound of 12m and a supervisor_timeout of 3m, 12m + 1m + 3m + 2m
 // = 18m. A run from before the change keeps its recorded 45m + 1m = 46m, and
 // its timeout text names 45m.

@@ -507,13 +507,15 @@ func TestPinnedBoundOfTheChecksWaitIsTheWaitsRow(t *testing.T) {
 // flakyTasks is a store whose task read fails its first n calls.
 type flakyTasks struct {
 	*fakeStore
-	mu sync.Mutex
-	n  int
+	mu    sync.Mutex
+	n     int
+	calls int
 }
 
 func (f *flakyTasks) Task(ctx context.Context, id string) (Task, bool, error) {
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.calls++
 	if f.n > 0 {
 		f.n--
 		return Task{}, false, errors.New("store down")
@@ -549,5 +551,28 @@ func TestGateWatchChecksWaitRetriesItsTaskLookup(t *testing.T) {
 		if trips, _ := sig.got(); len(trips) != tc.trips || len(base.alertRows()) != tc.trips {
 			t.Fatalf("%s: trips %+v, alerts %d, want %d", name, trips, len(base.alertRows()), tc.trips)
 		}
+	}
+}
+
+// The retry tick of a checks wait that ended reads the task no more.
+func TestGateWatchLookupTickStopsWithTheWait(t *testing.T) {
+	base := newFakeStore()
+	base.CreateTask(context.Background(), Task{ID: "t1", Status: "in-review", Track: "direct", Repository: "demo-app/demo-app"})
+	store := &flakyTasks{fakeStore: base, n: 1 << 30}
+	env := signallingEnv(&GateWatch{Store: store, Bound: func(context.Context, string, int64, int) time.Duration { return time.Hour }, LookupRetry: 10 * time.Millisecond})
+	env.RegisterActivityWithOptions(func(context.Context, string, string) error { time.Sleep(60 * time.Millisecond); return nil },
+		activity.RegisterOptions{Name: ActivityWaitChecks})
+	if _, err := env.ExecuteActivity(ActivityWaitChecks, "t1", "c1"); err != nil {
+		t.Fatal(err)
+	}
+	time.Sleep(30 * time.Millisecond)
+	store.mu.Lock()
+	after := store.calls
+	store.mu.Unlock()
+	time.Sleep(100 * time.Millisecond)
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if store.calls != after {
+		t.Fatalf("task reads grew from %d to %d after the wait ended", after, store.calls)
 	}
 }
