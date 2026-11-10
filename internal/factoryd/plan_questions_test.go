@@ -20,8 +20,8 @@ import (
 func questionPlan() Plan {
 	p := testPlan()
 	p.Questions = []PlanQuestion{
-		{Text: "How often does the checker probe a site?", Choices: []string{"30 seconds", "60 seconds", "5 minutes"}},
-		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}},
+		{Text: "How often does the checker probe a site?", Choices: []string{"30 seconds", "60 seconds", "5 minutes"}, Recommended: "60 seconds", Grounds: "a minute catches an outage soon enough"},
+		{Text: "How long are the results kept?", Choices: []string{"7 days", "30 days"}, Recommended: "30 days", Grounds: "a month covers a billing cycle"},
 	}
 	return p
 }
@@ -60,7 +60,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 		"no text":           {change(func(p *Plan) { p.Questions[0].Text = "" }), []string{"plan: question 1: text empty"}},
 		"an attack":         {change(func(p *Plan) { p.Questions[0].Origin = CatchSelfAttack }), nil},
 		"unknown origin":    {change(func(p *Plan) { p.Questions[0].Origin = "attack" }), []string{`plan: question 1: origin "attack", want self_attack or none`}},
-		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
+		"unknown field":     {"```json\n{\"summary\": \"s\", \"cards\": [], \"questions\": [{\"text\": \"q\", \"choices\": [\"a\", \"b\"], \"recommended\": \"a\", \"grounds\": \"g\", \"answer\": \"a\"}]}\n```", []string{`plan: json: unknown field "answer"`}},
 	} {
 		if got := validatePlan(tc.text, testShape, testLimits, nil); !slices.Equal(got, tc.want) {
 			t.Errorf("%s: validatePlan = %q, want %q", name, got, tc.want)
@@ -69,7 +69,7 @@ func TestPlanQuestionsFormat(t *testing.T) {
 	// The bounds (0 to 5 questions, 2 to 5 choices) are questionFindings'
 	// findings, pinned by the table above, not the prose (roadmap 186).
 	g := planGuide(testShape, testLimits, nil, nil)
-	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. `) ||
+	if !strings.Contains(g, `"size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `) ||
 		!strings.Contains(g, "questions: open points the spec leaves to the human; their answers come back to you with your last plan, "+
 			"and a plan with open questions waits for their answers, while a plan with none files its cards at once.") || strings.Count(g, "question") != 5 {
 		t.Fatalf("planGuide names questions %d times, want 5 (the format's key, the attack sentence's one, the sentence's two, the two plans' one):\n%s", strings.Count(g, "question"), g)
@@ -80,10 +80,32 @@ func TestPlanQuestionsFormat(t *testing.T) {
 // the bound and files again before the card fills the column.
 func TestQuestionBoundsRefuseATextOverTheBound(t *testing.T) {
 	q := func(text string) []PlanQuestion {
-		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}}}
+		return []PlanQuestion{{Text: text, Choices: []string{"7 days", "30 days"}, Recommended: "7 days", Grounds: "g"}}
 	}
 	if got, want := questionBounds(q(strings.Repeat("q", 301))), []string{"plan: question 1: text is over 300 characters"}; !slices.Equal(got, want) {
 		t.Errorf("301 runes: findings %q, want %q", got, want)
+	}
+	for name, tc := range map[string]struct {
+		edit func(q *PlanQuestion)
+		want []string
+	}{
+		"no recommended":  {func(q *PlanQuestion) { q.Recommended = "" }, []string{"plan: question 1: no recommended answer: name one of its choices"}},
+		"recommended off": {func(q *PlanQuestion) { q.Recommended = "both" }, []string{`plan: question 1: recommended "both" is not one of its choices`}},
+		"no grounds":      {func(q *PlanQuestion) { q.Grounds = "" }, []string{"plan: question 1: grounds empty"}},
+	} {
+		qs := []PlanQuestion{{Text: "t", Choices: []string{"one", "two"}, Recommended: "two", Grounds: "g"}}
+		tc.edit(&qs[0])
+		if got := questionBounds(qs); !slices.Equal(got, tc.want) {
+			t.Errorf("%s: findings %q, want %q", name, got, tc.want)
+		}
+	}
+	long := []PlanQuestion{{Text: "t", Choices: []string{"a", "b"}, Recommended: "a", Grounds: strings.Repeat("g", 301)}}
+	if got, want := questionBounds(long), []string{"plan: question 1: grounds is over 300 characters"}; !slices.Equal(got, want) {
+		t.Errorf("301 runes of grounds: findings %q, want %q", got, want)
+	}
+	long[0].Grounds = strings.Repeat("ü", 300)
+	if got := questionBounds(long); len(got) != 0 {
+		t.Errorf("300 runes of ü grounds: findings %q, want none", got)
 	}
 	if got := questionBounds(q(strings.Repeat("ü", 300))); len(got) != 0 {
 		t.Errorf("300 runes of ü (600 bytes): findings %q, want none", got)
@@ -145,6 +167,21 @@ func TestPGStorePlanQuestions(t *testing.T) {
 	got, err := s.PlanQuestions(ctx, "t-plan", 1)
 	if open, _ := s.OpenPlanQuestions(ctx, "t-plan", 1); err != nil || fmt.Sprint(got) != fmt.Sprint(asked) || open != 2 {
 		t.Fatalf("questions %+v (%v), %d open; want %+v, 2 open", got, err, open, asked)
+	}
+	if got[0].Recommended != "60 seconds" || got[0].Grounds != "a minute catches an outage soon enough" || got[1].Recommended != "30 days" {
+		t.Fatalf("recommended and grounds read back as %+v", got)
+	}
+	if err := s.CreateTask(ctx, Task{ID: "t-old", Status: "waiting-human", Kind: "agent", Repository: "sf/r", BudgetEUR: 1, Track: "plan", IssueNumber: 21}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.AddPlanRevision(ctx, "t-old", json.RawMessage(`{"summary": "old"}`), "s0"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind) VALUES ('t-old', 1, 1, 'Old?', '["a","b"]', 'question')`); err != nil {
+		t.Fatal(err)
+	}
+	if old, err := s.PlanQuestions(ctx, "t-old", 1); err != nil || len(old) != 1 || old[0].Recommended != "" || old[0].Grounds != "" {
+		t.Fatalf("a question stored before the columns reads %+v (%v), want empty recommended and grounds", old, err)
 	}
 	before := time.Now()
 	if err := s.AnswerPlanQuestion(ctx, "t-plan", 1, 1, "", "60 seconds", "alice"); err != nil {
@@ -240,6 +277,8 @@ func must[T any](v T, err error) T {
 func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	p := questionPlan()
 	p.Questions[1].Choices[1] = "30 days, see https://evil.example"
+	p.Questions[1].Recommended = "30 days, see https://evil.example"
+	p.Questions[1].Grounds = "see https://user:pass@host/x"
 	r, store, _, fj := newPlanRunner(t, p)
 	rec := &fakeEventRecorder{}
 	r.timeline.Events = rec
@@ -257,11 +296,11 @@ func TestRequestPlanAsksTheQuestions(t *testing.T) {
 	var rows []string
 	for _, e := range rec.rows {
 		if e.TaskID == "t-plan" && e.Kind == EventQuestionAsked && e.Via == ViaFactoryd && e.Detail["kind"] == nil {
-			rows = append(rows, fmt.Sprintf("%v %v %v %v", e.Detail["revision"], e.Detail["index"], e.Detail["question"], e.Detail["choices"]))
+			rows = append(rows, fmt.Sprintf("%v %v %v %v | %v | %v", e.Detail["revision"], e.Detail["index"], e.Detail["question"], e.Detail["choices"], e.Detail["recommended"], e.Detail["grounds"]))
 		}
 	}
-	if !slices.Equal(rows, []string{"1 1 How often does the checker probe a site? [30 seconds 60 seconds 5 minutes]",
-		"1 2 How long are the results kept? [7 days 30 days, see hxxps://evil[.]example]"}) {
+	if !slices.Equal(rows, []string{"1 1 How often does the checker probe a site? [30 seconds 60 seconds 5 minutes] | 60 seconds | a minute catches an outage soon enough",
+		"1 2 How long are the results kept? [7 days 30 days, see hxxps://evil[.]example] | 30 days, see hxxps://evil[.]example | see hxxps://user:pass@host/x"}) {
 		t.Fatalf("question_asked rows %q", rows)
 	}
 	if qs, _ := store.PlanQuestions(context.Background(), "t-plan", 1); len(qs) != 3 || qs[1].Choices[1] != "30 days, see hxxps://evil[.]example" ||

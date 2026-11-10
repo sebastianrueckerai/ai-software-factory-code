@@ -195,6 +195,10 @@ type PlanItem struct {
 type PlanQuestion struct {
 	Text    string   `json:"text"`
 	Choices []string `json:"choices"`
+	// Recommended is the choice the planner recommends, verbatim, and
+	// Grounds its reason; the confirmation question holds neither.
+	Recommended string `json:"recommended"`
+	Grounds     string `json:"grounds"`
 	// Kind marks the confirmation question (kind confirmation), whose
 	// answer fixes the spec and the criteria; every other question's kind
 	// is question.
@@ -579,15 +583,32 @@ func questionFindings(qs []PlanQuestion) []string {
 	return out
 }
 
-// questionBounds are the findings on the length of a plan's questions,
-// at most MaxQuestion runes each. file_plan alone judges them, where the
-// planner writes, so a revision stored before the bound still files its
-// round and its delta cards.
+// questionBounds are the findings on a plan's questions that only the
+// planner's filing judges: the length of the text and the grounds, at most
+// MaxQuestion runes each, and a recommended answer that is one of the
+// choices with its grounds. file_plan alone judges them, where the planner
+// writes, so a revision stored before the bound or the recommendation
+// still files its round and its delta cards.
 func questionBounds(qs []PlanQuestion) []string {
 	var out []string
 	for i, q := range qs {
+		add := func(format string, args ...any) {
+			out = append(out, fmt.Sprintf("plan: question %d: "+format, append([]any{i + 1}, args...)...))
+		}
 		if utf8.RuneCountInString(q.Text) > MaxQuestion {
-			out = append(out, fmt.Sprintf("plan: question %d: text is over %d characters", i+1, MaxQuestion))
+			add("text is over %d characters", MaxQuestion)
+		}
+		switch {
+		case q.Recommended == "":
+			add("no recommended answer: name one of its choices")
+		case !slices.Contains(q.Choices, q.Recommended):
+			add("recommended %q is not one of its choices", q.Recommended)
+		}
+		switch {
+		case q.Grounds == "":
+			add("grounds empty")
+		case utf8.RuneCountInString(q.Grounds) > MaxQuestion:
+			add("grounds is over %d characters", MaxQuestion)
 		}
 	}
 	return out
@@ -1242,7 +1263,7 @@ func planGuide(shape policy.PlanShape, limits policy.Limits, pins map[string]pol
 		"A card is one pull request by one agent: one package, one page, or one set of endpoints, with its tests, about ten files at most; a larger piece of work is two cards. " +
 		"You file the whole result with the file_plan tool: its plan argument is the complete plan json, one object holding " +
 		`{"spec": {"outcome": "...", "glossary": ["term: what it is"]}, "summary": "a paragraph: what gets built and in which order", "outline": ["..."], "criteria": [{"id": "...", "kind": "test|invariant|judgement|human", "claim": "...", "inputs": "...", "expected": "...", "suite": "...", "prompt": "...", "evidence": "..."}], "cards": [{"key": "...", "role": "...", "title": "...", "brief": "...", ` +
-		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. ` +
+		`"directories": ["..."], "depends_on": ["..."], "acceptance": [{"criterion": "...", "text": "..."}], "size": "small|medium|large", "rung": "cheap|frontier", "rung_reason": "one line"` + imageField(pins) + `}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. ` +
 		"spec: the outcome in a few sentences and the glossary that names each component once; the humans confirm the spec in Needs you, and the criteria are fixed only when they answer. " +
 		"outline: the parts of the work a later round plans, one short line each, in the order they come; leave it out when this round's cards finish the feature. " +
 		"A feature too big for one round of cards is planned in rounds: " + first + " and keep the rest in outline; " +
@@ -1579,8 +1600,8 @@ func (s *PGStore) PutPlanQuestions(ctx context.Context, id string, revision int,
 	if err != nil {
 		return false, err
 	}
-	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind)
-		SELECT $1, $2, i, q->>'text', q->'choices', 'question' FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
+	res, err := s.db.ExecContext(ctx, `INSERT INTO plan_questions (task_id, revision, idx, text, choices, kind, recommended, grounds)
+		SELECT $1, $2, i, q->>'text', q->'choices', 'question', COALESCE(q->>'recommended', ''), COALESCE(q->>'grounds', '') FROM jsonb_array_elements($3::jsonb) WITH ORDINALITY AS a(q, i) ON CONFLICT DO NOTHING`, id, revision, b)
 	if err != nil {
 		return false, err
 	}
@@ -1654,7 +1675,7 @@ func (s *PGStore) PutPlanCatches(ctx context.Context, id string, revision int, k
 }
 
 func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([]PlanQuestion, error) {
-	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
+	rows, err := s.db.QueryContext(ctx, `SELECT text, choices, recommended, grounds, COALESCE(kind, 'question'), COALESCE(decision, ''), COALESCE(answer, ''), COALESCE(answered_by, ''), answered_at FROM plan_questions
 		WHERE task_id = $1 AND revision = $2 ORDER BY idx`, id, revision)
 	if err != nil {
 		return nil, err
@@ -1665,7 +1686,7 @@ func (s *PGStore) PlanQuestions(ctx context.Context, id string, revision int) ([
 		var q PlanQuestion
 		var choices []byte
 		var at sql.NullTime
-		if err := rows.Scan(&q.Text, &choices, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
+		if err := rows.Scan(&q.Text, &choices, &q.Recommended, &q.Grounds, &q.Kind, &q.Decision, &q.Answer, &q.AnsweredBy, &at); err != nil {
 			return nil, err
 		}
 		if err := json.Unmarshal(choices, &q.Choices); err != nil {
@@ -3209,7 +3230,8 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 	}
 	asked := make([]PlanQuestion, len(qs))
 	for i, q := range qs {
-		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin}
+		asked[i] = PlanQuestion{Text: r.untrusted(t, q.Text), Choices: make([]string, len(q.Choices)), Origin: q.Origin,
+			Recommended: r.untrusted(t, q.Recommended), Grounds: r.untrusted(t, q.Grounds)}
 		for j, c := range q.Choices {
 			asked[i].Choices[j] = r.untrusted(t, c)
 		}
@@ -3237,7 +3259,7 @@ func (r *Runner) askQuestions(ctx context.Context, t Task, revision int, qs []Pl
 	}
 	for i, q := range asked {
 		r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd,
-			map[string]any{"question": q.Text, "choices": q.Choices, "revision": revision, "index": i + 1})
+			map[string]any{"question": q.Text, "choices": q.Choices, "recommended": q.Recommended, "grounds": q.Grounds, "revision": revision, "index": i + 1})
 	}
 	return nil
 }
