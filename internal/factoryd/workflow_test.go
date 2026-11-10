@@ -446,6 +446,13 @@ func (h *workflowHarness) beforeQueueWaits() {
 	h.env.OnGetVersion("queue-waits", workflow.DefaultVersion, versionQueueWaits).Return(workflow.DefaultVersion)
 }
 
+// beforeCaseQueue runs the workflow as a run from before
+// versionCaseQueue: a case_resolved of a case the run does not wait on
+// is dropped, and the question must be answered again once asked.
+func (h *workflowHarness) beforeCaseQueue() {
+	h.env.OnGetVersion("case-queue", workflow.DefaultVersion, versionCaseQueue).Return(workflow.DefaultVersion)
+}
+
 func (h *workflowHarness) signalAfter(d time.Duration, name string, sig TaskSignal) {
 	h.env.RegisterDelayedCallback(func() { h.env.SignalWorkflow(name, sig) }, d)
 }
