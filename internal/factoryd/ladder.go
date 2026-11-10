@@ -258,6 +258,9 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 			if err := r.store.SetCaseFact(ctx, c.ID, "plan_draft", note); err != nil {
 				return TripOutcome{}, err
 			}
+			if err := r.refreshDraftInfo(ctx, t.ID, have, note); err != nil {
+				return TripOutcome{}, err
+			}
 		}
 	}
 	if !opened && c.Status == CaseAtHuman {
@@ -367,6 +370,31 @@ func (r *Runner) healedTrip(ctx context.Context, t Task, in TripInput, trip stri
 		return TripOutcome{}, err
 	}
 	return TripOutcome{CaseID: c.ID, Comment: comment, Rung: 3}, nil
+}
+
+// refreshDraftInfo swaps the draft note have in the info of the question
+// the card's newest escalation asked for note, so the face shows the draft
+// as it is now.
+func (r *Runner) refreshDraftInfo(ctx context.Context, taskID, have, note string) error {
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return err
+	}
+	for i := len(events) - 1; i >= 0; i-- {
+		e := events[i]
+		if e.Kind != IntakeEscalation || e.Question == nil || e.CommentID == 0 {
+			continue
+		}
+		info := e.Question.Info
+		if have != "" {
+			info = strings.Replace(info, "\n\n"+have, "", 1)
+		}
+		if note != "" {
+			info += "\n\n" + note
+		}
+		return r.store.SetQuestionInfo(ctx, taskID, e.CommentID, info)
+	}
+	return nil
 }
 
 // restartedStop is the reason of the stop card t asked last, which a
@@ -601,7 +629,11 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
 	}
 	body += "\n\n" + next
-	note, err := r.planDraftNote(ctx, t.ID, reason)
+	stop := reason
+	if reason == healedReason {
+		stop, _ = c.Facts["reason"].(string)
+	}
+	note, err := r.planDraftNote(ctx, t.ID, stop)
 	if err != nil {
 		return 0, err
 	}

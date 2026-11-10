@@ -878,6 +878,17 @@ func (s *fakeStore) ReachedReview(ctx context.Context, id string) (bool, error) 
 	}), nil
 }
 
+func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	for i, e := range s.intakeEvents {
+		if e.TaskID == taskID && e.Kind == IntakeEscalation && e.CommentID == commentID && e.Question != nil {
+			q := *e.Question
+			q.Info = info
+			s.intakeEvents[i].Question = &q
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error) {
 	if s.failIntakeEvent != nil {
 		return 0, s.failIntakeEvent

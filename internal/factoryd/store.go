@@ -439,6 +439,9 @@ type Store interface {
 	// InsertIntakeEvent records e and returns its id; 0 when the same
 	// delivery or comment was recorded before.
 	InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, error)
+	// SetQuestionInfo replaces the info of the question task's escalation
+	// at comment commentID asked.
+	SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error
 	// ConfirmFactoryClose marks the task's factory_closed row for issue as
 	// finished: its comment posted and its issue closed. A confirmed or
 	// missing row is left as it is.
@@ -1483,6 +1486,12 @@ func (s *PGStore) InsertIntakeEvent(ctx context.Context, e IntakeEvent) (int64, 
 		return 0, nil
 	}
 	return id, err
+}
+
+func (s *PGStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	_, err := s.db.ExecContext(ctx, `UPDATE intake_events SET question = jsonb_set(question, '{info}', to_jsonb($3::text))
+		WHERE task_id = $1 AND kind = $4 AND comment_id = $2 AND question IS NOT NULL`, taskID, commentID, info, IntakeEscalation)
+	return err
 }
 
 // ConfirmFactoryClose marks task's card-closed comment confirmed: the

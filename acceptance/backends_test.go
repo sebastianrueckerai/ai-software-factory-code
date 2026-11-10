@@ -427,6 +427,10 @@ func (s *acceptanceStore) TaskByIssue(_ context.Context, repository string, issu
 	return held[0], true, nil
 }
 
+func (s *acceptanceStore) SetQuestionInfo(context.Context, string, int64, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) InsertIntakeEvent(_ context.Context, e factoryd.IntakeEvent) (int64, error) {
 	s.mu.Lock()
 	defer s.mu.Unlock()

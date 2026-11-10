@@ -3,6 +3,7 @@ package factoryd
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -61,6 +62,22 @@ func TestPGStorePlanDraft(t *testing.T) {
 		if got.Facts["other"] != "kept" || set != (v != "") || (set && have != v) {
 			t.Fatalf("SetCaseFact %q: facts %v", v, got.Facts)
 		}
+	}
+	if err := s.ResolveCase(ctx, c.ID, CaseResolution{By: FactoryDecider, Rung: 0, Action: "wait"}, nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetCaseFact(ctx, c.ID, "plan_draft", "x"); !errors.Is(err, ErrNotFound) {
+		t.Fatalf("SetCaseFact on a resolved case = %v, want ErrNotFound", err)
+	}
+	if _, err := s.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-plan", Kind: IntakeEscalation, Author: "factoryd", Body: "b", CommentID: 5,
+		Question: &HumanQuestion{Ask: "a", Why: "w", Info: "old"}}); err != nil {
+		t.Fatal(err)
+	}
+	if err := s.SetQuestionInfo(ctx, "t-plan", 5, "new"); err != nil {
+		t.Fatal(err)
+	}
+	if evs, _ := s.IntakeEvents(ctx, "t-plan"); len(evs) != 1 || evs[0].Question == nil || evs[0].Question.Info != "new" || evs[0].Question.Ask != "a" {
+		t.Fatalf("the question after SetQuestionInfo: %+v", evs)
 	}
 	if n, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"three"}`), "s3"); err != nil || n != 1 {
 		t.Fatalf("revision %d, %v", n, err)
@@ -164,6 +181,9 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	if err != nil || first.CaseID == 0 || first.Comment == 0 {
 		t.Fatalf("first trip %+v, %v", first, err)
 	}
+	if info := questionInfo(store, first.Comment); !strings.Contains(info, want) {
+		t.Fatalf("the question row's info %q lacks the note", info)
+	}
 	c, _ := store.CaseByID(ctx, first.CaseID)
 	if c.Facts["plan_draft"] != want || strings.Contains(c.Problem, "draft") || strings.Contains(c.StateKey, "draft") {
 		t.Fatalf("case facts %v, problem %q, key %q; want the note as its own fact", c.Facts, c.Problem, c.StateKey)
@@ -188,6 +208,9 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	if c.Facts["plan_draft"] != "The planner's last refused filing is kept as a draft, refused for 11 findings." {
 		t.Fatalf("the fact after the second trip: %v", c.Facts["plan_draft"])
 	}
+	if info := questionInfo(store, first.Comment); !strings.Contains(info, "refused for 11 findings.") || strings.Contains(info, "2 findings") {
+		t.Fatalf("the question row's info %q after the second trip", info)
+	}
 	if err := store.DeletePlanDraft(ctx, "t-b"); err != nil {
 		t.Fatal(err)
 	}
@@ -197,14 +220,42 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	if c, _ = store.CaseByID(ctx, first.CaseID); c.Facts["plan_draft"] != nil {
 		t.Fatalf("the fact outlived the draft: %v", c.Facts["plan_draft"])
 	}
-	var info string
+	if info := questionInfo(store, first.Comment); strings.Contains(info, "refused for") {
+		t.Fatalf("the question row's info %q keeps a note about a deleted draft", info)
+	}
+}
+
+func questionInfo(store *fakeStore, comment int64) string {
 	for _, e := range store.intakeEvents {
-		if e.Kind == IntakeEscalation && e.Question != nil && e.CommentID == first.Comment {
-			info = e.Question.Info
+		if e.Kind == IntakeEscalation && e.Question != nil && e.CommentID == comment {
+			return e.Question.Info
 		}
 	}
-	if !strings.Contains(info, want) {
-		t.Fatalf("the question row's info %q lacks the note", info)
+	return ""
+}
+
+// A restart's re-ask of a time-cap stop shows the draft note too.
+func TestHealedReAskNamesTheDraft(t *testing.T) {
+	r, store, fj := outsidePlanRig(t)
+	ctx := context.Background()
+	if _, err := store.InsertIntakeEvent(ctx, IntakeEvent{TaskID: "t-b", Kind: IntakeEscalation, Author: "factoryd", Body: timeCapAsk, CommentID: 77}); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.SetPlanDraft(ctx, "t-b", json.RawMessage(`{}`), []string{"a", "b", "c"}); err != nil {
+		t.Fatal(err)
+	}
+	out, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: healedReason}, tripAttempt{N: 1})
+	if err != nil || out.Comment == 0 {
+		t.Fatalf("the re-ask %+v, %v", out, err)
+	}
+	var face string
+	for _, cm := range fj.comments {
+		if cm.id == out.Comment {
+			face = cm.body
+		}
+	}
+	if !strings.Contains(face, "refused for 3 findings.") {
+		t.Fatalf("the re-ask's face %q lacks the note", face)
 	}
 }
 

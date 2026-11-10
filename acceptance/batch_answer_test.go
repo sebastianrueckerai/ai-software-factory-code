@@ -577,6 +577,9 @@ func (s *accBatchStore) TasksByPR(ctx context.Context, repository string, pr int
 func (s *accBatchStore) TasksByRuling(ctx context.Context, repository, ruling string) ([]factoryd.Task, error) {
 	return s.tasks.TasksByRuling(ctx, repository, ruling)
 }
+func (s *accBatchStore) SetQuestionInfo(ctx context.Context, taskID string, commentID int64, info string) error {
+	panic("unused")
+}
 func (s *accBatchStore) InsertIntakeEvent(ctx context.Context, e factoryd.IntakeEvent) (int64, error) {
 	panic("unused")
 }
