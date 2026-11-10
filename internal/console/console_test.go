@@ -1145,7 +1145,7 @@ func (l *fakeLedger) CurrentPolicy(context.Context) (policy.Version, bool, error
 			EnvelopeDefault: policy.Envelope{MonthlyEUR: 10, ServerTypes: []string{"cx23"}, MaxCount: 2, MaxLeaseHours: 4, VolumeMaxGB: 20},
 			Chat:            l.chat, Risk: l.risk, Routines: l.routines},
 			Projects: map[string]policy.ProjectConfig{
-				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "auto", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
+				"demo-app": {Repository: "demo-app/demo-app", MergeRule: "human", Objects: "factory", Agents: "coder", Namespaces: []string{"demo-staging", "demo-prod"},
 					Envelope: &policy.Envelope{MonthlyEUR: 30, ServerTypes: []string{"cx23", "cx33"}, MaxCount: 3, MaxLeaseHours: 8},
 					Standing: &policy.Standing{MonthlyEUR: 12, ServerTypes: []string{"cx23"}, MaxCount: 2}},
 				"infra": {Repository: "sf/infra", MergeRule: "human", Objects: "seed", Agents: "none"},
@@ -2529,7 +2529,7 @@ func TestPolicyShowsTheCurrentVersionAndLinksToGit(t *testing.T) {
 		`<a href="` + at + `/projects/demo-app.yaml" target="_blank" rel="noopener">demo-app</a>`,
 		`<a href="` + at + `/projects/infra.yaml" target="_blank" rel="noopener">infra</a>`,
 		"<td>sf/infra</td><td>human</td><td>seed</td><td>none</td><td></td>",
-		"<td>demo-app/demo-app</td><td>auto</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
+		"<td>demo-app/demo-app</td><td>human</td><td>factory</td><td>coder</td><td>demo-staging, demo-prod</td>",
 		"<td>screening</td><td>human</td><td><i class=\"lamp\" aria-hidden=\"true\"></i>no</td><td>outsider</td>",
 		"<td>checks</td><td>agent</td><td><i class=\"lamp on\" aria-hidden=\"true\"></i>yes</td><td></td>",
 		`<a href="https://git.example/sf/infra/src/branch/main/factory" target="_blank" rel="noopener">`} {

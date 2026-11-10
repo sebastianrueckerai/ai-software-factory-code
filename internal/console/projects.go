@@ -206,11 +206,11 @@ var (
 
 type newProject struct {
 	// Source is the GitHub repository, owner/name, registration copies.
-	Name, Process, Template, MergeRule, Source string
+	Name, Process, Template, Autonomy, Source string
 }
 
 func (c *Console) newProjectForm(w http.ResponseWriter, r *http.Request) {
-	c.renderNewProject(w, r, http.StatusOK, newProject{MergeRule: policy.MergeHuman}, nil)
+	c.renderNewProject(w, r, http.StatusOK, newProject{Autonomy: policy.AutonomyManual}, nil)
 }
 
 func (c *Console) renderNewProject(w http.ResponseWriter, r *http.Request, code int, p newProject, refused []string) {
@@ -225,7 +225,7 @@ func (c *Console) renderNewProject(w http.ResponseWriter, r *http.Request, code 
 	w.WriteHeader(code)
 	c.render(w, "project_new.html", map[string]any{"User": s.user, "CSRF": s.csrf, "Factory": true, "Form": p, "Refused": refused,
 		"Processes": slices.Sorted(maps.Keys(v.Tree.Processes)), "Templates": slices.Sorted(maps.Keys(v.Tree.Templates)),
-		"Approver": c.approver(r), "Import": c.cfg.Mirrors != nil})
+		"Levels": policy.AutonomyStates, "Approver": c.approver(r), "Import": c.cfg.Mirrors != nil})
 }
 
 // projectFile is the file section 5 of stage11-design.md shows: the form's
@@ -235,7 +235,8 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 	var b strings.Builder
 	b.WriteString("# yaml-language-server: $schema=../schema/project.schema.json\n")
 	fmt.Fprintf(&b, "# Filed from the console by %s on %s.\n", user, day.UTC().Format(time.DateOnly))
-	fmt.Fprintf(&b, "repository: %s/%s\nmerge_rule: %s\nobjects: factory\nagents: coder\nprocess: %s\n", p.Name, p.Name, p.MergeRule, p.Process)
+	level, rule := autonomyKeys(p.Autonomy)
+	fmt.Fprintf(&b, "repository: %s/%s\nmerge_rule: %s\nautonomy: %s\nobjects: factory\nagents: coder\nprocess: %s\n", p.Name, p.Name, rule, level, p.Process)
 	if p.Template != "" {
 		fmt.Fprintf(&b, "template: %s\n", p.Template)
 	}
@@ -256,7 +257,7 @@ func projectFile(p newProject, user string, day time.Time) []byte {
 // undoes it (failFiling).
 func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	p := newProject{Name: r.PostFormValue("name"), Process: r.PostFormValue("process"),
-		Template: r.PostFormValue("template"), MergeRule: r.PostFormValue("merge_rule"), Source: strings.TrimSpace(r.PostFormValue("source"))}
+		Template: r.PostFormValue("template"), Autonomy: r.PostFormValue("autonomy"), Source: strings.TrimSpace(r.PostFormValue("source"))}
 	token := r.PostFormValue("token")
 	var refused []string
 	if !newProjectName.MatchString(p.Name) {
@@ -268,8 +269,8 @@ func (c *Console) createProject(w http.ResponseWriter, r *http.Request) {
 	if p.Template != "" && !treeName.MatchString(p.Template) {
 		refused = append(refused, "template: one of the configuration's templates, or none")
 	}
-	if p.MergeRule != policy.MergeHuman && p.MergeRule != policy.MergeAuto {
-		refused = append(refused, "merge rule: human or auto")
+	if !slices.Contains(policy.AutonomyStates, p.Autonomy) {
+		refused = append(refused, "autonomy: manual, assisted, autonomous or full auto")
 	}
 	if p.Source != "" && (c.cfg.Mirrors == nil || !githubRepo.MatchString(p.Source)) {
 		refused = append(refused, "GitHub repository: owner/name of a repository on GitHub, or none")

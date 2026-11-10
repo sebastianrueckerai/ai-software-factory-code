@@ -169,7 +169,7 @@ func TestTripFactsReadsTheCard(t *testing.T) {
 			{TaskID: "d3", Issue: 22, Status: "running"},
 			{TaskID: "d5", Issue: 24, Status: "closed", Why: ReasonIssueClosed},
 		},
-		Autonomy:     policy.AutonomyManual,
+		Autonomy:     policy.AutonomyFullAuto,
 		PoolLeft:     policy.Draw{Sessions: 29, AgentTime: 29*time.Hour + 55*time.Minute, EUR: 58.5},
 		CardDrawLeft: policy.Draw{Sessions: 2, AgentTime: 85 * time.Minute, EUR: 4},
 	}

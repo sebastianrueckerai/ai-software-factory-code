@@ -531,6 +531,7 @@ func linkshortFile(day string) string {
 		"# Filed from the console by sebastian on " + day + ".\n" +
 		"repository: linkshort/linkshort\n" +
 		"merge_rule: human\n" +
+		"autonomy: manual\n" +
 		"objects: factory\n" +
 		"agents: coder\n" +
 		"process: spec\n" +
@@ -541,7 +542,23 @@ func linkshortFile(day string) string {
 }
 
 func linkshortForm(csrf string) url.Values {
-	return url.Values{"csrf": {csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "merge_rule": {"human"}}
+	return url.Values{"csrf": {csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "autonomy": {"manual"}}
+}
+
+// Each dial position files the keys the dial writes for it, derived by
+// hand: only full auto is autonomous with merge_rule auto.
+func TestProjectFileWritesTheDialsKeys(t *testing.T) {
+	for state, want := range map[string]string{
+		"manual":     "merge_rule: human\nautonomy: manual\n",
+		"assisted":   "merge_rule: human\nautonomy: assisted\n",
+		"autonomous": "merge_rule: human\nautonomy: autonomous\n",
+		"full auto":  "merge_rule: auto\nautonomy: autonomous\n",
+	} {
+		got := string(projectFile(newProject{Name: "linkshort", Process: "spec", Autonomy: state}, "sebastian", time.Now()))
+		if !strings.Contains(got, "repository: linkshort/linkshort\n"+want+"objects: factory\n") {
+			t.Errorf("%s: filed\n%s", state, got)
+		}
+	}
 }
 
 // The form offers the tree's processes and templates to every console
@@ -561,7 +578,7 @@ func TestNewProjectRefusedByCheck(t *testing.T) {
 	body := form.Body.String()
 	for _, want := range []string{`<form method="post" action="/projects"`, `name="name"`, `pattern="[a-z0-9][a-z0-9\-]{0,35}[a-z0-9]"`,
 		`<option value="maintenance">maintenance</option>`, `<option value="" selected>none</option>`,
-		`<option value="human" selected>human</option>`, `<option value="auto">auto</option>`} {
+		`<option value="manual" selected>manual</option>`, `<option value="full auto">full auto</option>`} {
 		if form.Code != http.StatusOK || !strings.Contains(body, want) {
 			t.Errorf("GET /settings/new = %d, lacks %q", form.Code, want)
 		}
@@ -585,7 +602,8 @@ func TestNewProjectRefusedByCheck(t *testing.T) {
 	for form, line := range map[string]string{
 		"name=L":               "name: a DNS label of 2 to 37 lowercase letters, digits and dashes",
 		"name=-x":              "name: a DNS label of 2 to 37 lowercase letters, digits and dashes",
-		"merge_rule=sometimes": "merge rule: human or auto",
+		"autonomy=sometimes":   "autonomy: manual, assisted, autonomous or full auto",
+		"autonomy=autonomous ": "autonomy: manual, assisted, autonomous or full auto",
 		"process=":             "process: one of the configuration's processes",
 		"template=../x":        "template: one of the configuration's templates, or none",
 	} {

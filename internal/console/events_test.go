@@ -269,7 +269,7 @@ var actions = []action{
 			r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
 		},
 		request: func(r *rig, s *session) *http.Request {
-			return post("/projects", url.Values{"csrf": {s.csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "merge_rule": {"human"}})
+			return post("/projects", url.Values{"csrf": {s.csrf}, "name": {"linkshort"}, "process": {"spec"}, "template": {"ts-go"}, "autonomy": {"manual"}})
 		}},
 	{name: "mergeProject", kind: factoryd.EventProjectMerged, repo: "linkshort/linkshort",
 		detail: map[string]any{"name": "linkshort", "pr": int64(12)},
