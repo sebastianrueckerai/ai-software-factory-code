@@ -925,6 +925,54 @@ func TestFilingLeavesABranchNotItsOwn(t *testing.T) {
 	}
 }
 
+// failAfter is an http.RoundTripper that answers every branch read after
+// the first with 502; every other request goes to base.
+type failAfter struct {
+	base http.RoundTripper
+	n    *int
+}
+
+func (f failAfter) RoundTrip(req *http.Request) (*http.Response, error) {
+	if req.Method == http.MethodGet && strings.Contains(req.URL.Path, "/branches/") {
+		*f.n++
+		if *f.n > 1 {
+			return failAnswer(http.StatusBadGateway, "the branch read did not answer"), nil
+		}
+	}
+	return f.base.RoundTrip(req)
+}
+
+// A refused commit whose undo cannot read the branch holds no proof that
+// another filing has the name, so its advice is the conditional one.
+func TestFailedCommitWithAnUnreadableBranch(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		status int
+		want   string
+	}{
+		{"a 4xx refusal", http.StatusUnprocessableEntity, "Forgejo refused to commit the project's file: 422 Unprocessable Entity. " +
+			"Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again."},
+		{"a 5xx refusal", http.StatusInternalServerError, "Forgejo refused to commit the project's file: 500 Internal Server Error. " +
+			"Branch project-linkshort may be left. If no other filing of linkshort is in progress, delete it on Forgejo, then file the project again."},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			r := newRig(t)
+			infra := withInfra(t, r)
+			r.c.cfg.CheckProject = func(context.Context, string, []byte) ([]string, error) { return nil, nil }
+			ck, s := r.loggedIn(t)
+			infra.mu.Lock()
+			infra.branches, infra.contentsStatus = map[string]string{}, tc.status
+			infra.mu.Unlock()
+			reads := 0
+			r.c.cfg.HTTP = &http.Client{Transport: failAfter{http.DefaultTransport, &reads}}
+			rec := r.do(post("/projects", linkshortForm(s.csrf)), ck)
+			if got := strings.TrimSpace(rec.Body.String()); rec.Code != http.StatusBadGateway || !strings.HasSuffix(got, tc.want) {
+				t.Errorf("the filing = %d %q, want 502 ending %q", rec.Code, got, tc.want)
+			}
+		})
+	}
+}
+
 // Two filings of one name racing both pass the branch check. The one
 // whose commit lands first opens its pull request; the other's commit is
 // refused, and its undo finds the branch's head is not its commit, so it
