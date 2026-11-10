@@ -883,11 +883,11 @@ func TestTheChatAnswersAMonitorCaseByItsNumber(t *testing.T) {
 		}
 	}
 	const live = " Card #11's live cases: 7 (monitor_flag)."
-	refused("t-run", 8, "Card #11 has no case 8."+live)
-	refused("t-run", 3, "Card #11 has no case 3."+live)
-	refused("t-run", 6, "Case 6 ended."+live)
-	refused("t-run", 5, "Case 5 is #14's."+live)
-	refused("t-idle", 7, "Case 7 is #11's. Card #15 has no live case.")
+	refused("t-run", 8, "Card #11 has no case by that number."+live)
+	refused("t-run", 3, "Card #11 has no case by that number."+live)
+	refused("t-run", 6, "That case ended."+live)
+	refused("t-run", 5, "That case is #14's."+live)
+	refused("t-idle", 7, "That case is #11's. Card #15 has no live case.")
 	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-run", CaseID: 7, Action: factoryd.ActClose}); err != nil {
 		t.Fatal(err)
 	}

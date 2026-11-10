@@ -1281,9 +1281,9 @@ func (in *Intake) handleIssueClosed(ctx context.Context, p issuesPayload) error 
 // issueClosed acts on task t's issue closed by closer, from the webhook or
 // the heal pass alike: the task's workflow is signalled (it asks Forgejo
 // whether a merge closed it), a human-lane task is simply done, a failed
-// card ends closed, and so does a done plan between rounds
-// (BetweenRounds). A merged card is left as it is: its own
-// merge closes its issue (Closes #N), a close no webhook tells from a
+// card ends closed, and so does a done plan (DonePlan) once its
+// production hold is gone (endDonePlan). A merged card is left as it is:
+// its own merge closes its issue (Closes #N), a close no webhook tells from a
 // human's, and its workflow ended at the merge; the chain ends it, or
 // the console's Close (CloseCard). Only a close that counts acts
 // (closeCounts).
@@ -1301,11 +1301,12 @@ func (in *Intake) issueClosed(ctx context.Context, t Task, closer string) error 
 	case t.Status == "merged":
 		return nil
 	}
-	switch between, err := BetweenRounds(ctx, in.Store, t); {
-	case err != nil:
-		return err
-	case between:
-		return in.Store.TransitionTask(ctx, t.ID, []string{"done"}, "closed")
+	if DonePlan(t) {
+		// factoryd's own close of a finished plan leaves it done
+		if later, err := leavesRounds(ctx, in.Store, t.ID); closer == in.BotUser && (err != nil || !later) {
+			return err
+		}
+		return endDonePlan(ctx, in.Store, in.Forgejo, t)
 	}
 	_, err := in.decide(ctx, t.ID, "issue_closed", closer, t.IssueNumber)
 	return err

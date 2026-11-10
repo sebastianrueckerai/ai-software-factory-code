@@ -587,7 +587,7 @@ func TestPlanGuideCriteria(t *testing.T) {
 			"the new card starts from that card's branch and lands what it holds first. Drop a card by leaving its key out: an open card stops, its branch stays. " +
 			"take_off_main: a revert from main, and nothing else: the keys of merged cards whose work comes off main; take_off_reasons: by key, what breaks if that card's work stays on main; " +
 			"a card of a later revision that lands it again names it in from. A done card of this round that the revision leaves out of its cards stays on main and leaves the list: name it nowhere.",
-		`"rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."]}]}. `,
+		`"rung_reason": "one line"}], "take_off_main": ["..."], "take_off_reasons": {"<key>": "..."}, "questions": [{"text": "...", "choices": ["...", "..."], "recommended": "<one of the choices, verbatim>", "grounds": "why, in one sentence"}]}. `,
 		"Its acceptance items are the criteria, one item per criterion by id; a judgement or human criterion arrives as an item that names its claim.",
 	} {
 		if !strings.Contains(got, want) {
@@ -893,6 +893,9 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 				}
 			}
 			json.NewEncoder(w).Encode(list)
+		case r.Method == "POST" && len(parts) == 3 && parts[2] == "comments" && strings.TrimSpace(body["body"].(string)) == "":
+			// Forgejo requires a comment's body
+			http.Error(w, `{"message":"Body is empty"}`, http.StatusUnprocessableEntity)
 		case r.Method == "POST" && len(parts) == 3 && parts[2] == "comments":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			c := &stubComment{id: int64(700 + len(f.comments)), issue: n, body: body["body"].(string), author: "factory-agent"}
@@ -904,6 +907,8 @@ func (f *planForgejo) srv(t *testing.T) *httptest.Server {
 		case r.Method == "GET" && len(parts) == 2 && parts[0] == "issues":
 			n, _ := strconv.ParseInt(parts[1], 10, 64)
 			fmt.Fprintf(w, `{"number":%d,"state":%q}`, n, f.issues[n].state)
+		case r.Method == "GET" && len(parts) == 3 && parts[0] == "issues" && parts[2] == "timeline":
+			w.Write([]byte(`[{"type":"close","user":{"login":"factory-agent"}}]`))
 		case r.Method == "GET" && strings.HasPrefix(rest, "pulls"):
 			json.NewEncoder(w).Encode([]any{})
 		case r.Method == "PATCH" && len(parts) == 2 && parts[0] == "issues":

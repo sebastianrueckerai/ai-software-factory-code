@@ -2,7 +2,6 @@ package factoryd
 
 import (
 	"encoding/json"
-	"fmt"
 	"reflect"
 	"slices"
 	"strings"
@@ -45,8 +44,10 @@ func TestPokeOf(t *testing.T) {
 		{"a withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"question": "Which store?", "reason": "the checks failed"}}, card,
 			ChatMessage{Kind: MessagePoke, Content: "#603 needs you no more: its question is withdrawn because the checks failed."}, true},
 		// a monitor's case sits beside the card's own ask: its row names the case
-		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "reason": "the wait ended"}}, card,
-			ChatMessage{Kind: MessagePoke, Content: "Case 12 needs you no more: its question is withdrawn because the wait ended."}, true},
+		{"a monitor case's withdrawn question", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(12), "reason": "the wait ended", "problem": "queued_over_bound(work bound 3 of 3 for 3h)"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (queued_over_bound(work bound 3 of 3 for 3h)) needs you no more: its question is withdrawn because the wait ended."}, true},
+		{"another flag withdrawn for the same reason reads differently", Event{Kind: EventQuestionWithdrawn, TaskID: "t-1", Detail: map[string]any{"case_id": float64(13), "reason": "the wait ended", "problem": "wait_over_bound(review 5h)"}}, card,
+			ChatMessage{Kind: MessagePoke, Content: "The flag on #603 - Session store: pick the table's store (wait_over_bound(review 5h)) needs you no more: its question is withdrawn because the wait ended."}, true},
 		{"a merge", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "high"}}, card,
 			ChatMessage{Kind: MessageEscalation, Content: "#603 waits for you: merge PR #612, high risk.", Choices: []string{"Approve"}}, true},
 		{"an agent's merge on red checks offers no Approve", Event{Kind: EventApprovalRequested, TaskID: "t-1", Detail: map[string]any{"kind": "merge", "pr": float64(612), "class": "normal", "factory": false, "red_checks": true}}, card,
@@ -505,7 +506,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 			t.Fatal(err)
 		}
 	}
-	flagged := fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", flag.ID)
+	const flagged = "The monitor flagged this card: what should happen? Answer it in the project chat."
 	record(EventQuestionAsked, map[string]any{"question": "Use a replica?"})
 	record(EventQuestionAsked, map[string]any{"question": flagged, "case_id": flag.ID, "case_kind": string(CaseMonitorFlag)})
 	if err := p.Pass(ctx); err != nil {
@@ -531,7 +532,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if want := fmt.Sprintf("Case %d needs you no more: its question is withdrawn because the wait ended.", flag.ID); len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
+	if want := "The flag on #603 - Session store needs you no more: its question is withdrawn because the wait ended."; len(rows) != 3 || len(asks) != 3 || rows[2].Content != want {
 		t.Fatalf("the inbox = %+v, asks %+v; want the two asks and the withdrawal %q", rows, asks, want)
 	}
 	askRows := make([]ChatMessage, len(asks))
@@ -573,7 +574,7 @@ func TestTheInboxSettlesAMonitorsAskByItsCase(t *testing.T) {
 			t.Fatal(err)
 		}
 		faced = append(faced, c.ID)
-		record(EventQuestionAsked, map[string]any{"question": fmt.Sprintf("The monitor flagged this card: what should happen? Answer case %d in the project chat.", c.ID),
+		record(EventQuestionAsked, map[string]any{"question": "The monitor flagged this card (" + flag + "): what should happen? Answer it in the project chat.",
 			"case_id": c.ID, "case_kind": string(CaseMonitorFlag), "flag": flag})
 	}
 	copyWords := func() []string {

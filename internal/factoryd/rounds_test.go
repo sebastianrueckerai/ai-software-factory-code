@@ -1574,3 +1574,27 @@ func TestOneCardPlanTakesADeltaCard(t *testing.T) {
 		t.Fatalf("a delta card on a missing card: %q", why)
 	}
 }
+
+// A done plan in its last round whose issue a writer closed, the webhook
+// missed, ends closed on the sweep, as the webhook's close does; a close
+// that does not count (the bot's, unrecorded) leaves it done, and so does
+// an open issue.
+func TestRoundCheckEndsAClosedPlanInItsLastRound(t *testing.T) {
+	ctx := context.Background()
+	last := roundOne()
+	last.Outline, last.Criteria = nil, nil
+	for _, tc := range []struct{ name, closer, want string }{
+		{"a writer's close", "sebastian", "closed"},
+		{"the bot's unrecorded close", "factory-agent", "done"},
+		{"an open issue", "", "done"},
+	} {
+		r, store, fj := roundRigOf(t, last)
+		fj.issueOff, fj.closer = tc.closer != "", tc.closer
+		if err := r.nextRound(ctx, "p"); err != nil {
+			t.Fatalf("%s: %v", tc.name, err)
+		}
+		if got := store.tasks["p"].Status; got != tc.want || len(replanSteps(t, r, "p")) != 0 {
+			t.Errorf("%s: plan %s, replan steps %d; want %s and none", tc.name, got, len(replanSteps(t, r, "p")), tc.want)
+		}
+	}
+}

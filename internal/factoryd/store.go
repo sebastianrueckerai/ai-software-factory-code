@@ -676,6 +676,18 @@ type Store interface {
 	// PlansBetweenRounds are the done or closed plan cards without a
 	// plan_closed event whose newest revision's outline has parts, by id.
 	PlansBetweenRounds(ctx context.Context) ([]string, error)
+	// PlanMerged says whether a card of plan holds an unreverted merge
+	// (a merge commit, or a pull_request_merged row): the rule that opens
+	// the plan's production group.
+	PlanMerged(ctx context.Context, plan string) (bool, error)
+	// PlanClosesToFinish are the plan cards whose close recorded
+	// plan_closed and is still to finish, by plan id with the closing words
+	// (none for a failed card factoryd closed itself): a done card whose
+	// person's Close left its issue open, a failed card not yet ended. A
+	// row of the last minute is the console's own close in progress: its
+	// four Forgejo calls time out at 15 s each, so it has ended well before
+	// the sweep takes the row.
+	PlanClosesToFinish(ctx context.Context) (map[string]string, error)
 	// PlanClosed reports whether plan has its plan_closed event row, the
 	// fact OpenGroups reads, and the time of its first.
 	PlanClosed(ctx context.Context, plan string) (at time.Time, closed bool, err error)
@@ -809,6 +821,11 @@ type Store interface {
 	// 8): verdict rows on the plan's integration card, one per source, and
 	// the tasks that carry them.
 	PutCriteriaVerdicts(ctx context.Context, taskID, source, by string, rows []CriterionVerdict) error
+	// ClosePlanWithWaivers writes what prepare decides (a PlanClose) and
+	// ends plan's pending criteria asks in one transaction that locks the
+	// plan's task row, re-checks it is at rest (ErrNotDonePlan) and not
+	// closed (ErrPlanClosed), and runs prepare under the lock.
+	ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error
 	// DeleteVerdictsButApprover deletes task's rows of criterion from
 	// every source but the approver's; none is no error.
 	DeleteVerdictsButApprover(ctx context.Context, taskID, criterion string) error

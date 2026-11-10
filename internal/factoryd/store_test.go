@@ -556,6 +556,24 @@ func (s *fakeStore) HeldPlanCards(ctx context.Context, repository string) ([]Tas
 	return out, nil
 }
 
+// cardMerged is the rule of groupOpenings: a merge commit or a
+// pull_request_merged row, and no revert.
+func (s *fakeStore) cardMerged(c Task) bool {
+	if c.RevertedAt != nil {
+		return false
+	}
+	return c.MergeCommit != "" || slices.ContainsFunc(s.events, func(e Event) bool { return e.TaskID == c.ID && e.Kind == "pull_request_merged" })
+}
+
+func (s *fakeStore) PlanMerged(ctx context.Context, plan string) (bool, error) {
+	for _, c := range s.tasks {
+		if c.Parent == plan && c.Source == SourcePlan && c.PlanKey != "" && s.cardMerged(c) {
+			return true, nil
+		}
+	}
+	return false, nil
+}
+
 func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) {
 	groups := map[string]*Group{}
 	merged := map[string]bool{}
@@ -570,7 +588,7 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 			groups[c.Parent] = g
 		}
 		g.Children[c.Status]++
-		if c.MergeCommit == "" || c.RevertedAt != nil {
+		if !s.cardMerged(c) {
 			continue
 		}
 		merged[c.Parent] = true
@@ -589,6 +607,18 @@ func (s *fakeStore) OpenGroups(ctx context.Context) (map[string][]Group, error) 
 	}
 	if s.afterRead != nil {
 		s.afterRead("OpenGroups")
+	}
+	return out, nil
+}
+
+func (s *fakeStore) PlanClosesToFinish(ctx context.Context) (map[string]string, error) {
+	out := map[string]string{}
+	for _, e := range s.events {
+		words, _ := e.Detail["words"].(string)
+		status := s.tasks[e.TaskID].Status
+		if e.Kind == EventPlanClosed && (status == "failed" || status == "done" && words != "") && (e.At.IsZero() || time.Since(e.At) > time.Minute) {
+			out[e.TaskID] = words
+		}
 	}
 	return out, nil
 }
@@ -1576,7 +1606,7 @@ func (s *fakeStore) ResolveCase(ctx context.Context, id int64, r CaseResolution,
 		return answered == comment
 	}
 	if c := s.cases[i]; c.Status != CaseOpen && c.Status != CaseAtHuman && !copied(c) {
-		return ErrCaseEnded{c}
+		return ErrCaseEnded{Case: c}
 	}
 	if d != nil {
 		if err := s.DrawCard(ctx, s.cases[i].TaskID, *d); err != nil {
@@ -4689,6 +4719,36 @@ func (s *fakeStore) PutCriteriaVerdicts(ctx context.Context, taskID, source, by 
 		out = append(out, v)
 	}
 	s.criteriaVerdicts[taskID] = out
+	return nil
+}
+
+func (s *fakeStore) ClosePlanWithWaivers(ctx context.Context, plan, by string, prepare func(context.Context) (PlanClose, error)) error {
+	t, ok := s.tasks[plan]
+	switch _, stands := s.closed[plan]; {
+	case !ok:
+		return ErrNotFound
+	case !ClosablePlan(t):
+		return ErrNotDonePlan
+	case stands:
+		return ErrPlanClosed
+	}
+	pc, err := prepare(ctx)
+	if err != nil {
+		return err
+	}
+	if err := s.PutCriteriaVerdicts(ctx, pc.Home, CriteriaSourceApprover, by, pc.Waive); err != nil {
+		return err
+	}
+	if pc.Closed != nil {
+		if _, err := s.Record(ctx, *pc.Closed); err != nil {
+			return err
+		}
+	}
+	for _, kind := range criteriaKinds {
+		if err := s.ResolveApprovals(ctx, plan, kind, "approved", by, pc.Words); err != nil {
+			return err
+		}
+	}
 	return nil
 }
 

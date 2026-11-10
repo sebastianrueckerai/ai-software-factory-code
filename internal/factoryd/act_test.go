@@ -57,7 +57,9 @@ func TestActRefusesAnActionTheTableDoesNotOffer(t *testing.T) {
 		{"the human's approve", ActInput{CaseID: 7, By: "sebastian", Rung: 3, Res: Resolution{Action: "approve"}},
 			"there is no action approve, and the human may take reverify, raise_ceiling, successor, replan, close and note"},
 		{"a fund with no case while case 7 waits", ActInput{By: "sebastian", Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
-			"card #12 waits on its case 7: answer that case by its id"},
+			"card #12 waits on the session cap: answer that case, not the card"},
+		{"a fund with no case via the chat while case 7 waits", ActInput{By: "sebastian", Via: ViaChat, Rung: 3, Res: Resolution{Action: ActFund, Args: map[string]any{"eur": 0.5}}},
+			"card #12 waits on the session cap (case 7): answer that case, not the card"},
 	} {
 		c.in.TaskID = "t1"
 		var refused ErrActRefused
@@ -122,7 +124,7 @@ func TestActRetriesTheFailedDependency(t *testing.T) {
 	}
 	want := []CaseAction{{Action: ActRetry, Args: map[string]any{"task_id": "t-a", "replacement": int64(9)}, Result: "Filed #9 in place of #5."}}
 	if !reflect.DeepEqual(got.Did, want) || got.Case.Status != CaseResolved || got.Case.Resolution.Action != ActRetry ||
-		got.Text != "Case 3 is resolved with retry. Filed #9 in place of #5." {
+		got.Text != "The failed dependency on #6 is resolved with retry. Filed #9 in place of #5." {
 		t.Fatalf("result = %+v, want case 3 resolved with the retry that filed #9", got)
 	}
 	if steps := store.caseSteps[3]; len(steps) != 1 || !reflect.DeepEqual(steps[0].Did, want) || steps[0].Outcome != StepResolved {
@@ -140,7 +142,7 @@ type resolveFails struct {
 }
 
 func (s resolveFails) ResolveCase(context.Context, int64, CaseResolution, *CaseDraw, *CaseStep) error {
-	return ErrCaseEnded{s.ended}
+	return ErrCaseEnded{Case: s.ended}
 }
 
 // When the case cannot end after the retry filed its replacement, the
@@ -150,11 +152,11 @@ func TestActSaysWhatRanWhenTheCaseCannotEnd(t *testing.T) {
 	r, store, _, _, _ := newRetryRig(t)
 	store.cases = []Case{{ID: 3, TaskID: "t-b", Kind: CaseDependencyFailed, Status: CaseAtHuman}}
 	at := time.Date(2026, 11, 3, 10, 4, 0, 0, time.UTC)
-	r.store = resolveFails{store, Case{ID: 3, Status: CaseResolved, ResolvedAt: &at, Resolution: &CaseResolution{By: "bo", Action: ActResume}}}
+	r.store = resolveFails{store, Case{ID: 3, Kind: CaseDependencyFailed, Status: CaseResolved, ResolvedAt: &at, Resolution: &CaseResolution{By: "bo", Action: ActResume}}}
 	got, err := r.Act(context.Background(), ActInput{TaskID: "t-b", CaseID: 3, By: "alice", Rung: 3,
 		Res: Resolution{Action: ActRetry, Args: map[string]any{"task_id": "t-a"}, Fund: &policy.Draw{Sessions: 1}}})
 	var ended ErrCaseEnded
-	const want = "Filed #9 in place of #5. The answer stopped there: case 3 was resolved by bo with resume at 10:04 UTC"
+	const want = "Filed #9 in place of #5. The answer stopped there: the failed dependency on #6 was resolved by bo with resume at 10:04 UTC"
 	if !errors.As(err, &ended) || err.Error() != want || len(got.Did) != 1 || got.Did[0].Action != ActRetry || !got.Drawn.IsZero() {
 		t.Fatalf("Act = %+v, %v; want the retry alone in Did, nothing drawn, and the error %q", got, err, want)
 	}
