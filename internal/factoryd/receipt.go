@@ -73,13 +73,17 @@ type ReceiptGate struct {
 }
 
 // ReceiptDecision is one human decision on the task's road to its merge:
-// an approval request a person decided.
+// an approval request a person decided, or a case the human (rung 3)
+// answered.
 type ReceiptDecision struct {
-	Kind     string     `json:"kind"`
-	Decision string     `json:"decision"`
-	By       string     `json:"by"`
-	Note     string     `json:"note,omitempty"`
-	At       *time.Time `json:"at,omitempty"`
+	Kind     string `json:"kind"`
+	Decision string `json:"decision"`
+	// Draw is what an answer drew when it drew: its sessions, agent time
+	// or money, in the factory's own words.
+	Draw string     `json:"draw,omitempty"`
+	By   string     `json:"by"`
+	Note string     `json:"note,omitempty"`
+	At   *time.Time `json:"at,omitempty"`
 }
 
 // ReceiptAssessment is one model assessment the receipt carries beside
@@ -100,9 +104,10 @@ type ReceiptAssessment struct {
 // row (the base SHA, the cost), the pull request (the head, the merge
 // commit, the diff), the timeline's gate steps (the policy version,
 // every gate's command, exit code and verdict), the decided approval
-// requests (every human decision) and the verdict rows (the judgement
-// criteria's assessments). It reads, never writes: the merge path stores
-// what it builds (PutMergeReceipt).
+// requests and the cases the human answered on rung 3 (every human
+// decision) and the verdict rows (the judgement criteria's assessments).
+// It reads, never writes: the merge path stores what it builds
+// (PutMergeReceipt).
 func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64) (MergeReceipt, error) {
 	t, repo, err := r.task(ctx, taskID)
 	if err != nil {
@@ -124,7 +129,12 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 	}
 	receiptTimeline(ctx, r.timeline, taskID, &rec)
 	// every human decision: the task's decided approval requests, a
-	// person's, oldest first
+	// person's, oldest first, and the cases the human answered on rung 3
+	// (the typed action, what it drew, the note). A case the merge
+	// approval ended is that approval's own record, so its row adds no
+	// second decision, and a lower rung's answer — the factory's, the
+	// agent's, the agent's for a member over the chat — is no human one,
+	// whoever's name it carries.
 	var decided []ApprovalRequest
 	for _, status := range []string{"approved", "denied"} {
 		as, err := r.store.ApprovalRequests(ctx, status)
@@ -142,6 +152,20 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 		rec.Decisions = append(rec.Decisions, ReceiptDecision{Kind: a.Kind, Decision: a.Status, By: a.DecidedBy,
 			Note: a.DecisionNote, At: a.DecidedAt})
 	}
+	cases, err := r.store.CasesOf(ctx, taskID)
+	if err != nil {
+		return MergeReceipt{}, err
+	}
+	for _, c := range cases {
+		res := c.Resolution
+		if res == nil || res.Rung != 3 || !receiptHuman(res.By) || c.Kind == CaseMergeApproval {
+			continue
+		}
+		d, _ := Resolution{Action: res.Action, Args: res.Args}.draw()
+		rec.Decisions = append(rec.Decisions, ReceiptDecision{Kind: "case", Decision: res.Action, By: res.By,
+			Draw: drawWords(d), Note: res.Reason, At: c.ResolvedAt})
+	}
+	slices.SortStableFunc(rec.Decisions, func(a, b ReceiptDecision) int { return receiptWhen(a).Compare(receiptWhen(b)) })
 	// the judgement criteria's verdicts: the model's assessments on the
 	// task's rows (an integration card's own, a card of a plan without
 	// them has none)
@@ -165,6 +189,14 @@ func (r *Runner) BuildMergeReceipt(ctx context.Context, taskID string, pr int64)
 // decisions.
 func receiptHuman(by string) bool {
 	return by != "" && by != FactoryDecider && by != AgentDecider && by != AutoApprover && by != ChatUser && by != MergeUser
+}
+
+// receiptWhen is decision d's time, the zero time while it names none.
+func receiptWhen(d ReceiptDecision) time.Time {
+	if d.At == nil {
+		return time.Time{}
+	}
+	return *d.At
 }
 
 // receiptTimeline reads the task's timeline into the receipt: the policy

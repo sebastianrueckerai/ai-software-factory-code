@@ -9,7 +9,7 @@ import (
 
 // answerFacts are seeded facts of a card at its budget floor with two
 // findings: rung 3 answers reverify, extend, raise_ceiling, successor,
-// replan and close on them.
+// replan, close and note on them.
 var answerFacts = CaseFacts{Head: "h1", PR: 9, PROpen: true, Checks: "green", ReviewApproved: true, Attempts: 3, SessionCap: 3,
 	AgentTimeS: 900, AgentTimeCapS: 1800, BudgetEUR: 5, SpentEUR: 5, LeftEUR: 0, FloorEUR: 0.3, CeilingEUR: 5,
 	Findings: []string{idA, idB}}
@@ -105,7 +105,7 @@ func TestAnswerSchemaDerivesFromOffered(t *testing.T) {
 	// rung: rung 3 answers the caps, rung 0 routes the approval and
 	// withdraws instead of closing
 	schema := AnswerSchema(answerFacts, 3)
-	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose}; !slices.Equal(got, want) {
+	if got, want := answerEnum(t, schema, "decision"), []string{ActReverify, ActExtend, ActRaiseCeiling, ActSuccessor, ActReplan, ActClose, ActNote}; !slices.Equal(got, want) {
 		t.Errorf("rung 3's decision enum is %v, want %v", got, want)
 	}
 	if got, want := answerEnum(t, AnswerSchema(answerFacts, 0), "decision"), []string{ActRouteApproval, ActReverify, ActSuccessor, ActReplan, ActWithdraw}; !slices.Equal(got, want) {
