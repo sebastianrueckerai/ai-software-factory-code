@@ -28,12 +28,20 @@ func messageTokenHash(token string) string {
 
 // workerMessages waits briefly (a nudge holds up the session's event loop)
 // but past the worker's own bound on the hand-over.
-var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout, CheckRedirect: noRedirect}
+var workerMessages = &http.Client{Timeout: 2 * harness.MessageTimeout, CheckRedirect: noRedirect, Transport: podTransport()}
 
 // workerReads has no timeout of its own: a check-in tool call or an image
 // read runs as long as its own bound (checkinToolTimeout, fileReadTimeout)
 // says, and the context holds it.
-var workerReads = &http.Client{CheckRedirect: noRedirect}
+var workerReads = &http.Client{CheckRedirect: noRedirect, Transport: podTransport()}
+
+// podTransport bounds the response headers a sandbox's pod may send: the
+// default allows 10 MiB.
+func podTransport() *http.Transport {
+	t := http.DefaultTransport.(*http.Transport).Clone()
+	t.MaxResponseHeaderBytes = 64 << 10
+	return t
+}
 
 // noRedirect keeps factoryd from following a sandbox's redirect to a URL
 // of the pod's choosing.

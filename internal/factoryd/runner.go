@@ -1359,17 +1359,17 @@ func (r *Runner) postWorkerUntil(ctx context.Context, workerStop <-chan struct{}
 // postWorkerWip is postWorkerUntil's sibling for the ask whose answer is
 // a body: it POSTs the running worker's /wip with the session's bearer
 // until it answers, and hands back the WIP commit the answer names in its
-// Wip-Commit header with its objects as the raw bundle, read under
-// wipBundleCap. A 204 answer ships nothing: no commit, no error. The
+// Wip-Commit header with the path of a temporary file that holds the
+// bundle, streamed under wipBundleCap and never held in memory; the caller
+// removes it. A 204 answer ships nothing: no commit, no error. The
 // endpoint was up at the session's brief and the pod runs on through a
 // check-in, so unlike the brief's delivery no answer is waited out: an
 // answered refusal, of any status, or a timed-out ask is final — the
 // interim push is given up, not retried — and only a transport that has
 // not answered is retried until wait, as postWorkerUntil retries it.
-func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, ns, pod, token string, wait time.Duration) (string, []byte, error) {
+func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, ns, pod, token string, wait time.Duration) (string, string, error) {
 	end := time.Now().Add(wait)
-	var commit string
-	var bundle []byte
+	var commit, bundle string
 	var err error
 	for {
 		commit, bundle, err = r.postWip(ctx, ns, pod, token)
@@ -1385,10 +1385,10 @@ func (r *Runner) postWorkerWip(ctx context.Context, workerStop <-chan struct{}, 
 		select {
 		case <-ctx.Done():
 			timer.Stop()
-			return "", nil, ctx.Err()
+			return "", "", ctx.Err()
 		case <-workerStop:
 			timer.Stop()
-			return "", nil, errWorkerStop
+			return "", "", errWorkerStop
 		case <-timer.C:
 		}
 	}
@@ -1411,37 +1411,57 @@ const wipBundleCap = 16 << 20
 var wipAskTimeout = 30 * time.Second
 
 // postWip posts one /wip to the running worker's endpoint and reads its
-// answer: the WIP commit from the header, the bundle as the raw body.
-func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, []byte, error) {
+// answer: the WIP commit from the header, the bundle streamed from the body
+// into a temporary file.
+func (r *Runner) postWip(ctx context.Context, ns, pod, token string) (string, string, error) {
 	ip, err := r.kube.PodIP(ctx, ns, pod)
 	if errors.Is(err, errPodEnded) {
-		return "", nil, fmt.Errorf("%w: %w", harness.ErrNotRunning, err)
+		return "", "", fmt.Errorf("%w: %w", harness.ErrNotRunning, err)
 	}
 	if err != nil {
-		return "", nil, fmt.Errorf("pod address: %w", err)
+		return "", "", fmt.Errorf("pod address: %w", err)
 	}
 	ctx, cancel := context.WithTimeout(ctx, wipAskTimeout)
 	defer cancel()
 	req, err := http.NewRequestWithContext(ctx, http.MethodPost, "http://"+net.JoinHostPort(ip, strconv.Itoa(r.messagePort()))+"/wip", nil)
 	if err != nil {
-		return "", nil, err
+		return "", "", err
 	}
 	req.Header.Set("Authorization", "Bearer "+token)
 	resp, err := workerReads.Do(req)
 	if err != nil {
-		return "", nil, err
+		return "", "", err
 	}
 	defer resp.Body.Close()
-	body, _ := io.ReadAll(io.LimitReader(resp.Body, wipBundleCap+1))
+	commit := resp.Header.Get(wipCommitHeader)
+	badAnswer := func(n int64) error {
+		return &workerAnswer{code: resp.StatusCode, text: fmt.Sprintf("the /wip answer names commit %q over %d bytes of bundle", textutil.Truncate(commit, 80), n)}
+	}
 	switch {
 	case resp.StatusCode == http.StatusNoContent:
-		return "", nil, nil // the tree equals the start's: nothing to ship
+		return "", "", nil // the tree equals the start's: nothing to ship
 	case resp.StatusCode != http.StatusOK:
-		return "", nil, &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(body)), 300)}
-	case !wipCommitID.MatchString(resp.Header.Get(wipCommitHeader)), len(body) == 0, len(body) > wipBundleCap:
-		return "", nil, &workerAnswer{code: resp.StatusCode, text: fmt.Sprintf("the /wip answer names commit %q over %d bytes of bundle", textutil.Truncate(resp.Header.Get(wipCommitHeader), 80), len(body))}
+		text, _ := io.ReadAll(io.LimitReader(resp.Body, 1<<10))
+		return "", "", &workerAnswer{code: resp.StatusCode, text: textutil.Truncate(string(bytes.TrimSpace(text)), 300)}
+	case !wipCommitID.MatchString(commit):
+		return "", "", badAnswer(0)
 	}
-	return resp.Header.Get(wipCommitHeader), body, nil
+	f, err := os.CreateTemp("", "wip-*.bundle")
+	if err != nil {
+		return "", "", err
+	}
+	n, err := io.Copy(f, io.LimitReader(resp.Body, wipBundleCap+1))
+	if cerr := f.Close(); err == nil {
+		err = cerr
+	}
+	if err == nil && (n == 0 || n > wipBundleCap) {
+		err = badAnswer(n)
+	}
+	if err != nil {
+		os.Remove(f.Name()) // #nosec G104 -- the temporary file of a refused answer
+		return "", "", err
+	}
+	return commit, f.Name(), nil
 }
 
 // checkinFacts is the small JSON of the card's facts the runner already

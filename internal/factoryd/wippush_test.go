@@ -30,6 +30,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"slices"
 	"strconv"
 	"strings"
@@ -902,6 +903,12 @@ func TestInterimPushRefusesTooLargeWorkBeforeReadingIt(t *testing.T) {
 				}
 			}
 		},
+		"ten-copies-of-a-blob": func(dir string) {
+			// one 7 MiB blob under ten names: 70 MiB of the tree as checked out
+			for i := range 10 {
+				os.WriteFile(filepath.Join(dir, fmt.Sprintf("copy%d.bin", i)), make([]byte, 7<<20), 0o644)
+			}
+		},
 		"wide-tree": func(dir string) {
 			os.MkdirAll(filepath.Join(dir, "wide"), 0o755)
 			for i := range 100000 {
@@ -986,6 +993,12 @@ func TestInterimPushesDoNotOverlap(t *testing.T) {
 	interimSlot <- struct{}{}
 	out := runner.interimPush(context.Background(), supervisedTask("t2"), spec, "ns", "pod", nil)
 	<-interimSlot
+	serve.mu.Lock()
+	asked := len(serve.wipAuth)
+	serve.mu.Unlock()
+	if asked != 1 {
+		t.Fatalf("the pod was asked %d times while the slot was held, want once: the ask comes before the slot", asked)
+	}
 	if out != (wipOutcome{}) {
 		t.Fatalf("outcome %+v while the slot was held, want a push that waited and gave up", out)
 	}
@@ -1048,7 +1061,7 @@ func TestInterimPushBaseFetchRunsUnderTheCap(t *testing.T) {
 		t.Fatal(err)
 	}
 	step := timelineStep(t, objects, "t2", "wip_push_failed")
-	if text := fmt.Sprint(step["error"]); !strings.Contains(text, "neither the task branch nor main") || !strings.Contains(text, "memory") {
+	if text := fmt.Sprint(step["error"]); !strings.Contains(text, "fetch the task branch") || !strings.Contains(text, "memory") {
 		t.Fatalf("the wip_push_failed step = %v, want git's allocation failure in the base fetch", step)
 	}
 }
@@ -1551,5 +1564,108 @@ func TestASessionThatRevertsItsWorkSaysWhatTheBranchHolds(t *testing.T) {
 				t.Fatalf("result = %+v, want the interim head %s named as what the branch holds, not a pushed outcome", res, tip)
 			}
 		})
+	}
+}
+
+// gitConfig keeps the two settings every capped call needs: one pack thread,
+// and a 32 MiB pack window instead of the whole pack.
+func TestGitConfigHoldsTheCapSettings(t *testing.T) {
+	for _, want := range []string{"pack.threads=1", "core.packedGitWindowSize=32m"} {
+		if !slices.Contains(gitConfig, want) {
+			t.Fatalf("gitConfig = %q, want %s", gitConfig, want)
+		}
+	}
+}
+
+// A first push, when the fork has no task branch yet, falls back to main
+// as the start and creates the branch.
+func TestInterimPushFallsBackToMainWhenTheForkHasNoBranch(t *testing.T) {
+	runner, objects, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	})
+	wipRun(t, "-C", serve.fork, "update-ref", "-d", "refs/heads/factory/t2")
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	if n := wipSteps(t, objects, "t2", "wip_pushed"); n != 1 {
+		t.Fatalf("wip_pushed steps = %d, want the first push landed on a new branch; timeline %s", n, objGet(objects, "sessions/t2/timeline.jsonl"))
+	}
+}
+
+// The /wip body goes to a file, never into memory: two concurrent answers of
+// 15 MiB allocate a small part of that, and the file holds the body.
+func TestPostWipStreamsTheBodyToAFile(t *testing.T) {
+	runner, _, serve := wipRig(t, nil, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644)
+	}, func(dir string) {
+		os.WriteFile(filepath.Join(dir, "b.txt"), []byte("two\n"), 0o644)
+	})
+	body := bytes.Repeat([]byte("x"), 15<<20)
+	id := "0123456789012345678901234567890123456789"
+	serve.ship = func(i int, tree string) (string, []byte, error) { return id, body, nil }
+	runner.kube.(*fakeKube).pods["ns/pod"] = &fakePod{ns: "ns", name: "pod", phase: "Running"}
+
+	var before, after runtime.MemStats
+	runtime.GC()
+	runtime.ReadMemStats(&before)
+	var wg sync.WaitGroup
+	paths := make([]string, 2)
+	for i := range paths {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			commit, path, err := runner.postWip(context.Background(), "ns", "pod", "tok")
+			if err != nil || commit != id {
+				t.Errorf("postWip = (%q, %q, %v), want the commit and a file", commit, path, err)
+			}
+			paths[i] = path
+		}()
+	}
+	wg.Wait()
+	runtime.ReadMemStats(&after)
+	for _, p := range paths {
+		if fi, err := os.Stat(p); err != nil || fi.Size() != int64(len(body)) {
+			t.Fatalf("bundle file %q: %v, %v; want %d bytes", p, fi, err, len(body))
+		}
+		os.Remove(p)
+	}
+	if got := after.TotalAlloc - before.TotalAlloc; got > 8<<20 {
+		t.Fatalf("two 15 MiB bodies allocated %d MiB, want far less than one body: they stream to disk", got>>20)
+	}
+}
+
+// A pod's response headers are bounded: 100 KiB of header fails the ask.
+func TestInterimPushBoundsTheResponseHeaders(t *testing.T) {
+	edit := func(dir string) { os.WriteFile(filepath.Join(dir, "b.txt"), []byte("one\n"), 0o644) }
+	runner, objects, serve := wipRig(t, nil, edit, edit, edit, edit, edit, edit)
+	serve.ship = func(i int, tree string) (string, []byte, error) {
+		return strings.Repeat("x", 100<<10), []byte("body"), nil
+	}
+	chat := &wipChat{order: serve.order, answers: []CheckinResponse{wipContinue}}
+	runner.checkin = chat
+
+	if _, err := runSession(t, nil, runner, SessionInput{TaskID: "t2", Attempt: 1, Model: "m"}, nil,
+		commands(0, 24)+pushedLine("c1")+"\n"+resultLine(true, "pushed")); err != nil {
+		t.Fatal(err)
+	}
+	step := timelineStep(t, objects, "t2", "wip_push_failed")
+	if text := fmt.Sprint(step["error"]); step["at"] != "ask" || !strings.Contains(text, "exceeded") {
+		t.Fatalf("the wip_push_failed step = %v, want the ask's header-bound failure", step)
+	}
+}
+
+// gitRun fails a call whose output passes its cap, and keeps one at it.
+func TestGitRunFailsPastItsOutputCap(t *testing.T) {
+	dir := t.TempDir()
+	wipRun(t, "init", "-q", "-b", "main", dir)
+	if _, err := gitRun(context.Background(), dir, "", nil, gitLimits{maxOut: 8}, "--version"); !errors.Is(err, errGitOutput) {
+		t.Fatalf("a 20-byte output under an 8-byte cap: err = %v, want the cap's failure", err)
+	}
+	if out, err := gitRun(context.Background(), dir, "", nil, gitLimits{maxOut: 64}, "--version"); err != nil || !strings.HasPrefix(out, "git version") {
+		t.Fatalf("under the cap: (%q, %v), want the output", out, err)
 	}
 }

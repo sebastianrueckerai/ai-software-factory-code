@@ -8,7 +8,6 @@ import (
 	"io"
 	"log"
 	"os"
-	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -54,6 +53,9 @@ func (r *Runner) interimPush(ctx context.Context, t Task, s sessionSpec, ns, pod
 		return wipOutcome{}
 	}
 	commit, bundle, err := r.postWorkerWip(ctx, workerStop, ns, pod, s.messageToken, r.endpointWait)
+	if bundle != "" {
+		defer os.Remove(bundle) // #nosec G104 -- the shipped bundle's temporary file
+	}
 	switch {
 	case err != nil:
 		// factoryd stopping cuts the ask: its own shutdown is the last
@@ -131,7 +133,7 @@ func (r *Runner) wipFailureFresh(ctx context.Context, t Task, s sessionSpec, at,
 // history kept between check-ins, and the session's end push — which
 // lands its own commit the same way — cannot be refused for the
 // replacement. It answers the commit it landed.
-func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit string, bundle []byte) (string, error) {
+func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit, bundle string) (string, error) {
 	own, err := bareRepo(ctx)
 	if err != nil {
 		return "", err
@@ -152,35 +154,47 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 		return err
 	}
 	tip := ""
-	if err := fetch(fork, branch); err == nil {
+	switch err := fetch(fork, branch); {
+	case err == nil:
 		if tip, err = run(nil, "rev-parse", "--verify", branch); err != nil {
 			return "", err
 		}
-	} else if err := fetch(r.repoURL(s.repo), prBase); err != nil {
-		return "", fmt.Errorf("the repositories hold neither the task branch nor main: %w", err)
-	}
-	file := filepath.Join(own, "wip.bundle")
-	if err := os.WriteFile(file, bundle, 0o600); err != nil {
-		return "", err
+	case strings.Contains(err.Error(), "couldn't find remote ref") || strings.Contains(err.Error(), "not found"):
+		// a first push: the fork has no task branch yet, and main is the start
+		if err := fetch(r.repoURL(s.repo), prBase); err != nil {
+			return "", fmt.Errorf("the fork holds no task branch and main cannot be fetched: %w", err)
+		}
+	default:
+		return "", fmt.Errorf("fetch the task branch: %w", err)
 	}
 	// the body is verified as a bundle before anything is taken from it:
 	// a body that is no bundle, whatever its header says it ships, costs
 	// the interim push alone
-	if _, err := run(nil, "bundle", "verify", file); err != nil {
+	if _, err := run(nil, "bundle", "verify", bundle); err != nil {
 		return "", fmt.Errorf("the shipped body is no bundle: %w", err)
 	}
 	// the bundle's pack is indexed under git's strict object checks, which
 	// a fetch from a bundle does not apply: a lying object never lands.
 	// The bundle's own ref line names the WIP, and its prerequisites are
 	// the objects fetched above
-	hdr, pack, ok := bytes.Cut(bundle, []byte("\n\n"))
+	f, err := os.Open(bundle) // #nosec G304 -- the temporary file postWip made
+	if err != nil {
+		return "", err
+	}
+	defer f.Close()
+	size, buf := int64(0), make([]byte, wipHeaderMax)
+	if fi, err := f.Stat(); err == nil {
+		size = fi.Size()
+	}
+	n, _ := f.ReadAt(buf, 0)
+	hdr, _, ok := bytes.Cut(buf[:n], []byte("\n\n"))
 	if !ok {
 		return "", errors.New("the shipped body is no bundle: no header end")
 	}
 	if got := bundleCommit(hdr); got != commit {
 		return "", fmt.Errorf("the bundle ships commit %q, not the %s the answer names", got, commit)
 	}
-	if _, err := gitRun(ctx, own, "", nil, lim(wipGitOutput, bytes.NewReader(pack)), "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
+	if _, err := gitRun(ctx, own, "", nil, lim(wipGitOutput, io.NewSectionReader(f, int64(len(hdr)+2), size-int64(len(hdr)+2))), "index-pack", "--strict", "--fix-thin", "--stdin"); err != nil {
 		return "", fmt.Errorf("index the shipped bundle: %w", err)
 	}
 	if _, err := run(nil, "rev-parse", "--verify", "--quiet", commit+"^{commit}"); err != nil {
@@ -229,6 +243,8 @@ func (r *Runner) pushWip(ctx context.Context, t Task, s sessionSpec, commit stri
 // The bounds on what a pod ships, all far above any card's real work (a
 // card's diff is bounded at hundreds to a few thousand lines).
 const (
+	// wipHeaderMax bounds the bundle header read from the file.
+	wipHeaderMax = 64 << 10
 	// wipGitOutput bounds a git call whose answer is an id, a flag or a
 	// one-line failure: bundle verify prints a line per missing prerequisite.
 	wipGitOutput = 4 << 10
@@ -339,6 +355,13 @@ func bundleCommit(header []byte) string {
 		}
 	}
 	return ""
+}
+
+// gitCapped is a git call on a repository a sandbox wrote to — a task
+// branch, a pull request head — under the address-space cap and with its
+// output capped.
+func gitCapped(ctx context.Context, dir, login string, args ...string) (string, error) {
+	return gitRun(ctx, dir, login, nil, gitLimits{maxOut: wipGitOutput, addressSpace: wipGitMemory}, args...)
 }
 
 // rulesGit is the push rules' git (PushGit) over factoryd's own: the

@@ -116,7 +116,7 @@ func (g *GitHub) pullState(ctx context.Context, token, remote string, n int64) (
 // for a minute fails, and packing keeps to one thread and small windows,
 // as factoryd's memory limit holds git too.
 var gitConfig = []string{"http.lowSpeedLimit=1000", "http.lowSpeedTime=60", "pack.threads=1", "pack.windowMemory=32m",
-	"core.packedGitLimit=64m", "core.deltaBaseCacheLimit=32m"}
+	"core.packedGitLimit=64m", "core.packedGitWindowSize=32m", "core.deltaBaseCacheLimit=32m"}
 
 // git runs git in dir with gitConfig and login, the basic login of the
 // call's one remote, as an http.extraHeader, all from the environment, so
@@ -152,22 +152,24 @@ var errGitOutput = errors.New("git output over its cap")
 // outCap collects output up to max (all of it when max is 0); past it,
 // the output is dropped and stop is called.
 type outCap struct {
-	bytes.Buffer
+	buf  bytes.Buffer
 	max  int
 	over bool
 	stop func()
 }
 
 func (w *outCap) Write(p []byte) (int, error) {
-	if w.max > 0 && w.Len()+len(p) > w.max {
+	if w.max > 0 && w.buf.Len()+len(p) > w.max {
 		if !w.over {
 			w.over = true
 			w.stop()
 		}
 		return len(p), nil
 	}
-	return w.Buffer.Write(p)
+	return w.buf.Write(p)
 }
+
+func (w *outCap) String() string { return w.buf.String() }
 
 // gitRun is gitEnv under limits, for the commands that read the sandbox's bytes.
 func gitRun(ctx context.Context, dir, login string, env []string, lim gitLimits, args ...string) (string, error) {
