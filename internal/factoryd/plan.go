@@ -2734,30 +2734,41 @@ func (r *Runner) RunPlan(ctx context.Context, taskID, model string, pin int64, f
 const maxDraftBrief = 32 << 10
 
 // draftBrief is the starting point a planner session gets when its last
-// filing was refused: the plan, cut at maxDraftBrief, and the findings it
-// was refused for that carried does not hold already.
+// filing was refused: the plan, cut at maxDraftBrief bytes of its scrubbed
+// text, and the findings it was refused for that carried does not hold
+// already, matched without their "plan: " head.
 func (r *Runner) draftBrief(d PlanDraft, carried []string) string {
-	var b strings.Builder
-	b.WriteString("your last filing was refused and kept as a draft: fix the findings it was refused for and file it again, rather than plan again from the top.\n")
-	first := true
+	held := make(map[string]bool, len(carried))
+	for _, f := range carried {
+		held[draftFindingKey(f)] = true
+	}
+	var shown strings.Builder
 	for _, f := range d.Findings {
-		if slices.Contains(carried, f) {
-			continue
+		if !held[draftFindingKey(f)] {
+			shown.WriteString("- " + r.Scrub.String(f) + "\n")
 		}
-		if first {
-			b.WriteString("The findings:\n")
-			first = false
-		}
-		b.WriteString("- " + r.Scrub.String(f) + "\n")
+	}
+	var b strings.Builder
+	b.WriteString("your last filing was refused and kept as a draft: fix the findings it was refused for")
+	if shown.Len() == 0 {
+		b.WriteString(" (listed above)")
+	}
+	b.WriteString(" and file it again, rather than plan again from the top.\n")
+	if shown.Len() > 0 {
+		b.WriteString("The findings:\n" + shown.String())
 	}
 	plan := r.Scrub.String(string(d.Plan))
 	cut := ""
 	if n := len(plan); n > maxDraftBrief {
 		plan = strings.ToValidUTF8(plan[:maxDraftBrief], "")
-		cut = fmt.Sprintf("\nthe draft is cut here at %d of its %d bytes", maxDraftBrief, n)
+		cut = fmt.Sprintf("\nthe draft is cut here at %d of its %d bytes, counted after scrubbing", len(plan), n)
 	}
 	b.WriteString("The draft:\n```json\n" + plan + "\n```" + cut)
 	return b.String()
+}
+
+func draftFindingKey(f string) string {
+	return strings.TrimPrefix(strings.TrimSpace(f), "plan: ")
 }
 
 // planDraftNote is the sentence that names the draft a planner's refused

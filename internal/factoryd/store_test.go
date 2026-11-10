@@ -1504,6 +1504,24 @@ func (s *fakeStore) SetCaseStatus(ctx context.Context, id int64, status string) 
 	return nil
 }
 
+func (s *fakeStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	facts := maps.Clone(s.cases[i].Facts)
+	if facts == nil {
+		facts = map[string]any{}
+	}
+	if value == "" {
+		delete(facts, key)
+	} else {
+		facts[key] = value
+	}
+	s.cases[i].Facts = facts
+	return nil
+}
+
 // SetCaseWake sets live case id's wake as PGStore.SetCaseWake does; a
 // rung other than 0 to 3 is refused, as the column's check refuses it.
 func (s *fakeStore) SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error {

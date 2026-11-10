@@ -9,6 +9,7 @@ import (
 	"slices"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/policy"
 	"github.com/sebastianrueckerai/ai-software-factory-code/internal/redact"
@@ -46,6 +47,20 @@ func TestPGStorePlanDraft(t *testing.T) {
 	}
 	if cards, err := s.PlanCards(ctx, "t-plan"); err != nil || len(cards) != 0 {
 		t.Fatalf("a draft opened cards %v, %v", cards, err)
+	}
+	c, _, err := s.OpenCase(ctx, Case{TaskID: "t-plan", Repository: "sf/r", Kind: CaseMonitorFlag, StateKey: "k", Problem: "p", Facts: map[string]any{"other": "kept"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, v := range []string{"one", "two", ""} {
+		if err := s.SetCaseFact(ctx, c.ID, "plan_draft", v); err != nil {
+			t.Fatal(err)
+		}
+		got, _ := s.CaseByID(ctx, c.ID)
+		have, set := got.Facts["plan_draft"]
+		if got.Facts["other"] != "kept" || set != (v != "") || (set && have != v) {
+			t.Fatalf("SetCaseFact %q: facts %v", v, got.Facts)
+		}
 	}
 	if n, err := s.AddPlanRevision(ctx, "t-plan", json.RawMessage(`{"summary":"three"}`), "s3"); err != nil || n != 1 {
 		t.Fatalf("revision %d, %v", n, err)
@@ -169,6 +184,28 @@ func TestTimeCapAskNamesTheDraft(t *testing.T) {
 	if err != nil || second.CaseID != first.CaseID {
 		t.Fatalf("second trip %+v, %v; want the same case %d", second, err, first.CaseID)
 	}
+	c, _ = store.CaseByID(ctx, first.CaseID)
+	if c.Facts["plan_draft"] != "The planner's last refused filing is kept as a draft, refused for 11 findings." {
+		t.Fatalf("the fact after the second trip: %v", c.Facts["plan_draft"])
+	}
+	if err := store.DeletePlanDraft(ctx, "t-b"); err != nil {
+		t.Fatal(err)
+	}
+	if third, err := r.OpenTrip(ctx, TripInput{TaskID: "t-b", Reason: timeCapAsk}, tripAttempt{N: 1}); err != nil || third.CaseID != first.CaseID {
+		t.Fatalf("third trip %+v, %v", third, err)
+	}
+	if c, _ = store.CaseByID(ctx, first.CaseID); c.Facts["plan_draft"] != nil {
+		t.Fatalf("the fact outlived the draft: %v", c.Facts["plan_draft"])
+	}
+	var info string
+	for _, e := range store.intakeEvents {
+		if e.Kind == IntakeEscalation && e.Question != nil && e.CommentID == first.Comment {
+			info = e.Question.Info
+		}
+	}
+	if !strings.Contains(info, want) {
+		t.Fatalf("the question row's info %q lacks the note", info)
+	}
 }
 
 // The Escalate activity, which cases-off runs use, adds the same note.
@@ -210,8 +247,17 @@ func TestDraftBriefIsBounded(t *testing.T) {
 	if !strings.Contains(got, "- new\n") || strings.Contains(got, "- carried") {
 		t.Fatalf("findings in %q", got[:200])
 	}
-	if !strings.HasSuffix(got, "```\nthe draft is cut here at 32768 of its 40002 bytes") || len(got) > 32768+600 {
+	if !strings.HasSuffix(got, "```\nthe draft is cut here at 32768 of its 40002 bytes, counted after scrubbing") || len(got) > 32768+600 {
 		t.Fatalf("the cut: %d bytes, ends %q", len(got), got[len(got)-80:])
+	}
+	if !strings.Contains(r.draftBrief(PlanDraft{Plan: json.RawMessage(`{}`), Findings: []string{"plan: carried"}}, []string{"carried"}), "(listed above)") {
+		t.Fatal("a brief whose findings are all carried says nothing of where they are")
+	}
+	// "é" is two bytes, so the bound falls inside one: 32767 bytes are whole runes
+	multi := `"` + strings.Repeat("é", 20000) + `"`
+	cutMulti := r.draftBrief(PlanDraft{Plan: json.RawMessage(multi), Findings: []string{"f"}}, nil)
+	if !utf8.ValidString(cutMulti) || !strings.HasSuffix(cutMulti, "cut here at 32767 of its 40002 bytes, counted after scrubbing") {
+		t.Fatalf("a cut inside a rune: valid %v, ends %q", utf8.ValidString(cutMulti), cutMulti[len(cutMulti)-80:])
 	}
 	short := r.draftBrief(PlanDraft{Plan: json.RawMessage(`{}`), Findings: []string{"x"}}, nil)
 	if strings.Contains(short, "cut here") {

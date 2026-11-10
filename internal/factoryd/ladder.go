@@ -253,6 +253,13 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err != nil {
 		return TripOutcome{}, err
 	}
+	if !opened {
+		if have, _ := c.Facts["plan_draft"].(string); have != note {
+			if err := r.store.SetCaseFact(ctx, c.ID, "plan_draft", note); err != nil {
+				return TripOutcome{}, err
+			}
+		}
+	}
 	if !opened && c.Status == CaseAtHuman {
 		return r.waitsAtHuman(ctx, t, c, "the same stop again: "+c.Problem)
 	}
@@ -263,7 +270,7 @@ func (r *Runner) OpenTrip(ctx context.Context, in TripInput, at tripAttempt) (Tr
 	if err := r.tripStep(ctx, c.ID, found); err != nil {
 		return TripOutcome{}, err
 	}
-	comment, err := r.askHuman(ctx, t, c, in.Reason, joinNote(tripNext(c, in.Reason), note), in.Choices)
+	comment, err := r.askHuman(ctx, t, c, in.Reason, tripNext(c, in.Reason), in.Choices)
 	if err != nil {
 		return TripOutcome{}, err
 	}
@@ -559,14 +566,6 @@ func replyNext(reason string) string {
 // extend start the next attempt, at a budget floor the Fund form or the
 // chat's fund, for a monitor flag, whose card goes on, the case by its
 // number in the chat, and elsewhere a reply (replyNext).
-// joinNote is next with the note after it, when there is one.
-func joinNote(next, note string) string {
-	if note == "" {
-		return next
-	}
-	return next + "\n\n" + note
-}
-
 func tripNext(c Case, reason string) string {
 	switch c.Kind {
 	case CaseMonitorFlag:
@@ -602,6 +601,13 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		body += "\n\nLinks:\n- " + strings.Join(links, "\n- ")
 	}
 	body += "\n\n" + next
+	note, err := r.planDraftNote(ctx, t.ID, reason)
+	if err != nil {
+		return 0, err
+	}
+	if note != "" {
+		body += "\n\n" + note
+	}
 	if strings.HasPrefix(reason, screeningAsks) {
 		// the reasons go to the card only: they would teach the author
 		body = screenedLine
@@ -635,6 +641,9 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 		// verbatim: the blocker reaches the human with no agent-side
 		// reporting to lose it (card #1345). A prover's refusals name its
 		// hold-outs, so its ask is factoryd's words alone.
+		if note != "" {
+			shaped.Info += "\n\n" + note
+		}
 		if t.Source != SourceProver {
 			if tool, refusal, ok := r.lastToolRefusal(ctx, t.ID); ok {
 				shaped.Info += "\n\nThe session's last tool call (" + tool + ") was refused:\n\n" + fenced(refusal)

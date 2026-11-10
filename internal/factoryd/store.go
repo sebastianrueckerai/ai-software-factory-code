@@ -880,6 +880,9 @@ type Store interface {
 	AppendCaseStep(ctx context.Context, s CaseStep) (int64, error)
 	EndCaseStep(ctx context.Context, id int64, outcome, found string, did []CaseAction, decision, grounds string, costEUR float64) error
 	SetCaseStatus(ctx context.Context, id int64, status string) error
+	// SetCaseFact sets fact key of live case id to value, or removes it
+	// for the empty value.
+	SetCaseFact(ctx context.Context, id int64, key, value string) error
 	// SetCaseWake sets who owns the next move on case id, the events that
 	// end its wait, and when the sweep wakes it if none does.
 	SetCaseWake(ctx context.Context, id int64, rung int, on []string, at *time.Time) error

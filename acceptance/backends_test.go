@@ -1436,6 +1436,10 @@ func (s *acceptanceStore) EndCaseStep(context.Context, int64, string, string, []
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
 
+func (s *acceptanceStore) SetCaseFact(context.Context, int64, string, string) error {
+	return nil
+}
+
 func (s *acceptanceStore) SetCaseWake(context.Context, int64, int, []string, *time.Time) error {
 	return nil
 }

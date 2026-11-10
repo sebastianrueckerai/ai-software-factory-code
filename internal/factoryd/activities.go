@@ -1508,10 +1508,6 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	note, err := r.planDraftNote(ctx, t.ID, reason)
-	if err != nil {
-		return 0, err
-	}
 	var c Case
 	if reason == healedReason {
 		c, err = r.store.NewestAskCase(ctx, t.ID)
@@ -1526,7 +1522,7 @@ func (r *Runner) Escalate(ctx context.Context, taskID, reason string, choices []
 	if err != nil {
 		return 0, err
 	}
-	id, err := r.askHuman(ctx, t, c, reason, joinNote(replyNext(reason), note), choices)
+	id, err := r.askHuman(ctx, t, c, reason, replyNext(reason), choices)
 	if err != nil || c.ID == 0 {
 		return id, err
 	}

@@ -279,6 +279,12 @@ func (s *PGStore) SetCaseStatus(ctx context.Context, id int64, status string) er
 	return oneRow(res, err, fmt.Sprintf("live case %d", id))
 }
 
+func (s *PGStore) SetCaseFact(ctx context.Context, id int64, key, value string) error {
+	res, err := s.db.ExecContext(ctx, `UPDATE cases SET facts = CASE WHEN $3::text = '' THEN facts - $2::text
+		ELSE jsonb_set(facts, ARRAY[$2::text], to_jsonb($3::text)) END WHERE id = $1 AND `+caseLive, id, key, value)
+	return oneRow(res, err, fmt.Sprintf("live case %d", id))
+}
+
 // SetCaseWake sets who owns the next move on live case id, the events that
 // end its wait, and when the sweep wakes it if none does; a nil at clears
 // the wake. ErrNotFound when the case is not live.
