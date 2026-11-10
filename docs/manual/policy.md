@@ -128,6 +128,12 @@ minute for the supervisor's reads, the pinned `limits.supervisor_timeout` and
 two minutes (59m at the shipped policy's 6m `supervisor_timeout`), and its poll ends one minute before that.
 An explicit `bounds: WaitChecks` still overrides the field.
 
+`routing` steers a slow alias to its twin: `slow_seconds_per_1000_tokens` (absent or 0: 30) and `twins`, the twin of each alias by alias (absent: `big` to `big-alibaba` and `small` to `small-alibaba`; an alias without a twin never switches).
+The gateway measures each alias from its audit rows: the median of seconds per 1000 output tokens over the last hour's successful calls that the alias's primary deployment answered, counting only calls of at least 100 output tokens and only when at least 20 count.
+When the median is above the bound, the gateway names the twin as the model of the alias's calls, prices and holds them at the twin's price (a twin without its own `prices.max_output_tokens` takes its alias's limit), audits them on the twin and shows the switch on the status line.
+Every 10th call of a switched alias still goes to the primary, so the window keeps measuring it, and when the median is at or under the bound the alias returns.
+Each switch and each return is a row of `alias_switches`; a task's key allows every twin of its aliases.
+
 The policy's other sections, schema v1: `budget` (`task_default_eur`, `task_max_eur`,
 `day_eur` for the UTC day and `month_eur` for the UTC calendar month over
 all tasks, `session_floor_cheap_eur` for the least free budget a session on the cheap rung starts on,
