@@ -1121,6 +1121,7 @@ func (r *Runner) checkinBlock(ctx context.Context, t Task, s sessionSpec, ns, po
 		}
 		bound := EffectiveLineBound(t.Size, s.policy.Risk.LargeLines, t.Usage)
 		ask.Pace = r.pace(ctx, t, s, lines, bound, time.Now(), deadline)
+		ask.CostState = r.costState(ctx, t)
 		var parent []byte
 		if s.parent != "" {
 			if rec, err := parentRecord(); err == nil {
@@ -1173,6 +1174,23 @@ func (r *Runner) pace(ctx context.Context, t Task, s sessionSpec, lines, bound i
 		Attempt: s.attempt, Sessions: s.sessions}
 }
 
+// costState assembles the cost and state block from the store: the task
+// row's settled figures and status, and the model-call and token totals of
+// its audit rows. Never from the agent.
+func (r *Runner) costState(ctx context.Context, t Task) *CostState {
+	if fresh, ok, err := r.store.Task(ctx, t.ID); err == nil && ok {
+		t = fresh
+	}
+	totals, err := r.store.TaskCallTotals(ctx, t.ID)
+	if err != nil {
+		log.Printf("task %s: read the call totals: %v", t.ID, err)
+		totals = TaskCallTotals{}
+	}
+	return &CostState{BudgetEUR: t.BudgetEUR, SpentEUR: t.SpentEUR, RemainingEUR: t.BudgetEUR - t.SpentEUR,
+		Calls: totals.Calls, PromptTokens: totals.PromptTokens, CachedTokens: totals.CachedTokens, OutputTokens: totals.OutputTokens,
+		State: t.Status}
+}
+
 // sizeBounded: the session codes a card the work bound covers, so the
 // card's diff has the line bound its size plans. A report and a planner
 // session write no card's code.
@@ -1200,7 +1218,7 @@ func (r *Runner) checkinLive(ctx context.Context, t Task, s sessionSpec, ns, pod
 	climbs := r.cfg.Models.Stronger != "" && s.model != sessionModel(s.policy, t, r.cfg.Models.Stronger)
 	ask := CheckInAsk{Moment: CheckInSession, ParentSession: s.id,
 		Trip: &TripReport{Detector: trip.Kind, Detail: trip.Detail, Stuck: trip.Stuck, Climbs: climbs}, Messages: messages, Gates: s.lastGates,
-		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline)}
+		Replan: cuttable(t, s), Pace: r.pace(ctx, t, s, lines, bound, started, deadline), CostState: r.costState(ctx, t)}
 	share, eurLeft, _ := r.checkinBudget(ctx, t, limits)
 	if eurLeft <= 0 {
 		record := &CheckInRecord{Model: r.callModel(t, policy.PurposeCheckin), Session: s.id,

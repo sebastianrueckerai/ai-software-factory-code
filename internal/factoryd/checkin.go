@@ -107,8 +107,9 @@ type CheckInAsk struct {
 	Stop          string      `json:",omitempty"`
 	// Replan: the session's card can be cut (cuttable), so the decision
 	// replan is offered
-	Replan bool  `json:",omitempty"`
-	Pace   *Pace `json:"-"`
+	Replan    bool       `json:",omitempty"`
+	Pace      *Pace      `json:"-"`
+	CostState *CostState `json:"-"`
 }
 
 // Pace is how far the card has come against what it has: its changed lines
@@ -327,6 +328,9 @@ func checkinStatement(ask *CheckInAsk, tail []byte, callsLeft int, eurLeft float
 	}
 	if ask.Pace != nil {
 		b.WriteString(ask.Pace.Line() + "\n\n")
+	}
+	if ask.CostState != nil {
+		fmt.Fprintf(&b, "Cost and state: %s\n\n", ask.CostState.Line())
 	}
 	if len(tail) > 0 {
 		// the session moment tails the live session's own record, which no

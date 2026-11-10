@@ -294,6 +294,37 @@ func TestSuperviseGateAuditReadsItsLastResult(t *testing.T) {
 	}
 }
 
+// The bundle the gate supervisor's model reads carries the deterministic
+// cost and state block beside its existing state and elapsed fields: the
+// task row's settled figures and status, and the call totals from the
+// store.
+func TestSuperviseGateBundleCarriesTheCostState(t *testing.T) {
+	c := newGateCase(t, ActivityGateAudit, `{"action":"wait","diagnosis":"the model is slow"}`, nil)
+	tk := c.store.tasks["t1"]
+	tk.BudgetEUR, tk.SpentEUR = 3, 0.75
+	c.store.tasks["t1"] = tk
+	c.store.callTotals["t1"] = TaskCallTotals{Calls: 4, PromptTokens: 1500, CachedTokens: 300, OutputTokens: 600}
+	liveRun(c.runner.cfg.Gates, "7", time.Now(), 30*time.Second)
+
+	_, bundle := c.supervise(t, ActivityGateAudit, nil, true, true)
+	cost, ok := bundle["cost"].(map[string]any)
+	if !ok {
+		t.Fatalf("bundle carries no cost and state block:\n%s", jsonOf(bundle))
+	}
+	want := map[string]any{"budget_eur": float64(3), "spent_eur": 0.75, "remaining_eur": 2.25,
+		"calls": float64(4), "prompt_tokens": float64(1500), "cached_tokens": float64(300), "output_tokens": float64(600),
+		"state": "in-review"}
+	if !reflect.DeepEqual(cost, want) {
+		t.Fatalf("cost = %s\nwant  %s", jsonOf(cost), jsonOf(want))
+	}
+	if _, ok := bundle["state"].(map[string]any); !ok {
+		t.Fatalf("the block rides without the activity state beside it:\n%s", jsonOf(bundle))
+	}
+	if bundle["elapsed"] == "" {
+		t.Fatalf("the block rides without the elapsed field beside it:\n%s", jsonOf(bundle))
+	}
+}
+
 // A model gate's last result is in the bundle once: in the timeline's
 // tail when the tail holds its step whole, else as last_result, a step the
 // tail cuts by its opening brace alone included; a timeline without the
