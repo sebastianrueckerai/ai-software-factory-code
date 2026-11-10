@@ -300,9 +300,6 @@ func openMergeCase(ctx context.Context, q rowQuerier, id int64) (bool, error) {
 	c.Problem = fmt.Sprintf("Pull request #%d waits for a merge approval", pr)
 	c.Facts = map[string]any{"approval": id, "pr": pr, "head": spec.HeadSHA, "class": spec.RiskClass,
 		"factory": spec.Factory, "red_checks": spec.RedChecks}
-	if len(spec.FailedTests) > 0 {
-		c.Facts["failed_tests"] = spec.FailedTests
-	}
 	if c.Follows, err = newestEndedCase(ctx, q, c.TaskID); err != nil {
 		return false, err
 	}

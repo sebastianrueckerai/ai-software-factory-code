@@ -93,6 +93,8 @@ type prForgejo struct {
 	jobLogs    map[string]string // "job/attempt" -> GET /actions/jobs/{id}/logs, as a suffix Range reads it
 	rerunCode  int               // POST /actions/jobs/{id}/rerun answers this status; 200 when zero
 	rerunBody  string            // the rerun's answer body
+	wholeLogs  bool              // the log is read whole, with no Range
+	logStatus  map[string]int    // "job/attempt" -> the status its log answers instead of the log
 	logGets    []string          // "job/attempt" of every job log read
 	reruns     []int64           // POST /actions/jobs/{id}/rerun, by job id
 	sessionLog string            // the session-cookie job log (login, job page, /logs) JobLog reads
@@ -318,11 +320,15 @@ func (f *prForgejo) srv(t *testing.T) *httptest.Server {
 			json.NewEncoder(w).Encode(f.jobLists[min(f.jobGets, len(f.jobLists)-1)])
 			f.jobGets++
 		case r.Method == "GET" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/logs"):
-			if r.Header.Get("Range") == "" {
+			if r.Header.Get("Range") == "" && !f.wholeLogs {
 				t.Error("job log read without a Range")
 			}
 			key := strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/logs") + "/" + r.URL.Query().Get("attempt")
 			f.logGets = append(f.logGets, key)
+			if code := f.logStatus[key]; code != 0 {
+				w.WriteHeader(code)
+				return
+			}
 			io.WriteString(w, f.jobLogs[key])
 		case r.Method == "POST" && strings.HasPrefix(p, "/actions/jobs/") && strings.HasSuffix(p, "/rerun"):
 			id, _ := strconv.ParseInt(strings.TrimSuffix(strings.TrimPrefix(p, "/actions/jobs/"), "/rerun"), 10, 64)

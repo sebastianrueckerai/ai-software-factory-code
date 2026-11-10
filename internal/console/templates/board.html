@@ -225,7 +225,8 @@
 {{define "merge-brief"}}{{if .IDSuffix}}{{range .Merge.WhyHuman}}<p class="why">{{.}}</p>
 {{end}}<p class="info"><b>Model review</b> {{if .Merge.Review.Verdict}}{{.Merge.Review.Verdict}}: {{end}}{{.Merge.VerdictSummary}}</p>
 {{range .Merge.Review.Findings}}<p class="finding">{{.}}</p>
-{{end}}{{range .Merge.FailedTests}}<p class="failed-test">Failing test: {{.}}</p>
+{{end}}{{range .Merge.FailedTests}}<p class="failed-test">Red in the log: {{.}}</p>
+{{end}}{{if .Merge.FailedTestsMore}}<p class="failed-test">and {{.Merge.FailedTestsMore}} more</p>
 {{end}}{{with .Merge.Recommendation}}<p class="recommendation">Recommendation: {{.}}</p>
 {{end}}{{end}}{{end}}
 

@@ -1282,7 +1282,7 @@ func newRig(t *testing.T) *rig {
 					`"verdict_summary":"adds the column safely","review":{"verdict":"approve","summary":"adds the column safely",` +
 					`"verdicts":{"internal/api.go: the handler leaks the client":{"state":"dropped","evidence":"grep finds the client closed in handler.go:40","round":1},` +
 					`"a follow-up files the docs":{"state":"remark"}}},"head_sha":"abc123",` +
-					`"failed_tests":[{"test":"TestA","package":"p/q"}],"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
+					`"failed_tests":[{"job":"test","test":"TestA","package":"p/q","kind":"failed"}],"recommendation":"Adds the column; merge it.","why_human":["the project's merge rule is human","risk class high is requires_approval"],` +
 					`"earlier_reviews":[{"verdict":"concerns","summary":"the column lacks a default","findings":["0018_x.sql: add a default"],` +
 					`"verdicts":{"0018_x.sql: add a default":{"state":"dropped","evidence":"main already held the default","round":1}}}],` +
 					`"audit":{"verdict":"findings","model":"big","deployment":"zai/glm-5.3","findings":[` +
@@ -2580,12 +2580,12 @@ func TestBoardShowsApprovalCardsOfBothKinds(t *testing.T) {
 	// the drawer carries the merge request's five-part ask: why a
 	// human, the model review's verdict and summary, the recommendation
 	drawer := r.do(httptest.NewRequest(http.MethodGet, "/cards/t-m/drawer?tab=overview", nil), ck).Body.String()
-	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, `<p class="failed-test">Failing test: TestA (p/q)</p>`} {
+	for _, want := range []string{`<p class="why">the project&#39;s merge rule is human</p>`, `<p class="why">risk class high is requires_approval</p>`, `<p class="info"><b>Model review</b> approve: adds the column safely</p>`, `<p class="recommendation">Recommendation: Adds the column; merge it.</p>`, `<p class="failed-test">Red in the log: TestA (p/q): failed (job test)</p>`} {
 		if !strings.Contains(drawer, want) {
 			t.Errorf("the merge drawer lacks %q", want)
 		}
 	}
-	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Failing test"} {
+	for _, wall := range []string{"<dl class=\"facts\">", "Risk class", "Earlier review", "Security audit", "Why a human", "Agent's recommendation", "Red in the log"} {
 		if strings.Contains(lane, wall) {
 			t.Errorf("the wide approval card shows the facts wall %q", wall)
 		}
