@@ -983,6 +983,9 @@ func (f *fakeResources) Promote(_ context.Context, id int64, by string, standing
 	if id == 500 {
 		return errors.New(`pq: deadlock detected in "cloud_resources"`)
 	}
+	if id == 501 {
+		return errors.New("the store rejected the token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
+	}
 	if id == 420 {
 		return fmt.Errorf("resource %d: %w: server type cx53 is not in the standing types [cx23]", id, cloudres.ErrBeyondStanding)
 	}
@@ -3202,8 +3205,9 @@ func TestMergeCardShowsWhyItHasNotMerged(t *testing.T) {
 
 // A resources button's refusal names what failed, the error and the next
 // action, not the factoryd log: the bound arms keep their fixed causes,
-// and a store failure carries the store's error.
-func TestErrorsShowNoInternals(t *testing.T) {
+// a store failure's 500 carries the store's error, and a token-shaped
+// secret in that error reaches the page masked.
+func TestStoreErrorRefusalNamesTheErrorAndMasksTokens(t *testing.T) {
 	r := newRig(t)
 	ck, s := r.loggedIn(t)
 	rec := r.do(post("/resources/410/promote", url.Values{"csrf": {s.csrf}}), ck)
@@ -3217,8 +3221,14 @@ func TestErrorsShowNoInternals(t *testing.T) {
 	}
 	rec = r.do(post("/resources/500/promote", url.Values{"csrf": {s.csrf}}), ck)
 	if rec.Code != http.StatusInternalServerError ||
-		strings.TrimSpace(rec.Body.String()) != `cannot promote: pq: deadlock detected in "cloud_resources". Try again in a moment.` {
+		strings.TrimSpace(rec.Body.String()) != `The resource could not be promoted: pq: deadlock detected in "cloud_resources". Press Promote again, or release it and commission it anew.` {
 		t.Fatalf("a store error = %d: %s", rec.Code, rec.Body)
+	}
+	// a token-shaped secret in the store's error is masked in the refusal
+	rec = r.do(post("/resources/501/promote", url.Values{"csrf": {s.csrf}}), ck)
+	if rec.Code != http.StatusInternalServerError ||
+		strings.TrimSpace(rec.Body.String()) != "The resource could not be promoted: the store rejected the token "+tokenMask+". Press Promote again, or release it and commission it anew." {
+		t.Fatalf("a store error holding a token = %d: %s", rec.Code, rec.Body)
 	}
 }
 

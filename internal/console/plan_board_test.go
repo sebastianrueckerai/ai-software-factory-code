@@ -432,7 +432,7 @@ func TestRetryFilesTheReplacement(t *testing.T) {
 	}
 	r.retryErr = errors.New("the retry of t-c7 as t-x stopped at filing its issue: forgejo 502")
 	if rec := retry(ck, s.csrf); rec.Code != http.StatusInternalServerError ||
-		strings.TrimSpace(rec.Body.String()) != "The card could not be retried: the retry of t-c7 as t-x stopped at filing its issue: forgejo 502. Try again in a moment." {
+		strings.TrimSpace(rec.Body.String()) != "The card could not be retried: the retry of t-c7 as t-x stopped at filing its issue: forgejo 502. Press Retry again, or replan the card when it keeps failing." {
 		t.Errorf("a failed retry: %d %q", rec.Code, rec.Body)
 	}
 }

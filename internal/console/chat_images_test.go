@@ -196,14 +196,14 @@ func TestChatRequestImage(t *testing.T) {
 	equal(t, "factoryd's refusal", []any{code, msg}, []any{http.StatusConflict, "The factory refuses: image sox would be new."})
 	r.imageErr = errors.New("the store is down")
 	code, msg = refused(t, r, "request_image", toolInput{Tool: "sox", Need: "mix"})
-	equal(t, "a failure", []any{code, msg}, []any{http.StatusBadGateway, "The tool card could not be filed: the store is down. Try again in a moment."})
+	equal(t, "a failure", []any{code, msg}, []any{http.StatusBadGateway, "The tool card could not be filed: the store is down. Ask again, or file the tool card by hand."})
 
 	// a token-shaped secret in the error reaches the sentence masked, so
 	// no credential reaches the chat
 	r.imageErr = errors.New("the store rejected the token ghp_ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 	code, msg = refused(t, r, "request_image", toolInput{Tool: "sox", Need: "mix"})
 	equal(t, "a masked failure", []any{code, msg}, []any{http.StatusBadGateway,
-		"The tool card could not be filed: the store rejected the token " + tokenMask + ". Try again in a moment."})
+		"The tool card could not be filed: the store rejected the token " + tokenMask + ". Ask again, or file the tool card by hand."})
 }
 
 // At assisted the agent asks for a tool without the member's OK, as it

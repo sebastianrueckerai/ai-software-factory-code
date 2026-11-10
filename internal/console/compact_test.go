@@ -239,7 +239,7 @@ func TestChatCompactionErrorsWhenASingleLineAnswersNothing(t *testing.T) {
 	equal(t, "the compaction calls", len(g.compacts), 2)
 	equal(t, "the compacted events", compactedRows(t, events), []int(nil))
 	equal(t, "the stream's end", events[len(events)-1],
-		`error {"message":"The thread could not be compacted: The action failed: the summariser answered nothing. Try again in a moment."}`)
+		`error {"message":"The thread could not be compacted: The action failed: the summariser answered nothing. Try the call again, or read the board to see the factory's state."}`)
 	rec := r.do(httptest.NewRequest(http.MethodGet, chatPath, nil), ck)
 	var got chatGetAnswer
 	if err := json.Unmarshal(rec.Body.Bytes(), &got); err != nil {
