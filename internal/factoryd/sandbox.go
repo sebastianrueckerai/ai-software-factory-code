@@ -39,7 +39,7 @@ func FactoryStack() policy.ImageSpec {
 			// go.dev/dl's sha256 of the file (its JSON index, mode=json&include=all)
 			{Name: "go", URL: "https://go.dev/dl/go1.26.10.linux-amd64.tar.gz", SHA256: "ccfe7ae822d2c2f41f4fe7c956199967a4dac22d0ee0d2b2bfdb440aab3b20c5",
 				To: "/usr/local/go", Strip: 1},
-			{Name: "node", URL: "https://nodejs.org/dist/v24.21.0/node-v24.21.0-linux-x64.tar.xz", SHA256: "fd8e59d5a511510f6a298afb548f18c7d2b1be404d8b4a27d94fbe49f56cb2d6",
+			{Name: "node", URL: "https://nodejs.org/dist/v24.22.2/node-v24.22.2-linux-x64.tar.xz", SHA256: "48cc0e21e048790e54c0cf5749c2725005313d652651c40b7a21feb9697aaf75",
 				To: "/usr/local", Strip: 1},
 		},
 		Env:    map[string]string{"GOTOOLCHAIN": "local", "GOPROXY": "https://proxy.golang.org", "GOSUMDB": "sum.golang.org"},

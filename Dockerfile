@@ -3,7 +3,7 @@
 # store (a local one) passes UPSTREAM= and pulls the same digests from
 # their upstreams.
 ARG UPSTREAM=git.aisoftwarefactory.world/upstream/
-FROM ${UPSTREAM}docker.io/library/golang:1.26.10-alpine@sha256:d1f3216ef30257c850cc136ba42a359ccd9d3e75f19b2c276e520c0b4ef327ce AS build
+FROM ${UPSTREAM}docker.io/library/golang:1.26.10-alpine@sha256:2173d702003b1a8d17b844191acaeb36e94de46f6cabf2cb27370e151bbce5aa AS build
 # roadmap 232: this stage's only clock is the commit's; ci.yml passes
 # --build-arg SOURCE_DATE_EPOCH=<commit time> so a content-identical tree
 # builds the same digest at any wall-clock time. The stage builds offline
@@ -34,9 +34,9 @@ COPY internal/ internal/
 RUN CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factory-gateway ./cmd/factory-gateway \
  && CGO_ENABLED=0 go build -trimpath -buildvcs=false -ldflags="-s -w" -o /out/factoryd ./cmd/factoryd
 
-FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:f3034a6ec3c1205360777c4aae76234998866ad18806ae62b63a3f84ccad782b
+FROM ${UPSTREAM}docker.io/library/debian:bookworm-slim@sha256:c67e92c8099ba22853ab4cfda7cfb494d253d6012ca82dee98ba8976772af018
 LABEL org.opencontainers.image.source=https://git.aisoftwarefactory.world/sf/ai-software-factory-code
-ARG DEBIAN_SNAPSHOT=20261015T000000Z
+ARG DEBIAN_SNAPSHOT=20261108T000000Z
 # git: factoryd's GitHub exports of mode pull_requests fetch and push with
 # it; ca-certificates: every HTTPS call of both binaries. Debian's packages
 # come from snapshot.debian.org at DEBIAN_SNAPSHOT, as in Dockerfile.runner,
