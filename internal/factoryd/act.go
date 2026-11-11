@@ -130,6 +130,9 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 		return ActResult{Case: c}, err
 	}
 	if c.ID != 0 && Final(t.Status) && !slices.Contains(endedCardActions, in.Res.Action) {
+		if _, known := ActionByName(in.Res.Action); !known {
+			return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s: its case closes on its own, so %s changes nothing; a new card carries the work on", cardName(t), t.Status, in.Res.Action))
+		}
 		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s, so its case takes no %s: its case closes on its own, and a new card carries the work on", cardName(t), t.Status, in.Res.Action))
 	}
 	own, err := r.ownStep(ctx, c, in)

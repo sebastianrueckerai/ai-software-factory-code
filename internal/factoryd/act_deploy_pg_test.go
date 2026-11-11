@@ -457,3 +457,64 @@ func TestDeployNowFailures(t *testing.T) {
 		})
 	}
 }
+
+// A choice pressed after its card ended is refused with the card's end and
+// what to do, not with words about an action: Wait is no action of the table.
+func TestAChoiceAfterTheCardEndedNamesTheEnd(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	if _, err := h.s.db.ExecContext(context.Background(), `UPDATE tasks SET status = 'done', finished_at = now() WHERE id = $1`, h.cardID); err != nil {
+		t.Fatal(err)
+	}
+	for _, rung := range []int{2, 3} {
+		_, err := h.r.Act(context.Background(), ActInput{TaskID: h.cardID, CaseID: h.caseID, By: "sebastian", Via: ViaChat, Rung: rung, Res: Resolution{Action: AnswerHoldWait, Note: "Wait"}})
+		if want := "ended done: its case closes on its own, so hold_wait changes nothing; a new card carries the work on"; err == nil || !strings.Contains(err.Error(), want) {
+			t.Errorf("rung %d: Act = %v, want a refusal with %q", rung, err, want)
+		}
+	}
+}
+
+// SetAskInfo rewrites the ask's own rows and leaves a proposal's row beside
+// it alone, and an info that is the stored one writes no row at all (the
+// rows' xmin stays).
+func TestSetAskInfoLeavesAProposalAndWritesNothingTwice(t *testing.T) {
+	h := newHeldRig(t, policy.AutonomyFullAuto)
+	ctx := context.Background()
+	h.r.timeline.RecordRow(ctx, h.cardID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"source": "chat", "info": "proposal info",
+		"recommendation": "close it", "preselected": map[string]any{"action": ActClose}})
+	xmins := func() string {
+		var out string
+		if err := h.s.db.QueryRowContext(ctx, `SELECT (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM events WHERE task_id = $1 AND kind = $2)
+			|| '|' || (SELECT string_agg(xmin::text, ',' ORDER BY id) FROM intake_events WHERE task_id = $1)`, h.cardID, EventQuestionAsked).Scan(&out); err != nil {
+			t.Fatal(err)
+		}
+		return out
+	}
+	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+		t.Fatal(err)
+	}
+	after := xmins()
+	if err := h.s.SetAskInfo(ctx, h.cardID, "new info"); err != nil {
+		t.Fatal(err)
+	}
+	if again := xmins(); again != after {
+		t.Errorf("rows after the same info again %s, want %s: nothing written", again, after)
+	}
+	events, err := h.s.TaskEvents(ctx, h.cardID, 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var ask, proposal *Event
+	for i := range events {
+		if events[i].Kind != EventQuestionAsked {
+			continue
+		}
+		if events[i].Detail["source"] == SourceProductionHeld {
+			ask = &events[i]
+		} else {
+			proposal = &events[i]
+		}
+	}
+	if ask == nil || proposal == nil || ask.Detail["info"] != "new info" || proposal.Detail["info"] != "proposal info" || proposal.Detail["recommendation"] != "close it" || proposal.Detail["preselected"] == nil {
+		t.Errorf("ask %+v, proposal %+v; want the ask's info rewritten and the proposal's row as it was", ask, proposal)
+	}
+}
