@@ -584,8 +584,12 @@ func (r *Runner) rungConversation(ctx context.Context, t Task, repo Repo, c Case
 	tools := &caseTools{r: r, t: t, c: c, f: f, repo: repo}
 	defer tools.close()
 	limits := v.Document.Limits
-	return r.runRung(ctx, r.checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
-		caseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap()), nil
+	out := r.runRung(ctx, r.checkin, chat.ID, r.callModel(t, policy.PurposeCheckin), f, 1, rungSystem+" "+rungToolsLine, statement,
+		caseEvidence(), tools, limits.CheckinCallCap(), limits.CheckinTimeCap())
+	for i := range out.Read {
+		out.Read[i].Args = r.scrub(out.Read[i].Args)
+	}
+	return out, nil
 }
 
 // rungUp ends rung 1's step stepID handed up, with the recommendation its

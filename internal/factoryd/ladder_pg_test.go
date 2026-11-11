@@ -34,6 +34,12 @@ type tripForge struct {
 	checks      map[string]string // a head's combined state: success or failure
 	comments    []string
 	failComment bool
+	// files holds a repository file by "ref:path", prCommits the body of
+	// pull request 9's commits, and redLog the log of the one failed job of
+	// run 7, which the red heads' statuses point at when it is set
+	files     map[string]string
+	prCommits string
+	redLog    string
 }
 
 func (f *tripForge) serve(t *testing.T) *httptest.Server {
@@ -41,7 +47,25 @@ func (f *tripForge) serve(t *testing.T) *httptest.Server {
 		f.mu.Lock()
 		defer f.mu.Unlock()
 		const issue = "/api/v1/repos/demo-app/demo-app/issues/12"
+		const repo = "/api/v1/repos/demo-app/demo-app"
 		switch {
+		case strings.HasPrefix(r.URL.Path, repo+"/raw/"):
+			body, ok := f.files[r.URL.Query().Get("ref")+":"+strings.TrimPrefix(r.URL.Path, repo+"/raw/")]
+			if !ok {
+				w.WriteHeader(http.StatusNotFound)
+				return
+			}
+			fmt.Fprint(w, body)
+		case r.URL.Path == repo+"/pulls/9/commits" && r.URL.Query().Get("page") == "1" && f.prCommits != "":
+			fmt.Fprint(w, f.prCommits)
+		case r.URL.Path == repo+"/pulls/9/commits":
+			fmt.Fprint(w, `[]`)
+		case r.URL.Path == repo+"/actions/runs":
+			fmt.Fprint(w, `{"workflow_runs":[{"id":70,"index_in_repo":7}]}`)
+		case r.URL.Path == repo+"/actions/runs/70/jobs":
+			fmt.Fprint(w, `[{"id":12,"name":"test","status":"failure","attempt":1}]`)
+		case r.URL.Path == repo+"/actions/jobs/12/logs":
+			fmt.Fprint(w, f.redLog)
 		case r.Method == http.MethodPost && r.URL.Path == issue+"/comments" && f.failComment:
 			f.failComment = false
 			w.WriteHeader(http.StatusInternalServerError)
@@ -53,7 +77,11 @@ func (f *tripForge) serve(t *testing.T) *httptest.Server {
 		case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/commits/") && strings.HasSuffix(r.URL.Path, "/status") &&
 			f.checks[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/commits/"), "/status")] != "":
 			state := f.checks[strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/repos/demo-app/demo-app/commits/"), "/status")]
-			fmt.Fprintf(w, `{"state":%q,"statuses":[{"status":%[1]q,"context":"ci / test"}]}`, state)
+			target := ""
+			if state == "failure" && f.redLog != "" {
+				target = "/demo-app/demo-app/actions/runs/7/jobs/0"
+			}
+			fmt.Fprintf(w, `{"state":%q,"statuses":[{"status":%[1]q,"context":"ci / test","target_url":%q}]}`, state, target)
 		case strings.HasPrefix(r.URL.Path, issue+"/labels"):
 			fmt.Fprint(w, `[]`)
 		default:

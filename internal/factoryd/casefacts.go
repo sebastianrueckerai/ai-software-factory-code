@@ -104,7 +104,7 @@ type CaseFacts struct {
 	PlanName     string        `json:"plan_name,omitempty"`
 	PlanStatus   string        `json:"plan_status,omitempty"`
 	Siblings     []SiblingFact `json:"siblings,omitempty"`
-	Running      bool          `json:"running,omitempty"` // a session is live
+	Running      bool          `json:"running,omitempty"` // a session is live: the card runs and holds a live session row
 	Autonomy     string        `json:"autonomy"`
 	PoolLeft     policy.Draw   `json:"pool_left"`
 	CardDrawLeft policy.Draw   `json:"card_draw_left"`
@@ -257,6 +257,18 @@ func (r *Runner) tripFacts(ctx context.Context, t Task, head, model string) (Cas
 			res, err := r.HeadChecks(ctx, t.ID, f.Head)
 			if err == nil {
 				f.Checks = checksWord(res.State)
+			}
+			return err
+		}},
+		{"live session", func() error {
+			// the card keeps its status while a rung works, so the status
+			// alone no longer says a session runs: its live row does
+			if !f.Running {
+				return nil
+			}
+			_, live, err := r.store.LiveSession(ctx, t.ID)
+			if err == nil {
+				f.Running = live
 			}
 			return err
 		}},
