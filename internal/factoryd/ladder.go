@@ -1489,7 +1489,7 @@ func (r *Runner) askHuman(ctx context.Context, t Task, c Case, reason, next stri
 			log.Printf("task %s: the offers of case %d: %v", t.ID, c.ID, err)
 		} else if offers, refusals, ok := storeOffers(c, t, f); ok {
 			asked["offers"] = withTableOffers(asked["offers"], offers)
-			asked["refusals"] = refusals
+			asked["refusals"] = nonNilList(refusals)
 		}
 	}
 	if !beside {

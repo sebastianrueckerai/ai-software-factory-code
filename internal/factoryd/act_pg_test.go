@@ -648,7 +648,7 @@ func TestActTakesAHumanCardsChoice(t *testing.T) {
 	askOwn(t, g.s, "h1", c.ID, q.Choices...)
 	_, err = g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: "deploy"}})
 	var refused ErrActRefused
-	if want := "card #13 takes one of its choices or a note: Dismiss (dismiss), Check again (check_again)"; !errors.As(err, &refused) || err.Error() != want {
+	if want := "card #13 takes one of its choices, with your note beside it: Dismiss (dismiss), Check again (check_again)"; !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("a value it does not offer = %v, want %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h1", CaseID: c.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerDismiss}}); err != nil {
@@ -687,7 +687,7 @@ func TestActReadsTheChoicesOfTheCasesOwnAsk(t *testing.T) {
 	newer := open("newer", QuestionChoice{Value: AnswerDismiss, Label: "Dismiss"})
 	_, err := g.r.Act(ctx, ActInput{TaskID: "h2", CaseID: newer.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerCheckAgain}})
 	var refused ErrActRefused
-	if want := "card #14 takes one of its choices or a note: Dismiss (dismiss)"; !errors.As(err, &refused) || err.Error() != want {
+	if want := "card #14 takes one of its choices, with your note beside it: Dismiss (dismiss)"; !errors.As(err, &refused) || err.Error() != want {
 		t.Fatalf("the newer case taking the older's choice = %v, want %q", err, want)
 	}
 	if _, err := g.r.Act(ctx, ActInput{TaskID: "h2", CaseID: older.ID, By: "sebastian", Rung: 3, Res: Resolution{Action: AnswerCheckAgain}}); err != nil {

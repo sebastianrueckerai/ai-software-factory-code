@@ -193,6 +193,11 @@ func (r *Runner) act(ctx context.Context, in ActInput) (ActResult, error) {
 	// beside it for the session: the issue's record names them apart
 	ownNote, added := res.Note, ""
 	choice := ChoiceCase(c, t.Kind) && res.Action != ActNote
+	if ChoiceCase(c, t.Kind) && res.Action == ActNote && in.Rung != 0 {
+		if why := r.wordsRefusal(ctx, t, c); why != "" {
+			return ActResult{}, ErrActRefused(why)
+		}
+	}
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
@@ -362,7 +367,8 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 			if c.Status != CaseAtHuman || !AnswersByOffers(c, t.Kind) {
 				continue
 			}
-			if ask, ok := r.caseAsk(ctx, c); !ok || ask.Detail["refusals"] != nil {
+			ask, found := r.caseAsk(ctx, c)
+			if found && ask.Detail["refusals"] != nil {
 				continue
 			}
 			f, err := r.factsAtCase(ctx, t, c)
@@ -370,9 +376,28 @@ func (r *Runner) StoreMissedOffers(ctx context.Context) {
 				log.Printf("offers pass: case %d: %v", c.ID, err)
 				continue
 			}
-			r.refreshOffers(ctx, t, c, f)
+			if found {
+				r.refreshOffers(ctx, t, c, f)
+				continue
+			}
+			// a case the heal opened from the card's intake row alone has no ask row: write its face's
+			if offers, refusals, ok := storeOffers(c, t, f); ok {
+				r.timeline.RecordRow(ctx, t.ID, EventQuestionAsked, FactoryDecider, ViaFactoryd, map[string]any{"question": textutil.Truncate(c.Problem, 300),
+					"ask": c.Problem, "comment": c.CommentID, "case_id": c.ID, "offers": offers, "refusals": nonNilList(refusals)})
+			}
 		}
 	}
+}
+
+// LockCase takes case id's answer lock, which Act holds from its first read to
+// its end, and answers how to release it.
+func (r *Runner) LockCase(ctx context.Context, id int64) (func(), error) {
+	lock, _ := r.caseLocks.LoadOrStore(id, &sync.Mutex{})
+	mu := lock.(*sync.Mutex)
+	if err := lockWithin(ctx, mu); err != nil {
+		return nil, err
+	}
+	return mu.Unlock, nil
 }
 
 // refreshOffersOf stores the offers of case caseID anew when it is still at
@@ -723,6 +748,14 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	if why == "" {
 		return ""
 	}
+	if ok && a.Name == ActApproveMerge && f.Kind == CaseMergeApproval && f.PROpen && f.Checks != "green" {
+		// the approval card's own remedies: a factory pull request's checks run again, an agent's goes back
+		remedy := "return it to the agent with what to change (deny_merge with request_changes) or close it (deny_merge with reject)"
+		if f.Factory {
+			remedy = "run them again (rerun_checks) or close it with your words (deny_merge)"
+		}
+		return why + ", and " + who(in.Rung) + " may " + remedy
+	}
 	var names []string
 	for _, o := range Offered(f, in.Rung) {
 		if in.CaseID != 0 || !answersACase(o) {
@@ -761,7 +794,22 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, c Case, in ActInput) s
 	for _, o := range offers {
 		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
 	}
-	return fmt.Sprintf("card %s takes one of its choices or a note: %s", cardName(t), strings.Join(choices, ", "))
+	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", cardName(t), strings.Join(choices, ", "))
+}
+
+// wordsRefusal is why free words alone answer no human card whose question
+// offers choices: the answer is a choice, and a note rides with it.
+func (r *Runner) wordsRefusal(ctx context.Context, t Task, c Case) string {
+	ask, _ := r.caseAsk(ctx, c)
+	offers := askOffers(ask.Detail)
+	if len(offers) == 0 {
+		return ""
+	}
+	choices := make([]string, 0, len(offers))
+	for _, o := range offers {
+		choices = append(choices, fmt.Sprintf("%s (%s)", o.Label, o.Value))
+	}
+	return fmt.Sprintf("card %s takes one of its choices, with your note beside it: %s", cardName(t), strings.Join(choices, ", "))
 }
 
 // actOutside runs what in.Res does outside the run before the case ends:

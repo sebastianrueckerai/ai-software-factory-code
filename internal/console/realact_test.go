@@ -444,3 +444,44 @@ func TestAMonthCapHumanCardClosesByItsChoice(t *testing.T) {
 		t.Fatalf("case %s %+v, patched %v; want it resolved by close and the issue closed", k.Status, k.Resolution, r.fg.patched)
 	}
 }
+
+// The chat's answer by case number on a month cap human card routes by the
+// card's kind, so its close closes the issue and resolves the case.
+func TestTheChatClosesAMonthCapCardByItsCase(t *testing.T) {
+	q := factoryd.HumanQuestion{Ask: "The month cap is reached: raise it, or let the factory stand?",
+		Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerPark, Label: "Let it stand"}, {Value: factoryd.AnswerClose, Label: "Decided, close"}}}
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: factoryd.SourceMonthCap,
+		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceMonthCap, q, policy.AutonomyManual)
+	ra.wire(r, "t-hq", false)
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", CaseID: ra.caseID, Action: factoryd.AnswerClose}); err != nil {
+		t.Fatalf("the chat's close by case number: %v", err)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseResolved || !slices.Equal(r.fg.patched, []string{`/api/v1/repos/sf/code/issues/51 {"state":"closed"}`}) {
+		t.Fatalf("case %s, patched %v; want it resolved and the issue closed", k.Status, r.fg.patched)
+	}
+}
+
+// Free words on a card whose question offers choices meet Act's one refusal,
+// naming the choices, on the button and in the chat; nothing is posted.
+func TestFreeWordsOnAChoiceCardMeetActsRefusal(t *testing.T) {
+	q := factoryd.HumanQuestion{Ask: "Which store?", Choices: []factoryd.QuestionChoice{{Value: factoryd.AnswerClose, Label: "Done"}}}
+	r := newRig(t)
+	r.tasks.tasks = []factoryd.BoardTask{{Task: factoryd.Task{ID: "t-hq", Kind: "human", Status: "waiting-human", Source: factoryd.SourceRoutine,
+		Repository: "sf/code", IssueNumber: 51, SHA: "abc1234", Objective: "needs you"}, Escalation: q.Ask, Question: &q}}
+	ra := newRealAct(t, "t-hq", 51, factoryd.SourceRoutine, q, policy.AutonomyManual)
+	ra.wire(r, "t-hq", false)
+	const want = "card #51 takes one of its choices, with your note beside it: Done (close)"
+	ck, s := r.loggedIn(t)
+	rec := r.do(post("/tasks/t-hq/answer", url.Values{"csrf": {s.csrf}, "answer": {"retry it next week"}}), ck)
+	if rec.Code != http.StatusConflict || strings.TrimSpace(rec.Body.String()) != want {
+		t.Errorf("the button's words = %d %q, want 409 %q", rec.Code, rec.Body, want)
+	}
+	if _, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-hq", Text: "retry it next week"}); err == nil || err.Error() != want {
+		t.Errorf("the chat's words = %v, want %q", err, want)
+	}
+	if k := ra.caseNow(t); k.Status != factoryd.CaseAtHuman || len(r.fg.patched) != 0 || len(r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments")) != 0 {
+		t.Errorf("case %s, patched %v, comments %v; want it waiting and nothing posted", k.Status, r.fg.patched, r.fg.commentBodies("/api/v1/repos/sf/code/issues/51/comments"))
+	}
+}

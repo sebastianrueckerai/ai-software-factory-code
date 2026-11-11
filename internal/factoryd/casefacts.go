@@ -29,6 +29,7 @@ type CaseFacts struct {
 	Final          string `json:"final,omitempty"`
 	Head           string `json:"head,omitempty"`
 	PR             int64  `json:"pr,omitempty"`
+	Factory        bool   `json:"factory,omitempty"`         // the pull request is one factoryd opened
 	PROpen         bool   `json:"pr_open,omitempty"`         // PR is set and the card neither merged nor ended
 	Checks         string `json:"checks,omitempty"`          // green, red, pending or ""
 	ReviewApproved bool   `json:"review_approved,omitempty"` // the newest model_review on Head was reviewed and approved
@@ -190,6 +191,7 @@ func (f CaseFacts) noSession(refund, waiting bool) (asked CaseKind, read bool) {
 func (f *CaseFacts) atCase(c Case) {
 	f.Kind, f.Gate = c.Kind, ""
 	f.ApprovalKind, _ = c.Facts["approval_kind"].(string)
+	f.Factory, _ = c.Facts["factory"].(bool)
 	if f.Killed == nil && c.Facts["killed"] != nil {
 		f.Killed = factsOf(c).Killed
 	}

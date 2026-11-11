@@ -587,20 +587,6 @@ func TestWordsThatNameTheGoChoiceHandTheCardOver(t *testing.T) {
 		}
 	}
 
-	const refusal = "Card #15 takes one of its choices: Have the factory do it, Done. A remark goes on the issue."
-	r := newCard()
-	_, err := runTool(t, r, "answer", "member", toolInput{TaskID: "t-wait", Text: "Please do it"})
-	if err == nil || err.Error() != refusal {
-		t.Errorf("the chat's stray words = %v, want %q", err, refusal)
-	}
-	ck, s := r.loggedIn(t)
-	rec := r.do(post("/tasks/t-wait/answer", url.Values{"csrf": {s.csrf}, "answer": {"Please do it"}}), ck)
-	if rec.Code != http.StatusBadRequest || strings.TrimSpace(rec.Body.String()) != refusal {
-		t.Errorf("the button's stray words = %d %q, want 400 %q", rec.Code, rec.Body, refusal)
-	}
-	if len(r.handed) != 0 || len(r.fg.commentBodies(comments)) != 0 {
-		t.Errorf("handed %v, comments %q; want nothing", r.handed, r.fg.commentBodies(comments))
-	}
 }
 
 // A client that leaves once the agent card is filed does not leave the old

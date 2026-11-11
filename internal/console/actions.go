@@ -1378,7 +1378,7 @@ func (c *Console) doHumanAnswer(ctx context.Context, a actor, t factoryd.Task, t
 		value = q.ChoiceValue(text)
 	}
 	label := q.ChoiceLabel(value)
-	if label == "" && value == "" && (text == "" || choiceCard(t) || len(q.Choices) > 0) {
+	if label == "" && value == "" && text == "" {
 		return "", refuse(http.StatusBadRequest, fmt.Sprintf("Card #%d takes one of its choices: %s. A remark goes on the issue.", t.IssueNumber, strings.Join(q.Labels(), ", ")))
 	}
 	k, err := c.liveCase(ctx, t)
@@ -2684,12 +2684,8 @@ func (c *Console) doApprove(ctx context.Context, a actor, id int64) (string, err
 		}
 		c.record(ctx, a, q.Project, q.TaskID, c.issueOf(ctx, q.TaskID), factoryd.EventMergeApproved, map[string]any{"approval": q.ID, "kind": "resource"})
 		return "Approved the resource for its task.", nil
-	case factoryd.ApprovalCriteria:
+	case factoryd.ApprovalCriteria, factoryd.ApprovalCriteriaRerun:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActGrantCriteria})
-	case factoryd.ApprovalCriteriaRerun:
-		// no task can pay for the review that never judged them: the
-		// gateway takes no hold of a finished card
-		return "", refuse(http.StatusConflict, fmt.Sprintf("Plan %s's ask is criteria never judged: it grants no card and runs no review; waive a criterion with your reason, or confirm the delivered cards.", q.TaskID))
 	case factoryd.ApprovalMerge:
 		return c.answerRequest(ctx, a, q, factoryd.Resolution{Action: factoryd.ActApproveMerge})
 	}

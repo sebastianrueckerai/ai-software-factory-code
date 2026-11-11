@@ -944,6 +944,8 @@ func (o fakeObjects) Delete(_ context.Context, k string) error        { delete(o
 type fakeApprovals struct {
 	mu   sync.Mutex
 	rows []factoryd.ApprovalRequest
+	// left records, by request id, whether its decision left the case to Act
+	left map[int64]bool
 }
 
 func (a *fakeApprovals) ApprovalRequests(_ context.Context, status string) ([]factoryd.ApprovalRequest, error) {
@@ -958,9 +960,13 @@ func (a *fakeApprovals) ApprovalRequests(_ context.Context, status string) ([]fa
 	return out, nil
 }
 
-func (a *fakeApprovals) DecideApproval(_ context.Context, id int64, kind, status, by, note string) error {
+func (a *fakeApprovals) DecideApproval(ctx context.Context, id int64, kind, status, by, note string) error {
 	a.mu.Lock()
 	defer a.mu.Unlock()
+	if a.left == nil {
+		a.left = map[int64]bool{}
+	}
+	a.left[id] = factoryd.CaseLeftToAct(ctx)
 	for i, r := range a.rows {
 		if r.ID == id && r.Kind == kind && r.Status == "pending" {
 			a.rows[i].Status, a.rows[i].DecidedBy, a.rows[i].DecisionNote = status, by, note

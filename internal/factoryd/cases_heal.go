@@ -93,8 +93,9 @@ func (s *PGStore) endDecidedMergeCases(ctx context.Context, repository string) (
 		return 0, 0, err
 	}
 	for _, d := range ds {
-		switch ended, err := decideRequestCase(ctx, s.db, d.id, d.kind, d.status, d.by, d.note); {
-		case errors.Is(err, ErrNotFound):
+		ended, err := s.endDecidedCase(ctx, d.id, d.kind, d.status, d.by, d.note)
+		switch {
+		case errors.Is(err, ErrNotFound), ended == "":
 		case err != nil:
 			return resolved, withdrawn, err
 		case ended == CaseWithdrawn:
@@ -104,6 +105,28 @@ func (s *PGStore) endDecidedMergeCases(ctx context.Context, repository string) (
 		}
 	}
 	return resolved, withdrawn, nil
+}
+
+// endDecidedCase ends case id by its request's decision under the lock Act
+// holds while it answers the case, and reads the case again under it: a case
+// Act is answering is Act's to end, so the heal never resolves it. "" when the
+// case was not live any more.
+func (s *PGStore) endDecidedCase(ctx context.Context, id int64, kind CaseKind, status, by, note string) (string, error) {
+	if s.LockCase != nil {
+		unlock, err := s.LockCase(ctx, id)
+		if err != nil {
+			return "", err
+		}
+		defer unlock()
+	}
+	c, err := s.CaseByID(ctx, id)
+	if err != nil {
+		return "", err
+	}
+	if c.Status != CaseOpen && c.Status != CaseAtHuman {
+		return "", nil
+	}
+	return decideRequestCase(ctx, s.db, id, kind, status, by, note)
 }
 
 // withdrawCases withdraws each live case query answers, for the reason
@@ -190,16 +213,16 @@ func (s *PGStore) openMissedAsks(ctx context.Context, repository string) (int, e
 // merge requests whose card has no live merge case, a request older than
 // the cases table among them, and counts the cases it opened. A request
 // younger than a minute is left to its approval_requested row, written
-// after it; a request whose case a human resolved (a confirmation, which
-// leaves the request pending until the criteria pass) is left as it is; an ended card's is left alone, as the ended rule would
-// withdraw its case.
+// after it; a request whose case a confirmation resolved stays pending until
+// the criteria pass and is left as it is; an ended card's is left alone, as
+// the ended rule would withdraw its case.
 func (s *PGStore) openMissedMerges(ctx context.Context, repository string) (int, error) {
 	ids, err := queryAll(ctx, s.db, `SELECT a.id FROM approval_requests a JOIN tasks t ON t.id = a.task_id
 		WHERE t.repository = $1 AND a.kind IN ($2, $3, $4) AND a.status = 'pending' AND a.created_at < now() - interval '1 minute'
 		AND (a.kind <> $2 OR t.status NOT IN ('done', 'failed', 'closed'))
-		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = a.task_id AND c.kind IN ($5, $6) AND (c.status IN `+caseLiveStatuses+` OR c.status = $7)
+		AND NOT EXISTS (SELECT 1 FROM cases c WHERE c.task_id = a.task_id AND c.kind IN ($5, $6) AND (c.status IN `+caseLiveStatuses+` OR c.status = $7 AND c.resolution->>'action' = $8)
 		    AND (c.facts->>'approval')::bigint = a.id)`,
-		[]any{repository, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun, CaseMergeApproval, CasePlanCriteria, CaseResolved}, func(row rowScanner) (id int64, err error) {
+		[]any{repository, ApprovalMerge, ApprovalCriteria, ApprovalCriteriaRerun, CaseMergeApproval, CasePlanCriteria, CaseResolved, ActConfirmCriteria}, func(row rowScanner) (id int64, err error) {
 			return id, row.Scan(&id)
 		})
 	if err != nil {
