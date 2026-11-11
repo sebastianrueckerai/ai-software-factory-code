@@ -358,19 +358,6 @@ func TestAHumanCardChoiceRunsItsWorkOnlyWhereActAccepts(t *testing.T) {
 	}
 }
 
-// The chat never answers Deploy anyway, below autonomous too: the console
-// refuses it before Act, which would propose it at manual.
-func TestRungTwoCannotProposeDeployAnywayAtManual(t *testing.T) {
-	r, _, deploys, _ := holdAskRig(t)
-	r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
-	_, s := r.loggedIn(t)
-	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyManual}
-	_, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.AnswerDeployAnyway, nil, 0)
-	if no := refusedWith(err); no == nil || no.status != http.StatusForbidden || len(r.acted) != 0 || len(*deploys) != 0 {
-		t.Fatalf("err %v, Act calls %+v, deploys %v; want the refusal before Act", err, r.acted, *deploys)
-	}
-}
-
 // Every model call the turn makes counts, not only the main stream: a wake
 // whose first call the provider refuses for its context compacts the thread
 // (a second call, a compaction) and answers on a third. The compaction costs

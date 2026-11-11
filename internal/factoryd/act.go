@@ -91,7 +91,11 @@ func (e ErrActRefused) Error() string { return string(e) }
 
 // outsideActions are the actions Act runs outside the run, before the
 // case ends.
-var outsideActions = []string{ActRetry, ActReplan, ActClose}
+var outsideActions = []string{ActRetry, ActReplan, ActClose, ActDeployNow}
+
+// endedCardActions are the actions a case of an ended card still takes: they
+// run or draw nothing for the card's work.
+var endedCardActions = []string{ActClose, ActNote, ActSettle, ActWithdraw}
 
 // lockWithin takes mu, or gives up when ctx ends: the wait for a case's
 // lock is bounded by the answer's own context.
@@ -125,7 +129,8 @@ func keepsOpen(c Case, res Resolution) bool {
 // under the project's lock. Then it posts factoryd's comment when the
 // caller posted none, records the answer and signals the run. A note
 // records a step and ends nothing. A human card's case takes a value of its question's
-// choices, which Act records and runs nothing for. Rung 0 is factoryd's,
+// choices, which Act records and runs nothing for, deploy_now excepted, which
+// runs outside the run. Rung 0 is factoryd's,
 // and factoryd answers on rung 0 alone. An answer holds its case from its
 // first read to its end, so a second answer on it waits, then finds it
 // ended, with nothing of its own run.
@@ -154,6 +159,12 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	if err != nil {
 		return ActResult{Case: c}, err
 	}
+	if c.ID != 0 && Final(t.Status) && !slices.Contains(endedCardActions, in.Res.Action) {
+		if _, known := ActionByName(in.Res.Action); !known {
+			return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s: its case closes on its own, so %s changes nothing; a new card carries the work on", cardName(t), t.Status, in.Res.Action))
+		}
+		return ActResult{Case: c}, ErrActRefused(fmt.Sprintf("card %s ended %s, so its case takes no %s: its case closes on its own, and a new card carries the work on", cardName(t), t.Status, in.Res.Action))
+	}
 	own, err := r.ownStep(ctx, c, in)
 	if err != nil {
 		return ActResult{}, err
@@ -173,6 +184,12 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	var f CaseFacts
 	proposing := in.Rung == 2 && c.ID != 0 && res.Action != ActNote && Proposes(r.autonomyOf(t), res.Action)
 	if choice {
+		if res.Action == ActDeployNow {
+			deploy, _ := ActionByName(ActDeployNow)
+			if why := deploy.Applies(CaseFacts{Kind: c.Kind}, res); why != "" {
+				return ActResult{}, ErrActRefused(why)
+			}
+		}
 		why, err := r.humanChoice(ctx, t, in)
 		if err != nil {
 			return ActResult{}, err
@@ -218,12 +235,14 @@ func (r *Runner) Act(ctx context.Context, in ActInput) (ActResult, error) {
 	via := cmp.Or(in.Via, ViaFactoryd)
 	var out ActResult
 	var draw *CaseDraw
+	if !choice || res.Action == ActDeployNow {
+		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
+			return out, err
+		}
+	}
 	if !choice {
 		grants, err := r.runGrants(ctx, c, res)
 		if err != nil {
-			return out, err
-		}
-		if out.Did, err = r.actOutside(ctx, t, f, in); err != nil {
 			return out, err
 		}
 		if draw = r.caseDraw(t, f, c, in, via); draw != nil {
@@ -636,6 +655,21 @@ func actRefusal(f CaseFacts, in ActInput, card string) string {
 	return why + ", and " + who(in.Rung) + " may take " + textutil.AndList(names)
 }
 
+// askOf is the question the newest escalation of card taskID put, nil for none.
+func (r *Runner) askOf(ctx context.Context, taskID string) (*HumanQuestion, error) {
+	events, err := r.store.IntakeEvents(ctx, taskID)
+	if err != nil {
+		return nil, err
+	}
+	var q *HumanQuestion
+	for _, e := range events {
+		if e.Kind == IntakeEscalation {
+			q = e.Question
+		}
+	}
+	return q, nil
+}
+
 // humanChoice is why human card t's case does not take in, "" when it
 // does: rung 2 or the human picks a value its question offers, with no
 // draw beside it.
@@ -648,15 +682,9 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 	case in.Res.Action == ActClose:
 		return "", nil // a human card closes whatever it asks, as its Close button does
 	}
-	events, err := r.store.IntakeEvents(ctx, t.ID)
+	q, err := r.askOf(ctx, t.ID)
 	if err != nil {
 		return "", err
-	}
-	var q *HumanQuestion
-	for _, e := range events {
-		if e.Kind == IntakeEscalation {
-			q = e.Question
-		}
 	}
 	switch {
 	case q == nil || len(q.Choices) == 0:
@@ -679,6 +707,8 @@ func (r *Runner) humanChoice(ctx context.Context, t Task, in ActInput) (string, 
 // with its result.
 func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInput) ([]CaseAction, error) {
 	switch in.Res.Action {
+	case ActDeployNow:
+		return r.deployNow(ctx, t, in)
 	case ActRetry:
 		id, _ := in.Res.Args["task_id"].(string)
 		if id == "" {
@@ -713,6 +743,31 @@ func (r *Runner) actOutside(ctx context.Context, t Task, f CaseFacts, in ActInpu
 		return []CaseAction{{Action: ActReplan, Result: said}}, nil
 	}
 	return nil, nil
+}
+
+// deployNow releases held production of card t's repository for in.By: the
+// agent decides for rung 2, the stored member for the human. Its refusals
+// come back as Act's, the secrets of any other failure masked.
+func (r *Runner) deployNow(ctx context.Context, t Task, in ActInput) ([]CaseAction, error) {
+	if r.DeployNow == nil {
+		return nil, errors.New("no release keeper is wired to deploy")
+	}
+	decider := "member"
+	if in.Rung == 2 {
+		decider = "agent"
+	}
+	commit, err := r.DeployNow(ctx, t.Repository, in.By, cmp.Or(in.Via, ViaFactoryd), decider)
+	var red ErrMainRed
+	switch {
+	case errors.Is(err, ErrNotHeld):
+		return nil, ErrActRefused("production of " + t.Repository + " is not held: every merge goes to production on its own")
+	case errors.As(err, &red):
+		return nil, ErrActRefused(fmt.Sprintf("main of %s at %s is red: deploy_now waits for a green run on main", t.Repository, red.Commit[:min(7, len(red.Commit))]))
+	case err != nil:
+		return nil, ErrActRefused("production of " + t.Repository + " could not be released: " + r.scrub(err.Error()))
+	}
+	return []CaseAction{{Action: ActDeployNow, Result: fmt.Sprintf("Deploy now: main of %s at %s goes to production. A merge after it waits for the open plans again.",
+		t.Repository, commit[:min(7, len(commit))])}}, nil
 }
 
 // replanDependency sends failed dependency id of card t to its plan's

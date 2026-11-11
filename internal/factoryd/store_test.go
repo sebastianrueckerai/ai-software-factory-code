@@ -927,6 +927,26 @@ func (s *fakeStore) SetQuestionInfo(ctx context.Context, taskID string, commentI
 	return nil
 }
 
+func (s *fakeStore) SetAskInfo(ctx context.Context, taskID, info string) error {
+	for i := len(s.intakeEvents) - 1; i >= 0; i-- {
+		if e := s.intakeEvents[i]; e.TaskID == taskID && e.Kind == IntakeEscalation && e.Question != nil {
+			q := *e.Question
+			q.Info = info
+			s.intakeEvents[i].Question = &q
+			break
+		}
+	}
+	for i := len(s.events) - 1; i >= 0; i-- {
+		if e := s.events[i]; e.TaskID == taskID && e.Kind == EventQuestionAsked && e.Detail["source"] == SourceProductionHeld {
+			detail := maps.Clone(e.Detail)
+			detail["info"] = info
+			s.events[i].Detail = detail
+			break
+		}
+	}
+	return nil
+}
+
 func (s *fakeStore) SetQuestionProposal(ctx context.Context, taskID string, caseID int64, beside bool, recommendation string, preselected map[string]any) error {
 	if !beside {
 		for i := len(s.intakeEvents) - 1; i >= 0; i-- {
@@ -1608,6 +1628,20 @@ func (s *fakeStore) SetCaseFact(ctx context.Context, id int64, key, value string
 		facts[key] = value
 	}
 	s.cases[i].Facts = facts
+	return nil
+}
+
+func (s *fakeStore) SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error {
+	i := slices.IndexFunc(s.cases, func(c Case) bool { return c.ID == id && (c.Status == CaseOpen || c.Status == CaseAtHuman) })
+	if i < 0 {
+		return fmt.Errorf("live case %d: %w", id, ErrNotFound)
+	}
+	merged := maps.Clone(s.cases[i].Facts)
+	if merged == nil {
+		merged = map[string]any{}
+	}
+	maps.Copy(merged, facts)
+	s.cases[i].Facts = merged
 	return nil
 }
 
