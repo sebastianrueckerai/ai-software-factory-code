@@ -109,6 +109,7 @@ func newHeldRig(t *testing.T, state string) heldRig {
 		t.Fatalf("NewestAskCase = %+v, %v", c, err)
 	}
 	h.caseID, h.cardID = c.ID, card.ID
+	g.r.forgejo = h.forge.srv(t)
 	return h
 }
 
@@ -199,6 +200,25 @@ func TestRung2DeployNowRunsOrProposesByLevel(t *testing.T) {
 			if !tc.runs {
 				if len(h.stub.calls) != 0 || c.Status != CaseAtHuman || !strings.HasPrefix(out.Text, "Proposed deploy_now on ") {
 					t.Errorf("calls %+v, case %s, text %q; want none, at the human, a proposal", h.stub.calls, c.Status, out.Text)
+				}
+				events, err := h.s.TaskEvents(context.Background(), h.cardID, 100)
+				if err != nil {
+					t.Fatal(err)
+				}
+				var asked []Event
+				for _, e := range events {
+					if e.Kind == EventQuestionAsked {
+						asked = append(asked, e)
+					}
+				}
+				if len(asked) != 1 {
+					t.Fatalf("%d question_asked rows on the ask, want the keeper's one", len(asked))
+				}
+				if pre, _ := asked[0].Detail["preselected"].(map[string]any); pre["action"] != ActDeployNow {
+					t.Errorf("preselected %v, want deploy_now", asked[0].Detail["preselected"])
+				}
+				if len(h.forge.comments) != 1 || !strings.Contains(h.forge.comments[0], "The factory agent proposes deploy_now") {
+					t.Errorf("comments %q, want one naming the proposal", h.forge.comments)
 				}
 				return
 			}

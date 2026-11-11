@@ -419,3 +419,19 @@ func TestHoldAskDeployAnywayReachesActFromTheChat(t *testing.T) {
 		})
 	}
 }
+
+// A wake turn's Deploy anyway at assisted reaches Act on rung 2 as the
+// proposal, with no release run ahead of it.
+func TestAWakeTurnsDeployAnywayIsActsProposalAtAssisted(t *testing.T) {
+	r, _, deploys, _ := holdAskRig(t)
+	r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
+	r.actProposes = true
+	_, s := r.loggedIn(t)
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAssisted, wake: true, birth: "wake_ask"}
+	if _, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.ActDeployNow, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(*deploys) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.ActDeployNow {
+		t.Errorf("DeployNow calls %v, Act calls %+v; want no release and one deploy_now on rung 2", *deploys, r.acted)
+	}
+}
