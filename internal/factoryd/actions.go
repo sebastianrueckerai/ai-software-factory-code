@@ -344,9 +344,9 @@ var Actions = []Action{
 	}},
 	{Name: ActSalvage, Rungs: rungs(3), Applies: func(f CaseFacts, _ Resolution) string {
 		switch {
-		case f.Final != "":
-			return "this card ended " + f.Final + ": there is no run left to salvage"
-		case f.Kind == CaseMonitorFlag && f.Flag == "wait_over_bound" && f.Wait == "run_quiet", f.RunGone:
+		case f.Final != "" && !f.RunStrays:
+			return "this card ended " + f.Final + " and no run of it is left to end"
+		case f.RunStrays, f.Kind == CaseMonitorFlag && f.Flag == "wait_over_bound" && f.Wait == "run_quiet", f.RunGone:
 			return ""
 		}
 		return "salvage ends a run that neither moves nor answers: the monitor's run_quiet flag, or a live card whose workflow is gone, opens it"

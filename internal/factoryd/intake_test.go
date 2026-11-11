@@ -147,9 +147,10 @@ type fakeWorkflows struct {
 	signalFails  int      // Signal fails this many calls first
 	onStart      func(taskID string)
 	routineRuns  []RoutineRunInput
-	reopens      []reopenCall    // the reopens that started a run
-	reopenFails  int             // Reopen fails this many calls first
-	terminated   []string        // "<task> <reason>" per Terminate
+	reopens      []reopenCall // the reopens that started a run
+	reopenFails  int          // Reopen fails this many calls first
+	terminated   []string     // "<task> <reason>" per Terminate
+	aliveErr     error
 	terminateErr error           // returned by Terminate when set
 	gone         map[string]bool // tasks whose workflow does not run
 }
@@ -163,6 +164,9 @@ func (w *fakeWorkflows) Terminate(ctx context.Context, taskID, reason string) er
 }
 
 func (w *fakeWorkflows) Alive(ctx context.Context, taskID string) (bool, error) {
+	if w.aliveErr != nil {
+		return false, w.aliveErr
+	}
 	return !w.gone[taskID], nil
 }
 

@@ -610,3 +610,29 @@ func TestTemporalTerminate(t *testing.T) {
 		})
 	}
 }
+
+func TestTemporalAlive(t *testing.T) {
+	info := func(s enumspb.WorkflowExecutionStatus) *workflowservice.DescribeWorkflowExecutionResponse {
+		return &workflowservice.DescribeWorkflowExecutionResponse{WorkflowExecutionInfo: &workflowpb.WorkflowExecutionInfo{Status: s}}
+	}
+	for name, tc := range map[string]struct {
+		res     *workflowservice.DescribeWorkflowExecutionResponse
+		err     error
+		alive   bool
+		wantErr bool
+	}{
+		"running":    {info(enumspb.WORKFLOW_EXECUTION_STATUS_RUNNING), nil, true, false},
+		"terminated": {info(enumspb.WORKFLOW_EXECUTION_STATUS_TERMINATED), nil, false, false},
+		"missing":    {nil, serviceerror.NewNotFound("no such workflow"), false, false},
+		"outage":     {nil, errors.New("frontend down"), false, true},
+	} {
+		t.Run(name, func(t *testing.T) {
+			c := &mocks.Client{}
+			c.On("DescribeWorkflowExecution", mock.Anything, "task-t1", "").Return(tc.res, tc.err)
+			alive, err := TemporalWorkflows{Client: c}.Alive(context.Background(), "t1")
+			if alive != tc.alive || (err != nil) != tc.wantErr {
+				t.Fatalf("Alive = %v, %v; want %v, error %v", alive, err, tc.alive, tc.wantErr)
+			}
+		})
+	}
+}
