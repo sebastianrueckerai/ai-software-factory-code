@@ -16,11 +16,11 @@ import (
 const unjudgedSuffix = " (not judged, judgment budget spent)"
 
 // askOf and infoOf are the question the face asked on case id.
-func (g rungRig) askOf(t *testing.T, id int64) string { return g.asked(t, id, "ask") }
+func (g rungRig) askOf(t *testing.T, id int64) string { return g.askedOf(t, id, "ask") }
 
-func (g rungRig) infoOf(t *testing.T, id int64) string { return g.asked(t, id, "info") }
+func (g rungRig) infoOf(t *testing.T, id int64) string { return g.askedOf(t, id, "info") }
 
-func (g rungRig) asked(t *testing.T, id int64, key string) string {
+func (g rungRig) askedOf(t *testing.T, id int64, key string) string {
 	t.Helper()
 	for _, e := range g.asks(t) {
 		if n, _ := toInt(e.Detail["case_id"]); int64(n) == id {
@@ -84,6 +84,9 @@ func TestSpentJudgmentBudgetFacesTheHumanUnjudged(t *testing.T) {
 			t.Errorf("outcome %+v, case %d %s %q; want at the human with one mark", out, c.ID, c.Status, c.Problem)
 		}
 		if out.CaseID == a.CaseID {
+			if !strings.HasSuffix(g.askedOf(t, c.ID, "question"), unjudgedSuffix) {
+				t.Errorf("the question of case %d does not end with the mark: %q", c.ID, g.askedOf(t, c.ID, "question"))
+			}
 			if !strings.HasSuffix(g.askOf(t, c.ID), unjudgedSuffix) {
 				t.Errorf("the ask of case %d does not end with the mark: %q", c.ID, g.askOf(t, c.ID))
 			}
@@ -246,36 +249,50 @@ func TestJudgedCaseIsNotMarkedUnjudged(t *testing.T) {
 }
 
 // Many writers at one limit: the count and the step are one write, so a
-// card gets exactly limit steps of rung 1 across its cases.
+// card gets exactly limit steps of rung 1 across its cases. The writers
+// wait at a barrier so they all reach the count together; 20 cards run
+// the race.
 func TestRung1StepsStopAtTheLimitUnderRace(t *testing.T) {
 	g := newRungRig(t, "success")
 	ctx := context.Background()
-	var cases []Case
-	for i := range 4 {
-		c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: fmt.Sprint("k", i), Status: CaseOpen, Problem: "p"})
-		if err != nil {
+	for round := range 20 {
+		id := fmt.Sprint("race", round)
+		if err := g.s.CreateTask(ctx, Task{ID: id, Kind: "agent", Status: "running", Objective: "x", Repository: "demo-app/demo-app", Track: policy.TrackDirect, Size: "medium", BudgetEUR: 3}); err != nil {
 			t.Fatal(err)
 		}
-		cases = append(cases, c)
-	}
-	var wg sync.WaitGroup
-	var started atomic.Int32
-	for i := range 12 {
-		wg.Add(1)
-		go func() {
-			defer wg.Done()
-			_, atLimit, err := g.s.AppendRung1Step(ctx, "t1", 3, CaseStep{CaseID: cases[i%4].ID, Rung: 1, Actor: CheckinDecider})
+		var cases []Case
+		for i := range 4 {
+			c, _, err := g.s.OpenCase(ctx, Case{TaskID: id, Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: fmt.Sprint("k", i), Status: CaseOpen, Problem: "p"})
 			if err != nil {
-				t.Error(err)
+				t.Fatal(err)
 			}
-			if !atLimit {
-				started.Add(1)
-			}
-		}()
-	}
-	wg.Wait()
-	if started.Load() != 3 {
-		t.Fatalf("%d steps written, want 3", started.Load())
+			cases = append(cases, c)
+		}
+		var ready, done sync.WaitGroup
+		start := make(chan struct{})
+		var started atomic.Int32
+		for i := range 12 {
+			ready.Add(1)
+			done.Add(1)
+			go func() {
+				defer done.Done()
+				ready.Done()
+				<-start
+				_, atLimit, err := g.s.StartRung1Step(ctx, id, 3, CaseStep{CaseID: cases[i%4].ID, Rung: 1, Actor: CheckinDecider})
+				if err != nil {
+					t.Error(err)
+				}
+				if !atLimit {
+					started.Add(1)
+				}
+			}()
+		}
+		ready.Wait()
+		close(start)
+		done.Wait()
+		if started.Load() != 3 {
+			t.Fatalf("card %s: %d steps written, want 3", id, started.Load())
+		}
 	}
 }
 
@@ -319,5 +336,133 @@ func TestFailedMoneyCardDoesNotHoldTheFace(t *testing.T) {
 	var made int
 	if err := g.s.db.QueryRowContext(ctx, `SELECT count(*) FROM tasks WHERE source = $1 AND parent_task = $2`, SourceChatBudget, chat.ID).Scan(&made); err != nil || made != 1 {
 		t.Fatalf("%d money cards after the loop, %v; want 1", made, err)
+	}
+}
+
+// The stop a failed filing records holds the suggestion the console
+// computes for the same chat task: 7 EUR over the last 7 days on the 20th,
+// 11 days left is 7/7*11 = 11.
+func TestFailedMoneyCardRecordsTheConsolesSuggestion(t *testing.T) {
+	g := newRungRig(t, "success")
+	g.r.cfg.Prices = nil
+	g.r.store = projectStore{g.s}
+	ctx := context.Background()
+	now := time.Date(2026, 11, 20, 0, 0, 0, 0, time.UTC)
+	g.r.now = func() time.Time { return now }
+	dead := &Forgejo{BaseURL: "http://127.0.0.1:1", BotUser: "factory-agent", BotPassword: "pw"}
+	g.r.ChatBudget = &ChatBudgetCards{Store: projectStore{g.s}, Forgejo: dead, Timeline: g.r.timeline}
+	chat := g.spendChat(t)
+	task, _, _ := g.r.task(ctx, "t1")
+	g.r.fileJudgmentCard(ctx, task, chat)
+	stops, err := g.s.TaskEventsOfKind(ctx, chat.ID, EventChatBudgetSpent, 1)
+	if err != nil || len(stops) != 1 {
+		t.Fatalf("stops %+v, %v", stops, err)
+	}
+	spent7, _ := g.s.TaskSpendSince(ctx, chat.ID, now.Add(-7*24*time.Hour))
+	if got, want := stops[0].Detail["suggest_eur"], SuggestFund(spent7, now); got != want || want < 1 {
+		t.Fatalf("suggest_eur = %v, want %v (at least 1)", got, want)
+	}
+}
+
+// A repository with no project faces the case unjudged with a step naming
+// it, once however often the case climbs.
+func TestUnreadJudgmentBudgetFacesTheCase(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	task, _, _ := g.r.task(ctx, "t1")
+	task.Repository = "other/unknown"
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "other/unknown", Kind: CaseOther, StateKey: "u", Status: CaseOpen, Problem: "stuck"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		up, err := g.r.spentJudgment(ctx, task, c)
+		if err != nil || up == nil || !strings.Contains(up.Found, "other/unknown names no project") {
+			t.Fatalf("hand-up %+v, %v; want it naming the missing project", up, err)
+		}
+	}
+	n := 0
+	for _, s := range g.steps(t, c.ID) {
+		if s.Rung == 0 && strings.HasPrefix(s.Found, markJudgmentUnread) {
+			n++
+		}
+	}
+	if n != 1 {
+		t.Fatalf("%d steps, want 1", n)
+	}
+}
+
+// A card at its count gets one step of rung 0 for the count however many
+// passes the case makes.
+func TestCountReachedAddsOneStep(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "n", Status: CaseOpen, Problem: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	for range 2 {
+		if _, err := g.r.countReached(ctx, c, 6); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if n := len(g.steps(t, c.ID)); n != 1 {
+		t.Fatalf("%d steps, want 1", n)
+	}
+}
+
+// A card on a repository with no project trips: no rung runs and the
+// face's ask ends with the unreadable mark.
+func TestUnreadJudgmentBudgetEndToEnd(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	if err := g.s.CreateTask(ctx, Task{ID: "t3", Kind: "agent", Status: "running", Objective: "z", Repository: "other/unknown", Track: policy.TrackDirect, Size: "medium", BudgetEUR: 3}); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := g.s.db.ExecContext(ctx, `UPDATE tasks SET required_capabilities = '["coder"]'::jsonb WHERE id = 't3'`); err != nil {
+		t.Fatal(err)
+	}
+	out, err := g.r.OpenTrip(ctx, TripInput{TaskID: "t3", Reason: tripCap}, tripAttempt{N: 1})
+	if err != nil {
+		t.Fatal(err)
+	}
+	g.settle()
+	if out.Rung != 3 || g.chat.calls != 0 {
+		t.Fatalf("outcome %+v, %d conversations; want the face and none", out, g.chat.calls)
+	}
+	asks, err := g.s.TaskEventsOfKind(ctx, "t3", EventQuestionAsked, 1)
+	if err != nil || len(asks) != 1 {
+		t.Fatalf("asks %+v, %v", asks, err)
+	}
+	if ask, _ := asks[0].Detail["ask"].(string); !strings.HasSuffix(ask, "(not judged, judgment budget unreadable)") {
+		t.Fatalf("ask = %q, want the unreadable mark", ask)
+	}
+}
+
+// The unread finding is scrubbed: a repository text carrying URL userinfo
+// and a bearer value reaches the step masked.
+func TestUnreadJudgmentFindingIsMasked(t *testing.T) {
+	g := newRungRig(t, "success")
+	ctx := context.Background()
+	task, _, _ := g.r.task(ctx, "t1")
+	task.Repository = "https://user:pass@host.example/x Authorization: Bearer abc123"
+	c, _, err := g.s.OpenCase(ctx, Case{TaskID: "t1", Repository: "demo-app/demo-app", Kind: CaseOther, StateKey: "m", Status: CaseOpen, Problem: "p"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	up, err := g.r.spentJudgment(ctx, task, c)
+	if err != nil || up == nil {
+		t.Fatalf("hand-up %+v, %v", up, err)
+	}
+	var found string
+	for _, s := range g.steps(t, c.ID) {
+		if s.Rung == 0 && strings.HasPrefix(s.Found, markJudgmentUnread) {
+			found = s.Found
+		}
+	}
+	for _, bad := range []string{"user:pass", "abc123"} {
+		if found == "" || strings.Contains(found, bad) || strings.Contains(up.Found, bad) {
+			t.Fatalf("finding %q, hand-up %q: want both masked of %s", found, up.Found, bad)
+		}
 	}
 }

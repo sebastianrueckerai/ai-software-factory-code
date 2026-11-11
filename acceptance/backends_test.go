@@ -1469,7 +1469,7 @@ func (s *acceptanceStore) EnsureChatTask(context.Context, string, string, float6
 
 func (s *acceptanceStore) SetCaseStatus(context.Context, int64, string) error { return nil }
 
-func (s *acceptanceStore) AppendRung1Step(context.Context, string, int, factoryd.CaseStep) (int64, bool, error) {
+func (s *acceptanceStore) StartRung1Step(context.Context, string, int, factoryd.CaseStep) (int64, bool, error) {
 	return 0, false, nil
 }
 
@@ -1497,11 +1497,21 @@ func (s *acceptanceStore) MonitorEvents(context.Context, int64, []string, int) (
 
 func (s *acceptanceStore) SetMonitorCursor(context.Context, int64) error { return nil }
 
-func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep) error {
+func (s *acceptanceStore) ResolveCase(context.Context, int64, factoryd.CaseResolution, *factoryd.CaseDraw, *factoryd.CaseStep, *factoryd.TaskSignal) error {
 	return nil
 }
 
 func (s *acceptanceStore) WithdrawCase(context.Context, int64, string) error { return nil }
+
+func (s *acceptanceStore) StartRungStep(context.Context, factoryd.CaseStep) (int64, error) {
+	return 0, nil
+}
+
+func (s *acceptanceStore) PendingCaseSignals(context.Context, time.Time, int) ([]factoryd.PendingSignal, error) {
+	return nil, nil
+}
+
+func (s *acceptanceStore) SettleCaseSignal(context.Context, int64, string, bool) error { return nil }
 
 func (s *acceptanceStore) CaseByID(context.Context, int64) (factoryd.Case, error) {
 	return factoryd.Case{}, nil

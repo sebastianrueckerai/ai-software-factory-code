@@ -40,9 +40,9 @@ func TestChatBudgetCards(t *testing.T) {
 	}
 	events, _ := store.IntakeEvents(ctx, open[0].ID)
 	want := HumanQuestion{
-		Ask:     "The chat budget of 50.00 EUR for 2026-11 is spent: raise it?",
-		Why:     "The chat spent 49.96 EUR of its budget of 50.00 EUR in 2026-11. Rung 2 of the ladder answers no stopped card through the chat until the chat budget is raised or the UTC month turns, so every stop reaches Needs you.",
-		Info:    "The action: raise the chat budget on the project screen, or press Fund and go on in the chat thread that hit the stop. Only a human who approves the project can do either. The raise ends this card.",
+		Ask:     "The judgment budget of 50.00 EUR for 2026-11 is spent: raise it?",
+		Why:     "The project spent 49.96 EUR of its judgment budget of 50.00 EUR in 2026-11. The judgment budget pays the chat, rung 1, rung 2 and the check-in's judgment. Until it is raised or the UTC month turns, no rung judges a stopped card, so every stop reaches Needs you unjudged.",
+		Info:    "The action: raise the judgment budget on the project screen, or press Fund and go on in the chat thread that hit the stop. Only a human who approves the project can do either. The raise ends this card.",
 		Choices: []QuestionChoice{{AnswerClose, "Decided, close"}},
 	}
 	if len(events) != 1 || events[0].Question == nil || !reflect.DeepEqual(*events[0].Question, want) {
@@ -63,7 +63,7 @@ func TestChatBudgetCards(t *testing.T) {
 	if got, _, _ := store.Task(ctx, open[0].ID); got.Status != "done" {
 		t.Fatalf("after the raise the card is %s, want done", got.Status)
 	}
-	if got := closeComments(t, store, open[0].ID); !slices.Equal(got, []string{"The chat budget is 60.00 EUR for 2026-11: the card closes."}) {
+	if got := closeComments(t, store, open[0].ID); !slices.Equal(got, []string{"The judgment budget is 60.00 EUR for 2026-11: the card closes."}) {
 		t.Fatalf("close comments = %q", got)
 	}
 
@@ -172,5 +172,28 @@ func TestChatBudgetCardsFileNothingAfterARaise(t *testing.T) {
 	open, _ := store.ListTasksByStatus(ctx, "waiting-human")
 	if len(open) != 0 || len(fj.issues) != 0 {
 		t.Fatalf("a snapshot at 50 of a chat raised to 60 filed %d cards and %d issues, want none", len(open), len(fj.issues))
+	}
+}
+
+// The fund a stop suggests carries the chat's daily rate over the last 7
+// days, or the month's days so far when fewer, a day at least, to the
+// next UTC month, in whole euros and at least 1.
+func TestSuggestFund(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		spent7 float64
+		now    time.Time
+		want   float64
+	}{
+		{"1 a day, 11 days left", 7, time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), 11},
+		{"under 1 euro", 0.5, time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), 1},
+		{"nothing spent", 0, time.Date(2026, 9, 20, 0, 0, 0, 0, time.UTC), 1},
+		{"the live stop: 5.47 over 7 days, 3 days 1h20 left", 5.47, time.Date(2026, 10, 28, 22, 40, 0, 0, time.UTC), 3},
+		{"day 3: 3 over 2 days, 29 days left", 3, time.Date(2026, 10, 3, 0, 0, 0, 0, time.UTC), 44},
+		{"6 hours in: 2 over a day, 29.75 days left", 2, time.Date(2026, 11, 1, 6, 0, 0, 0, time.UTC), 60},
+	} {
+		if got := SuggestFund(tc.spent7, tc.now); got != tc.want {
+			t.Errorf("%s: SuggestFund(%v, %s) = %v, want %v", tc.name, tc.spent7, tc.now, got, tc.want)
+		}
 	}
 }
