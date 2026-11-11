@@ -239,6 +239,7 @@ footer#live:empty { display: none; }
 .lane.five #needs-you .card.case > .decide { margin: 8px 0 0; }
 .lane.five #needs-you .card.case .need-foot { margin: 6px 0 0; font: 11px/1.6 var(--font-mono); }
 .lane.five #needs-you .card.case > .carousel { grid-row: 99; display: inline-flex; align-items: center; justify-content: flex-end; gap: 2px; margin: 6px 0 0; padding-top: 4px; border-top: 1px solid color-mix(in srgb, var(--need) 35%, var(--line)); }
+.lane.five #needs-you .card.case > .approval { grid-row: 100; }
 .lane.five #needs-you .card.case > .carousel button { width: 24px; height: 24px; padding: 0; font-size: 16px; line-height: 1; }
 .lane.five #needs-you .card.case > .carousel .pos { min-width: 7ch; text-align: center; color: var(--text); font: 11px/1 var(--font-mono); font-variant-numeric: tabular-nums; }
 @media (max-width: 899px) {
