@@ -1138,4 +1138,5 @@ func TestReplayCoverageNamesEveryStuckPointAndIncident(t *testing.T) {
 
 func (w replayWorkflows) Terminate(context.Context, string, string) error { return nil }
 
-func (w replayWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }
+func (w replayWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (w replayWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }

@@ -1878,4 +1878,5 @@ func (s *accBatchTasks) PlanMerged(context.Context, string) (bool, error) { retu
 
 func (w batchWorkflows) Terminate(context.Context, string, string) error { return nil }
 
-func (w batchWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }
+func (w batchWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (w batchWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }

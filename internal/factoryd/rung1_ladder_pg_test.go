@@ -1862,8 +1862,10 @@ func TestModelReviewOfTheSameHeadReusesTheNewestVerdict(t *testing.T) {
 
 func (h heldSignals) Terminate(context.Context, string, string) error { return nil }
 
-func (h heldSignals) Alive(context.Context, string) (bool, error) { return true, nil }
+func (h heldSignals) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (h heldSignals) RunningTasks(context.Context) ([]string, error) { return nil, nil }
 
 func (d downSignals) Terminate(context.Context, string, string) error { return nil }
 
-func (d downSignals) Alive(context.Context, string) (bool, error) { return true, nil }
+func (d downSignals) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (d downSignals) RunningTasks(context.Context) ([]string, error) { return nil, nil }

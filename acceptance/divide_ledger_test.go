@@ -730,4 +730,5 @@ func (g *accGateway) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 
 func (accWorkflows) Terminate(context.Context, string, string) error { return nil }
 
-func (accWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }
+func (accWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (accWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }

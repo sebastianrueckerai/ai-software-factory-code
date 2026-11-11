@@ -614,4 +614,5 @@ func TestAdmitRecordsTheRefusalAndClearsItOnAdmission(t *testing.T) {
 
 func (w *recordingWorkflows) Terminate(context.Context, string, string) error { return nil }
 
-func (w *recordingWorkflows) Alive(context.Context, string) (bool, error) { return true, nil }
+func (w *recordingWorkflows) Alive(context.Context, string) (bool, error)    { return true, nil }
+func (w *recordingWorkflows) RunningTasks(context.Context) ([]string, error) { return nil, nil }
