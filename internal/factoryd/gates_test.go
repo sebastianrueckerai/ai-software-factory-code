@@ -4043,7 +4043,7 @@ func TestApproveMergeLeavesOutAStageTheProcessDoesNotList(t *testing.T) {
 	}
 }
 
-func (w *recordedSignals) Terminate(context.Context, string, string) error { return nil }
+func (w *recordedSignals) Terminate(context.Context, string, string, string) error { return nil }
 
-func (w *recordedSignals) Alive(context.Context, string) (bool, error)    { return true, nil }
-func (w *recordedSignals) RunningTasks(context.Context) ([]string, error) { return nil, nil }
+func (w *recordedSignals) Alive(context.Context, string) (bool, error)       { return true, nil }
+func (w *recordedSignals) RunningRuns(context.Context) ([]RunningRun, error) { return nil, nil }

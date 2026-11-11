@@ -936,7 +936,7 @@ func (r *Runner) salvage(ctx context.Context, t Task, f CaseFacts, in ActInput) 
 	if err := r.Finish(ctx, t.ID, "closed", fmt.Sprintf("salvaged into #%d", succ.IssueNumber)); err != nil {
 		return nil, fmt.Errorf("the successor #%d is filed, but card %s did not close and its run goes on: press again: %s", succ.IssueNumber, cardName(t), r.scrub(err.Error()))
 	}
-	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "salvaged by "+in.By); err != nil {
+	if err := r.cfg.Workflows.Terminate(ctx, t.ID, "", "salvaged by "+in.By); err != nil {
 		return []CaseAction{{Action: ActSalvage, Args: map[string]any{"successor": id, "issue": succ.IssueNumber},
 			Result: fmt.Sprintf("Salvaged: the card %s is closed and #%d filed; the run did not end: %s. The heal pass ends it within %s.",
 				cardName(t), succ.IssueNumber, r.scrub(err.Error()), r.cfg.Policy().WaitsOf(t.Repository).RunQuiet)}}, nil
