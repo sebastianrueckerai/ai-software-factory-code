@@ -776,36 +776,141 @@ func parseCheckinAnswer(text string, ask *CheckInAsk) (checkinAnswer, error) {
 // (checkin_time_cap). Every call lands in the record.
 func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *CheckInAsk, parent []byte, chat checkinChat, tools podTools, callsLeft int, eurLeft float64, sessions, handoverCap int, timeCap time.Duration) CheckInOutcome {
 	start := time.Now()
-	ctx, cancel := context.WithTimeout(ctx, timeCap)
-	defer cancel()
 	rec := &CheckInRecord{Model: alias, ParentSession: ask.ParentSession, Moment: ask.Moment, TailBytes: len(parent)}
 	defer func() { rec.Duration = time.Since(start) }()
+	var parsed checkinAnswer
+	end := converse(ctx, chat, tools, taskID, alias, conversation{
+		System:    checkinSystemFor(ask.Moment, ask.Replan),
+		Statement: checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap),
+		Evidence:  checkinToolsFor(ask.Moment),
+		Answer:    momentAnswerTool(ask),
+		Parse: func(text string) error {
+			a, err := parseCheckinAnswer(text, ask)
+			parsed = a
+			return err
+		},
+		CallCap: callsLeft,
+		TimeCap: timeCap,
+		Scrub:   r.scrub,
+	})
+	rec.StatementBytes = end.StatementBytes
+	rec.Calls = end.Calls
+	rec.ToolCalls = end.ToolCalls
+	rec.CostEUR = end.CostEUR
+	stop := func(kind, reason string) CheckInOutcome {
+		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, kind, reason
+		return CheckInOutcome{Decision: CheckHuman, ReasonKind: kind, Reason: reason, Record: rec}
+	}
+	switch end.Kind {
+	case convTimeCap:
+		return stop(CheckTimeCap, checkinCapStop(checkinTimeCapStop, timeCap.String()))
+	case convCallCap:
+		return stop(CheckCallCap, checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft)))
+	case convRefused:
+		rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+end.Detail
+		return CheckInOutcome{Decision: CheckHandover, Record: rec}
+	case convUnreadable:
+		return stop(CheckUnreadable, "check-in answer unreadable: "+end.Detail)
+	}
+	return checkinOutcome(rec, ask, parsed, handoverCap, sessions)
+}
+
+// conversation is one forced-call conversation: the persona, the
+// statement that opens it, the evidence tools every call posts beside the
+// answer tool, the parser of the answer's arguments, and the caps.
+type conversation struct {
+	System, Statement string
+	Evidence          []CheckinTool
+	Answer            CheckinTool
+	Parse             func(text string) error
+	CallCap           int
+	TimeCap           time.Duration
+	Scrub             func(string) string
+	// RepairPastCap gives a refusal of the forced last call its one repair
+	// call past the call cap.
+	RepairPastCap bool
+	// DueOwnLine puts the calls left and the answer's due time on a line of
+	// their own after the statement, which then ends at its own sentence.
+	DueOwnLine bool
+}
+
+type convKind int
+
+const (
+	convAnswered convKind = iota
+	convTimeCap
+	convCallCap
+	convRefused
+	convUnreadable
+)
+
+// convEnd is how a conversation ended. Detail is the scrubbed text of the
+// last refusal or parse error, Refusals every parse error in order, and
+// Evidence the evidence calls among Calls.
+type convEnd struct {
+	Kind           convKind
+	Detail         string
+	Refusals       []string
+	Calls          []CheckCall
+	Evidence       []CheckCall
+	ToolCalls      int
+	CostEUR        float64
+	StatementBytes int
+}
+
+// converse drives a conversation: the statement opens it, each evidence
+// call the model makes is executed through tools (a tool it was not posted
+// is refused, naming the posted ones) until the answer tool's call
+// arrives, and the answer is parsed. An answer the parser refuses gets one
+// repair round, then ends the conversation unreadable; a refusal on the
+// last call ends it at once unless RepairPastCap gives it one repair call
+// past the call cap. Every call posts the answer tool beside the evidence
+// tools; the
+// last call posts only it and forces it with tool_choice. Any other tool
+// asked for on the last call is the call cap's end. The last call comes at
+// the call cap or once an evidence call as long as the longest so far
+// would not end before the answer is due, whichever is first, and an
+// evidence call still running when the answer is due is cut. A call the
+// time cap cuts ends it at the time cap. A provider that refuses a call
+// ends it refused. Every call lands in the result.
+func converse(ctx context.Context, chat checkinChat, tools podTools, taskID, alias string, c conversation) convEnd {
+	start := time.Now()
+	ctx, cancel := context.WithTimeout(ctx, c.TimeCap)
+	defer cancel()
+	var end convEnd
 	var longest time.Duration
-	due := func() time.Time { return start.Add(checkinAnswerDue(timeCap, longest)) }
-	conv := checkinStatement(ask, parent, callsLeft, eurLeft, handoverCap) + checkinDueLine(time.Until(due()))
-	rec.StatementBytes = len(conv)
-	timeStop := func() CheckInOutcome {
-		reason := checkinCapStop(checkinTimeCapStop, timeCap.String())
-		rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckTimeCap, reason
-		return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckTimeCap, Reason: reason, Record: rec}
+	due := func() time.Time { return start.Add(checkinAnswerDue(c.TimeCap, longest)) }
+	dueLine := func() string {
+		if c.DueOwnLine {
+			return fmt.Sprintf("\nCalls left %d; your answer is due within %s.", c.CallCap, max(0, time.Until(due())).Round(time.Second))
+		}
+		return checkinDueLine(time.Until(due()))
+	}
+	conv := c.Statement + dueLine()
+	end.StatementBytes = len(conv)
+	finish := func(k convKind, detail string) convEnd {
+		end.Kind, end.Detail = k, detail
+		return end
 	}
 
 	calls, repairs := 0, 0
+	told := false
 	for {
-		if time.Since(start) >= timeCap {
-			return timeStop()
+		if time.Since(start) >= c.TimeCap {
+			return finish(convTimeCap, "")
 		}
-		last := calls >= callsLeft-1 || time.Until(due()) < longest
-		if last {
+		last := calls >= c.CallCap-1 || time.Until(due()) < longest
+		if last && !told {
+			told = true
 			conv += "\n\nThis is your last call: answer now through the answer tool."
 		}
-		req := CheckinRequest{System: checkinSystemFor(ask.Moment, ask.Replan), Input: conv}
+		req := CheckinRequest{System: c.System, Input: conv}
 		callCtx, cancelCall := ctx, context.CancelFunc(func() {})
 		if last {
-			req.Tools = []CheckinTool{momentAnswerTool(ask)}
-			req.ToolChoice = forcedToolChoice(checkinAnswerTool)
+			req.Tools = []CheckinTool{c.Answer}
+			req.ToolChoice = forcedToolChoice(c.Answer.Name)
 		} else {
-			req.Tools = slices.Concat(checkinToolsFor(ask.Moment), []CheckinTool{momentAnswerTool(ask)})
+			req.Tools = slices.Concat(c.Evidence, []CheckinTool{c.Answer})
 			callCtx, cancelCall = context.WithDeadline(ctx, due())
 		}
 		calls++
@@ -814,48 +919,49 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 		cancelCall()
 		d := time.Since(at)
 		longest = max(longest, d)
-		rec.Calls = append(rec.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: d})
-		rec.CostEUR += resp.UsageEUR
+		end.Calls = append(end.Calls, CheckCall{Name: alias, ResultBytes: len(resp.Text), Duration: d})
+		end.CostEUR += resp.UsageEUR
 		if err != nil {
-			if time.Since(start) >= timeCap {
-				return timeStop()
+			if time.Since(start) >= c.TimeCap {
+				return finish(convTimeCap, "")
 			}
 			if !last && ctx.Err() == nil && !time.Now().Before(due()) {
 				continue // the evidence call ran into the answer's reserve
 			}
-			rec.Decision, rec.Reason = CheckHandover, "check-in calls refused: "+oneLine(r.scrub(err.Error()))
-			return CheckInOutcome{Decision: CheckHandover, Record: rec}
+			return finish(convRefused, oneLine(c.Scrub(err.Error())))
 		}
 		answer := resp.Text
 		if resp.ToolName != "" {
-			if resp.ToolName != checkinAnswerTool {
+			if resp.ToolName != c.Answer.Name {
 				if last {
-					reason := checkinCapStop(checkinCallCapStop, fmt.Sprintf("%d calls", callsLeft))
-					rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckCallCap, reason
-					return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckCallCap, Reason: reason, Record: rec}
+					return finish(convCallCap, "")
 				}
 				args, _ := json.Marshal(resp.ToolArgs)
 				at := time.Now()
 				var out string
 				var cut bool
 				var terr error
-				if resp.ToolErr != "" {
-					excerpt := textutil.Truncate(r.scrub(resp.ToolRaw), 200)
+				if !slices.ContainsFunc(c.Evidence, func(t CheckinTool) bool { return t.Name == resp.ToolName }) {
+					terr = fmt.Errorf("%s is not a tool of this conversation; its tools are %s", c.Scrub(resp.ToolName), textutil.AndList(append(toolNames(c.Evidence), c.Answer.Name)))
+				} else if resp.ToolErr != "" {
+					excerpt := textutil.Truncate(c.Scrub(resp.ToolRaw), 200)
 					args = []byte(excerpt)
 					terr = fmt.Errorf("the arguments are not one JSON object (%s): %s; call %s again with one JSON object of its parameters: %s",
-						r.scrub(resp.ToolErr), excerpt, resp.ToolName, toolShape(checkinToolsFor(ask.Moment), resp.ToolName))
+						c.Scrub(resp.ToolErr), excerpt, resp.ToolName, toolShape(c.Evidence, resp.ToolName))
 				} else {
 					out, cut, terr = tools.Tool(ctx, resp.ToolName, resp.ToolArgs)
 				}
 				d := time.Since(at)
 				if terr != nil {
-					out = "tool error: " + r.scrub(terr.Error())
+					out = "tool error: " + c.Scrub(terr.Error())
 				} else if cut {
 					out += "\n(output cut)"
 				}
-				rec.Calls = append(rec.Calls, CheckCall{Name: resp.ToolName, Args: textutil.Truncate(string(args), 512), ResultBytes: len(out), Duration: d})
-				rec.ToolCalls++
-				conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d, your answer due within %s)", resp.ToolName, args, out, callsLeft-calls, max(0, time.Until(due())).Round(time.Second))
+				call := CheckCall{Name: resp.ToolName, Args: textutil.Truncate(string(args), 512), ResultBytes: len(out), Duration: d}
+				end.Calls = append(end.Calls, call)
+				end.Evidence = append(end.Evidence, call)
+				end.ToolCalls++
+				conv += fmt.Sprintf("\n\ntool %s %s answered:\n%s\n(calls left %d, your answer due within %s)", resp.ToolName, args, out, c.CallCap-calls, max(0, time.Until(due())).Round(time.Second))
 				continue
 			}
 			// the answer tool's arguments are the answer, parsed here and
@@ -863,17 +969,17 @@ func (r *Runner) runCheckin(ctx context.Context, taskID, alias string, ask *Chec
 			args, _ := json.Marshal(resp.ToolArgs)
 			answer = string(args)
 		}
-		a, perr := parseCheckinAnswer(answer, ask)
+		perr := c.Parse(answer)
 		if perr == nil {
-			return checkinOutcome(rec, ask, a, handoverCap, sessions)
+			return finish(convAnswered, "")
 		}
-		if repairs == 1 || last {
-			reason := "check-in answer unreadable: " + oneLine(r.scrub(perr.Error()))
-			rec.Decision, rec.ReasonKind, rec.Reason = CheckHuman, CheckUnreadable, reason
-			return CheckInOutcome{Decision: CheckHuman, ReasonKind: CheckUnreadable, Reason: reason, Record: rec}
+		refusal := oneLine(c.Scrub(perr.Error()))
+		end.Refusals = append(end.Refusals, refusal)
+		if repairs == 1 || last && !c.RepairPastCap {
+			return finish(convUnreadable, refusal)
 		}
 		repairs++
-		conv += "\n\nYour last answer was unreadable: " + r.scrub(perr.Error()) + ". Answer again through the answer tool."
+		conv += "\n\nYour last answer was unreadable: " + c.Scrub(perr.Error()) + ". Answer again through the answer tool."
 	}
 }
 
@@ -1028,4 +1134,13 @@ func (g *checkinGateway) Call(ctx context.Context, taskID, alias string, in Chec
 		}
 	}
 	return resp, nil
+}
+
+// toolNames are the names of tools, in order.
+func toolNames(tools []CheckinTool) []string {
+	names := make([]string, len(tools))
+	for i, t := range tools {
+		names[i] = t.Name
+	}
+	return names
 }
