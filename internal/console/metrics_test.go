@@ -53,7 +53,7 @@ func metricsFiguresReport() factoryd.MetricsReport {
 // never renames or drops one.
 var metricsBodyKeys = []string{"repository", "from", "to", "deploys", "lead_time", "card_cycle", "throughput",
 	"change_failure", "reverted_refiled", "time_to_restore", "spend", "per_card", "tokens_per_card", "model_spend", "served_by", "tool_spend", "tool_mix",
-	"interventions", "escalations", "escalated_share", "escalations_handled", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
+	"interventions", "escalations", "escalated_share", "cases_per_card", "cases_by_rung", "human_wait", "case_money", "human_blocked", "review_acceptance", "self_deploys", "diff_size",
 	"chat_tool_work", "ci_duration", "session_time"}
 
 func TestProjectMetricsJSON(t *testing.T) {
@@ -557,7 +557,7 @@ func TestProjectMetricsAnswers403ForNonWriter(t *testing.T) {
 }
 
 // TestProjectMetricsPage pins the page's structure: the deck's five
-// sections and 22 row names, the window control, the measure, the open
+// sections and 25 row names, the window control, the measure, the open
 // page's word, and one figure rendered from the report.
 func TestProjectMetricsPage(t *testing.T) {
 	r := newRig(t)
@@ -568,10 +568,10 @@ func TestProjectMetricsPage(t *testing.T) {
 	}
 	body := rec.Body.String()
 	// every row's name carries its one-sentence explanation as a tooltip:
-	// the deck's 22 rows and the divide section's twelve panel rows (the
+	// the deck's 25 rows and the divide section's twelve panel rows (the
 	// panels' named detail rows carry no tooltip of their own)
-	if n := strings.Count(body, `class="mname" title="`); n != 37 {
-		t.Fatalf("%d row names carry a title, want 37", n)
+	if n := strings.Count(body, `class="mname" title="`); n != 40 {
+		t.Fatalf("%d row names carry a title, want 40", n)
 	}
 	wants := []string{
 		`class="page page-metrics"`,
@@ -579,7 +579,7 @@ func TestProjectMetricsPage(t *testing.T) {
 		"deploys / week", "lead time, push to live", "card cycle", "throughput",
 		"change failure", "reverted · refiled", "time to restore",
 		"spend / week", "per card, median", "tokens / card", "spend by model", "served by", "tools / week", "tool mix",
-		"interventions / card", "escalations", "escalations handled", "human-blocked", "review acceptance",
+		"interventions / card", "escalations", "cases / card", "resolved at each rung", "human wait, median", "spend after a case", "human-blocked", "review acceptance",
 		"self-deploys / week", "diff size, median", "chat tool work", "check share", "command share", "session time",
 		"How the project runs its work, over the window and against the one before.",
 		`aria-pressed="true">28 days`,
@@ -769,5 +769,22 @@ func TestSparkOutlier(t *testing.T) {
 	}
 	if lo != 5 || hi != 25 {
 		t.Errorf("y band = %.1f..%.1f, want 5..25", lo, hi)
+	}
+}
+
+func TestProjectMetricsCaseRow(t *testing.T) {
+	r := newRig(t)
+	rep := metricsFiguresReport()
+	rep.CasesPerCard = factoryd.Figure{Value: 2, Has: true}
+	rep.CasesByRung = factoryd.CasesByRung{Rung: [4]float64{0.25, 0.125, 0.125, 0.375}, Withdrawn: 0.125, Has: true}
+	rep.HumanWait = factoryd.Figure{Value: 1800000, Has: true}
+	rep.CaseMoney = factoryd.CaseMoneyFigure{AfterEUR: 0.84, ResolveEUR: 1.92, Has: true}
+	r.figures.report = rep
+	ck, _ := r.loggedIn(t)
+	body := r.do(httptest.NewRequest(http.MethodGet, "/projects/ai-software-factory-code/metrics", nil), ck).Body.String()
+	for _, want := range []string{`<span class="mval">2.0</span>`, `<span>rung 3</span><span class="mshare">38 %</span>`, `<span>withdrawn</span><span class="mshare">13 %</span>`, `€0.84 · €1.92`, mDur(1800000)} {
+		if !strings.Contains(body, want) {
+			t.Errorf("page lacks %q", want)
+		}
 	}
 }
