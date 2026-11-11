@@ -204,6 +204,20 @@ func TestReproduceRunsTheImagesShell(t *testing.T) {
 	}
 }
 
+// An argv runs with no shell: its metacharacters are plain arguments.
+func TestReproduceRunsAnArgvWithoutAShell(t *testing.T) {
+	dir := t.TempDir()
+	marker := filepath.Join(dir, "injected")
+	got := reproduce(reproEnv{argv: []string{"sh", "-c", `test "$1" = "x; touch ` + marker + `" && exit 7`, "sh", "x; touch " + marker}, timeout: 10 * time.Second}, dir)
+	if got.Exit != 7 {
+		t.Fatalf("repro = %+v, want the argv's exit 7", got)
+	}
+	got = reproduce(reproEnv{argv: []string{"echo", "$(touch " + marker + ")"}, timeout: 10 * time.Second}, dir)
+	if _, err := os.Stat(marker); err == nil || got.Exit != 0 || strings.TrimSpace(got.Output) != "$(touch "+marker+")" {
+		t.Fatalf("repro = %+v, marker written: %v", got, err == nil)
+	}
+}
+
 func TestTailBufferKeepsTheEnd(t *testing.T) {
 	b := &tailBuffer{max: 4}
 	b.Write([]byte("abc"))
@@ -217,9 +231,20 @@ func TestLoadReproEnv(t *testing.T) {
 	t.Setenv("REPRO_COMMAND", "make")
 	t.Setenv("REPRO_TIMEOUT", "600")
 	e, err := loadReproEnv()
-	if err != nil || e != (reproEnv{command: "make", timeout: 10 * time.Minute}) {
+	if err != nil || e.command != "make" || e.argv != nil || e.timeout != 10*time.Minute {
 		t.Fatalf("env = %+v, %v", e, err)
 	}
+	t.Setenv("REPRO_ARGV", `["go","test","-run","^TestY$","./x"]`)
+	if e, err = loadReproEnv(); err != nil || e.command != "" || !slices.Equal(e.argv, []string{"go", "test", "-run", "^TestY$", "./x"}) {
+		t.Fatalf("argv env = %+v, %v", e, err)
+	}
+	for _, bad := range []string{"go test", "[]", `["a",1]`} {
+		t.Setenv("REPRO_ARGV", bad)
+		if _, err := loadReproEnv(); err == nil {
+			t.Fatalf("REPRO_ARGV %q loaded", bad)
+		}
+	}
+	t.Setenv("REPRO_ARGV", "")
 	t.Setenv("REPRO_TIMEOUT", "0")
 	if _, err := loadReproEnv(); err == nil {
 		t.Fatal("a zero timeout loaded")
@@ -275,6 +300,150 @@ func TestReproRunsAtTheBase(t *testing.T) {
 		if got := repro(ws); got.Exit != want {
 			t.Fatalf("at %q: repro = %+v, want exit %d", at, got, want)
 		}
+	}
+}
+
+// With OVERLAY_PKG the base's tree gets the head's test files and testdata
+// of that package alone (regular files only, the base's own removed): a
+// test the head extends runs its new body on the base's code, a test the
+// head adds whole runs, another package's tests stay the base's, a head
+// without the package directory fails the fetch.
+func TestReproOverlaysTheHeadsTestsAtTheBase(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	run("init", "-q", "-b", "main", seed)
+	write := func(name, content string) {
+		path := filepath.Join(seed, name)
+		if err := os.MkdirAll(filepath.Dir(path), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	commit := func() string {
+		run("-C", seed, "add", "-A")
+		run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	write("go.mod", "module m\n\ngo 1.21\n")
+	write("a/a.go", "package a\n\nfunc One() int { return 1 }\n")
+	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 1 {\n\t\tt.Fatal(\"one\")\n\t}\n}\n")
+	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) {}\n")
+	write("a/main_test.go", "package a\n\nimport (\n\t\"os\"\n\t\"testing\"\n)\n\nfunc TestMain(m *testing.M) { m.Run(); os.Exit(3) }\n")
+	write("r.go", "package m\n\nconst R = 1\n")
+	write("a/testdata/old.txt", "base fixture\n")
+	base := commit()
+	run("-C", seed, "rm", "-q", "a/main_test.go")
+	write("r.go", "package m\n\nconst R = 2\n")
+	write(":!zz_test.go", "package m\n")
+	write("a/dir_test.go/x.txt", "a directory, not a test file\n")
+	write("a/a.go", "package a\n\nfunc One() int { return 2 }\n")
+	write("a/testdata/want.txt", "head fixture\n")
+	write("a/sub/x_test.go", "package sub\n")
+	write("a/testdata/deep/er/x.txt", "nested fixture\n")
+	if err := os.WriteFile(filepath.Join(seed, "a", "testdata", "run.sh"), []byte("#!/bin/sh\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "a", "exec_test.go"), []byte("package a\n"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	run("-C", seed, "rm", "-q", "a/testdata/old.txt")
+	write("a/a_test.go", "package a\n\nimport \"testing\"\n\nfunc TestOne(t *testing.T) {\n\tif One() != 2 {\n\t\tt.Fatal(\"head asserts two\")\n\t}\n}\n")
+	write("a/new_test.go", "package a\n\nimport \"testing\"\n\nfunc TestNew(t *testing.T) {}\n")
+	write("b/b_test.go", "package b\n\nimport \"testing\"\n\nfunc TestB(t *testing.T) { t.Fatal(\"head b\") }\n")
+	head := commit()
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "update-ref", "refs/pull/9/head", head)
+	reproEnvs(t, remote, head, "true")
+	t.Setenv("CHECKOUT_SHA", base)
+	// ./a and a are one package; the overlay is the head's test files, the
+	// base's TestMain (deleted at the head) gone, the base's a.go kept
+	t.Setenv("OVERLAY_PKG", "./a")
+	ws := t.TempDir()
+	if code := runReproFetch(nolog, ws); code != 0 {
+		t.Fatalf("fetch exit %d", code)
+	}
+	if err := fetched(ws); err != nil {
+		t.Fatal(err)
+	}
+	repo := filepath.Join(ws, "repo")
+	goTest := func(name, pkg string) harness.Repro {
+		return reproduce(reproEnv{argv: []string{"go", "test", "-count=1", "-run", "^" + name + "$", pkg}, timeout: time.Minute}, repo)
+	}
+	if _, err := os.Stat(filepath.Join(repo, "a", "main_test.go")); err == nil {
+		t.Fatal("the base's own test file stays beside the head's")
+	}
+	if b, err := os.ReadFile(filepath.Join(repo, "a", "testdata", "want.txt")); err != nil || string(b) != "head fixture\n" {
+		t.Fatalf("the head's testdata fixture = %q, %v", b, err)
+	}
+	for _, kept := range []string{"testdata/deep/er/x.txt", "testdata/run.sh", "exec_test.go"} {
+		if _, err := os.Stat(filepath.Join(repo, "a", kept)); err != nil {
+			t.Fatalf("a/%s of the head is not in the overlaid tree: %v", kept, err)
+		}
+	}
+	for _, gone := range []string{"testdata/old.txt", "sub/x_test.go"} {
+		if _, err := os.Lstat(filepath.Join(repo, "a", gone)); err == nil {
+			t.Fatalf("a/%s is in the overlaid tree", gone)
+		}
+	}
+	if _, err := os.Stat(filepath.Join(repo, "a", "dir_test.go")); err == nil {
+		t.Fatal("a directory named like a test file was copied")
+	}
+	if b, _ := os.ReadFile(filepath.Join(repo, "a", "a.go")); !strings.Contains(string(b), "return 1") {
+		t.Fatalf("a.go = %q, want the base's", b)
+	}
+	if got := goTest("TestOne", "./a"); got.Exit != 1 || !strings.Contains(got.Output, "head asserts two") {
+		t.Fatalf("TestOne at base with the head's tests = %+v, want its new body failing", got)
+	}
+	if got := goTest("TestNew", "./a"); got.Exit != 0 || strings.Contains(got.Output, "no tests to run") {
+		t.Fatalf("TestNew at base = %+v, want the head's added test run", got)
+	}
+	if got := goTest("TestB", "./b"); got.Exit != 0 {
+		t.Fatalf("TestB = %+v, want the base's test, the package not being overlaid", got)
+	}
+	// a package the head lacks fails the fetch: the run is unsettled
+	t.Setenv("OVERLAY_PKG", "nosuchdir")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil || !strings.Contains(err.Error(), "no package directory nosuchdir") {
+		t.Fatalf("a package the head lacks: %v", err)
+	}
+	if got := repro(ws); got.Exit != -1 {
+		t.Fatalf("repro = %+v, want exit -1", got)
+	}
+	// a package that is a file at the head is no package directory
+	t.Setenv("OVERLAY_PKG", "a/a.go")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil || !strings.Contains(err.Error(), "no package directory a/a.go") {
+		t.Fatalf("a file as the package: %v", err)
+	}
+	// the root package: a head file named like a pathspec is no pathspec
+	t.Setenv("OVERLAY_PKG", ".")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err != nil {
+		t.Fatal(err)
+	}
+	if b, _ := os.ReadFile(filepath.Join(ws, "repo", "r.go")); !strings.Contains(string(b), "R = 1") {
+		t.Fatalf("r.go = %q, want the base's", b)
+	}
+	if _, err := os.Stat(filepath.Join(ws, "repo", ":!zz_test.go")); err != nil {
+		t.Fatalf("the head's test file was not copied: %v", err)
+	}
+	t.Setenv("OVERLAY_PKG", "../x")
+	ws = t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil || !strings.Contains(err.Error(), "not inside the repository") {
+		t.Fatalf("an overlay outside the repository: %v", err)
 	}
 }
 
@@ -1024,5 +1193,150 @@ func TestProofsCountTheWaitAgainstTheBudget(t *testing.T) {
 	}
 	if _, err := os.Stat(filepath.Join(repo, "ran")); !errors.Is(err, os.ErrNotExist) {
 		t.Fatalf("the check ran: %v", err)
+	}
+}
+
+// A failing listing of the head fails the overlay, never an empty one.
+func TestOverlayFailsWhenTheListingFails(t *testing.T) {
+	err := overlayTests(workerEnv{}, filepath.Join(t.TempDir(), "no-repository"), "abc", ".", t.TempDir())
+	if err == nil || !strings.Contains(err.Error(), "list the head's") {
+		t.Fatalf("overlay = %v, want the listing's failure", err)
+	}
+}
+
+// The base's package directory may be a symlink out of the workspace: the
+// removal of its test files cannot follow it.
+func TestOverlayRemovalStaysInTheWorkspace(t *testing.T) {
+	run := func(args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", args...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	outside := t.TempDir()
+	victim := filepath.Join(outside, "victim_test.go")
+	if err := os.WriteFile(victim, []byte("package v\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+	run("init", "-q", "-b", "main", seed)
+	commit := func() string {
+		run("-C", seed, "add", "-A")
+		run("-C", seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+		return run("-C", seed, "rev-parse", "HEAD")
+	}
+	if err := os.Symlink(outside, filepath.Join(seed, "a")); err != nil {
+		t.Fatal(err)
+	}
+	base := commit()
+	run("-C", seed, "rm", "-q", "a")
+	if err := os.MkdirAll(filepath.Join(seed, "a"), 0o750); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(seed, "a", "a_test.go"), []byte("package a\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	head := commit()
+	run("clone", "-q", "--bare", seed, remote)
+	run("-C", remote, "update-ref", "refs/pull/9/head", head)
+	reproEnvs(t, remote, head, "true")
+	t.Setenv("CHECKOUT_SHA", base)
+	t.Setenv("OVERLAY_PKG", "a")
+	ws := t.TempDir()
+	runReproFetch(nolog, ws)
+	if err := fetched(ws); err == nil {
+		t.Fatal("the overlay followed the base's symlinked package directory")
+	}
+	if _, err := os.Stat(victim); err != nil {
+		t.Fatalf("the file outside the workspace is gone: %v", err)
+	}
+}
+
+// What the head has under the package's tests or testdata and the overlay
+// would not copy fails the fetch: the run is unsettled, never a failure of
+// the test on a missing file.
+func TestOverlayFailsOnWhatItWouldNotCopy(t *testing.T) {
+	run := func(dir string, args ...string) string {
+		t.Helper()
+		out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput()
+		if err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+		return strings.TrimSpace(string(out))
+	}
+	for name, tc := range map[string]struct {
+		link, target string
+		file         string // a regular file at link's path instead
+		want         string
+	}{
+		"a symlinked test file":     {link: "a/x_test.go", target: "../r.go", want: "a/x_test.go is not a regular file"},
+		"a symlinked testdata":      {link: "a/testdata", target: "../shared", want: "a/testdata is not a directory"},
+		"a testdata that is a file": {file: "a/testdata", want: "a/testdata is not a directory"},
+		"a symlink inside testdata": {link: "a/testdata/w.txt", target: "../../r.go", want: "a/testdata/w.txt is not a regular file"},
+	} {
+		seed, remote := t.TempDir(), filepath.Join(t.TempDir(), "remote.git")
+		run(seed, "init", "-q", "-b", "main")
+		for _, f := range []string{"r.go", "a/a.go"} {
+			if err := os.MkdirAll(filepath.Join(seed, filepath.Dir(f)), 0o750); err != nil {
+				t.Fatal(err)
+			}
+			if err := os.WriteFile(filepath.Join(seed, f), []byte("package a\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		}
+		commit := func() string {
+			run(seed, "add", "-A")
+			run(seed, "-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "c")
+			return run(seed, "rev-parse", "HEAD")
+		}
+		base := commit()
+		at := tc.link + tc.file
+		if err := os.MkdirAll(filepath.Join(seed, filepath.Dir(at)), 0o750); err != nil {
+			t.Fatal(err)
+		}
+		if tc.file != "" {
+			if err := os.WriteFile(filepath.Join(seed, at), []byte("x\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+		} else if err := os.Symlink(tc.target, filepath.Join(seed, at)); err != nil {
+			t.Fatal(err)
+		}
+		head := commit()
+		run(t.TempDir(), "clone", "-q", "--bare", seed, remote)
+		run(remote, "update-ref", "refs/pull/9/head", head)
+		reproEnvs(t, remote, head, "true")
+		t.Setenv("CHECKOUT_SHA", base)
+		t.Setenv("OVERLAY_PKG", "a")
+		ws := t.TempDir()
+		runReproFetch(nolog, ws)
+		if err := fetched(ws); err == nil || !strings.Contains(err.Error(), tc.want) {
+			t.Errorf("%s: fetch = %v, want %q", name, err, tc.want)
+		}
+		if got := repro(ws); got.Exit != -1 {
+			t.Errorf("%s: repro = %+v, want exit -1", name, got)
+		}
+	}
+}
+
+// A git answer past the output cap is an error, never its first megabyte.
+func TestGitOutputPastTheCapFails(t *testing.T) {
+	dir := t.TempDir()
+	for _, args := range [][]string{{"init", "-q"}, {"-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "--allow-empty", "-m", "c"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(dir, "big"), []byte(strings.Repeat("x", maxGitOutput+10)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	for _, args := range [][]string{{"add", "big"}, {"-c", "user.name=H", "-c", "user.email=h@h", "commit", "-q", "-m", "big"}} {
+		if out, err := exec.Command("git", append([]string{"-C", dir}, args...)...).CombinedOutput(); err != nil {
+			t.Fatalf("git %v: %v: %s", args, err, out)
+		}
+	}
+	if out, err := (workerEnv{}).git(dir, "cat-file", "-p", "HEAD:big"); err == nil || !strings.Contains(err.Error(), "output past") {
+		t.Fatalf("git = %d bytes, %v; want the cap's error", len(out), err)
 	}
 }

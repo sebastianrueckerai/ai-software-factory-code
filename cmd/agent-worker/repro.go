@@ -15,9 +15,11 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"path"
 	"path/filepath"
 	"regexp"
 	"strconv"
+	"strings"
 	"syscall"
 	"time"
 	"unicode/utf8"
@@ -35,10 +37,14 @@ import (
 // push token.
 type fetchEnv struct {
 	repoURL, repoToken, ref, sha, at string
+	// overlay is a package directory whose test files of sha are written
+	// over the tree of at
+	overlay string
 }
 
 type reproEnv struct {
 	command string
+	argv    []string
 	timeout time.Duration
 }
 
@@ -64,7 +70,7 @@ func loadFetchEnv() (fetchEnv, error) {
 	if err != nil {
 		return fetchEnv{}, err
 	}
-	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"], at: os.Getenv("CHECKOUT_SHA")}, nil
+	return fetchEnv{repoURL: v["REPO_URL"], repoToken: v["REPO_TOKEN"], ref: v["PR_REF"], sha: v["REPO_SHA"], at: os.Getenv("CHECKOUT_SHA"), overlay: os.Getenv("OVERLAY_PKG")}, nil
 }
 
 func reproTimeout() (time.Duration, error) {
@@ -75,12 +81,21 @@ func reproTimeout() (time.Duration, error) {
 	return time.Duration(secs) * time.Second, nil
 }
 
+// loadReproEnv reads the command a shell runs, or REPRO_ARGV, a JSON list
+// executed directly with no shell.
 func loadReproEnv() (reproEnv, error) {
-	v, err := required("REPRO_COMMAND")
+	timeout, err := reproTimeout()
 	if err != nil {
 		return reproEnv{}, err
 	}
-	timeout, err := reproTimeout()
+	if list := os.Getenv("REPRO_ARGV"); list != "" {
+		var argv []string
+		if err := json.Unmarshal([]byte(list), &argv); err != nil || len(argv) == 0 {
+			return reproEnv{}, fmt.Errorf("REPRO_ARGV: want a non-empty JSON list of strings")
+		}
+		return reproEnv{argv: argv, timeout: timeout}, nil
+	}
+	v, err := required("REPRO_COMMAND")
 	if err != nil {
 		return reproEnv{}, err
 	}
@@ -352,7 +367,108 @@ func fetchHead(e fetchEnv, dir string) error {
 	if _, err := w.git(scratch, "--work-tree="+dir, "checkout", "-q", "-f", commit, "--", "."); err != nil {
 		return fmt.Errorf("check out %s: %w", commit, err)
 	}
+	if e.overlay != "" {
+		if err := overlayTests(w, scratch, e.sha, e.overlay, dir); err != nil {
+			return err
+		}
+	}
 	return os.RemoveAll(scratch)
+}
+
+// overlayTests makes pkg's *_test.go files and its testdata directory in
+// dir the head's (sha's): the base's are removed, then the head's files of
+// mode 100644 or 100755, none else (no symlink, no submodule), are written
+// from scratch. A package directory the head lacks is an error: the claim
+// names nothing there. The removal goes through a root on dir, so a
+// symlink in the base's tree cannot lead it out.
+func overlayTests(w workerEnv, scratch, sha, pkg, dir string) error {
+	pkg = path.Clean(filepath.ToSlash(pkg))
+	if !filepath.IsLocal(pkg) {
+		return fmt.Errorf("overlay package %q is not inside the repository", pkg)
+	}
+	if pkg != "." {
+		if kind, err := w.git(scratch, "cat-file", "-t", sha+":"+pkg); err != nil || kind != "tree" {
+			return fmt.Errorf("the head has no package directory %s", pkg)
+		}
+	}
+	prefix := ""
+	if pkg != "." {
+		prefix = pkg + "/"
+	}
+	list := func(args ...string) ([]string, error) {
+		out, err := w.git(scratch, append([]string{"--literal-pathspecs", "ls-tree", "-z"}, args...)...)
+		if err != nil {
+			return nil, fmt.Errorf("list the head's %s: %w", args[len(args)-1], err)
+		}
+		return strings.Split(out, "\x00"), nil
+	}
+	regular := func(rec string) (name string, ok bool) {
+		meta, name, found := strings.Cut(rec, "\t")
+		f := strings.Fields(meta)
+		return name, found && len(f) == 3 && f[1] == "blob" && (f[0] == "100644" || f[0] == "100755")
+	}
+	// what the head has and the overlay would not copy fails it: a missing
+	// file would read as the test's own failure
+	var paths []string
+	recs, err := list(sha, "--", prefix)
+	if prefix == "" {
+		recs, err = list(sha)
+	}
+	if err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if name, ok := regular(rec); ok && strings.HasSuffix(name, "_test.go") {
+			paths = append(paths, name)
+		} else if !ok && strings.HasSuffix(name, "_test.go") && !strings.Contains(rec, " tree ") {
+			return fmt.Errorf("the head's %s is not a regular file", name)
+		}
+	}
+	dataRecs, err := list(sha, "--", prefix+"testdata")
+	if err != nil {
+		return err
+	}
+	for _, rec := range dataRecs {
+		if meta, _, _ := strings.Cut(rec, "\t"); rec != "" && !strings.Contains(meta, " tree ") {
+			return fmt.Errorf("the head's %stestdata is not a directory", prefix)
+		}
+	}
+	if recs, err = list("-r", sha, "--", prefix+"testdata/"); err != nil {
+		return err
+	}
+	for _, rec := range recs {
+		if name, ok := regular(rec); ok {
+			paths = append(paths, name)
+		} else if rec != "" {
+			return fmt.Errorf("the head's %s is not a regular file", name)
+		}
+	}
+	root, err := os.OpenRoot(dir)
+	if err != nil {
+		return err
+	}
+	defer root.Close()
+	entries, err := fs.ReadDir(root.FS(), pkg)
+	if err != nil && !errors.Is(err, fs.ErrNotExist) {
+		return err
+	}
+	for _, e := range entries {
+		if !e.IsDir() && strings.HasSuffix(e.Name(), "_test.go") {
+			if err := root.Remove(path.Join(pkg, e.Name())); err != nil {
+				return err
+			}
+		}
+	}
+	if err := root.RemoveAll(path.Join(pkg, "testdata")); err != nil {
+		return err
+	}
+	if len(paths) == 0 {
+		return nil
+	}
+	if _, err := w.git(scratch, append([]string{"--literal-pathspecs", "--work-tree=" + dir, "checkout", "-q", "-f", sha, "--"}, paths...)...); err != nil {
+		return fmt.Errorf("overlay the head's tests of %s: %w", pkg, err)
+	}
+	return nil
 }
 
 // maxReproOutput is the output tail kept in memory and reported, of a
@@ -382,8 +498,12 @@ func repro(ws string) harness.Repro {
 	return reproduce(e, filepath.Join(ws, "repo"))
 }
 
-// reproduce runs the command under the image's /bin/sh in dir.
+// reproduce runs the command under the image's /bin/sh in dir, or the argv
+// directly.
 func reproduce(e reproEnv, dir string) harness.Repro {
+	if e.argv != nil {
+		return runBounded(dir, nil, e.timeout, fmt.Sprintf("timed out after %s", e.timeout), e.argv[0], e.argv[1:]...)
+	}
 	return runBounded(dir, nil, e.timeout, fmt.Sprintf("timed out after %s", e.timeout), "/bin/sh", "-c", e.command)
 }
 

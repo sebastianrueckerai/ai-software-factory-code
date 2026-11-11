@@ -946,6 +946,9 @@ func (e workerEnv) runGitCtx(ctx context.Context, dir string, env []string, args
 		scrub := redact.New(e.repoToken, e.pushToken).String
 		return "", fmt.Errorf("git %s: %v: %s", scrub(strings.Join(args, " ")), err, scrub(strings.TrimSpace(out.String()+"\n"+errOut.String())))
 	}
+	if out.cut {
+		return "", fmt.Errorf("git %s: output past %d bytes", strings.Join(args, " "), maxGitOutput)
+	}
 	return strings.TrimSpace(out.String()), nil
 }
 
