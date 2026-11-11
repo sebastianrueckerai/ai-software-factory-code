@@ -224,7 +224,7 @@ func holdAskRig(t *testing.T) (*rig, *fakeEvents, *[]deployCall, *[]replanCall) 
 func holdAsk() factoryd.BoardTask {
 	q := &factoryd.HumanQuestion{Ask: "Production has waited 7 hours. Wait, deploy anyway, or replan?", Choices: []factoryd.QuestionChoice{
 		{Value: factoryd.AnswerHoldWait, Label: "Wait"},
-		{Value: factoryd.AnswerDeployAnyway, Label: "Deploy anyway"},
+		{Value: factoryd.ActDeployNow, Label: "Deploy anyway"},
 		{Value: factoryd.AnswerReplanOnTop + ":t-pl", Label: "Replan plan #12 on top"},
 		{Value: factoryd.AnswerTakeOffMain + ":t-pl", Label: "Take plan #12 off main and replan"}}}
 	return factoryd.BoardTask{Task: factoryd.Task{ID: "t-ask", Kind: "human", Status: "waiting-human", Source: factoryd.SourceProductionHeld,
@@ -259,35 +259,40 @@ func askRows(ev *fakeEvents, kind string) []factoryd.Event {
 	return out
 }
 
+// The human's press of Deploy anyway answers the ask's case with Act's
+// deploy_now on rung 3, and Act runs the release: the console calls
+// DeployNow itself no longer.
 func TestHoldAskDeployAnyway(t *testing.T) {
 	r, ev, deploys, _ := holdAskRig(t)
 	ck, s := r.loggedIn(t)
-	rec := answerAsk(r, ck, s.csrf, factoryd.AnswerDeployAnyway, "")
+	rec := answerAsk(r, ck, s.csrf, factoryd.ActDeployNow, "")
 	if !pressRefreshes(rec) {
 		t.Fatalf("deploy anyway = %d: %s", rec.Code, rec.Body)
 	}
-	if len(*deploys) != 1 || (*deploys)[0] != (deployCall{"sf/code", "sebastian", factoryd.ViaButton, "member"}) {
-		t.Fatalf("DeployNow calls = %+v, want one for sf/code by sebastian via the button", *deploys)
+	if len(r.acted) != 1 || r.acted[0].TaskID != "t-ask" || r.acted[0].Res.Action != factoryd.ActDeployNow || r.acted[0].Rung != 3 || r.acted[0].By != "sebastian" {
+		t.Fatalf("Act calls = %+v, want one deploy_now on t-ask by sebastian on rung 3", r.acted)
+	}
+	if len(*deploys) != 0 {
+		t.Errorf("the console called DeployNow %d times itself, want Act alone to", len(*deploys))
 	}
 	rows := askRows(ev, factoryd.EventQuestionAnswered)
-	if len(rows) != 1 || rows[0].Detail["value"] != factoryd.AnswerDeployAnyway || rows[0].TaskID != "t-ask" {
-		t.Fatalf("question_answered rows = %+v, want one on t-ask with value deploy_anyway", rows)
-	}
-
-	r, ev, deploys, _ = holdAskRig(t)
-	wck, ws := memberLogin(t, r, "morgan")
-	rec = answerAsk(r, wck, ws.csrf, factoryd.AnswerDeployAnyway, "")
-	if rec.Code != http.StatusForbidden || len(*deploys) != 0 || len(askRows(ev, factoryd.EventQuestionAnswered)) != 0 {
-		t.Errorf("writer = %d with %d calls and %d rows, want 403, 0, 0", rec.Code, len(*deploys), len(askRows(ev, factoryd.EventQuestionAnswered)))
+	if len(rows) != 1 || rows[0].Detail["value"] != factoryd.ActDeployNow || rows[0].TaskID != "t-ask" {
+		t.Fatalf("question_answered rows = %+v, want one on t-ask with value deploy_now", rows)
 	}
 
 	r, ev, _, _ = holdAskRig(t)
-	r.c.cfg.DeployNow = func(context.Context, string, string, string, string) (string, error) { return "", factoryd.ErrNotHeld }
+	wck, ws := memberLogin(t, r, "morgan")
+	rec = answerAsk(r, wck, ws.csrf, factoryd.ActDeployNow, "")
+	if rec.Code != http.StatusForbidden || len(r.acted) != 0 || len(askRows(ev, factoryd.EventQuestionAnswered)) != 0 {
+		t.Errorf("writer = %d with %d Act calls and %d rows, want 403, 0, 0", rec.Code, len(r.acted), len(askRows(ev, factoryd.EventQuestionAnswered)))
+	}
+
+	r, ev, _, _ = holdAskRig(t)
+	r.actErr = factoryd.ErrActRefused("production of sf/code is not held: every merge goes to production on its own")
 	ck, s = r.loggedIn(t)
-	rec = answerAsk(r, ck, s.csrf, factoryd.AnswerDeployAnyway, "")
-	want := "Production of " + holdProject + " is not held: every merge goes to production on its own."
-	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), want) {
-		t.Fatalf("a free production = %d %q, want 409 %q", rec.Code, rec.Body, want)
+	rec = answerAsk(r, ck, s.csrf, factoryd.ActDeployNow, "")
+	if rec.Code != http.StatusConflict || !strings.Contains(rec.Body.String(), "is not held: every merge goes to production on its own") {
+		t.Fatalf("a free production = %d %q, want 409 with Act's words", rec.Code, rec.Body)
 	}
 	if n := len(askRows(ev, factoryd.EventQuestionAnswered)); n != 0 || askStatus(r) != "waiting-human" {
 		t.Errorf("a refused Deploy anyway left %d answers, status %s; want none, waiting-human", n, askStatus(r))
@@ -383,13 +388,11 @@ func TestHoldAskReplanNamesAFailedClose(t *testing.T) {
 	}
 }
 
-// The project agent never presses Deploy anyway: the chat's answer on the
-// held-production ask refuses it at every autonomy level, run unconfirmed
-// at autonomous and before any proposal at manual. Nothing deploys and
-// nothing is answered.
-func TestHoldAskDeployAnywayRefusedInChat(t *testing.T) {
-	refused := `tool {"arguments":{"task_id":"#77","text":"Deploy anyway"},"duration_ms":0,"name":"answer","result":` +
-		`"Refused: Deploy anyway is a person's press: use Deploy now in the status panel, or answer card #77 in the console."}`
+// The chat's answer of Deploy anyway on the held-production ask reaches Act
+// as rung 2's deploy_now where the chat runs its answers (autonomous), and
+// is a proposal the human confirms where it does not (manual): the console
+// never refuses it and never deploys itself.
+func TestHoldAskDeployAnywayReachesActFromTheChat(t *testing.T) {
 	for _, level := range []string{policy.AutonomyAutonomous, policy.AutonomyManual} {
 		t.Run(level, func(t *testing.T) {
 			r, _, g := newChatRig(t)
@@ -400,20 +403,35 @@ func TestHoldAskDeployAnywayRefusedInChat(t *testing.T) {
 				return "9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d9d", nil
 			}
 			r.tasks.tasks = append(r.tasks.tasks, holdAsk())
-			g.replies = [][]string{{call(1, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)}, {say("Use Deploy now in the status panel.")}}
+			g.replies = [][]string{{call(1, "answer", `{"task_id":"#77","text":"Deploy anyway"}`)}, {say("Done.")}}
 			ck, s := r.loggedIn(t)
-			code, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"deploy anyway on the held ask"}})
-			equal(t, "code", code, 200)
-			if !slices.Contains(events, refused) {
-				t.Errorf("the stream lacks the refusal %s: %v", refused, events)
+			_, events, _ := chatPost(t, r, ck, s, chatPath, url.Values{"message": {"deploy anyway on the held ask"}})
+			if len(*deploys) != 0 {
+				t.Errorf("the console called DeployNow %d times itself, want Act alone to", len(*deploys))
 			}
-			if slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "proposal ") }) {
-				t.Errorf("the stream proposes the answer: %v", events)
+			proposed := slices.ContainsFunc(events, func(e string) bool { return strings.HasPrefix(e, "proposal ") })
+			if level == policy.AutonomyAutonomous && (len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.ActDeployNow || proposed) {
+				t.Errorf("autonomous: Act calls %+v, proposed %v; want one rung 2 deploy_now, no proposal", r.acted, proposed)
 			}
-			if len(*deploys) != 0 || len(askRows(r.events, factoryd.EventQuestionAnswered)) != 0 || askStatus(r) != "waiting-human" {
-				t.Errorf("DeployNow calls %+v, %d answers, status %s; want none, none, waiting-human",
-					*deploys, len(askRows(r.events, factoryd.EventQuestionAnswered)), askStatus(r))
+			if level == policy.AutonomyManual && (len(r.acted) != 0 || !proposed) {
+				t.Errorf("manual: Act calls %+v, proposed %v; want none and a proposal", r.acted, proposed)
 			}
 		})
+	}
+}
+
+// A wake turn's Deploy anyway at assisted reaches Act on rung 2 as the
+// proposal, with no release run ahead of it.
+func TestAWakeTurnsDeployAnywayIsActsProposalAtAssisted(t *testing.T) {
+	r, _, deploys, _ := holdAskRig(t)
+	r.openCases = map[string][]factoryd.Case{"t-ask": {{ID: 4, TaskID: "t-ask", Kind: factoryd.CaseRollHeld, Status: factoryd.CaseAtHuman}}}
+	r.actProposes = true
+	_, s := r.loggedIn(t)
+	a := actor{s: s, repository: "sf/code", via: factoryd.ViaChat, decider: "agent", level: policy.AutonomyAssisted, wake: true, birth: "wake_ask"}
+	if _, err := r.c.doAnswerCase(t.Context(), a, "t-ask", 4, "", factoryd.ActDeployNow, nil, 0); err != nil {
+		t.Fatal(err)
+	}
+	if len(*deploys) != 0 || len(r.acted) != 1 || r.acted[0].Rung != 2 || r.acted[0].Res.Action != factoryd.ActDeployNow {
+		t.Errorf("DeployNow calls %v, Act calls %+v; want no release and one deploy_now on rung 2", *deploys, r.acted)
 	}
 }

@@ -920,6 +920,8 @@ type Store interface {
 	// SetCaseFact sets fact key of live case id to value, or removes it
 	// for the empty value.
 	SetCaseFact(ctx context.Context, id int64, key, value string) error
+	// SetCaseFacts sets each of facts on live case id, whatever its type.
+	SetCaseFacts(ctx context.Context, id int64, facts map[string]any) error
 	// AppendRung1Step appends rung 1's step st on a case of task taskID
 	// unless the task's cases hold limit steps of rung 1 already (atLimit),
 	// the count and the insert one write.
