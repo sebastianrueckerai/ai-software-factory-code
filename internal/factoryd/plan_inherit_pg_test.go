@@ -130,10 +130,10 @@ func TestSetQuestionProposalFindsAnUnnamedFaceForTheCardsOwnAsk(t *testing.T) {
 		evs, _ := s.TaskEventsOfKind(ctx, "t1", EventQuestionAsked, 10)
 		return evs[0]
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", 9, true, "close: flag", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != nil {
+	if err := s.SetQuestionProposal(ctx, "t1", 9, true, "close: flag", "the factory agent", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != nil {
 		t.Fatalf("a flag's proposal: err %v, face %+v; want the unnamed face untouched", err, face().Detail)
 	}
-	if err := s.SetQuestionProposal(ctx, "t1", 9, false, "close: card", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != "close: card" {
+	if err := s.SetQuestionProposal(ctx, "t1", 9, false, "close: card", "the factory agent", map[string]any{"action": ActClose}); err != nil || face().Detail["recommendation"] != "close: card" {
 		t.Fatalf("the card's proposal: err %v, face %+v; want the unnamed face written", err, face().Detail)
 	}
 }
